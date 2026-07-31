@@ -1154,6 +1154,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
+        from clio_agent.gact.elicitation_bridge import check_elicitation_answer  # noqa: PLC0415
+
+        check_elicitation_answer(row, req)  # P1.3 #1113: 422 re-prompt on invalid form answer
         updated = row.model_copy(
             update={
                 "status": "answered",

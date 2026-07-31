@@ -36,12 +36,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+import threading
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
-from urllib.parse import urlsplit
 
+from clio_agent.gact.elicitation_schema import (
+    ELICITATION_QUESTION_SOURCE,
+    FormTranslation,
+    build_form_content,
+    check_elicitation_answer,
+    check_url_trust,
+    translate_form_schema,
+    validate_elicitation_answer,
+)
 from clio_agent.gact.types import UserQuestion, UserQuestionOption
 from clio_agent.tools.mcp_handlers import MCPClientCapabilities, MCPInvocationContext
 
@@ -52,6 +61,7 @@ __all__ = [
     "ELICITATION_REASONS",
     "FORWARDED_QUESTION_SOURCE",
     "FormTranslation",
+    "check_elicitation_answer",
     "check_url_trust",
     "deliver_forwarded_answer",
     "forward_child_question_to_parent",
@@ -60,11 +70,8 @@ __all__ = [
     "resolve_answered_question",
     "resolve_elicitation",
     "translate_form_schema",
+    "validate_elicitation_answer",
 ]
-
-#: ``UserQuestion.source`` stamped on every elicitation-derived question, so the
-#: shared answer route can recognise an elicitation and resolve its parked call.
-ELICITATION_QUESTION_SOURCE = "mcp_elicitation"
 
 #: ``UserQuestion.source`` for a paused child's question mirrored to the parent's
 #: HITL surface (the parent-forward replacing the child_requires_user_input fail).
@@ -88,9 +95,6 @@ ELICITATION_REASONS: dict[str, str] = {
     "forwarded_child_question_gone": "forwarded parent answer arrived but the child question is gone",
 }
 
-#: JSON-Schema scalar types this form translator accepts (flat, restricted set).
-_SUPPORTED_SCALAR_TYPES = frozenset({"string", "number", "integer", "boolean"})
-
 
 def _record_reason(reason: str, **fields: Any) -> None:
     """Log a typed elicitation degrade/reject reason (never silent)."""
@@ -104,128 +108,6 @@ def _record_reason(reason: str, **fields: Any) -> None:
     )
 
 
-# --- Schema translation (form mode) ---
-
-
-@dataclass(frozen=True)
-class FormTranslation:
-    """The result of translating a form-mode elicitation schema.
-
-    ``degrade`` is a key in :data:`ELICITATION_REASONS` when the schema cannot be
-    served (non-object / non-flat / unsupported field); all other fields are then
-    empty and the caller declines the elicitation with that typed reason.
-    """
-
-    kind: Literal["freeform", "choice", "confirmation"] = "freeform"
-    options: list[UserQuestionOption] = field(default_factory=list)
-    fields: list[dict[str, Any]] = field(default_factory=list)
-    degrade: str | None = None
-
-
-def _enum_options(values: Sequence[Any], names: Sequence[Any] | None) -> list[UserQuestionOption]:
-    """Build one :class:`UserQuestionOption` per enum value (label from enumNames)."""
-
-    options: list[UserQuestionOption] = []
-    for index, value in enumerate(values):
-        label = str(names[index]) if names and index < len(names) else str(value)
-        options.append(UserQuestionOption(label=label, value=str(value)))
-    return options
-
-
-def translate_form_schema(requested_schema: Mapping[str, Any]) -> FormTranslation:
-    """Translate a flat restricted JSON Schema into a UserQuestion shape.
-
-    Accepts the MCP form-mode subset: a top-level ``{"type": "object",
-    "properties": {...}}`` whose property values are scalar (string / number /
-    integer / boolean) or enum, optionally with ``default`` / ``title`` /
-    ``description``. Nesting (object / array property values) or an unsupported
-    field type returns a typed :attr:`FormTranslation.degrade` instead of raising.
-
-    Kind selection: a single boolean field -> ``confirmation``; a single enum
-    field -> ``choice`` (options are the enum values); anything else ->
-    ``freeform`` (the UI renders the multi-field / scalar form from the
-    ``fields`` descriptor carried in the question metadata).
-    """
-
-    if not isinstance(requested_schema, Mapping) or requested_schema.get("type") != "object":
-        return FormTranslation(degrade="elicitation_schema_not_object")
-    properties = requested_schema.get("properties")
-    if not isinstance(properties, Mapping):
-        return FormTranslation(degrade="elicitation_schema_not_object")
-    required = set(requested_schema.get("required") or [])
-
-    fields: list[dict[str, Any]] = []
-    for name, spec in properties.items():
-        if not isinstance(spec, Mapping):
-            return FormTranslation(degrade="elicitation_schema_not_flat")
-        field_type = spec.get("type")
-        enum = spec.get("enum")
-        # A nested object/array (with or without a declared type) is not flat.
-        if field_type in {"object", "array"} or "properties" in spec or "items" in spec:
-            return FormTranslation(degrade="elicitation_schema_not_flat")
-        if enum is None and field_type not in _SUPPORTED_SCALAR_TYPES:
-            return FormTranslation(degrade="elicitation_unsupported_field_type")
-        fields.append(
-            {
-                "name": str(name),
-                "type": str(field_type or ("string" if enum is not None else "")),
-                "enum": [str(v) for v in enum]
-                if isinstance(enum, Sequence) and enum is not None
-                else None,
-                "default": spec.get("default"),
-                "title": str(spec.get("title") or name),
-                "description": str(spec.get("description") or ""),
-                "required": str(name) in required,
-            }
-        )
-
-    if len(fields) == 1:
-        only = fields[0]
-        if only["enum"]:
-            names = properties[only["name"]].get("enumNames")
-            return FormTranslation(
-                kind="choice",
-                options=_enum_options(only["enum"], names if isinstance(names, Sequence) else None),
-                fields=fields,
-            )
-        if only["type"] == "boolean":
-            return FormTranslation(kind="confirmation", fields=fields)
-    return FormTranslation(kind="freeform", fields=fields)
-
-
-# --- URL trust (url mode) ---
-
-
-def _origin(url: str) -> str:
-    """Return the scheme://host[:port] origin of ``url`` (lower-cased)."""
-
-    parts = urlsplit(url)
-    netloc = parts.netloc.lower()
-    return f"{parts.scheme.lower()}://{netloc}" if netloc else ""
-
-
-def check_url_trust(url: str, trusted_origins: Sequence[str]) -> str | None:
-    """Return a typed reject reason for ``url``, or ``None`` when it is trusted.
-
-    Trust is decided WITHOUT fetching the URL: only its origin is inspected. A
-    non-https URL is rejected outright; an origin absent from ``trusted_origins``
-    (a configured allow-list) is rejected. An empty allow-list means the url
-    trust flow is not configured, so every url is rejected as not-declared.
-    """
-
-    if not trusted_origins:
-        return "elicitation_url_not_declared"
-    parts = urlsplit(url)
-    if parts.scheme.lower() != "https":
-        return "elicitation_url_insecure_scheme"
-    allowed = {_origin(o) if "://" in o else o.lower() for o in trusted_origins}
-    origin = _origin(url)
-    host = parts.netloc.lower()
-    if origin not in allowed and host not in allowed:
-        return "elicitation_url_untrusted_origin"
-    return None
-
-
 # --- Async-safe park / resolve ---
 
 
@@ -237,21 +119,42 @@ class ElicitResolution:
     content: dict[str, Any] | None = None
 
 
-def _waiters(
-    app: Any,
-) -> dict[str, tuple["asyncio.Future[ElicitResolution]", asyncio.AbstractEventLoop]]:
-    """Return the per-app elicitation waiter registry, created on first use.
+#: Guards lazy creation of the per-app waiter registry AND every register/pop, so
+#: two worker loops racing the first elicitation cannot create rival dicts (#1113
+#: finding 4). The registry is a plain dict once created; all mutation holds this.
+_WAITERS_LOCK = threading.Lock()
 
-    Lazily attached to ``app.state`` (no ``build_app`` edit needed): maps a
-    pending question id to the parked future and the loop that awaits it, so a
-    resolution scheduled from any thread reaches the right loop.
+_WaiterEntry = tuple["asyncio.Future[ElicitResolution]", asyncio.AbstractEventLoop]
+
+
+def _waiters(app: Any) -> dict[str, _WaiterEntry]:
+    """Return the per-app elicitation waiter registry (thread-safe first use).
+
+    Maps a pending question id to the parked future and the loop that awaits it.
+    Double-checked locking makes concurrent first registrations converge on ONE
+    dict rather than overwriting ``app.state`` with rival dicts (finding 4).
     """
 
     registry = getattr(app.state, "elicitation_waiters", None)
     if registry is None:
-        registry = {}
-        app.state.elicitation_waiters = registry
+        with _WAITERS_LOCK:
+            registry = getattr(app.state, "elicitation_waiters", None)
+            if registry is None:
+                registry = {}
+                app.state.elicitation_waiters = registry
     return registry
+
+
+def _register_waiter(app: Any, question_id: str, entry: _WaiterEntry) -> None:
+    registry = _waiters(app)  # resolve/create OUTSIDE the item lock (non-reentrant)
+    with _WAITERS_LOCK:
+        registry[question_id] = entry
+
+
+def _pop_waiter(app: Any, question_id: str) -> _WaiterEntry | None:
+    registry = _waiters(app)  # resolve/create OUTSIDE the item lock (non-reentrant)
+    with _WAITERS_LOCK:
+        return registry.pop(question_id, None)
 
 
 def _safe_set(future: "asyncio.Future[ElicitResolution]", resolution: ElicitResolution) -> None:
@@ -265,20 +168,58 @@ async def _await_answer(app: Any, question: UserQuestion, timeout: float) -> Eli
     Async-safe: the handler runs on the client's receive loop; this yields it (so
     the answer route can run and resolve the future) instead of blocking. The
     waiter is registered BEFORE publish, closing the race where an answer between
-    publish and registration would miss it. Timeout -> fail-safe typed cancel.
+    publish and registration would miss it. On timeout OR outer cancellation the
+    still-pending question is atomically terminalized (expired/cancelled), so no
+    stale row and no anchor can leak a late answer into native handling (finding 6).
     """
 
     loop = asyncio.get_running_loop()
     future: asyncio.Future[ElicitResolution] = loop.create_future()
-    _waiters(app)[question.id] = (future, loop)
+    _register_waiter(app, question.id, (future, loop))
     _publish_question_created(app, question)
     try:
         return await asyncio.wait_for(future, timeout=timeout)
     except (TimeoutError, asyncio.TimeoutError):
         _record_reason("elicitation_wait_timeout", question_id=question.id)
+        _terminalize_question(app, question.id, "expired", "user_question.expired")
         return ElicitResolution(action="cancel")
+    except asyncio.CancelledError:
+        # Outer tool failure / loop teardown / cancel cascade: terminalize + re-raise.
+        _terminalize_question(app, question.id, "cancelled", "user_question.cancelled")
+        raise
     finally:
-        _waiters(app).pop(question.id, None)
+        _pop_waiter(app, question.id)
+
+
+def _terminalize_question(app: Any, question_id: str, status: str, event_type: str) -> None:
+    """Atomically move a still-pending elicitation row to a terminal state.
+
+    Only acts while the row is still ``pending`` (never clobbers an answer/cancel
+    that already landed via the route). Clears ``pending_user_question_id`` only
+    when it still points here, and publishes a typed event. Because the row is no
+    longer pending, a late answer hits the route's 409 guard instead of leaking
+    into native ask-user resolution (finding 6).
+    """
+
+    row = getattr(app.state, "user_questions", {}).get(question_id)
+    if row is None or row.status != "pending":
+        return
+    updated = row.model_copy(
+        update={"status": status, "updated_at": datetime.now(timezone.utc).isoformat()}
+    )
+    app.state.user_questions[question_id] = updated
+    _clear_pending_anchor(app, row.session_id, only_if=question_id)
+    bus = getattr(app.state, "bus", None)
+    if bus is not None:
+        from clio_agent.gact.events import Event  # noqa: PLC0415
+
+        bus.publish(
+            Event(
+                type=event_type,
+                session_id=row.session_id,
+                payload=updated.model_dump(exclude_none=True),
+            )
+        )
 
 
 def resolve_elicitation(app: Any, question: UserQuestion) -> bool:
@@ -291,7 +232,7 @@ def resolve_elicitation(app: Any, question: UserQuestion) -> bool:
     metadata), then delivered to the parked future on its owning loop.
     """
 
-    waiter = _waiters(app).pop(question.id, None)
+    waiter = _pop_waiter(app, question.id)
     if waiter is None:
         return False
     future, loop = waiter
@@ -305,7 +246,7 @@ def resolve_elicitation(app: Any, question: UserQuestion) -> bool:
             exc,
         )
         return False
-    _clear_pending_anchor(app, question.session_id)
+    _clear_pending_anchor(app, question.session_id, only_if=question.id)
     return True
 
 
@@ -358,60 +299,33 @@ def _resolution_from_question(question: UserQuestion) -> ElicitResolution:
         # URL consent carries no form content; accept == the user consented.
         return ElicitResolution(action="accept", content={})
     fields = elicitation.get("fields") or []
-    content = _build_form_content(fields, question)
+    content = build_form_content(
+        fields,
+        selected_options=question.selected_options,
+        answer=question.answer,
+        answer_metadata=question.answer_metadata,
+    )
     return ElicitResolution(action="accept", content=content)
-
-
-def _coerce(value: Any, field_type: str) -> Any:
-    """Coerce a string-ish answer to the field's JSON-Schema scalar type."""
-
-    if field_type in {"number", "integer"} and isinstance(value, str):
-        try:
-            return int(value) if field_type == "integer" else float(value)
-        except ValueError:
-            return value
-    if field_type == "boolean" and isinstance(value, str):
-        return value.strip().lower() in {"true", "yes", "1", "on", "y"}
-    return value
-
-
-def _build_form_content(
-    fields: Sequence[Mapping[str, Any]], question: UserQuestion
-) -> dict[str, Any]:
-    """Build the accept ``content`` dict from the answer + the field descriptors.
-
-    Precedence per field: an explicit value in ``answer_metadata`` (a multi-field
-    form submits ``{field: value}`` there), else the single-field shorthand
-    (``selected_options`` for a choice, ``answer`` for freeform/confirmation),
-    else the schema default. Values are coerced to the declared scalar type.
-    """
-
-    supplied = question.answer_metadata
-    content: dict[str, Any] = {}
-    single = len(fields) == 1
-    for spec in fields:
-        name = str(spec["name"])
-        field_type = str(spec.get("type") or "string")
-        if name in supplied:
-            content[name] = _coerce(supplied[name], field_type)
-        elif single and question.selected_options:
-            content[name] = _coerce(question.selected_options[0], field_type)
-        elif single and question.answer != "":
-            content[name] = _coerce(question.answer, field_type)
-        elif spec.get("default") is not None:
-            content[name] = spec["default"]
-    return content
 
 
 # --- The handler + client construction ---
 
 
-def _clear_pending_anchor(app: Any, session_id: str) -> None:
-    """Clear the durable ``pending_user_question_id`` anchor for ``session_id``."""
+def _clear_pending_anchor(app: Any, session_id: str, *, only_if: str = "") -> None:
+    """Clear the durable ``pending_user_question_id`` anchor for ``session_id``.
+
+    ``only_if`` guards against clobbering a newer pending question: the anchor is
+    cleared only when it still points at ``only_if`` (when given).
+    """
 
     sessions = getattr(app.state, "sessions", None)
     if sessions is None or not session_id:
         return
+    if only_if:
+        sess = sessions.get(session_id)
+        anchor = str((getattr(sess, "metadata", {}) or {}).get("pending_user_question_id") or "")
+        if anchor != only_if:
+            return
     try:
         sessions.update(session_id, metadata_patch={"pending_user_question_id": ""})
     except Exception as exc:  # noqa: BLE001 - anchor bookkeeping must never fail a resolve
@@ -677,6 +591,7 @@ async def handle_elicitation(
                 "elicitation": {
                     "mode": "form",
                     "fields": translation.fields,
+                    "additional_properties": translation.additional_properties,
                     "request_id": getattr(params, "request_id", None),
                     "namespace": invocation.namespace,
                     "tool_name": invocation.tool_name,

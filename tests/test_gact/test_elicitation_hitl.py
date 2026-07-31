@@ -447,3 +447,225 @@ def test_url_elicitation_trusted_origin_mints_confirmation(client: TestClient) -
     assert resp.status_code == 200, resp.text
     thread.join(timeout=10.0)
     assert holder["result"].action == "accept"
+
+
+# ---------------------------------------------------------------------------
+# Finding 4 — concurrent first registration converges on ONE waiter registry
+# ---------------------------------------------------------------------------
+
+
+def test_concurrent_first_elicitations_share_one_registry(client: TestClient) -> None:
+    """Two worker loops racing the FIRST elicitation must not orphan a parked call.
+
+    Both threads hit the lazily-created waiter registry simultaneously (barrier);
+    the double-checked lock (finding 4) makes them converge on ONE dict, so BOTH
+    questions are registered and resolvable — never rival dicts with one lost.
+    """
+
+    import mcp_types
+
+    from clio_agent.gact import elicitation_bridge as eb
+
+    app = client.app  # type: ignore[attr-defined]
+    # No registry yet: force the concurrent-first-creation race.
+    if hasattr(app.state, "elicitation_waiters"):
+        delattr(app.state, "elicitation_waiters")
+
+    sids = [_create_session(client), _create_session(client)]
+    barrier = threading.Barrier(2)
+    results: dict[str, Any] = {}
+
+    def _fire(idx: int) -> None:
+        inv = MCPInvocationContext(
+            invocation_id=f"i{idx}", session_id=sids[idx], namespace="ext", tool_name="t"
+        )
+        params = mcp_types.ElicitRequestFormParams(
+            message="pick",
+            requested_schema={"type": "object", "properties": {"v": {"type": "string"}}},
+        )
+
+        async def _call() -> Any:
+            barrier.wait()
+            return await eb.handle_elicitation(app, inv, "pick", params, timeout=10.0)
+
+        results[str(idx)] = asyncio.run(_call())
+
+    threads = [threading.Thread(target=_fire, args=(i,), daemon=True) for i in range(2)]
+    for t in threads:
+        t.start()
+
+    # Both questions must appear (one shared registry holds both waiters).
+    for sid in sids:
+        _wait_for_pending_question(client, sid)
+    assert len(app.state.elicitation_waiters) == 2, app.state.elicitation_waiters
+
+    # Both resolve independently through the shared answer route.
+    for sid in sids:
+        q = client.get(f"/v1/sessions/{sid}/questions", params={"status": "pending"}).json()[
+            "questions"
+        ][0]
+        client.post(
+            f"/v1/sessions/{sid}/questions/{q['id']}/answer",
+            json={"metadata": {"v": "ok"}},
+        )
+    for t in threads:
+        t.join(timeout=10.0)
+    assert results["0"].action == "accept" and results["1"].action == "accept"
+
+
+# ---------------------------------------------------------------------------
+# Finding 6 — timeout atomically terminalizes the question + clears the anchor
+# ---------------------------------------------------------------------------
+
+
+def test_timeout_expires_question_clears_anchor_and_blocks_late_answer(client: TestClient) -> None:
+    """On timeout the tool gets cancel, the row goes ``expired``, the anchor clears,
+    and a late answer is refused (409) rather than leaking into native handling."""
+
+    import mcp_types
+
+    from clio_agent.gact.elicitation_bridge import handle_elicitation
+
+    app = client.app  # type: ignore[attr-defined]
+    sid = _create_session(client)
+    invocation = MCPInvocationContext(
+        invocation_id="inv", session_id=sid, namespace="ext", tool_name="t"
+    )
+    params = mcp_types.ElicitRequestFormParams(
+        message="pick",
+        requested_schema={"type": "object", "properties": {"v": {"type": "string"}}},
+    )
+    holder: dict[str, Any] = {}
+
+    def _worker() -> None:
+        holder["result"] = asyncio.run(
+            handle_elicitation(app, invocation, "pick", params, timeout=0.3)
+        )
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    question = _wait_for_pending_question(client, sid)
+    thread.join(timeout=10.0)
+
+    assert holder["result"].action == "cancel"
+    row = app.state.user_questions[question["id"]]
+    assert row.status == "expired"
+    sess = app.state.sessions.get(sid)
+    assert (sess.metadata or {}).get("pending_user_question_id", "") == ""
+    # A late answer is refused, never leaked into native ask-user resolution.
+    late = client.post(f"/v1/sessions/{sid}/questions/{question['id']}/answer", json={})
+    assert late.status_code == 409, late.text
+
+
+# ---------------------------------------------------------------------------
+# Finding 7 — invalid form answers are 422 re-prompts, never invalid accepts
+# ---------------------------------------------------------------------------
+
+
+def test_required_integer_invalid_answer_is_422_then_valid_accepts(client: TestClient) -> None:
+    """An invalid required-integer answer re-prompts (422, still pending); a valid
+    answer then resolves the parked call with coerced content."""
+
+    import mcp_types
+
+    from clio_agent.gact.elicitation_bridge import handle_elicitation
+
+    app = client.app  # type: ignore[attr-defined]
+    sid = _create_session(client)
+    invocation = MCPInvocationContext(
+        invocation_id="inv", session_id=sid, namespace="ext", tool_name="t"
+    )
+    params = mcp_types.ElicitRequestFormParams(
+        message="how many",
+        requested_schema={
+            "type": "object",
+            "properties": {"count": {"type": "integer"}},
+            "required": ["count"],
+        },
+    )
+    holder: dict[str, Any] = {}
+
+    def _worker() -> None:
+        holder["result"] = asyncio.run(
+            handle_elicitation(app, invocation, "how many", params, timeout=10.0)
+        )
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    question = _wait_for_pending_question(client, sid)
+
+    # Non-integer answer -> 422, question stays pending, future not resolved.
+    bad = client.post(
+        f"/v1/sessions/{sid}/questions/{question['id']}/answer",
+        json={"metadata": {"count": "not-a-number"}},
+    )
+    assert bad.status_code == 422, bad.text
+    assert app.state.user_questions[question["id"]].status == "pending"
+    assert holder == {}
+
+    # A valid integer answer resolves with coerced content.
+    good = client.post(
+        f"/v1/sessions/{sid}/questions/{question['id']}/answer",
+        json={"metadata": {"count": "7"}},
+    )
+    assert good.status_code == 200, good.text
+    thread.join(timeout=10.0)
+    assert holder["result"].action == "accept"
+    assert holder["result"].content == {"count": 7}
+
+
+def test_validate_elicitation_answer_unit_rules() -> None:
+    """Unit: required / enum / integer / additionalProperties validation rules."""
+
+    from clio_agent.gact.elicitation_schema import validate_elicitation_answer
+    from clio_agent.gact.types import UserQuestion
+
+    def _q(fields: list[dict[str, Any]], *, additional: bool = True) -> UserQuestion:
+        return UserQuestion(
+            id="q",
+            session_id="s",
+            prompt="p",
+            created_at="t",
+            updated_at="t",
+            source="mcp_elicitation",
+            metadata={
+                "elicitation": {
+                    "mode": "form",
+                    "fields": fields,
+                    "additional_properties": additional,
+                }
+            },
+        )
+
+    # required missing
+    q = _q([{"name": "count", "type": "integer", "required": True}])
+    assert (
+        validate_elicitation_answer(q, selected_options=[], answer="", answer_metadata={})
+        is not None
+    )
+    # invalid integer
+    assert (
+        validate_elicitation_answer(
+            q, selected_options=[], answer="", answer_metadata={"count": "x"}
+        )
+        is not None
+    )
+    # enum violation
+    qe = _q([{"name": "c", "type": "string", "enum": ["a", "b"]}])
+    assert (
+        validate_elicitation_answer(qe, selected_options=["z"], answer="", answer_metadata={})
+        is not None
+    )
+    # additionalProperties=False rejects extras
+    qa = _q([{"name": "c", "type": "string"}], additional=False)
+    assert (
+        validate_elicitation_answer(
+            qa, selected_options=[], answer="", answer_metadata={"c": "x", "extra": "1"}
+        )
+        is not None
+    )
+    # valid
+    assert (
+        validate_elicitation_answer(qe, selected_options=["a"], answer="", answer_metadata={})
+        is None
+    )
