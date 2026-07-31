@@ -308,7 +308,7 @@ async def test_create_task_result_is_driven_to_the_real_result() -> None:
 
         ctx = Ctx()
         ctx.session = session
-        extension = ClioTasksClientExtension(None)
+        extension = ClioTasksClientExtension()
         result = await extension._resolve_task(create, ctx)
 
         assert result.content[0].text == "42"
@@ -603,7 +603,7 @@ def test_direct_execution_client_declares_the_tasks_extension() -> None:
 
     from fastmcp import Client
 
-    declaration = tasks_declaration(None, Client)
+    declaration = tasks_declaration(Client)
 
     assert declaration.reason is None
     assert len(declaration.extensions) == 1
@@ -616,7 +616,7 @@ def test_proxy_backend_suppresses_the_declaration_with_a_typed_reason() -> None:
 
     from fastmcp.server.providers.proxy import ProxyClient
 
-    declaration = tasks_declaration(None, ProxyClient)
+    declaration = tasks_declaration(ProxyClient)
 
     assert declaration.extensions == ()
     assert declaration.reason == MCP_TASKS_DECLARATION_SUPPRESSED

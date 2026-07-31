@@ -282,6 +282,27 @@ async def _answer_new_input_keys(
     await send_task_update(session, task_id, responses, remaining())
 
 
+def session_elicitation_callback(session: Any) -> Any:
+    """The SDK-shaped ``(context, params)`` elicitation callback the session will use.
+
+    THE ONE HITL SURFACE, resolved from the object that owns it. A fastmcp ``Client``
+    wraps the caller's 4-argument ``elicitation_handler`` into the SDK's 2-argument
+    ``ElicitationFnT`` and installs THAT on the ``ClientSession``; the raw handler
+    passed at construction has the wrong signature for a task's in-task input round.
+    Reading it off the session is therefore not a convenience — it is the only way a
+    task's question reaches the same handler a foreground elicitation reaches.
+
+    The SDK's own decline-everything default is filtered out to ``None`` so a client
+    with no HITL surface raises the typed "no elicitation handler" error instead of
+    silently declining every in-task question.
+    """
+
+    from mcp.client.session import _default_elicitation_callback  # noqa: PLC0415
+
+    callback = getattr(session, "_elicitation_callback", None)
+    return None if callback is _default_elicitation_callback else callback
+
+
 async def drive_task_to_terminal(
     session: "ClientSession",
     task_id: str,
@@ -307,10 +328,16 @@ async def drive_task_to_terminal(
     The record's status is written through ``store`` on every observed transition
     and dropped once the task settles, so a crash leaves behind exactly the ids
     that are still live.
+
+    ``elicitation_callback`` is the SDK-shaped ``(context, params)`` callback. When
+    omitted it is read off ``session`` — see :func:`session_elicitation_callback`,
+    which is what puts in-task input on the ONE HITL surface.
     """
 
     ledger = ledger if ledger is not None else TaskInputLedger()
     record_store = resolve_store(store)
+    if elicitation_callback is None:
+        elicitation_callback = session_elicitation_callback(session)
     if max_no_progress_rounds is None:
         from clio_agent.tools.mcp_runtime import input_required_max_rounds  # noqa: PLC0415
 
@@ -478,8 +505,16 @@ class ClioTasksClientExtension(TasksClientExtension):
     ``Mcp-Name``-bearing task RPCs.
     """
 
-    def __init__(self, elicitation_callback: Any = None, tool_name: str = "") -> None:
-        super().__init__(elicitation_callback)
+    def __init__(self, tool_name: str = "") -> None:
+        # The substrate stores a construction-time elicitation callback; CLIO
+        # deliberately passes NONE and resolves it from the live ``ClientSession``
+        # instead. fastmcp wraps the caller's 4-argument ``elicitation_handler`` into
+        # the SDK's 2-argument ``ElicitationFnT`` and installs THAT on the session,
+        # so the object handed to an extension factory has the wrong signature for a
+        # task's input round — calling it raises ``TypeError`` mid-task. Reading the
+        # callback off the session is what makes in-task input land on the SAME HITL
+        # surface a foreground elicitation lands on.
+        super().__init__(None)
         self._clio_tool_name = tool_name
 
     async def _resolve_task(self, create_result: Any, ctx: Any) -> mcp_types.CallToolResult:
@@ -499,7 +534,7 @@ class ClioTasksClientExtension(TasksClientExtension):
         final = await drive_task_to_terminal(
             ctx.session,
             task_id,
-            self._elicitation_callback,
+            session_elicitation_callback(ctx.session),
             timeout_seconds=ctx.read_timeout_seconds,
             store=store,
         )
@@ -529,7 +564,7 @@ class TasksDeclaration:
     reason: str | None
 
 
-def tasks_declaration(elicitation_callback: Any, client_cls: Any) -> TasksDeclaration:
+def tasks_declaration(client_cls: Any) -> TasksDeclaration:
     """Resolve whether this client declares the tasks extension, and why not if not.
 
     A client class that pins ``_auto_internal_extensions = False`` — FastMCP's
@@ -550,6 +585,4 @@ def tasks_declaration(elicitation_callback: Any, client_cls: Any) -> TasksDeclar
             getattr(client_cls, "__name__", client_cls),
         )
         return TasksDeclaration(extensions=(), reason=MCP_TASKS_DECLARATION_SUPPRESSED)
-    return TasksDeclaration(
-        extensions=(ClioTasksClientExtension(elicitation_callback),), reason=None
-    )
+    return TasksDeclaration(extensions=(ClioTasksClientExtension(),), reason=None)

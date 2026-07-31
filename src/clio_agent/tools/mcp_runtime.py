@@ -457,11 +457,9 @@ def make_mcp_client(
         # SDK's hardcoded default. Exhaustion surfaces the typed degrade in mcp_executor.
         "input_required_max_rounds": input_required_max_rounds(),
     }
-    elicitation_callback: Any = None
     if handlers is not None:
         if handlers.elicitation is not None:
-            elicitation_callback = ElicitationDispatcher(handlers.elicitation)
-            kwargs["elicitation_handler"] = elicitation_callback
+            kwargs["elicitation_handler"] = ElicitationDispatcher(handlers.elicitation)
         if handlers.progress is not None:
             kwargs["progress_handler"] = ProgressDispatcher(handlers.progress)
         if handlers.message is not None:
@@ -473,10 +471,13 @@ def make_mcp_client(
         # substrate's identifier, so folding it in REPLACES fastmcp-tasks' internal
         # extension with the hardened one (input-key dedup, `Mcp-Name` on task RPCs,
         # durable task-id persistence). Suppressed — with a typed reason — for client
-        # classes that forbid internal extensions (proxy backends; #1119).
+        # classes that forbid internal extensions (proxy backends; #1119). The
+        # extension takes no elicitation callback here on purpose: it reads the
+        # SDK-shaped one off the live ClientSession, since fastmcp rewraps the
+        # 4-argument handler installed above (see `session_elicitation_callback`).
         from clio_agent.tools.mcp_tasks import tasks_declaration  # noqa: PLC0415
 
-        declaration = tasks_declaration(elicitation_callback, client_cls)
+        declaration = tasks_declaration(client_cls)
         if declaration.extensions:
             kwargs["extensions"] = list(declaration.extensions)
 
