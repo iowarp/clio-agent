@@ -75,7 +75,7 @@ class _Agent:
 def _declare(monkeypatch, *child_ids: str) -> None:
     monkeypatch.setattr(
         "clio_agent.gact.agents.resolution._runtime_declared_child_ids",
-        lambda app, pid, session_id="": set(child_ids),
+        lambda app, pid, session_id="", **_bindings: set(child_ids),
     )
 
 
@@ -174,6 +174,15 @@ def test_taskspec_json_roundtrips_verbatim() -> None:
         mode="async",
         workflow_state={"plan": "P1", "steps": [1, 2, 3]},
         fanout_bound=4,
+        workspace_id="ws_science",
+        session_mode="architect",
+        session_scope_metadata={
+            "active_agent_blueprint_id": "science-blueprint",
+            "active_agent_blueprint_path": "/blueprints/science",
+            "active_expert_pack_id": "science-pack",
+            "active_expert_pack_path": "/packs/science",
+            "expert_pack_id": "legacy-science-pack",
+        },
     )
     wire = spec_to_wire(spec)
     # Genuinely JSON (survives a dumps/loads with no custom encoder).
@@ -367,7 +376,8 @@ def test_invoke_undeclared_child_parity(tmp_path: Path, monkeypatch) -> None:
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app):
         invoker = InProcessExpertInvoker(app)
-        spec = TaskSpec(child_expert_id="hpc_expert", task_text="x", parent_session_id="sess_p")
+        parent = app.state.sessions.create(workspace_id="ws_default", title="p")
+        spec = TaskSpec(child_expert_id="hpc_expert", task_text="x", parent_session_id=parent.id)
         with pytest.raises(SpawnError) as inv_exc:
             invoker.invoke(spec)
         with pytest.raises(SpawnError) as dir_exc:

@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from clio_agent.gact.agent_tasks import STATUS_RUNNING, AgentTask
 from clio_agent.gact.app import build_app
 from clio_agent.gact.permission_gate import _policy_action_for_tool
+from clio_agent.gact.spawn_context import bind_task_spec_to_parent
 from clio_agent.gact.turn_forward import _forward_executor
 from clio_agent.gact.turn_spawn import (
     MAX_SPAWN_DEPTH,
@@ -55,7 +56,7 @@ class _Agent:
 def _declare(monkeypatch, *child_ids: str) -> None:
     monkeypatch.setattr(
         "clio_agent.gact.agents.resolution._runtime_declared_child_ids",
-        lambda app, pid, session_id="": set(child_ids),
+        lambda app, pid, session_id="", **_bindings: set(child_ids),
     )
 
 
@@ -123,7 +124,8 @@ def test_undeclared_child_rejected(tmp_path: Path, monkeypatch) -> None:
     _declare(monkeypatch, "data_expert")
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app):
-        spec = TaskSpec(child_expert_id="hpc_expert", task_text="x", parent_session_id="sess_p")
+        parent = app.state.sessions.create(workspace_id="ws_default", title="p")
+        spec = TaskSpec(child_expert_id="hpc_expert", task_text="x", parent_session_id=parent.id)
         with pytest.raises(SpawnError) as exc:
             spawn_child_turn_threadsafe(app, spec)
         assert exc.value.reason == "undeclared_child"
@@ -626,22 +628,150 @@ def test_edit_mode_parent_spawns_edit_mode_child_unchanged(tmp_path: Path, monke
         )
 
 
-def test_spawn_with_no_parent_session_defaults_to_edit(tmp_path: Path, monkeypatch) -> None:
-    """A spawn whose ``parent_session_id`` does not resolve to a real session (unit
-    tests exercising the guard in isolation) must still default the child to
-    ``edit`` — the pre-fix default — never crash on a missing parent."""
+def _spawn_scope(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Return the session-scoped blueprint/expert-pack keys copied by spawn."""
+
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key.startswith(("active_agent_blueprint_", "active_expert_pack_"))
+        or key == "expert_pack_id"
+    }
+
+
+def test_bind_task_spec_to_parent_populates_detached_context(tmp_path: Path) -> None:
+    """The production binder makes an ordinary local declaration self-contained."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        scope = {
+            "active_agent_blueprint_id": "bound-blueprint",
+            "active_expert_pack_id": "bound-pack",
+        }
+        parent = app.state.sessions.create(
+            workspace_id="ws_bound",
+            title="parent",
+            mode="plan",
+            metadata={**scope, "unrelated": "not copied"},
+        )
+        original = TaskSpec(
+            child_expert_id="worker",
+            task_text="x",
+            parent_session_id=parent.id,
+        )
+        bound = bind_task_spec_to_parent(app, original)
+
+        assert original.workspace_id is None
+        assert bound.workspace_id == "ws_bound"
+        assert bound.session_mode == "plan"
+        assert bound.session_scope_metadata == scope
+
+
+def test_fully_bound_spec_without_parent_matches_live_parent_child(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A detached spec reproduces the live inheritance path byte-for-byte."""
+
+    monkeypatch.setattr("clio_agent.gact.turn._start_background_user_turn", lambda *a, **k: None)
+    blueprint = tmp_path / "detached-scope-bp"
+    _write_session_scoped_blueprint(blueprint)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        scope = {
+            "active_agent_blueprint_id": "inherit-scope-bp",
+            "active_agent_blueprint_path": str(blueprint),
+            "active_agent_blueprint_future_key": {"preserve": [1, 2]},
+            "active_expert_pack_id": "session-pack",
+            "active_expert_pack_path": str(tmp_path / "pack"),
+            "expert_pack_id": "legacy-pack-id",
+        }
+        parent = app.state.sessions.create(
+            workspace_id="ws_science",
+            title="live parent",
+            mode="architect",
+            metadata={**scope, "unrelated": "do not inherit"},
+        )
+        inherited_task = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(
+                child_expert_id="worker",
+                task_text="from live parent",
+                parent_session_id=parent.id,
+                requesting_expert_id="orchestrator",
+            ),
+        )
+        detached_task = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(
+                child_expert_id="worker",
+                task_text="from detached executor",
+                parent_session_id="sess_missing",
+                requesting_expert_id="orchestrator",
+                workspace_id="ws_science",
+                session_mode="architect",
+                session_scope_metadata=scope,
+            ),
+        )
+
+        inherited = app.state.sessions.get(inherited_task.child_session_id)
+        detached = app.state.sessions.get(detached_task.child_session_id)
+        assert (detached.workspace_id, detached.mode, _spawn_scope(detached.metadata)) == (
+            inherited.workspace_id,
+            inherited.mode,
+            _spawn_scope(inherited.metadata),
+        )
+        assert _spawn_scope(detached.metadata) == scope
+
+
+def test_spec_bindings_beat_live_parent_inheritance(tmp_path: Path, monkeypatch) -> None:
+    """Every explicit binding wins over conflicting values on a live parent."""
+
+    _declare(monkeypatch, "data_expert")
+    monkeypatch.setattr("clio_agent.gact.turn._start_background_user_turn", lambda *a, **k: None)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        parent = app.state.sessions.create(
+            workspace_id="ws_parent",
+            title="parent",
+            mode="plan",
+            metadata={"active_agent_blueprint_id": "parent-blueprint"},
+        )
+        task = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(
+                child_expert_id="data_expert",
+                task_text="x",
+                parent_session_id=parent.id,
+                workspace_id="ws_spec",
+                session_mode="edit",
+                session_scope_metadata={},
+                skip_declared_check=True,
+            ),
+        )
+        child = app.state.sessions.get(task.child_session_id)
+        assert child.workspace_id == "ws_spec"
+        assert child.mode == "edit"
+        assert _spawn_scope(child.metadata) == {}
+
+
+def test_unbound_spec_with_missing_parent_is_typed_failure(tmp_path: Path, monkeypatch) -> None:
+    """Missing bindings and a missing parent never mint a ws_default child."""
 
     _declare(monkeypatch, "data_expert")
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app):
-        task = spawn_child_turn_threadsafe(
-            app,
-            TaskSpec(
-                child_expert_id="data_expert", task_text="x", parent_session_id="sess_missing"
-            ),
-        )
-        child = app.state.sessions.get(task.child_session_id)
-        assert child.mode == "edit"
+        before = {session.id for session in app.state.sessions.list()}
+        with pytest.raises(SpawnError) as exc:
+            spawn_child_turn_threadsafe(
+                app,
+                TaskSpec(
+                    child_expert_id="data_expert",
+                    task_text="x",
+                    parent_session_id="sess_missing",
+                ),
+            )
+        assert exc.value.reason == "spawn_parent_bindings_unavailable"
+        assert {session.id for session in app.state.sessions.list()} == before
 
 
 def _seed_forwarding_case(app, *, with_question: bool):
