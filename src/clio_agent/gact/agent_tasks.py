@@ -70,9 +70,14 @@ ERROR_REASONS = frozenset(
     {
         "agent_error",
         "spawn_depth_exceeded",
-        # #1113: an unattended child that pauses for input no longer FAILS — its
-        # question is forwarded to the parent's HITL surface (elicitation_bridge),
-        # so ``child_requires_user_input`` is no longer a produced error reason.
+        # #1113: an unattended child that pauses for input no longer FAILS with
+        # ``child_requires_user_input`` — its question is forwarded to the parent's
+        # HITL surface (elicitation_bridge). The forward binds to the task, so its
+        # edges terminate typed: no pending question to forward, a headless-parent
+        # deadline, and a parent cancel/decline each fail the task with these.
+        "child_question_forward_failed",
+        "child_forward_unattended_timeout",
+        "child_forward_declined",
         "cancelled_by_parent",
         "child_session_gone",
         "timeout",

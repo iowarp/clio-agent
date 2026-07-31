@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -148,8 +149,6 @@ def install_agent_task_executor(app: "FastAPI") -> None:
     children on ``pool[d+1]`` (a single shared pool deadlocks nested orchestrators
     — see #948 S4 adversarial review). Each pool is sized to the concurrency cap;
     the depth backstop (:data:`MAX_SPAWN_DEPTH`) bounds the number of pools."""
-
-    import threading  # noqa: PLC0415
 
     from clio_agent import conf  # noqa: PLC0415
 
@@ -634,18 +633,27 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
 
     # HITL-in-child (#1113): an unattended child cannot answer its own user question.
     # If its turn paused (waiting_user), FORWARD the pending question to the parent's
-    # HITL surface (parent-forward, adopted default) instead of failing the task —
-    # the answer is relayed back and resumes the child. The task stays non-terminal
-    # (still in progress, awaiting input), so no stop/admit fires yet; _on_child_done
-    # runs again at the child's true completion. (Replaces the deleted
-    # child_requires_user_input fail path.)
+    # HITL surface instead of failing (replaces the deleted child_requires_user_input
+    # fail path). Every edge terminates typed, nothing hangs: no pending question to
+    # forward -> typed terminal now; forwarded -> the task stays in progress but arms a
+    # bounded unattended-parent deadline that terminates it typed and frees the slot;
+    # a parent answer resumes the child (then _on_child_done runs again at true
+    # completion); a parent cancel/decline relays down and fails the task.
     child_sess = app.state.sessions.get(child_sid)
     if child_sess is not None and getattr(child_sess, "status", "") == "waiting_user":
+        from clio_agent.gact.child_forward import (  # noqa: PLC0415
+            arm_forward_deadline,
+            fail_child_task,
+        )
         from clio_agent.gact.elicitation_bridge import (  # noqa: PLC0415
             forward_child_question_to_parent,
         )
 
-        forward_child_question_to_parent(app, task, child_sid)
+        forwarded_qid = forward_child_question_to_parent(app, task, child_sid)
+        if forwarded_qid is None:
+            fail_child_task(app, task, child_sid, "child_question_forward_failed", mode)
+        else:
+            arm_forward_deadline(app, forwarded_qid)
         return
 
     msgs = app.state.messages.get(child_sid, []) or []

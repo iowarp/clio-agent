@@ -1273,11 +1273,11 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 }
             )
             app.state.user_questions[question_id] = row
-        # P1.3 #1113: a cancelled MCP elicitation wakes its parked tool call (typed
-        # cancel) and must NOT flip its still-running turn to idle.
-        from clio_agent.gact.elicitation_bridge import resolve_elicitation  # noqa: PLC0415
+        # P1.3 #1113: a cancelled elicitation wakes its parked call; a cancelled
+        # forwarded mirror relays to the child + fails the task. Neither goes idle.
+        from clio_agent.gact.elicitation_bridge import resolve_cancelled_question  # noqa: PLC0415
 
-        if not resolve_elicitation(app, row) and not _pending_user_questions(sid):
+        if not resolve_cancelled_question(app, row) and not _pending_user_questions(sid):
             sess = app.state.sessions.get(sid)
             _set_session_status(
                 sid,

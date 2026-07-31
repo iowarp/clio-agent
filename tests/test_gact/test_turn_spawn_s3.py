@@ -559,9 +559,7 @@ def test_architect_mode_parent_spawns_architect_mode_child_write_denied(
     _declare(monkeypatch, "main")
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app) as client:
-        parent = client.post(
-            "/v1/sessions", json={"title": "p", "mode": "architect"}
-        ).json()["id"]
+        parent = client.post("/v1/sessions", json={"title": "p", "mode": "architect"}).json()["id"]
         assert app.state.sessions.get(parent).mode == "architect"
 
         task = spawn_child_turn_threadsafe(
@@ -637,7 +635,124 @@ def test_spawn_with_no_parent_session_defaults_to_edit(tmp_path: Path, monkeypat
     with TestClient(app):
         task = spawn_child_turn_threadsafe(
             app,
-            TaskSpec(child_expert_id="data_expert", task_text="x", parent_session_id="sess_missing"),
+            TaskSpec(
+                child_expert_id="data_expert", task_text="x", parent_session_id="sess_missing"
+            ),
         )
         child = app.state.sessions.get(task.child_session_id)
         assert child.mode == "edit"
+
+
+def _seed_forwarding_case(app, *, with_question: bool):
+    """Parent + waiting_user child (optionally with a pending resumable question)."""
+
+    from clio_agent.gact.agent_tasks import STATUS_RUNNING, AgentTask
+    from clio_agent.gact.types import UserQuestion, UserQuestionOption
+
+    now = "2026-07-17T00:00:00+00:00"
+    parent = app.state.sessions.create(workspace_id="ws_default", title="p")
+    child = app.state.sessions.create(
+        workspace_id="ws_default", title="c", parent_session_id=parent.id
+    )
+    qid = ""
+    if with_question:
+        q = UserQuestion(
+            id="q_child",
+            session_id=child.id,
+            prompt="Which dataset?",
+            kind="choice",
+            options=[UserQuestionOption(label="A", value="a")],
+            created_at=now,
+            updated_at=now,
+            source="orchestrator_action",
+            metadata={"resume_on_answer": True},
+        )
+        app.state.user_questions[q.id] = q
+        qid = q.id
+    app.state.sessions.update(
+        child.id, status="waiting_user", metadata_patch={"pending_user_question_id": qid}
+    )
+    task = AgentTask(
+        task_id="task_fwd",
+        parent_session_id=parent.id,
+        child_session_id=child.id,
+        status=STATUS_RUNNING,
+        created_at=now,
+        updated_at=now,
+    )
+    app.state.agent_task_registry.register(task)
+    return parent, child, task
+
+
+def test_child_forward_no_pending_question_fails_typed(tmp_path: Path, monkeypatch) -> None:
+    """A waiting_user child with NO pending question terminates the task typed (#1113
+    finding 5) instead of hanging — child_question_forward_failed."""
+
+    from clio_agent.gact.agent_tasks import STATUS_FAILED
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        _parent, child, task = _seed_forwarding_case(app, with_question=False)
+        _on_child_done(app, task.task_id, child.id, "async")
+        settled = app.state.agent_task_registry.get(task.task_id)
+        assert settled.status == STATUS_FAILED
+        assert settled.error_reason == "child_question_forward_failed"
+
+
+def test_forwarded_question_cancel_relays_to_child_and_fails_task(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Cancelling the parent's forwarded question cancels the child question and fails
+    the task typed (child_forward_declined) — never a permanent wait (#1113 finding 5)."""
+
+    from clio_agent.gact.agent_tasks import STATUS_FAILED
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent, child, task = _seed_forwarding_case(app, with_question=True)
+        _on_child_done(app, task.task_id, child.id, "async")
+        fwd = next(
+            q
+            for q in app.state.user_questions.values()
+            if q.session_id == parent.id and q.metadata.get("forwarded_from_question") == "q_child"
+        )
+        resp = client.post(f"/v1/sessions/{parent.id}/questions/{fwd.id}/cancel")
+        assert resp.status_code == 200, resp.text
+        assert app.state.user_questions["q_child"].status == "cancelled"
+        settled = app.state.agent_task_registry.get(task.task_id)
+        assert settled.status == STATUS_FAILED
+        assert settled.error_reason == "child_forward_declined"
+
+
+def test_unattended_forward_deadline_fails_task(tmp_path: Path, monkeypatch) -> None:
+    """A headless parent that never answers a forwarded question hits a bounded
+    deadline that terminates the task typed and frees the slot (#1113 finding 5)."""
+
+    import time
+
+    from clio_agent.gact.agent_tasks import STATUS_FAILED
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        app.state.child_forward_deadline_s = 0.3  # tiny unattended deadline for the test
+        parent, child, task = _seed_forwarding_case(app, with_question=True)
+        _on_child_done(app, task.task_id, child.id, "async")
+        fwd = next(
+            q
+            for q in app.state.user_questions.values()
+            if q.session_id == parent.id and q.metadata.get("forwarded_from_question") == "q_child"
+        )
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            settled = app.state.agent_task_registry.get(task.task_id)
+            if settled.is_terminal:
+                break
+            time.sleep(0.05)
+        settled = app.state.agent_task_registry.get(task.task_id)
+        assert settled.status == STATUS_FAILED
+        assert settled.error_reason == "child_forward_unattended_timeout"
+        assert app.state.user_questions[fwd.id].status == "expired"
+        assert app.state.user_questions["q_child"].status == "cancelled"

@@ -67,7 +67,9 @@ __all__ = [
     "forward_child_question_to_parent",
     "make_elicitation_client",
     "make_elicitation_hook",
+    "relay_forwarded_cancel",
     "resolve_answered_question",
+    "resolve_cancelled_question",
     "resolve_elicitation",
     "translate_form_schema",
     "validate_elicitation_answer",
@@ -425,21 +427,22 @@ def _pending_question_for(app: Any, session_id: str) -> UserQuestion | None:
     return pending[0] if pending else None
 
 
-def forward_child_question_to_parent(app: Any, task: Any, child_sid: str) -> bool:
+def forward_child_question_to_parent(app: Any, task: Any, child_sid: str) -> str | None:
     """Forward a paused child's pending question to the parent's HITL surface.
 
     Replaces the deleted ``child_requires_user_input`` fail path: an unattended
     child whose turn paused for user input has its pending question mirrored onto
     the parent's (root attended) session so a human can answer. The forwarded
-    question links back to the child so :func:`deliver_forwarded_answer` can relay
-    the answer and resume the child. Returns ``True`` when a question was
-    forwarded, ``False`` (with a typed reason) when the child had none.
+    question links back to the child so :func:`deliver_forwarded_answer` /
+    :func:`relay_forwarded_cancel` can relay the resolution. Returns the forwarded
+    question id, or ``None`` (typed reason) when the child had no pending question
+    — the caller (``turn_spawn``) then terminates the task typed, never hangs.
     """
 
     child_q = _pending_question_for(app, child_sid)
     if child_q is None:
         _record_reason("child_waiting_without_question", child=child_sid)
-        return False
+        return None
     attended = _attended_session(app, getattr(task, "parent_session_id", "") or child_sid)
     forwarded = _new_question(
         attended,
@@ -470,7 +473,53 @@ def forward_child_question_to_parent(app: Any, task: Any, child_sid: str) -> boo
                 },
             )
         )
+    return forwarded.id
+
+
+def relay_forwarded_cancel(
+    app: Any, forwarded: UserQuestion, *, reason: str = "child_forward_declined"
+) -> bool:
+    """Relay a parent-side cancel of a forwarded question down to the child + task.
+
+    Cancels the mirrored child question and fails the bound AgentTask with a typed
+    ``reason`` (via ``turn_spawn``), so a declined/cancelled/expired forward never
+    leaves the child waiting or the task's concurrency slot pinned. Returns ``True``
+    when the row was a forwarded mirror handled here.
+    """
+
+    child_qid = str(forwarded.metadata.get("forwarded_from_question") or "")
+    task_id = str(forwarded.metadata.get("task_id") or "")
+    if not child_qid and not task_id:
+        return False
+    child_q = app.state.user_questions.get(child_qid) if child_qid else None
+    if child_q is not None and child_q.status == "pending":
+        app.state.user_questions[child_qid] = child_q.model_copy(
+            update={"status": "cancelled", "updated_at": datetime.now(timezone.utc).isoformat()}
+        )
+    if task_id:
+        from clio_agent.gact.child_forward import fail_forwarded_child_task  # noqa: PLC0415
+
+        fail_forwarded_child_task(app, task_id, reason)
     return True
+
+
+def resolve_cancelled_question(app: Any, question: UserQuestion) -> bool:
+    """Resolve a cancelled question that is an elicitation or a forwarded mirror.
+
+    Used by the shared cancel route: an in-flight elicitation wakes its parked call
+    with a typed cancel; a forwarded mirror relays the cancel to the child + fails
+    the task. Returns ``True`` when handled (the route then skips the idle
+    transition), ``False`` for an ordinary ask-user question.
+    """
+
+    if resolve_elicitation(app, question):
+        return True
+    if (
+        question.metadata.get("forwarded_from_question")
+        or question.source == FORWARDED_QUESTION_SOURCE
+    ):
+        return relay_forwarded_cancel(app, question)
+    return False
 
 
 def deliver_forwarded_answer(app: Any, deps: Any, forwarded: UserQuestion) -> None:
