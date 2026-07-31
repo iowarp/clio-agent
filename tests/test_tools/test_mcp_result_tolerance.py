@@ -92,12 +92,18 @@ def test_explicit_supported_result_type_passes_through_without_degrade() -> None
 
 @pytest.mark.asyncio
 async def test_explicit_unsupported_result_type_records_downgrade() -> None:
-    """An explicit unsupported resultType is coerced to complete and recorded."""
+    """An explicit unsupported resultType is coerced to complete and recorded.
+
+    ``task`` is deliberately NOT the example any more: #1115 made this a tasks
+    client, so ``resultType: "task"`` is a shape it drives (see
+    ``tests/test_tools/test_mcp_tasks.py::test_task_result_type_is_handled_not_downgraded``).
+    An unknown extension result type still degrades.
+    """
 
     envelope = {
-        "content": [{"type": "text", "text": "task result"}],
-        "structuredContent": {"taskId": "task-1"},
-        "resultType": "task",
+        "content": [{"type": "text", "text": "streamed result"}],
+        "structuredContent": {"streamId": "stream-1"},
+        "resultType": "streaming",
     }
     client = _ResultClient(result=envelope)
     async with AsyncMCPToolExecutor(
@@ -112,7 +118,7 @@ async def test_explicit_unsupported_result_type_records_downgrade() -> None:
     assert observed["degrade"] == {
         "reason": "mcp_result_downgraded_to_complete",
         "resultType": "complete",
-        "originalResultType": "task",
+        "originalResultType": "streaming",
     }
 
 

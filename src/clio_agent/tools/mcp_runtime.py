@@ -366,6 +366,7 @@ def make_mcp_client(
     handlers: MCPClientHandlers | None = None,
     capabilities: MCPClientCapabilities | None = None,
     client_cls: Callable[..., Any] | None = None,
+    tasks: bool = True,
 ) -> Any:
     """Construct an execution-path FastMCP client with CLIO identity + the handler slot.
 
@@ -422,6 +423,14 @@ def make_mcp_client(
         client_cls: Injection seam for the client class. Defaults to
             ``fastmcp.Client``; tests substitute a fake to inspect the
             construction without spawning a real backend.
+        tasks: Whether this client declares the SEP-2663 tasks extension (#1115).
+            Default ``True``: every execution-path client can drive a task-serving
+            backend's background tasks. The declaration is still SUPPRESSED, with
+            the typed reason ``mcp_tasks_declaration_suppressed``, for a
+            ``client_cls`` that forbids internal extensions (FastMCP's
+            ``ProxyClient``) — a proxy relays synchronously and cannot drive a
+            backend task on the front connection's behalf. Pass ``False`` to opt a
+            construction out explicitly.
 
     Returns:
         A constructed (not yet entered) FastMCP client for ``target``.
@@ -448,14 +457,28 @@ def make_mcp_client(
         # SDK's hardcoded default. Exhaustion surfaces the typed degrade in mcp_executor.
         "input_required_max_rounds": input_required_max_rounds(),
     }
+    elicitation_callback: Any = None
     if handlers is not None:
         if handlers.elicitation is not None:
-            kwargs["elicitation_handler"] = ElicitationDispatcher(handlers.elicitation)
+            elicitation_callback = ElicitationDispatcher(handlers.elicitation)
+            kwargs["elicitation_handler"] = elicitation_callback
         if handlers.progress is not None:
             kwargs["progress_handler"] = ProgressDispatcher(handlers.progress)
         if handlers.message is not None:
             kwargs["message_handler"] = MessageMultiplexer(handlers.message)
         # `cancellation` has no fastmcp Client keyword today; P1 owns its wiring.
+
+    if tasks:
+        # #1115: declare the SEP-2663 tasks extension. CLIO's subclass carries the
+        # substrate's identifier, so folding it in REPLACES fastmcp-tasks' internal
+        # extension with the hardened one (input-key dedup, `Mcp-Name` on task RPCs,
+        # durable task-id persistence). Suppressed — with a typed reason — for client
+        # classes that forbid internal extensions (proxy backends; #1119).
+        from clio_agent.tools.mcp_tasks import tasks_declaration  # noqa: PLC0415
+
+        declaration = tasks_declaration(elicitation_callback, client_cls)
+        if declaration.extensions:
+            kwargs["extensions"] = list(declaration.extensions)
 
     client = client_cls(target, **kwargs)
     if capabilities is not None:

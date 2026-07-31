@@ -35,6 +35,7 @@ __all__ = [
     "close_invocation",
     "correlated_capabilities",
     "correlated_elicitation_handler",
+    "correlated_session_id",
     "make_correlated_handlers",
     "open_invocation",
 ]
@@ -142,6 +143,21 @@ async def correlated_elicitation_handler(
         params,
         url_trusted_origins=_resolve_trusted_origins(None),
     )
+
+
+def correlated_session_id(session: Any) -> str | None:
+    """The CLIO session id for the ``ClientSession`` a task was created on (#1115).
+
+    Same registry, same resolution rule as the elicitation handler: a SEP-2663
+    ``CreateTaskResult`` is resolved on the call that produced it, so the
+    ``ClientSession`` carried on the claim context identifies the in-flight call.
+    ``None`` when the call cannot be attributed (no open record, or several open
+    and none bound) — the task-record store then reports the unattributed write
+    with a typed reason rather than guessing a session.
+    """
+
+    record = _resolve_for_session(id(session))
+    return record.invocation.session_id if record is not None else None
 
 
 def make_correlated_handlers() -> Any:

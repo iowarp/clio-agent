@@ -18,6 +18,16 @@ from clio_agent.tools.mcp_runtime import wire_value
 
 _MISSING = object()
 
+#: Result types this client HANDLES, so carrying one is not a degrade.
+#:
+#: ``complete`` is the protocol's ordinary completeness. ``task`` joined it in
+#: #1115: CLIO now declares the SEP-2663 tasks extension on every execution-path
+#: client (:mod:`clio_agent.tools.mcp_tasks`), so a ``CreateTaskResult`` is a shape
+#: the client drives to the real result — recording it as a downgrade-to-complete
+#: would report a working path as a degradation. A result type outside this set is
+#: still one the client cannot act on, and still degrades.
+HANDLED_RESULT_TYPES: frozenset[str] = frozenset({"complete", "task"})
+
 
 @dataclass(frozen=True)
 class MCPResultClassification:
@@ -30,10 +40,10 @@ class MCPResultClassification:
 
 
 def _explicit_result_type_classification(value: Any) -> MCPResultClassification:
-    """Classify one explicitly carried resultType for the tasks-off client path."""
+    """Classify one explicitly carried resultType against the handled set."""
 
     result_type = str(value)
-    if result_type == "complete":
+    if result_type in HANDLED_RESULT_TYPES:
         return MCPResultClassification(result_type=result_type, explicitly_carried=True)
     return MCPResultClassification(
         result_type="complete",
@@ -50,8 +60,9 @@ def classify_call_tool_result(result: Any) -> MCPResultClassification:
     completeness. FastMCP's client-side ``CallToolResult`` dataclass carries no
     result-type field at all, while Pydantic protocol models can expose a
     defaulted field that is absent from ``model_fields_set``. Neither case is a
-    downgrade. This tasks-off client records a downgrade only when the server
-    explicitly carries a result type other than ``complete``.
+    downgrade. A downgrade is recorded only when the server explicitly carries a
+    result type outside :data:`HANDLED_RESULT_TYPES` — which, since #1115, includes
+    the tasks extension's ``task``.
     """
 
     if isinstance(result, Mapping):
@@ -146,6 +157,7 @@ def call_tool_result_to_observer(result: Any) -> dict[str, Any]:
 
 
 __all__ = [
+    "HANDLED_RESULT_TYPES",
     "MCP_RESULT_DOWNGRADED_TO_COMPLETE",
     "MCPResultClassification",
     "call_tool_result_to_observer",

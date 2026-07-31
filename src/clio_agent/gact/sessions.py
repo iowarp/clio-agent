@@ -182,6 +182,16 @@ class SessionStore:
         self._sessions: dict[str, Session] = {}
         if path is not None:
             self._load()
+            # #1115: a PERSISTENT session registry is the durable home for in-flight
+            # SEP-2663 task ids (RULE 4 - no fifth store). Publishing it here is what
+            # lets the tools layer reach a durable store without importing gact; an
+            # in-memory registry deliberately does not publish, because it would be
+            # claiming a crash-recovery guarantee it cannot keep.
+            from clio_agent.gact.mcp_task_store import (  # noqa: PLC0415 - keep leaf
+                install_session_task_store,
+            )
+
+            install_session_task_store(self)
 
     # ---- lifecycle ----------------------------------------------------
 

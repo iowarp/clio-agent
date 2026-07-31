@@ -26,6 +26,15 @@ MCP_WIRE_CANCELLATION_UNAVAILABLE = "mcp_wire_cancellation_unavailable"
 #: #1114: the modern-era MRTR loop (InputRequiredResult -> retry with inputResponses)
 #: exceeded its config-resolved round bound without reaching a terminal result.
 MCP_INPUT_REQUIRED_ROUNDS_EXCEEDED = "mcp_input_required_rounds_exceeded"
+#: #1115: no durable task-record home is published, so SEP-2663 task ids survive
+#: losing the client but not the process (reconnect-after-crash is degraded).
+MCP_TASK_RECORD_STORE_ABSENT = "mcp_task_record_store_absent"
+#: #1115: a task kept reporting ``input_required`` while every surfaced input key
+#: was already answered — the drive stops rather than polling forever.
+MCP_TASK_INPUT_NO_PROGRESS = "mcp_task_input_no_progress"
+#: #1115: the tasks extension was NOT declared on this client because its class
+#: forbids internal extensions (a proxy backend must not advertise task support).
+MCP_TASKS_DECLARATION_SUPPRESSED = "mcp_tasks_declaration_suppressed"
 
 
 class ClioError(Exception):
