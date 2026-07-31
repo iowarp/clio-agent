@@ -324,11 +324,27 @@ class SessionStore:
 
     def delete(self, sid: str) -> bool:
         with self._lock:
-            existed = sid in self._sessions
+            existing = self._sessions.get(sid)
+            existed = existing is not None
+            # #1115: a deleted session may still own LIVE remote SEP-2663 tasks. The
+            # deletion is never blocked or delayed by them, but the rows are captured
+            # here so they can be cancelled best-effort and migrated to the task
+            # store's holding path instead of vanishing with the session.
+            task_rows: dict[str, Any] = (
+                dict((existing.metadata or {}).get("mcp_tasks") or {})
+                if existing is not None
+                else {}
+            )
             self._sessions.pop(sid, None)
             if existed:
                 self._flush()
         if existed:
+            if task_rows:
+                from clio_agent.gact.mcp_task_store import (  # noqa: PLC0415 - keep leaf
+                    notify_session_deleted,
+                )
+
+                notify_session_deleted(sid, task_rows)
             # P2.3 SessionEnd lifecycle hook (observation): fires exactly once, only
             # when a session actually existed and was removed.
             from clio_agent.gact.hooks import dispatch_session_end  # noqa: PLC0415

@@ -475,9 +475,9 @@ def make_mcp_client(
     # takes no elicitation callback here on purpose: it reads the SDK-shaped one off
     # the live ClientSession, since fastmcp rewraps the 4-argument handler installed
     # above (see `session_elicitation_callback`).
-    from clio_agent.tools.mcp_tasks import tasks_declaration  # noqa: PLC0415
+    from clio_agent.tools.mcp_task_extension import tasks_declaration  # noqa: PLC0415
 
-    declaration = tasks_declaration(client_cls)
+    declaration = tasks_declaration(client_cls, target)
     if declaration.extensions:
         kwargs["extensions"] = list(declaration.extensions)
 

@@ -6,9 +6,10 @@ does NOT exist in the installed mcp 2.0 SDK). It provides the client extension, 
 `tasks/update` dispatched through the client's elicitation callback (CLIO's P1.3
 handler, so inputs land on the ONE HITL surface), and ack-only `tasks/cancel`.
 
-CLIO builds what the substrate lacks: per-poll input-key DEDUP, the `Mcp-Name: <taskId>`
-header on task RPCs, durable task-id persistence + reconnect-by-task-id, and #1112
-classification tolerance for `resultType: "task"`.
+CLIO builds what the substrate lacks: retry- and concurrency-safe input dedup (the
+answer PAYLOAD persisted before transmission, plus an exclusive per-task lease), the
+`Mcp-Name: <taskId>` header on task RPCs, composite-keyed durable persistence +
+reconnect-by-identity, and #1112 classification tolerance for `resultType: "task"`.
 
 These tests drive the poll loop against a scripted fake `ClientSession` that records
 every request it is sent, so the wire assertions (which method, which params, which
@@ -20,28 +21,47 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-import pytest  # noqa: F401 - pytest.raises / approx used throughout
+import pytest
 
 from clio_agent.errors import (
     MCP_TASK_INPUT_NO_PROGRESS,
+    MCP_TASK_LEASE_HELD,
+    MCP_TASK_RECORD_NOT_DURABLE,
     MCP_TASKS_DECLARATION_SUPPRESSED,
     ToolError,
 )
+from clio_agent.tools.mcp_task_extension import (
+    BackendIdentity,
+    ClioTasksClientExtension,
+    backend_identity,
+    tasks_declaration,
+)
 from clio_agent.tools.mcp_task_records import (
     InMemoryTaskRecordStore,
+    TaskInputAnswer,
     TaskInputLedger,
+    TaskKey,
+    TaskLease,
     TaskRecord,
     set_task_record_store,
 )
 from clio_agent.tools.mcp_tasks import (
     REMOVED_TASK_METHODS,
-    ClioTasksClientExtension,
     cancel_task,
     drive_task_to_terminal,
     resume_task,
     task_record_store,
-    tasks_declaration,
 )
+
+SERVER_A = "server-a"
+SERVER_B = "server-b"
+
+
+def _key(task_id: str, *, server: str = SERVER_A, session: str | None = "sess-1") -> TaskKey:
+    """A composite task identity for the tests."""
+
+    return TaskKey(server_id=server, session_id=session, task_id=task_id)
+
 
 # --------------------------------------------------------------------------- #
 # Scripted session double                                                     #
@@ -96,12 +116,23 @@ class ScriptedSession:
     Records every request OBJECT it is handed, so the tests can assert on the SDK's
     own `Request.name_param` (the value the session mirrors into `Mcp-Name`) and on
     the exact params sent, rather than on a re-implementation of the wire.
+
+    ``update_failures`` scripts transport-level failures for `tasks/update`: the
+    number of leading updates that raise instead of returning, which is how a lost
+    acknowledgement and a rejected update are simulated.
     """
 
-    def __init__(self, script: list[dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        script: list[dict[str, Any]],
+        *,
+        update_failures: int = 0,
+        update_error: Exception | None = None,
+    ) -> None:
         self._script = list(script)
+        self._update_failures = update_failures
+        self._update_error = update_error or RuntimeError("tasks/update acknowledgement lost")
         self.requests: list[Any] = []
-        self.sleeps: list[float] = []
         self.notifications: list[Any] = []
         self.updates: list[dict[str, Any]] = []
 
@@ -116,10 +147,12 @@ class ScriptedSession:
         self.requests.append(request)
         method = request.method
         if method == "tasks/get":
-            payload = self._script.pop(0)
-            return result_type.model_validate(payload)
+            return result_type.model_validate(self._script.pop(0))
         if method == "tasks/update":
             self.updates.append(dict(request.params.input_responses))
+            if self._update_failures > 0:
+                self._update_failures -= 1
+                raise self._update_error
             return result_type()
         if method == "tasks/cancel":
             return result_type()
@@ -136,10 +169,34 @@ class ScriptedSession:
         return [request.method for request in self.requests]
 
 
+class _Ctx:
+    """Minimal ``ClaimContext`` stand-in."""
+
+    def __init__(self, session: Any, read_timeout_seconds: float | None = None) -> None:
+        self.session = session
+        self.read_timeout_seconds = read_timeout_seconds
+
+
 def _fresh_store() -> InMemoryTaskRecordStore:
     """A store isolated from the process registry."""
 
     return InMemoryTaskRecordStore()
+
+
+def _create_result(task_id: str) -> Any:
+    """A claimed ``CreateTaskResult`` as a task-serving backend returns it."""
+
+    from fastmcp_tasks.client_models import ClientCreateTaskResult
+
+    return ClientCreateTaskResult.model_validate(
+        {
+            "taskId": task_id,
+            "status": "working",
+            "createdAt": "2026-07-31T00:00:00+00:00",
+            "lastUpdatedAt": "2026-07-31T00:00:00+00:00",
+            "resultType": "task",
+        }
+    )
 
 
 async def _answer_everything(context: Any, params: Any) -> Any:
@@ -164,8 +221,9 @@ async def test_reconnect_by_task_id_resumes_polling_to_completion() -> None:
     """
 
     store = _fresh_store()
+    key = _key("task-42")
     # The client that started the task persisted the id, then died mid-flight.
-    store.put(TaskRecord(task_id="task-42", tool="slow_tool", status="working"))
+    store.put(TaskRecord(key=key, tool="slow_tool", status="working"))
 
     # A brand-new session (nothing carried over from the dead client).
     session = ScriptedSession(
@@ -179,33 +237,36 @@ async def test_reconnect_by_task_id_resumes_polling_to_completion() -> None:
         ]
     )
 
-    final = await resume_task(session, "task-42", store=store)
+    final = await resume_task(session, key, store=store)
 
     assert final.status == "completed"
     assert session.methods() == ["tasks/get", "tasks/get"]
     # Settled tasks are dropped: a later sweep must not try to resume them.
-    assert store.get("task-42") is None
+    assert store.get(key) is None
 
 
 async def test_resume_without_a_persisted_record_is_a_typed_error() -> None:
-    """Resuming an unknown id raises rather than inventing a poll loop."""
+    """Resuming an unknown identity raises rather than inventing a poll loop."""
 
     session = ScriptedSession([])
     with pytest.raises(ToolError) as excinfo:
-        await resume_task(session, "task-unknown", store=_fresh_store())
+        await resume_task(session, _key("task-unknown"), store=_fresh_store())
     assert excinfo.value.details["task_id"] == "task-unknown"
     assert session.requests == []
 
 
 async def test_resume_seeds_the_dedup_ledger_from_the_persisted_record() -> None:
-    """A key answered before the crash is not asked again after it."""
+    """A key answered AND delivered before the crash is not asked again after it."""
 
     store = _fresh_store()
+    key = _key("task-7")
     store.put(
         TaskRecord(
-            task_id="task-7",
+            key=key,
             status="input_required",
-            answered_input_keys=("k1",),
+            input_answers=(
+                TaskInputAnswer(key="k1", payload={"action": "accept"}, delivered=True),
+            ),
         )
     )
     session = ScriptedSession(
@@ -227,13 +288,13 @@ async def test_resume_seeds_the_dedup_ledger_from_the_persisted_record() -> None
         prompts.append(params)
         return await _answer_everything(context, params)
 
-    final = await resume_task(
-        session, "task-7", elicitation_callback=recording_callback, store=store
-    )
+    final = await resume_task(session, key, elicitation_callback=recording_callback, store=store)
 
     assert final.status == "completed"
     assert prompts == []
-    assert "tasks/update" not in session.methods()
+    # The stored payload is RETRANSMITTED verbatim rather than suppressed, so a
+    # server that never saw the pre-crash update is not left starving.
+    assert session.updates == [{"k1": {"action": "accept"}}]
 
 
 # --------------------------------------------------------------------------- #
@@ -251,17 +312,11 @@ async def test_poll_loop_honors_server_poll_interval_ms(monkeypatch: Any) -> Non
 
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
     session = ScriptedSession(
-        [
-            _task_payload("task-1", "working", poll_interval_ms=250),
-            _task_payload("task-1", "working", poll_interval_ms=250),
-            _task_payload("task-1", "working", poll_interval_ms=250),
-            _task_payload("task-1", "working", poll_interval_ms=250),
-            _task_payload("task-1", "working", poll_interval_ms=250),
-            _task_payload("task-1", "completed", result={"content": []}),
-        ]
+        [_task_payload("task-1", "working", poll_interval_ms=250) for _ in range(5)]
+        + [_task_payload("task-1", "completed", result={"content": []})]
     )
 
-    final = await drive_task_to_terminal(session, "task-1", store=_fresh_store())
+    final = await drive_task_to_terminal(session, _key("task-1"), store=_fresh_store())
 
     assert final.status == "completed"
     # The ramp starts fast so a quick task resolves promptly, then settles AT the
@@ -274,8 +329,6 @@ async def test_poll_loop_honors_server_poll_interval_ms(monkeypatch: Any) -> Non
 
 async def test_create_task_result_is_driven_to_the_real_result() -> None:
     """The extension resolves a claimed ``CreateTaskResult`` into the tool's result."""
-
-    from fastmcp_tasks.client_models import ClientCreateTaskResult
 
     store = _fresh_store()
     set_task_record_store(store)
@@ -290,42 +343,24 @@ async def test_create_task_result_is_driven_to_the_real_result() -> None:
                 ),
             ]
         )
-        create = ClientCreateTaskResult.model_validate(
-            {
-                "taskId": "task-9",
-                "status": "working",
-                "createdAt": "2026-07-31T00:00:00+00:00",
-                "lastUpdatedAt": "2026-07-31T00:00:00+00:00",
-                "resultType": "task",
-            }
-        )
-
-        class Ctx:
-            """Minimal ``ClaimContext`` stand-in."""
-
-            session = None
-            read_timeout_seconds = None
-
-        ctx = Ctx()
-        ctx.session = session
-        extension = ClioTasksClientExtension()
-        result = await extension._resolve_task(create, ctx)
+        extension = ClioTasksClientExtension(BackendIdentity(SERVER_A, {"transport": "test"}))
+        result = await extension._resolve_task(_create_result("task-9"), _Ctx(session))
 
         assert result.content[0].text == "42"
         assert result.is_error in (False, None)
-        # The id was persisted while in flight and dropped once terminal.
-        assert store.get("task-9") is None
+        # The id was persisted under the extension's backend identity, then dropped.
+        assert store.list() == []
     finally:
         set_task_record_store(None)
 
 
 # --------------------------------------------------------------------------- #
-# Gap 1: input-key dedup                                                      #
+# Finding 1: dedup is retry-safe and concurrency-safe                         #
 # --------------------------------------------------------------------------- #
 
 
 async def test_input_key_answered_exactly_once_across_polls() -> None:
-    """A re-sent unanswered key is NOT re-asked: exactly one answer per key."""
+    """A re-sent unanswered key is NOT re-asked: exactly one prompt per key."""
 
     session = ScriptedSession(
         [
@@ -362,13 +397,216 @@ async def test_input_key_answered_exactly_once_across_polls() -> None:
         return await _answer_everything(context, params)
 
     final = await drive_task_to_terminal(
-        session, "task-3", recording_callback, store=_fresh_store()
+        session, _key("task-3"), recording_callback, store=_fresh_store()
     )
 
     assert final.status == "completed"
-    # One prompt per KEY, never per poll — this is the whole point of the ledger.
+    # One prompt per KEY, never per poll — the whole point of the ledger.
     assert asked == ["first?", "second?"]
-    assert [sorted(update) for update in session.updates] == [["k1"], ["k2"]]
+    # Every round retransmits the outstanding keys' stored payloads verbatim.
+    assert [sorted(update) for update in session.updates] == [["k1"], ["k1"], ["k1", "k2"]]
+
+
+async def test_lost_update_acknowledgement_retries_the_identical_payload() -> None:
+    """A ``tasks/update`` whose response is lost is retried, never re-elicited.
+
+    The human's answer is persisted BEFORE transmission, so the failed round leaves a
+    recoverable payload and the next drive re-sends exactly those bytes.
+    """
+
+    store = _fresh_store()
+    key = _key("task-lost")
+    store.put(TaskRecord(key=key, status="working"))
+    parked = _task_payload(
+        "task-lost",
+        "input_required",
+        poll_interval_ms=1,
+        input_requests={"k1": _elicit_request("who?")},
+    )
+    session = ScriptedSession(
+        [dict(parked), dict(parked), _task_payload("task-lost", "completed", result={})],
+        update_failures=1,
+    )
+    asked: list[str] = []
+
+    async def recording_callback(context: Any, params: Any) -> Any:
+        asked.append(params.message)
+        return await _answer_everything(context, params)
+
+    with pytest.raises(RuntimeError):
+        await drive_task_to_terminal(session, key, recording_callback, store=store)
+
+    # The answer survived the failed transmission, marked NOT delivered.
+    persisted = store.get(key)
+    assert persisted is not None
+    assert [(a.key, a.delivered) for a in persisted.input_answers] == [("k1", False)]
+    stored_payload = persisted.input_answers[0].payload
+
+    # Resuming re-sends the IDENTICAL payload without asking the human again.
+    final = await drive_task_to_terminal(session, key, recording_callback, store=store)
+
+    assert final.status == "completed"
+    assert asked == ["who?"], "the human must be asked exactly once across both drives"
+    assert session.updates == [{"k1": stored_payload}, {"k1": stored_payload}]
+
+
+async def test_rejected_update_retries_the_identical_payload() -> None:
+    """A server that REJECTS the update gets the same bytes back, not a new prompt."""
+
+    from mcp.shared.exceptions import MCPError
+
+    store = _fresh_store()
+    key = _key("task-rejected")
+    store.put(TaskRecord(key=key, status="working"))
+    parked = _task_payload(
+        "task-rejected",
+        "input_required",
+        poll_interval_ms=1,
+        input_requests={"k1": _elicit_request("who?")},
+    )
+    session = ScriptedSession(
+        [dict(parked), dict(parked), _task_payload("task-rejected", "completed", result={})],
+        update_failures=1,
+        update_error=MCPError(code=-32602, message="stale update"),
+    )
+    asked: list[str] = []
+
+    async def recording_callback(context: Any, params: Any) -> Any:
+        asked.append(params.message)
+        return await _answer_everything(context, params)
+
+    with pytest.raises(MCPError):
+        await drive_task_to_terminal(session, key, recording_callback, store=store)
+    final = await drive_task_to_terminal(session, key, recording_callback, store=store)
+
+    assert final.status == "completed"
+    assert asked == ["who?"]
+    assert session.updates[0] == session.updates[1]
+
+
+async def test_server_ledger_divergence_retransmits_instead_of_starving(
+    monkeypatch: Any,
+) -> None:
+    """A server re-reporting a DELIVERED key is retried, then bounded — never starved.
+
+    A key-only ledger suppressed retransmission on divergence, so the task could only
+    end at the no-progress abort. Now the stored payload goes out on every round and
+    the bound is the backstop rather than the outcome.
+    """
+
+    async def fake_sleep(delay: float) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    store = _fresh_store()
+    key = _key("task-diverged")
+    store.put(
+        TaskRecord(
+            key=key,
+            status="input_required",
+            input_answers=(
+                TaskInputAnswer(key="k1", payload={"action": "accept"}, delivered=True),
+            ),
+        )
+    )
+    parked = _task_payload(
+        "task-diverged",
+        "input_required",
+        poll_interval_ms=1,
+        input_requests={"k1": _elicit_request("who?")},
+    )
+    session = ScriptedSession([dict(parked) for _ in range(10)])
+
+    with pytest.raises(ToolError) as excinfo:
+        await drive_task_to_terminal(
+            session, key, _answer_everything, store=store, max_no_progress_rounds=3
+        )
+
+    assert excinfo.value.details["reason"] == MCP_TASK_INPUT_NO_PROGRESS
+    assert excinfo.value.details["delivered_keys"] == ["k1"]
+    # Retransmitted every round, identically — not suppressed until the abort.
+    assert len(session.updates) == 4
+    assert all(update == {"k1": {"action": "accept"}} for update in session.updates)
+
+
+async def test_two_concurrent_resumes_cannot_both_drive_one_task() -> None:
+    """The lease refuses the second driver instead of double-prompting."""
+
+    store = _fresh_store()
+    key = _key("task-leased")
+    store.put(TaskRecord(key=key, status="working"))
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockingSession(ScriptedSession):
+        """Parks inside the first ``tasks/get`` so both drivers overlap."""
+
+        async def send_request(self, request: Any, result_type: Any, **kwargs: Any) -> Any:
+            """Signal that the drive is live, then wait before answering."""
+
+            started.set()
+            await release.wait()
+            return await super().send_request(request, result_type, **kwargs)
+
+    first = BlockingSession([_task_payload("task-leased", "completed", result={})])
+    driver = asyncio.create_task(drive_task_to_terminal(first, key, store=store))
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    second = ScriptedSession([_task_payload("task-leased", "completed", result={})])
+    with pytest.raises(ToolError) as excinfo:
+        await resume_task(second, key, store=store)
+
+    release.set()
+    final = await asyncio.wait_for(driver, timeout=5)
+
+    assert final.status == "completed"
+    assert excinfo.value.details["reason"] == MCP_TASK_LEASE_HELD
+    assert second.requests == [], "the refused driver must not touch the wire"
+
+
+def test_expired_lease_is_reclaimable() -> None:
+    """A lease from a process that died mid-drive must not wedge the task forever."""
+
+    import time
+
+    store = _fresh_store()
+    key = _key("task-stale-lease")
+    store.put(
+        TaskRecord(
+            key=key,
+            status="working",
+            lease_owner="dead-process:1",
+            lease_expires_at=time.time() - 1.0,
+        )
+    )
+
+    lease = TaskLease(store, key, owner="live-driver")
+    lease.acquire()
+    try:
+        held = store.get(key)
+        assert held is not None
+        assert held.lease_owner == "live-driver"
+    finally:
+        lease.release()
+    assert (store.get(key) or TaskRecord(key=key)).lease_owner is None
+
+
+def test_ledger_state_machine_is_absent_captured_delivered() -> None:
+    """The payload is retained through every state, so a retry is always identical."""
+
+    ledger = TaskInputLedger()
+    assert ledger.unelicited(["k1"]) == ["k1"]
+
+    ledger.capture("k1", {"action": "accept", "content": {"answer": "yes"}})
+    assert ledger.unelicited(["k1"]) == []
+    assert ledger.delivered_keys() == frozenset()
+    assert ledger.payloads_for(["k1"]) == {"k1": {"action": "accept", "content": {"answer": "yes"}}}
+
+    ledger.mark_delivered(["k1"])
+    assert ledger.delivered_keys() == frozenset({"k1"})
+    # A delivered key still yields its payload, so a divergence retransmits.
+    assert ledger.payloads_for(["k1"])["k1"]["action"] == "accept"
 
 
 async def test_input_requests_reach_the_one_hitl_surface_via_elicitation() -> None:
@@ -396,7 +634,7 @@ async def test_input_requests_reach_the_one_hitl_surface_via_elicitation() -> No
         seen.append((context.session, params.message))
         return await _answer_everything(context, params)
 
-    await drive_task_to_terminal(session, "task-4", recording_callback, store=_fresh_store())
+    await drive_task_to_terminal(session, _key("task-4"), recording_callback, store=_fresh_store())
 
     assert len(seen) == 1
     dispatched_session, message = seen[0]
@@ -418,38 +656,169 @@ async def test_missing_elicitation_handler_is_a_typed_error() -> None:
         ]
     )
     with pytest.raises(ToolError) as excinfo:
-        await drive_task_to_terminal(session, "task-5", None, store=_fresh_store())
+        await drive_task_to_terminal(session, _key("task-5"), None, store=_fresh_store())
     assert excinfo.value.details["input_keys"] == ["k1"]
 
 
-async def test_no_progress_input_required_rounds_are_bounded(monkeypatch: Any) -> None:
-    """A server stuck re-sending only answered keys stops with a typed reason."""
+# --------------------------------------------------------------------------- #
+# Finding 2: composite identity                                               #
+# --------------------------------------------------------------------------- #
 
-    async def fake_sleep(delay: float) -> None:
-        return None
 
-    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
-    parked = _task_payload(
-        "task-6",
-        "input_required",
-        poll_interval_ms=1,
-        input_requests={"k1": _elicit_request("who?")},
-    )
-    session = ScriptedSession([dict(parked) for _ in range(10)])
-    ledger = TaskInputLedger()
-    ledger.mark_answered("task-6", ["k1"])
+def test_same_task_id_from_two_servers_does_not_overwrite() -> None:
+    """A server-minted id is unique only WITHIN its server."""
 
-    with pytest.raises(ToolError) as excinfo:
-        await drive_task_to_terminal(
-            session,
-            "task-6",
-            _answer_everything,
-            ledger=ledger,
-            store=_fresh_store(),
-            max_no_progress_rounds=3,
-        )
-    assert excinfo.value.details["reason"] == MCP_TASK_INPUT_NO_PROGRESS
-    assert excinfo.value.details["answered_keys"] == ["k1"]
+    store = _fresh_store()
+    a = _key("shared-id", server=SERVER_A)
+    b = _key("shared-id", server=SERVER_B)
+    store.put(TaskRecord(key=a, tool="tool-a"))
+    store.put(TaskRecord(key=b, tool="tool-b"))
+
+    assert (store.get(a) or TaskRecord(key=a)).tool == "tool-a"
+    assert (store.get(b) or TaskRecord(key=b)).tool == "tool-b"
+    assert len(store.list()) == 2
+
+
+def test_dropping_one_server_task_leaves_the_other_alive() -> None:
+    """A ``drop`` must never delete an unrelated backend's live crash-recovery record."""
+
+    store = _fresh_store()
+    a = _key("shared-id", server=SERVER_A)
+    b = _key("shared-id", server=SERVER_B)
+    store.put(TaskRecord(key=a))
+    store.put(TaskRecord(key=b))
+
+    store.drop(a)
+
+    assert store.get(a) is None
+    assert store.get(b) is not None
+
+
+def test_same_task_id_in_two_sessions_does_not_collide() -> None:
+    """Two CLIO sessions can hold the same server's task id independently."""
+
+    store = _fresh_store()
+    one = _key("shared-id", session="sess-1")
+    two = _key("shared-id", session="sess-2")
+    store.put(TaskRecord(key=one, tool="one"))
+    store.put(TaskRecord(key=two, tool="two"))
+
+    store.drop(one)
+
+    assert store.get(one) is None
+    assert (store.get(two) or TaskRecord(key=two)).tool == "two"
+
+
+def test_backend_identity_is_stable_and_distinguishing() -> None:
+    """The same backend digests identically; different backends never collide."""
+
+    class Http:
+        """An http-shaped transport double."""
+
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+    class Stdio:
+        """A stdio-shaped transport double."""
+
+        command = "python"
+        args = ["-m", "server"]
+
+    first = backend_identity(Http("http://127.0.0.1:9/mcp"))
+    again = backend_identity(Http("http://127.0.0.1:9/mcp"))
+    other = backend_identity(Http("http://127.0.0.1:10/mcp"))
+    stdio = backend_identity(Stdio())
+
+    assert first.server_id == again.server_id
+    assert first.server_id != other.server_id
+    assert first.locator == {"transport": "http", "url": "http://127.0.0.1:9/mcp"}
+    assert stdio.locator == {"transport": "stdio", "command": "python", "args": ["-m", "server"]}
+    assert len({first.server_id, other.server_id, stdio.server_id}) == 3
+
+
+async def test_resume_requires_the_full_identity() -> None:
+    """A record under one server is not resumable under another's identity."""
+
+    store = _fresh_store()
+    store.put(TaskRecord(key=_key("task-x", server=SERVER_A), status="working"))
+    session = ScriptedSession([])
+
+    with pytest.raises(ToolError):
+        await resume_task(session, _key("task-x", server=SERVER_B), store=store)
+    assert session.requests == []
+
+
+# --------------------------------------------------------------------------- #
+# Finding 4: create-before-durable window                                     #
+# --------------------------------------------------------------------------- #
+
+
+async def test_persistence_failure_is_a_typed_recovery_error_with_a_cancel_attempt() -> None:
+    """A task that cannot be made durable fails LOUDLY, carrying everything to reconcile."""
+
+    class FailingStore(InMemoryTaskRecordStore):
+        """A store whose durable write fails (the failpoint DURING store.put)."""
+
+        def put(self, record: TaskRecord) -> None:
+            """Fail every durable write."""
+
+            raise OSError("disk full")
+
+    session = ScriptedSession([])
+    identity = BackendIdentity(SERVER_A, {"transport": "http", "url": "http://x/mcp"})
+    set_task_record_store(FailingStore())
+    try:
+        extension = ClioTasksClientExtension(identity)
+        with pytest.raises(ToolError) as excinfo:
+            await extension._resolve_task(_create_result("task-orphan"), _Ctx(session))
+    finally:
+        set_task_record_store(None)
+
+    details = excinfo.value.details
+    assert details["reason"] == MCP_TASK_RECORD_NOT_DURABLE
+    assert details["task_id"] == "task-orphan"
+    assert details["server_id"] == SERVER_A
+    assert details["backend"] == {"transport": "http", "url": "http://x/mcp"}
+    # A best-effort tasks/cancel is the only lever a client has over an orphan.
+    assert details["cancel_attempted"] is True
+    assert session.methods() == ["tasks/cancel"]
+    # It never proceeds to poll a task it cannot recover.
+    assert "tasks/get" not in session.methods()
+
+
+async def test_no_polling_happens_before_the_record_is_durable() -> None:
+    """The failpoint immediately BEFORE store.put: nothing is driven yet."""
+
+    order: list[str] = []
+
+    class RecordingStore(InMemoryTaskRecordStore):
+        """Records the ordering of the durable write against the wire."""
+
+        def put(self, record: TaskRecord) -> None:
+            """Note the write, then persist."""
+
+            order.append(f"put:{record.key.task_id}")
+            super().put(record)
+
+    class OrderedSession(ScriptedSession):
+        """Notes every RPC so the write/poll ordering is assertable."""
+
+        async def send_request(self, request: Any, result_type: Any, **kwargs: Any) -> Any:
+            """Note the RPC, then answer it."""
+
+            order.append(request.method)
+            return await super().send_request(request, result_type, **kwargs)
+
+    session = OrderedSession([_task_payload("task-order", "completed", result={"content": []})])
+    set_task_record_store(RecordingStore())
+    try:
+        extension = ClioTasksClientExtension(BackendIdentity(SERVER_A, {}))
+        await extension._resolve_task(_create_result("task-order"), _Ctx(session))
+    finally:
+        set_task_record_store(None)
+
+    assert order[0] == "put:task-order", f"durable write must precede any RPC: {order}"
+    assert "tasks/get" in order
 
 
 # --------------------------------------------------------------------------- #
@@ -465,6 +834,7 @@ def test_task_requests_declare_name_param_so_the_sdk_stamps_mcp_name() -> None:
     emit ``Mcp-Name`` for ``tasks/*``.
     """
 
+    from fastmcp_tasks.client_models import GetTaskRequest
     from mcp.shared.inbound import NAME_BEARING_METHODS
 
     from clio_agent.tools.mcp_tasks import (
@@ -476,8 +846,6 @@ def test_task_requests_declare_name_param_so_the_sdk_stamps_mcp_name() -> None:
     for request_cls in (NamedGetTaskRequest, NamedUpdateTaskRequest, NamedCancelTaskRequest):
         assert request_cls.name_param == "taskId"
     # The substrate's own models leave the hook unset — that is the gap CLIO closes.
-    from fastmcp_tasks.client_models import GetTaskRequest
-
     assert GetTaskRequest.name_param is None
     assert "tasks/get" not in NAME_BEARING_METHODS
 
@@ -512,15 +880,9 @@ async def test_mcp_name_header_is_emitted_for_task_rpcs() -> None:
     dispatcher = _CapturingDispatcher()
     session = ClientSession(dispatcher=dispatcher)
     session._stamp = _make_modern_stamp(
-        "2026-07-28",
-        {"name": "clio-agent", "version": "test"},
-        {},
-        lambda name, args: {},
+        "2026-07-28", {"name": "clio-agent", "version": "test"}, {}, lambda name, args: {}
     )
 
-    # tasks/get returns a typed result, so drive it through the poll loop's sender
-    # only for the two RPCs whose result is a bare Result; tasks/get is asserted via
-    # the same send path with a validating stub below.
     await send_task_update(session, "task-hdr", {})
     await send_task_cancel(session, "task-hdr")
 
@@ -550,10 +912,7 @@ async def test_mcp_name_header_is_emitted_for_tasks_get() -> None:
     dispatcher = _GetDispatcher()
     session = ClientSession(dispatcher=dispatcher)
     session._stamp = _make_modern_stamp(
-        "2026-07-28",
-        {"name": "clio-agent", "version": "test"},
-        {},
-        lambda name, args: {},
+        "2026-07-28", {"name": "clio-agent", "version": "test"}, {}, lambda name, args: {}
     )
 
     result = await send_task_get(session, "task-hdr")
@@ -572,14 +931,30 @@ async def test_cancel_is_ack_only_and_emits_no_cancelled_notification() -> None:
     """``tasks/cancel`` is a REQUEST; no ``notifications/cancelled`` names a task."""
 
     store = _fresh_store()
-    store.put(TaskRecord(task_id="task-8", status="working"))
+    key = _key("task-8")
+    store.put(TaskRecord(key=key, status="working"))
     session = ScriptedSession([])
 
-    await cancel_task(session, "task-8", store=store)
+    await cancel_task(session, key, store=store)
 
     assert session.methods() == ["tasks/cancel"]
     assert session.notifications == []
-    assert store.get("task-8") is None
+    assert store.get(key) is None
+
+
+async def test_cancel_drops_only_the_named_identity() -> None:
+    """Cancelling one backend's task leaves another backend's same-id task alive."""
+
+    store = _fresh_store()
+    a = _key("shared-id", server=SERVER_A)
+    b = _key("shared-id", server=SERVER_B)
+    store.put(TaskRecord(key=a))
+    store.put(TaskRecord(key=b))
+
+    await cancel_task(ScriptedSession([]), a, store=store)
+
+    assert store.get(a) is None
+    assert store.get(b) is not None
 
 
 def test_removed_task_methods_are_never_called() -> None:
@@ -603,12 +978,13 @@ def test_direct_execution_client_declares_the_tasks_extension() -> None:
 
     from fastmcp import Client
 
-    declaration = tasks_declaration(Client)
+    declaration = tasks_declaration(Client, object())
 
     assert declaration.reason is None
     assert len(declaration.extensions) == 1
     assert isinstance(declaration.extensions[0], ClioTasksClientExtension)
     assert declaration.extensions[0].identifier == "io.modelcontextprotocol/tasks"
+    assert declaration.extensions[0].backend.server_id
 
 
 def test_proxy_backend_suppresses_the_declaration_with_a_typed_reason() -> None:
@@ -616,7 +992,7 @@ def test_proxy_backend_suppresses_the_declaration_with_a_typed_reason() -> None:
 
     from fastmcp.server.providers.proxy import ProxyClient
 
-    declaration = tasks_declaration(ProxyClient)
+    declaration = tasks_declaration(ProxyClient, object())
 
     assert declaration.extensions == ()
     assert declaration.reason == MCP_TASKS_DECLARATION_SUPPRESSED
@@ -651,11 +1027,18 @@ def test_make_mcp_client_declares_tasks_on_execution_clients() -> None:
             captured["target"] = target
             captured.update(kwargs)
 
-    make_mcp_client(object(), client_cls=FakeClient)
+    class Transport:
+        """An http-shaped transport double, so the identity is derived from it."""
+
+        url = "http://127.0.0.1:1234/mcp"
+
+    transport = Transport()
+    make_mcp_client(transport, client_cls=FakeClient)
     extensions = captured.get("extensions") or []
 
     assert len(extensions) == 1
     assert isinstance(extensions[0], ClioTasksClientExtension)
+    assert extensions[0].backend.server_id == backend_identity(transport).server_id
 
 
 def test_make_mcp_client_omits_the_declaration_for_a_proxy_client_class() -> None:
@@ -762,9 +1145,7 @@ def test_unknown_result_type_still_degrades() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_absent_durable_store_degrades_to_memory_with_a_typed_reason(
-    caplog: Any,
-) -> None:
+def test_absent_durable_store_degrades_to_memory_with_a_typed_reason(caplog: Any) -> None:
     """No durable home is a REPORTED degradation, never a silent one."""
 
     import logging

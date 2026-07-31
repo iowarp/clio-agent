@@ -31,8 +31,10 @@ from fastmcp_tasks import TasksExtension, call_tool_task
 
 from clio_agent.tools.mcp_handlers import MCPClientCapabilities
 from clio_agent.tools.mcp_runtime import MCPClientHandlers, make_mcp_client
+from clio_agent.tools.mcp_task_extension import backend_identity
 from clio_agent.tools.mcp_task_records import (
     InMemoryTaskRecordStore,
+    TaskKey,
     TaskRecord,
     set_task_record_store,
 )
@@ -220,17 +222,23 @@ async def test_conformance_reconnect_by_task_id_after_dropping_the_client(
     client = _client(backend.url)
     async with client:
         handle = await call_tool_task(client, "slow", {"seconds": 1.0})
-        task_id = handle.task_id
-        task_record_store().put(TaskRecord(task_id=task_id, tool="slow", status="working"))
+        # The FULL composite identity is what survives: the backend the task lives on
+        # plus the server-minted id. Resuming by bare id would be ambiguous.
+        key = TaskKey(
+            server_id=backend_identity(client.transport).server_id,
+            session_id=None,
+            task_id=handle.task_id,
+        )
+        task_record_store().put(TaskRecord(key=key, tool="slow", status="working"))
     # The client (and its session, and its transport) is gone here.
 
     async with _client(backend.url) as fresh:
-        final = await resume_task(fresh.session, task_id)
+        final = await resume_task(fresh.session, key)
 
     assert final.status == "completed"
     assert final.result is not None
     assert final.result["content"][0]["text"] == "slow-done"
-    assert task_record_store().get(task_id) is None
+    assert task_record_store().get(key) is None
 
 
 async def test_conformance_mcp_name_header_on_every_task_rpc(backend: Any) -> None:
@@ -253,7 +261,12 @@ async def test_conformance_cancel_is_ack_only(backend: Any) -> None:
     client = _client(backend.url)
     async with client:
         handle = await call_tool_task(client, "slow", {"seconds": 5.0})
-        await cancel_task(client.session, handle.task_id)
+        key = TaskKey(
+            server_id=backend_identity(client.transport).server_id,
+            session_id=None,
+            task_id=handle.task_id,
+        )
+        await cancel_task(client.session, key)
         settled = await handle.wait(timeout=15.0)
 
     assert settled.status == "cancelled"
