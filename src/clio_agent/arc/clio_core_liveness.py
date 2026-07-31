@@ -55,9 +55,24 @@ import weakref
 from pathlib import Path
 from typing import Callable, Optional
 
+from clio_agent.arc.runtime_crash import read_crash_record, summarize_crash
 from clio_agent.errors import ClioError
 
 logger = logging.getLogger(__name__)
+
+
+def _current_crash_record() -> dict | None:
+    """The watcher's typed crash record for the ACTIVE runtime state dir, if any.
+
+    Resolved lazily (not cached) because tests and private-daemon runs repoint
+    ``CLIO_RUNTIME_STATE_DIR`` per session. Never raises: an unreadable record
+    degrades (with a logged warning inside :func:`read_crash_record`) to the
+    base liveness message, which is still typed and quarantining.
+    """
+
+    from clio_agent.arc.clio_core_config import runtime_state_dir  # noqa: PLC0415
+
+    return read_crash_record(runtime_state_dir())
 
 _DEFAULT_RUNTIME_PORT = 9413
 
@@ -205,6 +220,13 @@ class ClioCoreRuntimeLostError(ClioError):
             merged["port"] = port
         if details:
             merged.update(details)
+        # #1148: if the spawner's watcher recorded a daemon crash, NAME it here —
+        # every quarantine reason then reads "the daemon CRASHED with 0x…", never
+        # a vague "not listening" that gets misread as an environment flake.
+        crash = _current_crash_record()
+        if crash is not None:
+            merged["daemon_crash"] = crash
+            message = f"{message} {summarize_crash(crash)}"
         super().__init__(message, error_type="arc_runtime_lost", details=merged)
 
 

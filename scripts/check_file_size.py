@@ -56,7 +56,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # so they live here; the reusable guard helpers (guarded_store_rpc /
     # store_rpc_health_probe) were moved to the rpc_liveness owner module to hold the
     # growth down. Ratchet back below on the arc/storage decomposition (#714).
-    "src/clio_agent/arc/storage.py": 920,
+    "src/clio_agent/arc/storage.py": 896,
     # #737 S2 fold owner module. Crossed the 800 new-file cap restoring the FROZEN
     # arc.op reproducibility contract (§2 / GOAL.md DoD #4): the five working-set write
     # overrides now emit a per-op arc.op via _emit_op so arc.replay rebuilds the live

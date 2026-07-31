@@ -33,12 +33,11 @@ import contextlib
 import logging
 import os
 import subprocess
-import sys
 import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Dict, Optional, Protocol, runtime_checkable
+from typing import Dict, Optional, Protocol, runtime_checkable
 
 # The clio-core CTE config generation + capacity policy lives in its own owner module
 # (iowarp/clio-agent#774/#890). Re-exported here so existing callers/tests that reach
@@ -74,6 +73,15 @@ from clio_agent.arc.rpc_liveness import (
     guard_store_op,
     guarded_store_rpc,
     store_rpc_health_probe,
+)
+from clio_agent.arc.runtime_crash import clear_crash_record, watch_daemon_process
+
+# Per-OS spawn primitives live in their own owner module (#1148); re-exported here
+# for existing callers/tests that reach ``storage._detached_popen_kwargs`` etc.
+from clio_agent.arc.runtime_spawn import (  # noqa: F401 - re-exported for callers/tests
+    _detached_popen_kwargs,
+    _dynamic_library_env_var,
+    _runtime_launcher_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -285,44 +293,6 @@ def _runtime_spawn_lock() -> "Iterator[None]":
         yield
 
 
-def _dynamic_library_env_var() -> str:
-    """The OS env var the standalone launcher uses to find clio-core's shared libs."""
-    if sys.platform == "darwin":
-        return "DYLD_LIBRARY_PATH"
-    if sys.platform.startswith("win"):
-        return "PATH"  # Windows resolves DLLs via PATH
-    return "LD_LIBRARY_PATH"
-
-
-def _runtime_launcher_path(iowarp_core: object) -> Optional[str]:
-    """Absolute path to the ``clio_run`` launcher (``.exe`` on Windows), or None."""
-    bin_dir = iowarp_core.get_bin_dir()  # type: ignore[attr-defined]
-    names = ("clio_run.exe", "clio_run") if sys.platform.startswith("win") else ("clio_run",)
-    for name in names:
-        candidate = os.path.join(bin_dir, name)
-        if os.path.exists(candidate):
-            return candidate
-    return None
-
-
-def _detached_popen_kwargs() -> "dict[str, Any]":
-    """Popen kwargs that detach the daemon so it outlives the spawning process.
-
-    POSIX: ``setsid``. Windows: ``CREATE_NO_WINDOW`` in a new process group, NOT
-    ``DETACHED_PROCESS``: no console breaks the daemon's ZeroMQ Winsock init (#870).
-    ``CREATE_BREAKAWAY_FROM_JOB`` (#900) breaks the shared daemon OUT of the server's
-    ``KILL_ON_JOB_CLOSE`` Job Object so it survives a server hard-kill (the job sets
-    ``BREAKAWAY_OK``; the flag is ignored where no job is assigned).
-    """
-    if sys.platform.startswith("win"):
-        flags = 0
-        flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-        flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-        flags |= getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
-        return {"creationflags": flags, "close_fds": True}
-    return {"start_new_session": True, "close_fds": True}
-
-
 def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str) -> None:
     """Launch the standalone clio-core runtime daemon (``clio_run start``), detached.
 
@@ -348,7 +318,9 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
     env.setdefault("CTP_LOG_LEVEL", log_level)
     if config_path:
         env["CLIO_SERVER_CONF"] = config_path
-    log_path = runtime_state_dir() / "clio-runtime.log"
+    state_dir = runtime_state_dir()
+    log_path = state_dir / "clio-runtime.log"
+    clear_crash_record(state_dir)  # fresh spawn, fresh slate (#1148)
     log_fh = open(log_path, "ab")  # noqa: SIM115 - handed to the detached child
     try:
         proc = subprocess.Popen(  # type: ignore[call-overload]  # noqa: S603 - fixed launcher path
@@ -361,6 +333,10 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
         )
     finally:
         log_fh.close()
+    # The daemon must die loudly in OUR channels (#1148): on abnormal exit the
+    # watcher writes a typed crash record that the liveness gate folds into its
+    # ClioCoreRuntimeLostError, so a crash is never misread as an env flake.
+    watch_daemon_process(proc, log_path=log_path, state_dir=state_dir)
     proc_pid = proc.pid
     ctime = _proc_create_time(proc_pid)
     _daemon_pidfile().write_text(
