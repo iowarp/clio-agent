@@ -26,6 +26,29 @@ MCP_WIRE_CANCELLATION_UNAVAILABLE = "mcp_wire_cancellation_unavailable"
 #: #1114: the modern-era MRTR loop (InputRequiredResult -> retry with inputResponses)
 #: exceeded its config-resolved round bound without reaching a terminal result.
 MCP_INPUT_REQUIRED_ROUNDS_EXCEEDED = "mcp_input_required_rounds_exceeded"
+#: #1115: no durable task-record home is published, so SEP-2663 task ids survive
+#: losing the client but not the process (reconnect-after-crash is degraded).
+MCP_TASK_RECORD_STORE_ABSENT = "mcp_task_record_store_absent"
+#: #1115: a task kept reporting ``input_required`` while every surfaced input key
+#: was already answered — the drive stops rather than polling forever.
+MCP_TASK_INPUT_NO_PROGRESS = "mcp_task_input_no_progress"
+#: #1115: the tasks extension was NOT declared on this client because its class
+#: forbids internal extensions (a proxy backend must not advertise task support).
+MCP_TASKS_DECLARATION_SUPPRESSED = "mcp_tasks_declaration_suppressed"
+#: #1115: another live driver already holds the lease on this task, so this driver
+#: refused to poll/answer it rather than double-prompt and double-update.
+MCP_TASK_LEASE_HELD = "mcp_task_lease_held"
+#: #1115: the durable write for a task record failed (its session row vanished, or
+#: the registry rejected the update), so the record was moved to the process-local
+#: holding path — still resumable/cancellable here, but not across a restart.
+MCP_TASK_RECORD_HELD_LOCALLY = "mcp_task_record_held_locally"
+#: #1115: the session owning live tasks was deleted. Deletion is never blocked; the
+#: records are cancel-requested best-effort and migrated to the holding path.
+MCP_TASK_SESSION_DELETED = "mcp_task_session_deleted"
+#: #1115: a task exists on the server but its id could NOT be made durable. The
+#: caller gets this reason plus the taskId and backend identity so the orphan can be
+#: reconciled by hand (SEP-2663 has no tasks/list to rediscover it).
+MCP_TASK_RECORD_NOT_DURABLE = "mcp_task_record_not_durable"
 
 
 class ClioError(Exception):
