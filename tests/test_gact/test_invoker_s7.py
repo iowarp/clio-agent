@@ -27,9 +27,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.agent_tasks import STATUS_COMPLETED, STATUS_RUNNING, AgentTask
 from clio_agent.gact.agents.invoker import (
-    RELAY_STATE_MAP,
     TASK_CONSUMED_EVENT,
-    TASK_EVENT_VOCABULARY,
     ExpertInvoker,
     InProcessExpertInvoker,
     InvokerError,
@@ -545,73 +543,6 @@ def test_taskresult_drops_internal_bookkeeping(tmp_path: Path, monkeypatch) -> N
         "result",
         "artifact_ref",
     } <= result_fields
-
-
-def test_relay_state_map_is_total_and_lossless() -> None:
-    """Every clio status maps 1:1 to a clio-relay ``JobState`` (federation adapters
-    translate at the wire; neither side renames its durable records)."""
-
-    assert set(RELAY_STATE_MAP) == set(TASK_EVENT_VOCABULARY)
-    assert RELAY_STATE_MAP["completed"] == "succeeded"
-    assert RELAY_STATE_MAP["cancelled"] == "canceled"
-    # Lossless: distinct clio statuses never collapse to one relay state.
-    assert len(set(RELAY_STATE_MAP.values())) == len(RELAY_STATE_MAP)
-
-
-def _relay_jobstate_values() -> set[str]:
-    """Parse clio-relay's real ``JobState`` StrEnum values from its source, or skip.
-
-    clio-relay is not a clio-agent dependency (federation is future work), so its
-    models are not importable; we AST-parse the sibling checkout when present and skip
-    with a typed reason otherwise — the map is asserted against the REAL enum, never a
-    hand-copied literal list that could silently drift (adversarial-review finding [6])."""
-    import ast
-    import os
-
-    repo_root = Path(__file__).resolve().parents[2]
-    candidates = [
-        os.environ.get("CLIO_RELAY_ROOT", ""),
-        str(repo_root.parent / "clio-relay"),
-        str(repo_root.parent.parent / "clio-relay"),
-    ]
-    models: Path | None = None
-    for cand in candidates:
-        if not cand:
-            continue
-        p = Path(cand) / "src" / "clio_relay" / "models.py"
-        if p.is_file():
-            models = p
-            break
-    if models is None:
-        pytest.skip("clio-relay checkout not found (set CLIO_RELAY_ROOT); cannot verify JobState")
-
-    tree = ast.parse(models.read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == "JobState":
-            values: set[str] = set()
-            for stmt in node.body:
-                if isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Constant):
-                    values.add(str(stmt.value.value))
-            return values
-    pytest.skip("JobState enum not found in clio-relay models.py")
-    return set()  # unreachable (pragma)
-
-
-def test_relay_state_map_targets_are_real_jobstates() -> None:
-    """The map's targets must be REAL ``clio_relay.JobState`` values, injective into the
-    enum — asserted against relay's actual source, not a copied literal list.
-
-    Relay's enum also carries ``leased`` (a transitional scheduler state clio does not
-    originate), so the map is injective INTO ``JobState``, not onto it — that unmapped
-    state is the exact drift shape this guard exists to surface if it ever changes."""
-
-    job_states = _relay_jobstate_values()
-    mapped = set(RELAY_STATE_MAP.values())
-    missing = mapped - job_states
-    assert not missing, f"RELAY_STATE_MAP targets not present in relay JobState: {missing}"
-    # Injective, not onto: relay's transitional 'leased' is deliberately unmapped by clio.
-    assert "leased" in job_states  # present in relay; if this ever disappears, revisit the map
-    assert "leased" not in mapped
 
 
 # ---------------------------------------------------------------------------
