@@ -79,7 +79,7 @@ def test_default_clio_core_dir_falls_back_to_user_data(monkeypatch, tmp_path):
 
     store = conf.ConfigStore(home=tmp_path / "home", cwd=tmp_path / "cwd", env={})
     monkeypatch.setattr(conf, "_STORE", store)
-    monkeypatch.setattr(storage.sys, "platform", "linux")
+    monkeypatch.setattr("sys.platform", "linux")
 
     from clio_agent import paths
 
