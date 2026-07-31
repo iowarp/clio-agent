@@ -289,12 +289,12 @@ def test_cancel_before_turn_skips_agent_forward(tmp_path: Path) -> None:
     assert attempt["upstream_abort"] == "not_supported"
 
 
-def test_capabilities_do_not_claim_hard_upstream_abort(tmp_path: Path) -> None:
-    """Release contract: CLIO advertises truthful best-effort cancellation."""
+def test_capabilities_advertise_foreground_executor_wire_cancellation(tmp_path: Path) -> None:
+    """Global cancellation stays best-effort while foreground MCP calls support wire cancel."""
 
     client = _client(tmp_path)
 
     caps = client.get("/v1/capabilities").json()["capabilities"]
 
     assert caps["x_clio_cancellation"] == "best_effort"
-    assert caps["x_clio_executor_cancellation"] is False
+    assert caps["x_clio_executor_cancellation"] is True

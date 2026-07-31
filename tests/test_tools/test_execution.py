@@ -2,18 +2,22 @@
 
 import json
 import os
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import anyio
 import pytest
-from mcp.types import TextContent
+from fastmcp import Context, FastMCP
+from mcp.types import CancelledNotificationParams, TextContent
 from pydantic import BaseModel, ConfigDict, Field
 
 from clio_agent import conf
 from clio_agent.errors import CancellationError
 from clio_agent.gact.artifacts.designation import ground_output_paths
+from clio_agent.tools import foreground_cancellation as foreground_cancel
 from clio_agent.tools.execution import (
     MCPToolBridge,
     RepeatedToolFailureError,
@@ -920,8 +924,65 @@ def test_repair_logs_reason_when_file_policy_unavailable(
     assert "reason=file_policy_unavailable" in caplog.text
 
 
-def test_sync_mcp_tool_executor_reports_cooperative_cancel_after_tool_result():
-    """Cancellation after a tool returns should not publish normal success telemetry."""
+def test_sync_mcp_tool_executor_cancel_mid_call_emits_wire_notification() -> None:
+    """Mid-call cancellation emits the protocol request id and raises CLIO's typed error."""
+    server = FastMCP("wire-cancellation")
+    tool_started = threading.Event()
+    release_tool = threading.Event()
+    cancel_requested = threading.Event()
+    cancel_observed = threading.Event()
+    request_ids: list[str] = []
+    cancelled_request_ids: list[str] = []
+
+    @server.tool()
+    async def slow_tool(ctx: Context) -> str:
+        """Wait until the test releases the in-memory MCP tool."""
+        request_ids.append(ctx.request_id)
+        tool_started.set()
+        while not release_tool.is_set():
+            await anyio.sleep(0.01)
+        return "completed"
+
+    async def capture_cancel(_context: Any, params: CancelledNotificationParams) -> None:
+        cancelled_request_ids.append(str(params.request_id))
+        cancel_observed.set()
+
+    server._mcp_server.add_notification_handler(
+        "notifications/cancelled",
+        CancelledNotificationParams,
+        capture_cancel,
+    )
+    executor = SyncMCPToolExecutor(server, timeout=3.0)
+    outcome: dict[str, Any] = {}
+
+    def call_tool() -> None:
+        try:
+            outcome["result"] = executor.call_tool("slow_tool", {})
+        except Exception as exc:  # noqa: BLE001 - asserted below
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=call_tool, daemon=True)
+    try:
+        set_tool_runtime_fallback(ToolRuntimeHooks(cancellation_checker=cancel_requested.is_set))
+        worker.start()
+        assert tool_started.wait(1.0), "slow MCP tool never entered"
+
+        cancel_requested.set()
+
+        assert cancel_observed.wait(1.0), "server never observed notifications/cancelled"
+        worker.join(timeout=1.0)
+        assert not worker.is_alive(), "foreground caller did not settle after cancellation"
+        assert isinstance(outcome.get("error"), CancellationError)
+        assert cancelled_request_ids == request_ids
+    finally:
+        release_tool.set()
+        worker.join(timeout=1.0)
+        set_tool_runtime_fallback(ToolRuntimeHooks())
+        executor.close()
+
+
+def test_sync_mcp_tool_executor_preserves_result_when_cancel_loses_race() -> None:
+    """A cancellation observed only after completion must not replace the tool result."""
     fake_client = FakeClient()
     executor = SyncMCPToolExecutor(
         object(),
@@ -941,17 +1002,33 @@ def test_sync_mcp_tool_executor_reports_cooperative_cancel_after_tool_result():
             )
         )
 
-        with pytest.raises(CancellationError, match="tool call cancelled"):
-            executor.call_tool("fake_echo", {"value": "late-cancel"})
+        result = executor.call_tool("fake_echo", {"value": "late-cancel"})
 
         assert fake_client.started_call is True
+        assert '"value": "late-cancel"' in result
         assert observed[0] == ("fake_echo", {"value": "late-cancel"}, "started", None)
-        assert observed[-1][2] == "completed"
-        assert observed[-1][3] is not None
-        assert "CancellationError" in observed[-1][3]
+        assert observed[-1] == ("fake_echo", {"value": "late-cancel"}, "completed", None)
     finally:
         set_tool_runtime_fallback(ToolRuntimeHooks())
         executor.close()
+
+
+def test_mcp_wire_cancellation_unavailable_is_typed() -> None:
+    """An uncooperative transport path names its degradation and ongoing-work risk."""
+    error = foreground_cancel._tool_cancellation_error(
+        "slow_tool",
+        "tool_call_in_flight",
+        wire_settled=False,
+    )
+
+    assert error.details == {
+        "tool": "slow_tool",
+        "stage": "tool_call_in_flight",
+        "reason": "mcp_wire_cancellation_unavailable",
+        "execution_cancellation": "cooperative",
+        "executor_work_may_continue": True,
+        "mcp_wire_cancellation": "unavailable",
+    }
 
 
 def test_mcp_tool_bridge_remains_sync_compatibility_shim():

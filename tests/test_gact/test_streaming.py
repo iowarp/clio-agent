@@ -167,6 +167,7 @@ def test_stream_fallback_reasons_are_audited_and_reject_unknowns(tmp_path: Path)
         "mcp_result_downgraded_to_complete",
         "mcp_capability_refused",
         "mcp_protocol_refused",
+        "mcp_wire_cancellation_unavailable",
     } == set(catalog)
     for reason, details in catalog.items():
         assert details["synthetic_posthoc"] is True, reason
