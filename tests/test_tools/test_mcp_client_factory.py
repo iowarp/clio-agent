@@ -90,8 +90,10 @@ def test_make_mcp_client_message_hook_is_multiplexer() -> None:
 
 
 #: Kwargs every factory-built client carries regardless of handlers: CLIO's identity
-#: (#1111) plus the #1114 MRTR round bound (any modern tool call can enter that loop).
-_ALWAYS_KWARGS = {"client_info", "input_required_max_rounds"}
+#: (#1111), the #1114 MRTR round bound (any modern tool call can enter that loop), and
+#: the #1115 SEP-2663 tasks extension (declared on every execution-path client; only a
+#: client class forbidding internal extensions omits it).
+_ALWAYS_KWARGS = {"client_info", "input_required_max_rounds", "extensions"}
 
 
 def test_make_mcp_client_no_handlers_stamps_identity_only() -> None:

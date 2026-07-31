@@ -148,17 +148,43 @@ async def _advertised_caps(
     return recorder.by_method["tools/call"][CLIENT_CAPS_KEY]
 
 
+def _capability_domains(caps: dict[str, Any]) -> dict[str, Any]:
+    """The capability DOMAINS advertised, without the extension declarations.
+
+    #1115 added the SEP-2663 tasks extension to every execution-path client, so
+    ``clientCapabilities`` now always carries an ``extensions`` key. That key is a
+    registry of declared extensions, not a capability domain the
+    :class:`MCPClientCapabilities` declaration models, so the per-domain assertions
+    below read the envelope with it split off — and assert on it separately in
+    :func:`test_capability_envelope_always_declares_the_tasks_extension`.
+    """
+
+    return {key: value for key, value in caps.items() if key != "extensions"}
+
+
 @pytest.mark.asyncio
 async def test_capability_envelope_no_declaration_is_empty() -> None:
-    """No declaration, no handler -> empty clientCapabilities (honest default today)."""
-    assert await _advertised_caps() == {}
+    """No declaration, no handler -> no capability DOMAIN advertised."""
+    assert _capability_domains(await _advertised_caps()) == {}
+
+
+@pytest.mark.asyncio
+async def test_capability_envelope_always_declares_the_tasks_extension() -> None:
+    """#1115: every execution-path client declares io.modelcontextprotocol/tasks.
+
+    The extension declaration is orthogonal to the elicitation DOMAIN declaration:
+    it rides the same ``clientCapabilities`` envelope but is what tells a
+    task-serving backend it may run a call as a background task.
+    """
+    caps = await _advertised_caps()
+    assert caps["extensions"] == {"io.modelcontextprotocol/tasks": {}}
 
 
 @pytest.mark.asyncio
 async def test_capability_envelope_declared_form_only_without_handler() -> None:
     """A form-only DECLARATION advertises form WITHOUT url and WITHOUT a live handler."""
     caps = await _advertised_caps(capabilities=MCPClientCapabilities(elicitation_form=True))
-    assert caps == {"elicitation": {"form": {}}}
+    assert _capability_domains(caps) == {"elicitation": {"form": {}}}
 
 
 @pytest.mark.asyncio
@@ -206,7 +232,9 @@ async def test_empty_declaration_pins_elicitation_absent_on_direct_client() -> N
         capabilities=MCPClientCapabilities(),  # explicit empty -> authoritative for elicitation
         handlers=MCPClientHandlers(elicitation=elicit),
     )
-    assert caps == {}  # the whole envelope, exactly — nothing else was wired here
+    # The whole envelope's DOMAINS, exactly — nothing else was wired here. (The
+    # #1115 tasks extension declaration is not a domain; see _capability_domains.)
+    assert _capability_domains(caps) == {}
 
 
 @pytest.mark.asyncio
