@@ -143,7 +143,7 @@ def test_transport_for():
     stdio = transport_for(spec_from_declaration("ndp", "sh -c true"))
     assert not isinstance(stdio, str)
     assert stdio.command == shutil.which("sh")
-    assert transport_for(spec_from_declaration("n", "https://h/mcp")) == "https://h/mcp"
+    assert str(transport_for(spec_from_declaration("n", "https://h/mcp")).url) == "https://h/mcp"
 
 
 def test_transport_for_stdio_cwd(tmp_path):
@@ -156,9 +156,8 @@ def test_transport_for_stdio_cwd(tmp_path):
     default = transport_for(spec_from_declaration("ndp", "sh -c true"))
     assert getattr(default, "cwd", None) is None
     # http ignores cwd entirely.
-    assert transport_for(spec_from_declaration("n", "https://h/mcp"), cwd=str(work)) == (
-        "https://h/mcp"
-    )
+    http = transport_for(spec_from_declaration("n", "https://h/mcp"), cwd=str(work))
+    assert str(http.url) == "https://h/mcp"
 
 
 def test_transport_for_resolves_relative_launcher_to_absolute(tmp_path):
@@ -285,6 +284,24 @@ def test_transport_from_spec_http_family_yield_streamable_http(kind: str) -> Non
 
     transport = transport_from_spec({"transport": kind, "url": "https://mcp.example.com/mcp"})
     assert isinstance(transport, StreamableHttpTransport)
+
+
+def test_transport_from_runtime_http_spec_passes_headers_to_transport() -> None:
+    """Runtime-dict HTTP headers reach the transport instead of disappearing."""
+    headers = {
+        "Authorization": "Bearer runtime-secret",
+        "X-Tenant": "science",
+    }
+
+    transport = transport_from_spec(
+        {
+            "transport": "http",
+            "url": "https://mcp.example.com/mcp",
+            "headers": headers,
+        }
+    )
+
+    assert transport.headers == headers
 
 
 def test_transport_from_spec_sse_yields_sse_transport() -> None:
