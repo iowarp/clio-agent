@@ -375,10 +375,10 @@ async def _call_enabled_external_mcp_tool(
     try:
         transport = transport_from_spec(spec)
         client_ctx = make_elicitation_client(app, transport, server_id, tool_name)
-    except MCPTransportError as exc:
-        raise RuntimeError(f"unknown stored MCP transport for {server_id}: {spec!r}") from exc
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"fastmcp Client unavailable: {exc!r}") from exc
+    except MCPTransportError:
+        raise RuntimeError(f"unknown stored MCP transport for {server_id}") from None
+    except Exception:  # noqa: BLE001
+        raise RuntimeError("fastmcp Client unavailable") from None
 
     tool_observer = getattr(app.state, "pending_tool_observer", None)
     if tool_observer is None:

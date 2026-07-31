@@ -68,7 +68,7 @@ from clio_agent.gact.routes.mcp_rows import (
 from clio_agent.gact.runtime.globals import _tool_session_context
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.execution import notify_tool_observer
-from clio_agent.tools.mcp_config import MCPTransportError, transport_from_spec
+from clio_agent.tools.mcp_config import MCPTransportError, redact_mcp_spec, transport_from_spec
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -193,7 +193,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "transport": info.get("transport", "unknown"),
                     "tools_count": len(info.get("tools") or []),
                     "tools": list(info.get("tools") or []),
-                    "spec": info.get("spec", {}),
+                    "spec": redact_mcp_spec(info.get("spec", {})),
                 }
             )
         try:
@@ -297,17 +297,17 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         try:
             from fastmcp import Client
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - safe exception type is returned
             raise HTTPException(
                 status_code=503,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
                         error="dependency_missing",
-                        message=f"fastmcp Client unavailable: {exc!r}",
+                        message=f"fastmcp Client unavailable (reason={type(exc).__name__})",
                         recoverable=False,
                     )
                 ).model_dump(exclude_none=True),
-            ) from exc
+            ) from None
 
         if transport_kind == "stdio":
             command = body.get("command")
@@ -394,7 +394,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     error=ErrorInfo(
                         error="upstream_unavailable",
                         message=f"MCP server probe failed: {connect_error}",
-                        details={"id": sid, "spec": spec},
+                        details={"id": sid, "spec": redact_mcp_spec(spec)},
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
@@ -406,7 +406,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             "transport": transport_kind,
             "tools_count": len(tool_names),
             "tools": tool_names,
-            "spec": spec,
+            "spec": redact_mcp_spec(spec),
         }
 
     @app.post("/v1/mcp/servers/{sid}/call")
@@ -523,7 +523,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                         error=ErrorInfo(
                             error="mcp_spec_invalid",
                             message=str(exc),
-                            details={"id": sid, "spec": spec},
+                            details={"id": sid, "spec": redact_mcp_spec(spec)},
                             recoverable=True,
                         )
                     ).model_dump(exclude_none=True),
@@ -534,11 +534,11 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     detail=ErrorEnvelope(
                         error=ErrorInfo(
                             error="dependency_missing",
-                            message=f"fastmcp Client unavailable: {exc!r}",
+                            message=f"fastmcp Client unavailable (reason={type(exc).__name__})",
                             recoverable=False,
                         )
                     ).model_dump(exclude_none=True),
-                ) from exc
+                ) from None
 
             # Fire tool observer manually so this call shows up in
             # tools_called + tool.call.* SSE events identically to an
@@ -652,17 +652,17 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         try:
             from fastmcp import Client
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - safe exception type is returned
             raise HTTPException(
                 status_code=503,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
                         error="dependency_missing",
-                        message=f"fastmcp Client unavailable: {exc!r}",
+                        message=f"fastmcp Client unavailable (reason={type(exc).__name__})",
                         recoverable=False,
                     )
                 ).model_dump(exclude_none=True),
-            ) from exc
+            ) from None
 
         # Validate the stored transport spec BEFORE touching the registry row
         # or attempting any connection. A malformed spec — stdio without a
@@ -680,7 +680,11 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     error=ErrorInfo(
                         error="mcp_spec_invalid",
                         message=message,
-                        details={"id": sid, "transport": transport_kind, "spec": spec},
+                        details={
+                            "id": sid,
+                            "transport": transport_kind,
+                            "spec": redact_mcp_spec(spec),
+                        },
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
@@ -745,11 +749,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     error=ErrorInfo(
                         error="mcp_reconnect_timeout",
                         message=timeout_msg,
-                        details={
-                            "id": sid,
-                            "spec": spec,
-                            "timeout_s": reconnect_timeout,
-                        },
+                        details={"id": sid, "timeout_s": reconnect_timeout},
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
@@ -785,7 +785,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     error=ErrorInfo(
                         error="upstream_unavailable",
                         message=f"MCP server reconnect failed: {connect_error}",
-                        details={"id": sid, "spec": spec},
+                        details={"id": sid, "spec": redact_mcp_spec(spec)},
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
@@ -811,7 +811,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             "transport": info.get("transport", ""),
             "tools_count": len(tool_names),
             "tools": tool_names,
-            "spec": spec,
+            "spec": redact_mcp_spec(spec),
         }
 
     @app.get("/v1/mcp/servers/{sid}")
@@ -863,17 +863,17 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             from fastmcp import Client
 
             from clio_agent.tools.mcp_runtime import make_mcp_client
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - safe exception type is returned
             raise HTTPException(
                 status_code=503,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
                         error="dependency_missing",
-                        message=f"fastmcp Client unavailable: {exc!r}",
+                        message=f"fastmcp Client unavailable (reason={type(exc).__name__})",
                         recoverable=False,
                     )
                 ).model_dump(exclude_none=True),
-            ) from exc
+            ) from None
         spec = info.get("spec", {})
         try:
             transport = transport_from_spec(spec)
@@ -884,7 +884,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     error=ErrorInfo(
                         error="mcp_spec_invalid",
                         message=str(exc),
-                        details={"id": sid, "spec": spec},
+                        details={"id": sid, "spec": redact_mcp_spec(spec)},
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),

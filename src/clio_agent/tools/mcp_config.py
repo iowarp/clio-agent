@@ -12,8 +12,8 @@ declares the servers it needs right in its ``AGENT.md`` frontmatter, as a simple
 
 The value is either a **command string** (shlex-split into command + args; stdio)
 or an **http(s) URL**. ``${VAR}`` / ``${VAR:-default}`` expansion is supported.
-For the rare case that needs env vars or headers, a mapping value is also
-accepted (``{command, args, env}`` or ``{url, headers}``), but the string form is
+For the rare case that needs env vars, headers, or OAuth, a mapping value is
+also accepted (``{command, args, env}`` or ``{url, headers, auth}``), but the string form is
 the documented, default surface.
 
 Scopes (highest precedence wins, merged by name): workspace
@@ -31,14 +31,19 @@ import re
 import shlex
 import shutil
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import yaml
 
+if TYPE_CHECKING:
+    from mcp.client.auth.oauth2 import TokenStorage
+    from mcp.shared.auth import AuthorizationCodeResult, OAuthClientMetadata
+
 __all__ = [
+    "MCPAuthConfig",
     "MCPServerSpec",
     "MCPConfigError",
     "MCPSpawnError",
@@ -50,6 +55,7 @@ __all__ = [
     "load_mcp_servers",
     "transport_for",
     "transport_from_spec",
+    "redact_mcp_spec",
     "MCPTransportError",
 ]
 
@@ -115,6 +121,27 @@ class MCPSpawnError(RuntimeError):
     """
 
 
+@dataclass(frozen=True, repr=False)
+class MCPAuthConfig:
+    """Typed OAuth block for a remote MCP server.
+
+    ``client_metadata`` and ``storage`` are the installed MCP SDK's
+    :class:`OAuthClientMetadata` and :class:`TokenStorage` contracts. Callback
+    handlers are optional so a storage backend with a refresh token can operate
+    unattended; an initial authorization-code grant requires both handlers.
+    """
+
+    client_metadata: OAuthClientMetadata | Mapping[str, Any]
+    storage: TokenStorage | None = None
+    redirect_handler: Callable[[str], Awaitable[None]] | None = None
+    callback_handler: Callable[[], Awaitable[AuthorizationCodeResult]] | None = None
+    client_metadata_url: str | None = None
+
+    def __repr__(self) -> str:
+        """Return a representation that can never disclose OAuth credentials."""
+        return "MCPAuthConfig(<redacted>)"
+
+
 @dataclass(frozen=True)
 class MCPServerSpec:
     """A normalized, transport-agnostic MCP server declaration."""
@@ -125,7 +152,8 @@ class MCPServerSpec:
     args: tuple[str, ...] = ()
     env: Mapping[str, str] = field(default_factory=dict)
     url: str = ""
-    headers: Mapping[str, str] = field(default_factory=dict)
+    headers: Mapping[str, str] = field(default_factory=dict, repr=False)
+    auth: MCPAuthConfig | None = field(default=None, repr=False)
     always_load: bool = False
     timeout_ms: int | None = None
     source: str = ""
@@ -161,6 +189,76 @@ def _expand_map(values: Mapping[str, Any], *, env: Mapping[str, str] | None) -> 
     return {str(k): expand_env(str(v), env=env) for k, v in values.items()}
 
 
+_OAUTH_AUTH_FIELDS = frozenset(
+    {
+        "type",
+        "client_metadata",
+        "storage",
+        "redirect_handler",
+        "callback_handler",
+        "client_metadata_url",
+    }
+)
+
+
+def _oauth_config_from_value(value: Any) -> MCPAuthConfig | None:
+    """Normalize a typed/runtime OAuth block without echoing credential values."""
+    if value is None:
+        return None
+    if isinstance(value, MCPAuthConfig):
+        return value
+    if not isinstance(value, Mapping):
+        raise MCPTransportError("MCP HTTP 'auth' must be a typed OAuth block or mapping")
+    unexpected = sorted(str(key) for key in value if key not in _OAUTH_AUTH_FIELDS)
+    if unexpected:
+        raise MCPTransportError(f"unsupported MCP OAuth field(s): {', '.join(unexpected)}")
+    if str(value.get("type") or "").strip().lower() != "oauth":
+        raise MCPTransportError("MCP HTTP auth block requires type='oauth'")
+    metadata = value.get("client_metadata")
+    if metadata is None:
+        raise MCPTransportError("MCP OAuth auth block requires 'client_metadata'")
+    storage = value.get("storage")
+    if storage is not None and not all(
+        callable(getattr(storage, method, None))
+        for method in ("get_tokens", "set_tokens", "get_client_info", "set_client_info")
+    ):
+        raise MCPTransportError("MCP OAuth 'storage' must implement the SDK TokenStorage protocol")
+    redirect_handler = value.get("redirect_handler")
+    if redirect_handler is not None and not callable(redirect_handler):
+        raise MCPTransportError("MCP OAuth 'redirect_handler' must be callable")
+    callback_handler = value.get("callback_handler")
+    if callback_handler is not None and not callable(callback_handler):
+        raise MCPTransportError("MCP OAuth 'callback_handler' must be callable")
+    client_metadata_url = value.get("client_metadata_url")
+    if client_metadata_url is not None and not isinstance(client_metadata_url, str):
+        raise MCPTransportError("MCP OAuth 'client_metadata_url' must be a string")
+    return MCPAuthConfig(
+        client_metadata=metadata,
+        storage=storage,
+        redirect_handler=cast("Callable[[str], Awaitable[None]] | None", redirect_handler),
+        callback_handler=cast(
+            "Callable[[], Awaitable[AuthorizationCodeResult]] | None", callback_handler
+        ),
+        client_metadata_url=client_metadata_url,
+    )
+
+
+def redact_mcp_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
+    """Return an error/log-safe MCP spec with all client credentials removed."""
+    redacted = dict(spec)
+    headers = redacted.get("headers")
+    if isinstance(headers, Mapping):
+        redacted["headers"] = {str(key): "<redacted>" for key in headers}
+    if redacted.get("auth") is not None:
+        redacted["auth"] = "<redacted>"
+    # env values are the common credential carrier for stdio servers
+    # (GITHUB_TOKEN, API keys); redact values, keep the variable names.
+    env = redacted.get("env")
+    if isinstance(env, Mapping):
+        redacted["env"] = {str(key): "<redacted>" for key in env}
+    return redacted
+
+
 def _spec_from_string(
     name: str, value: str, *, source: str, env: Mapping[str, str] | None
 ) -> MCPServerSpec:
@@ -194,7 +292,7 @@ def _spec_from_string(
 def _spec_from_mapping(
     name: str, entry: Mapping[str, Any], *, source: str, env: Mapping[str, str] | None
 ) -> MCPServerSpec:
-    """Advanced form (only when env/headers/timeout are needed)."""
+    """Advanced form (only when env/headers/auth/timeout are needed)."""
     errors: list[str] = []
     declared = str(entry.get("type") or "").strip().lower()
     has_command = bool(entry.get("command"))
@@ -211,6 +309,7 @@ def _spec_from_mapping(
     env_map: dict[str, str] = {}
     url = ""
     headers: dict[str, str] = {}
+    auth: MCPAuthConfig | None = None
     try:
         if transport == "stdio":
             command = expand_env(str(entry.get("command", "")), env=env).strip()
@@ -237,6 +336,10 @@ def _spec_from_mapping(
                 errors.append("'headers' must be a mapping")
                 raw_headers = {}
             headers = _expand_map(raw_headers, env=env)
+            try:
+                auth = _oauth_config_from_value(entry.get("auth"))
+            except MCPTransportError as exc:
+                errors.append(str(exc))
     except MCPConfigError as exc:
         errors.append(str(exc))
 
@@ -255,6 +358,7 @@ def _spec_from_mapping(
         env=env_map,
         url=url,
         headers=headers,
+        auth=auth,
         always_load=bool(entry.get("alwaysLoad") or entry.get("always_load") or False),
         timeout_ms=timeout_ms,
         source=source,
@@ -526,7 +630,16 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             cwd=cwd,
             **confined.popen_kwargs,
         )
-    return spec.url
+
+    from fastmcp.client.transports import StreamableHttpTransport  # noqa: PLC0415
+
+    from clio_agent.tools.mcp_runtime import _oauth_provider_from_config  # noqa: PLC0415
+
+    return StreamableHttpTransport(
+        url=spec.url,
+        headers=dict(spec.headers),
+        auth=_oauth_provider_from_config(spec.url, spec.auth),
+    )
 
 
 # The single canonical accepted transport set for raw dict specs. Every
@@ -541,10 +654,35 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
 _STREAMABLE_HTTP_TRANSPORTS = frozenset({"http", "streamable-http"})
 _HTTP_TRANSPORTS = _STREAMABLE_HTTP_TRANSPORTS | frozenset({"sse"})
 _CANONICAL_TRANSPORTS = frozenset({"stdio"}) | _HTTP_TRANSPORTS
+_HTTP_SPEC_FIELDS = frozenset({"transport", "url", "headers", "auth"})
+
+
+def _runtime_http_headers(value: Any) -> dict[str, str]:
+    """Validate runtime HTTP headers without stringifying invalid credential data."""
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise MCPTransportError("MCP HTTP 'headers' must be a mapping of strings")
+    if not all(isinstance(key, str) and isinstance(item, str) for key, item in value.items()):
+        raise MCPTransportError("MCP HTTP 'headers' keys and values must be strings")
+    return dict(value)
+
+
+def _runtime_http_credentials(spec: Mapping[str, Any], url: str) -> tuple[dict[str, str], Any]:
+    """Resolve every supported runtime HTTP credential field, rejecting the rest."""
+    unexpected = sorted(str(key) for key in spec if key not in _HTTP_SPEC_FIELDS)
+    if unexpected:
+        raise MCPTransportError(f"unsupported MCP HTTP field(s): {', '.join(unexpected)}")
+    headers = _runtime_http_headers(spec.get("headers"))
+    auth_config = _oauth_config_from_value(spec.get("auth"))
+
+    from clio_agent.tools.mcp_runtime import _oauth_provider_from_config  # noqa: PLC0415
+
+    return headers, _oauth_provider_from_config(url, auth_config)
 
 
 def transport_from_spec(spec: Mapping[str, Any]) -> Any:
-    """Turn a raw ``{transport, command, args, url, env}`` dict into a FastMCP transport.
+    """Turn a raw MCP runtime dict into a validated FastMCP transport.
 
     This is the ONE construction site for the runtime third-party MCP surface —
     the REST-installed servers and agent-blueprint MCP descriptors stored on
@@ -555,7 +693,7 @@ def transport_from_spec(spec: Mapping[str, Any]) -> Any:
 
     Accepted ``transport`` values are the single canonical set
     ``{stdio, http, streamable-http, sse}``. ``http``/``streamable-http`` connect
-    via ``StreamableHttpTransport(url)``; ``sse`` is a DISTINCT FastMCP wire
+    via ``StreamableHttpTransport(url, headers, auth)``; ``sse`` is a DISTINCT FastMCP wire
     protocol and connects via ``SSETransport(url)`` — the same class FastMCP's own
     ``infer_transport`` selects for an ``/sse`` URL, so a real SSE MCP server's
     tools are actually reachable. ``stdio`` spawns a subprocess whose command is
@@ -566,8 +704,8 @@ def transport_from_spec(spec: Mapping[str, Any]) -> Any:
 
     Args:
         spec: The stored dict spec. ``transport`` selects the branch; ``command``
-            (+ optional ``args``/``env``) drives stdio; ``url`` drives the http
-            family.
+            (+ optional ``args``/``env``) drives stdio; ``url`` plus optional
+            validated ``headers``/``auth`` drives the HTTP family.
 
     Returns:
         A ``fastmcp`` ``ClientTransport`` (``StdioTransport``,
@@ -619,12 +757,14 @@ def transport_from_spec(spec: Mapping[str, Any]) -> Any:
         url = str(spec.get("url") or "").strip()
         if not url:
             raise MCPTransportError(f"{transport_kind} MCP transport spec requires a 'url'")
+        headers, auth = _runtime_http_credentials(spec, url)
         # SSE and Streamable-HTTP are distinct wire protocols in FastMCP; route
         # each to its own transport class (matching ``infer_transport``) so the
-        # server's tools are actually reachable.
+        # server's tools are actually reachable. Both receive the exact same
+        # validated credential surface.
         if transport_kind == "sse":
-            return SSETransport(url=url)
-        return StreamableHttpTransport(url=url)
+            return SSETransport(url=url, headers=headers, auth=auth)
+        return StreamableHttpTransport(url=url, headers=headers, auth=auth)
     raise MCPTransportError(
         f"unknown MCP transport {transport_kind!r} "
         f"(expected one of {sorted(_CANONICAL_TRANSPORTS)})"
