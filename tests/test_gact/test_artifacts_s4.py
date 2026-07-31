@@ -14,6 +14,7 @@ assertion red, proving the test binds the invariant (not a tautology).
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
 import time
@@ -650,9 +651,13 @@ def test_single_version_decision_point_no_number_assignment_elsewhere():
     # Sabotage: assign a version number in registry.mint or minting (a second
     # decision point) -> another file appears here -> the single-point lock goes red.
     assert set(call_sites) == {"versions.py"}, call_sites
-    # And the arithmetic helper is DEFINED once, in the record model.
-    defs = [p.name for p in src.rglob("*.py") if "def next_version_number" in p.read_text("utf-8")]
-    assert defs == ["records.py"]
+    # And the arithmetic helper is defined on the canonical extracted model.
+    helper_source = inspect.getsource(ArtifactRecord.next_version_number)
+    helper_file = inspect.getsourcefile(ArtifactRecord.next_version_number)
+    assert helper_file is not None and helper_file.replace("\\", "/").endswith(
+        "clio_schemas/models.py"
+    )
+    assert "def next_version_number" in helper_source
 
 
 def test_no_inline_version_number_arithmetic_outside_the_helper():
@@ -661,7 +666,7 @@ def test_no_inline_version_number_arithmetic_outside_the_helper():
     ``next_version_number`` being the only *named* call site does not stop a second
     decision point from computing ``head.version + 1`` / ``max(v.version…) + 1`` /
     ``len(versions) + 1`` inline. Scan the concrete inline forms across ``src`` and
-    allow-list only the ONE legitimate producer — ``records.py``'s
+    allow-list only the ONE legitimate producer — ``clio_schemas.models``'s
     ``next_version_number`` (``self.head.version + 1``). Any other file that grows a
     version number by arithmetic turns this red.
     """
@@ -679,10 +684,12 @@ def test_no_inline_version_number_arithmetic_outside_the_helper():
         hits = [m.group(0) for pat in patterns for m in pat.finditer(text)]
         if hits:
             offenders[py.name] = hits
-    # Allow-list: the sole arithmetic producer is records.next_version_number.
-    assert set(offenders) == {"records.py"}, offenders
-    # And that single legitimate site is exactly the helper's ``head.version + 1``.
-    assert offenders["records.py"] == [".version + 1"], offenders["records.py"]
+    # No clio-agent module owns the arithmetic after extraction.
+    assert offenders == {}, offenders
+    # The canonical helper remains the sole legitimate ``head.version + 1`` site.
+    helper_source = inspect.getsource(ArtifactRecord.next_version_number)
+    helper_hits = [m.group(0) for pattern in patterns for m in pattern.finditer(helper_source)]
+    assert helper_hits == [".version + 1"], helper_hits
 
 
 # --------------------------------------------------------------------------- #

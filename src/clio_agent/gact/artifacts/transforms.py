@@ -33,7 +33,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from clio_schemas import TransformRecord
 
 from clio_agent import conf
 from clio_agent.gact.artifacts.environment import (
@@ -98,102 +98,6 @@ def instrument_total_max_bytes() -> int:
         default=_DEFAULT_INSTRUMENT_TOTAL_MAX_BYTES,
         cast=conf.as_int,
     )
-
-
-class TransformRecord(BaseModel):
-    """One coarse transform keyed by the observer ``call_id`` (owner decision #966.6).
-
-    Immutable value: the harness builds it; the model is never load-bearing (its
-    intent is quarantined in ``annotation``). ``environment`` stamps the tiered
-    identity; ``replay`` stamps the permanent guarantee derived from the tier and
-    the used-edge pinning.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    #: THE key — the tool observer's ``call_id`` (the activity id).
-    call_id: str
-    event_id: str = ""
-    session_id: str = ""
-    turn_id: str = ""
-    workspace_id: str = ""
-    status: TransformStatus = TransformStatus.SUCCESS
-    kind: TransformKind = TransformKind.ORDINARY
-    agent_role: AgentRole = AgentRole.EXECUTING
-    agent_id: str = ""
-    instrument: Instrument = Field(default_factory=Instrument)
-    environment: EnvironmentRecord = Field(default_factory=EnvironmentRecord)
-    replay: ReplayContract = ReplayContract.RE_RUNNABLE
-    replay_reason: str = ""
-    used: list[ProvEdge] = Field(default_factory=list)
-    generated: list[ProvEdge] = Field(default_factory=list)
-    started_at: str = ""
-    ended_at: str = ""
-    #: Model-provided intent (untrusted, quarantined — never merged into evidence).
-    annotation: str = ""
-    #: The contended candidate set (other active session ids on the workspace).
-    candidates: list[str] = Field(default_factory=list)
-    #: Typed notes for DETECTABLE non-edges (precision over recall, #966.10): a
-    #: freshly-written output under a non-designation arg (``unminted_output_candidate``,
-    #: finding [1]), a path-looking arg that never resolved (``unresolved_path_arg``,
-    #: finding [4]), a discovery search whose hits were listed not consumed
-    #: (``catalog_hits_not_consumed``, finding [2]). Each ``{reason, ...}``.
-    notes: list[dict[str, Any]] = Field(default_factory=list)
-
-    def to_payload(self) -> dict[str, Any]:
-        """The durable ``artifact.transform.recorded`` payload (fold source of truth)."""
-        return {
-            "event_id": self.event_id,
-            "call_id": self.call_id,
-            "session_id": self.session_id,
-            "turn_id": self.turn_id,
-            "workspace_id": self.workspace_id,
-            "status": self.status.value,
-            "kind": self.kind.value,
-            "agent_role": self.agent_role.value,
-            "agent_id": self.agent_id,
-            "instrument": self.instrument.model_dump(),
-            "environment": self.environment.model_dump(),
-            "replay": self.replay.value,
-            "replay_reason": self.replay_reason,
-            "used": [e.model_dump() for e in self.used],
-            "generated": [e.model_dump() for e in self.generated],
-            "started_at": self.started_at,
-            "ended_at": self.ended_at,
-            "annotation": self.annotation,
-            "candidates": list(self.candidates),
-            "notes": [dict(n) for n in self.notes],
-        }
-
-    def to_relay_provenance(self) -> dict[str, Any]:
-        """The extras block that rides relay ``ArtifactRef.metadata['clio.provenance.v1']``.
-
-        Relay's ``ArtifactUse`` is frozen + ``extra='forbid'`` with no metadata
-        field, so our mechanism/evidence/environment extras cannot ride the edge
-        itself — they ride the producing artifact's ``ArtifactRef.metadata`` under
-        this versioned key until relay's schema converges (the S5 convergence
-        issue). ``used_artifact_refs`` is the list of relay ``ArtifactUse`` dicts
-        for the hash-pinned used edges (the shape relay lands unchanged).
-        """
-        return {
-            "activity_id": self.call_id,
-            "instrument": self.instrument.model_dump(),
-            "environment": self.environment.model_dump(),
-            "replay": self.replay.value,
-            "used_evidence": [
-                {
-                    "artifact_id": e.artifact_id,
-                    "external_ref": e.external_ref,
-                    "authority": e.authority,
-                    "evidence": e.evidence.value,
-                    "note": e.note,
-                }
-                for e in self.used
-            ],
-            "used_artifact_refs": [
-                use for e in self.used if (use := e.to_artifact_use()) is not None
-            ],
-        }
 
 
 def transform_from_payload(payload: dict[str, Any]) -> Optional[TransformRecord]:
