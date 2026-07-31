@@ -19,15 +19,8 @@ from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
 
-from mcp.client._input_required import InputRequiredRoundsExceededError
-from mcp.shared.exceptions import MCPError
-
-from clio_agent.errors import (
-    MCPMissingRequiredClientCapabilityError,
-    MCPProtocolError,
-    MCPUnsupportedProtocolVersionError,
-)
 from clio_agent.tools import spawn_diet
+from clio_agent.tools.mcp_errors import typed_mcp_call_error, typed_mcp_protocol_error
 from clio_agent.tools.mcp_runtime import make_mcp_client
 
 logger = logging.getLogger(__name__)
@@ -83,17 +76,9 @@ REPEATED_TRANSIENT_FAILURE_LIMIT = 2
 SYNC_TOOL_RESULT_GRACE_SECONDS = 1.0
 
 
-def _typed_mcp_protocol_error(error: Exception) -> MCPProtocolError | None:
-    """Map supported MCP JSON-RPC refusal codes without inspecting message text."""
-
-    if not isinstance(error, MCPError):
-        return None
-    mcp_error = cast(MCPError, error)
-    if mcp_error.code == -32021:
-        return MCPMissingRequiredClientCapabilityError(mcp_error.message, mcp_error.data)
-    if mcp_error.code == -32022:
-        return MCPUnsupportedProtocolVersionError(mcp_error.message, mcp_error.data)
-    return None
+#: Backwards-compatible alias: the protocol-refusal mapping now lives in the shared
+#: :mod:`clio_agent.tools.mcp_errors` seam every direct call path applies (#1114).
+_typed_mcp_protocol_error = typed_mcp_protocol_error
 
 
 @dataclass(frozen=True)
@@ -368,23 +353,12 @@ class AsyncMCPToolExecutor:
                 if not self._tool_timeout_is_retry_safe(name):
                     raise self.mark_uncertain_mutating_timeout(name, args, timeout) from exc
                 raise TimeoutError(f"MCP tool {name!r} timed out after {timeout:g}s") from exc
-            except InputRequiredRoundsExceededError as exc:
-                # #1114: the MRTR loop hit its config-resolved round bound. Surface the
-                # typed CLIO degrade (advertised x_clio_stream_fallback_reasons reason)
-                # instead of the raw SDK exception, so the model sees a typed tool error.
-                from clio_agent.errors import (  # noqa: PLC0415
-                    MCPInputRequiredRoundsExceededError,
-                )
-
-                if first_call and namespace is not None:
-                    spawn_diet.spawn_failed(namespace)
-                raise MCPInputRequiredRoundsExceededError(
-                    getattr(exc, "max_rounds", 0), tool=name
-                ) from exc
             except Exception as exc:
                 if first_call and namespace is not None:
                     spawn_diet.spawn_failed(namespace)
-                typed_error = _typed_mcp_protocol_error(exc)
+                # #1114: the ONE shared boundary translation (MRTR exhaustion +
+                # protocol refusals) every direct call path applies.
+                typed_error = typed_mcp_call_error(exc, tool=name)
                 if typed_error is not None:
                     raise typed_error from exc
                 raise

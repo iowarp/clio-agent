@@ -250,13 +250,30 @@ def input_required_max_rounds() -> int:
     from mcp.client._input_required import DEFAULT_INPUT_REQUIRED_MAX_ROUNDS  # noqa: PLC0415
 
     from clio_agent import conf  # noqa: PLC0415
+    from clio_agent.errors import ConfigError  # noqa: PLC0415
 
-    return conf.resolve(
+    rounds = conf.resolve(
         "tools.mcp.input_required_max_rounds",
         env="CLIO_MCP_INPUT_REQUIRED_MAX_ROUNDS",
         default=DEFAULT_INPUT_REQUIRED_MAX_ROUNDS,
         cast=conf.as_int,
     )
+    if rounds < 1:
+        # A bound below 1 makes the SDK driver report exhaustion BEFORE dispatching the
+        # first input request: ONE legitimate modern-era input request would be
+        # misreported as server non-termination, silently disabling HITL. Reject the
+        # config at client construction rather than degrade at call time.
+        raise ConfigError(
+            f"tools.mcp.input_required_max_rounds must be >= 1, got {rounds}: a bound "
+            "below 1 disables server-initiated input (MRTR) instead of bounding it.",
+            details={
+                "key": "tools.mcp.input_required_max_rounds",
+                "env": "CLIO_MCP_INPUT_REQUIRED_MAX_ROUNDS",
+                "value": rounds,
+                "minimum": 1,
+            },
+        )
+    return rounds
 
 
 def clio_client_info() -> Any:

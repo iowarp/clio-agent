@@ -69,6 +69,7 @@ from clio_agent.gact.runtime.globals import _tool_session_context
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.execution import notify_tool_observer
 from clio_agent.tools.mcp_config import MCPTransportError, redact_mcp_spec, transport_from_spec
+from clio_agent.tools.mcp_errors import typed_mcp_call_error
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -558,20 +559,23 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                             "text": getattr(c, "text", str(c)),
                         }
                     )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as raw_exc:  # noqa: BLE001
+                # #1114: typed translation first — no raw SDK class/message on the wire.
+                surfaced = typed_mcp_call_error(raw_exc, tool=tool_name) or raw_exc
                 notify_tool_observer(
-                    tool_observer, observer_name, tool_args, "completed", error=repr(exc)
+                    tool_observer, observer_name, tool_args, "completed", error=repr(surfaced)
                 )
                 raise HTTPException(
                     status_code=502,
                     detail=ErrorEnvelope(
                         error=ErrorInfo(
                             error="upstream_error",
-                            message=f"tool call failed: {exc!r}",
+                            message=f"tool call failed: {surfaced}",
+                            details=getattr(surfaced, "details", None) or {},
                             recoverable=True,
                         )
                     ).model_dump(exclude_none=True),
-                ) from exc
+                ) from raw_exc
             tool_result_text = "\n".join(str(item.get("text", item)) for item in content)
             if not tool_result_text:
                 data = getattr(result, "data", None)
@@ -664,12 +668,10 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             ) from None
 
-        # Validate the stored transport spec BEFORE touching the registry row
-        # or attempting any connection. A malformed spec — stdio without a
-        # command, http/sse without a url, or an unknown transport — is a
-        # client-actionable 4xx (mcp_spec_invalid), not an unhandled internal
-        # exception. Short-circuit so the registry row is never left
-        # half-updated by a spec we could never have reconnected anyway.
+        # Validate the stored transport spec BEFORE touching the registry row or
+        # attempting any connection: a malformed spec (stdio without a command,
+        # http/sse without a url, unknown transport) is a client-actionable 4xx
+        # (mcp_spec_invalid), so the row is never left half-updated.
         spec = info.get("spec") or {}
         transport_kind = str(spec.get("transport") or "").lower()
 
@@ -833,10 +835,8 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
 
     # ---- /v1/mcp/servers/{sid}/(tools|resources|prompts) ----------------
-    # Detail enumeration for the TUI MCP browser. Bundled servers are
-    # introspected via the in-process gateway; external servers via a
-    # short-lived fastmcp.Client connection (same transport spec used at
-    # install time).
+    # Detail enumeration for the TUI MCP browser: bundled servers introspect via the
+    # in-process gateway, external servers via a short-lived fastmcp.Client connection.
 
     async def _external_mcp_inventory(
         sid: str,

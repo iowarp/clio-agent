@@ -215,3 +215,142 @@ def test_mrtr_round_bound_reason_is_advertised() -> None:
     from clio_agent.gact.runtime.capabilities import _STREAM_FALLBACK_REASON_DEFINITIONS
 
     assert MCP_INPUT_REQUIRED_ROUNDS_EXCEEDED in _STREAM_FALLBACK_REASON_DEFINITIONS
+
+
+# ---------------------------------------------------------------------------
+# Finding 1 — the typed translation applies at EVERY direct call_tool boundary,
+# not only inside AsyncMCPToolExecutor.
+# ---------------------------------------------------------------------------
+
+_SDK_LEAK_MARKERS = ("InputRequiredRoundsExceededError", "input_required_max_rounds on the Client")
+
+
+def test_typed_mcp_call_error_maps_sdk_exhaustion() -> None:
+    """The shared boundary helper maps the raw SDK error to CLIO's typed degrade."""
+
+    from mcp.client._input_required import InputRequiredRoundsExceededError
+
+    from clio_agent.errors import (
+        MCP_INPUT_REQUIRED_ROUNDS_EXCEEDED,
+        MCPInputRequiredRoundsExceededError,
+    )
+    from clio_agent.tools.mcp_errors import typed_mcp_call_error
+
+    typed = typed_mcp_call_error(InputRequiredRoundsExceededError(4), tool="t")
+
+    assert isinstance(typed, MCPInputRequiredRoundsExceededError)
+    assert typed.reason == MCP_INPUT_REQUIRED_ROUNDS_EXCEEDED
+    assert typed.max_rounds == 4
+    assert typed_mcp_call_error(ValueError("unrelated")) is None
+
+
+def test_rest_per_call_route_surfaces_typed_reason_not_sdk_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """POST /v1/mcp/servers/{id}/call: an exhausted MRTR call returns the TYPED reason
+    and never the SDK class/message (finding 1)."""
+
+    from fastapi.testclient import TestClient
+
+    from clio_agent.errors import MCP_INPUT_REQUIRED_ROUNDS_EXCEEDED
+    from clio_agent.gact.app import build_app
+
+    monkeypatch.setenv("CLIO_MCP_INPUT_REQUIRED_MAX_ROUNDS", "2")
+    import clio_agent.conf as conf
+
+    conf.reload()
+    try:
+        monkeypatch.setattr(
+            "clio_agent.gact.routes.mcp.transport_from_spec",
+            lambda spec: _never_terminating_backend(),
+        )
+        monkeypatch.setattr(
+            "clio_agent.tools.mcp_runtime.make_mcp_client",
+            lambda target, **kw: _auto_accept_factory(target),
+        )
+        app = build_app(sessions_path=tmp_path / "s.json")
+        app.state.external_mcp_servers = {
+            "srv": {"name": "ext", "spec": {"transport": "stdio", "command": "x"}}
+        }
+        app.state.pending_permission_gate = lambda name, args: "allow"
+        app.state.pending_tool_observer = lambda *a, **k: None
+
+        client = TestClient(app)
+        resp = client.post("/v1/mcp/servers/srv/call", json={"tool": "never_done", "args": {}})
+
+        assert resp.status_code == 502, resp.text
+        body = resp.text
+        error = resp.json()["error"]
+        assert error["details"]["reason"] == MCP_INPUT_REQUIRED_ROUNDS_EXCEEDED
+        for marker in _SDK_LEAK_MARKERS:
+            assert marker not in body, f"SDK detail leaked to the wire: {marker}"
+    finally:
+        conf.reload()
+
+
+def test_dynamic_agent_path_raises_typed_error_not_sdk_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """The dynamic-agent external tool call raises the TYPED error into the model path,
+    never the raw SDK exception (finding 1)."""
+
+    from clio_agent.errors import (
+        MCP_INPUT_REQUIRED_ROUNDS_EXCEEDED,
+        MCPInputRequiredRoundsExceededError,
+    )
+    from clio_agent.gact.agents import builders
+    from clio_agent.gact.app import build_app
+
+    monkeypatch.setenv("CLIO_MCP_INPUT_REQUIRED_MAX_ROUNDS", "2")
+    import clio_agent.conf as conf
+
+    conf.reload()
+    try:
+        backend = _never_terminating_backend()
+        monkeypatch.setattr("clio_agent.tools.mcp_config.transport_from_spec", lambda spec: backend)
+        monkeypatch.setattr(
+            "clio_agent.gact.elicitation_bridge.make_elicitation_client",
+            lambda app, transport, *a, **kw: _auto_accept_factory(transport),
+        )
+        app = build_app(sessions_path=tmp_path / "s.json")
+        app.state.pending_permission_gate = lambda name, args: "allow"
+        app.state.pending_tool_observer = lambda *a, **k: None
+        info = {"name": "ext", "spec": {"transport": "stdio", "command": "x"}}
+
+        with pytest.raises(MCPInputRequiredRoundsExceededError) as excinfo:
+            asyncio.run(
+                builders._call_enabled_external_mcp_tool(app, "srv", info, "never_done", {})
+            )
+        assert excinfo.value.reason == MCP_INPUT_REQUIRED_ROUNDS_EXCEEDED
+        for marker in _SDK_LEAK_MARKERS:
+            assert marker not in str(excinfo.value), f"SDK detail leaked: {marker}"
+    finally:
+        conf.reload()
+
+
+# ---------------------------------------------------------------------------
+# Finding 2 — a round bound below 1 is a TYPED configuration error, rejected
+# before client construction (it would disable HITL, not bound it).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", ["0", "-3"])
+def test_round_bound_below_one_is_a_typed_config_error(
+    monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    import clio_agent.conf as conf
+    from clio_agent.errors import ConfigError
+    from clio_agent.tools.mcp_runtime import input_required_max_rounds
+
+    monkeypatch.setenv("CLIO_MCP_INPUT_REQUIRED_MAX_ROUNDS", bad)
+    conf.reload()
+    try:
+        with pytest.raises(ConfigError) as excinfo:
+            input_required_max_rounds()
+        assert excinfo.value.details["value"] == int(bad)
+        assert excinfo.value.details["minimum"] == 1
+        # ...and the factory refuses to build a client with that config.
+        with pytest.raises(ConfigError):
+            make_mcp_client("t", client_cls=lambda target, **kw: object())
+    finally:
+        conf.reload()
