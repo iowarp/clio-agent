@@ -156,8 +156,11 @@ class MCPClientHandlers:
     populate. ``make_mcp_client`` wraps a populated hook in a signature adapter
     and hands it to the matching ``fastmcp.Client`` keyword; ``message`` becomes
     a :class:`MessageMultiplexer` that forwards to the CLIO hook. FastMCP 4
-    handles task notifications through client extensions. ``cancellation`` has
-    no fastmcp ``Client`` keyword today — held as a slot for P1.
+    handles task notifications through client extensions. Cancellation is an
+    outbound call-lifecycle operation, not a ``Client`` callback keyword: #1116
+    cancels the active ``call_tool`` task so MCP's dispatcher emits the protocol
+    request id it allocated. The ``cancellation`` hook remains reserved for a
+    future server-originated cancellation policy.
 
     IMPORTANT: no hook may actually be *wired* until correlation-by-protocol-
     identity lands (clio-agent#1111/#1113). See the ``mcp_handlers`` module

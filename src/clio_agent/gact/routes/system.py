@@ -486,7 +486,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 integration_health=True,  # /v1/health above carries it
                 tool_telemetry=True,  # BBB18 — tool.call.started/completed events
                 x_clio_cancellation="best_effort",
-                x_clio_executor_cancellation=False,
+                x_clio_executor_cancellation=True,  # #1116 — MCP request task -> wire cancel
                 x_clio_text_streaming="best_effort_live",
                 x_clio_synthetic_posthoc_streaming=False,
                 x_clio_stream_fallback_reasons=_stream_fallback_reason_capabilities(),

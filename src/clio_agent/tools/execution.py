@@ -21,8 +21,9 @@ from typing import Any, Iterator, Optional, Protocol
 import dspy
 
 from clio_agent import conf
-from clio_agent.errors import CancellationError, ClioError
+from clio_agent.errors import ClioError
 from clio_agent.runtime.stream_audit import stream_audit
+from clio_agent.tools import foreground_cancellation as foreground_cancel
 from clio_agent.tools.file_policy import FileAccessPolicy
 from clio_agent.tools.mcp_executor import (
     AsyncMCPToolExecutor,
@@ -668,15 +669,7 @@ class SyncMCPToolExecutor:
 
         def raise_if_cancelled(stage: str) -> None:
             if cancellation_checker is not None and cancellation_checker():
-                raise CancellationError(
-                    "tool call cancelled by client",
-                    details={
-                        "tool": name,
-                        "execution_cancellation": "cooperative",
-                        "executor_work_may_continue": False,
-                        "stage": stage,
-                    },
-                )
+                raise foreground_cancel._tool_cancellation_error(name, stage)
 
         effective_args, repair_records = _repair_missing_file_arguments(args)
         effective_args = _ground_output_paths(
@@ -750,12 +743,18 @@ class SyncMCPToolExecutor:
         budget = self._async_executor._timeout_budget_for_call(name, effective_args)
         timeout = budget.seconds
         try:
-            outcome = self._run_coroutine(
+            outcome = foreground_cancel._run_foreground_coroutine(
+                self._loop,
                 self._async_executor.call_tool_result(name, effective_args),
                 timeout=timeout + SYNC_TOOL_RESULT_GRACE_SECONDS,
                 action=f"MCP tool {name!r}",
+                cancellation_checker=cancellation_checker,
+                cancellation_error=lambda wire_settled: foreground_cancel._tool_cancellation_error(
+                    name,
+                    "tool_call_in_flight",
+                    wire_settled=wire_settled,
+                ),
             )
-            raise_if_cancelled("tool_call_after")
         except Exception as exc:
             if isinstance(
                 exc, TimeoutError

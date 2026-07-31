@@ -35,6 +35,7 @@ from clio_agent.errors import (
     MCP_CAPABILITY_REFUSED,
     MCP_PROTOCOL_REFUSED,
     MCP_RESULT_DOWNGRADED_TO_COMPLETE,
+    MCP_WIRE_CANCELLATION_UNAVAILABLE,
 )
 from clio_agent.optimizer.stub import (
     OPTIMIZER_NOT_IMPLEMENTED_MESSAGE,
@@ -170,6 +171,16 @@ _STREAM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
         "live_streaming": False,
         "recovery_actions": ["negotiate_supported_protocol_version", "retry"],
         "description": "The MCP server refused the negotiated protocol version.",
+    },
+    MCP_WIRE_CANCELLATION_UNAVAILABLE: {
+        "category": "mcp_transport_limitation",
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["continue_with_cooperative_cancellation", "upgrade_mcp_transport"],
+        "description": (
+            "The MCP transport did not settle after its in-flight call task was cancelled, "
+            "so CLIO surfaced typed cooperative cancellation without claiming the server stopped."
+        ),
     },
 }
 
