@@ -22,6 +22,7 @@ from typing import Any
 MCP_CAPABILITY_REFUSED = "mcp_capability_refused"
 MCP_PROTOCOL_REFUSED = "mcp_protocol_refused"
 MCP_RESULT_DOWNGRADED_TO_COMPLETE = "mcp_result_downgraded_to_complete"
+MCP_WIRE_CANCELLATION_UNAVAILABLE = "mcp_wire_cancellation_unavailable"
 
 
 class ClioError(Exception):

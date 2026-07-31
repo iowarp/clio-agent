@@ -333,7 +333,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # ToolRuntimeHooks.post_tool field + the two call sites are here.
     # P0.1b (#1103): -500 — AsyncMCPToolExecutor, its client protocol/factory,
     # timeout/uncertain-mutation support, and MCP projections moved to mcp_executor.py.
-    "src/clio_agent/tools/execution.py": 1158,
+    "src/clio_agent/tools/execution.py": 1157,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.

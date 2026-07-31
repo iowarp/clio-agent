@@ -64,7 +64,7 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
         "/v1/health returns integrations[], so this must be True"
     )
     assert caps["x_clio_cancellation"] == "best_effort"
-    assert caps["x_clio_executor_cancellation"] is False
+    assert caps["x_clio_executor_cancellation"] is True
     assert caps["x_clio_text_streaming"] == "best_effort_live"
     assert caps["x_clio_synthetic_posthoc_streaming"] is False
     fallback_reasons = caps["x_clio_stream_fallback_reasons"]
@@ -79,6 +79,10 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
     )
     assert fallback_reasons["mcp_capability_refused"]["json_rpc_code"] == -32021
     assert fallback_reasons["mcp_protocol_refused"]["json_rpc_code"] == -32022
+    assert (
+        fallback_reasons["mcp_wire_cancellation_unavailable"]["category"]
+        == "mcp_transport_limitation"
+    )
     assert caps["x_clio_direct_delete_permissions"] is True
     gaps = caps["x_clio_capability_gaps"]
     assert gaps["voice"]["advertised"] is False

@@ -23,7 +23,6 @@ from typing import Any, Iterator
 import pytest
 from fastapi.testclient import TestClient
 
-from clio_agent.errors import CancellationError
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agent_tasks import (
     STATUS_COMPLETED,
@@ -354,9 +353,8 @@ def test_carrier_raw_path_does_not_append_or_drain() -> None:
         executor.close()
 
 
-def test_cancel_precedes_injection() -> None:
-    """A cancellation after the tool returns raises BEFORE the drain runs — cancel
-    always beats injection, and the drain is never invoked."""
+def test_cancel_after_completion_does_not_preempt_injection() -> None:
+    """A cancellation that loses to tool completion leaves the result path intact."""
 
     executor = SyncMCPToolExecutor(object(), timeout=1.0, client_factory=lambda _: _FakeClient())
     checks = iter([False, True])  # before-stage passes, after-stage cancels
@@ -373,9 +371,9 @@ def test_cancel_precedes_injection() -> None:
                 loop_inbox_drain=_drain,
             )
         )
-        with pytest.raises(CancellationError, match="tool call cancelled"):
-            executor.call_tool("fake_echo", {"value": "late-cancel"})
-        assert drain_calls["n"] == 0, "cancel must short-circuit before the drain"
+        result = executor.call_tool("fake_echo", {"value": "late-cancel"})
+        assert result.endswith("MID_TURN_WAKE_BLOCK")
+        assert drain_calls["n"] == 1
     finally:
         set_tool_runtime_fallback(ToolRuntimeHooks())
         executor.close()
