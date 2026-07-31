@@ -399,6 +399,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
 
     from clio_agent.gact.agents.observe_runtime import build_observe_tool  # noqa: PLC0415
     from clio_agent.gact.agents.resolution import _runtime_declared_child_ids  # noqa: PLC0415
+    from clio_agent.gact.spawn_context import bind_task_spec_to_parent  # noqa: PLC0415
     from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
         SpawnError,
         TaskSpec,
@@ -433,24 +434,27 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         try:
             spawned = spawn_child_turn_threadsafe(
                 app,
-                TaskSpec(
-                    child_expert_id=agent,
-                    task_text=task,
-                    parent_session_id=session_id,
-                    requesting_expert_id=agent_def.id,
-                    # #953 [2]/[8]: stamp the ACTIVE turn id so run_index resets per
-                    # parent turn (else it accumulates across the whole session).
-                    parent_turn_id=_active_semantic_turn_id(),
-                    depth=depth,
-                    # #948 S6: ONE honest semantic — every model-driven spawn is
-                    # fire-and-forget (notify-later). The child is untied to this
-                    # turn's lifetime; on completion it sets notify_pending, which
-                    # the model collects in-turn (wait/check) or observes next turn
-                    # (injection). Both mark it consumed exactly once. (The declared-
-                    # workflow runner keeps mode="sync": it always collects its steps
-                    # within run_workflow, never observe-later.)
-                    mode="async",
-                    fanout_bound=fanout_bound,
+                bind_task_spec_to_parent(
+                    app,
+                    TaskSpec(
+                        child_expert_id=agent,
+                        task_text=task,
+                        parent_session_id=session_id,
+                        requesting_expert_id=agent_def.id,
+                        # #953 [2]/[8]: stamp the ACTIVE turn id so run_index resets per
+                        # parent turn (else it accumulates across the whole session).
+                        parent_turn_id=_active_semantic_turn_id(),
+                        depth=depth,
+                        # #948 S6: ONE honest semantic — every model-driven spawn is
+                        # fire-and-forget (notify-later). The child is untied to this
+                        # turn's lifetime; on completion it sets notify_pending, which
+                        # the model collects in-turn (wait/check) or observes next turn
+                        # (injection). Both mark it consumed exactly once. (The declared-
+                        # workflow runner keeps mode="sync": it always collects its steps
+                        # within run_workflow, never observe-later.)
+                        mode="async",
+                        fanout_bound=fanout_bound,
+                    ),
                 ),
             )
         except SpawnError as exc:

@@ -540,6 +540,7 @@ def run_declared_workflow(
     from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
         _active_semantic_turn_id,
     )
+    from clio_agent.gact.spawn_context import bind_task_spec_to_parent  # noqa: PLC0415
     from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
         SpawnError,
         TaskSpec,
@@ -601,15 +602,18 @@ def run_declared_workflow(
         try:
             spawned = spawn_child_turn_threadsafe(
                 app,
-                TaskSpec(
-                    child_expert_id=step.child,
-                    task_text=task_text,
-                    parent_session_id=parent_session_id,
-                    requesting_expert_id=requesting,
-                    parent_turn_id=active_turn_id,
-                    depth=depth,
-                    mode="sync",
-                    workflow_state=dict(accumulated) or None,
+                bind_task_spec_to_parent(
+                    app,
+                    TaskSpec(
+                        child_expert_id=step.child,
+                        task_text=task_text,
+                        parent_session_id=parent_session_id,
+                        requesting_expert_id=requesting,
+                        parent_turn_id=active_turn_id,
+                        depth=depth,
+                        mode="sync",
+                        workflow_state=dict(accumulated) or None,
+                    ),
                 ),
             )
         except SpawnError as exc:
