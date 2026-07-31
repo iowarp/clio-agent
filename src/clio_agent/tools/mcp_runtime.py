@@ -39,6 +39,10 @@ from clio_agent.tools.mcp_handlers import (
 )
 
 if TYPE_CHECKING:
+    from mcp.client.auth.oauth2 import OAuthClientProvider
+    from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+
+    from clio_agent.tools.mcp_config import MCPAuthConfig
     from clio_agent.tools.mcp_handlers import (
         ElicitationHook,
         MessageHook,
@@ -56,6 +60,66 @@ WireMode = Literal["mcp_results", "mcp_apps", "gact_runtime"]
 
 _MISSING = object()
 _VALID_MODES: frozenset[str] = frozenset(("mcp_results", "mcp_apps", "gact_runtime"))
+
+
+class _MemoryOAuthTokenStorage:
+    """Process-local implementation of the MCP SDK ``TokenStorage`` protocol."""
+
+    def __init__(self) -> None:
+        self._tokens: OAuthToken | None = None
+        self._client_info: OAuthClientInformationFull | None = None
+
+    async def get_tokens(self) -> OAuthToken | None:
+        """Return the current OAuth token bundle."""
+        return self._tokens
+
+    async def set_tokens(self, tokens: OAuthToken) -> None:
+        """Replace the current OAuth token bundle."""
+        self._tokens = tokens
+
+    async def get_client_info(self) -> OAuthClientInformationFull | None:
+        """Return dynamically registered OAuth client information."""
+        return self._client_info
+
+    async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
+        """Replace dynamically registered OAuth client information."""
+        self._client_info = client_info
+
+
+def _oauth_provider_from_config(
+    server_url: str, config: MCPAuthConfig | None
+) -> OAuthClientProvider | None:
+    """Build the installed MCP SDK OAuth provider at the client factory boundary.
+
+    Invalid metadata is surfaced as a typed, credential-free transport error.
+    The default storage is intentionally process-local; callers that need durable
+    refresh tokens provide an SDK ``TokenStorage`` implementation in the auth block.
+    """
+    if config is None:
+        return None
+
+    from mcp.client.auth.oauth2 import OAuthClientProvider  # noqa: PLC0415
+    from mcp.shared.auth import OAuthClientMetadata  # noqa: PLC0415
+    from pydantic import ValidationError  # noqa: PLC0415
+
+    from clio_agent.tools.mcp_config import MCPTransportError  # noqa: PLC0415
+
+    try:
+        metadata = (
+            config.client_metadata
+            if isinstance(config.client_metadata, OAuthClientMetadata)
+            else OAuthClientMetadata.model_validate(config.client_metadata)
+        )
+        return OAuthClientProvider(
+            server_url=server_url,
+            client_metadata=metadata,
+            storage=config.storage or _MemoryOAuthTokenStorage(),
+            redirect_handler=config.redirect_handler,
+            callback_handler=config.callback_handler,
+            client_metadata_url=config.client_metadata_url,
+        )
+    except (TypeError, ValueError, ValidationError):
+        raise MCPTransportError("invalid MCP OAuth configuration") from None
 
 
 def _dump_mcp_results_model(value: Any, *, exclude_none: bool) -> Any:
