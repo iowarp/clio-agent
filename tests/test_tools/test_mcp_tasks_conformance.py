@@ -17,6 +17,7 @@ Redis is required for a single-process deployment.
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 import threading
 import time
@@ -260,3 +261,117 @@ async def test_conformance_cancel_is_ack_only(backend: Any) -> None:
     assert cancels == ["tasks/cancel"]
     # The cancel travelled as a REQUEST bearing Mcp-Name, never as a notification.
     assert all(name for method, name in backend.capture.task_rpcs() if method == "tasks/cancel")
+
+
+# --------------------------------------------------------------------------- #
+# Conformance backend (b): clio-relay 1.5.10                                  #
+# --------------------------------------------------------------------------- #
+#
+# The relay is an out-of-repo product with its own install and auth, so these run
+# only when a relay is already serving and its URL + token are exported. Recipe
+# (verified for 1.5.10 — 1.5.9's wheel is broken, iowarp/clio-relay#147):
+#
+#   uv venv relayvenv && uv pip install --python relayvenv --prerelease=allow \
+#       "clio-relay==1.5.10"
+#   CLIO_RELAY_API_TOKEN=<token> relayvenv/Scripts/clio-relay init
+#   CLIO_RELAY_API_TOKEN=<token> relayvenv/Scripts/clio-relay mcp-server \
+#       --transport http --host 127.0.0.1 --port 18783 --path /mcp --profile all
+#   CLIO_RELAY_MCP_URL=http://127.0.0.1:18783/mcp CLIO_RELAY_API_TOKEN=<token> \
+#       uv run --no-sync pytest tests/test_tools/test_mcp_tasks_conformance.py -k relay
+#
+# `clio_relay.fastmcp_server.RelayTasksExtension` gates EVERY `tasks/*` request on
+# the client having declared `io.modelcontextprotocol/tasks` for that request, and
+# validates `Mcp-Name` against the body's `taskId`. Both CLIO gaps are therefore
+# directly observable against the real relay wire.
+
+_RELAY_URL = os.environ.get("CLIO_RELAY_MCP_URL", "")
+_RELAY_TOKEN = os.environ.get("CLIO_RELAY_API_TOKEN", "")
+_relay_required = pytest.mark.skipif(
+    not (_RELAY_URL and _RELAY_TOKEN),
+    reason="set CLIO_RELAY_MCP_URL + CLIO_RELAY_API_TOKEN to run the clio-relay backend",
+)
+
+
+def _relay_transport() -> Any:
+    """An authenticated Streamable HTTP transport onto the running relay."""
+
+    from fastmcp.client.transports import StreamableHttpTransport
+
+    return StreamableHttpTransport(_RELAY_URL, headers={"Authorization": f"Bearer {_RELAY_TOKEN}"})
+
+
+@_relay_required
+async def test_relay_accepts_task_rpcs_because_clio_declares_the_extension() -> None:
+    """CLIO's per-request declaration passes the relay's capability gate.
+
+    The control below proves the gate is live: an undeclared client is refused with
+    ``MISSING_REQUIRED_CLIENT_CAPABILITY``. CLIO's client instead reaches the relay's
+    own task lookup ("Task not found"), which is only possible once the declaration
+    arrived on that request.
+    """
+
+    from mcp.shared.exceptions import MCPError
+
+    from clio_agent.tools.mcp_tasks import send_task_get
+
+    client = make_mcp_client(
+        _relay_transport(),
+        handlers=MCPClientHandlers(elicitation=_accept_handler),
+        capabilities=MCPClientCapabilities(elicitation_form=True),
+    )
+    async with client:
+        assert client.session._negotiated_version == "2026-07-28"
+        with pytest.raises(MCPError) as declared:
+            await send_task_get(client.session, "no-such-task")
+    assert "not found" in str(declared.value).lower()
+
+    from fastmcp import Client
+
+    class _NoExtensionClient(Client):
+        """Control: folds no extension at all, so nothing is declared."""
+
+        _auto_internal_extensions = False
+
+    async with _NoExtensionClient(_relay_transport()) as bare:
+        with pytest.raises(MCPError) as undeclared:
+            await send_task_get(bare.session, "no-such-task")
+    assert "did not declare that extension" in str(undeclared.value)
+
+
+@_relay_required
+async def test_relay_reads_the_mcp_name_header_clio_sends() -> None:
+    """The relay validates ``Mcp-Name`` against ``taskId`` — so the header arrives.
+
+    Deliberately corrupting the header the SDK stamped produces the relay's
+    ``HEADER_MISMATCH`` refusal. CLIO's unmodified request never trips it, which is
+    only true because the ``name_param`` declaration puts the real task id there.
+    """
+
+    from fastmcp_tasks.client_models import ClientGetTaskResult, GetTaskRequestParams
+    from mcp.shared.exceptions import MCPError
+
+    from clio_agent.tools.mcp_tasks import NamedGetTaskRequest
+
+    client = make_mcp_client(
+        _relay_transport(),
+        handlers=MCPClientHandlers(elicitation=_accept_handler),
+        capabilities=MCPClientCapabilities(elicitation_form=True),
+    )
+    async with client:
+        stamp = client.session._stamp
+
+        def _corrupt(data: Any, opts: Any) -> None:
+            stamp(data, opts)
+            opts.setdefault("headers", {})["mcp-name"] = "some-other-task"
+
+        client.session._stamp = _corrupt
+        try:
+            with pytest.raises(MCPError) as mismatched:
+                await client.session.send_request(
+                    NamedGetTaskRequest(params=GetTaskRequestParams(task_id="task-a")),
+                    ClientGetTaskResult,
+                )
+        finally:
+            client.session._stamp = stamp
+
+    assert "mcp-name header does not match" in str(mismatched.value).lower()

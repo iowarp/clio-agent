@@ -658,24 +658,67 @@ def test_make_mcp_client_declares_tasks_on_execution_clients() -> None:
     assert isinstance(extensions[0], ClioTasksClientExtension)
 
 
-def test_make_mcp_client_can_opt_out_of_tasks() -> None:
-    """``tasks=False`` builds a client that declares nothing."""
+def test_make_mcp_client_omits_the_declaration_for_a_proxy_client_class() -> None:
+    """The one honest suppression is the client class's own ``_auto_internal_extensions``.
+
+    There is deliberately no per-call opt-out: importing ``fastmcp_tasks`` registers
+    an internal factory process-wide, so a client that declared nothing would still
+    fold the substrate's own extension — an "off" switch would swap CLIO's hardened
+    resolver for the un-hardened one instead of turning the advertisement off.
+    """
 
     from clio_agent.tools.mcp_runtime import make_mcp_client
 
     captured: dict[str, Any] = {}
 
-    class FakeClient:
-        """Construction-inspecting client double."""
+    class ProxyLikeClient:
+        """A client class that forbids internal extensions, as ``ProxyClient`` does."""
 
-        _auto_internal_extensions = True
+        _auto_internal_extensions = False
 
         def __init__(self, target: Any, **kwargs: Any) -> None:
             captured.update(kwargs)
 
-    make_mcp_client(object(), client_cls=FakeClient, tasks=False)
+    make_mcp_client(object(), client_cls=ProxyLikeClient)
 
     assert "extensions" not in captured
+
+
+def test_no_tool_dispatching_client_is_built_outside_the_factory() -> None:
+    """The bare-``Client()`` sites in src/ are list-only, so none can start a task.
+
+    Importing this module registers ``fastmcp-tasks``' internal extension factory
+    process-wide, so a bare ``fastmcp.Client`` would fold the SUBSTRATE's resolver
+    (no dedup, no ``Mcp-Name``, no durable id). That is harmless only while every
+    bare client is list-only. This guard pins that: any new bare ``Client(...)`` in
+    ``src/`` must either be list-only or move to ``make_mcp_client``.
+    """
+
+    import re
+    from pathlib import Path
+
+    allowed = {
+        # Documented list-only introspection sites (#1106/#1111).
+        "src/clio_agent/tools/gateway.py",
+        "src/clio_agent/gact/routes/catalog.py",
+        "src/clio_agent/gact/routes/blueprints.py",
+        "src/clio_agent/gact/routes/mcp.py",
+        "src/clio_agent/runtime/status.py",
+    }
+    pattern = re.compile(r"(?<![.\w])Client\(")
+    offenders = []
+    for path in Path("src/clio_agent").rglob("*.py"):
+        rel = path.as_posix()
+        if rel in allowed or rel.endswith("mcp_runtime.py"):
+            continue
+        if pattern.search(path.read_text(encoding="utf-8")):
+            offenders.append(rel)
+
+    assert offenders == [], (
+        "these modules construct a bare fastmcp Client outside make_mcp_client; if "
+        "they dispatch a tool call they would silently use the un-hardened tasks "
+        f"resolver: {offenders}"
+    )
 
 
 # --------------------------------------------------------------------------- #

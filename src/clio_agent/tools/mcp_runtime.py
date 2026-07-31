@@ -366,7 +366,6 @@ def make_mcp_client(
     handlers: MCPClientHandlers | None = None,
     capabilities: MCPClientCapabilities | None = None,
     client_cls: Callable[..., Any] | None = None,
-    tasks: bool = True,
 ) -> Any:
     """Construct an execution-path FastMCP client with CLIO identity + the handler slot.
 
@@ -423,14 +422,16 @@ def make_mcp_client(
         client_cls: Injection seam for the client class. Defaults to
             ``fastmcp.Client``; tests substitute a fake to inspect the
             construction without spawning a real backend.
-        tasks: Whether this client declares the SEP-2663 tasks extension (#1115).
-            Default ``True``: every execution-path client can drive a task-serving
-            backend's background tasks. The declaration is still SUPPRESSED, with
-            the typed reason ``mcp_tasks_declaration_suppressed``, for a
-            ``client_cls`` that forbids internal extensions (FastMCP's
-            ``ProxyClient``) — a proxy relays synchronously and cannot drive a
-            backend task on the front connection's behalf. Pass ``False`` to opt a
-            construction out explicitly.
+    Tasks (#1115): every client built here declares the SEP-2663 tasks extension, so
+    a task-serving backend may run a call as a background task and CLIO drives it to
+    the real result. There is deliberately no per-call opt-out knob: a client that
+    declared nothing would still fold ``fastmcp-tasks``' own internal extension once
+    that package is imported, so an "off" switch would not turn the advertisement off
+    — it would only swap CLIO's hardened resolver for the un-hardened one. The single
+    honest suppression is the one FastMCP itself declares: a ``client_cls`` pinning
+    ``_auto_internal_extensions = False`` (``ProxyClient``) folds no extension at all,
+    and that path is recorded with the typed reason
+    ``mcp_tasks_declaration_suppressed``.
 
     Returns:
         A constructed (not yet entered) FastMCP client for ``target``.
@@ -466,20 +467,19 @@ def make_mcp_client(
             kwargs["message_handler"] = MessageMultiplexer(handlers.message)
         # `cancellation` has no fastmcp Client keyword today; P1 owns its wiring.
 
-    if tasks:
-        # #1115: declare the SEP-2663 tasks extension. CLIO's subclass carries the
-        # substrate's identifier, so folding it in REPLACES fastmcp-tasks' internal
-        # extension with the hardened one (input-key dedup, `Mcp-Name` on task RPCs,
-        # durable task-id persistence). Suppressed — with a typed reason — for client
-        # classes that forbid internal extensions (proxy backends; #1119). The
-        # extension takes no elicitation callback here on purpose: it reads the
-        # SDK-shaped one off the live ClientSession, since fastmcp rewraps the
-        # 4-argument handler installed above (see `session_elicitation_callback`).
-        from clio_agent.tools.mcp_tasks import tasks_declaration  # noqa: PLC0415
+    # #1115: declare the SEP-2663 tasks extension. CLIO's subclass carries the
+    # substrate's identifier, so folding it in REPLACES fastmcp-tasks' internal
+    # extension with the hardened one (input-key dedup, `Mcp-Name` on task RPCs,
+    # durable task-id persistence). Suppressed — with a typed reason — for client
+    # classes that forbid internal extensions (proxy backends; #1119). The extension
+    # takes no elicitation callback here on purpose: it reads the SDK-shaped one off
+    # the live ClientSession, since fastmcp rewraps the 4-argument handler installed
+    # above (see `session_elicitation_callback`).
+    from clio_agent.tools.mcp_tasks import tasks_declaration  # noqa: PLC0415
 
-        declaration = tasks_declaration(client_cls)
-        if declaration.extensions:
-            kwargs["extensions"] = list(declaration.extensions)
+    declaration = tasks_declaration(client_cls)
+    if declaration.extensions:
+        kwargs["extensions"] = list(declaration.extensions)
 
     client = client_cls(target, **kwargs)
     if capabilities is not None:
