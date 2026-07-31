@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.artifacts.ingest_edges import join_call_to_serving_child
 from clio_agent.gact.delegation import _expert_handoff_fields
+from clio_agent.gact.elicitation_correlation import close_invocation, open_invocation
 from clio_agent.gact.events import Event
 from clio_agent.gact.evidence import (
     _bounded_tool_call_result,
@@ -62,11 +63,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Per-thread call_id + start-time stash so the ``completed`` phase reuses the
-# same id and can compute duration. MCPToolBridge invokes the observer on a
-# worker thread, so threading-locals (not contextvars) are the right scope.
+# Per-thread stash (worker-thread scope -> threading-locals): ``completed`` reuses the
+# call_id + computes duration; ``_OBSERVER_ELICIT_REC`` holds the #1113 correlation
+# record opened at ``started`` and closed at ``completed``.
 _OBSERVER_CALL_IDS = threading.local()
 _OBSERVER_CALL_T0 = threading.local()
+_OBSERVER_ELICIT_REC = threading.local()
 
 
 def _tool_call_event_key(call: Mapping[str, Any]) -> tuple[str, str]:
@@ -387,8 +389,7 @@ def _ensure_live_assistant_message(app: "FastAPI", sid: str) -> str:
     transcript = _session_turn_transcript(app, sid)
     if transcript is not None:
         # #767 PR1: the ledger is the sole minter of the assistant message id
-        # (message.created published exactly once, whichever producer arrives
-        # first); mirrored into the legacy dicts for untouched readers.
+        # (message.created once); mirrored into the legacy dicts for untouched readers.
         msg_id = transcript.ensure_message()
         _mirror_transcript_state(app, sid, transcript)
         return msg_id
@@ -469,9 +470,8 @@ def _append_live_assistant_part_once(
 
     transcript = _session_turn_transcript(app, sid)
     if transcript is not None:
-        # #767 PR1: the idempotency key is turn-scoped ledger state. A
-        # duplicate key never closes streamed text — the boundary close runs
-        # inside append_part only when the key is fresh.
+        # #767 PR1: the idempotency key is turn-scoped ledger state. A duplicate key
+        # never closes streamed text — the boundary close runs only when the key is fresh.
         if transcript.has_part_key(key):
             return False
         appended = transcript.append_part_once(key, part)
@@ -598,22 +598,21 @@ def _make_tool_observer(app: "FastAPI"):
         sid, _current = _resolve_tool_session(app)
         if not sid:
             return
-        # The expert that OWNS (runs) this tool, for per-part attribution. Empty
-        # when CLIO can't resolve a routed owner (e.g. an orchestrator-level tool).
+        # The expert that OWNS (runs) this tool, for per-part attribution (#732).
         _public_agent, tool_owner = _agent_tool_owner(app, name)
-        # Attribute the tool_call/tool_result to the expert that INVOKED the tool
-        # (the active ReAct scope, e.g. ``geospatial``), NOT the tool's owning
-        # server/group (``geo``/``ndp``) — #732. Falls back to the owner when no
-        # react scope is active (an orchestrator-level / chat-path tool call).
+        # Attribute to the INVOKING expert (active ReAct scope), not the tool's owning
+        # server/group; fall back to the owner outside a react scope (#732).
         invoking_expert = _ctx.active_react_scope() or tool_owner
         if phase == "started":
             call_id = f"call_{uuid.uuid4().hex[:12]}"
-            # Stash the per-thread call_id so the completion event
-            # uses the same id. Threading-locals works for
-            # MCPToolBridge's worker thread.
+            # Per-thread call_id/t0 so completion reuses the id + computes duration.
             _OBSERVER_CALL_IDS.value = call_id
-            # Stamp the start time so completion can compute duration.
             _OBSERVER_CALL_T0.value = time.time()
+            # P1.3 #1113: open the correlation record for THIS call (call task) so a
+            # mid-call elicitation resolves at the receive loop.
+            _OBSERVER_ELICIT_REC.value = open_invocation(
+                app, session_id=sid, tool_name=name, invocation_id=call_id
+            )
             # B5 #979.7 (deferred B4 WRITER): join call_id → confined FLEET child (no-op on the
             # floor / built-in namespaces → the egress mint abstains). See ingest_edges.
             join_call_to_serving_child(app, sid, name, call_id)
@@ -694,6 +693,7 @@ def _make_tool_observer(app: "FastAPI"):
                 ),
             )
         elif phase == "completed":
+            close_invocation(getattr(_OBSERVER_ELICIT_REC, "value", None))  # P1.3 #1113
             call_id = getattr(_OBSERVER_CALL_IDS, "value", "") or ""
             t0 = getattr(_OBSERVER_CALL_T0, "value", None)
             duration_ms = (time.time() - t0) * 1000 if t0 else 0.0

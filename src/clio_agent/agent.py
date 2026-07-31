@@ -319,7 +319,15 @@ class ClioAgent(dspy.Module):
 
         pack_servers = self._discover_pack_servers()
         specs = load_mcp_servers(pack_servers=pack_servers)
-        tool_gateway = build_gateway(specs, cwd=cwd)
+        # #1113: wire the receive-loop elicitation handler onto every declared-server
+        # backend so a mid-tool-call elicitation reaches the HITL surface. The hook is
+        # app-agnostic (it resolves its invocation from the correlation record the tool
+        # observer opens), so binding it once on the shared gateway is safe.
+        from clio_agent.gact.elicitation_correlation import (
+            make_correlated_handlers,  # noqa: PLC0415
+        )
+
+        tool_gateway = build_gateway(specs, cwd=cwd, handlers=make_correlated_handlers())
         if not set_catalog:
             return tool_gateway
         experts = self._discover_pack_experts()
@@ -468,9 +476,7 @@ class ClioAgent(dspy.Module):
         from clio_agent.lm.hooked_lm import wrap_lm_with_hooks  # noqa: PLC0415
 
         try:
-            with dspy.context(
-                lm=wrap_lm_with_hooks(self._main_lm), adapter=self._dspy_adapter
-            ):
+            with dspy.context(lm=wrap_lm_with_hooks(self._main_lm), adapter=self._dspy_adapter):
                 result = self.chat_agent(
                     question=question,
                     images=image_inputs,

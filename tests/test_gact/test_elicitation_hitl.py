@@ -669,3 +669,129 @@ def test_validate_elicitation_answer_unit_rules() -> None:
         validate_elicitation_answer(qe, selected_options=["a"], answer="", answer_metadata={})
         is None
     )
+
+
+# ---------------------------------------------------------------------------
+# Findings 1 + 2 — wiring through the real executor + receive-loop correlation
+# ---------------------------------------------------------------------------
+
+
+def test_correlation_registry_single_in_flight_and_ambiguity() -> None:
+    """The correlation registry resolves the single in-flight record (binding the
+    session), and declines (None) when >1 is open and none matches (RULING 2)."""
+
+    from clio_agent.gact import elicitation_correlation as ec
+    from clio_agent.tools.mcp_handlers import MCPInvocationContext
+
+    ec._OPEN.clear()
+    rec = ec.open_invocation(object(), session_id="s1", tool_name="ns_tool")
+    # single in-flight -> resolves for any session key and binds it
+    assert ec._resolve_for_session(111) is rec
+    assert rec.session_key == 111
+    # a second concurrent record: an unknown session key is ambiguous -> None
+    rec2 = ec.open_invocation(object(), session_id="s2", tool_name="ns_tool")
+    assert ec._resolve_for_session(999) is None
+    # ...but the already-bound session still resolves precisely
+    assert ec._resolve_for_session(111) is rec
+    ec.close_invocation(rec)
+    ec.close_invocation(rec2)
+    assert ec._OPEN == []
+    _ = MCPInvocationContext  # imported for signature documentation
+
+
+def test_executor_elicitation_end_to_end_through_correlated_handler(client: TestClient) -> None:
+    """End-to-end through the REAL AsyncMCPToolExecutor: the gateway-style correlated
+    handler resolves its invocation at the receive loop from the correlation record
+    the tool-call boundary opened, mints the question, and the answer route unblocks
+    the tool (RULING 2 — not the make_elicitation_client wrapper)."""
+
+    from clio_agent.gact import elicitation_correlation as ec
+    from clio_agent.gact.elicitation_correlation import make_correlated_handlers
+    from clio_agent.tools.mcp_executor import AsyncMCPToolExecutor
+    from clio_agent.tools.mcp_handlers import MCPClientCapabilities
+    from clio_agent.tools.mcp_runtime import make_mcp_client
+
+    app = client.app  # type: ignore[attr-defined]
+    sid = _create_session(client)
+    ec._OPEN.clear()
+    backend = _fake_backend()
+
+    def _factory(target: Any) -> Any:
+        c = make_mcp_client(
+            target,
+            handlers=make_correlated_handlers(),
+            capabilities=MCPClientCapabilities(elicitation_form=True),
+        )
+        c.mode = "legacy"  # stand in for a legacy server that can elicit
+        return c
+
+    executor = AsyncMCPToolExecutor(backend, client_factory=_factory)
+    holder: dict[str, Any] = {}
+
+    def _worker() -> None:
+        async def _call() -> str:
+            # The tool-call boundary (the observer, in production) opens the per-call
+            # correlation record; the handler resolves it at the receive loop.
+            record = ec.open_invocation(app, session_id=sid, tool_name="pick_color")
+            try:
+                async with executor:
+                    return await executor.call_tool("pick_color", {})
+            finally:
+                ec.close_invocation(record)
+
+        try:
+            holder["result"] = asyncio.run(_call())
+        except Exception as exc:  # noqa: BLE001 - surfaced to the assertions
+            holder["error"] = repr(exc)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+
+    question = _wait_for_pending_question(client, sid)
+    assert question["source"] == "mcp_elicitation"
+    assert [o["value"] for o in question["options"]] == ["red", "green", "blue"]
+    resp = client.post(
+        f"/v1/sessions/{sid}/questions/{question['id']}/answer",
+        json={"selected_options": ["green"]},
+    )
+    assert resp.status_code == 200, resp.text
+    thread.join(timeout=10.0)
+    assert "error" not in holder, holder.get("error")
+    assert holder.get("result") == "action=accept value=green"
+
+
+def test_gateway_build_wires_correlated_elicitation_handler() -> None:
+    """finding 1: build_gateway carries the elicitation handler onto declared-server
+    backends (so a gateway tool call can reach the HITL surface)."""
+
+    from fastmcp import FastMCP
+
+    from clio_agent.gact.elicitation_correlation import (
+        correlated_elicitation_handler,
+        make_correlated_handlers,
+    )
+    from clio_agent.tools import gateway
+    from clio_agent.tools.gateway import build_gateway, namespace_proxies
+    from clio_agent.tools.mcp_config import MCPServerSpec
+
+    backend = FastMCP("backend")
+
+    @backend.tool
+    def ping() -> str:
+        return "pong"
+
+    import pytest as _pytest
+
+    monkeypatch = _pytest.MonkeyPatch()
+    monkeypatch.setattr(gateway, "transport_for", lambda spec, cwd=None: backend)
+    try:
+        gw = build_gateway(
+            {"ext": MCPServerSpec(name="ext", transport="stdio", command="x")},
+            handlers=make_correlated_handlers(),
+        )
+        upstream = namespace_proxies(gw)["ext"].client_factory()
+        cb = upstream._session_kwargs.get("elicitation_callback")
+        assert cb is not None  # the handler reaches the real upstream call path
+    finally:
+        monkeypatch.undo()
+    _ = correlated_elicitation_handler
