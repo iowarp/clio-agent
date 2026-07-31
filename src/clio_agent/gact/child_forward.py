@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.agent_tasks import (
     AGENT_TASK_EVENTS,
+    STATUS_COMPLETED,
     STATUS_FAILED,
     persist_agent_task,
     publish_agent_task_event,
@@ -38,6 +39,7 @@ __all__ = [
     "arm_forward_deadline",
     "fail_child_task",
     "fail_forwarded_child_task",
+    "settle_or_attach_forwarded_task",
 ]
 
 
@@ -130,3 +132,61 @@ def arm_forward_deadline(app: "FastAPI", forwarded_qid: str) -> None:
     timer = threading.Timer(deadline, _expire)
     timer.daemon = True
     timer.start()
+
+
+def settle_or_attach_forwarded_task(app: "FastAPI", task_id: str) -> None:
+    """Bind a forwarded task to the outcome of applying its answer (#1113 finding 5 remnant).
+
+    Called after a forwarded child answer is applied. If applying it launched a child
+    turn (resume / plan-exit that resumes), attach :func:`_on_child_done` to that turn
+    so the task settles at the turn's real completion. If NO turn launched (plan-exit
+    ``exit_only`` — the question was answered and honored, the child went idle), the task
+    would otherwise hang forever (its deadline is disabled once the parent question is
+    answered): terminalize it SUCCESS and admit the next queued task, freeing the slot.
+    """
+
+    reg = app.state.agent_task_registry
+    task = reg.get(task_id)
+    if task is None or task.is_terminal:
+        return
+    child_sid = task.child_session_id
+
+    from clio_agent.gact.turn_spawn import _on_child_done  # noqa: PLC0415
+
+    in_flight = getattr(app.state, "in_flight_turns", {}).get(child_sid)
+    if in_flight is not None:
+        in_flight.add_done_callback(
+            lambda _t, tid=task_id, csid=child_sid: _on_child_done(app, tid, csid, "async")
+        )
+        return
+    _complete_forwarded_task(app, task)
+
+
+def _complete_forwarded_task(app: "FastAPI", task: Any) -> None:
+    """Terminalize a forwarded task SUCCESS (answered + honored, no turn) + admit next."""
+
+    from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
+        _admit_next_queued,
+        _fire_subagent_stop,
+        _now,
+    )
+
+    reg = app.state.agent_task_registry
+    try:
+        updated = reg.transition(
+            task.task_id,
+            STATUS_COMPLETED,
+            result={
+                "message_ref": "",
+                "answer_excerpt": "forwarded user question answered",
+                "workflow_state": {},
+            },
+            notify_pending=True,
+            updated_at=_now(),
+        )
+    except Exception:  # noqa: BLE001 - a transition race falls back to the current row
+        updated = reg.get(task.task_id) or task
+    persist_agent_task(app, updated)
+    publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[updated.status])
+    _fire_subagent_stop(app, updated, task.child_session_id)
+    _admit_next_queued(app)

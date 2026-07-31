@@ -923,7 +923,10 @@ def test_scalar_validation_rejects_invalid_answers() -> None:
     intf = {"name": "n", "type": "integer"}
     numf = {"name": "n", "type": "number"}
     boolf = {"name": "n", "type": "boolean"}
+    strf = {"name": "n", "type": "string"}
     empty_enum = {"name": "n", "type": "string", "enum": []}
+    str_enum = {"name": "n", "type": "string", "enum": ["1"]}  # string enum
+    int_enum = {"name": "n", "type": "integer", "enum": [1]}  # typed int enum
 
     assert _bad(intf, 1.5)  # non-integral float
     assert _bad(intf, True)  # bool is not an integer
@@ -932,6 +935,8 @@ def test_scalar_validation_rejects_invalid_answers() -> None:
     assert _bad(numf, float("inf"))  # non-finite
     assert _bad(boolf, "maybe")  # unrecognised bool string (never coerce-to-false)
     assert _bad(empty_enum, "anything")  # empty enum admits nothing
+    assert _bad(strf, 7)  # wrong-typed value for a string field
+    assert _bad(str_enum, 1)  # cross-type enum: int 1 is NOT the string '1'
 
     # ...and the valid coercions still pass
     def _ok(field: dict[str, Any], value: Any) -> bool:
@@ -945,6 +950,9 @@ def test_scalar_validation_rejects_invalid_answers() -> None:
     assert _ok(intf, "5") and _ok(intf, 5)
     assert _ok(numf, "1.5") and _ok(numf, 2)
     assert _ok(boolf, "true") and _ok(boolf, False)
+    assert _ok(strf, "hello")  # correct-typed string
+    assert _ok(str_enum, "1")  # string enum, string member
+    assert _ok(int_enum, "1")  # int enum, "1" coerces to int 1 -> member
 
 
 # ---------------------------------------------------------------------------

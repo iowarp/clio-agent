@@ -106,8 +106,10 @@ def translate_form_schema(requested_schema: Mapping[str, Any]) -> FormTranslatio
             {
                 "name": str(name),
                 "type": str(field_type or ("string" if enum is not None else "")),
-                "enum": [str(v) for v in enum]
-                if isinstance(enum, Sequence) and enum is not None
+                # Keep the enum's ORIGINAL types so membership stays type-preserving
+                # (``1`` must not satisfy an enum of ``['1']``) — finding 7 remnant.
+                "enum": list(enum)
+                if isinstance(enum, Sequence) and not isinstance(enum, (str, bytes))
                 else None,
                 "default": spec.get("default"),
                 "title": str(spec.get("title") or name),
@@ -208,12 +210,14 @@ def _valid_scalar(value: Any, field_type: str, enum: Sequence[Any] | None) -> bo
     """Exact JSON-Schema scalar check on a POST-coercion value (finding 7).
 
     ``enum`` present (including an EMPTY enum, which admits nothing) enforces
-    membership and supersedes the primitive type. Booleans are NOT numbers/integers;
-    an integer must be integral; a number must be finite; both exclude ``bool``.
+    TYPE-PRESERVING membership (``1`` is not ``'1'``) and supersedes the primitive
+    type. Otherwise every supported primitive is checked exactly: a string must be
+    ``str``; booleans are NOT numbers/integers; an integer must be integral; a number
+    must be finite; both numeric types exclude ``bool``.
     """
 
     if enum is not None:
-        return str(value) in [str(e) for e in enum]
+        return value in enum  # type-preserving; empty enum admits nothing
     if field_type == "boolean":
         return isinstance(value, bool)
     if field_type == "integer":
@@ -222,7 +226,9 @@ def _valid_scalar(value: Any, field_type: str, enum: Sequence[Any] | None) -> bo
         return (
             isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
         )
-    return True  # string / unconstrained
+    if field_type == "string":
+        return isinstance(value, str)
+    return True  # unconstrained (no declared type, no enum)
 
 
 def build_form_content(

@@ -927,3 +927,150 @@ def test_forwarded_non_resumable_child_fails_task(tmp_path: Path, monkeypatch) -
         settled = app.state.agent_task_registry.get(task.task_id)
         assert settled.status == STATUS_FAILED
         assert settled.error_reason == "child_forward_not_resumable"
+
+
+def test_forwarded_exit_only_completes_task_and_frees_slot(tmp_path: Path, monkeypatch) -> None:
+    """A forwarded plan-exit answer that launches NO child turn (exit_only) still
+    terminalizes the bound task SUCCESS instead of stranding it (#1113 finding 5 remnant)."""
+
+    from types import SimpleNamespace
+
+    import clio_agent.gact.plan_mode as plan_mode
+    from clio_agent.gact.agent_tasks import STATUS_COMPLETED
+    from clio_agent.gact.elicitation_bridge import deliver_forwarded_answer
+    from clio_agent.gact.types import UserQuestion
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        now = "2026-07-17T00:00:00+00:00"
+        parent = app.state.sessions.create(workspace_id="ws_default", title="p")
+        child = app.state.sessions.create(
+            workspace_id="ws_default", title="c", parent_session_id=parent.id
+        )
+        app.state.user_questions["q_child"] = UserQuestion(
+            id="q_child",
+            session_id=child.id,
+            prompt="Exit plan?",
+            kind="confirmation",
+            created_at=now,
+            updated_at=now,
+            source="orchestrator_action",
+            metadata={"plan_exit_approval": True},
+        )
+        task = _register_running_task(app, parent.id, child.id)
+        forwarded = UserQuestion(
+            id="q_fwd",
+            session_id=parent.id,
+            prompt="Exit plan?",
+            kind="confirmation",
+            created_at=now,
+            updated_at=now,
+            source="child_forwarded",
+            answer="approve",
+            metadata={
+                "forwarded_from_session": child.id,
+                "forwarded_from_question": "q_child",
+                "task_id": task.task_id,
+            },
+        )
+        # exit_only: plan-exit is honored (mode switch), NO child turn launched.
+        monkeypatch.setattr(plan_mode, "resolve_plan_exit_answer", lambda a, d, s, q: None)
+        deps = SimpleNamespace(
+            start_background_user_turn=lambda *a, **k: None, ask_user_resume_text=lambda q: ""
+        )
+        assert app.state.in_flight_turns.get(child.id) is None
+        deliver_forwarded_answer(app, deps, forwarded)
+
+        settled = app.state.agent_task_registry.get(task.task_id)
+        assert settled.status == STATUS_COMPLETED  # SUCCESS terminal, slot freed
+        assert not settled.error_reason
+
+
+def test_forwarded_answer_with_turn_settles_task_on_turn_completion(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When the forwarded answer launches a child turn, the task settles at that turn's
+    completion (callback attached), not before (#1113 finding 5 remnant)."""
+
+    from types import SimpleNamespace
+
+    import clio_agent.gact.plan_mode as plan_mode
+    from clio_agent.gact.agent_tasks import STATUS_COMPLETED, STATUS_RUNNING
+    from clio_agent.gact.elicitation_bridge import deliver_forwarded_answer
+    from clio_agent.gact.types import Message, Part, UserQuestion
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        now = "2026-07-17T00:00:00+00:00"
+        parent = app.state.sessions.create(workspace_id="ws_default", title="p")
+        child = app.state.sessions.create(
+            workspace_id="ws_default", title="c", parent_session_id=parent.id
+        )
+        app.state.user_questions["q_child"] = UserQuestion(
+            id="q_child",
+            session_id=child.id,
+            prompt="Exit plan?",
+            kind="confirmation",
+            created_at=now,
+            updated_at=now,
+            source="orchestrator_action",
+            metadata={"plan_exit_approval": True},
+        )
+        task = _register_running_task(app, parent.id, child.id)
+        forwarded = UserQuestion(
+            id="q_fwd",
+            session_id=parent.id,
+            prompt="Exit plan?",
+            kind="confirmation",
+            created_at=now,
+            updated_at=now,
+            source="child_forwarded",
+            answer="approve",
+            metadata={
+                "forwarded_from_session": child.id,
+                "forwarded_from_question": "q_child",
+                "task_id": task.task_id,
+            },
+        )
+
+        class _FakeTurn:
+            def __init__(self) -> None:
+                self.cb: Any = None
+
+            def add_done_callback(self, cb: Any) -> None:
+                self.cb = cb
+
+        fake_turn = _FakeTurn()
+        # plan-exit that RESUMES: register an in-flight child turn.
+        monkeypatch.setattr(
+            plan_mode,
+            "resolve_plan_exit_answer",
+            lambda a, d, s, q: app.state.in_flight_turns.__setitem__(child.id, fake_turn),
+        )
+        deps = SimpleNamespace(
+            start_background_user_turn=lambda *a, **k: None, ask_user_resume_text=lambda q: ""
+        )
+        deliver_forwarded_answer(app, deps, forwarded)
+
+        # Not settled yet — bound to the turn's completion.
+        assert app.state.agent_task_registry.get(task.task_id).status == STATUS_RUNNING
+        assert fake_turn.cb is not None
+
+        # The child turn completes with a final assistant message; fire the callback.
+        app.state.messages[child.id] = [
+            Message(
+                id="m1",
+                session_id=child.id,
+                role="assistant",
+                created_at=now,
+                updated_at=now,
+                parts=[Part(id="p1", type="text", text="done")],
+            )
+        ]
+        app.state.sessions.update(child.id, status="idle")
+        fake_turn.cb(fake_turn)
+
+        settled = app.state.agent_task_registry.get(task.task_id)
+        assert settled.status == STATUS_COMPLETED

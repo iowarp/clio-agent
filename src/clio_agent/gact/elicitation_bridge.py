@@ -266,11 +266,9 @@ def _terminalize_question(app: Any, question_id: str, status: str, event_type: s
 def resolve_elicitation(app: Any, question: UserQuestion) -> bool:
     """Resolve a parked elicitation from the shared answer/cancel route.
 
-    Returns ``True`` when ``question`` was an in-flight elicitation whose parked
-    tool call was woken (cross-loop-safe), ``False`` otherwise (the caller then
-    runs its normal, non-elicitation resolution). The resolution is derived from
-    the already-updated question row (status + selected options / answer /
-    metadata), then delivered to the parked future on its owning loop.
+    Returns ``True`` when ``question`` was an in-flight elicitation whose parked call
+    was woken (cross-loop-safe), ``False`` otherwise. The resolution is derived from
+    the already-updated row and delivered to the parked future on its owning loop.
     """
 
     waiter = _pop_waiter(app, question.id)
@@ -469,13 +467,11 @@ def _pending_question_for(app: Any, session_id: str) -> UserQuestion | None:
 def forward_child_question_to_parent(app: Any, task: Any, child_sid: str) -> str | None:
     """Forward a paused child's pending question to the parent's HITL surface.
 
-    Replaces the deleted ``child_requires_user_input`` fail path: an unattended
-    child whose turn paused for user input has its pending question mirrored onto
-    the parent's (root attended) session so a human can answer. The forwarded
-    question links back to the child so :func:`deliver_forwarded_answer` /
-    :func:`relay_forwarded_cancel` can relay the resolution. Returns the forwarded
-    question id, or ``None`` (typed reason) when the child had no pending question
-    — the caller (``turn_spawn``) then terminates the task typed, never hangs.
+    Mirrors an unattended child's pending question onto the parent's (root attended)
+    session, linked back so :func:`deliver_forwarded_answer` / :func:`relay_forwarded_cancel`
+    relay the resolution. Returns the forwarded question id, or ``None`` (typed reason)
+    when the child had none — the caller then terminates the task typed (replaces the
+    deleted ``child_requires_user_input`` fail path).
     """
 
     child_q = _pending_question_for(app, child_sid)
@@ -521,9 +517,8 @@ def relay_forwarded_cancel(
     """Relay a parent-side cancel of a forwarded question down to the child + task.
 
     Cancels the mirrored child question and fails the bound AgentTask with a typed
-    ``reason`` (via ``turn_spawn``), so a declined/cancelled/expired forward never
-    leaves the child waiting or the task's concurrency slot pinned. Returns ``True``
-    when the row was a forwarded mirror handled here.
+    ``reason``, so a declined/cancelled/expired forward never leaves the child waiting
+    or its slot pinned. Returns ``True`` when the row was a forwarded mirror.
     """
 
     child_qid = str(forwarded.metadata.get("forwarded_from_question") or "")
@@ -542,10 +537,9 @@ def relay_forwarded_cancel(
 def resolve_cancelled_question(app: Any, question: UserQuestion) -> bool:
     """Resolve a cancelled question that is an elicitation or a forwarded mirror.
 
-    Used by the shared cancel route: an in-flight elicitation wakes its parked call
-    with a typed cancel; a forwarded mirror relays the cancel to the child + fails
-    the task. Returns ``True`` when handled (the route then skips the idle
-    transition), ``False`` for an ordinary ask-user question.
+    Shared cancel route: an in-flight elicitation wakes its parked call (typed cancel);
+    a forwarded mirror relays the cancel to the child + fails the task. Returns ``True``
+    when handled (route skips the idle transition), ``False`` for an ordinary ask.
     """
 
     if resolve_elicitation(app, question):
@@ -561,12 +555,12 @@ def resolve_cancelled_question(app: Any, question: UserQuestion) -> bool:
 def deliver_forwarded_answer(app: Any, deps: Any, forwarded: UserQuestion) -> None:
     """Relay a forwarded parent answer to the child question via the OWNER path.
 
-    Copies the answer onto the child's pending question (atomic) then dispatches it
-    through the SAME :func:`resolve_answered_question` the route uses — plan-exit child
-    -> ``resolve_plan_exit_answer``, elicitation child -> wake its parked call, ordinary
-    ask -> resume the child turn (finding 5). EVERY unresumable edge (child question /
-    session gone, non-resumable non-special ask) terminalizes the bound AgentTask typed,
-    so the concurrency slot is always freed — never a dead end.
+    Applies the answer atomically then dispatches through the SAME
+    :func:`resolve_answered_question` the route uses (plan-exit -> mode switch,
+    elicitation -> wake parked call, ordinary ask -> resume). The task is then bound to
+    the outcome via :func:`~clio_agent.gact.child_forward.settle_or_attach_forwarded_task`
+    (turn -> settle at its completion; no turn / exit_only -> SUCCESS terminal + admit).
+    Every unresumable edge terminalizes the task typed — the slot is never leaked (finding 5).
     """
 
     child_sid = str(forwarded.metadata.get("forwarded_from_session") or "")
@@ -579,6 +573,14 @@ def deliver_forwarded_answer(app: Any, deps: Any, forwarded: UserQuestion) -> No
             from clio_agent.gact.child_forward import fail_forwarded_child_task  # noqa: PLC0415
 
             fail_forwarded_child_task(app, task_id, "child_forward_not_resumable")
+
+    def _settle_or_attach(tid: str) -> None:
+        if tid:
+            from clio_agent.gact.child_forward import (
+                settle_or_attach_forwarded_task,  # noqa: PLC0415
+            )
+
+            settle_or_attach_forwarded_task(app, tid)
 
     answered = claim_question_transition(
         app,
@@ -593,6 +595,10 @@ def deliver_forwarded_answer(app: Any, deps: Any, forwarded: UserQuestion) -> No
         return
     # Owner-specific resolution (plan-exit / elicitation) — same dispatcher as the route.
     if resolve_answered_question(app, deps, child_sid, answered):
+        # Bind the task to the outcome: if a child turn launched (resume / plan-exit
+        # that resumes) settle at its completion; if none launched (plan-exit exit_only —
+        # answered + honored, child idle) terminalize SUCCESS + admit, never leak the slot.
+        _settle_or_attach(task_id)
         return
     child_sess = app.state.sessions.get(child_sid) if child_sid else None
     if child_sess is None or not answered.metadata.get("resume_on_answer"):
@@ -611,6 +617,7 @@ def deliver_forwarded_answer(app: Any, deps: Any, forwarded: UserQuestion) -> No
         },
         prev_status=getattr(child_sess, "status", "waiting_user"),
     )
+    _settle_or_attach(task_id)  # attach _on_child_done to the resumed turn (never strand)
 
 
 def _build_elicit_result(resolution: ElicitResolution) -> Any:
@@ -630,10 +637,8 @@ async def handle_elicitation(
 ) -> Any:
     """Mint a UserQuestion for an elicitation, park the call, return the result.
 
-    The single body behind the wired elicitation hook. ``params`` is the SDK
-    ``ElicitRequestFormParams`` or ``ElicitRequestURLParams``. A schema/url
-    degrade returns a typed decline; a timeout returns a cancel; a user answer
-    returns the accept content. Never raises for a serveable request.
+    The single body behind the wired hook. A schema/url degrade returns a typed
+    decline; a timeout returns cancel; an answer returns accept content. Never raises.
     """
 
     session_id = invocation.session_id or ""
@@ -713,11 +718,9 @@ def make_elicitation_hook(
 ) -> Any:
     """Build the elicitation hook bound to ONE invocation (correlation identity).
 
-    The returned coroutine matches
-    :class:`~clio_agent.tools.mcp_handlers.ElicitationHook`; the ``context``
-    argument the dispatcher supplies is ignored because this closure already
-    carries its invocation context (one client per tool call), which is the
-    correct correlation on the per-call execution path.
+    Matches :class:`~clio_agent.tools.mcp_handlers.ElicitationHook`; ignores the
+    dispatcher's ``context`` because this closure already carries its invocation (one
+    client per call) — the correct correlation on the per-call execution path.
     """
 
     async def hook(
@@ -763,15 +766,12 @@ def make_elicitation_client(
 ) -> Any:
     """Build a per-call, elicitation-capable execution client (#1113).
 
-    Wires the elicitation handler (bound to ``invocation`` — the correlation
-    identity for this single-call client) and declares the elicitation capability
-    at exactly the served granularity (form always; url only when a trust
-    allow-list is configured, so url is never over-advertised). The client keeps
-    NORMAL (auto) era negotiation: a legacy server negotiates legacy and the
-    handler fires; a modern-only server keeps working and elicitation simply never
-    arrives (SEP-2577 removed the back-channel — the modern input path is MRTR /
-    tasks, out of P1.3 scope). When ``invocation`` is omitted, it is built from
-    ``namespace`` / ``tool_name`` and the session currently driving the turn.
+    Wires the handler bound to ``invocation`` (per-call correlation) and declares the
+    capability at served granularity (form always; url only with a configured trust
+    list — no over-advertisement). Keeps NORMAL (auto) era negotiation: a legacy server
+    negotiates legacy and the handler fires; a modern-only server keeps working and
+    elicitation never arrives (SEP-2577). ``invocation`` omitted -> built from
+    ``namespace`` / ``tool_name`` + the driving session.
     """
 
     from clio_agent.tools.mcp_runtime import MCPClientHandlers, make_mcp_client  # noqa: PLC0415
