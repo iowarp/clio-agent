@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "close_invocation",
+    "correlated_capabilities",
     "correlated_elicitation_handler",
     "make_correlated_handlers",
     "open_invocation",
@@ -154,3 +155,19 @@ def make_correlated_handlers() -> Any:
     from clio_agent.tools.mcp_runtime import MCPClientHandlers  # noqa: PLC0415
 
     return MCPClientHandlers(elicitation=correlated_elicitation_handler)
+
+
+def correlated_capabilities() -> Any:
+    """Declare the elicitation capability at the served granularity for the gateway.
+
+    #1113 finding 2 (partial): the wired SDK callback otherwise auto-advertises BOTH
+    form and url, but the correlated handler declines every url request unless a trust
+    allow-list is configured. Advertise form always and url ONLY when trusted origins
+    are configured, so a server never picks an advertised mode that always fails.
+    """
+
+    from clio_agent.gact.elicitation_bridge import _resolve_trusted_origins  # noqa: PLC0415
+    from clio_agent.tools.mcp_handlers import MCPClientCapabilities  # noqa: PLC0415
+
+    origins = _resolve_trusted_origins(None)
+    return MCPClientCapabilities(elicitation_form=True, elicitation_url=bool(origins))

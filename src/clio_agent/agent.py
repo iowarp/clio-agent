@@ -322,12 +322,20 @@ class ClioAgent(dspy.Module):
         # #1113: wire the receive-loop elicitation handler onto every declared-server
         # backend so a mid-tool-call elicitation reaches the HITL surface. The hook is
         # app-agnostic (it resolves its invocation from the correlation record the tool
-        # observer opens), so binding it once on the shared gateway is safe.
-        from clio_agent.gact.elicitation_correlation import (
-            make_correlated_handlers,  # noqa: PLC0415
+        # observer opens), so binding it once on the shared gateway is safe. Capabilities
+        # are declared at the served granularity (form always; url only with a configured
+        # trust list) so the advertised envelope never offers a mode that always fails.
+        from clio_agent.gact.elicitation_correlation import (  # noqa: PLC0415
+            correlated_capabilities,
+            make_correlated_handlers,
         )
 
-        tool_gateway = build_gateway(specs, cwd=cwd, handlers=make_correlated_handlers())
+        tool_gateway = build_gateway(
+            specs,
+            cwd=cwd,
+            handlers=make_correlated_handlers(),
+            capabilities=correlated_capabilities(),
+        )
         if not set_catalog:
             return tool_gateway
         experts = self._discover_pack_experts()

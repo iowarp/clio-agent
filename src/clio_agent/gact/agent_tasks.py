@@ -78,6 +78,7 @@ ERROR_REASONS = frozenset(
         "child_question_forward_failed",
         "child_forward_unattended_timeout",
         "child_forward_declined",
+        "child_forward_not_resumable",
         "cancelled_by_parent",
         "child_session_gone",
         "timeout",

@@ -12,6 +12,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -756,3 +757,173 @@ def test_unattended_forward_deadline_fails_task(tmp_path: Path, monkeypatch) -> 
         assert settled.error_reason == "child_forward_unattended_timeout"
         assert app.state.user_questions[fwd.id].status == "expired"
         assert app.state.user_questions["q_child"].status == "cancelled"
+
+
+def _register_running_task(app, parent_id, child_id, task_id="task_fwd"):
+    from clio_agent.gact.agent_tasks import STATUS_RUNNING, AgentTask
+
+    now = "2026-07-17T00:00:00+00:00"
+    task = AgentTask(
+        task_id=task_id,
+        parent_session_id=parent_id,
+        child_session_id=child_id,
+        status=STATUS_RUNNING,
+        created_at=now,
+        updated_at=now,
+    )
+    app.state.agent_task_registry.register(task)
+    return task
+
+
+def test_forwarded_plan_exit_answer_routes_through_owner(tmp_path: Path, monkeypatch) -> None:
+    """A forwarded plan-exit child answer dispatches through resolve_plan_exit_answer
+    (mode switch), NOT a generic ask-user resume (#1113 finding 5 reopened)."""
+
+    from types import SimpleNamespace
+
+    import clio_agent.gact.plan_mode as plan_mode
+    from clio_agent.gact.elicitation_bridge import deliver_forwarded_answer
+    from clio_agent.gact.types import UserQuestion
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        now = "2026-07-17T00:00:00+00:00"
+        parent = app.state.sessions.create(workspace_id="ws_default", title="p")
+        child = app.state.sessions.create(
+            workspace_id="ws_default", title="c", parent_session_id=parent.id
+        )
+        app.state.user_questions["q_child"] = UserQuestion(
+            id="q_child",
+            session_id=child.id,
+            prompt="Exit plan?",
+            kind="confirmation",
+            created_at=now,
+            updated_at=now,
+            source="orchestrator_action",
+            metadata={"plan_exit_approval": True},
+        )
+        forwarded = UserQuestion(
+            id="q_fwd",
+            session_id=parent.id,
+            prompt="Exit plan?",
+            kind="confirmation",
+            created_at=now,
+            updated_at=now,
+            source="child_forwarded",
+            answer="approve",
+            metadata={
+                "forwarded_from_session": child.id,
+                "forwarded_from_question": "q_child",
+                "task_id": "task_fwd",
+            },
+        )
+        calls: dict[str, Any] = {}
+        monkeypatch.setattr(
+            plan_mode,
+            "resolve_plan_exit_answer",
+            lambda a, d, s, q: calls.setdefault("plan_exit", (s, q.id)),
+        )
+        deps = SimpleNamespace(
+            start_background_user_turn=lambda *a, **k: calls.setdefault("resume", True),
+            ask_user_resume_text=lambda q: "resume",
+        )
+        deliver_forwarded_answer(app, deps, forwarded)
+
+        assert calls.get("plan_exit") == (child.id, "q_child")
+        assert "resume" not in calls  # plan-exit owned it; no generic resume launched
+        assert app.state.user_questions["q_child"].status == "answered"
+
+
+def test_forwarded_missing_child_question_fails_task(tmp_path: Path, monkeypatch) -> None:
+    """A forwarded answer whose child question is gone terminates the task typed,
+    freeing the slot instead of stranding it (#1113 finding 5 reopened)."""
+
+    from types import SimpleNamespace
+
+    from clio_agent.gact.agent_tasks import STATUS_FAILED
+    from clio_agent.gact.elicitation_bridge import deliver_forwarded_answer
+    from clio_agent.gact.types import UserQuestion
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        now = "2026-07-17T00:00:00+00:00"
+        parent = app.state.sessions.create(workspace_id="ws_default", title="p")
+        child = app.state.sessions.create(
+            workspace_id="ws_default", title="c", parent_session_id=parent.id
+        )
+        task = _register_running_task(app, parent.id, child.id)
+        forwarded = UserQuestion(
+            id="q_fwd",
+            session_id=parent.id,
+            prompt="?",
+            created_at=now,
+            updated_at=now,
+            source="child_forwarded",
+            metadata={
+                "forwarded_from_session": child.id,
+                "forwarded_from_question": "q_gone",  # no such child question
+                "task_id": task.task_id,
+            },
+        )
+        deps = SimpleNamespace(
+            start_background_user_turn=lambda *a, **k: None, ask_user_resume_text=lambda q: ""
+        )
+        deliver_forwarded_answer(app, deps, forwarded)
+        settled = app.state.agent_task_registry.get(task.task_id)
+        assert settled.status == STATUS_FAILED
+        assert settled.error_reason == "child_forward_not_resumable"
+
+
+def test_forwarded_non_resumable_child_fails_task(tmp_path: Path, monkeypatch) -> None:
+    """A forwarded answer for a non-resumable, non-special child question terminates
+    the task typed rather than launching a bogus turn (#1113 finding 5 reopened)."""
+
+    from types import SimpleNamespace
+
+    from clio_agent.gact.agent_tasks import STATUS_FAILED
+    from clio_agent.gact.elicitation_bridge import deliver_forwarded_answer
+    from clio_agent.gact.types import UserQuestion
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        now = "2026-07-17T00:00:00+00:00"
+        parent = app.state.sessions.create(workspace_id="ws_default", title="p")
+        child = app.state.sessions.create(
+            workspace_id="ws_default", title="c", parent_session_id=parent.id
+        )
+        app.state.user_questions["q_child"] = UserQuestion(
+            id="q_child",
+            session_id=child.id,
+            prompt="?",
+            created_at=now,
+            updated_at=now,
+            source="orchestrator_action",
+            metadata={},  # no resume_on_answer, no plan_exit_approval, no elicitation waiter
+        )
+        task = _register_running_task(app, parent.id, child.id)
+        forwarded = UserQuestion(
+            id="q_fwd",
+            session_id=parent.id,
+            prompt="?",
+            created_at=now,
+            updated_at=now,
+            source="child_forwarded",
+            metadata={
+                "forwarded_from_session": child.id,
+                "forwarded_from_question": "q_child",
+                "task_id": task.task_id,
+            },
+        )
+        resumed: list[Any] = []
+        deps = SimpleNamespace(
+            start_background_user_turn=lambda *a, **k: resumed.append(True),
+            ask_user_resume_text=lambda q: "",
+        )
+        deliver_forwarded_answer(app, deps, forwarded)
+        assert resumed == []  # no bogus turn launched
+        settled = app.state.agent_task_registry.get(task.task_id)
+        assert settled.status == STATUS_FAILED
+        assert settled.error_reason == "child_forward_not_resumable"

@@ -13,6 +13,7 @@ in :data:`clio_agent.gact.elicitation_bridge.ELICITATION_REASONS`.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -168,17 +169,60 @@ def check_url_trust(url: str, trusted_origins: Sequence[str]) -> str | None:
 # --- Answer -> content + validation ---
 
 
-def _coerce(value: Any, field_type: str) -> Any:
-    """Coerce a string-ish answer to the field's JSON-Schema scalar type."""
+_TRUE_STRINGS = frozenset({"true", "yes", "1", "on", "y"})
+_FALSE_STRINGS = frozenset({"false", "no", "0", "off", "n"})
 
-    if field_type in {"number", "integer"} and isinstance(value, str):
+
+def _coerce(value: Any, field_type: str) -> Any:
+    """Coerce a string answer toward the declared scalar type (best-effort, strict).
+
+    Only STRINGS are coerced; non-strings pass through unchanged so :func:`_valid_scalar`
+    can reject a wrong type (e.g. a bool handed to an integer field). An unparseable
+    numeric string or an UNRECOGNISED boolean string is returned unchanged — never
+    silently coerced to ``0``/``False`` — so validation rejects it (finding 7).
+    """
+
+    if not isinstance(value, str):
+        return value
+    if field_type == "integer":
         try:
-            return int(value) if field_type == "integer" else float(value)
+            return int(value.strip())
         except ValueError:
             return value
-    if field_type == "boolean" and isinstance(value, str):
-        return value.strip().lower() in {"true", "yes", "1", "on", "y"}
+    if field_type == "number":
+        try:
+            return float(value.strip())
+        except ValueError:
+            return value
+    if field_type == "boolean":
+        lowered = value.strip().lower()
+        if lowered in _TRUE_STRINGS:
+            return True
+        if lowered in _FALSE_STRINGS:
+            return False
+        return value  # unrecognised -> stays a str so validation rejects it
     return value
+
+
+def _valid_scalar(value: Any, field_type: str, enum: Sequence[Any] | None) -> bool:
+    """Exact JSON-Schema scalar check on a POST-coercion value (finding 7).
+
+    ``enum`` present (including an EMPTY enum, which admits nothing) enforces
+    membership and supersedes the primitive type. Booleans are NOT numbers/integers;
+    an integer must be integral; a number must be finite; both exclude ``bool``.
+    """
+
+    if enum is not None:
+        return str(value) in [str(e) for e in enum]
+    if field_type == "boolean":
+        return isinstance(value, bool)
+    if field_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if field_type == "number":
+        return (
+            isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+        )
+    return True  # string / unconstrained
 
 
 def build_form_content(
@@ -255,11 +299,11 @@ def validate_elicitation_answer(
             continue
         value = content[name]
         enum = spec.get("enum")
-        if enum and str(value) not in [str(e) for e in enum]:
-            return f"field {name!r} must be one of {list(enum)}"
         field_type = str(spec.get("type") or "string")
-        if field_type in {"integer", "number"} and isinstance(value, str):
-            return f"field {name!r} must be a {field_type}"
+        if not _valid_scalar(value, field_type, enum):
+            if enum is not None:
+                return f"field {name!r} must be one of {list(enum)}"
+            return f"field {name!r} must be a valid {field_type}"
     return None
 
 

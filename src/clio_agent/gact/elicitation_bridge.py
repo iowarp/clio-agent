@@ -5,25 +5,20 @@ capability (the 2026-07-28 era removed the server->client back-channel, SEP-2577
 so ``ctx.elicit`` is only reachable on a legacy connection). This module owns the
 whole bridge:
 
-* **Schema translation** — a form-mode flat restricted JSON Schema (string /
-  number / integer / boolean / enum + defaults) becomes a
-  :class:`~clio_agent.gact.types.UserQuestion` (kind + options + a ``fields``
-  descriptor). A non-object / non-flat / unsupported schema yields a TYPED degrade
-  (never a crash) and the client declines.
-* **Async-safe pause point** — the in-flight tool call parks on an
-  ``asyncio.Future`` (NOT a ``threading.Event``: the handler fires on the client's
-  receive loop; blocking it would deadlock the answer route that resolves it). The
-  future is resolved cross-loop-safely, so a tool call on a worker-thread loop
-  (``_run_external_mcp_tool_sync`` -> ``asyncio.run``) is woken by the answer route
-  on the serving loop.
-* **Correlation by protocol identity** — the handler is bound, PER TOOL CALL, to
-  the :class:`~clio_agent.tools.mcp_handlers.MCPInvocationContext` captured where
-  the call is issued (one client per call): never a client-keyed registry (proxy
-  clones defeat that) nor ambient fire-time state (P1-IMPLEMENTER mandate).
+* **Schema translation** (in ``elicitation_schema``) — a flat restricted form schema
+  becomes a :class:`~clio_agent.gact.types.UserQuestion`; a non-object / non-flat /
+  unsupported schema yields a TYPED degrade (never a crash) and the client declines.
+* **Async-safe pause point** — the in-flight tool call parks on a ``shield``-ed
+  ``asyncio.Future`` (NOT a ``threading.Event``: the handler fires on the receive
+  loop; blocking it would deadlock the answer route). It is resolved cross-loop-safely,
+  and a single atomic status transition (:func:`claim_question_transition`) arbitrates
+  answer-vs-timeout so exactly one wins.
+* **Correlation by protocol identity** — the per-call client binds its invocation at
+  construction; shared/cloned clients (gateway/executor) resolve at the receive loop
+  via ``elicitation_correlation`` (never a client-keyed registry / ambient state).
 * **One surface** — the question lands on the SAME ``app.state.user_questions`` +
   ``pending_user_question_id`` anchor + answer route as native asks (RULE 4, no
-  parallel store); answering / cancelling resolves the parked future. A child's
-  question is forwarded to the root attended session.
+  parallel store). A child's question is forwarded to the root attended session.
 * **URL trust** — url-mode is NEVER pre-fetched; the full URL is shown for explicit
   consent, an untrusted origin is REJECTED (typed reason), url is advertised only
   where a trust allow-list is configured, and the consenting client MUST render it
@@ -37,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -63,6 +58,7 @@ __all__ = [
     "FormTranslation",
     "check_elicitation_answer",
     "check_url_trust",
+    "claim_question_transition",
     "deliver_forwarded_answer",
     "forward_child_question_to_parent",
     "make_elicitation_client",
@@ -95,6 +91,7 @@ ELICITATION_REASONS: dict[str, str] = {
     "elicitation_unknown_mode": "elicitation mode is neither form nor url; declined",
     "child_waiting_without_question": "child paused for input but has no pending question to forward",
     "forwarded_child_question_gone": "forwarded parent answer arrived but the child question is gone",
+    "forwarded_child_not_resumable": "forwarded child question is not resumable; task terminated",
 }
 
 
@@ -164,15 +161,59 @@ def _safe_set(future: "asyncio.Future[ElicitResolution]", resolution: ElicitReso
         future.set_result(resolution)
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+#: Serializes the ONE atomic status transition of any user question (answer / cancel /
+#: timeout / forwarded expiry): first out of ``pending`` wins, closing the race where an
+#: answer and a timeout both "won" (HTTP 200 while the tool got cancel) — #1113 finding 6.
+_QUESTIONS_LOCK = threading.Lock()
+
+
+def claim_question_transition(
+    app: Any,
+    question_id: str,
+    new_status: str,
+    *,
+    answer: str = "",
+    selected_options: Sequence[str] | None = None,
+    answer_metadata: Mapping[str, Any] | None = None,
+) -> UserQuestion | None:
+    """Atomically transition a PENDING question to ``new_status`` (first-wins).
+
+    The single serialization point for every terminalization. Returns the updated row
+    when THIS caller made the ``pending`` -> ``new_status`` transition; ``None`` when
+    the question is absent or already non-pending (the loser). Answer fields apply
+    inside the same lock, so a timeout cannot overwrite an accepted answer (or v.v.).
+    """
+
+    with _QUESTIONS_LOCK:
+        questions = getattr(app.state, "user_questions", None)
+        if questions is None:
+            return None
+        row = questions.get(question_id)
+        if row is None or row.status != "pending":
+            return None
+        update: dict[str, Any] = {"status": new_status, "updated_at": _now_iso()}
+        if new_status == "answered":
+            update["answer"] = answer
+            update["selected_options"] = list(selected_options or [])
+            update["answer_metadata"] = dict(answer_metadata or {})
+        updated = row.model_copy(update=update)
+        questions[question_id] = updated
+        return updated
+
+
 async def _await_answer(app: Any, question: UserQuestion, timeout: float) -> ElicitResolution:
     """Register the waiter, publish the question, then park until it is resolved.
 
-    Async-safe: the handler runs on the client's receive loop; this yields it (so
-    the answer route can run and resolve the future) instead of blocking. The
-    waiter is registered BEFORE publish, closing the race where an answer between
-    publish and registration would miss it. On timeout OR outer cancellation the
-    still-pending question is atomically terminalized (expired/cancelled), so no
-    stale row and no anchor can leak a late answer into native handling (finding 6).
+    Async- AND race-safe: the waiter is registered BEFORE publish (no gap), and the
+    future is ``shield``-ed so a ``wait_for`` timeout cancels only the wait, not the
+    future the answer route cross-loop resolves. The race arbiter is the atomic
+    :func:`claim_question_transition`: on timeout, claim ``expired`` — win -> typed
+    cancel; lose (answer already claimed ``answered``) -> await the shielded future
+    for the delivered result (finding 6).
     """
 
     loop = asyncio.get_running_loop()
@@ -180,37 +221,34 @@ async def _await_answer(app: Any, question: UserQuestion, timeout: float) -> Eli
     _register_waiter(app, question.id, (future, loop))
     _publish_question_created(app, question)
     try:
-        return await asyncio.wait_for(future, timeout=timeout)
+        return await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
     except (TimeoutError, asyncio.TimeoutError):
-        _record_reason("elicitation_wait_timeout", question_id=question.id)
-        _terminalize_question(app, question.id, "expired", "user_question.expired")
-        return ElicitResolution(action="cancel")
+        if _terminalize_question(app, question.id, "expired", "user_question.expired"):
+            _record_reason("elicitation_wait_timeout", question_id=question.id)
+            return ElicitResolution(action="cancel")
+        # The answer won the atomic transition; its result is (being) delivered onto
+        # the shielded, still-live future — await it so the tool gets the real answer.
+        return await future
     except asyncio.CancelledError:
-        # Outer tool failure / loop teardown / cancel cascade: terminalize + re-raise.
+        # Outer tool failure / loop teardown / cancel cascade: claim cancelled + re-raise.
         _terminalize_question(app, question.id, "cancelled", "user_question.cancelled")
         raise
     finally:
         _pop_waiter(app, question.id)
 
 
-def _terminalize_question(app: Any, question_id: str, status: str, event_type: str) -> None:
-    """Atomically move a still-pending elicitation row to a terminal state.
+def _terminalize_question(app: Any, question_id: str, status: str, event_type: str) -> bool:
+    """Atomically move a still-pending question to a terminal state; publish + clear.
 
-    Only acts while the row is still ``pending`` (never clobbers an answer/cancel
-    that already landed via the route). Clears ``pending_user_question_id`` only
-    when it still points here, and publishes a typed event. Because the row is no
-    longer pending, a late answer hits the route's 409 guard instead of leaking
-    into native ask-user resolution (finding 6).
+    Returns ``True`` when THIS caller won the transition (emitted the typed event +
+    cleared the anchor), ``False`` when it lost to a concurrent answer/cancel — so a
+    late answer hits the route's 409 guard (finding 6).
     """
 
-    row = getattr(app.state, "user_questions", {}).get(question_id)
-    if row is None or row.status != "pending":
-        return
-    updated = row.model_copy(
-        update={"status": status, "updated_at": datetime.now(timezone.utc).isoformat()}
-    )
-    app.state.user_questions[question_id] = updated
-    _clear_pending_anchor(app, row.session_id, only_if=question_id)
+    updated = claim_question_transition(app, question_id, status)
+    if updated is None:
+        return False
+    _clear_pending_anchor(app, updated.session_id, only_if=question_id)
     bus = getattr(app.state, "bus", None)
     if bus is not None:
         from clio_agent.gact.events import Event  # noqa: PLC0415
@@ -218,10 +256,11 @@ def _terminalize_question(app: Any, question_id: str, status: str, event_type: s
         bus.publish(
             Event(
                 type=event_type,
-                session_id=row.session_id,
+                session_id=updated.session_id,
                 payload=updated.model_dump(exclude_none=True),
             )
         )
+    return True
 
 
 def resolve_elicitation(app: Any, question: UserQuestion) -> bool:
@@ -491,11 +530,8 @@ def relay_forwarded_cancel(
     task_id = str(forwarded.metadata.get("task_id") or "")
     if not child_qid and not task_id:
         return False
-    child_q = app.state.user_questions.get(child_qid) if child_qid else None
-    if child_q is not None and child_q.status == "pending":
-        app.state.user_questions[child_qid] = child_q.model_copy(
-            update={"status": "cancelled", "updated_at": datetime.now(timezone.utc).isoformat()}
-        )
+    if child_qid:
+        claim_question_transition(app, child_qid, "cancelled")  # atomic, no-op if resolved
     if task_id:
         from clio_agent.gact.child_forward import fail_forwarded_child_task  # noqa: PLC0415
 
@@ -523,32 +559,44 @@ def resolve_cancelled_question(app: Any, question: UserQuestion) -> bool:
 
 
 def deliver_forwarded_answer(app: Any, deps: Any, forwarded: UserQuestion) -> None:
-    """Relay a forwarded parent answer to the child question and resume the child.
+    """Relay a forwarded parent answer to the child question via the OWNER path.
 
-    The parent-facing forwarded question has been answered; copy that answer onto
-    the child's pending question and, when it was a resumable ask, kick the child's
-    resume turn through the SAME ``start_background_user_turn`` seam the native
-    answer route uses (no duplicate turn machinery).
+    Copies the answer onto the child's pending question (atomic) then dispatches it
+    through the SAME :func:`resolve_answered_question` the route uses — plan-exit child
+    -> ``resolve_plan_exit_answer``, elicitation child -> wake its parked call, ordinary
+    ask -> resume the child turn (finding 5). EVERY unresumable edge (child question /
+    session gone, non-resumable non-special ask) terminalizes the bound AgentTask typed,
+    so the concurrency slot is always freed — never a dead end.
     """
 
     child_sid = str(forwarded.metadata.get("forwarded_from_session") or "")
     child_qid = str(forwarded.metadata.get("forwarded_from_question") or "")
-    child_q = app.state.user_questions.get(child_qid) if child_qid else None
-    if child_q is None:
-        _record_reason("forwarded_child_question_gone", child=child_sid, question=child_qid)
-        return
-    answered = child_q.model_copy(
-        update={
-            "status": "answered",
-            "answer": forwarded.answer,
-            "selected_options": list(forwarded.selected_options),
-            "answer_metadata": dict(forwarded.answer_metadata),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
+    task_id = str(forwarded.metadata.get("task_id") or "")
+
+    def _terminate(reason: str) -> None:
+        _record_reason(reason, child=child_sid, question=child_qid)
+        if task_id:
+            from clio_agent.gact.child_forward import fail_forwarded_child_task  # noqa: PLC0415
+
+            fail_forwarded_child_task(app, task_id, "child_forward_not_resumable")
+
+    answered = claim_question_transition(
+        app,
+        child_qid,
+        "answered",
+        answer=forwarded.answer,
+        selected_options=list(forwarded.selected_options),
+        answer_metadata=dict(forwarded.answer_metadata),
     )
-    app.state.user_questions[child_qid] = answered
+    if answered is None:
+        _terminate("forwarded_child_question_gone")
+        return
+    # Owner-specific resolution (plan-exit / elicitation) — same dispatcher as the route.
+    if resolve_answered_question(app, deps, child_sid, answered):
+        return
     child_sess = app.state.sessions.get(child_sid) if child_sid else None
     if child_sess is None or not answered.metadata.get("resume_on_answer"):
+        _terminate("forwarded_child_not_resumable")
         return
     app.state.sessions.update(child_sid, metadata_patch={"pending_user_question_id": ""})
     deps.start_background_user_turn(

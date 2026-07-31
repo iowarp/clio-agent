@@ -114,15 +114,15 @@ def arm_forward_deadline(app: "FastAPI", forwarded_qid: str) -> None:
     deadline = _forward_deadline_seconds(app)
 
     def _expire() -> None:
-        forwarded = app.state.user_questions.get(forwarded_qid)
-        if forwarded is None or forwarded.status != "pending":
-            return  # parent answered/cancelled in time — nothing to do
-        from clio_agent.gact.elicitation_bridge import relay_forwarded_cancel  # noqa: PLC0415
-        from clio_agent.gact.turn_spawn import _now  # noqa: PLC0415
-
-        app.state.user_questions[forwarded_qid] = forwarded.model_copy(
-            update={"status": "expired", "updated_at": _now()}
+        from clio_agent.gact.elicitation_bridge import (  # noqa: PLC0415
+            claim_question_transition,
+            relay_forwarded_cancel,
         )
+
+        # Atomically claim expiry (first-wins vs a parent answer/cancel landing now).
+        forwarded = claim_question_transition(app, forwarded_qid, "expired")
+        if forwarded is None:
+            return  # the parent answered/cancelled in time — nothing to do
         # Cancel the child question + fail the task with the TIMEOUT reason, freeing
         # the concurrency slot for a headless (never-answering) parent.
         relay_forwarded_cancel(app, forwarded, reason="child_forward_unattended_timeout")
