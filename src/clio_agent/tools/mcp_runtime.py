@@ -237,6 +237,28 @@ class MCPClientHandlers:
     cancellation: "MessageHook | None" = None
 
 
+def input_required_max_rounds() -> int:
+    """Resolve the MRTR round bound (#1114) — config, else the SDK default.
+
+    Bounds the modern-era ``InputRequiredResult`` -> retry-with-``inputResponses``
+    loop on every execution-path client. Config key
+    ``tools.mcp.input_required_max_rounds`` / env ``CLIO_MCP_INPUT_REQUIRED_MAX_ROUNDS``;
+    the default matches the mcp SDK's ``DEFAULT_INPUT_REQUIRED_MAX_ROUNDS`` (10) so a
+    server never loops unbounded and exhaustion is a typed, config-tunable degrade.
+    """
+
+    from mcp.client._input_required import DEFAULT_INPUT_REQUIRED_MAX_ROUNDS  # noqa: PLC0415
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "tools.mcp.input_required_max_rounds",
+        env="CLIO_MCP_INPUT_REQUIRED_MAX_ROUNDS",
+        default=DEFAULT_INPUT_REQUIRED_MAX_ROUNDS,
+        cast=conf.as_int,
+    )
+
+
 def clio_client_info() -> Any:
     """CLIO's client identity, stamped into every execution-path request's ``_meta``.
 
@@ -401,7 +423,14 @@ def make_mcp_client(
 
         client_cls = Client
 
-    kwargs: dict[str, Any] = {"client_info": clio_client_info()}
+    kwargs: dict[str, Any] = {
+        "client_info": clio_client_info(),
+        # #1114: the modern-era MRTR loop (InputRequiredResult -> retry with
+        # inputResponses) is bounded by this CLIO-config-resolved round cap on EVERY
+        # execution-path client (any modern tool call can enter the loop), replacing the
+        # SDK's hardcoded default. Exhaustion surfaces the typed degrade in mcp_executor.
+        "input_required_max_rounds": input_required_max_rounds(),
+    }
     if handlers is not None:
         if handlers.elicitation is not None:
             kwargs["elicitation_handler"] = ElicitationDispatcher(handlers.elicitation)
@@ -488,6 +517,7 @@ __all__ = [
     "MCPClientHandlers",
     "WireMode",
     "clio_client_info",
+    "input_required_max_rounds",
     "make_mcp_client",
     "wire_value",
 ]

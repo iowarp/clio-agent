@@ -89,13 +89,18 @@ def test_make_mcp_client_message_hook_is_multiplexer() -> None:
     assert mux._hook is on_message
 
 
+#: Kwargs every factory-built client carries regardless of handlers: CLIO's identity
+#: (#1111) plus the #1114 MRTR round bound (any modern tool call can enter that loop).
+_ALWAYS_KWARGS = {"client_info", "input_required_max_rounds"}
+
+
 def test_make_mcp_client_no_handlers_stamps_identity_only() -> None:
-    """No handlers => identity-only construction (client_info, no handler kwargs)."""
+    """No handlers => identity + round bound only (no handler kwargs)."""
 
     client = make_mcp_client("transport-sentinel", client_cls=_FakeClient)
 
     assert client.target == "transport-sentinel"
-    assert set(client.kwargs) == {"client_info"}
+    assert set(client.kwargs) == _ALWAYS_KWARGS
     assert client.kwargs["client_info"].name == "clio-agent"
 
 
@@ -104,7 +109,7 @@ def test_make_mcp_client_all_none_hooks_stamps_identity_only() -> None:
 
     client = make_mcp_client("t", handlers=MCPClientHandlers(), client_cls=_FakeClient)
 
-    assert set(client.kwargs) == {"client_info"}
+    assert set(client.kwargs) == _ALWAYS_KWARGS
     assert client.kwargs["client_info"].name == "clio-agent"
 
 

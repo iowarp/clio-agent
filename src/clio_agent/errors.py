@@ -23,6 +23,9 @@ MCP_CAPABILITY_REFUSED = "mcp_capability_refused"
 MCP_PROTOCOL_REFUSED = "mcp_protocol_refused"
 MCP_RESULT_DOWNGRADED_TO_COMPLETE = "mcp_result_downgraded_to_complete"
 MCP_WIRE_CANCELLATION_UNAVAILABLE = "mcp_wire_cancellation_unavailable"
+#: #1114: the modern-era MRTR loop (InputRequiredResult -> retry with inputResponses)
+#: exceeded its config-resolved round bound without reaching a terminal result.
+MCP_INPUT_REQUIRED_ROUNDS_EXCEEDED = "mcp_input_required_rounds_exceeded"
 
 
 class ClioError(Exception):
@@ -139,6 +142,31 @@ class MCPUnsupportedProtocolVersionError(MCPProtocolError):
             reason=MCP_PROTOCOL_REFUSED,
             error_type="mcp_unsupported_protocol_version",
             protocol_data=protocol_data,
+        )
+
+
+class MCPInputRequiredRoundsExceededError(ToolError):
+    """The modern-era MRTR loop exceeded its round bound without terminating (#1114).
+
+    A server kept returning ``InputRequiredResult`` past the config-resolved
+    ``tools.mcp.input_required_max_rounds``. Surfaced by the executor as a TYPED
+    degrade (``reason`` in the advertised x_clio_stream_fallback_reasons catalog)
+    instead of the raw SDK ``InputRequiredRoundsExceededError``, so the model sees
+    a typed, recoverable tool error rather than a traceback.
+    """
+
+    def __init__(self, max_rounds: int, tool: str = "") -> None:
+        self.reason = MCP_INPUT_REQUIRED_ROUNDS_EXCEEDED
+        self.max_rounds = max_rounds
+        super().__init__(
+            f"MCP tool {tool!r} exceeded the input-required round bound ({max_rounds}): "
+            "the server kept requesting input without completing. Raise "
+            "tools.mcp.input_required_max_rounds or fix the server.",
+            details={
+                "reason": MCP_INPUT_REQUIRED_ROUNDS_EXCEEDED,
+                "max_rounds": max_rounds,
+                "tool": tool,
+            },
         )
 
 

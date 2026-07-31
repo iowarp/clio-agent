@@ -33,6 +33,7 @@ from typing import Any
 
 from clio_agent.errors import (
     MCP_CAPABILITY_REFUSED,
+    MCP_INPUT_REQUIRED_ROUNDS_EXCEEDED,
     MCP_PROTOCOL_REFUSED,
     MCP_RESULT_DOWNGRADED_TO_COMPLETE,
     MCP_WIRE_CANCELLATION_UNAVAILABLE,
@@ -180,6 +181,17 @@ _STREAM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
         "description": (
             "The MCP transport did not settle after its in-flight call task was cancelled, "
             "so CLIO surfaced typed cooperative cancellation without claiming the server stopped."
+        ),
+    },
+    MCP_INPUT_REQUIRED_ROUNDS_EXCEEDED: {
+        "category": "mcp_result_tolerance",
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["raise_input_required_max_rounds", "fix_mcp_server", "retry"],
+        "description": (
+            "The modern-era MRTR loop (InputRequiredResult -> retry with inputResponses) "
+            "exceeded its config-resolved tools.mcp.input_required_max_rounds bound without "
+            "reaching a terminal result; the tool call surfaced a typed degrade."
         ),
     },
 }

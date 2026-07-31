@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
 
+from mcp.client._input_required import InputRequiredRoundsExceededError
 from mcp.shared.exceptions import MCPError
 
 from clio_agent.errors import (
@@ -367,6 +368,19 @@ class AsyncMCPToolExecutor:
                 if not self._tool_timeout_is_retry_safe(name):
                     raise self.mark_uncertain_mutating_timeout(name, args, timeout) from exc
                 raise TimeoutError(f"MCP tool {name!r} timed out after {timeout:g}s") from exc
+            except InputRequiredRoundsExceededError as exc:
+                # #1114: the MRTR loop hit its config-resolved round bound. Surface the
+                # typed CLIO degrade (advertised x_clio_stream_fallback_reasons reason)
+                # instead of the raw SDK exception, so the model sees a typed tool error.
+                from clio_agent.errors import (  # noqa: PLC0415
+                    MCPInputRequiredRoundsExceededError,
+                )
+
+                if first_call and namespace is not None:
+                    spawn_diet.spawn_failed(namespace)
+                raise MCPInputRequiredRoundsExceededError(
+                    getattr(exc, "max_rounds", 0), tool=name
+                ) from exc
             except Exception as exc:
                 if first_call and namespace is not None:
                     spawn_diet.spawn_failed(namespace)
