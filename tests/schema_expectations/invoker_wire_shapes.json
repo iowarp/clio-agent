@@ -1,0 +1,157 @@
+{
+  "_generated_by": "uv run --no-sync --no-cache python scripts/generate_schema_equality_expectations.py",
+  "_note": "Generated file; change the contract, then regenerate. Never edit by hand.",
+  "invoker_types": {
+    "TaskEvent": {
+      "dataclass_fields": [
+        "event_type",
+        "task_id",
+        "session_id",
+        "status",
+        "payload"
+      ],
+      "required_fields": [
+        "event_type",
+        "task_id",
+        "session_id",
+        "status"
+      ],
+      "wire_fields": [
+        "event_type",
+        "task_id",
+        "session_id",
+        "status",
+        "payload"
+      ]
+    },
+    "TaskHandle": {
+      "dataclass_fields": [
+        "task_id",
+        "parent_session_id",
+        "child_session_id",
+        "status",
+        "queued_reason",
+        "run_index",
+        "depth"
+      ],
+      "required_fields": [
+        "task_id",
+        "parent_session_id",
+        "child_session_id"
+      ],
+      "wire_fields": [
+        "task_id",
+        "parent_session_id",
+        "child_session_id",
+        "status",
+        "queued_reason",
+        "run_index",
+        "depth"
+      ]
+    },
+    "TaskResult": {
+      "dataclass_fields": [
+        "task_id",
+        "parent_session_id",
+        "child_session_id",
+        "agent_ref",
+        "depth",
+        "run_index",
+        "status",
+        "queued_reason",
+        "error_reason",
+        "created_at",
+        "updated_at",
+        "result",
+        "artifact_ref"
+      ],
+      "required_fields": [
+        "task_id",
+        "parent_session_id",
+        "child_session_id"
+      ],
+      "wire_fields": [
+        "task_id",
+        "parent_session_id",
+        "child_session_id",
+        "agent_ref",
+        "depth",
+        "run_index",
+        "status",
+        "queued_reason",
+        "error_reason",
+        "created_at",
+        "updated_at",
+        "result",
+        "artifact_ref"
+      ]
+    },
+    "TaskSpec": {
+      "dataclass_fields": [
+        "child_expert_id",
+        "task_text",
+        "parent_session_id",
+        "requesting_expert_id",
+        "parent_turn_id",
+        "depth",
+        "mode",
+        "workflow_state",
+        "fanout_bound",
+        "seed_context",
+        "skip_declared_check",
+        "workspace_id",
+        "session_mode",
+        "session_scope_metadata"
+      ],
+      "required_fields": [
+        "child_expert_id",
+        "task_text",
+        "parent_session_id"
+      ],
+      "wire_fields": [
+        "child_expert_id",
+        "task_text",
+        "parent_session_id",
+        "requesting_expert_id",
+        "parent_turn_id",
+        "depth",
+        "mode",
+        "workflow_state",
+        "fanout_bound",
+        "seed_context",
+        "skip_declared_check",
+        "workspace_id",
+        "session_mode",
+        "session_scope_metadata"
+      ]
+    }
+  },
+  "relay_state_map": {
+    "canceled": {
+      "status": "cancelled"
+    },
+    "input_required": {
+      "status": "input_required"
+    },
+    "leased": {
+      "status": "working"
+    },
+    "protocol": {
+      "status": "failed"
+    },
+    "queued": {
+      "status": "working"
+    },
+    "running": {
+      "status": "working"
+    },
+    "succeeded": {
+      "isError": false,
+      "status": "completed"
+    },
+    "tool-fail": {
+      "isError": true,
+      "status": "completed"
+    }
+  }
+}

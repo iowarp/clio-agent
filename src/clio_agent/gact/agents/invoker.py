@@ -32,14 +32,11 @@ and the in-process implementation:
   family the substrate publishes, as a serializable boundary shape + the
   status→event-type mapping.
 
-Relay compatibility (clio-relay ``src/clio_relay/models.py``): the vocabulary
-mirrors relay's durable job records — ``RelayJob``/``RelayTask`` carry
-``state`` + ``created_at``/``updated_at`` timelines + ``last_error``, ``ArtifactRef``
-is the durable artifact index entry, and ``TaskTimelineEvent`` is the resumable
-event. clio keeps its established status words (``completed``/``cancelled``) rather
-than relay's (``succeeded``/``canceled``); the two are 1:1 and the mapping is
-recorded in :data:`RELAY_STATE_MAP` so a federation adapter can translate at the
-wire without either side renaming its records.
+Relay compatibility (clio-relay ``docs/mcp-tasks.md``): relay's durable job
+observations project onto the MCP task vocabulary without changing relay's stored
+state words. :data:`RELAY_STATE_MAP` records that complete cross-repository table,
+including the distinction between a completed tool error (``isError``) and a failed
+protocol operation.
 
 **The seam IS the same substrate.** :class:`InProcessExpertInvoker` delegates every
 operation to the existing spawn / registry / cancel primitives
@@ -64,11 +61,7 @@ from typing import TYPE_CHECKING, Any, Optional, Protocol, Sequence, runtime_che
 from clio_agent.gact.agent_tasks import (
     AGENT_TASK_CONSUMED_EVENT,
     AGENT_TASK_EVENTS,
-    STATUS_CANCELLED,
-    STATUS_COMPLETED,
-    STATUS_FAILED,
     STATUS_QUEUED,
-    STATUS_RUNNING,
     TERMINAL_STATUSES,
     AgentTask,
 )
@@ -114,15 +107,20 @@ __all__ = [
 TASK_EVENT_VOCABULARY: dict[str, str] = dict(AGENT_TASK_EVENTS)
 TASK_CONSUMED_EVENT: str = AGENT_TASK_CONSUMED_EVENT
 
-# clio status → clio-relay ``JobState`` (relay src/clio_relay/models.py). 1:1 and
-# lossless; a federation adapter translates at the wire so neither side renames its
-# durable records. ``queued``/``running``/``failed`` are shared verbatim.
-RELAY_STATE_MAP: dict[str, str] = {
-    STATUS_QUEUED: "queued",
-    STATUS_RUNNING: "running",
-    STATUS_COMPLETED: "succeeded",
-    STATUS_FAILED: "failed",
-    STATUS_CANCELLED: "canceled",
+# Relay observation → MCP task projection. Relay keeps its durable JobState words;
+# adapters use this table at the protocol boundary. ``input_required`` is a durable
+# outstanding-input observation, while ``tool-fail`` and ``protocol`` distinguish
+# two outcomes of relay ``failed``: completed tool work with ``isError`` versus a
+# protocol-level task failure.
+RELAY_STATE_MAP: dict[str, dict[str, str | bool]] = {
+    "queued": {"status": "working"},
+    "leased": {"status": "working"},
+    "running": {"status": "working"},
+    "input_required": {"status": "input_required"},
+    "succeeded": {"status": "completed", "isError": False},
+    "tool-fail": {"status": "completed", "isError": True},
+    "protocol": {"status": "failed"},
+    "canceled": {"status": "cancelled"},
 }
 
 
