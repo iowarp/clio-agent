@@ -19,7 +19,6 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import threading
-from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
@@ -36,6 +35,11 @@ from clio_agent.gact.agent_tasks import (
     publish_agent_task_event,
 )
 from clio_agent.gact.loop_inbox import enqueue_completion_wake
+from clio_agent.gact.spawn_context import (
+    declared_child_ids_from_bindings,
+    inherited_session_scope_metadata,
+    resolve_spawn_bindings,
+)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -72,38 +76,6 @@ _ANSWER_EXCERPT_MAX = 2000
 # nothing here lets a child relax below its inherited posture.
 _RESTRICTIVE_SESSION_MODES = frozenset({"plan", "architect"})
 
-# Session-scoped activation keys a spawned child MUST inherit from its parent so it
-# resolves its declared expert against the SAME blueprint / expert-pack the parent
-# activated (session-scoped, possibly NOT installed globally) — never the global /
-# default catalog. ``active_agent_blueprint_*`` are stamped by the blueprint
-# activation route (see routes/blueprints.py) and read by resolution.py
-# (``_runtime_active_agent_blueprint_id`` / ``_runtime_active_agent_blueprint_path``);
-# ``active_expert_pack_*`` / ``expert_pack_id`` mirror them for expert packs
-# (``_runtime_active_session_expert_pack_id`` / ``_runtime_active_session_expert_pack_path``).
-_INHERITED_SESSION_SCOPE_PREFIXES = ("active_agent_blueprint_", "active_expert_pack_")
-_INHERITED_SESSION_SCOPE_KEYS = ("expert_pack_id",)
-
-
-def _inherited_session_scope_metadata(parent: Any) -> dict[str, Any]:
-    """Return the parent session's session-scoped blueprint / expert-pack activation
-    keys, copied VERBATIM for a spawned child.
-
-    Without this a child session created with only ``agent={"id": <expert>}``
-    resolves that expert through the GLOBAL catalog: on the live gate a child
-    accidentally resolved from a STALE global install while another failed typed
-    (``not_implemented``) because its global copy was disabled. Copying the
-    activation keys pins the child to the parent's active blueprint/pack. Tolerates
-    a missing / non-mapping parent metadata block (nothing to inherit → ``{}``)."""
-
-    metadata = getattr(parent, "metadata", None)
-    if not isinstance(metadata, Mapping):
-        return {}
-    return {
-        key: value
-        for key, value in metadata.items()
-        if key.startswith(_INHERITED_SESSION_SCOPE_PREFIXES) or key in _INHERITED_SESSION_SCOPE_KEYS
-    }
-
 
 @dataclass(frozen=True)
 class TaskSpec:
@@ -131,6 +103,14 @@ class TaskSpec:
     # routing decision to a different declared capability). A documented seam, not a
     # silent bypass: the depth backstop still applies and the child expert must resolve.
     skip_declared_check: bool = False
+    # P2.4 (#1122): execution-context bindings for a detached executor. ``None``
+    # means absent and permits the unchanged live-parent inheritance path; any
+    # present value wins over the parent field independently. ``mode`` above is
+    # already the sync/async collection semantic, hence the unambiguous
+    # ``session_mode`` name for the inherited plan/edit/architect posture.
+    workspace_id: Optional[str] = None
+    session_mode: Optional[str] = None
+    session_scope_metadata: Optional[dict[str, Any]] = None
 
 
 class SpawnError(Exception):
@@ -298,10 +278,31 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
             f"spawn depth {spec.depth} exceeds max {MAX_SPAWN_DEPTH}",
             reason="spawn_depth_exceeded",
         )
+    parent = app.state.sessions.get(spec.parent_session_id)
+    workspace_id, parent_mode, session_scope_metadata = resolve_spawn_bindings(parent, spec)
+    spec_has_bindings = any(
+        value is not None
+        for value in (spec.workspace_id, spec.session_mode, spec.session_scope_metadata)
+    )
+    parent_bindings_match = parent is not None and (
+        workspace_id == getattr(parent, "workspace_id", None)
+        and parent_mode == getattr(parent, "mode", None)
+        and session_scope_metadata == inherited_session_scope_metadata(parent)
+    )
     if not spec.skip_declared_check:
-        declared = _runtime_declared_child_ids(
-            app, spec.requesting_expert_id, session_id=spec.parent_session_id
-        )
+        if spec_has_bindings and not parent_bindings_match:
+            declared = declared_child_ids_from_bindings(
+                app,
+                spec.requesting_expert_id,
+                workspace_id=workspace_id,
+                session_scope_metadata=session_scope_metadata,
+            )
+        else:
+            # Compatibility path: a wholly unbound local spec with a live parent
+            # resolves through the exact pre-P2.4 session-inheritance call.
+            declared = _runtime_declared_child_ids(
+                app, spec.requesting_expert_id, session_id=spec.parent_session_id
+            )
         if spec.child_expert_id not in declared:
             raise SpawnError(
                 f"{spec.child_expert_id!r} is not a declared child of "
@@ -331,14 +332,11 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
     at_cap = global_at_cap or fanout_at_cap
 
     # ---- mint the child session (authoritative store) ----------------------
-    parent = app.state.sessions.get(spec.parent_session_id)
-    workspace_id = getattr(parent, "workspace_id", "ws_default") if parent else "ws_default"
     # Structural mode inheritance (P1.1 "subagents inherit structurally"): the child
     # is minted in the PARENT's session mode, not the default ``edit`` — else a
     # plan/architect-mode parent could spawn a full-authority edit-mode child and
     # write what the parent itself is denied (the plan-override bypass). See
     # ``_RESTRICTIVE_SESSION_MODES`` above.
-    parent_mode = str(getattr(parent, "mode", "") or "edit") if parent else "edit"
     child = app.state.sessions.create(
         workspace_id=workspace_id,
         title=f"{spec.child_expert_id} task",
@@ -384,11 +382,11 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
     # faithfully later (the AgentTask record deliberately carries no task_text), AND
     # inherit the parent's session-scoped blueprint / expert-pack activation keys so
     # the child resolves its expert against the parent's active blueprint (not the
-    # global/default catalog — see ``_inherited_session_scope_metadata``).
+    # global/default catalog — see ``inherited_session_scope_metadata``).
     app.state.sessions.update(
         child.id,
         metadata_patch={
-            **_inherited_session_scope_metadata(parent),
+            **session_scope_metadata,
             # Queryable audit trail for the mode-inheritance fix above: present (and
             # truthy) only when the child's mode was structurally inherited from a
             # restrictive parent, so the API/trace can distinguish "child is plan mode
@@ -407,6 +405,11 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
                 # skill-subagent launches faithfully later (parity with task_text).
                 "seed_context": spec.seed_context,
                 "skip_declared_check": spec.skip_declared_check,
+                # Persist resolved values so queued admission stays self-contained
+                # even when the parent session disappears before launch.
+                "workspace_id": workspace_id,
+                "session_mode": parent_mode,
+                "session_scope_metadata": session_scope_metadata,
             },
         },
     )
@@ -772,6 +775,9 @@ def _admit_next_queued(app: "FastAPI") -> None:
             fanout_bound=task.fanout_bound,
             seed_context=pending.get("seed_context", ""),
             skip_declared_check=bool(pending.get("skip_declared_check", False)),
+            workspace_id=pending.get("workspace_id"),
+            session_mode=pending.get("session_mode"),
+            session_scope_metadata=pending.get("session_scope_metadata"),
         )
         reg.register(replace(task, queued_reason=""))  # clear queued_reason as it launches
         _launch(app, reg.get(task.task_id), spec)

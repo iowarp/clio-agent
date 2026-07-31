@@ -641,6 +641,7 @@ def _execute_spawn(
     """Perform the ``spawn_subagent_with_skill`` effect: spawn a child turn seeded with the
     skill body (the body is NOT inlined into the caller). Returns the task handle."""
 
+    from clio_agent.gact.spawn_context import bind_task_spec_to_parent  # noqa: PLC0415
     from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
         SpawnError,
         TaskSpec,
@@ -649,10 +650,8 @@ def _execute_spawn(
 
     body = read_skill_body(ref)  # fresh read at invocation time
     seed = f"# Skill: {ref.id}\n\n{body}"
-    # A declared ``agent`` routes to that child (keeping the declared-child guard); an absent
-    # agent is a SELF-directed subagent (the caller's own expert in a fresh context) — that is
-    # not a routing decision to a different capability, so the declared-child guard is skipped
-    # for it (documented seam, not a silent bypass).
+    # A missing agent is a self-directed fresh context, not a routing decision;
+    # the depth/resolution guards still apply.
     child_expert = effect.agent or agent_id
     spec = TaskSpec(
         child_expert_id=child_expert,
@@ -666,6 +665,7 @@ def _execute_spawn(
         skip_declared_check=not effect.agent,
         mode="async",
     )
+    spec = bind_task_spec_to_parent(app, spec)
     try:
         task = spawn_child_turn_threadsafe(app, spec)
     except SpawnError as exc:
