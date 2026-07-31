@@ -1,4 +1,4 @@
-# P0.6 (#1110): the clio-schemas consumer loop, proven in CI.
+# P0.6/P2.3 (#1110/#1121): the clio-schemas consumer loop, proven in CI.
 # clio-agent resolves the pinned clio-schemas package and verifies the export
 # pipeline (copy + byte/set check of the IMMUTABLE schemas shipped in the
 # package). The real record schemas move into the package in P2.1 (#1120),
@@ -7,9 +7,27 @@ name: schema-check
 on:
   push:
     branches: [develop, main]
-    paths: [".github/workflows/schema-check.yml", "pyproject.toml", "uv.lock", "schemas/**"]
+    paths:
+      - ".github/workflows/schema-check.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "scripts/generate_schema_equality_expectations.py"
+      - "src/clio_agent/gact/agents/invoker.py"
+      - "src/clio_agent/gact/artifacts/**"
+      - "src/clio_agent/gact/turn_spawn.py"
+      - "tests/schema_expectations/**"
+      - "tests/test_schema_equality.py"
   pull_request:
-    paths: [".github/workflows/schema-check.yml", "pyproject.toml", "uv.lock", "schemas/**"]
+    paths:
+      - ".github/workflows/schema-check.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "scripts/generate_schema_equality_expectations.py"
+      - "src/clio_agent/gact/agents/invoker.py"
+      - "src/clio_agent/gact/artifacts/**"
+      - "src/clio_agent/gact/turn_spawn.py"
+      - "tests/schema_expectations/**"
+      - "tests/test_schema_equality.py"
 jobs:
   clio-schemas-export-check:
     runs-on: ubuntu-latest
@@ -18,9 +36,13 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
-      - name: Install clio-schemas (exact tag pin, P2.1 #1120)
-        run: uv venv --clear && uv pip install "clio-schemas @ git+https://github.com/iowarp/clio-schemas@v0.2.0"
+      - name: Install clio-agent and the exact clio-schemas pin
+        run: uv sync --frozen --extra dev
       - name: Export the immutable schemas and self-check the copy
         run: |
-          uv run python -m clio_schemas.export --out /tmp/clio-schemas-export
-          uv run python -m clio_schemas.export --out /tmp/clio-schemas-export --check
+          uv run --no-sync python -m clio_schemas.export --out /tmp/clio-schemas-export
+          uv run --no-sync python -m clio_schemas.export --out /tmp/clio-schemas-export --check
+      - name: Check generated equality expectations
+        run: uv run --no-sync python scripts/generate_schema_equality_expectations.py --check
+      - name: Run cross-repository schema equality suite
+        run: uv run --no-sync pytest tests/test_schema_equality.py -q
