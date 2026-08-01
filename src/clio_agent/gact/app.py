@@ -374,6 +374,7 @@ from clio_agent.gact.agents.composition import (  # noqa: E402, F401
     _runtime_active_workspace_context,
     _runtime_dynamic_agent_children_context,
 )
+from clio_agent.gact.agents.invoker import InProcessExpertInvoker  # noqa: E402
 from clio_agent.gact.agents.resolution import (  # noqa: E402, F401
     _agent_definition_is_agent_blueprint,
     _agent_definition_uses_blueprint_runtime,
@@ -1341,14 +1342,13 @@ def build_app(
     # strong-ref set → no GC-cancellation; app-loop anchored; busy gate; typed
     # shutdown drain). ``in_flight_turns`` stays its per-session view.
     install_turn_runner(app)
-    # #948 S2 (#950): the AgentTask registry — an in-memory projection over the
-    # session store, rebuilt at boot by folding session_type=="agent_task" sessions
-    # (no fifth store). Feeds agent.task.* events + the task API; S3+ spawn into it.
+    # #948 S2 (#950): in-memory AgentTask projection over the session store, rebuilt
+    # from agent-task sessions; feeds events, the task API, and S3+ spawns.
     install_agent_task_registry(app)
-    # #948 S3 (#951): dedicated child-forward pool (never the default executor) so a
-    # parent blocked in a future wait can't starve its children. Sized to the
-    # concurrency cap (agent_tasks.max_concurrent / CLIO_MAX_CONCURRENT_AGENT_TASKS).
+    # #948 S3 (#951): dedicated child-forward pool, sized to the concurrency cap,
+    # prevents a waiting parent from starving its children.
     install_agent_task_executor(app)
+    app.state.expert_invoker = InProcessExpertInvoker(app)
     # #948 S1: schedule ids deferred because their session was busy at the cron
     # minute; _scheduler_tick_once retries them until the session frees (a coarse
     # cron can't be retried via due_now, which only re-yields on a cron match).

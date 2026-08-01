@@ -532,6 +532,7 @@ def run_declared_workflow(
     window = inactivity_window_s if inactivity_window_s is not None else resolve_step_inactivity_s()
 
     from clio_agent.gact.agent_tasks import STATUS_COMPLETED  # noqa: PLC0415
+    from clio_agent.gact.agents.invoker import SpawnError, TaskSpec  # noqa: PLC0415
     from clio_agent.gact.agents.spawn_runtime import (  # noqa: PLC0415
         _current_session_depth,  # noqa: PLC0415
         emit_workflow_step_return,
@@ -541,12 +542,6 @@ def run_declared_workflow(
         _active_semantic_turn_id,
     )
     from clio_agent.gact.spawn_context import bind_task_spec_to_parent  # noqa: PLC0415
-    from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
-        SpawnError,
-        TaskSpec,
-        cancel_agent_task,
-        spawn_child_turn_threadsafe,
-    )
 
     # #953 [2]/[8]: stamp each step's spawn with the active parent turn id so run_index
     # resets per turn (else it accumulates across the whole session).
@@ -600,8 +595,7 @@ def run_declared_workflow(
 
         task_text = _render_task(step, request)
         try:
-            spawned = spawn_child_turn_threadsafe(
-                app,
+            spawned = app.state.expert_invoker.invoke(
                 bind_task_spec_to_parent(
                     app,
                     TaskSpec(
@@ -680,7 +674,7 @@ def run_declared_workflow(
             else:
                 reason = STALL_CHILD_FAILED
             if non_terminal:
-                cancel_agent_task(app, spawned.task_id)
+                app.state.expert_invoker.cancel(spawned)
             logger.warning(
                 "workflow stall reason=%s step=%s child=%s child_status=%s agent=%s",
                 reason,

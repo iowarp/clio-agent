@@ -42,12 +42,10 @@ protocol operation.
 operation to the existing spawn / registry / cancel primitives
 (``spawn_child_turn_threadsafe`` / ``AgentTaskRegistry`` / ``cancel_agent_task``) —
 so introducing it creates **no second execution pathway** and no behavior change.
-The model-facing spawn-runtime tools continue to call those primitives directly in
-this slice (they layer local wire-rendering choreography — semantic events,
-``expert_handoff`` Parts, observe-later consumption — that is parent-side, not
-transport, and stays local under federation); when federation lands they migrate to
-route the SUBSTRATE calls through an :class:`ExpertInvoker`, swapping
-``InProcess`` for a detached implementation. The parity suite
+The model-facing spawn-runtime tools route substrate operations through the
+app-bound :class:`ExpertInvoker`. They retain local wire-rendering choreography —
+semantic events, ``expert_handoff`` Parts, and observe-later consumption — above
+the boundary because those are parent-side, not transport concerns. The parity suite
 (``tests/test_gact/test_invoker_s7.py``) proves the in-process invoker is
 record-, event- and typed-error-identical to the direct substrate calls today.
 """
@@ -397,8 +395,8 @@ class InProcessExpertInvoker:
     """In-process :class:`ExpertInvoker` — a thin, behavior-preserving seam over the
     existing spawn substrate.
 
-    Every operation is a direct delegation to the primitive the spawn-runtime tools
-    already use, so the invoker and the direct calls are the SAME execution pathway
+    Every operation is a direct delegation to the established substrate primitives,
+    so the invoker and the historical direct calls are the SAME execution pathway
     (proven record-, event- and error-identical by the S7 parity suite). No wire
     rendering, no observe-later consumption, no merge — those are parent-side
     concerns layered ABOVE the boundary by the tools, not transport, and stay local
