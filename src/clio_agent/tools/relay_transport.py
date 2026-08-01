@@ -38,11 +38,18 @@ from clio_agent.tools.mcp_task_extension import (
 )
 from clio_agent.tools.mcp_task_records import (
     TERMINAL_TASK_STATES,
+    TaskInputLedger,
     TaskKey,
     TaskRecordStore,
+    persist_ledger,
     resolve_store,
 )
-from clio_agent.tools.mcp_tasks import cancel_task, resume_task, send_task_get
+from clio_agent.tools.mcp_tasks import (
+    cancel_task,
+    resume_task,
+    send_task_get,
+    send_task_update,
+)
 
 RELAY_POLL_INTERVAL_MS = 1_000
 RELAY_RESULT_DELIVERY_SCHEMA = "clio-relay.mcp-result-delivery.v1"
@@ -358,6 +365,52 @@ class RelayTransportClient:
         )
         store.put(replace(record, cancel_requested=True))
         return ack
+
+    async def message(self, task: RelayTaskIdentity, text: str) -> None:
+        """Deliver one agent message through relay's durable tasks/update round.
+
+        The exact accepted elicitation payload is written through #1115's shared
+        input-answer ledger before transmission. A retry therefore re-sends the
+        same bytes; a conflicting second payload is refused instead of replacing
+        the answer relay has already consumed.
+        """
+
+        self._validate_identity(task)
+        message = str(text or "")
+        if not message.strip():
+            raise RelayTransportContractError(
+                "relay agent message must be non-empty",
+                reason="agent_message_empty",
+                details={"task_id": task.task_id},
+            )
+        store = self._record_store()
+        record = store.get(task.key)
+        if record is None:
+            raise RelayTransportContractError(
+                f"relay task {task.task_id!r} has no persisted #1115 record",
+                reason="relay_task_record_missing",
+                details=task.key.to_wire(),
+            )
+        payload = {"action": "accept", "content": {"message": message}}
+        ledger = TaskInputLedger.from_record(record)
+        existing = ledger.answer("agent_message")
+        if existing is not None and existing.payload != payload:
+            raise RelayTransportContractError(
+                "relay task already captured a different agent message",
+                reason="agent_message_already_captured",
+                details={"task_id": task.task_id, "input_key": "agent_message"},
+            )
+        if existing is None:
+            ledger.capture("agent_message", payload)
+            persist_ledger(store, task.key, ledger)
+        await send_task_update(
+            self._require_mcp_client().session,
+            task.task_id,
+            {"agent_message": payload},
+            self._timeout,
+        )
+        ledger.mark_delivered(["agent_message"])
+        persist_ledger(store, task.key, ledger)
 
     async def stream_events(
         self,

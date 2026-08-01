@@ -119,6 +119,7 @@ def test_react_main_with_children_gets_spawn_tools(tmp_path: Path, monkeypatch) 
             "spawn_agent_task",
             "wait_agent_tasks",
             "check_agent_tasks",
+            "message_agent",
             "observe_agent_tasks",
             "spawn_agents_parallel",
         }

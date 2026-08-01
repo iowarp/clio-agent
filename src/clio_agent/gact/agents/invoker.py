@@ -1,8 +1,7 @@
 """Transport-abstracted expert execution seam (#671, #1124, #1126).
 
-The module reuses the serializable :class:`TaskSpec` request from ``turn_spawn``
-and owns the uniform :class:`TaskHandle`, :class:`TaskResult`, and :class:`TaskEvent`
-boundary shapes. :class:`InProcessExpertInvoker` delegates to the established local
+The module reuses the serializable :class:`TaskSpec` request from ``turn_spawn`` and
+owns uniform handle, result, and event shapes. :class:`InProcessExpertInvoker` delegates local
 spawn substrate; :class:`RelayExpertInvoker` maps the same request onto durable relay
 remote-agent jobs and folds their observations into the same ``AgentTaskRegistry``.
 Parent-side semantic events, ``expert_handoff`` Parts, observe-later consumption,
@@ -16,6 +15,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Optional, Protocol, Sequence, runtime_checkable
 
+from clio_agent.gact.agent_message_transport import message_in_process, message_via_relay
 from clio_agent.gact.agent_tasks import (
     AGENT_TASK_CONSUMED_EVENT,
     AGENT_TASK_EVENTS,
@@ -405,6 +405,8 @@ class ExpertInvoker(Protocol):
         was cancelled."""
         ...
 
+    def message(self, handle: TaskHandle, text: str, metadata: Any = None) -> None: ...
+
 
 class InProcessExpertInvoker:
     """In-process :class:`ExpertInvoker` — a thin, behavior-preserving seam over the
@@ -482,6 +484,9 @@ class InProcessExpertInvoker:
 
         return cancel_agent_task(self._app, handle.task_id)
 
+    def message(self, handle: TaskHandle, text: str, metadata: Any = None) -> None:
+        message_in_process(self, handle, text, metadata)
+
 
 class RelayExpertInvoker:
     """Relay-backed ExpertInvoker using one durable task identity across clients.
@@ -533,6 +538,7 @@ class RelayExpertInvoker:
             "model": self._model,
             "workdir": self._workdir,
             "context": spec_to_wire(spec),
+            "request_followup_message": True,
         }
 
     def invoke(self, spec: TaskSpec) -> TaskHandle:
@@ -625,6 +631,9 @@ class RelayExpertInvoker:
         key = self._runtime.task_key(handle)
         self._runtime.cancel(handle.parent_session_id, key)
         return True
+
+    def message(self, handle: TaskHandle, text: str, metadata: Any = None) -> None:
+        message_via_relay(self, handle, text, metadata)
 
     def _task_key(self, handle: TaskHandle) -> Any:
         return self._runtime.task_key(handle)

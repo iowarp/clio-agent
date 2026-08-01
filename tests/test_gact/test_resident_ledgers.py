@@ -383,11 +383,15 @@ def test_estimate_bytes_counts_nested_and_image_payloads() -> None:
     light = [_msg("m", "s", text="hi")]
     nested = [_heavy_tool_message("m", "s", nested_text="Z" * 1_000_000)]
     image = [_heavy_tool_message("m", "s", data="B" * 1_000_000)]
+    light_bytes = _estimate_bytes(light)
     # The heavy off-text payloads dominate; the old text-only estimate scored them
     # at ~256 bytes. Sabotage: revert _estimate_bytes to text-only -> these go tiny.
     assert _estimate_bytes(nested) > 900_000
     assert _estimate_bytes(image) > 900_000
-    assert _estimate_bytes(light) < 1_000
+    # P2.11's three additive empty Part fields contribute 75 serialized bytes,
+    # moving this light fixture from 960 to 1,035; it remains three orders of
+    # magnitude lighter than either heavy payload.
+    assert 1_000 <= light_bytes < 1_100
 
 
 def test_byte_cap_evicts_tool_result_heavy_sessions() -> None:

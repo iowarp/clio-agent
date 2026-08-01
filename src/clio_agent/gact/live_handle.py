@@ -240,7 +240,9 @@ def _live_actions(task_id: str, child_session_id: str) -> list[dict[str, Any]]:
             "mode": "steer",
             "method": "POST",
             "path": f"/v1/agent-tasks/{task_id}/steer",
-            "description": "Send a mid-turn steer to a genuinely running child (409 otherwise).",
+            "description": (
+                "Message the child using its retained placement; completed children wake."
+            ),
         },
     ]
 
