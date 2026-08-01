@@ -34,12 +34,12 @@ from clio_agent.gact.agent_tasks import (
     persist_agent_task,
     publish_agent_task_event,
 )
-from clio_agent.gact.loop_inbox import enqueue_completion_wake
 from clio_agent.gact.spawn_context import (
     declared_child_ids_from_bindings,
     inherited_session_scope_metadata,
     resolve_spawn_bindings,
 )
+from clio_agent.gact.task_fold import finish_agent_task_transition, fold_agent_task_transition
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -673,9 +673,12 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
         if code == "cancelled":
             # A cancelled child is NOT observed-later: cancellation is parent-driven
             # (session cancel cascade), so the parent already knows — no notify.
-            updated = reg.transition(task_id, STATUS_CANCELLED, updated_at=now)
+            outcome = fold_agent_task_transition(
+                app, task_id, STATUS_CANCELLED, notify_pending=False, updated_at=now
+            )
         elif code:
-            updated = reg.transition(
+            outcome = fold_agent_task_transition(
+                app,
                 task_id,
                 STATUS_FAILED,
                 error_reason="agent_error",
@@ -683,7 +686,8 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
                 updated_at=now,
             )
         elif final is None:
-            updated = reg.transition(
+            outcome = fold_agent_task_transition(
+                app,
                 task_id,
                 STATUS_FAILED,
                 error_reason="agent_error",
@@ -696,7 +700,8 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
                 "answer_excerpt": _message_text(final)[:_ANSWER_EXCERPT_MAX],
                 "workflow_state": _child_workflow_state(app, child_sid, final),
             }
-            updated = reg.transition(
+            outcome = fold_agent_task_transition(
+                app,
                 task_id,
                 STATUS_COMPLETED,
                 result=result,
@@ -705,17 +710,9 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
             )
     except Exception:  # noqa: BLE001 - a hook error must not vanish (no-silent-fallback)
         logger.exception("agent_task completion hook failed task=%s child=%s", task_id, child_sid)
-        updated = reg.get(task_id) or task
+        return
 
-    persist_agent_task(app, updated)
-    publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[updated.status])
-    _fire_subagent_stop(app, updated, child_sid)
-    # Producer A (#1035): a child finishing DURING the parent's turn wakes the
-    # parent mid-turn via the loop inbox (gated on the parent being busy). This is
-    # a latency optimization only — ``notify_pending`` stays set as the next-turn
-    # fallback — and never raises into this completion callback.
-    enqueue_completion_wake(app, updated)
-    _admit_next_queued(app)
+    finish_agent_task_transition(app, outcome)
 
 
 def _child_workflow_state(app: "FastAPI", child_sid: str, final: Any) -> dict[str, Any]:

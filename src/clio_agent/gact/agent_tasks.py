@@ -238,6 +238,7 @@ class AgentTaskRegistry:
         *,
         error_reason: str = "",
         result: Optional[dict[str, Any]] = None,
+        artifact_ref: Optional[str] = None,
         notify_pending: Optional[bool] = None,
         updated_at: str = "",
     ) -> AgentTask:
@@ -289,6 +290,8 @@ class AgentTaskRegistry:
                 updates["error_reason"] = error_reason
             if result is not None:
                 updates["result"] = result
+            if artifact_ref is not None:
+                updates["artifact_ref"] = artifact_ref
             if notify_pending is not None:
                 updates["notify_pending"] = notify_pending
             updated = replace(current, **updates)
