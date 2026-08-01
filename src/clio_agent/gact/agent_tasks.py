@@ -521,6 +521,12 @@ def seed_agent_task(
     depth: int = 1,
     task_id: str = "",
     status: str = STATUS_QUEUED,
+    workspace_id: str | None = None,
+    session_mode: str | None = None,
+    session_scope_metadata: Mapping[str, Any] | None = None,
+    run_index: int = 0,
+    fanout_bound: int = 0,
+    queued_reason: str = "",
 ) -> AgentTask:
     """Mint a child session + its AgentTask projection, persist, register, and
     publish the initial lifecycle event.
@@ -537,14 +543,18 @@ def seed_agent_task(
     now = datetime.now(timezone.utc).isoformat()
     tid = task_id or ("task_" + uuid.uuid4().hex[:12])
     parent = app.state.sessions.get(parent_session_id)
-    workspace_id = (
-        getattr(parent, "workspace_id", "ws_default") if parent is not None else "ws_default"
+    child_workspace_id = (
+        workspace_id
+        if workspace_id is not None
+        else (getattr(parent, "workspace_id", "ws_default") if parent is not None else "ws_default")
     )
     child = app.state.sessions.create(
-        workspace_id=workspace_id,
+        workspace_id=child_workspace_id,
         title=f"agent-task {tid[-6:]}",
         parent_session_id=parent_session_id,
-        agent={"id": agent_ref.get("expert_id", "")},
+        metadata=dict(session_scope_metadata or {}),
+        agent={"id": agent_ref.get("expert_id", ""), "mode": "subagent"},
+        mode=session_mode or getattr(parent, "mode", "edit"),
     )
     task = AgentTask(
         task_id=tid,
@@ -553,7 +563,10 @@ def seed_agent_task(
         parent_turn_id=parent_turn_id,
         agent_ref=dict(agent_ref),
         depth=depth,
+        run_index=run_index,
+        fanout_bound=fanout_bound,
         status=status,
+        queued_reason=queued_reason,
         created_at=now,
         updated_at=now,
     )

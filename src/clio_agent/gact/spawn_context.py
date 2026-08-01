@@ -89,6 +89,58 @@ def resolve_spawn_bindings(parent: Any, spec: "TaskSpec") -> tuple[str, str, dic
     )
 
 
+def validate_task_spec(app: "FastAPI", spec: "TaskSpec") -> tuple[str, str, dict[str, Any]]:
+    """Validate one local or detached spawn and return its resolved bindings.
+
+    Both invoker implementations call this owner so depth, declaration, and
+    self-contained binding failures retain the same typed SpawnError.
+    """
+
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        _runtime_declared_child_ids,
+    )
+    from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
+        MAX_SPAWN_DEPTH,
+        SpawnError,
+    )
+
+    if spec.depth > MAX_SPAWN_DEPTH:
+        raise SpawnError(
+            f"spawn depth {spec.depth} exceeds max {MAX_SPAWN_DEPTH}",
+            reason="spawn_depth_exceeded",
+        )
+    parent = app.state.sessions.get(spec.parent_session_id)
+    workspace_id, parent_mode, session_scope_metadata = resolve_spawn_bindings(parent, spec)
+    spec_has_bindings = any(
+        value is not None
+        for value in (spec.workspace_id, spec.session_mode, spec.session_scope_metadata)
+    )
+    parent_bindings_match = parent is not None and (
+        workspace_id == getattr(parent, "workspace_id", None)
+        and parent_mode == getattr(parent, "mode", None)
+        and session_scope_metadata == inherited_session_scope_metadata(parent)
+    )
+    if not spec.skip_declared_check:
+        if spec_has_bindings and not parent_bindings_match:
+            declared = declared_child_ids_from_bindings(
+                app,
+                spec.requesting_expert_id,
+                workspace_id=workspace_id,
+                session_scope_metadata=session_scope_metadata,
+            )
+        else:
+            declared = _runtime_declared_child_ids(
+                app, spec.requesting_expert_id, session_id=spec.parent_session_id
+            )
+        if spec.child_expert_id not in declared:
+            raise SpawnError(
+                f"{spec.child_expert_id!r} is not a declared child of "
+                f"{spec.requesting_expert_id!r} (declared: {sorted(declared)})",
+                reason="undeclared_child",
+            )
+    return workspace_id, parent_mode, session_scope_metadata
+
+
 def bind_task_spec_to_parent(app: "FastAPI", spec: "TaskSpec") -> "TaskSpec":
     """Populate a production spec from its live parent without overriding fields."""
 

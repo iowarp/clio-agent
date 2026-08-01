@@ -34,11 +34,7 @@ from clio_agent.gact.agent_tasks import (
     persist_agent_task,
     publish_agent_task_event,
 )
-from clio_agent.gact.spawn_context import (
-    declared_child_ids_from_bindings,
-    inherited_session_scope_metadata,
-    resolve_spawn_bindings,
-)
+from clio_agent.gact.spawn_context import validate_task_spec
 from clio_agent.gact.task_fold import finish_agent_task_transition, fold_agent_task_transition
 
 if TYPE_CHECKING:
@@ -270,45 +266,8 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
     unique per child session), disambiguated by a durable ``run_index`` (#948 S5).
     """
 
-    from clio_agent.gact.agents.resolution import _runtime_declared_child_ids  # noqa: PLC0415
-
     # ---- structural guards -------------------------------------------------
-    if spec.depth > MAX_SPAWN_DEPTH:
-        raise SpawnError(
-            f"spawn depth {spec.depth} exceeds max {MAX_SPAWN_DEPTH}",
-            reason="spawn_depth_exceeded",
-        )
-    parent = app.state.sessions.get(spec.parent_session_id)
-    workspace_id, parent_mode, session_scope_metadata = resolve_spawn_bindings(parent, spec)
-    spec_has_bindings = any(
-        value is not None
-        for value in (spec.workspace_id, spec.session_mode, spec.session_scope_metadata)
-    )
-    parent_bindings_match = parent is not None and (
-        workspace_id == getattr(parent, "workspace_id", None)
-        and parent_mode == getattr(parent, "mode", None)
-        and session_scope_metadata == inherited_session_scope_metadata(parent)
-    )
-    if not spec.skip_declared_check:
-        if spec_has_bindings and not parent_bindings_match:
-            declared = declared_child_ids_from_bindings(
-                app,
-                spec.requesting_expert_id,
-                workspace_id=workspace_id,
-                session_scope_metadata=session_scope_metadata,
-            )
-        else:
-            # Compatibility path: a wholly unbound local spec with a live parent
-            # resolves through the exact pre-P2.4 session-inheritance call.
-            declared = _runtime_declared_child_ids(
-                app, spec.requesting_expert_id, session_id=spec.parent_session_id
-            )
-        if spec.child_expert_id not in declared:
-            raise SpawnError(
-                f"{spec.child_expert_id!r} is not a declared child of "
-                f"{spec.requesting_expert_id!r} (declared: {sorted(declared)})",
-                reason="undeclared_child",
-            )
+    workspace_id, parent_mode, session_scope_metadata = validate_task_spec(app, spec)
 
     # ---- backpressure: queue (never fail) at the cap ----------------------
     # PER-DEPTH admission: each depth has its own pool, so the cap is counted
