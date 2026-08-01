@@ -29,6 +29,12 @@ from clio_agent.gact.agent_tasks import (
     seed_agent_task,
 )
 from clio_agent.gact.app import build_app
+from clio_agent.tools.mcp_task_records import (
+    InMemoryTaskRecordStore,
+    TaskKey,
+    TaskRecord,
+    set_task_record_store,
+)
 
 
 class _Agent:
@@ -63,6 +69,7 @@ def test_metadata_round_trip() -> None:
         metadata = meta
 
     assert AgentTask.from_session(_Sess()) == task
+
     # A non-agent-task session projects to None.
     class _Plain:
         metadata = {"session_type": "chat"}
@@ -142,7 +149,10 @@ def test_boot_fold_skips_malformed_block_without_crashing() -> None:
 
     class _Bad:
         id = "sess_bad"
-        metadata = {"session_type": "agent_task", "agent_task": {"task_id": "x"}}  # missing required
+        metadata = {
+            "session_type": "agent_task",
+            "agent_task": {"task_id": "x"},
+        }  # missing required
 
     good = _task(task_id="task_ok")
 
@@ -253,6 +263,59 @@ def test_projection_rebuilt_from_sessions_json_across_restart(tmp_path: Path) ->
         got = c2.get(f"/v1/agent-tasks/{task_id}")
         assert got.status_code == 200, "task projection not rebuilt from sessions.json"
         assert got.json()["agent_ref"] == {"expert_id": "hpc"}
-        assert [t["task_id"] for t in c2.get(f"/v1/sessions/{parent}/agent-tasks").json()["tasks"]] == [
-            task_id
-        ]
+        assert [
+            t["task_id"] for t in c2.get(f"/v1/sessions/{parent}/agent-tasks").json()["tasks"]
+        ] == [task_id]
+
+
+def test_runs_api_projects_local_and_relay_handles_with_live_state(tmp_path: Path) -> None:
+    """#1127: the runs registry is a union view over the two existing stores."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    relay_store = InMemoryTaskRecordStore()
+    set_task_record_store(relay_store, durable=False)
+    try:
+        with TestClient(app) as client:
+            parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+            local = seed_agent_task(
+                app,
+                parent_session_id=parent,
+                agent_ref={"expert_id": "data_expert"},
+                status=STATUS_RUNNING,
+                placement="local",
+            )
+            relay_store.put(
+                TaskRecord(
+                    key=TaskKey(
+                        server_id="relay-ares",
+                        session_id=parent,
+                        task_id="task_relay_only",
+                    ),
+                    tool="relay_submit_remote_agent",
+                    backend={"cluster": "ares", "transport": "relay"},
+                    status="working",
+                    created_at="2026-08-01T00:00:00+00:00",
+                )
+            )
+
+            response = client.get("/v1/runs")
+            assert response.status_code == 200
+            rows = {row["handle_id"]: row for row in response.json()["runs"]}
+            assert set(rows) == {local.task_id, "task_relay_only"}
+            assert rows[local.task_id]["placement"] == "local"
+            assert rows[local.task_id]["live_state"] == "running"
+            assert rows["task_relay_only"]["placement"] == "relay:ares"
+            assert rows["task_relay_only"]["live_state"] == "running"
+
+            detached = client.post(f"/v1/runs/{local.task_id}/detach")
+            assert detached.status_code == 200
+            assert detached.json()["detached"] is True
+            assert app.state.agent_task_registry.get(local.task_id).status == STATUS_RUNNING
+
+            dismissed = client.post("/v1/runs/task_relay_only/dismiss")
+            assert dismissed.status_code == 200
+            assert dismissed.json() == {"dismissed": True, "handle_id": "task_relay_only"}
+            remaining = {row["handle_id"] for row in client.get("/v1/runs").json()["runs"]}
+            assert remaining == {local.task_id}
+    finally:
+        set_task_record_store(None)

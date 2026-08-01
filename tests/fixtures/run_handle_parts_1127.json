@@ -1,0 +1,37 @@
+[
+  {
+    "metadata": {
+      "question": "profile the CSV",
+      "run_index": 0
+    },
+    "agent_id": "main",
+    "parent_agent": "main",
+    "child_agent": "data_expert",
+    "stage": "delegate.started",
+    "handle_id": "task_example",
+    "run_label": "data_expert #1",
+    "live_state": "running",
+    "host": "local",
+    "placement": "local",
+    "status": "running",
+    "id": "part_task_example",
+    "type": "expert_handoff"
+  },
+  {
+    "agent_id": "main",
+    "call_id": "call_spawn_example",
+    "tool_name": "spawn_agent_task",
+    "input": {
+      "agent": "data_expert",
+      "placement": "relay:ares",
+      "task": "profile the CSV"
+    },
+    "handle_id": "task_relay_example",
+    "run_label": "data_expert #1",
+    "live_state": "running",
+    "host": "ares",
+    "placement": "relay:ares",
+    "id": "part_tool_example",
+    "type": "tool_call"
+  }
+]

@@ -288,6 +288,11 @@ def test_spawn_agent_task_success_emits_delegation_started_and_returns_task(monk
         "status": "running",
         "run_index": 0,
         "queued_reason": "",
+        "handle_id": "task_abc",
+        "run_label": "data_expert #1",
+        "live_state": "running",
+        "host": "local",
+        "placement": "local",
     }
     # Exactly one delegation.started event, with the full wire block (migrated from
     # the deleted test_generated_child_expert_tool_emits_semantic_delegation_events).
@@ -501,12 +506,22 @@ def test_spawn_agents_parallel_emits_fanout_started_and_spawns_each(monkeypatch)
                 "status": "running",
                 "run_index": 0,
                 "queued_reason": "",
+                "handle_id": "task_data_expert",
+                "run_label": "data_expert #1",
+                "live_state": "running",
+                "host": "local",
+                "placement": "local",
             },
             {
                 "task_id": "task_hpc_expert",
                 "status": "running",
                 "run_index": 0,
                 "queued_reason": "",
+                "handle_id": "task_hpc_expert",
+                "run_label": "hpc_expert #1",
+                "live_state": "running",
+                "host": "local",
+                "placement": "local",
             },
         ]
     }
@@ -947,3 +962,213 @@ def test_orchestrator_max_iters_scales_with_declared_children() -> None:
     # An explicit blueprint param always wins, both directions.
     pinned = SimpleNamespace(parameters={"max_iters": 7})
     assert _tool_user_agent_max_iters(pinned, declared_children=4) == 7
+
+
+# ---------------------------------------------------------------------------
+# P2.10 (#1127): ONE spawn surface selects placement; grammar stays uniform.
+# ---------------------------------------------------------------------------
+
+
+class _PlacementSpy(_InvokeSpy):
+    """Invoker spy returning the additive P2.10 run-handle vocabulary."""
+
+    def __init__(self, placement: str, host: str) -> None:
+        super().__init__()
+        self.placement = placement
+        self.host = host
+
+    def invoke(self, spec: Any) -> TaskHandle:
+        self.specs.append(spec)
+        return TaskHandle(
+            task_id=f"task_{self.host}",
+            parent_session_id=spec.parent_session_id,
+            child_session_id=f"child_{self.host}",
+            status="running",
+            run_index=0,
+            depth=spec.depth,
+            handle_id=f"task_{self.host}",
+            run_label="data_expert #1",
+            live_state="running",
+            host=self.host,
+            placement=self.placement,
+        )
+
+
+def test_spawn_surface_real_invokers_share_handle_and_part_grammar(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The same tool drives real local/relay invokers with shape-identical output."""
+
+    from tests.test_gact.test_invoker_s7 import (
+        _declare,
+        _FakeRelayBackend,
+        _relay_invoker,
+    )
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    backend = _FakeRelayBackend()
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "spawn parity"}).json()["id"]
+        app.state.relay_expert_invokers = {"ares": _relay_invoker(app, backend)}
+        _capture_emits(monkeypatch)
+        parts = _capture_parts(monkeypatch)
+        with _active_turn(app, session_id=parent):
+            tools = _tools_by_name(app, "main", {"main"}, monkeypatch)
+            local = json.loads(
+                tools["spawn_agent_task"].func(agent="main", task="local", placement="local")
+            )
+            relay = json.loads(
+                tools["spawn_agent_task"].func(agent="main", task="relay", placement="relay:ares")
+            )
+
+        assert set(local) == set(relay)
+        assert local["placement"] == "local"
+        assert relay["placement"] == "relay:ares"
+        assert len(parts) == 2
+        assert set(parts[0][1].to_wire()) == set(parts[1][1].to_wire())
+        local_task = app.state.agent_task_registry.get(local["task_id"])
+        relay_task = app.state.agent_task_registry.get(relay["task_id"])
+        assert local_task is not None and local_task.placement == "local"
+        assert relay_task is not None and relay_task.placement == "relay:ares"
+
+
+def test_one_placement_parameter_drives_local_and_relay_with_part_shape_parity(
+    monkeypatch,
+) -> None:
+    """#1127: one spawn tool selects either invoker and preserves run-handle grammar."""
+
+    app = _fake_app()
+    local = _PlacementSpy("local", "local")
+    relay = _PlacementSpy("relay:ares", "ares")
+    app.state.expert_invoker = local
+    app.state.relay_expert_invokers = {"ares": relay}
+    _capture_emits(monkeypatch)
+    parts = _capture_parts(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        local_wire = json.loads(
+            tools["spawn_agent_task"].func(
+                agent="data_expert", task="profile locally", placement="local"
+            )
+        )
+        relay_wire = json.loads(
+            tools["spawn_agent_task"].func(
+                agent="data_expert", task="profile remotely", placement="relay:ares"
+            )
+        )
+
+    assert len(local.specs) == len(relay.specs) == 1
+    assert local.specs[0].placement == "local"
+    assert relay.specs[0].placement == "relay:ares"
+    assert (
+        set(local_wire)
+        == set(relay_wire)
+        == {
+            "handle_id",
+            "host",
+            "live_state",
+            "placement",
+            "queued_reason",
+            "run_index",
+            "run_label",
+            "status",
+            "task_id",
+        }
+    )
+    assert len(parts) == 2
+    assert set(parts[0][1].to_wire()) == set(parts[1][1].to_wire())
+    for (_sid, part), wire in zip(parts, (local_wire, relay_wire), strict=True):
+        assert part.handle_id == wire["handle_id"]
+        assert part.run_label == wire["run_label"]
+        assert part.live_state == wire["live_state"]
+        assert part.host == wire["host"]
+        assert part.placement == wire["placement"]
+
+
+def test_spawn_placement_precedence_explicit_then_session_policy_then_local(
+    monkeypatch,
+) -> None:
+    """An explicit placement wins; otherwise session policy wins; local is the default."""
+
+    app = _fake_app()
+    local = _PlacementSpy("local", "local")
+    relay = _PlacementSpy("relay:ares", "ares")
+    app.state.expert_invoker = local
+    app.state.relay_expert_invokers = {"ares": relay}
+    app.state.sessions.seed("sess_x", {"spawn_placement": "relay:ares"})
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        policy = json.loads(tools["spawn_agent_task"].func(agent="data_expert", task="policy"))
+        explicit = json.loads(
+            tools["spawn_agent_task"].func(agent="data_expert", task="override", placement="local")
+        )
+        app.state.sessions.get("sess_x").metadata.pop("spawn_placement")
+        default = json.loads(tools["spawn_agent_task"].func(agent="data_expert", task="default"))
+
+    assert policy["placement"] == "relay:ares"
+    assert explicit["placement"] == "local"
+    assert default["placement"] == "local"
+
+
+def test_parallel_spawn_uses_one_batch_placement_parameter(monkeypatch) -> None:
+    """The existing fan-out tool shares the same placement parameter and resolver."""
+
+    app = _fake_app()
+    relay = _PlacementSpy("relay:ares", "ares")
+    app.state.relay_expert_invokers = {"ares": relay}
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tool = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)["spawn_agents_parallel"]
+        wire = json.loads(
+            tool.func(
+                spawns=[
+                    {"agent": "data_expert", "task": "one"},
+                    {"agent": "data_expert", "task": "two"},
+                ],
+                placement="relay:ares",
+            )
+        )
+
+    assert len(relay.specs) == 2
+    assert {spec.placement for spec in relay.specs} == {"relay:ares"}
+    assert {row["placement"] for row in wire["spawned"]} == {"relay:ares"}
+
+
+def test_parallel_spawn_pins_session_placement_once_for_batch(monkeypatch) -> None:
+    """A batch adopts one session policy before launching any of its members."""
+
+    from clio_agent.gact.agents import spawn_placement
+
+    app = _fake_app()
+    relay = _PlacementSpy("relay:ares", "ares")
+    app.state.relay_expert_invokers = {"ares": relay}
+    app.state.sessions.seed("sess_x", {"spawn_placement": "relay:ares"})
+    session_reads = 0
+    original = spawn_placement._session_placement
+
+    def _tracked_session_placement(app_arg: Any, session_id: str) -> str | None:
+        nonlocal session_reads
+        session_reads += 1
+        return original(app_arg, session_id)
+
+    monkeypatch.setattr(spawn_placement, "_session_placement", _tracked_session_placement)
+    _capture_emits(monkeypatch)
+    with _active_turn(app):
+        tool = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)["spawn_agents_parallel"]
+        wire = json.loads(
+            tool.func(
+                spawns=[
+                    {"agent": "data_expert", "task": "one"},
+                    {"agent": "data_expert", "task": "two"},
+                ]
+            )
+        )
+
+    assert session_reads == 1
+    assert len(relay.specs) == 2
+    assert {row["placement"] for row in wire["spawned"]} == {"relay:ares"}
