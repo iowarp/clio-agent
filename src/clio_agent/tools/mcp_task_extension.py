@@ -54,6 +54,7 @@ __all__ = [
     "ClioTasksClientExtension",
     "TasksDeclaration",
     "backend_identity",
+    "persist_created_task",
     "tasks_declaration",
 ]
 
@@ -111,6 +112,67 @@ def backend_identity(target: Any) -> BackendIdentity:
     canonical = json.dumps(locator, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
     return BackendIdentity(server_id=digest, locator=locator)
+
+
+async def persist_created_task(
+    session: Any,
+    key: TaskKey,
+    create_result: Any,
+    *,
+    identity: BackendIdentity,
+    tool_name: str = "",
+    store: TaskRecordStore | None = None,
+) -> None:
+    """Make a newly accepted task durable before any task-management RPC.
+
+    This is the shared create-to-record seam used by both the transparent #1115
+    extension and the relay handle-first wrapper.  Keeping it here preserves the
+    same typed orphan failure and best-effort ``tasks/cancel`` behavior on both
+    surfaces instead of letting the relay path grow a second durability policy.
+    """
+
+    record_store = store if store is not None else task_record_store()
+    record = TaskRecord(
+        key=key,
+        tool=tool_name,
+        backend=dict(identity.locator),
+        status=create_result.status,
+        created_at=getattr(create_result, "created_at", "") or utcnow_iso(),
+    )
+    try:
+        record_store.put(record)
+    except Exception as exc:  # noqa: BLE001 - converted to the typed recovery error below
+        cancelled = await _best_effort_cancel(session, key)
+        logger.error(
+            "mcp task %s could not be made durable reason=%s server=%s cancel_attempted=%s: %s",
+            key.task_id,
+            MCP_TASK_RECORD_NOT_DURABLE,
+            key.server_id,
+            cancelled,
+            exc,
+        )
+        raise ToolError(
+            f"task {key.task_id} was created on the server but its id could not be "
+            "persisted; it cannot be resumed after a restart",
+            details={
+                "reason": MCP_TASK_RECORD_NOT_DURABLE,
+                **key.to_wire(),
+                "backend": dict(identity.locator),
+                "cancel_attempted": cancelled,
+                "persist_error": str(exc),
+            },
+        ) from exc
+
+
+async def _best_effort_cancel(session: Any, key: TaskKey) -> bool:
+    """Try to stop an unrecorded task and report whether its ack landed."""
+
+    try:
+        await send_task_cancel(session, key.task_id)
+    except Exception as exc:  # noqa: BLE001 - best effort is reported, never hidden
+        logger.warning("best-effort tasks/cancel for orphaned task %s failed: %s", key.task_id, exc)
+        return False
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -191,49 +253,20 @@ class ClioTasksClientExtension(TasksClientExtension):
         locator, so an operator can reconcile by hand.
         """
 
-        record = TaskRecord(
-            key=key,
-            tool=self._clio_tool_name,
-            backend=dict(self._clio_identity.locator),
-            status=create_result.status,
-            created_at=getattr(create_result, "created_at", "") or utcnow_iso(),
+        await persist_created_task(
+            ctx.session,
+            key,
+            create_result,
+            identity=self._clio_identity,
+            tool_name=self._clio_tool_name,
+            store=store,
         )
-        try:
-            store.put(record)
-        except Exception as exc:  # noqa: BLE001 - re-raised as a typed recovery error below
-            cancelled = await self._best_effort_cancel(ctx, key)
-            logger.error(
-                "mcp task %s could not be made durable reason=%s server=%s cancel_attempted=%s: %s",
-                key.task_id,
-                MCP_TASK_RECORD_NOT_DURABLE,
-                key.server_id,
-                cancelled,
-                exc,
-            )
-            raise ToolError(
-                f"task {key.task_id} was created on the server but its id could not be "
-                "persisted; it cannot be resumed after a restart",
-                details={
-                    "reason": MCP_TASK_RECORD_NOT_DURABLE,
-                    **key.to_wire(),
-                    "backend": dict(self._clio_identity.locator),
-                    "cancel_attempted": cancelled,
-                    "persist_error": str(exc),
-                },
-            ) from exc
 
     @staticmethod
     async def _best_effort_cancel(ctx: Any, key: TaskKey) -> bool:
         """Try to stop an orphaned task; report whether the ack landed."""
 
-        try:
-            await send_task_cancel(ctx.session, key.task_id)
-        except Exception as exc:  # noqa: BLE001 - best-effort; the reason is logged and reported
-            logger.warning(
-                "best-effort tasks/cancel for orphaned task %s failed: %s", key.task_id, exc
-            )
-            return False
-        return True
+        return await _best_effort_cancel(ctx.session, key)
 
 
 @dataclass(frozen=True)
