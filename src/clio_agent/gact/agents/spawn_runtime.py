@@ -410,6 +410,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
 
     import dspy  # noqa: PLC0415
 
+    from clio_agent.gact.agent_messaging import build_message_agent_tool  # noqa: PLC0415
     from clio_agent.gact.agents.invoker import (  # noqa: PLC0415
         InvokerError,
         SpawnError,
@@ -761,6 +762,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                 },
             },
         ),
+        build_message_agent_tool(agent_def),
         # OBSERVE posture (#1000): the read-only sibling of check_agent_tasks, built in
         # its owner module (observe_runtime) so this file stays under the size ratchet.
         build_observe_tool(),

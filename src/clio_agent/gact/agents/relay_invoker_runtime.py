@@ -80,6 +80,17 @@ class RelayInvokerRuntime:
 
         return run_async(call)
 
+    def message(self, parent_session_id: str, key: Any, text: str) -> None:
+        """Answer the relay agent's durable post-admission input round."""
+
+        async def call() -> None:
+            from clio_agent.tools.relay_transport import RelayTaskIdentity  # noqa: PLC0415
+
+            async with self._client_factory(parent_session_id) as client:
+                await client.message(RelayTaskIdentity.from_key(key), text)
+
+        run_async(call)
+
     @staticmethod
     def task_key(handle: Any) -> Any:
         """Resolve exactly one persisted composite identity for a handle."""

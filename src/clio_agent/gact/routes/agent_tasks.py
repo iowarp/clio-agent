@@ -26,7 +26,8 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
-from clio_agent.gact.live_handle import enqueue_steer_or_raise, project_live_handle
+from clio_agent.gact.agent_messaging import MessageAgentError, message_agent_task
+from clio_agent.gact.live_handle import project_live_handle
 from clio_agent.gact.messaging import raise_on_reserved_metadata
 from clio_agent.gact.run_registry import detach_run, dismiss_run, project_runs
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
@@ -156,14 +157,19 @@ def register_agent_task_routes(app: FastAPI, deps: "GactDeps") -> None:
         # /messages and /retry already reject. Reject (never strip) the reserved key
         # via the shared chokepoint, keyed on the CHILD session where it would land.
         raise_on_reserved_metadata(task.child_session_id, body.metadata)
-        # No silent stranding: a terminal/gone/idle child never drains its inbox
-        # again, so enqueue_steer_or_raise refuses with a typed 409 child_not_running
-        # unless the child has a genuinely running turn; only then does it reuse
-        # #1036's producer against the CHILD session.
-        enqueue_steer_or_raise(app, task, body.text, body.metadata)
-        response.status_code = 202  # accepted-as-steer into the running child's inbox
-        return {
-            "accepted": True,
-            "task_id": task_id,
-            "child_session_id": task.child_session_id,
-        }
+        try:
+            result = message_agent_task(app, task_id, body.text, body.metadata)
+        except MessageAgentError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error=exc.reason,
+                        message=str(exc),
+                        details=exc.details,
+                        recoverable=exc.recoverable,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+        response.status_code = 202
+        return result.to_wire()

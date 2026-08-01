@@ -158,6 +158,12 @@ class Part(BaseModel):
     host: str = ""
     placement: str = ""
 
+    # P2.11 (#1128): one message-an-agent grammar for step-boundary queueing,
+    # relay tasks/update injection, and finished-child wake supersession.
+    message_action: str = ""
+    supersedes_handle_id: str = ""
+    superseded_by_handle_id: str = ""
+
     # tool_call / tool_result. CLIO emits these as live SSE parts when
     # MCP tools start/finish so clients can show progress before the
     # final assistant message metadata is attached.
