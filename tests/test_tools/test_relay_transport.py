@@ -1,0 +1,341 @@
+"""Relay transport acceptance: two doors behind the #1115 task surface (#1125)."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import socket
+import threading
+import time
+from collections.abc import AsyncIterator, Iterator
+from datetime import timedelta
+from typing import Any
+
+import pytest
+import uvicorn
+from fastmcp import FastMCP
+from fastmcp.utilities.tasks import TaskConfig
+from fastmcp_tasks import TasksExtension
+
+from clio_agent.tools.mcp_task_records import (
+    InMemoryTaskRecordStore,
+    set_task_record_store,
+    task_record_store,
+)
+from clio_agent.tools.relay_transport import (
+    RELAY_POLL_INTERVAL_MS,
+    RelayInlineResultTooLargeError,
+    RelayMcpNameMismatchError,
+    RelayTaskIdentity,
+    RelayTaskJobMismatchError,
+    RelayTransportClient,
+)
+
+
+class _RelayCapture:
+    """Wire evidence collected by the in-process fake relay."""
+
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, dict[str, str]]] = []
+        self.submitted_tokens: list[str | None] = []
+
+
+def _fake_relay(capture: _RelayCapture) -> FastMCP:
+    """A FastMCP 4 task server standing in for the relay's MCP door."""
+
+    server = FastMCP("relay-transport-reference")
+    server.add_extension(TasksExtension(minimum_check_interval=timedelta(seconds=1)))
+
+    relay_task = TaskConfig(poll_interval=timedelta(seconds=1))
+
+    @server.tool(task=relay_task)
+    async def relay_run(delay: float, idempotency_key: str | None = None) -> dict[str, Any]:
+        """Return a terminal result after leaving time to consume the SSE door."""
+
+        capture.submitted_tokens.append(idempotency_key)
+        await asyncio.sleep(delay)
+        return {"outcome": "done", "idempotency_key": idempotency_key}
+
+    @server.tool(task=relay_task)
+    async def mismatched_job() -> dict[str, str]:
+        """Return a forged relay job identity for the client-side rejection test."""
+
+        return {"job_id": "job-other", "outcome": "must-not-pass"}
+
+    @server.tool(task=relay_task)
+    async def oversized_result() -> dict[str, Any]:
+        """Return relay's documented failed inline-delivery envelope."""
+
+        return {
+            "content_truncated": True,
+            "result_available": False,
+            "delivery": {
+                "schema_version": "clio-relay.mcp-result-delivery.v1",
+                "status": "failed",
+                "code": "inline_result_limit_exceeded",
+                "max_inline_bytes": 65_536,
+                "private_evidence_preserved": True,
+                "remote_side_effects_may_have_occurred": True,
+                "message": "result exceeded the safe inline response limit",
+            },
+        }
+
+    return server
+
+
+class _FakeRelayApp:
+    """ASGI fake combining the MCP, timeline SSE, and artifact HTTP doors."""
+
+    def __init__(self, mcp_app: Any, capture: _RelayCapture) -> None:
+        self._mcp_app = mcp_app
+        self._capture = capture
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        """Serve fake relay HTTP endpoints, delegating all other traffic to MCP."""
+
+        if scope["type"] != "http":
+            await self._mcp_app(scope, receive, send)
+            return
+        headers = {key.decode(): value.decode() for key, value in scope.get("headers", [])}
+        path = str(scope.get("path", ""))
+        self._capture.requests.append((path, headers))
+        if path.endswith("/events/sse"):
+            task_id = path.split("/")[-3]
+            body = (
+                "event: task_events\n"
+                "data: "
+                + json.dumps(
+                    {
+                        "task_id": task_id,
+                        "events": [
+                            {
+                                "task_id": task_id,
+                                "seq": 1,
+                                "event_type": "progress",
+                                "summary": "relay task is still running",
+                            }
+                        ],
+                        "next_cursor": 2,
+                    }
+                )
+                + "\n\n"
+            ).encode()
+            await self._respond(send, 200, body, b"text/event-stream")
+            return
+        if path.startswith("/artifacts/") and path.endswith("/content"):
+            artifact_id = path.split("/")[-2]
+            body = json.dumps(
+                {
+                    "artifact": {"artifact_id": artifact_id},
+                    "encoding": "base64",
+                    "data": "cmVsYXktYXJ0aWZhY3Q=",
+                }
+            ).encode()
+            await self._respond(send, 200, body, b"application/json")
+            return
+        await self._mcp_app(scope, receive, send)
+
+    @staticmethod
+    async def _respond(send: Any, status: int, body: bytes, content_type: bytes) -> None:
+        """Send one complete ASGI response."""
+
+        await send(
+            {
+                "type": "http.response.start",
+                "status": status,
+                "headers": [(b"content-type", content_type)],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
+
+class _Backend:
+    """URLs and capture for one running fake relay."""
+
+    def __init__(self, base_url: str, capture: _RelayCapture) -> None:
+        self.base_url = base_url
+        self.mcp_url = f"{base_url}/mcp"
+        self.capture = capture
+
+
+def _free_port() -> int:
+    """Reserve an OS-assigned localhost port."""
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+@pytest.fixture
+def relay_backend() -> Iterator[_Backend]:
+    """Run the fake relay in-process over the real Streamable HTTP wire."""
+
+    capture = _RelayCapture()
+    port = _free_port()
+    mcp_app = _fake_relay(capture).http_app(path="/mcp")
+    server = uvicorn.Server(
+        uvicorn.Config(
+            _FakeRelayApp(mcp_app, capture),
+            host="127.0.0.1",
+            port=port,
+            log_level="warning",
+        )
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 30
+    while not server.started and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if not server.started:
+        server.should_exit = True
+        thread.join(timeout=10)
+        pytest.fail("the fake relay did not start within 30 seconds")
+    try:
+        yield _Backend(f"http://127.0.0.1:{port}", capture)
+    finally:
+        server.should_exit = True
+        thread.join(timeout=15)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_task_store() -> Iterator[None]:
+    """Give every acceptance test a fresh #1115 record store."""
+
+    set_task_record_store(InMemoryTaskRecordStore())
+    yield
+    set_task_record_store(None)
+
+
+def _client(backend: _Backend) -> RelayTransportClient:
+    """Construct the owner-bound two-door client used by acceptance tests."""
+
+    return RelayTransportClient(
+        mcp_url=backend.mcp_url,
+        http_base_url=backend.base_url,
+        api_token="relay-secret",
+        owner_session_id="session-alice",
+        owner_session_generation_id="generation-1",
+    )
+
+
+async def _first(stream: AsyncIterator[dict[str, Any]]) -> dict[str, Any]:
+    """Read one event from an async event stream."""
+
+    async for event in stream:
+        return event
+    raise AssertionError("relay SSE stream returned no events")
+
+
+async def test_fake_relay_submit_poll_terminal_round_trip_and_headers(
+    relay_backend: _Backend,
+) -> None:
+    """Submit, poll, and finish through MCP while owner identity is on submission."""
+
+    async with _client(relay_backend) as relay:
+        task = await relay.submit("relay_run", {"delay": 0.05}, idempotency_key="client-create-1")
+        assert task.task_id == task.job_id == task.mcp_name
+        assert task_record_store().get(task.key) is not None
+
+        current = await relay.poll(task)
+        while current.status not in {"completed", "failed", "cancelled"}:
+            current = await relay.poll(task)
+
+    assert current.status == "completed"
+    assert relay_backend.capture.submitted_tokens == ["client-create-1"]
+    submission_headers = next(
+        headers
+        for path, headers in relay_backend.capture.requests
+        if path == "/mcp" and headers.get("mcp-method") == "tools/call"
+    )
+    assert submission_headers["authorization"] == "Bearer relay-secret"
+    assert submission_headers["x-clio-relay-owner-session-id"] == "session-alice"
+    assert submission_headers["x-clio-relay-session-generation-id"] == "generation-1"
+    task_headers = [
+        headers
+        for path, headers in relay_backend.capture.requests
+        if path == "/mcp" and headers.get("mcp-method") == "tasks/get"
+    ]
+    assert task_headers
+    assert all(headers["mcp-name"] == task.task_id for headers in task_headers)
+    assert task.poll_interval_ms == RELAY_POLL_INTERVAL_MS
+
+
+async def test_timeline_streams_while_running_and_artifact_fetch_returns_bytes(
+    relay_backend: _Backend,
+) -> None:
+    """The HTTP door streams task events and fetches out-of-band artifact bytes."""
+
+    async with _client(relay_backend) as relay:
+        task = await relay.submit("relay_run", {"delay": 1.0})
+        event = await _first(relay.stream_events(task))
+        assert (await relay.poll(task)).status == "working"
+        content = await relay.fetch_artifact("artifact-1")
+        await relay.cancel(task)
+
+    assert event["task_id"] == task.task_id
+    assert event["event_type"] == "progress"
+    assert content == b"relay-artifact"
+
+
+async def test_oversize_inline_delivery_raises_typed_contract_error(
+    relay_backend: _Backend,
+) -> None:
+    """A relay delivery failure is typed and never presented as truncated success."""
+
+    async with _client(relay_backend) as relay:
+        task = await relay.submit("oversized_result", {})
+        with pytest.raises(RelayInlineResultTooLargeError) as raised:
+            await relay.wait(task, timeout_seconds=15)
+
+    assert raised.value.delivery["schema_version"] == "clio-relay.mcp-result-delivery.v1"
+    assert raised.value.delivery["code"] == "inline_result_limit_exceeded"
+    assert raised.value.details["task_id"] == task.task_id
+
+
+async def test_task_job_mismatch_is_rejected_client_side(relay_backend: _Backend) -> None:
+    """A terminal relay result cannot redirect a task onto another job identity."""
+
+    async with _client(relay_backend) as relay:
+        task = await relay.submit("mismatched_job", {})
+        with pytest.raises(RelayTaskJobMismatchError) as raised:
+            await relay.wait(task, timeout_seconds=15)
+
+    assert raised.value.details["task_id"] == task.task_id
+    assert raised.value.details["job_id"] == "job-other"
+
+
+async def test_mcp_name_mismatch_is_rejected_before_an_rpc(relay_backend: _Backend) -> None:
+    """A forged Mcp-Name is refused locally rather than sent to the relay."""
+
+    async with _client(relay_backend) as relay:
+        task = await relay.submit("relay_run", {"delay": 1.0})
+        forged = RelayTaskIdentity(
+            key=task.key,
+            job_id=task.job_id,
+            mcp_name="another-task",
+            poll_interval_ms=task.poll_interval_ms,
+        )
+        before = len(relay_backend.capture.requests)
+        with pytest.raises(RelayMcpNameMismatchError):
+            await relay.poll(forged)
+        assert len(relay_backend.capture.requests) == before
+        await relay.cancel(task)
+
+
+async def test_reconnect_uses_persisted_record_after_originating_client_drops(
+    relay_backend: _Backend,
+) -> None:
+    """A fresh client resumes the exact durable #1115 key to terminal."""
+
+    first = _client(relay_backend)
+    async with first:
+        task = await first.submit("relay_run", {"delay": 1.0})
+        persisted = task_record_store().get(task.key)
+        assert persisted is not None
+        assert persisted.backend["url"] == relay_backend.mcp_url
+
+    async with _client(relay_backend) as rebuilt:
+        final = await rebuilt.resume(task.key, timeout_seconds=15)
+
+    assert final.status == "completed"
+    assert task_record_store().get(task.key) is None
