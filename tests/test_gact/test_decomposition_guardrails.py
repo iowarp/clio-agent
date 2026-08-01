@@ -60,7 +60,9 @@ from clio_agent.gact.app import build_app
 # routes/system.py, replacing the deleted CRUD surface with a debugging endpoint.
 # 164 -> 165 (#1117 P1.7): +1 POST /v1/mcp/servers/{sid}/prompts/get protocol prompt
 # fetch, owned by routes/mcp.py (prompts/get client support).
-EXPECTED_ROUTE_METHOD_PAIRS = 165
+# 165 -> 168 (#1127 P2.10): +3 run-projection routes owned by
+# routes/agent_tasks.py: GET /v1/runs plus POST detach and dismiss actions.
+EXPECTED_ROUTE_METHOD_PAIRS = 168
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

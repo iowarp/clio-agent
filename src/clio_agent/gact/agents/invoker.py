@@ -1,53 +1,12 @@
-"""The ``ExpertInvoker`` seam (#671, prepared by #948 S7 / #955).
+"""Transport-abstracted expert execution seam (#671, #1124, #1126).
 
-Expert execution today is in-process by construction (``spawn_child_turn`` mints a
-real child turn on a dedicated pool and projects it as an :class:`AgentTask`). #671
-detangles that behind a **transport-abstracted boundary** so a later federation
-campaign can swap the EXECUTOR — a detached loopback, then clio-core Context
-Transport Primitives on a cluster — *behind this seam, not in front of every
-caller*.
-
-This module owns the boundary's **serializable** request / response / event shapes
-and both the in-process and relay-backed implementations:
-
-* :data:`TaskSpec` — the spawn REQUEST. Re-exported verbatim from
-  :mod:`clio_agent.gact.turn_spawn`: it is already a frozen, fully JSON-serializable
-  dataclass (str/int fields + an optional plain-dict ``workflow_state``), so the
-  seam reuses it rather than minting a duplicate twin (:func:`spec_to_wire` /
-  :func:`spec_from_wire` prove the round-trip).
-* :class:`TaskHandle` — what :meth:`ExpertInvoker.invoke` returns: the serializable
-  identity a caller holds to later wait / check / cancel. A remote executor returns
-  the same handle shape.
-* :class:`TaskResult` — the serializable RESPONSE: a wire projection of an
-  :class:`AgentTask` carrying the status lifecycle, the create/update timeline, the
-  ``result`` payload (``message_ref`` / ``answer_excerpt`` / ``workflow_state``), the
-  typed ``error_reason`` and a RESERVED ``artifact_ref``. It DROPS all six
-  non-executor-boundary :class:`AgentTask` fields, in two classes: (a) parent-side
-  observe-later + wire-dedup bookkeeping — ``notify_pending`` / ``consumed_at`` /
-  ``delegation_reported`` — choreography that stays local under federation; and (b)
-  the spawn-REQUEST / topology fields the parent already holds on the ``TaskSpec`` it
-  authored — ``parent_turn_id`` / ``child_turn_id`` / ``fanout_bound`` — which the
-  executor need not echo back in a result.
-* :class:`TaskEvent` + :data:`TASK_EVENT_VOCABULARY` — the ``agent.task.*`` event
-  family the substrate publishes, as a serializable boundary shape + the
-  status→event-type mapping.
-
-Relay compatibility (clio-relay ``docs/mcp-tasks.md``): relay's durable job
-observations project onto the MCP task vocabulary without changing relay's stored
-state words. :data:`RELAY_STATE_MAP` records that complete cross-repository table,
-including the distinction between a completed tool error (``isError``) and a failed
-protocol operation.
-
-**The seam IS the same substrate.** :class:`InProcessExpertInvoker` delegates every
-operation to the existing spawn / registry / cancel primitives
-(``spawn_child_turn_threadsafe`` / ``AgentTaskRegistry`` / ``cancel_agent_task``) —
-so introducing it creates **no second execution pathway** and no behavior change.
-The model-facing spawn-runtime tools route substrate operations through the
-app-bound :class:`ExpertInvoker`. They retain local wire-rendering choreography —
-semantic events, ``expert_handoff`` Parts, and observe-later consumption — above
-the boundary because those are parent-side, not transport concerns. The parity suite
-(``tests/test_gact/test_invoker_s7.py``) proves the in-process invoker is
-record-, event- and typed-error-identical to the direct substrate calls today.
+The module reuses the serializable :class:`TaskSpec` request from ``turn_spawn``
+and owns the uniform :class:`TaskHandle`, :class:`TaskResult`, and :class:`TaskEvent`
+boundary shapes. :class:`InProcessExpertInvoker` delegates to the established local
+spawn substrate; :class:`RelayExpertInvoker` maps the same request onto durable relay
+remote-agent jobs and folds their observations into the same ``AgentTaskRegistry``.
+Parent-side semantic events, ``expert_handoff`` Parts, observe-later consumption,
+and workflow merging remain above this executor boundary in ``spawn_runtime``.
 """
 
 from __future__ import annotations
@@ -67,6 +26,7 @@ from clio_agent.gact.agent_tasks import (
     STATUS_RUNNING,
     TERMINAL_STATUSES,
     AgentTask,
+    persist_agent_task,
     seed_agent_task,
 )
 from clio_agent.gact.agents.relay_invoker_runtime import (
@@ -194,6 +154,11 @@ class TaskHandle:
     queued_reason: str = ""
     run_index: int = 0
     depth: int = 1
+    handle_id: str = ""
+    run_label: str = ""
+    live_state: str = ""
+    host: str = "local"
+    placement: str = "local"
 
     @classmethod
     def from_task(cls, task: AgentTask) -> "TaskHandle":
@@ -207,6 +172,14 @@ class TaskHandle:
             queued_reason=task.queued_reason,
             run_index=task.run_index,
             depth=task.depth,
+            handle_id=task.handle_id or task.task_id,
+            run_label=(
+                task.run_label
+                or f"{task.agent_ref.get('expert_id', 'agent')} #{task.run_index + 1}"
+            ),
+            live_state=task.live_state or task.status,
+            host=task.host,
+            placement=task.placement,
         )
 
     def to_wire(self) -> dict[str, Any]:
@@ -232,15 +205,17 @@ class TaskResult:
     and a RESERVED ``artifact_ref`` (the #670 artifacts campaign fills it with a
     spill ref; carried from day one so a federation record matches).
 
-    It OMITS all six :class:`AgentTask` fields that are not part of the executor
-    boundary, in two classes:
+    It OMITS all eight :class:`AgentTask` fields that are not part of the executor
+    boundary, in three classes:
 
     * parent-side observe-later + wire-dedup bookkeeping — ``notify_pending`` /
       ``consumed_at`` / ``delegation_reported`` — choreography that stays local under
       federation; and
     * spawn-REQUEST / topology fields the parent already holds on the ``TaskSpec`` it
       authored — ``parent_turn_id`` / ``child_turn_id`` / ``fanout_bound`` — which the
-      executor need not echo back in its result.
+      executor need not echo back in its result; and
+    * parent-side run-list display state — ``detached`` / ``dismissed`` — which is
+      never executor-owned.
     """
 
     task_id: str
@@ -258,6 +233,11 @@ class TaskResult:
     # RESERVED — filled by the artifacts campaign (#670); present so federation
     # records match the durable relay ``ArtifactRef`` vocabulary from day one.
     artifact_ref: str = ""
+    handle_id: str = ""
+    run_label: str = ""
+    live_state: str = ""
+    host: str = "local"
+    placement: str = "local"
 
     @property
     def is_terminal(self) -> bool:
@@ -283,6 +263,14 @@ class TaskResult:
             updated_at=task.updated_at,
             result=dict(task.result) if task.result is not None else None,
             artifact_ref=task.artifact_ref,
+            handle_id=task.handle_id or task.task_id,
+            run_label=(
+                task.run_label
+                or f"{task.agent_ref.get('expert_id', 'agent')} #{task.run_index + 1}"
+            ),
+            live_state=task.live_state or task.status,
+            host=task.host,
+            placement=task.placement,
         )
 
     def to_wire(self) -> dict[str, Any]:
@@ -520,6 +508,7 @@ class RelayExpertInvoker:
             raise ValueError("relay prompt_path must be a non-empty string")
         self._app = app
         self._runtime = RelayInvokerRuntime(client_factory, cluster=cluster)
+        self._placement = f"relay:{cluster}"
         self._events = RelayEventPump(client_factory)
         self._prompt_path = prompt_path
         self._mcp_config_path = mcp_config_path
@@ -550,6 +539,7 @@ class RelayExpertInvoker:
         """Submit remote_agent work and return the relay job id as the task id."""
 
         workspace_id, session_mode, scope = validate_task_spec(self._app, spec)
+        spec = replace(spec, placement=self._placement)
         with self._spawn_lock:
             from clio_agent.gact.turn_spawn import _next_run_index  # noqa: PLC0415
 
@@ -575,6 +565,8 @@ class RelayExpertInvoker:
                 run_index=run_index,
                 fanout_bound=spec.fanout_bound,
                 queued_reason="",
+                placement=self._placement,
+                host=self._placement.split(":", 1)[1],
             )
             handle = TaskHandle.from_task(seeded)
             self._apply_poll(handle, current)
@@ -723,13 +715,22 @@ class RelayExpertInvoker:
         observation, projection = self._relay_projection(current)
         target = self._agent_status(observation, projection)
         local = self._require_local_task(handle)
-        if local.is_terminal or local.status == target:
+        if local.is_terminal:
+            return
+        live_state = "input_required" if observation == "input_required" else target
+        if local.status == target:
+            if local.live_state != live_state:
+                persist_agent_task(self._app, replace(local, live_state=live_state))
             return
         if local.status == STATUS_QUEUED and target != STATUS_QUEUED:
-            running = replace(TaskResult.from_task(local), status=STATUS_RUNNING)
+            running = replace(
+                TaskResult.from_task(local), status=STATUS_RUNNING, live_state=live_state
+            )
             fold_agent_task_event(self._app, running)
             local = self._require_local_task(handle)
         if target == STATUS_RUNNING:
+            if local.live_state != live_state:
+                persist_agent_task(self._app, replace(local, live_state=live_state))
             return
         terminal = self._terminal_result(handle, local, current, target)
         fold_agent_task_event(self._app, terminal)

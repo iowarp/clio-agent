@@ -107,6 +107,8 @@ class TaskSpec:
     workspace_id: Optional[str] = None
     session_mode: Optional[str] = None
     session_scope_metadata: Optional[dict[str, Any]] = None
+    # P2.10 (#1127): resolved execution placement carried across the invoker seam.
+    placement: str = "local"
 
 
 class SpawnError(Exception):
@@ -331,6 +333,11 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         depth=spec.depth,
         run_index=run_index,
         fanout_bound=spec.fanout_bound,
+        handle_id="task_" + child.id.split("_")[-1],
+        run_label=f"{spec.child_expert_id} #{run_index + 1}",
+        live_state=STATUS_QUEUED,
+        host=(spec.placement.split(":", 1)[1] if spec.placement.startswith("relay:") else "local"),
+        placement=spec.placement,
         status=STATUS_QUEUED,
         queued_reason="concurrency_cap" if at_cap else "",
         created_at=now,
@@ -346,6 +353,7 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         child.id,
         metadata_patch={
             **session_scope_metadata,
+            "spawn_placement": spec.placement,
             # Queryable audit trail for the mode-inheritance fix above: present (and
             # truthy) only when the child's mode was structurally inherited from a
             # restrictive parent, so the API/trace can distinguish "child is plan mode

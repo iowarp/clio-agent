@@ -339,6 +339,10 @@ _VOLATILE = frozenset(
         "created_at",
         "updated_at",
         "consumed_at",
+        # P2.10 parity is modulo executor-specific run-handle identity/placement.
+        "handle_id",
+        "host",
+        "placement",
     }
 )
 _VOLATILE_RESULT = frozenset({"message_ref"})
@@ -1000,13 +1004,14 @@ def test_run_index_and_notify_parity(tmp_path: Path, monkeypatch) -> None:
 
 def test_taskresult_drops_internal_bookkeeping(tmp_path: Path, monkeypatch) -> None:
     """The boundary :class:`TaskResult` omits EVERY :class:`AgentTask` field that is not
-    part of the executor boundary — all six, in two classes: parent-side observe-later /
+    part of the executor boundary — all eight, in three classes: parent-side observe-later /
     wire-dedup bookkeeping (``notify_pending`` / ``consumed_at`` / ``delegation_reported``)
     and spawn-request / topology fields the parent already holds on its ``TaskSpec``
-    (``parent_turn_id`` / ``child_turn_id`` / ``fanout_bound``).
+    (``parent_turn_id`` / ``child_turn_id`` / ``fanout_bound``), plus parent-side run-list
+    display state (``detached`` / ``dismissed``).
 
     Adversarial-review finding [5]: the drop-list must be EXHAUSTIVE against the code —
-    ``AgentTask`` minus ``TaskResult`` is exactly these six, no more, no less."""
+    ``AgentTask`` minus ``TaskResult`` is exactly these eight, no more, no less."""
 
     task_fields = set(AgentTask.__dataclass_fields__)
     result_fields = set(TaskResult.__dataclass_fields__)
@@ -1017,9 +1022,11 @@ def test_taskresult_drops_internal_bookkeeping(tmp_path: Path, monkeypatch) -> N
         "parent_turn_id",
         "child_turn_id",
         "fanout_bound",
+        "detached",
+        "dismissed",
     }
-    assert dropped.isdisjoint(result_fields)  # none of the six survive the projection
-    # EXHAUSTIVE: the six named above are exactly the fields AgentTask has and
+    assert dropped.isdisjoint(result_fields)  # none of the eight survive the projection
+    # EXHAUSTIVE: the eight named above are exactly the fields AgentTask has and
     # TaskResult drops — a newly-added dropped/carried field must update this + the docs.
     assert task_fields - result_fields == dropped
     # But it DOES carry the durable, relay-compatible record vocabulary.
