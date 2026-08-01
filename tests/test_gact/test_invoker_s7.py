@@ -74,7 +74,7 @@ def test_both_expert_invoker_implementations_satisfy_protocol(invoker_type: type
 
     assert all(
         callable(getattr(invoker_type, method, None))
-        for method in ("invoke", "wait", "check", "cancel")
+        for method in ("invoke", "wait", "check", "cancel", "message")
     )
 
 
@@ -104,6 +104,7 @@ class _FakeRelayBackend:
     def __init__(self) -> None:
         self.tasks: dict[str, dict[str, Any]] = {}
         self.submissions: list[dict[str, Any]] = []
+        self.messages: list[tuple[str, str]] = []
         self.client_count = 0
         self._next_id = 0
         self._lock = threading.Lock()
@@ -128,6 +129,7 @@ class _FakeRelayBackend:
                 "polls": 0,
                 "cancel_requested": False,
                 "terminal": threading.Event(),
+                "stream_closed": threading.Event(),
                 "state": "queued",
             }
             self.tasks[task_id] = task
@@ -250,6 +252,9 @@ class _FakeRelayClient:
         resolve_store(None).put(replace(record, cancel_requested=True))
         return {"acknowledged": True}
 
+    async def message(self, identity: RelayTaskIdentity, text: str) -> None:
+        self.backend.messages.append((identity.task_id, text))
+
     async def stream_events(
         self,
         identity: RelayTaskIdentity,
@@ -259,24 +264,27 @@ class _FakeRelayClient:
         assert cursor == 1
         task = self.backend.tasks[identity.task_id]
         result = self.backend.task_result(task)
-        yield {
-            "task_id": identity.task_id,
-            "event_type": "agent.task.started",
-            "session_id": "",
-            "status": "running",
-            "payload": {**result, "status": "running", "result": None},
-        }
-        while not task["terminal"].is_set():
-            await asyncio.sleep(0.01)
-        status = "cancelled" if task["state"] == "canceled" else "completed"
-        event_type = f"agent.task.{status}"
-        yield {
-            "task_id": identity.task_id,
-            "event_type": event_type,
-            "session_id": "",
-            "status": status,
-            "payload": {**result, "status": status, "result": result["result"]},
-        }
+        try:
+            yield {
+                "task_id": identity.task_id,
+                "event_type": "agent.task.started",
+                "session_id": "",
+                "status": "running",
+                "payload": {**result, "status": "running", "result": None},
+            }
+            while not task["terminal"].is_set():
+                await asyncio.sleep(0.01)
+            status = "cancelled" if task["state"] == "canceled" else "completed"
+            event_type = f"agent.task.{status}"
+            yield {
+                "task_id": identity.task_id,
+                "event_type": event_type,
+                "session_id": "",
+                "status": status,
+                "payload": {**result, "status": status, "result": result["result"]},
+            }
+        finally:
+            task["stream_closed"].set()
 
 
 def _relay_current(
@@ -564,7 +572,35 @@ def test_taskspec_maps_to_remote_agent_task_spec_verbatim(
         "model": "anthropic/claude",
         "workdir": "/shared/work",
         "context": spec_to_wire(spec),
+        "request_followup_message": True,
     }
+
+
+def test_relay_message_answers_post_admission_input_on_retained_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The relay invoker carries a message over the retained durable identity."""
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    backend = _FakeRelayBackend()
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "relay message"}).json()["id"]
+        invoker = _relay_invoker(app, backend)
+        handle = invoker.invoke(
+            TaskSpec(
+                child_expert_id="data_expert",
+                task_text="initial",
+                parent_session_id=parent,
+                placement="relay:ares",
+            )
+        )
+        invoker.message(handle, "Use the new boundary condition.")
+        result = invoker.wait(handle, timeout_s=1.0)
+        assert result.status == "completed"
+        assert backend.tasks[handle.task_id]["stream_closed"].wait(1.0)
+
+    assert backend.messages == [(handle.task_id, "Use the new boundary condition.")]
 
 
 @pytest.mark.parametrize("observation", sorted(RELAY_STATE_MAP))

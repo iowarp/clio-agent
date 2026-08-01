@@ -120,6 +120,10 @@ class _WorkflowInvokerSpy:
         self.cancelled.append(handle)
         return True
 
+    def message(self, handle: TaskHandle, text: str, metadata: Any = None) -> None:
+        del handle, text, metadata
+        raise AssertionError("workflow routing does not message a child")
+
 
 def _wait_terminal(app: Any, task_id: str, timeout: float = 15.0) -> Any:
     import time as _time

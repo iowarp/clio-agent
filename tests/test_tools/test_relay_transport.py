@@ -9,6 +9,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Iterator
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -19,6 +20,8 @@ from fastmcp_tasks import TasksExtension
 
 from clio_agent.tools.mcp_task_records import (
     InMemoryTaskRecordStore,
+    TaskKey,
+    TaskRecord,
     set_task_record_store,
     task_record_store,
 )
@@ -224,6 +227,80 @@ async def _first(stream: AsyncIterator[dict[str, Any]]) -> dict[str, Any]:
     async for event in stream:
         return event
     raise AssertionError("relay SSE stream returned no events")
+
+
+async def test_agent_message_persists_then_sends_exact_tasks_update_payload() -> None:
+    """The #145 agent input answer uses #1115's ledger and named update sender."""
+
+    from tests.test_tools.test_mcp_tasks import ScriptedSession
+
+    store = task_record_store()
+    key = TaskKey(
+        server_id="relay-message-test",
+        session_id="session-alice",
+        task_id="task-agent-message",
+    )
+    store.put(TaskRecord(key=key, tool="relay_submit_remote_agent", status="input_required"))
+    session = ScriptedSession([])
+    relay = RelayTransportClient(
+        mcp_url="http://relay.invalid/mcp",
+        http_base_url="http://relay.invalid",
+        api_token="relay-secret",
+        session_id="session-alice",
+        store=store,
+    )
+    relay._mcp_client = SimpleNamespace(session=session)
+    identity = RelayTaskIdentity.from_key(key)
+
+    await relay.message(identity, "Use the new boundary condition.")
+
+    expected = {
+        "agent_message": {
+            "action": "accept",
+            "content": {"message": "Use the new boundary condition."},
+        }
+    }
+    assert session.methods() == ["tasks/update"]
+    assert session.updates == [expected]
+    persisted = store.get(key)
+    assert persisted is not None
+    assert len(persisted.input_answers) == 1
+    assert persisted.input_answers[0].payload == expected["agent_message"]
+    assert persisted.input_answers[0].delivered is True
+
+
+async def test_agent_message_lost_ack_retries_identical_persisted_answer() -> None:
+    """A lost update acknowledgement never re-captures or changes the answer."""
+
+    from tests.test_tools.test_mcp_tasks import ScriptedSession
+
+    store = task_record_store()
+    key = TaskKey("relay-message-test", "session-alice", "task-agent-retry")
+    store.put(TaskRecord(key=key, tool="relay_submit_remote_agent", status="input_required"))
+    relay = RelayTransportClient(
+        mcp_url="http://relay.invalid/mcp",
+        http_base_url="http://relay.invalid",
+        api_token="relay-secret",
+        session_id="session-alice",
+        store=store,
+    )
+    first = ScriptedSession([], update_failures=1)
+    relay._mcp_client = SimpleNamespace(session=first)
+    identity = RelayTaskIdentity.from_key(key)
+    with pytest.raises(RuntimeError, match="acknowledgement lost"):
+        await relay.message(identity, "same bytes")
+    captured = store.get(key)
+    assert captured is not None
+    assert captured.input_answers[0].delivered is False
+
+    retry = ScriptedSession([])
+    relay._mcp_client = SimpleNamespace(session=retry)
+    await relay.message(identity, "same bytes")
+
+    assert first.updates == retry.updates
+    delivered = store.get(key)
+    assert delivered is not None
+    assert delivered.input_answers[0].delivered is True
 
 
 async def test_fake_relay_submit_poll_terminal_round_trip_and_headers(
