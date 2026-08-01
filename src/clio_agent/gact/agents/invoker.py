@@ -8,7 +8,7 @@ Transport Primitives on a cluster — *behind this seam, not in front of every
 caller*.
 
 This module owns the boundary's **serializable** request / response / event shapes
-and the in-process implementation:
+and both the in-process and relay-backed implementations:
 
 * :data:`TaskSpec` — the spawn REQUEST. Re-exported verbatim from
   :mod:`clio_agent.gact.turn_spawn`: it is already a frozen, fully JSON-serializable
@@ -53,16 +53,31 @@ record-, event- and typed-error-identical to the direct substrate calls today.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from collections.abc import Callable, Mapping
+from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Optional, Protocol, Sequence, runtime_checkable
 
 from clio_agent.gact.agent_tasks import (
     AGENT_TASK_CONSUMED_EVENT,
     AGENT_TASK_EVENTS,
+    STATUS_CANCELLED,
+    STATUS_COMPLETED,
+    STATUS_FAILED,
     STATUS_QUEUED,
+    STATUS_RUNNING,
     TERMINAL_STATUSES,
     AgentTask,
+    seed_agent_task,
 )
+from clio_agent.gact.agents.relay_invoker_runtime import (
+    RelayEventPump,
+    RelayInvokerRuntime,
+    find_task_result_wire,
+    relay_error_reason,
+    relay_task_event,
+)
+from clio_agent.gact.spawn_context import validate_task_spec
+from clio_agent.gact.task_fold import fold_agent_task_event
 
 # Reuse — NOT duplicate — the request shape and the spawn/cancel primitives.
 from clio_agent.gact.turn_spawn import (
@@ -86,6 +101,7 @@ __all__ = [
     "InvokerError",
     "ExpertInvoker",
     "InProcessExpertInvoker",
+    "RelayExpertInvoker",
     "TASK_EVENT_VOCABULARY",
     "TASK_CONSUMED_EVENT",
     "RELAY_STATE_MAP",
@@ -93,7 +109,6 @@ __all__ = [
     "spec_to_wire",
     "spec_from_wire",
 ]
-
 
 # ---------------------------------------------------------------------------
 # Event vocabulary (the agent.task.* family)
@@ -326,6 +341,19 @@ class TaskEvent:
 
         return asdict(self)
 
+    @classmethod
+    def from_wire(cls, data: Mapping[str, Any]) -> "TaskEvent":
+        """Reconstruct one exact transport event while tolerating future keys."""
+
+        payload = data.get("payload")
+        return cls(
+            event_type=str(data.get("event_type") or ""),
+            task_id=str(data.get("task_id") or ""),
+            session_id=str(data.get("session_id") or ""),
+            status=str(data.get("status") or ""),
+            payload=dict(payload) if isinstance(payload, Mapping) else {},
+        )
+
 
 # ---------------------------------------------------------------------------
 # TaskSpec (re)serialization helpers — proving the reused request shape round-trips
@@ -362,10 +390,9 @@ class ExpertInvoker(Protocol):
 
     Implementations:
 
-    * :class:`InProcessExpertInvoker` — wraps today's in-process spawn substrate
-      (this slice; parity-gated).
-    * (later, #671) a detached loopback impl over a local socket, then clio-core
-      Context Transport Primitives on a cluster — same boundary, swapped executor.
+    * :class:`InProcessExpertInvoker` — wraps today's in-process spawn substrate.
+    * :class:`RelayExpertInvoker` — maps self-contained task specs onto relay
+      remote-agent jobs and reconstructs them from durable task ids.
     """
 
     def invoke(self, spec: TaskSpec) -> TaskHandle:
@@ -466,3 +493,298 @@ class InProcessExpertInvoker:
         terminal task with no live descendants — cancellation is idempotent)."""
 
         return cancel_agent_task(self._app, handle.task_id)
+
+
+class RelayExpertInvoker:
+    """Relay-backed ExpertInvoker using one durable task identity across clients.
+
+    The client factory is owner-session aware: every operation asks it for a fresh
+    client bound to the handle parent. Relay task records supply reconnect identity;
+    this class keeps no second remote-task registry.
+    """
+
+    def __init__(
+        self,
+        app: "FastAPI",
+        client_factory: Callable[[str], Any],
+        *,
+        cluster: str,
+        prompt_path: str,
+        mcp_config_path: str | None = None,
+        model: str | None = None,
+        workdir: str | None = None,
+    ) -> None:
+        if not cluster.strip():
+            raise ValueError("relay cluster must be a non-empty string")
+        if not prompt_path.strip():
+            raise ValueError("relay prompt_path must be a non-empty string")
+        self._app = app
+        self._runtime = RelayInvokerRuntime(client_factory, cluster=cluster)
+        self._events = RelayEventPump(client_factory)
+        self._prompt_path = prompt_path
+        self._mcp_config_path = mcp_config_path
+        self._model = model
+        self._workdir = workdir
+        import threading  # noqa: PLC0415
+
+        self._spawn_lock = threading.Lock()
+
+    @property
+    def app(self) -> "FastAPI":
+        """The FastAPI app whose durable AgentTask owner receives relay folds."""
+
+        return self._app
+
+    def remote_agent_task_spec(self, spec: TaskSpec) -> dict[str, Any]:
+        """Map one self-contained TaskSpec to the relay RemoteAgentTaskSpec wire."""
+
+        return {
+            "prompt_path": self._prompt_path,
+            "mcp_config_path": self._mcp_config_path,
+            "model": self._model,
+            "workdir": self._workdir,
+            "context": spec_to_wire(spec),
+        }
+
+    def invoke(self, spec: TaskSpec) -> TaskHandle:
+        """Submit remote_agent work and return the relay job id as the task id."""
+
+        workspace_id, session_mode, scope = validate_task_spec(self._app, spec)
+        with self._spawn_lock:
+            from clio_agent.gact.turn_spawn import _next_run_index  # noqa: PLC0415
+
+            run_index = _next_run_index(self._app, spec)
+            identity, current = self._runtime.submit_and_poll(
+                spec.parent_session_id,
+                self.remote_agent_task_spec(spec),
+            )
+            observation, _projection = self._relay_projection(current)
+            seeded = seed_agent_task(
+                self._app,
+                parent_session_id=spec.parent_session_id,
+                agent_ref={
+                    "expert_id": spec.child_expert_id,
+                    "requesting_expert_id": spec.requesting_expert_id,
+                },
+                parent_turn_id=spec.parent_turn_id,
+                depth=spec.depth,
+                task_id=identity.task_id,
+                workspace_id=workspace_id,
+                session_mode=session_mode,
+                session_scope_metadata=scope,
+                run_index=run_index,
+                fanout_bound=spec.fanout_bound,
+                queued_reason="",
+            )
+            handle = TaskHandle.from_task(seeded)
+            self._apply_poll(handle, current)
+            current_task = self._require_local_task(handle)
+            handle = TaskHandle.from_task(current_task)
+        self._start_event_pump(handle)
+        return handle
+
+    def wait(self, handle: TaskHandle, timeout_s: float) -> TaskResult:
+        """Reconnect by retained task id and wait within the caller's budget.
+
+        A timeout returns the latest non-terminal record. A fresh client and the
+        persisted composite task key are used on every call, so losing the client
+        that submitted the work does not lose the job.
+        """
+
+        local = self._require_local_task(handle)
+        if local.is_terminal:
+            return TaskResult.from_task(local)
+        if timeout_s <= 0:
+            return self.check([handle])[0]
+        self._start_event_pump(handle)
+        key = self._runtime.task_key(handle)
+        try:
+            current = self._runtime.resume(handle.parent_session_id, key, timeout_s)
+        except TimeoutError:
+            current = self._runtime.poll(handle.parent_session_id, key)
+        self._apply_poll(handle, current)
+        return TaskResult.from_task(self._require_local_task(handle))
+
+    def check(self, handles: Sequence[TaskHandle]) -> list[TaskResult]:
+        """Poll relay once per handle and preserve caller order."""
+
+        results: list[TaskResult] = []
+        for handle in handles:
+            local = self._require_local_task(handle)
+            if not local.is_terminal:
+                self._start_event_pump(handle)
+                key = self._runtime.task_key(handle)
+                current = self._runtime.poll(handle.parent_session_id, key)
+                self._apply_poll(handle, current)
+                local = self._require_local_task(handle)
+            results.append(TaskResult.from_task(local))
+        return results
+
+    def cancel(self, handle: TaskHandle) -> bool:
+        """Request cooperative cancellation and return after the relay ack.
+
+        The acknowledgement is not terminal evidence. The local task remains
+        non-terminal until a later check or wait observes canonical relay state.
+        """
+
+        local = self._require_local_task(handle)
+        if local.is_terminal:
+            return False
+        key = self._runtime.task_key(handle)
+        self._runtime.cancel(handle.parent_session_id, key)
+        return True
+
+    def _task_key(self, handle: TaskHandle) -> Any:
+        return self._runtime.task_key(handle)
+
+    def _require_local_task(self, handle: TaskHandle) -> AgentTask:
+        task = self._app.state.agent_task_registry.get(handle.task_id)
+        if task is None:
+            raise InvokerError(f"unknown task {handle.task_id!r}", reason="unknown_task")
+        if (
+            task.parent_session_id != handle.parent_session_id
+            or task.child_session_id != handle.child_session_id
+        ):
+            raise InvokerError(
+                f"task handle identity disagrees for {handle.task_id!r}",
+                reason="task_identity_mismatch",
+            )
+        return task
+
+    @staticmethod
+    def _result_is_error(result: Any) -> bool:
+        if not isinstance(result, Mapping):
+            return False
+        if result.get("isError") is True or result.get("is_error") is True:
+            return True
+        structured = result.get("structuredContent")
+        return isinstance(structured, Mapping) and structured.get("isError") is True
+
+    def _relay_projection(self, current: Any) -> tuple[str, dict[str, str | bool]]:
+        status = str(getattr(current, "status", ""))
+        observation = str(getattr(current, "relay_state", "") or "")
+        if not observation and status == "working":
+            message = str(getattr(current, "status_message", "") or "")
+            prefix = "Relay job is "
+            if message.startswith(prefix):
+                observation = message[len(prefix) :].strip()
+        if not observation:
+            if status == "input_required":
+                observation = "input_required"
+            elif status == "completed":
+                observation = (
+                    "tool-fail"
+                    if self._result_is_error(getattr(current, "result", None))
+                    else "succeeded"
+                )
+            elif status == "failed":
+                observation = "protocol"
+            elif status == "cancelled":
+                observation = "canceled"
+        projection = RELAY_STATE_MAP.get(observation)
+        if projection is None:
+            reason = "relay_state_missing" if not observation else "relay_state_unknown"
+            raise InvokerError(
+                f"relay task status {status!r} has no committed observation {observation!r}",
+                reason=reason,
+            )
+        if projection.get("status") != status:
+            raise InvokerError(
+                f"relay observation {observation!r} projects to "
+                f"{projection.get('status')!r}, not {status!r}",
+                reason="relay_state_mismatch",
+            )
+        expected_error = projection.get("isError")
+        if expected_error is not None and expected_error is not self._result_is_error(
+            getattr(current, "result", None)
+        ):
+            raise InvokerError(
+                f"relay observation {observation!r} disagrees with isError",
+                reason="relay_state_mismatch",
+            )
+        return observation, projection
+
+    @staticmethod
+    def _agent_status(observation: str, projection: Mapping[str, str | bool]) -> str:
+        if observation == "queued":
+            return STATUS_QUEUED
+        status = projection["status"]
+        if status in {"working", "input_required"}:
+            return STATUS_RUNNING
+        if status == "completed":
+            return STATUS_COMPLETED
+        if status == "failed":
+            return STATUS_FAILED
+        if status == "cancelled":
+            return STATUS_CANCELLED
+        raise InvokerError(f"unknown projected status {status!r}", reason="unknown_status")
+
+    def _apply_poll(self, handle: TaskHandle, current: Any) -> None:
+        observation, projection = self._relay_projection(current)
+        target = self._agent_status(observation, projection)
+        local = self._require_local_task(handle)
+        if local.is_terminal or local.status == target:
+            return
+        if local.status == STATUS_QUEUED and target != STATUS_QUEUED:
+            running = replace(TaskResult.from_task(local), status=STATUS_RUNNING)
+            fold_agent_task_event(self._app, running)
+            local = self._require_local_task(handle)
+        if target == STATUS_RUNNING:
+            return
+        terminal = self._terminal_result(handle, local, current, target)
+        fold_agent_task_event(self._app, terminal)
+
+    def _terminal_result(
+        self,
+        handle: TaskHandle,
+        local: AgentTask,
+        current: Any,
+        target: str,
+    ) -> TaskResult:
+        wire = find_task_result_wire(getattr(current, "result", None))
+        if wire is not None:
+            remote_task_id = str(wire.get("task_id") or "")
+            if remote_task_id and remote_task_id != handle.task_id:
+                raise InvokerError(
+                    "relay TaskResult task_id disagrees with the retained handle",
+                    reason="task_identity_mismatch",
+                )
+            merged = {
+                **TaskResult.from_task(local).to_wire(),
+                **wire,
+                "task_id": handle.task_id,
+                "parent_session_id": handle.parent_session_id,
+                "child_session_id": handle.child_session_id,
+            }
+            result = TaskResult.from_wire(merged)
+            if result.status not in TERMINAL_STATUSES:
+                raise InvokerError(
+                    "relay terminal response carried a non-terminal TaskResult",
+                    reason="relay_result_invalid",
+                )
+            return result
+        if target == STATUS_CANCELLED:
+            return replace(TaskResult.from_task(local), status=STATUS_CANCELLED)
+        if target == STATUS_FAILED:
+            reason = relay_error_reason(getattr(current, "error", None))
+            return replace(
+                TaskResult.from_task(local),
+                status=STATUS_FAILED,
+                error_reason=reason,
+            )
+        raise InvokerError(
+            "relay completion omitted its TaskResult boundary record",
+            reason="relay_result_invalid",
+        )
+
+    def _start_event_pump(self, handle: TaskHandle) -> None:
+        self._events.start(handle, self._runtime.task_key(handle), self._fold_relay_event)
+
+    def _fold_relay_event(self, handle: TaskHandle, raw: Mapping[str, Any]) -> None:
+        event = relay_task_event(handle, raw)
+        if event is None:
+            return
+        local = self._require_local_task(handle)
+        if local.is_terminal or local.status == event.status:
+            return
+        fold_agent_task_event(self._app, event)

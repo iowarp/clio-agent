@@ -335,14 +335,29 @@ class RelayTransportClient:
         )
 
     async def cancel(self, task: RelayTaskIdentity) -> Any:
-        """Send ack-only ``tasks/cancel`` through #1115; emit no cancellation notice."""
+        """Acknowledge cooperative cancellation while retaining reconnect state.
+
+        Canonical cancelled state is eventually consistent and arrives through a
+        later tasks/get. The durable row therefore remains until poll or wait
+        observes a terminal state.
+        """
 
         self._validate_identity(task)
-        return await cancel_task(
+        store = self._record_store()
+        record = store.get(task.key)
+        if record is None:
+            raise RelayTransportContractError(
+                f"relay task {task.task_id!r} has no persisted #1115 record",
+                reason="relay_task_record_missing",
+                details=task.key.to_wire(),
+            )
+        ack = await cancel_task(
             self._require_mcp_client().session,
             task.key,
-            store=self._record_store(),
+            store=store,
         )
+        store.put(replace(record, cancel_requested=True))
+        return ack
 
     async def stream_events(
         self,

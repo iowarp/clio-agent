@@ -271,10 +271,15 @@ async def test_timeline_streams_while_running_and_artifact_fetch_returns_bytes(
         assert (await relay.poll(task)).status == "working"
         content = await relay.fetch_artifact("artifact-1")
         await relay.cancel(task)
+        cancel_record = task_record_store().get(task.key)
+        assert cancel_record is not None and cancel_record.cancel_requested is True
+        cancelled = await relay.poll(task)
 
     assert event["task_id"] == task.task_id
     assert event["event_type"] == "progress"
     assert content == b"relay-artifact"
+    assert cancelled.status == "cancelled"
+    assert task_record_store().get(task.key) is None
 
 
 async def test_oversize_inline_delivery_raises_typed_contract_error(
