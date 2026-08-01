@@ -298,7 +298,7 @@ def _emit_delegation_terminal(app: Any, session_id: str, agent_def: "AgentDef", 
     """Emit a terminal task's once-per-task delegation event + return Part + resume.
 
     Shared by :func:`wait_agent_tasks` and the declared-workflow runner
-    (:func:`emit_workflow_step_return`): BOTH spawn+wait through the same substrate,
+    (:func:`emit_workflow_step_return`): BOTH spawn+wait through the same invoker,
     so BOTH reach a terminal task and must render it exactly once. The once-per-task
     claim (``mark_delegation_reported``) guarantees exactly-once wire emission no
     matter which path gets there first (the server owns the de-duplicated stream)."""
@@ -357,7 +357,7 @@ def emit_workflow_step_start(
 ) -> None:
     """Wire parity for a declared-workflow step spawn (#948 S5 work item 4).
 
-    A workflow step spawns its child directly through the substrate (never the
+    A workflow step spawns its child through the invoker (never the
     model's ``spawn_agent_task`` tool), so the runner re-emits the same
     ``blueprint.delegation.started`` event + started ``expert_handoff`` Part the tool
     path emits — otherwise the step's child would render nothing in the parent
@@ -397,14 +397,15 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
 
     import dspy  # noqa: PLC0415
 
+    from clio_agent.gact.agents.invoker import (  # noqa: PLC0415
+        InvokerError,
+        SpawnError,
+        TaskHandle,
+        TaskSpec,
+    )
     from clio_agent.gact.agents.observe_runtime import build_observe_tool  # noqa: PLC0415
     from clio_agent.gact.agents.resolution import _runtime_declared_child_ids  # noqa: PLC0415
     from clio_agent.gact.spawn_context import bind_task_spec_to_parent  # noqa: PLC0415
-    from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
-        SpawnError,
-        TaskSpec,
-        spawn_child_turn_threadsafe,
-    )
 
     # Only an agent with DECLARED children gets the routing surface — a leaf expert
     # has nothing to spawn (and spawn would reject an undeclared child anyway).
@@ -421,7 +422,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         return app, session_id
 
     def _do_spawn(agent: str, task: str, *, fanout_bound: int = 0) -> str:
-        """Spawn one declared child through the substrate + emit the started wire
+        """Spawn one declared child through the invoker + emit the started wire
         parity. ``fanout_bound`` (> 0) caps how many of THIS parent's concurrent
         children at this depth may run before a spawn queues — the fan-out admission
         bound (#948 S5); 0 means only the global per-depth cap applies."""
@@ -432,8 +433,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         # reachable (a root session spawns at depth 1) (#948 S4 adversarial review).
         depth = _current_session_depth(app, session_id) + 1
         try:
-            spawned = spawn_child_turn_threadsafe(
-                app,
+            spawned = app.state.expert_invoker.invoke(
                 bind_task_spec_to_parent(
                     app,
                     TaskSpec(
@@ -513,6 +513,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
 
         app, session_id = _ctx_app_session()
         registry = app.state.agent_task_registry
+        invoker = app.state.expert_invoker
         import time as _time  # noqa: PLC0415
 
         from clio_agent.gact.agent_tasks import consume_notification  # noqa: PLC0415
@@ -524,30 +525,31 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             # fresh never-set Event for an unknown/typo id and block the FULL budget
             # (starving every real id after it via the shared deadline). An unknown
             # id returns immediately with a typed row and emits nothing.
-            if registry.get(tid) is None:
+            task = registry.get(tid)
+            if task is None:
                 results.append({"task_id": tid, "error": "unknown_task"})
                 continue
             remaining = max(0.0, deadline - _time.monotonic())
-            registry.event(tid).wait(timeout=remaining)
-            task = registry.get(tid)
-            if task is None:  # pragma: no cover - retained records are never removed
-                results.append({"task_id": tid, "error": "unknown_task"})
+            try:
+                task_result = invoker.wait(TaskHandle.from_task(task), timeout_s=remaining)
+            except InvokerError as exc:
+                results.append({"task_id": tid, "error": exc.reason})
                 continue
-            payload = _completion_payload(app, task)
+            payload = _completion_payload(app, task_result)
             results.append(payload)
-            if task.is_terminal:
+            if task_result.is_terminal:
                 # Collecting a terminal task in-turn consumes its observe-later
                 # notification (#948 S6): the model saw the result HERE, so the next
                 # turn must not re-inject it. Exactly-once via the notify_pending gate.
-                consume_notification(app, task.task_id)
+                consume_notification(app, task_result.task_id)
                 # Once-per-task wire emission: the ROW above is returned on EVERY wait
                 # (the model may legitimately re-collect), but the terminal EVENT +
                 # return Part + parent-resume fire exactly once — the server owns the
                 # de-duplicated stream. A re-wait (partial-timeout re-collect, id
                 # repeated in a batch) claims nothing and emits nothing. Shared with the
                 # declared-workflow runner (both reach a terminal task via the same
-                # substrate).
-                _emit_delegation_terminal(app, session_id, agent_def, task)
+                # invoker boundary).
+                _emit_delegation_terminal(app, session_id, agent_def, task_result)
         # Deterministic ensemble merge (#948 S5): when this wait collected several
         # runs whose typed workflow_state sections COLLIDE, merge them in REQUEST
         # ORDER (run_index, never completion order) and surface every collision as a
@@ -592,8 +594,10 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         wanted = set(task_ids or [])
         if wanted:
             tasks = [t for t in tasks if t.task_id in wanted]
+        handles = [TaskHandle.from_task(task) for task in tasks]
+        task_results = app.state.expert_invoker.check(handles)
         rows: list[dict[str, Any]] = []
-        for t in tasks:
+        for t in task_results:
             row: dict[str, Any] = {
                 "task_id": t.task_id,
                 "agent": t.agent_ref.get("expert_id", ""),

@@ -195,6 +195,15 @@ def test_taskspec_json_roundtrips_verbatim() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_build_app_binds_in_process_expert_invoker(tmp_path: Path) -> None:
+    """P2.6: app assembly has one explicit default executor binding."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+
+    assert isinstance(app.state.expert_invoker, InProcessExpertInvoker)
+    assert app.state.expert_invoker.app is app
+
+
 def test_invoke_parity_records_and_events(tmp_path: Path, monkeypatch) -> None:
     """A child spawned through the invoker is record- and event-identical to one
     spawned through the direct substrate (same status, run_index, agent_ref, depth;

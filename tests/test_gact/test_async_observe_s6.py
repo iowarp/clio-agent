@@ -144,9 +144,11 @@ def test_spawn_tool_spawns_async_mode(tmp_path: Path, monkeypatch) -> None:
 
     _declare(monkeypatch, "data_expert")
     captured: list[TaskSpec] = []
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     monkeypatch.setattr(
-        "clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe",
-        lambda a, spec: (
+        app.state.expert_invoker,
+        "invoke",
+        lambda spec: (
             captured.append(spec)
             or SimpleNamespace(task_id="task_abc", status="running", run_index=0, queued_reason="")
         ),
@@ -158,7 +160,6 @@ def test_spawn_tool_spawns_async_mode(tmp_path: Path, monkeypatch) -> None:
         "clio_agent.gact.agents.spawn_runtime._append_live_assistant_part", lambda *a, **k: None
     )
 
-    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app):
         with _active_turn(app, "sess_x"):
             tools = {
