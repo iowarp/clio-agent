@@ -18,19 +18,31 @@ orthogonal to the substrate). Declared-children resolution is monkeypatched.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from clio_agent.gact.agent_tasks import STATUS_COMPLETED, STATUS_RUNNING, AgentTask
+from clio_agent.gact.agent_tasks import (
+    STATUS_CANCELLED,
+    STATUS_COMPLETED,
+    STATUS_RUNNING,
+    AgentTask,
+)
 from clio_agent.gact.agents.invoker import (
+    RELAY_STATE_MAP,
     TASK_CONSUMED_EVENT,
     ExpertInvoker,
     InProcessExpertInvoker,
     InvokerError,
+    RelayExpertInvoker,
     TaskEvent,
     TaskHandle,
     TaskResult,
@@ -46,8 +58,24 @@ from clio_agent.gact.turn_spawn import (
     cancel_agent_task,
     spawn_child_turn_threadsafe,
 )
+from clio_agent.tools.mcp_task_records import TaskKey, TaskRecord, resolve_store
+from clio_agent.tools.relay_transport import RelayTaskIdentity
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
+
+@pytest.mark.parametrize(
+    "invoker_type",
+    [InProcessExpertInvoker, RelayExpertInvoker],
+    ids=["in-process", "relay"],
+)
+def test_both_expert_invoker_implementations_satisfy_protocol(invoker_type: type) -> None:
+    """The S7 implementation matrix contains both protocol implementations."""
+
+    assert all(
+        callable(getattr(invoker_type, method, None))
+        for method in ("invoke", "wait", "check", "cancel")
+    )
 
 
 class _Agent:
@@ -68,6 +96,219 @@ class _Agent:
                 "routing_rationale": "",
             },
         )()
+
+
+class _FakeRelayBackend:
+    """Deterministic relay state shared by every reconstructed fake client."""
+
+    def __init__(self) -> None:
+        self.tasks: dict[str, dict[str, Any]] = {}
+        self.submissions: list[dict[str, Any]] = []
+        self.client_count = 0
+        self._next_id = 0
+        self._lock = threading.Lock()
+
+    def client(self, owner_session_id: str) -> "_FakeRelayClient":
+        """Return a fresh owner-bound client."""
+
+        return _FakeRelayClient(self, owner_session_id)
+
+    def create(self, owner_session_id: str, arguments: dict[str, Any]) -> RelayTaskIdentity:
+        """Admit one job and persist the exact reconnect key."""
+
+        with self._lock:
+            self._next_id += 1
+            task_id = f"task_relay_{self._next_id:04d}"
+            context = dict(arguments["context"])
+            task = {
+                "task_id": task_id,
+                "owner_session_id": owner_session_id,
+                "arguments": dict(arguments),
+                "context": context,
+                "polls": 0,
+                "cancel_requested": False,
+                "terminal": threading.Event(),
+                "state": "queued",
+            }
+            self.tasks[task_id] = task
+            self.submissions.append(dict(arguments))
+        key = TaskKey(
+            server_id="fake-relay-server",
+            session_id=owner_session_id,
+            task_id=task_id,
+        )
+        resolve_store(None).put(
+            TaskRecord(
+                key=key,
+                tool="relay_submit_remote_agent",
+                backend={"transport": "fake-relay"},
+                status="working",
+                created_at="2026-08-01T00:00:00+00:00",
+            )
+        )
+        return RelayTaskIdentity.from_key(key)
+
+    def current(self, task_id: str, *, terminal: bool = False) -> SimpleNamespace:
+        """Return one SEP task observation projected from canonical fake relay state."""
+
+        task = self.tasks[task_id]
+        task["polls"] += 1
+        if task["cancel_requested"]:
+            observation = "canceled"
+        elif terminal:
+            observation = "succeeded"
+        elif task["polls"] == 1:
+            observation = "queued"
+        else:
+            observation = "running"
+        task["state"] = observation
+        if observation == "canceled":
+            task["terminal"].set()
+            resolve_store(None).drop(self._key(task))
+            return _relay_current("canceled")
+        if observation == "succeeded":
+            task["terminal"].set()
+            resolve_store(None).drop(self._key(task))
+            return _relay_current(
+                "succeeded",
+                result={"isError": False, "task_result": self.task_result(task)},
+            )
+        return _relay_current(observation)
+
+    @staticmethod
+    def _key(task: dict[str, Any]) -> TaskKey:
+        return TaskKey(
+            server_id="fake-relay-server",
+            session_id=str(task["owner_session_id"]),
+            task_id=str(task["task_id"]),
+        )
+
+    @staticmethod
+    def task_result(task: dict[str, Any]) -> dict[str, Any]:
+        """Build the remote TaskResult boundary record."""
+
+        spec = task["context"]
+        text = str(spec["task_text"])
+        return {
+            "task_id": task["task_id"],
+            "parent_session_id": task["owner_session_id"],
+            "child_session_id": "",
+            "agent_ref": {
+                "expert_id": spec["child_expert_id"],
+                "requesting_expert_id": spec["requesting_expert_id"],
+            },
+            "depth": spec["depth"],
+            "run_index": 0,
+            "status": "completed",
+            "queued_reason": "",
+            "error_reason": "",
+            "created_at": "2026-08-01T00:00:00+00:00",
+            "updated_at": "2026-08-01T00:00:01+00:00",
+            "result": {
+                "message_ref": "remote-message",
+                "answer_excerpt": f"child did: {text[:20]}",
+                "workflow_state": {},
+            },
+            "artifact_ref": "",
+        }
+
+
+class _FakeRelayClient:
+    """Async RelayTransportClient surface over the shared fake backend."""
+
+    def __init__(self, backend: _FakeRelayBackend, owner_session_id: str) -> None:
+        self.backend = backend
+        self.owner_session_id = owner_session_id
+
+    async def __aenter__(self) -> "_FakeRelayClient":
+        self.backend.client_count += 1
+        return self
+
+    async def __aexit__(self, *_args: Any) -> None:
+        return None
+
+    async def submit(self, tool_name: str, arguments: dict[str, Any]) -> RelayTaskIdentity:
+        assert tool_name == "relay_submit_remote_agent"
+        return self.backend.create(self.owner_session_id, arguments)
+
+    async def poll(self, identity: RelayTaskIdentity) -> SimpleNamespace:
+        return self.backend.current(identity.task_id)
+
+    async def resume(
+        self, key: TaskKey, *, timeout_seconds: float | None = None
+    ) -> SimpleNamespace:
+        del timeout_seconds
+        return self.backend.current(key.task_id, terminal=True)
+
+    async def cancel(self, identity: RelayTaskIdentity) -> dict[str, bool]:
+        task = self.backend.tasks[identity.task_id]
+        task["cancel_requested"] = True
+        record = resolve_store(None).get(identity.key)
+        assert record is not None
+        from dataclasses import replace
+
+        resolve_store(None).put(replace(record, cancel_requested=True))
+        return {"acknowledged": True}
+
+    async def stream_events(
+        self,
+        identity: RelayTaskIdentity,
+        *,
+        cursor: int = 1,
+    ) -> AsyncIterator[dict[str, Any]]:
+        assert cursor == 1
+        task = self.backend.tasks[identity.task_id]
+        result = self.backend.task_result(task)
+        yield {
+            "task_id": identity.task_id,
+            "event_type": "agent.task.started",
+            "session_id": "",
+            "status": "running",
+            "payload": {**result, "status": "running", "result": None},
+        }
+        while not task["terminal"].is_set():
+            await asyncio.sleep(0.01)
+        status = "cancelled" if task["state"] == "canceled" else "completed"
+        event_type = f"agent.task.{status}"
+        yield {
+            "task_id": identity.task_id,
+            "event_type": event_type,
+            "session_id": "",
+            "status": status,
+            "payload": {**result, "status": status, "result": result["result"]},
+        }
+
+
+def _relay_current(
+    observation: str,
+    *,
+    result: dict[str, Any] | None = None,
+    error: dict[str, Any] | None = None,
+) -> SimpleNamespace:
+    """Build one fake ClientGetTaskResult for a committed map row."""
+
+    projection = RELAY_STATE_MAP[observation]
+    return SimpleNamespace(
+        status=projection["status"],
+        relay_state=observation,
+        status_message=f"Relay job is {observation}",
+        result=result,
+        error=error,
+    )
+
+
+def _relay_invoker(app: Any, backend: _FakeRelayBackend) -> RelayExpertInvoker:
+    """Construct the relay implementation with fixed remote execution inputs."""
+
+    return RelayExpertInvoker(
+        app,
+        backend.client,
+        cluster="ares",
+        prompt_path="/shared/clio/relay-expert.md",
+        mcp_config_path="/shared/clio/mcp.toml",
+        model="anthropic/claude",
+        workdir="/shared/work",
+    )
 
 
 def _declare(monkeypatch, *child_ids: str) -> None:
@@ -188,6 +429,245 @@ def test_taskspec_json_roundtrips_verbatim() -> None:
     assert spec_from_wire(wire) == spec
     # Unknown keys (a cross-release field) are tolerated, not fatal.
     assert spec_from_wire({**wire, "future_field": 7}) == spec
+
+
+@pytest.mark.parametrize("implementation", ["in-process", "relay"])
+def test_s7_record_parity_across_both_invokers(
+    implementation: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both implementations produce the direct substrate TaskResult record."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    backend = _FakeRelayBackend()
+    with TestClient(app) as client:
+        invoker: ExpertInvoker = (
+            InProcessExpertInvoker(app)
+            if implementation == "in-process"
+            else _relay_invoker(app, backend)
+        )
+        p_inv = client.post("/v1/sessions", json={"title": "inv"}).json()["id"]
+        p_dir = client.post("/v1/sessions", json={"title": "dir"}).json()["id"]
+        handle = invoker.invoke(_spec(p_inv))
+        direct = spawn_child_turn_threadsafe(app, _spec(p_dir))
+        if implementation == "relay":
+            invoker = _relay_invoker(app, backend)
+        result = invoker.wait(handle, timeout_s=10.0)
+        assert app.state.agent_task_registry.event(direct.task_id).wait(timeout=10.0)
+        direct_result = TaskResult.from_task(app.state.agent_task_registry.get(direct.task_id))
+
+        assert _norm_payload(result.to_wire()) == _norm_payload(direct_result.to_wire())
+        assert result.status == direct_result.status == STATUS_COMPLETED
+        assert result.result["answer_excerpt"] == direct_result.result["answer_excerpt"]
+
+
+@pytest.mark.parametrize("implementation", ["in-process", "relay"])
+def test_s7_event_parity_across_both_invokers(
+    implementation: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both implementations publish the same ordered lifecycle event family."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    backend = _FakeRelayBackend()
+    with TestClient(app) as client:
+        invoker: ExpertInvoker = (
+            InProcessExpertInvoker(app)
+            if implementation == "in-process"
+            else _relay_invoker(app, backend)
+        )
+        p_inv = client.post("/v1/sessions", json={"title": "inv"}).json()["id"]
+        p_dir = client.post("/v1/sessions", json={"title": "dir"}).json()["id"]
+        handle = invoker.invoke(_spec(p_inv))
+        direct = spawn_child_turn_threadsafe(app, _spec(p_dir))
+        invoker.wait(handle, timeout_s=10.0)
+        _wait_terminal(app, direct.task_id)
+        _wait_task_events_settled(app, handle.child_session_id)
+        _wait_task_events_settled(app, direct.child_session_id)
+
+        actual = _norm_events(app, handle.child_session_id)
+        expected = _norm_events(app, direct.child_session_id)
+        assert actual == expected
+        assert [event_type for event_type, _payload in actual] == [
+            "agent.task.queued",
+            "agent.task.started",
+            "agent.task.completed",
+        ]
+
+
+@pytest.mark.parametrize("implementation", ["in-process", "relay"])
+def test_s7_typed_error_parity_across_both_invokers(
+    implementation: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both implementations preserve the direct typed undeclared-child refusal."""
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    backend = _FakeRelayBackend()
+    with TestClient(app):
+        invoker: ExpertInvoker = (
+            InProcessExpertInvoker(app)
+            if implementation == "in-process"
+            else _relay_invoker(app, backend)
+        )
+        parent = app.state.sessions.create(workspace_id="ws_default", title="p")
+        spec = TaskSpec(
+            child_expert_id="hpc_expert",
+            task_text="x",
+            parent_session_id=parent.id,
+        )
+        with pytest.raises(SpawnError) as inv_exc:
+            invoker.invoke(spec)
+        with pytest.raises(SpawnError) as direct_exc:
+            spawn_child_turn_threadsafe(app, spec)
+
+        assert inv_exc.value.reason == direct_exc.value.reason == "undeclared_child"
+        depth_spec = TaskSpec(
+            child_expert_id="data_expert",
+            task_text="x",
+            parent_session_id=parent.id,
+            depth=MAX_SPAWN_DEPTH + 1,
+        )
+        with pytest.raises(SpawnError) as inv_depth:
+            invoker.invoke(depth_spec)
+        with pytest.raises(SpawnError) as direct_depth:
+            spawn_child_turn_threadsafe(app, depth_spec)
+        assert inv_depth.value.reason == direct_depth.value.reason == "spawn_depth_exceeded"
+        assert backend.submissions == []
+
+
+def test_taskspec_maps_to_remote_agent_task_spec_verbatim(
+    tmp_path: Path,
+) -> None:
+    """Remote execution fields are configured and context is the exact TaskSpec wire."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    backend = _FakeRelayBackend()
+    invoker = _relay_invoker(app, backend)
+    spec = TaskSpec(
+        child_expert_id="worker",
+        task_text="inspect",
+        parent_session_id="session-parent",
+        requesting_expert_id="main",
+        workspace_id="ws-science",
+        session_mode="architect",
+        session_scope_metadata={"active_agent_blueprint_id": "science"},
+    )
+
+    assert invoker.remote_agent_task_spec(spec) == {
+        "prompt_path": "/shared/clio/relay-expert.md",
+        "mcp_config_path": "/shared/clio/mcp.toml",
+        "model": "anthropic/claude",
+        "workdir": "/shared/work",
+        "context": spec_to_wire(spec),
+    }
+
+
+@pytest.mark.parametrize("observation", sorted(RELAY_STATE_MAP))
+def test_every_committed_relay_state_row_is_used(observation: str, tmp_path: Path) -> None:
+    """Every committed source row translates through the sole table."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    invoker = _relay_invoker(app, _FakeRelayBackend())
+    result = None
+    error = None
+    if observation == "succeeded":
+        result = {"isError": False}
+    elif observation == "tool-fail":
+        result = {"isError": True}
+    elif observation == "protocol":
+        error = {"reason": "agent_error"}
+    current = _relay_current(observation, result=result, error=error)
+
+    actual_observation, projection = invoker._relay_projection(current)
+
+    assert actual_observation == observation
+    assert projection is RELAY_STATE_MAP[observation]
+
+
+def test_relay_detach_new_invoker_reconnects_by_task_id_and_streams_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A new invoker/client resumes the retained task id and its event stream."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    backend = _FakeRelayBackend()
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        originating = _relay_invoker(app, backend)
+        handle = originating.invoke(_spec(parent))
+        assert handle.task_id == next(iter(backend.tasks))
+        assert resolve_store(None).get(originating._task_key(handle)) is not None
+        deadline = time.monotonic() + 5.0
+        while backend.client_count < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert backend.client_count >= 2
+
+        rebuilt = _relay_invoker(app, backend)
+        result = rebuilt.wait(handle, timeout_s=10.0)
+        _wait_task_events_settled(app, handle.child_session_id)
+
+    assert result.status == STATUS_COMPLETED
+    assert result.task_id == handle.task_id
+    assert backend.client_count >= 3
+    assert _norm_events(app, handle.child_session_id)[-1][0] == "agent.task.completed"
+
+
+def test_relay_live_task_events_use_committed_fold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The SSE door feeds TaskEvent objects through fold_agent_task_event."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    backend = _FakeRelayBackend()
+    seen = threading.Event()
+    from clio_agent.gact.agents import invoker as invoker_module
+
+    original = invoker_module.fold_agent_task_event
+
+    def recording_fold(app_arg: Any, observation: Any, **kwargs: Any) -> Any:
+        if isinstance(observation, TaskEvent):
+            seen.set()
+        return original(app_arg, observation, **kwargs)
+
+    monkeypatch.setattr(invoker_module, "fold_agent_task_event", recording_fold)
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        handle = _relay_invoker(app, backend).invoke(_spec(parent))
+        assert seen.wait(timeout=5.0)
+        assert (
+            _wait_terminal(
+                app,
+                _relay_invoker(app, backend).wait(handle, timeout_s=10.0).task_id,
+            ).status
+            == STATUS_COMPLETED
+        )
+
+
+def test_relay_cancel_acknowledges_now_and_settles_later(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancellation ack keeps the task running until a later canonical poll."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    backend = _FakeRelayBackend()
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        invoker = _relay_invoker(app, backend)
+        handle = invoker.invoke(_spec(parent))
+        assert invoker.cancel(handle) is True
+        acknowledged = app.state.agent_task_registry.get(handle.task_id)
+        assert acknowledged.status != STATUS_CANCELLED
+        record = resolve_store(None).get(invoker._task_key(handle))
+        assert record is not None and record.cancel_requested is True
+
+        settled = invoker.check([handle])[0]
+
+    assert settled.status == STATUS_CANCELLED
+    assert invoker.cancel(handle) is False
 
 
 # ---------------------------------------------------------------------------
