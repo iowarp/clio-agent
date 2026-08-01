@@ -32,6 +32,7 @@ from fastmcp.server.providers.proxy import FastMCPProxy
 
 if TYPE_CHECKING:
     from clio_agent.tools.mcp_runtime import MCPClientCapabilities, MCPClientHandlers
+    from clio_agent.tools.remote_mcp import RemoteMcpFederation
 
 from clio_agent.tools.catalog import (
     TOOL_CATALOG,
@@ -170,6 +171,7 @@ def build_gateway(
     proxy_factory: Callable[..., FastMCP] | None = None,
     handlers: "MCPClientHandlers | None" = None,
     capabilities: "MCPClientCapabilities | None" = None,
+    remote_mcp_federation: "RemoteMcpFederation | None" = None,
 ) -> FastMCP:
     """Build the agent's tool gateway: built-ins PLUS the declared MCP servers.
 
@@ -202,6 +204,9 @@ def build_gateway(
         capabilities: Optional client-capability declaration (#1111) forwarded to
             the default proxy factory so each declared server's backend advertises
             it. Ignored when ``proxy_factory`` is supplied.
+        remote_mcp_federation: Optional relay catalog snapshot projected under the
+            reserved ``remote`` namespace. Its bare server names are mounted back
+            into the exact relay aliases ``remote_<ns>_<tool>``.
 
     Returns:
         The gateway with the built-ins and declared proxies mounted.
@@ -228,6 +233,27 @@ def build_gateway(
     # second build over the same base MERGES instead of overwriting.
     registry: dict[str, Any] = getattr(gw, "_clio_namespace_proxies", {})
     specs_registry: dict[str, MCPServerSpec] = getattr(gw, "_clio_namespace_specs", {})
+
+    if remote_mcp_federation is not None:
+        from clio_agent.tools.remote_mcp import (  # noqa: PLC0415
+            RELAY_FOLLOW_NAMESPACE,
+            REMOTE_MCP_NAMESPACE,
+        )
+
+        occupied = _mounted_namespaces(gw) | set(BUILTIN_SERVER_NAMES)
+        federation_namespaces = {REMOTE_MCP_NAMESPACE}
+        if remote_mcp_federation.catalog.follow_tools:
+            federation_namespaces.add(RELAY_FOLLOW_NAMESPACE)
+        collision = occupied & federation_namespaces
+        if collision:
+            raise ValueError("remote MCP federation namespace is already provided")
+        remote_server = remote_mcp_federation.server
+        _mount_with_namespace(gw, remote_server, REMOTE_MCP_NAMESPACE)
+        registry[REMOTE_MCP_NAMESPACE] = remote_server
+        if remote_mcp_federation.catalog.follow_tools:
+            follow_server = remote_mcp_federation.follow_server
+            _mount_with_namespace(gw, follow_server, RELAY_FOLLOW_NAMESPACE)
+            registry[RELAY_FOLLOW_NAMESPACE] = follow_server
 
     # Names already provided (built-ins / earlier mounts) must not be shadowed.
     existing = _mounted_namespaces(gw) | set(BUILTIN_SERVER_NAMES)

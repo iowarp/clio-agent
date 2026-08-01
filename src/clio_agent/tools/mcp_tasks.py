@@ -68,7 +68,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -359,6 +359,7 @@ async def drive_task_to_terminal(
     store: TaskRecordStore | None = None,
     max_no_progress_rounds: int | None = None,
     lease: TaskLease | None = None,
+    poll_sleep: Callable[[float], Awaitable[None]] | None = None,
 ) -> ClientGetTaskResult:
     """Poll ``tasks/get`` to a terminal state under an exclusive lease.
 
@@ -375,6 +376,10 @@ async def drive_task_to_terminal(
     drive, so a second concurrent driver of the same task is refused with
     ``mcp_task_lease_held`` instead of double-polling and double-answering. Pass
     ``lease`` to reuse a lease the caller already holds.
+
+    ``poll_sleep`` is the poll loop's clock boundary. Tests may inject a recorder
+    without replacing the process-wide event-loop scheduler; production uses
+    :func:`asyncio.sleep`.
 
     The record's status is written through ``store`` on every observed transition and
     dropped once the task settles, so a crash leaves behind exactly the ids that are
@@ -404,6 +409,7 @@ async def drive_task_to_terminal(
             ledger=ledger,
             store=record_store,
             max_no_progress_rounds=max_no_progress_rounds,
+            poll_sleep=asyncio.sleep if poll_sleep is None else poll_sleep,
         )
     finally:
         if owned_lease:
@@ -419,6 +425,7 @@ async def _poll_until_terminal(
     ledger: TaskInputLedger,
     store: TaskRecordStore,
     max_no_progress_rounds: int,
+    poll_sleep: Callable[[float], Awaitable[None]],
 ) -> ClientGetTaskResult:
     """The lease-protected poll loop body (see :func:`drive_task_to_terminal`)."""
 
@@ -475,7 +482,7 @@ async def _poll_until_terminal(
         budget = remaining()
         if budget is not None:
             delay = min(delay, budget)
-        await asyncio.sleep(delay)
+        await poll_sleep(delay)
 
 
 def _record_status(

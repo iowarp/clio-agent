@@ -302,7 +302,7 @@ async def test_resume_seeds_the_dedup_ledger_from_the_persisted_record() -> None
 # --------------------------------------------------------------------------- #
 
 
-async def test_poll_loop_honors_server_poll_interval_ms(monkeypatch: Any) -> None:
+async def test_poll_loop_honors_server_poll_interval_ms() -> None:
     """The server-advertised ``pollIntervalMs`` caps the client's poll cadence."""
 
     slept: list[float] = []
@@ -310,13 +310,17 @@ async def test_poll_loop_honors_server_poll_interval_ms(monkeypatch: Any) -> Non
     async def fake_sleep(delay: float) -> None:
         slept.append(delay)
 
-    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
     session = ScriptedSession(
         [_task_payload("task-1", "working", poll_interval_ms=250) for _ in range(5)]
         + [_task_payload("task-1", "completed", result={"content": []})]
     )
 
-    final = await drive_task_to_terminal(session, _key("task-1"), store=_fresh_store())
+    final = await drive_task_to_terminal(
+        session,
+        _key("task-1"),
+        store=_fresh_store(),
+        poll_sleep=fake_sleep,
+    )
 
     assert final.status == "completed"
     # The ramp starts fast so a quick task resolves promptly, then settles AT the

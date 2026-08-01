@@ -23,7 +23,8 @@ import json
 import os
 from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass, replace
-from typing import Any
+from dataclasses import field as dataclass_field
+from typing import Any, Literal
 from urllib.parse import quote
 
 import httpx
@@ -56,6 +57,10 @@ RELAY_RESULT_DELIVERY_SCHEMA = "clio-relay.mcp-result-delivery.v1"
 RELAY_INLINE_LIMIT_CODE = "inline_result_limit_exceeded"
 OWNER_SESSION_ID_HEADER = "X-Clio-Relay-Owner-Session-Id"
 SESSION_GENERATION_ID_HEADER = "X-Clio-Relay-Session-Generation-Id"
+REMOTE_MCP_ALIAS_PREFIX = "remote_"
+REMOTE_MCP_CATALOG_META_KEY = "clio-relay/catalog-revision"
+REMOTE_MCP_HANDLE_FIELDS = frozenset({"job_id", "state", "kind", "terminal"})
+REMOTE_MCP_FOLLOW_TOOLS = frozenset({"relay_observe", "relay_wait"})
 
 __all__ = [
     "OWNER_SESSION_ID_HEADER",
@@ -65,6 +70,9 @@ __all__ = [
     "RelayInlineResultTooLargeError",
     "RelayMcpNameMismatchError",
     "RelayPollIntervalMismatchError",
+    "RelayRemoteMcpCatalog",
+    "RelayRemoteMcpCatalogStaleError",
+    "RelayRemoteMcpHandle",
     "RelayTaskIdentity",
     "RelayTaskJobMismatchError",
     "RelayTransportClient",
@@ -128,6 +136,53 @@ class RelayInlineResultTooLargeError(RelayTransportContractError):
             reason=RELAY_INLINE_LIMIT_CODE,
             details={"task_id": task_id, "delivery": self.delivery},
         )
+
+
+class RelayRemoteMcpCatalogStaleError(RelayTransportContractError):
+    """A projected remote alias no longer belongs to the current relay catalog."""
+
+    def __init__(self, name: str, expected: str, observed: str) -> None:
+        super().__init__(
+            "relay remote MCP catalog changed after local tool projection",
+            reason="remote_mcp_catalog_revision_stale",
+            details={
+                "tool": name,
+                "expected_catalog_revision": expected,
+                "observed_catalog_revision": observed,
+                "action": "refresh_remote_mcp_catalog",
+            },
+        )
+
+
+@dataclass(frozen=True)
+class RelayRemoteMcpCatalog:
+    """One relay-advertised catalog revision and its virtual ``remote_*`` tools."""
+
+    revision: str
+    tools: Mapping[str, Any]
+    follow_tools: Mapping[str, Any] = dataclass_field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RelayRemoteMcpHandle:
+    """Handle-first local result for one durable relay ``mcp_call`` job."""
+
+    job_id: str
+    state: str
+    kind: Literal["mcp_call"]
+    terminal: bool
+    catalog_revision: str
+
+    def to_wire(self) -> dict[str, Any]:
+        """Return the advertised local output-schema shape."""
+
+        return {
+            "job_id": self.job_id,
+            "state": self.state,
+            "kind": self.kind,
+            "terminal": self.terminal,
+            "catalog_revision": self.catalog_revision,
+        }
 
 
 @dataclass(frozen=True)
@@ -281,6 +336,112 @@ class RelayTransportClient:
             store=self._record_store(),
         )
         return RelayTaskIdentity.from_key(key)
+
+    async def discover_remote_mcp(self) -> RelayRemoteMcpCatalog:
+        """Read and validate the relay-owned catalog of virtual ``remote_*`` tools."""
+
+        client = self._require_mcp_client()
+        tools: list[Any] = []
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        revision: str | None = None
+        for _page_number in range(250):
+            page = await client.list_tools_mcp(cursor=cursor)
+            page_meta = page.meta if isinstance(page.meta, Mapping) else {}
+            page_revision = page_meta.get("clio-relay/remote-mcp-catalog-revision")
+            if not isinstance(page_revision, str) or not page_revision:
+                tool_revisions = {
+                    tool.meta.get(REMOTE_MCP_CATALOG_META_KEY)
+                    for tool in page.tools
+                    if tool.name.startswith(REMOTE_MCP_ALIAS_PREFIX)
+                    and isinstance(tool.meta, Mapping)
+                    and isinstance(tool.meta.get(REMOTE_MCP_CATALOG_META_KEY), str)
+                }
+                if len(tool_revisions) == 1:
+                    page_revision = tool_revisions.pop()
+            if not isinstance(page_revision, str) or not page_revision:
+                raise RelayTransportContractError(
+                    "relay tools/list omitted its remote MCP catalog revision",
+                    reason="remote_mcp_catalog_revision_missing",
+                    details={},
+                )
+            if revision is not None and page_revision != revision:
+                raise RelayTransportContractError(
+                    "relay remote MCP catalog revision changed during pagination",
+                    reason="remote_mcp_catalog_revision_changed_during_list",
+                    details={"first_revision": revision, "observed_revision": page_revision},
+                )
+            revision = page_revision
+            tools.extend(page.tools)
+            cursor = page.next_cursor
+            if not cursor:
+                break
+            if cursor in seen_cursors:
+                raise RelayTransportContractError(
+                    "relay tools/list repeated a remote MCP catalog cursor",
+                    reason="remote_mcp_catalog_cursor_repeated",
+                    details={"cursor": cursor},
+                )
+            seen_cursors.add(cursor)
+        else:
+            raise RelayTransportContractError(
+                "relay remote MCP catalog exceeded the pagination bound",
+                reason="remote_mcp_catalog_page_limit_exceeded",
+                details={"max_pages": 250},
+            )
+
+        assert revision is not None
+        projected: dict[str, Any] = {}
+        follow_tools: dict[str, Any] = {}
+        for tool in tools:
+            if tool.name in REMOTE_MCP_FOLLOW_TOOLS:
+                follow_tools[tool.name] = tool
+                continue
+            if not tool.name.startswith(REMOTE_MCP_ALIAS_PREFIX):
+                continue
+            self._validate_remote_mcp_definition(tool, revision)
+            projected[tool.name] = tool
+        return RelayRemoteMcpCatalog(
+            revision=revision,
+            tools=projected,
+            follow_tools=follow_tools,
+        )
+
+    async def submit_remote_mcp(
+        self,
+        name: str,
+        arguments: Mapping[str, Any],
+        *,
+        catalog_revision: str,
+    ) -> RelayRemoteMcpHandle:
+        """Bind one virtual call to its listed revision and return a job handle."""
+
+        current = await self.discover_remote_mcp()
+        if current.revision != catalog_revision or name not in current.tools:
+            raise RelayRemoteMcpCatalogStaleError(
+                name,
+                catalog_revision,
+                current.revision,
+            )
+        identity = await self.submit(name, arguments)
+        return RelayRemoteMcpHandle(
+            job_id=identity.job_id,
+            state="queued",
+            kind="mcp_call",
+            terminal=False,
+            catalog_revision=catalog_revision,
+        )
+
+    async def call_relay_tool(
+        self,
+        name: str,
+        arguments: Mapping[str, Any],
+    ) -> Any:
+        """Call one bounded relay follow tool and retain its typed MCP result."""
+
+        if name not in REMOTE_MCP_FOLLOW_TOOLS:
+            raise ValueError(f"unsupported relay federation follow tool: {name!r}")
+        return await self._require_mcp_client().call_tool_mcp(name, dict(arguments))
 
     async def poll(self, task: RelayTaskIdentity) -> ClientGetTaskResult:
         """Perform one named ``tasks/get`` and persist the observed transition."""
@@ -499,6 +660,36 @@ class RelayTransportClient:
         """Resolve the explicit store or #1115's installed durable home."""
 
         return resolve_store(self._store)
+
+    @staticmethod
+    def _validate_remote_mcp_definition(tool: Any, revision: str) -> None:
+        """Reject a dynamic relay definition that is not handle-first or revision-bound."""
+
+        meta = tool.meta if isinstance(tool.meta, Mapping) else {}
+        if meta.get(REMOTE_MCP_CATALOG_META_KEY) != revision:
+            raise RelayTransportContractError(
+                "relay remote MCP tool revision does not match tools/list",
+                reason="remote_mcp_tool_revision_mismatch",
+                details={
+                    "tool": tool.name,
+                    "catalog_revision": revision,
+                    "tool_revision": meta.get(REMOTE_MCP_CATALOG_META_KEY),
+                },
+            )
+        output_schema = tool.output_schema
+        properties = output_schema.get("properties") if isinstance(output_schema, Mapping) else None
+        required = output_schema.get("required") if isinstance(output_schema, Mapping) else None
+        if (
+            not isinstance(properties, Mapping)
+            or not isinstance(required, list)
+            or not REMOTE_MCP_HANDLE_FIELDS.issubset(required)
+            or properties.get("kind") != {"type": "string", "const": "mcp_call"}
+        ):
+            raise RelayTransportContractError(
+                "relay remote MCP tool does not advertise the durable job handle output schema",
+                reason="remote_mcp_handle_output_schema_invalid",
+                details={"tool": tool.name},
+            )
 
     def _require_mcp_client(self) -> Any:
         """Return the open FastMCP client."""
