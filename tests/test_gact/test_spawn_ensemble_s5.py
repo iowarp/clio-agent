@@ -32,6 +32,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agent_tasks import STATUS_RUNNING, AgentTask, AgentTaskRegistry
+from clio_agent.gact.agents.invoker import InProcessExpertInvoker
 from clio_agent.gact.app import build_app
 from clio_agent.gact.runtime.globals import _gact_app_context
 from clio_agent.gact.turn_spawn import TaskSpec, spawn_child_turn_threadsafe
@@ -138,10 +139,16 @@ def test_conflict_rows_carry_agent_id_for_cross_expert_same_run_index() -> None:
     and the stable-sort tie-break resolves the winner by wait-list order (#953 [1])."""
     runs = [
         RunWorkflowState(
-            run_index=0, task_id="task_r", workflow_state={"summary": {"v": "R"}}, agent_id="researcher"
+            run_index=0,
+            task_id="task_r",
+            workflow_state={"summary": {"v": "R"}},
+            agent_id="researcher",
         ),
         RunWorkflowState(
-            run_index=0, task_id="task_a", workflow_state={"summary": {"v": "A"}}, agent_id="analyst"
+            run_index=0,
+            task_id="task_a",
+            workflow_state={"summary": {"v": "A"}},
+            agent_id="analyst",
         ),
     ]
     merged, conflicts = merge_run_workflow_states(runs)
@@ -164,9 +171,7 @@ class _RecordingAgent:
     calls to (``_ctx.active_tool_session_id()``), appending a ledger row exactly as the
     live tool observer does — proving per-child attribution under interleaving."""
 
-    def __init__(
-        self, sleep_s: float = 0.0, barrier: threading.Barrier | None = None
-    ) -> None:
+    def __init__(self, sleep_s: float = 0.0, barrier: threading.Barrier | None = None) -> None:
         self.sleep_s = sleep_s
         # A load-insensitive concurrency WITNESS (#948 S5 flake hardening): when set,
         # every forward rendezvous at the barrier BEFORE it records its window, so the
@@ -481,7 +486,11 @@ def test_cancel_cascade_is_transitive_to_grandchildren(tmp_path: Path) -> None:
         main = client.post("/v1/sessions", json={"title": "m"}).json()["id"]
         # A is a direct child of main; B is a child of A's OWN child session (a grandchild).
         a = seed_agent_task(
-            app, parent_session_id=main, agent_ref={"expert_id": "A"}, depth=1, status=STATUS_RUNNING
+            app,
+            parent_session_id=main,
+            agent_ref={"expert_id": "A"},
+            depth=1,
+            status=STATUS_RUNNING,
         )
         b = seed_agent_task(
             app,
@@ -540,11 +549,13 @@ class _StubSessions:
 
 
 def _fake_app(registry: AgentTaskRegistry, messages: dict[str, list[Message]]) -> SimpleNamespace:
-    return SimpleNamespace(
+    app = SimpleNamespace(
         state=SimpleNamespace(
             agent_task_registry=registry, sessions=_StubSessions(), messages=dict(messages)
         )
     )
+    app.state.expert_invoker = InProcessExpertInvoker(app)
+    return app
 
 
 def _assistant_message(msg_id: str, sid: str, text: str) -> Message:

@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agent_tasks import AgentTask, AgentTaskRegistry
+from clio_agent.gact.agents.invoker import InProcessExpertInvoker, TaskHandle, TaskResult
 from clio_agent.gact.app import build_app
 from clio_agent.gact.runtime.globals import _gact_app_context, _tool_session_context
 from clio_agent.gact.turn_spawn import MAX_SPAWN_DEPTH, SpawnError
@@ -52,6 +53,50 @@ class _Def:
     def __init__(self, agent_id: str) -> None:
         self.id = agent_id
         self.metadata = {"agent_blueprint_id": "bp"}
+
+
+class _InvokeSpy:
+    """Minimal invoker spy for the P2.6 spawn-routing acceptance lock."""
+
+    def __init__(self) -> None:
+        self.specs: list[Any] = []
+
+    def invoke(self, spec: Any) -> TaskHandle:
+        self.specs.append(spec)
+        return TaskHandle(
+            task_id="task_via_invoker",
+            parent_session_id=spec.parent_session_id,
+            child_session_id="child_via_invoker",
+            status="running",
+            run_index=0,
+            depth=spec.depth,
+        )
+
+
+class _ProtocolSpy(_InvokeSpy):
+    """Invoker stub recording the model-facing spawn/wait/check operation set."""
+
+    def __init__(self, registry: AgentTaskRegistry) -> None:
+        super().__init__()
+        self.registry = registry
+        self.wait_calls: list[tuple[TaskHandle, float]] = []
+        self.check_calls: list[list[TaskHandle]] = []
+
+    def wait(self, handle: TaskHandle, timeout_s: float) -> TaskResult:
+        self.wait_calls.append((handle, timeout_s))
+        task = self.registry.get(handle.task_id)
+        assert task is not None
+        return TaskResult.from_task(task)
+
+    def check(self, handles: list[TaskHandle]) -> list[TaskResult]:
+        self.check_calls.append(list(handles))
+        tasks = [self.registry.get(handle.task_id) for handle in handles]
+        assert all(task is not None for task in tasks)
+        return [TaskResult.from_task(task) for task in tasks if task is not None]
+
+    def cancel(self, handle: TaskHandle) -> bool:
+        del handle
+        raise AssertionError("spawn-runtime tools do not own workflow cancellation")
 
 
 def _tool_names(app, agent_id: str, declared: set[str], monkeypatch) -> list[str]:
@@ -92,8 +137,8 @@ def test_leaf_expert_without_children_gets_no_spawn_tools(tmp_path: Path, monkey
 # test_agent_blueprints.py locked (payload shape, semantic event emission, the
 # blueprint block, undeclared-child rejection, fan-out bounds) onto the new
 # spawn-runtime surface. No real server: a bare SimpleNamespace app carries the
-# AgentTaskRegistry, ``spawn_child_turn_threadsafe`` and ``_emit_semantic_event``
-# are monkeypatched so the tools are exercised against captured real structures.
+# AgentTaskRegistry, the configured invoker, and ``_emit_semantic_event`` are
+# controlled so the tools are exercised against captured real structures.
 # ---------------------------------------------------------------------------
 
 
@@ -131,13 +176,15 @@ def _fake_app(
     the spawn tools reach for (depth computation, verbatim-output resolution,
     report-flag persistence)."""
 
-    return SimpleNamespace(
+    app = SimpleNamespace(
         state=SimpleNamespace(
             agent_task_registry=registry or AgentTaskRegistry(),
             sessions=_StubSessions(),
             messages=dict(messages or {}),
         )
     )
+    app.state.expert_invoker = InProcessExpertInvoker(app)
+    return app
 
 
 def _assistant_message(msg_id: str, session_id: str, text: str) -> Message:
@@ -223,8 +270,9 @@ def test_spawn_agent_task_success_emits_delegation_started_and_returns_task(monk
     app = _fake_app()
     emitted = _capture_emits(monkeypatch)
     monkeypatch.setattr(
-        "clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe",
-        lambda a, spec: SimpleNamespace(
+        app.state.expert_invoker,
+        "invoke",
+        lambda spec: SimpleNamespace(
             task_id="task_abc", status="running", run_index=0, queued_reason=""
         ),
     )
@@ -255,14 +303,68 @@ def test_spawn_agent_task_success_emits_delegation_started_and_returns_task(monk
     }
 
 
+def test_spawn_agent_task_routes_invoke_through_app_expert_invoker(monkeypatch) -> None:
+    """P2.6: the model-facing spawn crosses the configured invoker boundary."""
+
+    app = _fake_app()
+    spy = _InvokeSpy()
+    app.state.expert_invoker = spy
+    _capture_emits(monkeypatch)
+
+    def _direct_spawn_forbidden(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("spawn_agent_task bypassed app.state.expert_invoker")
+
+    monkeypatch.setattr(
+        "clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe", _direct_spawn_forbidden
+    )
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        result = json.loads(tools["spawn_agent_task"].func(agent="data_expert", task="analyze"))
+
+    assert len(spy.specs) == 1
+    assert spy.specs[0].child_expert_id == "data_expert"
+    assert result["task_id"] == "task_via_invoker"
+
+
+def test_spawn_runtime_has_no_direct_spawn_substrate_reference() -> None:
+    """P2.6 deletion lock: the routing owner cannot reaccrete the direct call."""
+
+    from clio_agent.gact.agents import spawn_runtime
+
+    source = Path(spawn_runtime.__file__).read_text(encoding="utf-8")
+    assert "spawn_child_turn_threadsafe" not in source
+
+
+def test_spawn_wait_and_check_all_route_through_expert_invoker(monkeypatch) -> None:
+    """P2.6: the complete model-facing operation set crosses one invoker stub."""
+
+    registry = AgentTaskRegistry()
+    registry.register(_completed_task())
+    app = _fake_app(registry)
+    spy = _ProtocolSpy(registry)
+    app.state.expert_invoker = spy
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        tools["spawn_agent_task"].func(agent="data_expert", task="analyze")
+        tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
+        tools["check_agent_tasks"].func(task_ids=["task_done"])
+
+    assert len(spy.specs) == 1
+    assert [handle.task_id for handle, _timeout in spy.wait_calls] == ["task_done"]
+    assert [[handle.task_id for handle in batch] for batch in spy.check_calls] == [["task_done"]]
+
+
 def test_spawn_agent_task_spawn_error_returns_reason_and_emits_nothing(monkeypatch) -> None:
     app = _fake_app()
     emitted = _capture_emits(monkeypatch)
 
-    def _raise(a: Any, spec: Any) -> Any:
+    def _raise(spec: Any) -> Any:
         raise SpawnError("child not declared", reason="undeclared_child")
 
-    monkeypatch.setattr("clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe", _raise)
+    monkeypatch.setattr(app.state.expert_invoker, "invoke", _raise)
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
@@ -374,13 +476,13 @@ def test_spawn_agents_parallel_emits_fanout_started_and_spawns_each(monkeypatch)
     emitted = _capture_emits(monkeypatch)
     spawn_calls: list[str] = []
 
-    def _fake_spawn(a: Any, spec: Any) -> Any:
+    def _fake_spawn(spec: Any) -> Any:
         spawn_calls.append(spec.child_expert_id)
         return SimpleNamespace(
             task_id=f"task_{spec.child_expert_id}", status="running", run_index=0, queued_reason=""
         )
 
-    monkeypatch.setattr("clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe", _fake_spawn)
+    monkeypatch.setattr(app.state.expert_invoker, "invoke", _fake_spawn)
 
     spawns = [
         {"agent": "data_expert", "task": "profile the CSV"},
@@ -599,18 +701,18 @@ def _seed_child_depth(app: Any, sid: str, depth: int) -> None:
 def test_spawn_depth_computed_and_increments_through_tool_path(monkeypatch) -> None:
     captured: list[Any] = []
 
-    def _capture_spawn(a: Any, spec: Any) -> Any:
+    def _capture_spawn(spec: Any) -> Any:
         captured.append(spec)
         return SimpleNamespace(
             task_id=f"task_d{spec.depth}", status="running", run_index=0, queued_reason=""
         )
 
-    monkeypatch.setattr("clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe", _capture_spawn)
     # Stub the started-Part append (the bare app has no transcript/bus); this test
     # asserts on computed depth, not on the Part.
     _capture_parts(monkeypatch)
 
     app = _fake_app()
+    monkeypatch.setattr(app.state.expert_invoker, "invoke", _capture_spawn)
     _seed_child_depth(app, "child_d1", 1)
     _seed_child_depth(app, "child_d2", 2)
 
@@ -685,8 +787,9 @@ def test_spawn_appends_started_expert_handoff_part(monkeypatch) -> None:
     _capture_emits(monkeypatch)
     parts = _capture_parts(monkeypatch)
     monkeypatch.setattr(
-        "clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe",
-        lambda a, spec: SimpleNamespace(
+        app.state.expert_invoker,
+        "invoke",
+        lambda spec: SimpleNamespace(
             task_id="task_abc", status="running", run_index=0, queued_reason=""
         ),
     )
