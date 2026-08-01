@@ -150,6 +150,14 @@ class Part(BaseModel):
     child_agent: str = ""
     stage: str = ""
 
+    # P2.10 (#1127): additive task/tool run-handle render contract. The same
+    # fields appear for local and relay placements; unused parts omit defaults.
+    handle_id: str = ""
+    run_label: str = ""
+    live_state: str = ""
+    host: str = ""
+    placement: str = ""
+
     # tool_call / tool_result. CLIO emits these as live SSE parts when
     # MCP tools start/finish so clients can show progress before the
     # final assistant message metadata is attached.

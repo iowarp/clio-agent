@@ -1,12 +1,15 @@
-"""Agent-task API (#948 S2, #950): read the task projection + cancel a task.
+"""Agent-task and uniform run-projection API (#948 S2, #1037, #1127).
 
-Three routes over :class:`~clio_agent.gact.agent_tasks.AgentTaskRegistry` — the
-projection the model tools (S5/S6), the UI redo, and mcpui/a2ui all consume:
+The established session-task list/get/cancel/live/steer routes remain intact. P2.10
+adds list/detach/dismiss over the uniform runs projection; those reads/actions source
+``AgentTaskRegistry`` plus existing durable relay handles and create no fifth store:
 
+* ``GET  /v1/runs`` — local and relay runs with uniform live tickers.
+* ``POST /v1/runs/{handle_id}/detach|dismiss`` — display lifecycle, never cancellation.
 * ``GET  /v1/sessions/{sid}/agent-tasks`` — every task spawned by a parent session.
-* ``GET  /v1/agent-tasks/{task_id}``       — one task record.
-* ``POST /v1/agent-tasks/{task_id}/cancel`` — cancel the child's in-flight turn +
-  a typed ``cancelled`` transition (idempotent on an already-terminal task).
+* ``GET  /v1/agent-tasks/{task_id}`` — one task record.
+* ``POST /v1/agent-tasks/{task_id}/cancel`` — placement-aware cancellation.
+* ``GET|POST /v1/agent-tasks/{task_id}/live|steer`` — human live interaction.
 
 The paths are ``agent-tasks``, NOT ``tasks``: ``/v1/sessions/{sid}/tasks`` +
 ``/v1/tasks/{tid}`` are the #18 per-session manual task CRUD (a shipped TUI
@@ -18,20 +21,14 @@ the same paths silently shadowed its GET by registration order while splitting
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
-from clio_agent.gact.agent_tasks import (
-    AGENT_TASK_EVENTS,
-    STATUS_CANCELLED,
-    persist_agent_task,
-    publish_agent_task_event,
-)
 from clio_agent.gact.live_handle import enqueue_steer_or_raise, project_live_handle
 from clio_agent.gact.messaging import raise_on_reserved_metadata
+from clio_agent.gact.run_registry import detach_run, dismiss_run, project_runs
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:
@@ -68,6 +65,24 @@ def register_agent_task_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register the agent-task read + cancel routes on ``app``."""
 
     del deps  # symmetry with the other register_*_routes; state is on app.state
+
+    @app.get("/v1/runs")
+    async def list_runs() -> dict[str, Any]:
+        # Pure union projection over AgentTaskRegistry + durable relay task handles.
+        return {"runs": project_runs(app)}
+
+    @app.post("/v1/runs/{handle_id}/detach")
+    async def detach_run_handle(handle_id: str) -> dict[str, Any]:
+        run = detach_run(app, handle_id)
+        if run is None:
+            raise _not_found("run", handle_id)
+        return run
+
+    @app.post("/v1/runs/{handle_id}/dismiss")
+    async def dismiss_run_handle(handle_id: str) -> dict[str, Any]:
+        if not dismiss_run(app, handle_id):
+            raise _not_found("run", handle_id)
+        return {"dismissed": True, "handle_id": handle_id}
 
     @app.get("/v1/sessions/{sid}/agent-tasks")
     async def list_session_agent_tasks(sid: str) -> dict[str, Any]:
@@ -109,22 +124,13 @@ def register_agent_task_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
 
-        # Cancel the child's in-flight turn: cooperative flag/event + a hard task
-        # cancel (the same machinery POST /cancel uses), so a running child stops.
-        child_sid = task.child_session_id
-        app.state.cancel_flags.add(child_sid)
-        event = app.state.cancel_events.get(child_sid)
-        if event is not None:
-            event.set()
-        in_flight = app.state.in_flight_turns.get(child_sid)
-        if in_flight is not None and not in_flight.done():
-            in_flight.cancel()
+        # Placement-aware cancellation uses the same invoker retained by the run.
+        from clio_agent.gact.agents.invoker import TaskHandle  # noqa: PLC0415
+        from clio_agent.gact.agents.spawn_placement import invoker_for_task  # noqa: PLC0415
 
-        now = datetime.now(timezone.utc).isoformat()
-        updated = registry.transition(task_id, STATUS_CANCELLED, updated_at=now)
-        persist_agent_task(app, updated)
-        publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[STATUS_CANCELLED])
-        return asdict(updated)
+        invoker_for_task(app, task).invoker.cancel(TaskHandle.from_task(task))
+        updated = registry.get(task_id)
+        return asdict(updated if updated is not None else task)
 
     @app.get("/v1/agent-tasks/{task_id}/live")
     async def get_agent_task_live(task_id: str) -> dict[str, Any]:

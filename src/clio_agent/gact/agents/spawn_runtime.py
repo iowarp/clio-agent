@@ -39,6 +39,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.agents.spawn_placement import run_handle_fields
 from clio_agent.gact.runtime.globals import (
     _active_semantic_trace_id,
     _active_semantic_turn_id,
@@ -220,7 +221,7 @@ def _completion_payload(app: Any, task: Any) -> dict[str, Any]:
 
 
 def _started_handoff_part(
-    agent_def: "AgentDef", child_id: str, task_text: str, depth: int, run_index: int = 0
+    agent_def: "AgentDef", child_id: str, task_text: str, depth: int, spawned: Any
 ) -> Part:
     """The ``delegate.started`` expert_handoff Part appended to the PARENT transcript
     when a child is spawned (#948 S4 finding [7]).
@@ -239,8 +240,9 @@ def _started_handoff_part(
         "stage": "delegate.started",
         "question": task_text,
         "depth": depth,
-        "run_index": run_index,
+        "run_index": spawned.run_index,
     }
+    handle_fields = run_handle_fields(spawned, child_id)
     return Part(
         id=f"live_handoff_{uuid.uuid4().hex[:12]}",
         type="expert_handoff",
@@ -248,6 +250,11 @@ def _started_handoff_part(
         parent_agent=agent_def.id,
         child_agent=child_id,
         stage="delegate.started",
+        handle_id=handle_fields["handle_id"],
+        run_label=handle_fields["run_label"],
+        live_state=handle_fields["live_state"],
+        host=handle_fields["host"],
+        placement=handle_fields["placement"],
         status="running",
         text=f"{agent_def.id} -> {child_id}",
         metadata={**_handoff_part_metadata(started_row), "stream_source": "live"},
@@ -281,6 +288,7 @@ def _return_handoff_part(agent_def: "AgentDef", task: Any, payload: dict[str, An
     for marker in ("output_source", "output_fallback_reason"):
         if marker in payload:
             return_row[marker] = payload[marker]
+    handle_fields = run_handle_fields(task, child_id)
     return Part(
         id=f"live_handoff_{uuid.uuid4().hex[:12]}",
         type="expert_handoff",
@@ -288,6 +296,11 @@ def _return_handoff_part(agent_def: "AgentDef", task: Any, payload: dict[str, An
         parent_agent=agent_def.id,
         child_agent=child_id,
         stage="delegate.completed",
+        handle_id=handle_fields["handle_id"],
+        run_label=handle_fields["run_label"],
+        live_state=handle_fields["live_state"],
+        host=handle_fields["host"],
+        placement=handle_fields["placement"],
         status=task.status,
         text=f"{agent_def.id} <- {child_id}",
         metadata={**_handoff_part_metadata(return_row), "stream_source": "live"},
@@ -379,7 +392,7 @@ def emit_workflow_step_start(
     _append_live_assistant_part(
         app,
         session_id,
-        _started_handoff_part(agent_def, child_id, task_text, spawned.depth, spawned.run_index),
+        _started_handoff_part(agent_def, child_id, task_text, spawned.depth, spawned),
     )
 
 
@@ -405,6 +418,11 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
     )
     from clio_agent.gact.agents.observe_runtime import build_observe_tool  # noqa: PLC0415
     from clio_agent.gact.agents.resolution import _runtime_declared_child_ids  # noqa: PLC0415
+    from clio_agent.gact.agents.spawn_placement import (  # noqa: PLC0415
+        invoker_for_placement,
+        invoker_for_task,
+        resolve_batch_placement,
+    )
     from clio_agent.gact.spawn_context import bind_task_spec_to_parent  # noqa: PLC0415
 
     # Only an agent with DECLARED children gets the routing surface — a leaf expert
@@ -421,7 +439,13 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             raise RuntimeError("spawn-runtime tool requires an active CLIO app/session context")
         return app, session_id
 
-    def _do_spawn(agent: str, task: str, *, fanout_bound: int = 0) -> str:
+    def _do_spawn(
+        agent: str,
+        task: str,
+        *,
+        fanout_bound: int = 0,
+        placement: str | None = None,
+    ) -> str:
         """Spawn one declared child through the invoker + emit the started wire
         parity. ``fanout_bound`` (> 0) caps how many of THIS parent's concurrent
         children at this depth may run before a spawn queues — the fan-out admission
@@ -433,7 +457,8 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         # reachable (a root session spawns at depth 1) (#948 S4 adversarial review).
         depth = _current_session_depth(app, session_id) + 1
         try:
-            spawned = app.state.expert_invoker.invoke(
+            binding = invoker_for_placement(app, session_id, placement)
+            spawned = binding.invoker.invoke(
                 bind_task_spec_to_parent(
                     app,
                     TaskSpec(
@@ -454,6 +479,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                         # within run_workflow, never observe-later.)
                         mode="async",
                         fanout_bound=fanout_bound,
+                        placement=binding.placement,
                     ),
                 ),
             )
@@ -480,7 +506,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         _append_live_assistant_part(
             app,
             session_id,
-            _started_handoff_part(agent_def, agent, task, depth, spawned.run_index),
+            _started_handoff_part(agent_def, agent, task, depth, spawned),
         )
         return json.dumps(
             {
@@ -490,18 +516,19 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                 # Typed queued_reason at the concurrency cap (#948 S6): the handle
                 # returns IMMEDIATELY as queued|running, never blocking on admission.
                 "queued_reason": spawned.queued_reason,
+                **run_handle_fields(spawned, agent),
             },
             sort_keys=True,
         )
 
-    def spawn_agent_task(agent: str, task: str) -> str:
+    def spawn_agent_task(agent: str, task: str, placement: str | None = None) -> str:
         """Spawn a declared child expert as a background child turn; returns its
         task_id IMMEDIATELY (status queued|running). Fire-and-forget: the child runs
         untied to this turn — collect it now with wait_agent_tasks, poll it with
         check_agent_tasks, or let its result surface in your NEXT turn. Prefer to spawn
         ALL independent children before waiting on any."""
 
-        return _do_spawn(agent, task)
+        return _do_spawn(agent, task, placement=placement)
 
     def wait_agent_tasks(task_ids: list[str], timeout_s: float) -> str:
         """Block until the given spawned tasks finish (up to timeout_s), then return
@@ -513,7 +540,6 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
 
         app, session_id = _ctx_app_session()
         registry = app.state.agent_task_registry
-        invoker = app.state.expert_invoker
         import time as _time  # noqa: PLC0415
 
         from clio_agent.gact.agent_tasks import consume_notification  # noqa: PLC0415
@@ -531,8 +557,9 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                 continue
             remaining = max(0.0, deadline - _time.monotonic())
             try:
-                task_result = invoker.wait(TaskHandle.from_task(task), timeout_s=remaining)
-            except InvokerError as exc:
+                binding = invoker_for_task(app, task)
+                task_result = binding.invoker.wait(TaskHandle.from_task(task), timeout_s=remaining)
+            except (InvokerError, SpawnError) as exc:
                 results.append({"task_id": tid, "error": exc.reason})
                 continue
             payload = _completion_payload(app, task_result)
@@ -594,8 +621,19 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         wanted = set(task_ids or [])
         if wanted:
             tasks = [t for t in tasks if t.task_id in wanted]
-        handles = [TaskHandle.from_task(task) for task in tasks]
-        task_results = app.state.expert_invoker.check(handles)
+        grouped: list[tuple[Any, list[TaskHandle]]] = []
+        for task in tasks:
+            invoker = invoker_for_task(app, task).invoker
+            for grouped_invoker, handles in grouped:
+                if grouped_invoker is invoker:
+                    handles.append(TaskHandle.from_task(task))
+                    break
+            else:
+                grouped.append((invoker, [TaskHandle.from_task(task)]))
+        by_id: dict[str, Any] = {}
+        for invoker, handles in grouped:
+            by_id.update({result.task_id: result for result in invoker.check(handles)})
+        task_results = [by_id[task.task_id] for task in tasks]
         rows: list[dict[str, Any]] = []
         for t in task_results:
             row: dict[str, Any] = {
@@ -629,7 +667,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             rows.append(row)
         return json.dumps({"tasks": rows}, sort_keys=True)
 
-    def spawn_agents_parallel(spawns: list[dict]) -> str:
+    def spawn_agents_parallel(spawns: list[dict], placement: str | None = None) -> str:
         """Fan out several declared children at once. ``spawns`` is a list of
         {agent, task}; returns their task_ids (collect with wait_agent_tasks).
 
@@ -653,10 +691,11 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             payload={"max_workers": bound} if bound else {},
         )
         out = []
+        placement = resolve_batch_placement(app, session_id, placement)
         for entry in spawns or []:
             agent = str((entry or {}).get("agent") or "")
             task = str((entry or {}).get("task") or "")
-            out.append(json.loads(_do_spawn(agent, task, fanout_bound=bound)))
+            out.append(json.loads(_do_spawn(agent, task, fanout_bound=bound, placement=placement)))
         return json.dumps({"spawned": out}, sort_keys=True)
 
     def run_workflow(request: str = "") -> str:
@@ -684,6 +723,13 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             args={
                 "agent": {"type": "string", "description": "Declared child expert id to spawn."},
                 "task": {"type": "string", "description": "The specific task for that child."},
+                "placement": {
+                    "type": "string",
+                    "description": (
+                        "Optional execution placement: local or relay:<cluster>. "
+                        "Omit to use the session policy, then the local default."
+                    ),
+                },
             },
         ),
         dspy.Tool(
@@ -724,6 +770,10 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             desc=spawn_agents_parallel.__doc__,
             args={
                 "spawns": {"type": "array", "description": "List of {agent, task} to fan out."},
+                "placement": {
+                    "type": "string",
+                    "description": ("Optional placement applied to every spawn in this batch."),
+                },
             },
         ),
     ]

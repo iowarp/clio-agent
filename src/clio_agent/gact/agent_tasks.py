@@ -130,6 +130,15 @@ class AgentTask:
     # admission (``_admit_next_queued``) honors the bound after a boot rebuild too; 0
     # means only the global per-depth cap applies.
     fanout_bound: int = 0
+    # P2.10 (#1127): additive run-handle vocabulary. These fields remain on the
+    # authoritative child-session record so local and relay runs project identically.
+    handle_id: str = ""
+    run_label: str = ""
+    live_state: str = ""
+    host: str = "local"
+    placement: str = "local"
+    detached: bool = False
+    dismissed: bool = False
     status: str = STATUS_QUEUED
     queued_reason: str = ""
     error_reason: str = ""
@@ -151,6 +160,12 @@ class AgentTask:
     # RESULT ROW is still returned on every wait; only the EVENT is once. Persisted
     # to the child-session metadata so a boot-rebuilt registry does not re-emit.
     delegation_reported: bool = False
+
+    def __post_init__(self) -> None:
+        """Keep lifecycle-backed live state canonical at record construction."""
+
+        if self.status != STATUS_RUNNING or not self.live_state or self.live_state in STATUSES:
+            object.__setattr__(self, "live_state", self.status)
 
     def to_metadata(self) -> dict[str, Any]:
         """The child-session metadata block that is the authoritative store."""
@@ -283,7 +298,7 @@ class AgentTaskRegistry:
                     "failed transition requires a typed error_reason",
                     reason="missing_error_reason",
                 )
-            updates: dict[str, Any] = {"status": new_status}
+            updates: dict[str, Any] = {"status": new_status, "live_state": new_status}
             if updated_at:
                 updates["updated_at"] = updated_at
             if error_reason:
@@ -527,6 +542,9 @@ def seed_agent_task(
     run_index: int = 0,
     fanout_bound: int = 0,
     queued_reason: str = "",
+    placement: str = "local",
+    host: str = "",
+    run_label: str = "",
 ) -> AgentTask:
     """Mint a child session + its AgentTask projection, persist, register, and
     publish the initial lifecycle event.
@@ -552,7 +570,7 @@ def seed_agent_task(
         workspace_id=child_workspace_id,
         title=f"agent-task {tid[-6:]}",
         parent_session_id=parent_session_id,
-        metadata=dict(session_scope_metadata or {}),
+        metadata={"spawn_placement": placement, **dict(session_scope_metadata or {})},
         agent={"id": agent_ref.get("expert_id", ""), "mode": "subagent"},
         mode=session_mode or getattr(parent, "mode", "edit"),
     )
@@ -565,6 +583,11 @@ def seed_agent_task(
         depth=depth,
         run_index=run_index,
         fanout_bound=fanout_bound,
+        handle_id=tid,
+        run_label=run_label or f"{agent_ref.get('expert_id', 'agent')} #{run_index + 1}",
+        live_state=status,
+        host=host or (placement.split(":", 1)[1] if placement.startswith("relay:") else "local"),
+        placement=placement,
         status=status,
         queued_reason=queued_reason,
         created_at=now,
