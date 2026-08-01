@@ -68,6 +68,7 @@ from clio_agent.tools.gateway import (
 )
 from clio_agent.tools.mcp_config import load_mcp_servers
 from clio_agent.tools.reaper import WorkspaceExecutorReaper
+from clio_agent.tools.remote_mcp import RemoteMcpFederation
 
 _CANCELLATION_CHECKER: contextvars.ContextVar[Callable[[], bool] | None] = contextvars.ContextVar(
     "clio_cancellation_checker", default=None
@@ -140,6 +141,7 @@ class ClioAgent(dspy.Module):
         data_dir: str = ".clio/agent",
         arc: ARCMemory | None = None,
         provider_config: LMProviderConfig | None = None,
+        remote_mcp_federation: RemoteMcpFederation | None = None,
     ):
         """Initialize the ClioAgent host: chat, tool execution, ARC, and runtime storage.
 
@@ -162,9 +164,12 @@ class ClioAgent(dspy.Module):
                 environment independently (the dropped boot env-handoff). ``None``
                 reads :func:`load_config_from_env` directly — the standalone CLI / test
                 baseline, byte-identical to before.
+            remote_mcp_federation: Optional relay catalog projection added to every
+                default and per-workspace execution gateway.
         """
         super().__init__()
         self.verbose = verbose
+        self._remote_mcp_federation = remote_mcp_federation
 
         # ARC Memory: reuse the injected one (the gact server owns the single per-process
         # ARC and re-injects it on every bind) or mint one. The persistence backend comes
@@ -335,6 +340,7 @@ class ClioAgent(dspy.Module):
             cwd=cwd,
             handlers=make_correlated_handlers(),
             capabilities=correlated_capabilities(),
+            remote_mcp_federation=getattr(self, "_remote_mcp_federation", None),
         )
         if not set_catalog:
             return tool_gateway
