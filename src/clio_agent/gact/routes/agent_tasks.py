@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from clio_agent.gact.agent_messaging import MessageAgentError, message_agent_task
@@ -134,13 +134,22 @@ def register_agent_task_routes(app: FastAPI, deps: "GactDeps") -> None:
         return asdict(updated if updated is not None else task)
 
     @app.get("/v1/agent-tasks/{task_id}/live")
-    async def get_agent_task_live(task_id: str) -> dict[str, Any]:
+    async def get_agent_task_live(task_id: str, request: Request) -> Any:
         # PURE read-only projection (#1037): assembles task + timeline + handoff +
         # bounded child head from existing stores, mutating nothing. A gone child is
         # tolerated (empty head/timeline); an unknown task is the typed not_found.
         handle = project_live_handle(app, task_id)
         if handle is None:
             raise _not_found("task", task_id)
+        if "text/event-stream" in request.headers.get("accept", ""):
+            from clio_agent.gact.relay_timeline import (  # noqa: PLC0415
+                relay_timeline_stream_response,
+            )
+
+            task = app.state.agent_task_registry.get(task_id)
+            if task is None:  # pragma: no cover - project_live_handle just resolved it
+                raise _not_found("task", task_id)
+            return relay_timeline_stream_response(app, task, request)
         return asdict(handle)
 
     @app.post("/v1/agent-tasks/{task_id}/steer")
