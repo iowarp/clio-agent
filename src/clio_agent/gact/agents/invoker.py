@@ -34,7 +34,6 @@ from clio_agent.gact.agents.relay_invoker_runtime import (
     RelayInvokerRuntime,
     find_task_result_wire,
     relay_error_reason,
-    relay_task_event,
 )
 from clio_agent.gact.spawn_context import validate_task_spec
 from clio_agent.gact.task_fold import fold_agent_task_event
@@ -514,7 +513,7 @@ class RelayExpertInvoker:
         self._app = app
         self._runtime = RelayInvokerRuntime(client_factory, cluster=cluster)
         self._placement = f"relay:{cluster}"
-        self._events = RelayEventPump(client_factory)
+        self._events = RelayEventPump(app, client_factory)
         self._prompt_path = prompt_path
         self._mcp_config_path = mcp_config_path
         self._model = model
@@ -788,13 +787,4 @@ class RelayExpertInvoker:
         )
 
     def _start_event_pump(self, handle: TaskHandle) -> None:
-        self._events.start(handle, self._runtime.task_key(handle), self._fold_relay_event)
-
-    def _fold_relay_event(self, handle: TaskHandle, raw: Mapping[str, Any]) -> None:
-        event = relay_task_event(handle, raw)
-        if event is None:
-            return
-        local = self._require_local_task(handle)
-        if local.is_terminal or local.status == event.status:
-            return
-        fold_agent_task_event(self._app, event)
+        self._events.start(handle, self._runtime.task_key(handle))

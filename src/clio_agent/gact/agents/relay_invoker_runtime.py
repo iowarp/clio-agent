@@ -119,7 +119,8 @@ class RelayInvokerRuntime:
 class RelayEventPump:
     """Reconnectable daemon consumers for relay TaskEvent SSE streams."""
 
-    def __init__(self, client_factory: Callable[[str], Any]) -> None:
+    def __init__(self, app: Any, client_factory: Callable[[str], Any]) -> None:
+        self._app = app
         self._client_factory = client_factory
         self._lock = threading.Lock()
         self._threads: dict[str, threading.Thread] = {}
@@ -128,7 +129,6 @@ class RelayEventPump:
         self,
         handle: Any,
         key: Any,
-        consume: Callable[[Any, Mapping[str, Any]], None],
     ) -> None:
         """Start at most one live stream for this invoker and task."""
 
@@ -138,7 +138,7 @@ class RelayEventPump:
                 return
             thread = threading.Thread(
                 target=self._pump,
-                args=(handle, key, consume),
+                args=(handle, key),
                 name=f"clio-relay-task-events-{handle.task_id}",
                 daemon=True,
             )
@@ -149,10 +149,9 @@ class RelayEventPump:
         self,
         handle: Any,
         key: Any,
-        consume: Callable[[Any, Mapping[str, Any]], None],
     ) -> None:
         try:
-            run_async(lambda: self._stream(handle, key, consume))
+            run_async(lambda: self._stream(handle, key))
         except (httpx.HTTPError, OSError, RuntimeError, TimeoutError, ToolError):
             logger.warning(
                 "relay TaskEvent stream disconnected reason=relay_event_stream_disconnected "
@@ -165,13 +164,71 @@ class RelayEventPump:
         self,
         handle: Any,
         key: Any,
-        consume: Callable[[Any, Mapping[str, Any]], None],
     ) -> None:
+        from clio_agent.gact.agents.invoker import InvokerError  # noqa: PLC0415
         from clio_agent.tools.relay_transport import RelayTaskIdentity  # noqa: PLC0415
 
         async with self._client_factory(handle.parent_session_id) as client:
             async for raw in client.stream_events(RelayTaskIdentity.from_key(key), cursor=1):
-                consume(handle, raw)
+                if not isinstance(raw, Mapping):
+                    self._record_drop(
+                        handle,
+                        "relay_timeline_malformed",
+                        raw,
+                        "relay event-stream item is not a mapping",
+                    )
+                    continue
+                try:
+                    event = relay_task_event(handle, raw)
+                except InvokerError as exc:
+                    reason = (
+                        "relay_timeline_task_identity_mismatch"
+                        if exc.reason == "task_identity_mismatch"
+                        else "relay_timeline_malformed"
+                    )
+                    self._record_drop(handle, reason, raw, str(exc))
+                    continue
+                except (TypeError, ValueError) as exc:
+                    self._record_drop(handle, "relay_timeline_malformed", raw, str(exc))
+                    continue
+                if event is not None:
+                    self._consume_lifecycle(handle, event)
+                else:
+                    self._consume_timeline(handle, raw)
+
+    def _consume_lifecycle(self, handle: Any, event: Any) -> None:
+        """Fold one classified lifecycle event through the committed owner seam."""
+
+        local = self._app.state.agent_task_registry.get(handle.task_id)
+        if local is None:
+            self._record_drop(
+                handle,
+                "relay_timeline_unknown_task",
+                event.to_wire(),
+                "retained handle is absent from AgentTaskRegistry",
+            )
+            return
+        if local.is_terminal or local.status == event.status:
+            return
+        from clio_agent.gact.agents import invoker as invoker_module  # noqa: PLC0415
+
+        invoker_module.fold_agent_task_event(self._app, event)
+
+    def _consume_timeline(self, handle: Any, raw: Mapping[str, Any]) -> None:
+        """Forward one application event into the bounded live-view sink."""
+
+        from clio_agent.gact.relay_timeline import route_relay_timeline_event  # noqa: PLC0415
+
+        route_relay_timeline_event(self._app, handle, raw)
+
+    def _record_drop(self, handle: Any, reason: str, raw: Any, message: str) -> None:
+        """Record a pump classification refusal through the typed drop catalog."""
+
+        from clio_agent.gact.relay_timeline import (  # noqa: PLC0415
+            record_relay_timeline_drop,
+        )
+
+        record_relay_timeline_drop(self._app, handle, reason, raw=raw, message=message)
 
 
 def relay_task_event(handle: Any, raw: Mapping[str, Any]) -> Any | None:

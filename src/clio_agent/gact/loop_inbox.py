@@ -420,6 +420,11 @@ def drain_active_session_inbox(app: "FastAPI") -> str:
                 claimed = consume_notification(app, event.task_id)
                 if claimed is None:
                     continue
+                from clio_agent.gact.background_exit import (  # noqa: PLC0415
+                    emit_background_exit_part,
+                )
+
+                emit_background_exit_part(app, sid, claimed)
                 task_blocks.append(_notify_block(claimed))
                 # Pair the consume with the delegation TERMINAL — the SAME choreography the
                 # next-turn commit (consume_pending_agent_task_notifications) and wait/check
@@ -492,9 +497,7 @@ def _persist_steer_at_consumption(
             metadata=metadata,
         )
         _append_session_message(app, sid, msg)
-        app.state.bus.publish(
-            Event(type="message.created", session_id=sid, payload=msg.to_wire())
-        )
+        app.state.bus.publish(Event(type="message.created", session_id=sid, payload=msg.to_wire()))
     except Exception as exc:  # noqa: BLE001 - a persist hiccup must not drop the steer block
         logger.warning(
             "loop_inbox steer persist failed reason=steer_persist_error steer_id=%s err=%r",

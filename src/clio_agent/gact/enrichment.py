@@ -746,14 +746,20 @@ def consume_pending_agent_task_notifications(app: "FastAPI", sid: str, task_ids:
         # Consume (atomic once-guard); a concurrent wait may already have consumed
         # it, in which case this no-ops. The terminal emission below is separately
         # once-gated, so we ALWAYS attempt it (exactly-once regardless of order).
-        consume_notification(app, task_id)
+        claimed = consume_notification(app, task_id)
+        if claimed is not None:
+            from clio_agent.gact.background_exit import (  # noqa: PLC0415
+                emit_background_exit_part,
+            )
+
+            emit_background_exit_part(app, sid, claimed)
         parent_id = task.agent_ref.get("requesting_expert_id", "") or "main"
         parent_def = AgentDef(
             id=parent_id,
             title=parent_id,
             metadata={"agent_blueprint_id": blueprint_id},
         )
-        _emit_delegation_terminal(app, sid, parent_def, task)
+        _emit_delegation_terminal(app, sid, parent_def, claimed or task)
 
 
 def _context_file_turn_provenance(app: "FastAPI", sid: str, *, status: str) -> dict[str, Any]:

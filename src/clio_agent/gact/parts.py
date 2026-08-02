@@ -164,6 +164,13 @@ class Part(BaseModel):
     supersedes_handle_id: str = ""
     superseded_by_handle_id: str = ""
 
+    # P2.14 (#1131): UI-facing twin of a consumed background-task notification.
+    # The existing text injection remains the model-grounding lane.
+    task_id: str = ""
+    job_id: str = ""
+    exit_status: str = ""
+    artifact_ref: str = ""
+
     # tool_call / tool_result. CLIO emits these as live SSE parts when
     # MCP tools start/finish so clients can show progress before the
     # final assistant message metadata is attached.
