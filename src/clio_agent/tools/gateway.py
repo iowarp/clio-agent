@@ -31,6 +31,7 @@ from fastmcp import Client, FastMCP
 from fastmcp.server.providers.proxy import FastMCPProxy
 
 if TYPE_CHECKING:
+    from clio_agent.tools.jarvis_jobs import JarvisJobs
     from clio_agent.tools.mcp_runtime import MCPClientCapabilities, MCPClientHandlers
     from clio_agent.tools.remote_mcp import RemoteMcpFederation
 
@@ -172,6 +173,7 @@ def build_gateway(
     handlers: "MCPClientHandlers | None" = None,
     capabilities: "MCPClientCapabilities | None" = None,
     remote_mcp_federation: "RemoteMcpFederation | None" = None,
+    jarvis_jobs: "JarvisJobs | None" = None,
 ) -> FastMCP:
     """Build the agent's tool gateway: built-ins PLUS the declared MCP servers.
 
@@ -207,6 +209,9 @@ def build_gateway(
         remote_mcp_federation: Optional relay catalog snapshot projected under the
             reserved ``remote`` namespace. Its bare server names are mounted back
             into the exact relay aliases ``remote_<ns>_<tool>``.
+
+        jarvis_jobs: Optional curated durable application surface mounted under the
+            reserved jarvis namespace.
 
     Returns:
         The gateway with the built-ins and declared proxies mounted.
@@ -254,6 +259,16 @@ def build_gateway(
             follow_server = remote_mcp_federation.follow_server
             _mount_with_namespace(gw, follow_server, RELAY_FOLLOW_NAMESPACE)
             registry[RELAY_FOLLOW_NAMESPACE] = follow_server
+
+    if jarvis_jobs is not None:
+        from clio_agent.tools.jarvis_jobs import JARVIS_NAMESPACE  # noqa: PLC0415
+
+        occupied = _mounted_namespaces(gw) | set(BUILTIN_SERVER_NAMES)
+        if JARVIS_NAMESPACE in occupied:
+            raise ValueError("curated JARVIS jobs namespace is already provided")
+        jarvis_server = jarvis_jobs.server
+        _mount_with_namespace(gw, jarvis_server, JARVIS_NAMESPACE)
+        registry[JARVIS_NAMESPACE] = jarvis_server
 
     # Names already provided (built-ins / earlier mounts) must not be shadowed.
     existing = _mounted_namespaces(gw) | set(BUILTIN_SERVER_NAMES)
