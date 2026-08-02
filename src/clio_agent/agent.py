@@ -66,6 +66,7 @@ from clio_agent.tools.gateway import (
     list_tool_definitions,
     namespace_proxies,
 )
+from clio_agent.tools.jarvis_jobs import JarvisJobs
 from clio_agent.tools.mcp_config import load_mcp_servers
 from clio_agent.tools.reaper import WorkspaceExecutorReaper
 from clio_agent.tools.remote_mcp import RemoteMcpFederation
@@ -142,6 +143,7 @@ class ClioAgent(dspy.Module):
         arc: ARCMemory | None = None,
         provider_config: LMProviderConfig | None = None,
         remote_mcp_federation: RemoteMcpFederation | None = None,
+        jarvis_jobs: JarvisJobs | None = None,
     ):
         """Initialize the ClioAgent host: chat, tool execution, ARC, and runtime storage.
 
@@ -166,10 +168,13 @@ class ClioAgent(dspy.Module):
                 baseline, byte-identical to before.
             remote_mcp_federation: Optional relay catalog projection added to every
                 default and per-workspace execution gateway.
+            jarvis_jobs: Optional durable JARVIS application surface added to every
+                default and per-workspace execution gateway.
         """
         super().__init__()
         self.verbose = verbose
         self._remote_mcp_federation = remote_mcp_federation
+        self._jarvis_jobs = jarvis_jobs
 
         # ARC Memory: reuse the injected one (the gact server owns the single per-process
         # ARC and re-injects it on every bind) or mint one. The persistence backend comes
@@ -341,6 +346,7 @@ class ClioAgent(dspy.Module):
             handlers=make_correlated_handlers(),
             capabilities=correlated_capabilities(),
             remote_mcp_federation=getattr(self, "_remote_mcp_federation", None),
+            jarvis_jobs=getattr(self, "_jarvis_jobs", None),
         )
         if not set_catalog:
             return tool_gateway
