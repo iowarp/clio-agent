@@ -89,6 +89,37 @@ def _default_store_path() -> Path:
     return paths.workspace_agent_dir() / "sessions.json"
 
 
+#: Modes this record may hold on disk that the wire model no longer accepts,
+#: mapped to the mode they are equivalent to.
+#:
+#: ``chat`` was deleted by P1.1 (#1063). That change is documented as
+#: behaviour-preserving — "nothing ever checked mode==\"chat\", so it behaved
+#: identically to ``edit``" — so this mapping restates an existing ruling
+#: rather than inventing one. Every session written before #1063 carries it.
+RETIRED_MODES: dict[str, str] = {"chat": "edit"}
+
+#: Where an unrecognised mode lands. ``plan`` is the read-only mode: an
+#: unknown value must never be resolved into MORE authority than it had, and
+#: guessing ``edit`` would hand write access to a record we cannot interpret.
+UNKNOWN_MODE_FALLBACK = "plan"
+
+#: Modes the wire model accepts (clio_agent.gact.types.Session).
+_WIRE_MODES = frozenset({"plan", "edit", "architect"})
+
+
+def normalize_stored_mode(mode: str) -> str:
+    """Map a stored mode onto one the wire model accepts.
+
+    The write side stopped accepting some values without migrating what was
+    already on disk (#1171). Reading must therefore tolerate what writing no
+    longer produces, or every pre-existing session becomes unreadable.
+    """
+
+    if mode in _WIRE_MODES:
+        return mode
+    return RETIRED_MODES.get(mode, UNKNOWN_MODE_FALLBACK)
+
+
 @dataclass
 class Session:
     """A single GACT v0.2 session record.
@@ -153,7 +184,9 @@ class Session:
         field-friendly shape (no nulls where the client expects
         empty)."""
 
-        return asdict(self)
+        wire = asdict(self)
+        wire["mode"] = normalize_stored_mode(self.mode)
+        return wire
 
 
 class SessionStore:

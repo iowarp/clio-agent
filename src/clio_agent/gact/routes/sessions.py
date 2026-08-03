@@ -40,11 +40,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from pydantic import ValidationError
 from fastapi.responses import JSONResponse
 
 from clio_agent.gact import context as _ctx
@@ -89,6 +90,33 @@ if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
 
 logger = logging.getLogger(__name__)
+
+
+def rows_to_wire(rows: "Iterable[Any]") -> "list[Session]":
+    """Convert stored session rows to wire models, one row at a time.
+
+    Deliberately NOT a list comprehension. It was one, and that is why #1171
+    returned 500 for the ENTIRE listing when a single stored row carried a mode
+    the wire model no longer accepted: the exception escaped the comprehension
+    and took every other session with it.
+
+    A row that still cannot be built after normalization is omitted and logged
+    rather than failing the request. Losing one session from a listing is
+    recoverable; losing all of them is not.
+    """
+
+    out: list[Session] = []
+    for row in rows:
+        try:
+            out.append(Session(**row.to_wire()))
+        except ValidationError as exc:
+            errors = exc.errors()
+            logger.warning(
+                "session_row_unreadable id=%s reason=%s (row omitted from listing)",
+                getattr(row, "id", "<unknown>"),
+                errors[0].get("msg") if errors else exc,
+            )
+    return out
 
 
 def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
@@ -206,7 +234,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         effective_workspace_id = workspace_id or (None if include_all_workspaces else "ws_default")
         rows = app.state.sessions.list(workspace_id=effective_workspace_id)
         rows = filter_session_rows(rows, archived=archived, parent_session_id=parent_session_id)
-        return ListSessionsResponse(sessions=[Session(**row.to_wire()) for row in rows])
+        return ListSessionsResponse(sessions=rows_to_wire(rows))
 
     @app.get("/v1/sessions/{sid}", response_model=Session)
     async def get_session(sid: str, workspace_id: Optional[str] = None) -> Session:
