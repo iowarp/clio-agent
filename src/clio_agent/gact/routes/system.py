@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from clio_agent.gact.relay_status import relay_capabilities
 from clio_agent.gact.runtime.capabilities import (
     _capability_gap_metadata,
     _latency_stat,
@@ -522,6 +523,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 schemes=["trust_socket", "bearer"] if bearer_enabled else ["trust_socket"],
                 current="bearer" if bearer_enabled else "trust_socket",
             ),
+            relay=relay_capabilities(),
         )
 
     @app.get("/v1/hooks")

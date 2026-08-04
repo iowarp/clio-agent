@@ -94,6 +94,7 @@ class Capabilities(BaseModel):
     transports: TransportFlags = Field(default_factory=TransportFlags)
     auth: AuthInfo = Field(default_factory=AuthInfo)
     extensions: list[Extension] = Field(default_factory=list)
+    relay: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -432,7 +433,6 @@ class Session(BaseModel):
     parent_session_id: str = ""
     model: ModelRef = Field(default_factory=ModelRef)
     agent: AgentRef = Field(default_factory=AgentRef)
-    # cumulative rollups.
     tokens_input: int = 0
     tokens_output: int = 0
     cost_usd: float = 0.0

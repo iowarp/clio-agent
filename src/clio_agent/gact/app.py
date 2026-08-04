@@ -518,15 +518,13 @@ from clio_agent.gact.routes.prompts import (  # noqa: E402
 from clio_agent.gact.routes.providers import (  # noqa: E402
     register_providers_routes,
 )
+from clio_agent.gact.routes.relay import register_relay_routes  # noqa: E402
 from clio_agent.gact.routes.schedules import (  # noqa: E402
     register_schedules_routes,
 )
-from clio_agent.gact.routes.sessions import (  # noqa: E402
-    register_sessions_routes,
-)
-from clio_agent.gact.routes.system import (  # noqa: E402
-    register_system_routes,
-)
+from clio_agent.gact.routes.sessions import register_sessions_routes  # noqa: E402
+from clio_agent.gact.routes.system import register_system_routes  # noqa: E402
+from clio_agent.gact.routes.trace import register_trace_routes  # noqa: E402
 from clio_agent.gact.routes.workspaces import (  # noqa: E402
     register_workspaces_routes,
 )
@@ -2234,6 +2232,7 @@ def build_app(
     # (state/ops/compact/search) are owned by routes/context.py; the
     # state-assembly + ARC-unavailable helpers they share live there.
     register_context_routes(app, deps)
+    register_trace_routes(app, deps)
 
     # ---- /v1/sessions/{sid}/diffs/* + /context/files + /context/frames ---
     # Pending/applied file-diff list/apply/reject plus the context-file
@@ -2263,6 +2262,7 @@ def build_app(
     # the wire/limit constants live in runtime/constants.py. It needs no
     # cross-concern seam from ``deps``.
     register_system_routes(app, deps)
+    register_relay_routes(app, deps)
 
     # ---- /v1/sessions/{sid}/tasks + /v1/tasks/{tid} + memory/events + share ----
     # + /v1/shared/{token} + /v1/sessions/{sid}/events SSE: the misc session-
