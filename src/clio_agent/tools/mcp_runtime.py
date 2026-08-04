@@ -458,6 +458,24 @@ def make_mcp_client(
         # SDK's hardcoded default. Exhaustion surfaces the typed degrade in mcp_executor.
         "input_required_max_rounds": input_required_max_rounds(),
     }
+    # #1186: era negotiation is timing-sensitive — a server whose first response
+    # outlives the per-RPC setup window (cold uv env, matplotlib import, launcher
+    # cache-lock contention) burns BOTH the server/discover probe and its one
+    # corrective re-probe, and the connect dies with -32022 even though client and
+    # server share 2026-07-28. Deployments whose fleet is uniformly modern can pin
+    # the version here: the pinned mode adopts directly (no probe, no initialize),
+    # removing the race class entirely. "auto" (the default) keeps SDK negotiation
+    # for mixed/unknown fleets.
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    connect_mode = conf.resolve(
+        "tools.mcp.connect_mode",
+        env="CLIO_MCP_CONNECT_MODE",
+        default="auto",
+        cast=conf.as_str,
+    )
+    if connect_mode and connect_mode != "auto":
+        kwargs["mode"] = connect_mode
     if handlers is not None:
         if handlers.elicitation is not None:
             kwargs["elicitation_handler"] = ElicitationDispatcher(handlers.elicitation)

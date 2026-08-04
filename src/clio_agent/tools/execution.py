@@ -457,7 +457,7 @@ def create_async_tool_executor(
 def create_sync_tool_executor(
     server: Any,
     *,
-    timeout: float = 30.0,
+    timeout: float | None = None,
     setup_timeout: float | None = None,
     tool_timeouts: Mapping[str, float] | None = None,
     client_factory: ClientFactory | None = None,
@@ -465,6 +465,19 @@ def create_sync_tool_executor(
     namespace_servers: Mapping[str, Any] | None = None,
 ) -> SyncToolExecutor:
     """Create a sync executor for CLI and deterministic expert call sites."""
+    # #1186 follow-on: the per-call ceiling is config-resolved like setup_timeout.
+    # 30s starves real scientific tools (a 50MB staged CSV made plot_plot_timeseries
+    # time out regardless of row caps); deployments size this to their data.
+    effective_timeout = (
+        conf.resolve(
+            "tools.mcp.call_timeout_s",
+            env="CLIO_MCP_CALL_TIMEOUT_S",
+            default=30.0,
+            cast=conf.as_float,
+        )
+        if timeout is None
+        else timeout
+    )
     effective_setup_timeout = (
         conf.resolve(
             "tools.mcp.setup_timeout_s",
@@ -477,7 +490,7 @@ def create_sync_tool_executor(
     )
     return SyncMCPToolExecutor(
         server,
-        timeout=timeout,
+        timeout=effective_timeout,
         setup_timeout=effective_setup_timeout,
         tool_timeouts=tool_timeouts,
         client_factory=client_factory,
