@@ -132,7 +132,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # (_scheduler_tick/_scheduler_tick_once/_fire_schedule/_seconds_until_next_minute)
     # moved to the owner module gact/scheduler_runtime.py; app.py only re-exports them.
     # P0.1d (#1105): -1 removing the stale _jsonish re-export after wire-mode migration.
-    "src/clio_agent/gact/app.py": 2551,
+    "src/clio_agent/gact/app.py": 2538,  # -13: unhandled-error envelope wiring moved to gact/error_middleware.py
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg

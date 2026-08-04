@@ -55,6 +55,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from clio_agent import conf
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.auth import configure_bearer_auth
+from clio_agent.gact.error_middleware import install_error_envelope
 from clio_agent.gact.semantic_events import (
     SemanticEventSink,
     build_trace_backend,
@@ -1222,6 +1223,9 @@ def build_app(
     # Browser/WebView origins are explicit: trust_socket must not grant arbitrary
     # sites access. Configure gact.cors.origins; CLIO_GACT_CORS_ORIGINS remains the
     # compatibility fallback.
+    # Must precede CORSMiddleware; see install_error_envelope for why.
+    install_error_envelope(app)
+
     allow_origins = _gact_cors_origins()
     app.add_middleware(
         CORSMiddleware,
@@ -2363,25 +2367,8 @@ def build_app(
             content=envelope.model_dump(exclude_none=True),
         )
 
-    @app.exception_handler(Exception)
-    async def _unhandled_exception_handler(request, exc: Exception) -> JSONResponse:
-        """Return a structured 500 for unexpected route failures."""
-
-        envelope = ErrorEnvelope(
-            error=ErrorInfo(
-                error="internal_error",
-                message="Unhandled server error.",
-                details={
-                    "original_error": type(exc).__name__,
-                    "original_message": str(exc),
-                },
-                recoverable=False,
-            )
-        )
-        return JSONResponse(
-            status_code=500,
-            content=envelope.model_dump(exclude_none=True),
-        )
+    # The Exception backstop is registered by install_error_envelope above,
+    # paired with the middleware it must agree with.
 
     # --- optional web UI (`clio web`): serve the built SPA bundle same-origin ---
     # Gated on CLIO_WEB_DIR so the default server (TUI / headless API) is byte-for-

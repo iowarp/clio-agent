@@ -40,12 +40,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from pydantic import ValidationError
 from fastapi.responses import JSONResponse
 
 from clio_agent.gact import context as _ctx
@@ -57,7 +56,7 @@ from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
 from clio_agent.gact.messaging import raise_on_reserved_metadata
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
 from clio_agent.gact.routes.compaction import build_compact_summary_message
-from clio_agent.gact.routes.session_filters import filter_session_rows
+from clio_agent.gact.routes.session_rows import filter_session_rows, rows_to_wire
 from clio_agent.gact.runtime.constants import _installed_clio_agent_version
 from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
@@ -90,33 +89,6 @@ if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
 
 logger = logging.getLogger(__name__)
-
-
-def rows_to_wire(rows: "Iterable[Any]") -> "list[Session]":
-    """Convert stored session rows to wire models, one row at a time.
-
-    Deliberately NOT a list comprehension. It was one, and that is why #1171
-    returned 500 for the ENTIRE listing when a single stored row carried a mode
-    the wire model no longer accepted: the exception escaped the comprehension
-    and took every other session with it.
-
-    A row that still cannot be built after normalization is omitted and logged
-    rather than failing the request. Losing one session from a listing is
-    recoverable; losing all of them is not.
-    """
-
-    out: list[Session] = []
-    for row in rows:
-        try:
-            out.append(Session(**row.to_wire()))
-        except ValidationError as exc:
-            errors = exc.errors()
-            logger.warning(
-                "session_row_unreadable id=%s reason=%s (row omitted from listing)",
-                getattr(row, "id", "<unknown>"),
-                errors[0].get("msg") if errors else exc,
-            )
-    return out
 
 
 def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
