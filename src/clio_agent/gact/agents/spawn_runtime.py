@@ -375,6 +375,15 @@ def _emit_delegation_terminal(app: Any, session_id: str, agent_def: "AgentDef", 
     if reported is None:
         return
     _persist_delegation_reported(app, reported)
+    # Clean-wire (owner, 2026-08-05): a task collected here may have reached
+    # terminal without crossing THIS process's result-sealing fold seam (a
+    # boot-refolded record collected after restart, a seeded/forwarded terminal),
+    # so the child's final assistant message is stamped with its return-to-parent
+    # edge here too — idempotent per task, so the fold-seam stamp and this one
+    # never duplicate (delegation_return.stamp_delegation_return).
+    from clio_agent.gact.delegation_return import stamp_delegation_return  # noqa: PLC0415
+
+    stamp_delegation_return(app, task)
     payload = _completion_payload(app, task)
     child_id = task.agent_ref.get("expert_id", "")
     event_type = (

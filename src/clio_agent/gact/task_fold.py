@@ -89,12 +89,18 @@ def finish_agent_task_transition(app: "FastAPI", outcome: AgentTaskFoldOutcome) 
 
     if not outcome.applied or not outcome.task.is_terminal:
         return
+    from clio_agent.gact.delegation_return import stamp_delegation_return  # noqa: PLC0415
     from clio_agent.gact.loop_inbox import enqueue_completion_wake  # noqa: PLC0415
     from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
         _admit_next_queued,
         _fire_subagent_stop,
     )
 
+    # Clean-wire (owner, 2026-08-05): the child's final assistant message carries
+    # its return-to-parent edge on the persisted record BEFORE any downstream
+    # effect observes the terminal. Idempotent per task and never-raising, so a
+    # re-fold or the collect-seam stamp can never duplicate it.
+    stamp_delegation_return(app, outcome.task)
     _fire_subagent_stop(app, outcome.task, outcome.task.child_session_id)
     enqueue_completion_wake(app, outcome.task)
     _admit_next_queued(app)
