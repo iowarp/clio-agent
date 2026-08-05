@@ -16,6 +16,7 @@ mocked away.
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -367,3 +368,151 @@ async def test_astream_sdk_writes_no_call_rows_when_gate_off(
 
     rows = _read_rows(audit)
     assert [r for r in rows if r["stage"] in ("provider.call_started", "provider.call_usage")] == []
+
+
+def _install_redacted_thinking_fake_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fake SDK streaming the claude CLI >= 2.1.x REDACTED thinking shape.
+
+    Two ``thinking_delta`` events with EMPTY text plus an ``estimated_tokens``
+    count (thinking display "omitted"), then one real-text thinking delta, then a
+    normal text delta — so a single call exercises the redacted path AND proves
+    the real thinking lane is untouched beside it.
+    """
+
+    class FakeTextBlock:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class FakeStreamEvent:
+        def __init__(self, event: dict[str, Any]) -> None:
+            self.event = event
+
+    class FakeAssistantMessage:
+        def __init__(self) -> None:
+            self.content = [FakeTextBlock("Hi")]
+            self.usage = {"input_tokens": 1, "output_tokens": 1}
+            self.stop_reason = "end_turn"
+
+    class FakeResultMessage:
+        def __init__(self) -> None:
+            self.usage = {"input_tokens": 1, "output_tokens": 1}
+            self.stop_reason = "end_turn"
+            self.result = "Hi"
+            self.is_error = False
+
+    class FakeClaudeAgentOptions:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+    class FakeClaudeSDKClient:
+        def __init__(self, options: FakeClaudeAgentOptions) -> None:
+            self.options = options
+
+        async def connect(self) -> None:
+            return None
+
+        async def disconnect(self) -> None:
+            return None
+
+        async def query(self, prompt: str, session_id: str = "default") -> None:
+            return None
+
+        async def receive_response(self) -> AsyncIterator[Any]:
+            yield FakeStreamEvent(
+                {
+                    "type": "content_block_delta",
+                    "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 50},
+                }
+            )
+            yield FakeStreamEvent(
+                {
+                    "type": "content_block_delta",
+                    "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 20},
+                }
+            )
+            yield FakeStreamEvent(
+                {
+                    "type": "content_block_delta",
+                    "delta": {"type": "thinking_delta", "thinking": "mulling it over"},
+                }
+            )
+            yield FakeStreamEvent(
+                {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hi"}}
+            )
+            yield FakeAssistantMessage()
+            yield FakeResultMessage()
+
+    fake_sdk = ModuleType("claude_agent_sdk")
+    fake_sdk.AssistantMessage = FakeAssistantMessage
+    fake_sdk.ClaudeAgentOptions = FakeClaudeAgentOptions
+    fake_sdk.ClaudeSDKClient = FakeClaudeSDKClient
+    fake_sdk.ResultMessage = FakeResultMessage
+    fake_sdk.StreamEvent = FakeStreamEvent
+    fake_sdk.TextBlock = FakeTextBlock
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+
+
+async def test_astream_sdk_redacted_thinking_delta_emits_typed_reason(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No-silent-fallback: a CoT-redacted thinking delta (empty text +
+    estimated_tokens — the claude CLI >= 2.1.x "omitted" display) must land a
+    typed ``provider_thinking_redacted`` reason with the token count, and one
+    ``trace.event`` per call naming the display='summarized' fix — never a
+    silent drop. Failing-first: before the fix these deltas were classified as
+    bare provider events and vanished without a trace."""
+    from clio_agent.runtime import trace as clio_trace
+
+    audit = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit))
+    _install_redacted_thinking_fake_sdk(monkeypatch)
+
+    # Deterministic trace gating (EVENT_ON) + a handler pinned directly on the
+    # clio_agent logger, so the assertion survives propagate=False and any
+    # ambient CLIO_DEBUG value.
+    clio_trace.configure(level="low", install_handler=False)
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    logger = logging.getLogger("clio_agent")
+    logger.addHandler(handler)
+    try:
+        chunks = [
+            chunk
+            async for chunk in claude_code_litellm._astream_sdk(
+                prompt="hello", model="sonnet", timeout=5.0, cwd="/tmp/clio", call_index=11
+            )
+        ]
+    finally:
+        logger.removeHandler(handler)
+        clio_trace.configure(install_handler=False)
+
+    # The visible stream is unaffected: redacted deltas yield no text chunks.
+    assert [c["text"] for c in chunks] == ["Hi", ""]
+
+    rows = _read_rows(audit)
+    redacted = [r for r in rows if r.get("duplicate_reason") == "provider_thinking_redacted"]
+    assert [r["thinking_tokens_estimated"] for r in redacted] == [50, 20]
+    for row in redacted:
+        assert row["stage"] == "provider.normalized"
+        assert row["provider"] == "claude_code_sdk"
+        assert row["source_channel"] == "thinking_delta"
+        assert row["normalized_event"] == "turn.trace.delta"
+        assert row["chunk_len"] == 0
+        assert row["duplicate_suppressed"] is True
+        assert row["call_index"] == 11
+    # The REAL thinking delta beside them still flows to the thinking lane.
+    real = [
+        r
+        for r in rows
+        if r["stage"] == "provider.normalized"
+        and r.get("source_channel") == "thinking_delta"
+        and not r.get("duplicate_suppressed")
+    ]
+    assert [r["head"] for r in real] == ["mulling it over"]
+    # Exactly ONE trace.event per call, and it names the un-redaction fix.
+    messages = [rec.getMessage() for rec in records]
+    redaction_events = [m for m in messages if "provider_thinking_redacted" in m]
+    assert len(redaction_events) == 1
+    assert "summarized" in redaction_events[0]
+    assert "est_tokens=50" in redaction_events[0]

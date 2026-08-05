@@ -54,6 +54,8 @@ from clio_agent.providers.claude_code_stateful import (
 )
 from clio_agent.providers.claude_code_thinking_split import (
     _split_provider_thinking_contract_delta,
+    emit_provider_thinking,
+    note_redacted_thinking,
 )
 from clio_agent.runtime import trace
 from clio_agent.runtime.stream_audit import stream_audit
@@ -239,6 +241,7 @@ async def _astream_sdk(
         nonlocal emitted_partial, final_text, final_usage, final_reason
         provider_thinking_marker_tail = ""
         provider_thinking_contract_started = False
+        redacted_thinking_total = 0
         promoted_contract_text = ""
         emitted_regular_text = ""
         start = time.monotonic()
@@ -302,28 +305,9 @@ async def _astream_sdk(
                         marker_tail=provider_thinking_marker_tail,
                         contract_started=provider_thinking_contract_started,
                     )
-                    try:
-                        from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
-                            note_lm_provider_thinking_delta,
-                        )
-
-                        if provider_thinking:
-                            stream_audit(
-                                "provider.normalized",
-                                provider="claude_code_sdk",
-                                call_index=call_index,
-                                event_index=index,
-                                source_channel="thinking_delta",
-                                normalized_event="turn.trace.delta",
-                                chunk_len=len(provider_thinking),
-                                duplicate_suppressed=False,
-                                head=provider_thinking[:120],
-                            )
-                            note_lm_provider_thinking_delta(
-                                provider_thinking, provider="claude_code_sdk"
-                            )
-                    except Exception:  # noqa: BLE001,S110 - debug stream must not break provider
-                        pass
+                    emit_provider_thinking(
+                        provider_thinking, call_index=call_index, event_index=index
+                    )
                     if promoted_text:
                         promoted_contract_text += promoted_text
                         emitted_partial = True
@@ -345,6 +329,17 @@ async def _astream_sdk(
                             promoted_text[:80],
                         )
                         yield _streaming_chunk(text=promoted_text, is_finished=False)
+                else:
+                    # No thinking TEXT on this event. If it is a redacted thinking
+                    # delta (empty text + estimated_tokens — CLI thinking display
+                    # 'omitted'), record the typed provider_thinking_redacted
+                    # reason instead of letting the CoT vanish silently.
+                    redacted_thinking_total = note_redacted_thinking(
+                        msg.event,
+                        call_index=call_index,
+                        event_index=index,
+                        total=redacted_thinking_total,
+                    )
                 if text:
                     emitted_regular_text += text
                     if promoted_contract_text and promoted_contract_text.startswith(
@@ -390,16 +385,9 @@ async def _astream_sdk(
                     yield _streaming_chunk(text=text, is_finished=False)
             elif isinstance(msg, AssistantMessage):
                 if provider_thinking_marker_tail and not provider_thinking_contract_started:
-                    try:
-                        from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
-                            note_lm_provider_thinking_delta,
-                        )
-
-                        note_lm_provider_thinking_delta(
-                            provider_thinking_marker_tail, provider="claude_code_sdk"
-                        )
-                    except Exception:  # noqa: BLE001,S110 - debug stream must not break provider
-                        pass
+                    emit_provider_thinking(
+                        provider_thinking_marker_tail, call_index=call_index, event_index=index
+                    )
                     provider_thinking_marker_tail = ""
                 parts = [b.text for b in msg.content if isinstance(b, TextBlock)]
                 if parts:

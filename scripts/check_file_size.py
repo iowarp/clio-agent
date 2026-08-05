@@ -287,7 +287,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # streaming session/delta transport to providers/claude_code_sessions.py; this
     # file keeps only the LiteLLM handler + exec/stream plumbing. Ratchet back down
     # further with the #714/#767 decomposition.
-    "src/clio_agent/providers/claude_code_litellm.py": 847,
+    # -12: the thinking-channel emission seams (provider-thinking forward + the
+    # provider_thinking_redacted typed reason) moved to their owner module,
+    # providers/claude_code_thinking_split.py.
+    "src/clio_agent/providers/claude_code_litellm.py": 835,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
     # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
     # #947 DEBT (recorded 2026-07-18, #948 S4): residual over the pre-#947 count
