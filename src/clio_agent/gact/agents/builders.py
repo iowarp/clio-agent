@@ -579,6 +579,16 @@ def _dynamic_agent_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
     return [_recording_blueprint_tool(available_tools[name]) for name in requested_tools]
 
 
+def _recorded_load_skill_tool(agent_def: "AgentDef", skill_rt: Any) -> Any:
+    """The auto-attached ``load_skill`` tool, recorded like a declared tool.
+
+    A skill load is loop evidence: the tool_call must reach the blueprint
+    tool rows (and through them the transcript wire), not just the trace log.
+    """
+
+    return _recording_blueprint_tool(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
+
+
 def _recording_blueprint_tool(tool: Any) -> Any:
     """Wrap a DSPy tool so blueprint ReAct predictions retain tool evidence."""
 
@@ -1254,7 +1264,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 if skill_rt.resolved:
                     # Auto-attached infra (like child-delegation tools), not a
                     # curated domain tool (#919).
-                    tools.append(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
+                    tools.append(_recorded_load_skill_tool(agent_def, skill_rt))
                 # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
                 tools += build_auto_react_tools(agent_def)
                 self.tools = tools
@@ -1716,7 +1726,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             )
             if skill_rt.resolved:
                 # Same react tier-1 + load_skill contract as blueprint experts (#919).
-                self.tools.append(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
+                self.tools.append(_recorded_load_skill_tool(agent_def, skill_rt))
             # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
             self.tools += build_auto_react_tools(agent_def)
             runtime = PromptRegistry().resolve("clio.runtime.tool_user_agent")
