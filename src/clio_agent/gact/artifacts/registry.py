@@ -369,7 +369,13 @@ class ArtifactRegistry:
                     key: tuple[Any, ...] = (
                         (version.version,)
                         if allowed_workspace_ids is None
-                        else (ws == workspace_id, version.created_at or "", ws, name, version.version)
+                        else (
+                            ws == workspace_id,
+                            version.created_at or "",
+                            ws,
+                            name,
+                            version.version,
+                        )
                     )
                     if best_key is None or key >= best_key:
                         best_key, best = key, (record, version)
@@ -730,6 +736,35 @@ def _safe_mechanism(value: str) -> Mechanism:
 _REGISTRY_INIT_LOCK = threading.Lock()
 
 
+def _retry_boot_fold(app: "FastAPI") -> Optional[ArtifactRegistry]:
+    """One-shot lazy refold after a ``capture_released`` boot.
+
+    Observed live: the boot fold's ARC read raises during early boot
+    (``arc_iter_failed``) while the same store serves reads minutes later, so
+    the registry served empty for the whole process life. Off-loop callers
+    refold inline and get the rebuilt registry; on-loop callers must not run
+    the fold's synchronous native I/O, so the refold runs on a daemon thread
+    and THIS reader still sees the empty registry — the next one gets the
+    rebuilt projection.
+    """
+    from clio_agent.gact.artifacts import registry_boot  # noqa: PLC0415 — import cycle
+
+    def _refold() -> None:
+        try:
+            rebuilt = registry_boot.rebuild_registry_at_boot(app)
+            logger.info("artifact registry lazy refold completed records=%d", rebuilt.count())
+        except Exception as exc:  # noqa: BLE001 — a failed retry keeps the typed state
+            logger.warning("artifact registry lazy refold failed cause=%r", exc)
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        _refold()
+        return getattr(app.state, "artifact_registry", None)
+    threading.Thread(target=_refold, name="artifact-registry-refold", daemon=True).start()
+    return None
+
+
 def get_registry(app: "FastAPI") -> ArtifactRegistry:
     """Return the app's artifact registry, rebuilding it from the log on first access.
 
@@ -744,6 +779,21 @@ def get_registry(app: "FastAPI") -> ArtifactRegistry:
     """
     registry = getattr(app.state, "artifact_registry", None)
     if registry is not None:
+        if (
+            registry.capture_released is not None
+            and registry.count() == 0
+            and not getattr(registry, "_boot_retry_attempted", False)
+        ):
+            # The boot fold found NO reachable source (observed live: the ARC
+            # reader raises during early boot while the same store serves
+            # reads minutes later). One lazy refold on first access — ARC is
+            # up by now — instead of serving an empty registry all process
+            # long. One attempt only; a second failure keeps the typed
+            # capture_released state.
+            registry._boot_retry_attempted = True
+            retried = _retry_boot_fold(app)
+            if retried is not None:
+                return retried
         return registry
     # First access — a rebuild is required. It must never run on the loop thread.
     try:

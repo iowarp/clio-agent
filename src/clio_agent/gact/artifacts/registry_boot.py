@@ -187,10 +187,12 @@ def _fold_from_arc(app: "FastAPI", registry: ArtifactRegistry) -> _SourceFold:
             "`clio doctor`, then restart.",
             store_path=store_path,
         ) from exc
-    except Exception:  # noqa: BLE001 — a configured-but-unreadable source is unreachable
+    except Exception as exc:  # noqa: BLE001 — a configured-but-unreadable source is unreachable
         logger.warning(
-            "artifact boot fold ARC source unreadable reason=arc_iter_failed folded_any=%s",
+            "artifact boot fold ARC source unreadable reason=arc_iter_failed folded_any=%s "
+            "cause=%r",
             folded_any,
+            exc,
         )
         return _SourceFold(reachable=False, folded_any=folded_any)
     return _SourceFold(reachable=True, folded_any=folded_any)
