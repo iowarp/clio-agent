@@ -312,13 +312,20 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
         before: str | None = None,
         include_children: bool = False,
     ) -> dict[str, Any]:
-        """List the artifacts of a session's workspace (newest-first, paginated).
+        """List THIS session's artifacts (newest-first, paginated), SESSION-scoped.
+
+        Candidate records are drawn from the session's workspace (below), but a
+        record is only returned if at least one of its versions was produced by this
+        session — otherwise a brand-new session in a workspace with prior artifacts
+        would inherit them (owner defect, 2026-08-05). A matched record is returned
+        WHOLE (every version, not just the ones this session produced).
 
         ``?include_children=true`` (GAP B, S5 #971) also lists the descendant child
-        sessions' workspaces so a parent ORCHESTRATOR sees its delegates' outputs:
-        children resolve via the agent-task registry (bounded), their workspaces
-        union with the parent's, records dedup by ``(workspace_id, name)``, and each
-        row carries its ``producing_session_ids``. Flag off → own workspace only,
+        sessions' workspaces AND treats their versions as in-scope too, so a parent
+        ORCHESTRATOR sees its delegates' outputs: children resolve via the
+        agent-task registry (bounded), their workspaces union with the parent's,
+        records dedup by ``(workspace_id, name)``, and each row carries its
+        ``producing_session_ids``. Flag off → own workspace + own session only,
         byte-identical to before.
         """
         workspace_id = _session_workspace_id(app, sid)
@@ -350,6 +357,22 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
                     if key not in seen_records:
                         seen_records.add(key)
                         records.append(record)
+        # SESSION-scoped, not workspace-scoped (owner defect, 2026-08-05): a shared
+        # workspace's records are only visible here if at least one version was
+        # produced by THIS session or, with include_children, a descendant session —
+        # otherwise a brand-new sibling session in a busy workspace inherits artifacts
+        # it never produced. A matched record is returned WHOLE (every version, not
+        # only the matching ones) — simplest honest semantics per the route's existing
+        # convention (versions are never sliced elsewhere in this listing).
+        allowed_session_ids = {sid, *child_ids}
+        records = [
+            record
+            for record in records
+            if any(
+                str((version.producer or {}).get("session_id") or "") in allowed_session_ids
+                for version in record.versions
+            )
+        ]
         page, next_cursor = _paginate_records(records, limit=_clamp_limit(limit), before=before)
         _audit(
             app,

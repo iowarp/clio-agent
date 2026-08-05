@@ -1534,6 +1534,78 @@ def test_route_session_artifacts_include_children(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# Session-scoped listing (owner defect, 2026-08-05). ``GET /v1/sessions/{sid}/
+# artifacts`` must show only records a VERSION of which was produced by THIS
+# session (or, with include_children=true, a descendant session) — never every
+# record in the shared workspace. Before the fix a brand-new sibling session in a
+# workspace with prior artifacts showed them as its own.
+# --------------------------------------------------------------------------- #
+
+
+def test_route_session_artifacts_is_scoped_to_the_producing_session(tmp_path, monkeypatch):
+    from clio_agent.gact.agent_tasks import AgentTask
+
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    with TestClient(build_app(sessions_path=tmp_path / "s.json")) as client:
+        app = client.app
+        wid, sid_a = _workspace_session(client, tmp_path)
+        sid_b = client.post("/v1/sessions", json={"workspace_id": wid}).json()["id"]
+
+        # Session A mints an artifact in the SHARED workspace.
+        a_out = tmp_path / "a_out.csv"
+        a_out.write_bytes(b"a rows")
+        mint_tool_declared_outputs(
+            app,
+            sid_a,
+            tool_name="t",
+            effective_args={"output_path": str(a_out)},
+            call_id="call_a",
+            workspace_id=wid,
+        )
+
+        # A child of A, wired via the agent-task registry, mints its OWN artifact —
+        # also in the shared workspace (same-workspace children are common).
+        child = app.state.sessions.create(workspace_id=wid, title="child", parent_session_id=sid_a)
+        app.state.agent_task_registry.register(
+            AgentTask(
+                task_id="t1", parent_session_id=sid_a, child_session_id=child.id, created_at="1"
+            )
+        )
+        c_out = tmp_path / "c_out.csv"
+        c_out.write_bytes(b"c rows")
+        mint_tool_declared_outputs(
+            app,
+            child.id,
+            tool_name="t",
+            effective_args={"output_path": str(c_out)},
+            call_id="call_c",
+            workspace_id=wid,
+        )
+
+        # B never minted anything — a brand-new sibling session sees NOTHING from the
+        # shared workspace, flag off or on (it has no descendants either).
+        b_off = client.get(f"/v1/sessions/{sid_b}/artifacts")
+        assert b_off.status_code == 200
+        assert b_off.json()["count"] == 0
+        assert b_off.json()["artifacts"] == []
+        b_on = client.get(f"/v1/sessions/{sid_b}/artifacts?include_children=true").json()
+        assert b_on["count"] == 0
+        assert b_on["artifacts"] == []
+
+        # A, flag OFF: sees only its OWN artifact — NOT the child's, even though the
+        # child wrote into the same workspace (session-scoped, not workspace-scoped).
+        a_off = client.get(f"/v1/sessions/{sid_a}/artifacts").json()
+        assert a_off["count"] == 1
+        assert [r["name"] for r in a_off["artifacts"]] == ["a_out.csv"]
+
+        # A, flag ON: the child's artifact now joins (a declared descendant), so both
+        # show up — the child-of-A artifact appears for A ONLY with include_children.
+        a_on = client.get(f"/v1/sessions/{sid_a}/artifacts?include_children=true").json()
+        assert a_on["count"] == 2
+        assert {r["name"] for r in a_on["artifacts"]} == {"a_out.csv", "c_out.csv"}
+
+
+# --------------------------------------------------------------------------- #
 # Boot-fold placement (#971 defects 1b + 2). The artifact registry projection is
 # folded ONCE at server boot, OFF the event loop, before the agent is announced
 # ready — NEVER lazily on the tool-completion hot path (defect 2) — and a wedged
