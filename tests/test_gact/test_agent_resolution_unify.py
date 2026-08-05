@@ -3,9 +3,16 @@
 ``GET /v1/agents`` (the route path, backed by ``_agent_rows``) and the actual
 turn engine (the ``clio_agent.gact.agents.resolution`` module stack) MUST compute
 the SAME effective agent rows for a given session: identical MCP tool-gating,
-identical default-blueprint fallback, identical capability refs. Before the C1
-unification these were two independent stacks that disagreed; these tests lock
-the single-seam invariant so the divergence cannot come back.
+identical blueprint-activation semantics, identical capability refs. Before the
+C1 unification these were two independent stacks that disagreed; these tests
+lock the single-seam invariant so the divergence cannot come back.
+
+Blueprint activation is EXPLICIT only (owner ruling, 2026-08-05): a session that
+activated no blueprint resolves NO blueprint. The implicit fallback to a
+discoverable ``DEFAULT_AGENT_BLUEPRINT_ID`` is DELETED from
+``_runtime_active_agent_blueprint_id`` — a bare session must never silently
+inherit an expert hierarchy it never asked for. Activation happens only via
+``POST /v1/sessions/{sid}/agent-blueprint`` or explicit session metadata.
 """
 
 from __future__ import annotations
@@ -39,8 +46,8 @@ def _isolate_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """
 
     monkeypatch.setenv("CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP", "1")
-    # The default-blueprint fallback is the behaviour under test. (#948 S4b retired
-    # the legacy-native-experts short-circuit that used to suppress it.)
+    # Explicit-activation-only resolution is the behaviour under test: the implicit
+    # default-blueprint fallback is DELETED (owner ruling 2026-08-05).
     # ``CLIO_USER_DIR`` wins over ``XDG_CONFIG_HOME`` (paths.user_config_dir_for),
     # so an empty per-user root keeps both the machine's real marketplace and the
     # conftest's ambient XDG default blueprint out of the resolved set.
@@ -112,13 +119,16 @@ def _route_row(client: TestClient, sid: str, agent_id: str, wid: str = "") -> di
     return None
 
 
-def test_default_blueprint_fallback_parity(tmp_path: Path) -> None:
-    """#1: a session with no explicit blueprint but a discoverable DEFAULT one.
+def test_unbound_session_resolves_no_blueprint_and_parity_holds(tmp_path: Path) -> None:
+    """#1: a session with NO activated blueprint resolves NO blueprint experts.
 
-    The route (`/v1/agents`) and the runtime resolver must agree on the effective
-    agent id-set. Pre-fix the route saw an empty blueprint set and fell back to
-    the builtin/expert-pack hierarchy while the runtime executed the default
-    blueprint's experts -- two different agent sets for the same session.
+    Owner ruling (2026-08-05): a session that activated nothing gets no
+    blueprint — the implicit fallback to a discoverable
+    ``DEFAULT_AGENT_BLUEPRINT_ID`` is deleted, so a bare session must never
+    silently inherit an expert hierarchy it never asked for. The route
+    (`/v1/agents`) and the runtime resolver must agree on that emptiness, and
+    after an EXPLICIT ``POST /v1/sessions/{sid}/agent-blueprint`` activation
+    they must agree on the blueprint's expert set — parity in both states.
     """
 
     workspace = tmp_path / "workspace"
@@ -137,16 +147,31 @@ def test_default_blueprint_fallback_parity(tmp_path: Path) -> None:
         ).json()["id"]
         sid = client.post(
             "/v1/sessions",
-            json={"title": "fallback", "workspace_id": wid},
+            json={"title": "unbound", "workspace_id": wid},
         ).json()["id"]
 
-        route_ids = _route_enabled_ids(client, sid, wid)
-        runtime_ids = _runtime_active_agent_blueprint_agent_ids(app, sid)
+        # Unbound: the discoverable default blueprint is NOT implicitly resolved.
+        unbound_runtime_ids = _runtime_active_agent_blueprint_agent_ids(app, sid)
+        unbound_route_ids = _route_enabled_ids(client, sid, wid)
 
-    # The runtime resolves the default blueprint's experts (no explicit activation).
-    assert runtime_ids == {"root", "variant"}
-    # The route MUST resolve the exact same effective set.
-    assert route_ids == runtime_ids
+        # Explicit activation is the ONE way to bind the blueprint to the session.
+        assert (
+            client.post(
+                f"/v1/sessions/{sid}/agent-blueprint",
+                json={"blueprint_id": DEFAULT_AGENT_BLUEPRINT_ID},
+            ).status_code
+            == 200
+        )
+
+        activated_runtime_ids = _runtime_active_agent_blueprint_agent_ids(app, sid)
+        activated_route_ids = _route_enabled_ids(client, sid, wid)
+
+    # No activation -> no blueprint experts, and the route agrees on emptiness.
+    assert unbound_runtime_ids == set()
+    assert unbound_route_ids == unbound_runtime_ids
+    # Explicit activation -> the blueprint's experts, identical on both seams.
+    assert activated_runtime_ids == {"root", "variant"}
+    assert activated_route_ids == activated_runtime_ids
 
 
 def test_mcp_tool_gating_parity(tmp_path: Path) -> None:
@@ -247,8 +272,9 @@ def test_import_seam_and_root_id_symmetry(tmp_path: Path) -> None:
 
     The module-level ``from clio_agent.gact.app import _resolve_runtime_dynamic_agent``
     re-export must survive the refactor (turn.py + the import-seam guard depend on
-    it), and for a default-fallback session the runtime-selected root expert must be
-    one of the agents ``/v1/agents`` lists.
+    it), and for a session with an EXPLICITLY activated blueprint (the implicit
+    default fallback is deleted) the runtime-selected root expert must be one of
+    the agents ``/v1/agents`` lists.
     """
 
     from clio_agent.gact.app import (  # noqa: PLC0415
@@ -275,6 +301,13 @@ def test_import_seam_and_root_id_symmetry(tmp_path: Path) -> None:
             "/v1/sessions",
             json={"title": "root-sym", "workspace_id": wid},
         ).json()["id"]
+        assert (
+            client.post(
+                f"/v1/sessions/{sid}/agent-blueprint",
+                json={"blueprint_id": DEFAULT_AGENT_BLUEPRINT_ID},
+            ).status_code
+            == 200
+        )
 
         route_ids = _route_enabled_ids(client, sid, wid)
         root_id = _runtime_active_agent_blueprint_root_id(app, sid)
@@ -332,34 +365,16 @@ def test_no_resolvable_agent_fails_typed_and_never_runs_forward(tmp_path: Path) 
     assert spy.forward_calls == 0
 
 
-class _RecordingHostAgent:
-    """Host fake whose ``forward`` proves the turn ran the blueprint branch.
-
-    Under the ``host_agent_executor`` seam the default-registry react main
-    delegates to this ``forward`` instead of an LM-bound DSPy program, so a
-    recorded question is positive proof the blueprint branch executed the turn.
-    """
-
-    def __init__(self) -> None:
-        self.questions: list[str] = []
-
-    def forward(self, question: str, session_id: str, **_kw: object) -> object:
-        self.questions.append(question)
-        return type(
-            "P",
-            (),
-            {"answer": f"handled: {question}", "selected_expert": "", "routing_rationale": ""},
-        )()
-
-
 def _write_loose_workspace_expert(workspace: Path) -> None:
     """Drop a DISCOVERABLE (un-activated) loose workspace expert under ``.clio``.
 
     Its mere presence makes ``discover_expert_packs(cwd=workspace)`` non-empty (the
     pack is id ``workspace.experts``, a LOOSE pack with ``manifest_path is None``).
-    A loose expert must NOT suppress the default (only a workspace MANIFEST pack or
-    an explicit session activation does), so it stays available as a delegate of the
-    resolved default main rather than shadowing it.
+    Discoverability alone never resolves a blueprint; the loose expert is simply
+    part of the expert-pack/builtin hierarchy the route serves for an unbound
+    session. Tier 1 with no parent: standalone-valid, because there is no
+    implicit default "main" left for it to hang off (tier > 1 without a
+    parent_id fails hierarchy validation and would be served disabled).
     """
 
     loose = workspace / ".clio" / "experts"
@@ -368,7 +383,7 @@ def _write_loose_workspace_expert(workspace: Path) -> None:
         """---
 id: helper
 title: Helper
-tier: 2
+tier: 1
 ---
 Help out.
 """,
@@ -380,10 +395,11 @@ def _write_global_manifest_pack(home: Path) -> None:
     """Install a GLOBAL manifest expert-pack under the isolated per-user config.
 
     ``discover_expert_packs`` reports this as a ``scope == "global"`` pack with
-    ``manifest_path`` set. Finding #948-S4b-[4]: a global/marketplace pack must NOT
-    suppress the default (only a WORKSPACE manifest pack does), so the
-    ``pack.scope == "workspace"`` filter in the suppression predicate is what keeps
-    this from shadowing the default main.
+    ``manifest_path`` set. Like the loose workspace expert, its discoverability
+    never resolves a blueprint — it only joins the expert-pack/builtin hierarchy
+    the route serves when no blueprint is activated. Tier 1 with no parent:
+    there is no implicit default "main" left to declare as ``parent_id`` (an
+    unresolvable parent fails hierarchy validation and is served disabled).
     """
 
     from clio_agent import paths
@@ -399,8 +415,7 @@ def _write_global_manifest_pack(home: Path) -> None:
         """---
 id: ghelper
 title: Global Helper
-parent_id: main
-tier: 2
+tier: 1
 ---
 Help globally.
 """,
@@ -408,27 +423,18 @@ Help globally.
     )
 
 
-def test_discoverable_pack_does_not_suppress_default_blueprint(
-    tmp_path: Path, host_agent_executor
-) -> None:
-    """A discoverable LOOSE expert / GLOBAL pack must NOT suppress the default.
+def test_discoverable_pack_and_default_blueprint_resolve_no_blueprint(tmp_path: Path) -> None:
+    """Discoverability is NOT activation: nothing on disk resolves implicitly.
 
-    Owner decision (#948 S4b review): the precedence guard suppresses the default
-    react main ONLY for an EXPLICIT activation -- a session-activated pack or a
-    WORKSPACE manifest expert-pack. Two configurations that must NOT suppress and
-    are covered here together (the common "default registry + some experts on disk"
-    deployment): a loose workspace expert (``.clio/experts/helper.md``) and a global
-    marketplace-style manifest pack (``~/.config/.../expert-packs/*/clio-pack.yaml``).
-    Both must leave the default blueprint resolving (they become delegates of the
-    resolved main), or a plain default session would fail ``no_resolvable_agent``.
-
-    Sabotage (two independent guards, each turns this red):
-      * broaden the predicate to ``or discover_expert_packs(cwd=pack_cwd)`` (drop the
-        ``manifest_path is not None`` filter) -> the loose expert suppresses; or
-      * drop the ``pack.scope == "workspace"`` filter -> the global manifest pack
-        suppresses.
-    Either way the blueprint id resolves to "" -> ``runtime_ids`` empties and the
-    turn fails ``no_resolvable_agent`` -> the id-set + ``agent_runtime`` assertions go red.
+    The predecessor of this test pinned "a discoverable pack must not suppress
+    the implicit default blueprint". That whole precedence question is deleted
+    with the implicit fallback (owner ruling 2026-08-05): with a discoverable
+    DEFAULT blueprint, a loose workspace expert (``.clio/experts/helper.md``)
+    AND a global manifest expert-pack all on disk but NOTHING activated, the
+    session resolves NO blueprint at all — there is no implicit default left to
+    suppress or protect. What the route honestly serves for such an unbound
+    session is the expert-pack/builtin hierarchy (here: the discoverable loose
+    workspace expert plus the global pack's expert).
     """
 
     workspace = tmp_path / "workspace"
@@ -440,11 +446,8 @@ def test_discoverable_pack_does_not_suppress_default_blueprint(
     # by ``discover_expert_packs`` (config_root/expert-packs), not the real machine.
     _write_global_manifest_pack(tmp_path)
 
-    host = _RecordingHostAgent()
-    app = build_app(sessions_path=tmp_path / "sessions.json", agent=host)
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
     with TestClient(app) as client:
-        from .conftest import complete_turn
-
         wid = client.post(
             "/v1/workspaces",
             json={
@@ -458,35 +461,29 @@ def test_discoverable_pack_does_not_suppress_default_blueprint(
             json={"title": "discoverable-pack", "workspace_id": wid},
         ).json()["id"]
 
-        # The discoverable pack does NOT shadow the default blueprint: it still
-        # resolves its experts for this un-activated default session.
-        runtime_ids = _runtime_active_agent_blueprint_agent_ids(app, sid)
-        assert runtime_ids == {"root", "variant"}
+        # No activation -> no blueprint, regardless of what is discoverable.
+        assert _resolution._runtime_active_agent_blueprint_id(app, sid) == ""
+        assert _runtime_active_agent_blueprint_agent_ids(app, sid) == set()
 
-        # And a bare turn RUNS through the blueprint branch (default react main),
-        # not the deleted legacy planner and not the no_resolvable_agent else.
-        assistant = complete_turn(client, sid, "do the thing")
+        # The route serves the expert-pack/builtin hierarchy for the unbound
+        # session: the loose workspace expert and the global pack's expert, and
+        # NOT the un-activated blueprint's experts.
+        route_ids = _route_enabled_ids(client, sid, wid)
 
-    assert (assistant.get("error_info") or {}).get("error") != "no_resolvable_agent"
-    # Positive proof the default-registry main executed the turn (finding #8's
-    # default-main provenance, asserted on the wire).
-    assert assistant["metadata"]["agent_runtime"]["agent_id"] == "root"
-    assert host.questions == ["do the thing"]
+    assert route_ids == {"helper", "ghelper"}
 
 
-def test_activated_pack_suppresses_implicit_default_blueprint(tmp_path: Path) -> None:
-    """An EXPLICITLY activated expert pack still suppresses the implicit default.
+def test_activated_pack_without_blueprint_activation_resolves_no_blueprint(
+    tmp_path: Path,
+) -> None:
+    """An activated expert pack binds the PACK — a blueprint still never appears.
 
-    This is the behaviour the precedence guard exists for: activating a pack is an
-    explicit user choice, so the default-registry blueprint must not shadow the
-    pack's experts (#770 C1 list==execute). Contrast with
-    ``test_discoverable_pack_does_not_suppress_default_blueprint``: mere
-    discoverability does NOT suppress; explicit activation DOES.
-
-    Sabotage: delete the two activation clauses in
-    ``_runtime_active_agent_blueprint_id`` -> the blueprint id stays
-    ``DEFAULT_AGENT_BLUEPRINT_ID`` even after activation -> the post-activation
-    assertion goes red.
+    The predecessor of this test pinned "explicit pack activation suppresses the
+    implicit default blueprint". The suppression mechanism is deleted with the
+    implicit fallback itself (owner ruling 2026-08-05): the blueprint id is ""
+    before AND after pack activation, because only blueprint activation ever
+    binds a blueprint. What pack activation does control is the effective agent
+    set the route serves: the activated pack's experts.
     """
 
     workspace = tmp_path / "workspace"
@@ -509,10 +506,8 @@ def test_activated_pack_suppresses_implicit_default_blueprint(tmp_path: Path) ->
             json={"title": "activated-pack", "workspace_id": wid},
         ).json()["id"]
 
-        # Before activation: the discoverable pack does NOT suppress the default.
-        assert (
-            _resolution._runtime_active_agent_blueprint_id(app, sid) == DEFAULT_AGENT_BLUEPRINT_ID
-        )
+        # Before pack activation: no blueprint (nothing was activated).
+        assert _resolution._runtime_active_agent_blueprint_id(app, sid) == ""
 
         # Explicitly activate the discoverable loose-experts pack (workspace.experts).
         resp = client.post(
@@ -521,6 +516,57 @@ def test_activated_pack_suppresses_implicit_default_blueprint(tmp_path: Path) ->
         )
         assert resp.status_code == 200, resp.text
 
-        # After explicit activation: the implicit default IS suppressed (the pack's
-        # experts become the session's agent set via ``_agent_rows``).
+        # After pack activation: STILL no blueprint — pack activation binds the
+        # pack, never a blueprint, and the deleted implicit default stays gone.
+        assert _resolution._runtime_active_agent_blueprint_id(app, sid) == ""
+        assert _runtime_active_agent_blueprint_agent_ids(app, sid) == set()
+
+        # The activated pack's experts are the effective agent set the route serves.
+        route_ids = _route_enabled_ids(client, sid, wid)
+
+    assert route_ids == {"helper"}
+
+
+def test_discoverable_default_blueprint_never_implicitly_activates(tmp_path: Path) -> None:
+    """REGRESSION PIN (owner ruling 2026-08-05): discoverable is NOT activated.
+
+    The regression the owner hit: a bare session in a workspace where
+    ``DEFAULT_AGENT_BLUEPRINT_ID`` ("earthscope-gnss-region") was merely
+    discoverable silently inherited the blueprint's full expert hierarchy — the
+    session never asked for it. The implicit discovery fallback is deleted from
+    ``_runtime_active_agent_blueprint_id``; this test keeps it deleted.
+
+    Sabotage: restore the fallback (return a discovered
+    ``DEFAULT_AGENT_BLUEPRINT_ID`` when the session metadata names no blueprint)
+    -> the resolved id becomes the default blueprint's id and this goes red.
+    """
+
+    workspace = tmp_path / "workspace"
+    blueprint = workspace / ".clio" / "agent-blueprints" / DEFAULT_AGENT_BLUEPRINT_ID
+    _write_simple_blueprint(blueprint, DEFAULT_AGENT_BLUEPRINT_ID, variant_tools=["noop_tool"])
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "bare", "workspace_id": wid},
+        ).json()["id"]
+
+        # The default blueprint IS discoverable for this workspace...
+        cwd = _resolution._runtime_workspace_catalog_cwd(app, session_id=sid)
+        from clio_agent.gact.agent_blueprints import discover_agent_blueprints  # noqa: PLC0415
+
+        assert any(
+            row.id == DEFAULT_AGENT_BLUEPRINT_ID for row in discover_agent_blueprints(cwd=cwd)
+        )
+
+        # ...and it must STILL never resolve without explicit activation.
         assert _resolution._runtime_active_agent_blueprint_id(app, sid) == ""
