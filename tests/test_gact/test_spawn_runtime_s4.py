@@ -1466,6 +1466,45 @@ def test_narration_between_waits_collapses_and_keeps_narration() -> None:
     assert kinds.count("message.part.updated") == 4  # 2 re-polls x (call + result)
 
 
+def test_thinking_and_text_between_waits_collapses_and_keeps_both_verbatim() -> None:
+    """LIVE evidence (rerun sess_c6241fc8906f, msg_asst_8894cb745b15): the
+    provider-thinking lane came alive alongside narration text, so the stored
+    shape between two same-args re-polls is tool_call, tool_result,
+    THINKING, text, tool_call(same args)... — not just text. A ``thinking``
+    part is the same narration lane as ``text`` (both stay exactly where they
+    streamed, never absorbed): it must not break the collapse chain either."""
+
+    from clio_agent.gact.tool_observer import _append_live_assistant_part
+
+    app, transcript, events = _collector_transcript_app()
+    _append_live_assistant_part(
+        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=30.0)
+    )
+    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
+    transcript.append_text_delta("main", "provider_thinking:main", "Checking on task_1...")
+    transcript.append_text_delta("main", "next_thought", "Still waiting on task_1...")
+    _append_live_assistant_part(
+        app, "sess_x", _collector_call("call_b", task_ids=["task_1"], timeout_s=30.0)
+    )
+    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 30000.0))
+
+    parts = transcript.snapshot()
+    assert [p.type for p in parts] == ["tool_call", "tool_result", "thinking", "text"]
+    call, result, thinking, narration = parts
+    assert call.id == "live_call_a_call"  # the pair keeps its ORIGINAL position/id
+    assert call.call_id == "call_b"  # ...owned by the newest attempt
+    assert call.metadata["attempts"] == 2
+    assert result.id == "live_call_a_result"
+    assert result.metadata["attempts"] == 2
+    assert result.metadata["total_wait_ms"] == 60000.0
+    assert result.content[0].text == "completed"  # newest result VERBATIM
+    assert thinking.text == "Checking on task_1..."
+    assert narration.text == "Still waiting on task_1..."
+    kinds = [e for e, _ in events]
+    assert kinds.count("message.part.added") == 4  # one pair + thinking + text
+    assert kinds.count("message.part.updated") == 2  # 1 re-poll x (call + result)
+
+
 def test_interleaved_other_tool_call_breaks_the_collapse_chain() -> None:
     """A DIFFERENT tool's call/result pair between same-args waits BREAKS the
     chain — collapsing across another tool's activity would reorder reality."""

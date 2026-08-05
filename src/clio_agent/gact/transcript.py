@@ -406,11 +406,15 @@ class TurnTranscript:
         summed durations) while the VISIBLE content is the newest result
         VERBATIM — never a synthesized merge.
 
-        Narration TEXT parts between re-polls never break the chain (owner
+        Narration parts (``text`` AND ``thinking`` — ``_STREAMED_TEXT_TYPES``,
+        the same narration lane) between re-polls never break the chain (owner
         amendment, round-4 live evidence: real turns interleave narration
-        between EVERY re-poll, so strict adjacency made the collapse inert).
-        The narration parts stay exactly where they are — order preserved,
-        never absorbed — while the duplicate pair is replaced in place at its
+        between EVERY re-poll, so strict adjacency made the collapse inert;
+        round-5 live evidence — rerun sess_c6241fc8906f, msg_asst_8894cb745b15
+        — showed the provider-thinking lane interleaved too, so a ``thinking``
+        part between re-polls must be skipped exactly like ``text``). The
+        narration parts stay exactly where they are — order preserved, never
+        absorbed — while the duplicate pair is replaced in place at its
         ORIGINAL position. The chain DOES break on different args, any OTHER
         tool's call/result pair, or an ``expert_handoff`` between them:
         collapsing across those would reorder reality.
@@ -482,13 +486,15 @@ class TurnTranscript:
         """Ledger index of the prior same-args collector call ``part`` replaces.
 
         Walks back from the tail to the LAST ``tool_call``, skipping narration
-        ``text`` parts (they never break the chain — the pair collapses at its
-        original position and the narration stays where it is). The call must
+        ``text`` AND ``thinking`` parts (``_STREAMED_TEXT_TYPES`` — both are
+        the narration lane, same order-preservation rationale: they never
+        break the chain because the pair collapses at its original position
+        and the narration stays exactly where it streamed). The call must
         carry the same tool name and canonically equal args, and every part
-        after it must be that call's own ``tool_result`` or narration text.
-        Anything else — different args, another tool's call/result, an
-        ``expert_handoff``, any other part type — yields ``None`` and the
-        caller appends normally.
+        after it must be that call's own ``tool_result`` or narration
+        text/thinking. Anything else — different args, another tool's
+        call/result, an ``expert_handoff``, any other part type — yields
+        ``None`` and the caller appends normally.
         """
 
         new_args = _canonical_tool_args(part.input)
@@ -502,13 +508,13 @@ class TurnTranscript:
                 if _canonical_tool_args(candidate.input) != new_args:
                     return None
                 for trailing in self._parts[index + 1 :]:
-                    if trailing.type == "text":
+                    if trailing.type in _STREAMED_TEXT_TYPES:
                         continue
                     if trailing.type == "tool_result" and trailing.call_id == candidate.call_id:
                         continue
                     return None
                 return index
-            if candidate.type not in ("tool_result", "text"):
+            if candidate.type not in ("tool_result", *_STREAMED_TEXT_TYPES):
                 return None
         return None
 
@@ -518,9 +524,11 @@ class TurnTranscript:
         Matches the shape the sibling call-upsert leaves behind — the collapsed
         ``tool_call`` (carrying THIS result's call_id) immediately followed by
         the PRIOR attempt's ``tool_result`` — reached by walking back over any
-        narration text that streamed after the pair. Anything else yields
-        ``None`` (append normally: an uncollapsed call sits at the tail with
-        nothing after it, so its result never matches here).
+        narration ``text``/``thinking`` that streamed after the pair
+        (``_STREAMED_TEXT_TYPES`` — both lanes stay put, same as the sibling
+        call-upsert). Anything else yields ``None`` (append normally: an
+        uncollapsed call sits at the tail with nothing after it, so its
+        result never matches here).
         """
 
         if not str(part.call_id or ""):
@@ -540,7 +548,7 @@ class TurnTranscript:
                 if str(prior.call_id or "") == str(part.call_id or ""):
                     return None
                 return index + 1
-            if candidate.type not in ("tool_result", "text"):
+            if candidate.type not in ("tool_result", *_STREAMED_TEXT_TYPES):
                 return None
         return None
 
