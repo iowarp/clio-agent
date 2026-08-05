@@ -17,7 +17,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as ctx
@@ -1272,6 +1271,205 @@ def test_terminal_handoff_updates_started_part_in_place() -> None:
     assert kinds.count("message.part.updated") == 1
 
 
+def _collector_transcript_app(sid: str = "sess_x") -> tuple[Any, Any, list[tuple[str, dict]]]:
+    """A minimal app whose open TurnTranscript ledger backs the live observer's
+    ``_append_live_assistant_part`` — the REAL producer path for tool parts."""
+
+    from clio_agent.gact.transcript import TurnTranscriptRegistry
+
+    events: list[tuple[str, dict]] = []
+
+    class _Pub:
+        def publish(self, event_type: str, payload: dict) -> None:
+            events.append((event_type, dict(payload)))
+
+    app = SimpleNamespace(state=SimpleNamespace(turn_transcripts=TurnTranscriptRegistry()))
+    transcript = app.state.turn_transcripts.open_turn(sid, "turn_1", _Pub())
+    return app, transcript, events
+
+
+def _collector_call(call_id: str, tool_name: str = "wait_agent_tasks", **args: Any) -> Part:
+    """A live tool_call Part shaped exactly like the observer's started append."""
+
+    return Part(
+        id=f"live_{call_id}_call",
+        type="tool_call",
+        agent_id="main",
+        call_id=call_id,
+        tool_name=tool_name,
+        input=dict(args),
+        metadata={"stream_source": "live", "telemetry_source": "live_observer"},
+    )
+
+
+def _collector_result(
+    call_id: str,
+    text: str,
+    duration_ms: float,
+    tool_name: str = "wait_agent_tasks",
+    is_error: bool = False,
+) -> Part:
+    """A live tool_result Part shaped exactly like the observer's completed append."""
+
+    return Part(
+        id=f"live_{call_id}_result",
+        type="tool_result",
+        agent_id="main",
+        call_id=call_id,
+        tool_name=tool_name,
+        is_error=is_error,
+        duration_ms=duration_ms,
+        content=[Part(id=f"live_{call_id}_result_text", type="text", agent_id="main", text=text)],
+        metadata={
+            "stream_source": "live",
+            "telemetry_source": "live_observer",
+            **({} if is_error else {"result": text}),
+        },
+    )
+
+
+def test_repeated_same_args_waits_collapse_to_one_tool_pair() -> None:
+    """One logical activity (waiting on task_X) = ONE tool_call+tool_result pair
+    (clean-wire rule): a re-polled wait with identical args REPLACES the prior
+    pair in place — same part ids, cumulative attempts/total_wait_ms, the NEWEST
+    result text verbatim — publishing message.part.updated, never new rows."""
+
+    from clio_agent.gact.tool_observer import _append_live_assistant_part
+
+    app, transcript, events = _collector_transcript_app()
+    for call_id, text in [
+        ("call_a", "running"),
+        ("call_b", "still running"),
+        ("call_c", "completed"),
+    ]:
+        _append_live_assistant_part(
+            app, "sess_x", _collector_call(call_id, task_ids=["task_1"], timeout_s=30.0)
+        )
+        _append_live_assistant_part(app, "sess_x", _collector_result(call_id, text, 30000.0))
+
+    parts = transcript.snapshot()
+    assert [p.type for p in parts] == ["tool_call", "tool_result"]
+    call, result = parts
+    assert call.id == "live_call_a_call"  # identity survives the collapse
+    assert call.call_id == "call_c"  # ...but the newest attempt owns the call
+    assert call.metadata["attempts"] == 3
+    assert result.id == "live_call_a_result"
+    assert result.metadata["attempts"] == 3
+    assert result.metadata["total_wait_ms"] == 90000.0
+    assert result.content[0].text == "completed"  # newest result VERBATIM
+    kinds = [e for e, _ in events]
+    assert kinds.count("message.part.added") == 2  # one pair, ever
+    assert kinds.count("message.part.updated") == 4  # 2 re-polls x (call + result)
+
+
+def test_check_error_repoll_collapses_and_shows_newest_error_verbatim() -> None:
+    """check_agent_tasks collapses the same way, and a failed re-poll's VISIBLE
+    result is the newest error verbatim — never a merge that keeps the prior
+    attempt's stale result evidence under the failure."""
+
+    from clio_agent.gact.tool_observer import _append_live_assistant_part
+
+    app, transcript, _events = _collector_transcript_app()
+    _append_live_assistant_part(
+        app, "sess_x", _collector_call("call_a", tool_name="check_agent_tasks", task_ids=None)
+    )
+    _append_live_assistant_part(
+        app,
+        "sess_x",
+        _collector_result("call_a", '{"results": []}', 5.0, tool_name="check_agent_tasks"),
+    )
+    _append_live_assistant_part(
+        app, "sess_x", _collector_call("call_b", tool_name="check_agent_tasks", task_ids=None)
+    )
+    _append_live_assistant_part(
+        app,
+        "sess_x",
+        _collector_result(
+            "call_b", "registry gone", 3.0, tool_name="check_agent_tasks", is_error=True
+        ),
+    )
+
+    parts = transcript.snapshot()
+    assert [p.type for p in parts] == ["tool_call", "tool_result"]
+    result = parts[1]
+    assert result.is_error is True
+    assert result.content[0].text == "registry gone"
+    assert result.metadata["attempts"] == 2
+    assert result.metadata["total_wait_ms"] == 8.0
+    assert "result" not in result.metadata  # no stale prior-attempt evidence
+
+
+def test_different_args_waits_stay_separate_rows() -> None:
+    """A wait on DIFFERENT task ids is a different activity — separate row pairs,
+    never an in-place update."""
+
+    from clio_agent.gact.tool_observer import _append_live_assistant_part
+
+    app, transcript, events = _collector_transcript_app()
+    _append_live_assistant_part(
+        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=30.0)
+    )
+    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
+    _append_live_assistant_part(
+        app, "sess_x", _collector_call("call_b", task_ids=["task_2"], timeout_s=30.0)
+    )
+    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "running", 30000.0))
+
+    parts = transcript.snapshot()
+    assert [p.type for p in parts] == ["tool_call", "tool_result", "tool_call", "tool_result"]
+    assert "attempts" not in parts[2].metadata
+    assert [e for e, _ in events].count("message.part.updated") == 0
+
+
+def test_narration_between_waits_breaks_the_collapse_chain() -> None:
+    """Interleaved narration between same-args waits BREAKS the chain — collapsing
+    across it would reorder reality, so the second pair appends normally."""
+
+    from clio_agent.gact.tool_observer import _append_live_assistant_part
+
+    app, transcript, events = _collector_transcript_app()
+    _append_live_assistant_part(
+        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=30.0)
+    )
+    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
+    transcript.append_text_delta("main", "next_thought", "Still waiting on task_1...")
+    _append_live_assistant_part(
+        app, "sess_x", _collector_call("call_b", task_ids=["task_1"], timeout_s=30.0)
+    )
+    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 30000.0))
+
+    parts = transcript.snapshot()
+    assert [p.type for p in parts] == [
+        "tool_call",
+        "tool_result",
+        "text",
+        "tool_call",
+        "tool_result",
+    ]
+    assert parts[2].text == "Still waiting on task_1..."
+    assert [e for e, _ in events].count("message.part.updated") == 0
+
+
+def test_non_collector_tools_never_collapse() -> None:
+    """Scope is STRICTLY the two collector tools by name — an identical-args
+    re-run of any other tool appends normally (no generic tool collapsing)."""
+
+    from clio_agent.gact.tool_observer import _append_live_assistant_part
+
+    app, transcript, events = _collector_transcript_app()
+    for call_id in ("call_a", "call_b"):
+        _append_live_assistant_part(
+            app, "sess_x", _collector_call(call_id, tool_name="read_file", filepath="x.h5")
+        )
+        _append_live_assistant_part(
+            app, "sess_x", _collector_result(call_id, "bytes", 5.0, tool_name="read_file")
+        )
+
+    parts = transcript.snapshot()
+    assert [p.type for p in parts] == ["tool_call", "tool_result", "tool_call", "tool_result"]
+    assert [e for e, _ in events].count("message.part.updated") == 0
+
+
 def test_collector_tools_notify_the_live_observer() -> None:
     """wait/check are REAL tool calls the model makes; they must reach the
     observer (started + completed with the verbatim result) instead of being
@@ -1288,6 +1486,7 @@ def test_collector_tools_notify_the_live_observer() -> None:
     original = _execution.notify_global_tool_observer
     _execution.notify_global_tool_observer = _capture
     try:
+
         def fake_wait(task_ids: list[str], timeout_s: float) -> str:
             return '{"results": []}'
 

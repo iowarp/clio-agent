@@ -44,6 +44,7 @@ Accretion rule: all new transcript logic lives HERE; ``turn.py`` only shrinks.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -73,6 +74,20 @@ def _transcript_text_field(field_name: str) -> str:
     """Map DSPy contract fields to public transcript text fields."""
 
     return "answer" if field_name == "answer" else "thought"
+
+
+def _canonical_tool_args(args: Mapping[str, Any] | None) -> str:
+    """Canonical JSON identity of a tool call's args, or ``""`` when unencodable.
+
+    Sorted keys make two calls with the same argument dict compare equal
+    regardless of insertion order; an unencodable dict yields the empty
+    sentinel, which every caller treats as "no identity — never collapse".
+    """
+
+    try:
+        return json.dumps(dict(args or {}), sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return ""
 
 
 class TranscriptFrozenError(RuntimeError):
@@ -373,6 +388,133 @@ class TurnTranscript:
                 )
                 return part
         return self.append_part(part, stream_source=stream_source)
+
+    def upsert_repeated_collector_call(
+        self, part: Part, *, stream_source: str = "live"
+    ) -> Optional[Part]:
+        """A re-polled collector = ONE tool_call+tool_result pair (clean-wire rule).
+
+        ``wait_agent_tasks`` / ``check_agent_tasks`` re-polls are one logical
+        activity (waiting on the same tasks), not N transcript rows. A NEW
+        ``tool_call`` whose canonical args equal the LAST ``tool_call`` part's
+        — with nothing between them but that call's own ``tool_result`` —
+        REPLACES the prior call in place: same part id/sequence,
+        ``metadata.attempts`` incremented, ``message.part.updated`` published
+        (:meth:`upsert_delegation_part` is the precedent). Its ``tool_result``
+        then replaces the prior result the same way, carrying cumulative
+        ``metadata.attempts`` + ``metadata.total_wait_ms`` (the attempts'
+        summed durations) while the VISIBLE content is the newest result
+        VERBATIM — never a synthesized merge. Any other part between waits
+        (narration text, a different tool) breaks the chain and the pair
+        appends normally: collapsing across it would reorder reality.
+
+        The caller (the tool observer) scopes this to the two collector tools
+        BY NAME; this method applies only the structural adjacency rule above
+        — no prose inspection, no generic tool collapsing.
+        """
+
+        with self._lock:
+            if self._frozen:
+                self._audit_late_op(
+                    "upsert_repeated_collector_call", part_id=part.id, part_type=part.type
+                )
+                return None
+            if part.type == "tool_call":
+                index = self._repeated_collector_call_index_locked(part)
+            elif part.type == "tool_result":
+                index = self._repeated_collector_result_index_locked(part)
+            else:
+                index = None
+            if index is not None:
+                existing = self._parts[index]
+                merged_metadata = {**existing.metadata, **part.metadata}
+                merged_metadata["attempts"] = int(existing.metadata.get("attempts") or 1) + 1
+                if part.type == "tool_call" and not part.thought:
+                    # Keep the started reasoning under the re-poll (the same way
+                    # the delegation upsert keeps the brief) when the new
+                    # attempt carries none of its own.
+                    part.thought = existing.thought
+                if part.type == "tool_result":
+                    prior_total = existing.metadata.get("total_wait_ms")
+                    if prior_total is None:
+                        prior_total = existing.duration_ms
+                    merged_metadata["total_wait_ms"] = float(prior_total or 0.0) + float(
+                        part.duration_ms or 0.0
+                    )
+                    # The newest attempt owns the result facts: a prior
+                    # attempt's evidence must not survive under a newer
+                    # attempt that lacks it (e.g. a failed re-poll).
+                    for stale_key in ("result", "structured_content"):
+                        if stale_key in merged_metadata and stale_key not in part.metadata:
+                            merged_metadata.pop(stale_key)
+                part.id = existing.id
+                part.sequence = existing.sequence
+                part.metadata = merged_metadata
+                # In-place list mutation (never rebound) — alias views observe it.
+                self._parts[index] = part
+                msg_id = self.ensure_message()
+                self._publisher.publish(
+                    "message.part.updated",
+                    {
+                        "turn_id": self.turn_id,
+                        "message_id": msg_id,
+                        "stream_source": str(part.metadata.get("stream_source") or stream_source),
+                        "part": part.to_wire(),
+                    },
+                )
+                return part
+        return self.append_part(part, stream_source=stream_source)
+
+    def _repeated_collector_call_index_locked(self, part: Part) -> Optional[int]:
+        """Ledger index of the prior same-args collector call ``part`` replaces.
+
+        Structural adjacency only: scanning back from the tail, every part
+        until the LAST ``tool_call`` must be that call's own ``tool_result``;
+        the call itself must carry the same tool name and canonically equal
+        args. Anything else — narration text (open streamed parts live in the
+        ledger, so they break the chain too), a different tool, different args
+        — yields ``None`` and the caller appends normally.
+        """
+
+        new_args = _canonical_tool_args(part.input)
+        if not new_args:
+            return None
+        for index in range(len(self._parts) - 1, -1, -1):
+            candidate = self._parts[index]
+            if candidate.type == "tool_call":
+                if candidate.tool_name != part.tool_name:
+                    return None
+                if _canonical_tool_args(candidate.input) != new_args:
+                    return None
+                for trailing in self._parts[index + 1 :]:
+                    if trailing.type != "tool_result" or trailing.call_id != candidate.call_id:
+                        return None
+                return index
+            if candidate.type != "tool_result":
+                return None
+        return None
+
+    def _repeated_collector_result_index_locked(self, part: Part) -> Optional[int]:
+        """Ledger index of the prior collector result ``part`` replaces.
+
+        Matches exactly the shape the sibling call-upsert leaves behind:
+        ``[..., tool_call(call_id == this result's), tool_result(prior
+        attempt, different call_id)]``. Anything else yields ``None``.
+        """
+
+        if len(self._parts) < 2 or not str(part.call_id or ""):
+            return None
+        prior = self._parts[-1]
+        call = self._parts[-2]
+        if prior.type != "tool_result" or prior.tool_name != part.tool_name:
+            return None
+        if str(prior.call_id or "") == str(part.call_id or ""):
+            return None
+        if call.type != "tool_call" or call.tool_name != part.tool_name:
+            return None
+        if str(call.call_id or "") != str(part.call_id or ""):
+            return None
+        return len(self._parts) - 1
 
     def append_part_once(self, key: str, part: Part, **kw: Any) -> Optional[Part]:
         """:meth:`append_part` gated on a turn-scoped idempotency key.

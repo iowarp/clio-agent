@@ -70,6 +70,15 @@ _OBSERVER_CALL_IDS = threading.local()
 _OBSERVER_CALL_T0 = threading.local()
 _OBSERVER_ELICIT_REC = threading.local()
 
+# The spawn-runtime COLLECTOR tools (owner 2026-08-05): a react main re-polling
+# ``wait_agent_tasks`` / ``check_agent_tasks`` on the same args is ONE logical
+# activity, so the transcript collapses consecutive same-args re-polls onto one
+# tool_call+tool_result pair updated in place
+# (:meth:`TurnTranscript.upsert_repeated_collector_call`). The observer decides
+# by tool NAME only — scoped STRICTLY to these two tools, no generic tool
+# collapsing; the structural adjacency rule lives in the transcript.
+_COLLECTOR_TOOL_NAMES = frozenset({"wait_agent_tasks", "check_agent_tasks"})
+
 
 def _tool_call_event_key(call: Mapping[str, Any]) -> tuple[str, str]:
     """Return a stable identity for de-duplicating tool telemetry events."""
@@ -433,6 +442,14 @@ def _append_live_assistant_part(app: "FastAPI", sid: str, part: Part) -> None:
         # handoff updates its started part in place (message.part.updated).
         if part.type == "expert_handoff":
             transcript.upsert_delegation_part(part)
+        elif (
+            part.type in ("tool_call", "tool_result")
+            and str(part.tool_name or "") in _COLLECTOR_TOOL_NAMES
+        ):
+            # Consecutive same-args collector re-polls collapse onto ONE pair
+            # (clean-wire rule): the observer decides by tool NAME only; the
+            # transcript applies the structural adjacency rule.
+            transcript.upsert_repeated_collector_call(part)
         else:
             transcript.append_part(part)
         _mirror_transcript_state(app, sid, transcript)
