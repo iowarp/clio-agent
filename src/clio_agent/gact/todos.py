@@ -184,7 +184,7 @@ def build_write_todos_tool(agent_def: Any) -> Any:
     ``session.metadata['todos']`` (no fifth store).
     """
 
-    import dspy  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def write_todos(todos: list) -> str:
         """Record your task checklist for a multi-step job (execution phase only).
@@ -219,10 +219,11 @@ def build_write_todos_tool(agent_def: Any) -> Any:
             )
         return _write_todos(app, sid, session, todos)
 
-    return dspy.Tool(
-        func=write_todos,
+    return native_tool(
+        write_todos,
         name="write_todos",
         desc=write_todos.__doc__,
+        title="Update todo list",
         args={
             "todos": {
                 "type": "array",

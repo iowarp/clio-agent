@@ -649,6 +649,13 @@ def _make_tool_observer(app: "FastAPI"):
     deterministic short-circuit paths).
     """
 
+    # Declared-presentation registry (populated at the instrumentation seam;
+    # default "row" for undeclared names — never a name-matching heuristic).
+    from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+        declared_tool_representation,
+        declared_tool_title,
+    )
+
     def observe(
         name: str,
         args: Mapping[str, Any],
@@ -659,6 +666,14 @@ def _make_tool_observer(app: "FastAPI"):
         sid, _current = _resolve_tool_session(app)
         if not sid:
             return
+        # One representation per action on the wire: a declared non-"row" tool
+        # (handoff/chip) records full telemetry but appends no live tool parts —
+        # its wire representation is the expert_handoff / resource_link part its
+        # own runtime emits. Stamped into the payloads so the trace shows why.
+        representation = declared_tool_representation(name)
+        representation_fields = (
+            {"representation": representation} if representation != "row" else {}
+        )
         # The expert that OWNS (runs) this tool, for per-part attribution (#732).
         _public_agent, tool_owner = _agent_tool_owner(app, name)
         # Attribute to the INVOKING expert (active ReAct scope), not the tool's owning
@@ -693,6 +708,7 @@ def _make_tool_observer(app: "FastAPI"):
                     "tool": name,
                     "args": dict(args),
                     "telemetry_source": "live_observer",
+                    **representation_fields,
                 },
             )
             app.state.bus.publish(
@@ -704,9 +720,12 @@ def _make_tool_observer(app: "FastAPI"):
                         "tool": name,
                         "args": dict(args),
                         "telemetry_source": "live_observer",
+                        **representation_fields,
                     },
                 )
             )
+            if representation != "row":
+                return
             step_thought = _ctx.active_step_thought()
             # #732/#883: next_thought owns its OWN streamed text row; the copy on
             # tool_call.thought is redundant. Clear it IFF THIS step's next_thought
@@ -746,6 +765,7 @@ def _make_tool_observer(app: "FastAPI"):
                     agent_id=invoking_expert,
                     call_id=call_id,
                     tool_name=name,
+                    tool_title=declared_tool_title(name),
                     # The step's reasoning rides the tool_call part (#732): the
                     # model's text and the action it chose are one ordered event.
                     thought=step_thought,
@@ -789,6 +809,7 @@ def _make_tool_observer(app: "FastAPI"):
                 "duration_ms": duration_ms,
                 "cached": False,
                 "telemetry_source": "live_observer",
+                **representation_fields,
                 **({"error": completion_error} if completion_error else {}),
                 **({"result": _bounded_tool_call_result(result)} if result is not None else {}),
                 **cancellation_metadata,
@@ -808,6 +829,7 @@ def _make_tool_observer(app: "FastAPI"):
                         "duration_ms": duration_ms,
                         "cached": False,
                         "telemetry_source": "live_observer",
+                        **representation_fields,
                         **({"error": completion_error} if completion_error else {}),
                         **(
                             {"result": _bounded_tool_call_result(result)}
@@ -852,6 +874,8 @@ def _make_tool_observer(app: "FastAPI"):
             _OBSERVER_CALL_T0.value = (
                 None  # finding [3]: clear the latch (idle thread -> DIRTY lease)
             )
+            if representation != "row":
+                return
             result_text = completion_error or (
                 _tool_result_preview(result) if result is not None else "completed"
             )

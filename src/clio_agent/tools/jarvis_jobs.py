@@ -419,10 +419,20 @@ class JarvisJobs:
         payload["wait_for_terminal"] = True
         payload["wait_timeout_seconds"] = self._dispatch_timeout_seconds
         async with self._client_factory() as relay:
+            # The create-task call itself carries ``wait_for_terminal=True`` /
+            # ``wait_timeout_seconds=self._dispatch_timeout_seconds`` — the remote
+            # side is told it may take up to the full dispatch budget before
+            # replying at all. The client's own read timeout on THAT call must
+            # therefore be at least as generous, or it gives up long before the
+            # server-side deadline it was just told to honor (observed live: a
+            # real SSH-relayed JARVIS describe/create_pipeline/add_step/edit_step
+            # dispatch routinely takes 40-100+s, well past the short
+            # ``request_timeout_seconds`` budget meant for quick control calls
+            # like ``jarvis_run``'s fire-and-forget submit).
             identity = await relay.submit(
                 tool_name,
                 payload,
-                timeout_seconds=self._request_timeout_seconds,
+                timeout_seconds=self._dispatch_timeout_seconds,
             )
             final = await self._drive_to_terminal(relay, identity)
         return _terminal_payload(tool_name, final)

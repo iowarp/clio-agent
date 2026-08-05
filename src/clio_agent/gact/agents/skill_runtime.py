@@ -215,7 +215,7 @@ def skill_bodies_context(runtime: SkillRuntime) -> str:
 def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
     """The tier-2 ``load_skill`` DSPy tool (auto-attached infrastructure)."""
 
-    import dspy  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     resolved = runtime.resolved
     agent_id = getattr(agent_def, "id", "?")
@@ -336,9 +336,10 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
         )
         return f"# Skill: {skill_id}\n{body}{listing}"
 
-    return dspy.Tool(
-        func=load_skill,
+    return native_tool(
+        load_skill,
         name="load_skill",
+        title="Load skill",
         desc=(
             "Load the full procedure of one of this expert's declared skills "
             "(see 'Skills available to you'). Call BEFORE performing the task "

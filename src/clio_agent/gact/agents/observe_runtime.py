@@ -418,9 +418,8 @@ def build_observe_tool() -> Any:
     binding), resolving the active app/session from the runtime context at call time.
     """
 
-    import dspy  # noqa: PLC0415
-
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def observe_agent_tasks(
         task_ids: list[str],
@@ -456,10 +455,11 @@ def build_observe_tool() -> Any:
             timeout_s=timeout_s,
         )
 
-    return dspy.Tool(
-        func=observe_agent_tasks,
+    return native_tool(
+        observe_agent_tasks,
         name="observe_agent_tasks",
         desc=observe_agent_tasks.__doc__,
+        title="Observe agent tasks",
         args={
             "task_ids": {
                 "type": "array",

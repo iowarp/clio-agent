@@ -305,7 +305,7 @@ def message_agent_task(
 def build_message_agent_tool(agent_def: Any) -> Any:
     """Build the one model-facing message tool bound to the requesting expert."""
 
-    import dspy  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def message_agent(task_id: str, message: str) -> str:
         """Send a message to a spawned child by task id.
@@ -337,10 +337,11 @@ def build_message_agent_tool(agent_def: Any) -> Any:
                 sort_keys=True,
             )
 
-    return dspy.Tool(
-        func=message_agent,
+    return native_tool(
+        message_agent,
         name="message_agent",
         desc=message_agent.__doc__,
+        title="Message agent",
         args={
             "task_id": {"type": "string", "description": "Task id returned by spawn."},
             "message": {"type": "string", "description": "Message for the child agent."},

@@ -32,12 +32,10 @@ inline in-thread child forward, no settle-loop routing vocabulary.
 
 from __future__ import annotations
 
-import functools
-import inspect
 import json
 import logging
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -55,38 +53,6 @@ if TYPE_CHECKING:
     from clio_agent.gact.agents.types import AgentDef
 
 logger = logging.getLogger(__name__)
-
-
-def _observed_collector(func: Callable[..., str], tool_name: str) -> Callable[..., str]:
-    """Route a native collector tool through the live tool observer.
-
-    The spawn tools already surface on the wire as ``expert_handoff`` parts
-    (the Call box IS the spawn's representation — wrapping them here would put
-    two representations of one action on the wire). The COLLECTORS had none:
-    the model's ``wait_agent_tasks``/``check_agent_tasks`` calls were invisible,
-    so the transcript showed narration about waiting with no visible mechanism
-    (owner, 2026-08-05). They now notify the observer exactly like a boundary
-    tool: a real ``tool_call`` part with the call's args, a real result with
-    the true wait duration, error surfaced on failure — never re-authored.
-    """
-
-    from clio_agent.tools.execution import notify_global_tool_observer  # noqa: PLC0415
-
-    @functools.wraps(func)
-    def wrapper(*call_args: Any, **call_kwargs: Any) -> str:
-        bound = inspect.signature(func).bind(*call_args, **call_kwargs)
-        bound.apply_defaults()
-        args = dict(bound.arguments)
-        notify_global_tool_observer(tool_name, args, "started")
-        try:
-            result = func(*call_args, **call_kwargs)
-        except Exception as exc:
-            notify_global_tool_observer(tool_name, args, "completed", error=str(exc))
-            raise
-        notify_global_tool_observer(tool_name, args, "completed", result=result)
-        return result
-
-    return wrapper
 
 
 def _fanout_batch_bound(agent_def: "AgentDef") -> int:
@@ -471,8 +437,6 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
     """Build the react-main spawn tools bound to ``agent_def`` as the requesting
     (parent) expert. Resolved lazily against the active app/session at call time."""
 
-    import dspy  # noqa: PLC0415
-
     from clio_agent.gact.agent_messaging import build_message_agent_tool  # noqa: PLC0415
     from clio_agent.gact.agents.invoker import (  # noqa: PLC0415
         InvokerError,
@@ -487,6 +451,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         invoker_for_task,
         resolve_batch_placement,
     )
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
     from clio_agent.gact.spawn_context import bind_task_spec_to_parent  # noqa: PLC0415
 
     # Only an agent with DECLARED children gets the routing surface — a leaf expert
@@ -779,11 +744,19 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         )
         return json.dumps(record, sort_keys=True, default=str)
 
+    # Declared presentation (tool_instrumentation): the spawn/fan-out/workflow
+    # tools' wire representation IS their ``expert_handoff`` part — declared
+    # ``handoff`` so the seam-attached observer records telemetry without a
+    # second representation on the wire. The collectors are plain ``row`` tools
+    # (owner, 2026-08-05: a wait/check is a REAL call, never invisible mechanism
+    # the narration references).
     tools = [
-        dspy.Tool(
-            func=spawn_agent_task,
+        native_tool(
+            spawn_agent_task,
             name="spawn_agent_task",
             desc=spawn_agent_task.__doc__,
+            title="Spawn agent",
+            representation="handoff",
             args={
                 "agent": {"type": "string", "description": "Declared child expert id to spawn."},
                 "task": {"type": "string", "description": "The specific task for that child."},
@@ -796,10 +769,11 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                 },
             },
         ),
-        dspy.Tool(
-            func=_observed_collector(wait_agent_tasks, "wait_agent_tasks"),
+        native_tool(
+            wait_agent_tasks,
             name="wait_agent_tasks",
             desc=wait_agent_tasks.__doc__,
+            title="Wait for agents",
             args={
                 "task_ids": {"type": "array", "description": "Task ids returned by spawn."},
                 "timeout_s": {
@@ -814,10 +788,11 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                 },
             },
         ),
-        dspy.Tool(
-            func=_observed_collector(check_agent_tasks, "check_agent_tasks"),
+        native_tool(
+            check_agent_tasks,
             name="check_agent_tasks",
             desc=check_agent_tasks.__doc__,
+            title="Check agent tasks",
             args={
                 "task_ids": {
                     "type": "array",
@@ -829,10 +804,12 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         # OBSERVE posture (#1000): the read-only sibling of check_agent_tasks, built in
         # its owner module (observe_runtime) so this file stays under the size ratchet.
         build_observe_tool(),
-        dspy.Tool(
-            func=spawn_agents_parallel,
+        native_tool(
+            spawn_agents_parallel,
             name="spawn_agents_parallel",
             desc=spawn_agents_parallel.__doc__,
+            title="Spawn agents in parallel",
+            representation="handoff",
             args={
                 "spawns": {"type": "array", "description": "List of {agent, task} to fan out."},
                 "placement": {
@@ -848,10 +825,12 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
 
     if parse_workflow(agent_def) is not None:
         tools.append(
-            dspy.Tool(
-                func=run_workflow,
+            native_tool(
+                run_workflow,
                 name="run_workflow",
                 desc=run_workflow.__doc__,
+                title="Run workflow",
+                representation="handoff",
                 args={
                     "request": {
                         "type": "string",

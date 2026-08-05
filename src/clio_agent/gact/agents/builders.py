@@ -470,7 +470,9 @@ def _run_external_mcp_tool_sync(
 def _enabled_external_mcp_dspy_tools(app: Any, requested_tools: list[str]) -> dict[str, Any]:
     """Return DSPy Tool wrappers for enabled Agent Blueprint MCP tools."""
 
-    import dspy  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+        boundary_observed_tool,
+    )
 
     requested = set(requested_tools)
     available: dict[str, Any] = {}
@@ -513,8 +515,11 @@ def _enabled_external_mcp_dspy_tools(app: Any, requested_tools: list[str]) -> di
 
             tool_fn.__name__ = tool_name
             tool_fn.__doc__ = description
-            available[tool_name] = dspy.Tool(
-                func=tool_fn,
+            # ``_run_external_mcp_tool_sync`` notifies the observer itself, so
+            # the construction is marked observed — the assembly seam must not
+            # add a second notification (exactly-once).
+            available[tool_name] = boundary_observed_tool(
+                tool_fn,
                 name=tool_name,
                 desc=description,
                 args=properties,
@@ -592,8 +597,7 @@ def _recorded_load_skill_tool(agent_def: "AgentDef", skill_rt: Any) -> Any:
 def _recording_blueprint_tool(tool: Any) -> Any:
     """Wrap a DSPy tool so blueprint ReAct predictions retain tool evidence."""
 
-    import dspy  # noqa: PLC0415
-
+    from clio_agent.gact.agents.tool_instrumentation import rebuilt_tool  # noqa: PLC0415
     from clio_agent.gact.app import (  # noqa: PLC0415
         _bounded_tool_call_result,
         _tool_result_is_error,
@@ -639,7 +643,9 @@ def _recording_blueprint_tool(tool: Any) -> Any:
 
     call_tool.__name__ = name
     call_tool.__doc__ = desc
-    return dspy.Tool(func=call_tool, name=name, desc=desc, args=args)
+    # Re-construction around a new callable: propagate the inner callable's
+    # instrumentation markers (a re-wrapped boundary tool stays exactly-once).
+    return rebuilt_tool(tool, call_tool, name=name, desc=desc, args=args)
 
 
 def _tool_names(tools: Iterable[Any]) -> list[str]:
@@ -1267,6 +1273,14 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     tools.append(_recorded_load_skill_tool(agent_def, skill_rt))
                 # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
                 tools += build_auto_react_tools(agent_def)
+                # THE assembly seam (owner 2026-08-05): every tool is observed
+                # by definition — unmarked callables get the observer wrap and
+                # declared representations/titles register for the live observer.
+                from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+                    instrument_tools,
+                )
+
+                tools = instrument_tools(tools)
                 self.tools = tools
                 # The iteration default scales with the declared children — an
                 # orchestrator pays spawn+wait per child inside this loop (#948 S4).
@@ -1729,6 +1743,13 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 self.tools.append(_recorded_load_skill_tool(agent_def, skill_rt))
             # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
             self.tools += build_auto_react_tools(agent_def)
+            # THE assembly seam (owner 2026-08-05): same default-on
+            # instrumentation as the blueprint react branch.
+            from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+                instrument_tools,
+            )
+
+            self.tools = instrument_tools(self.tools)
             runtime = PromptRegistry().resolve("clio.runtime.tool_user_agent")
             runtime_text = str(getattr(runtime, "text", "") or "").strip()
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description

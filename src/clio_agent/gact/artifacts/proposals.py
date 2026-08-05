@@ -692,9 +692,8 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
     Returns the typed record on acceptance or a typed rejection the model can react
     to. The harness computes every hash — any ``sha256`` in the args is ignored.
     """
-    import dspy  # noqa: PLC0415
-
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     agent_id = str(getattr(agent_def, "id", "") or "")
 
@@ -742,9 +741,13 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             agent_id=agent_id,
         )
 
-    return dspy.Tool(
-        func=create_artifact,
+    # Declared "chip": the artifact's wire representation is its resource_link
+    # chip — the observer records telemetry but appends no tool parts.
+    return native_tool(
+        create_artifact,
         name="create_artifact",
+        title="Create artifact",
+        representation="chip",
         desc=(
             "Designate a deliverable as a first-class artifact — YOU decide what is "
             "worth keeping (a report, a document you wrote, a generated file). "

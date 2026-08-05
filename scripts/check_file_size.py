@@ -336,7 +336,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # ToolRuntimeHooks.post_tool field + the two call sites are here.
     # P0.1b (#1103): -500 — AsyncMCPToolExecutor, its client protocol/factory,
     # timeout/uncertain-mutation support, and MCP projections moved to mcp_executor.py.
-    "src/clio_agent/tools/execution.py": 1157,
+    # Default-on tool instrumentation (owner 2026-08-05): +10 — TOOL_OBSERVED_ATTR
+    # (the observed-callable marker MUST live in this low tools layer: the bridge
+    # marks its own constructions and gact may import tools, never the reverse) +
+    # the one-line stamp in _make_dspy_tool. All other logic lives in the owner
+    # module gact/agents/tool_instrumentation.py.
+    "src/clio_agent/tools/execution.py": 1167,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.

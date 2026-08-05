@@ -575,7 +575,7 @@ def build_goal_status_tool() -> Any:
     runs the judge and never exposes a ``met`` completion readback the model could steer toward
     (completion is decided at the finalize boundary by the bounded judge, A4)."""
 
-    import dspy  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def goal_status() -> dict:
         """Read THIS session's active goal condition + progress (READ-ONLY).
@@ -601,4 +601,10 @@ def build_goal_status_tool() -> Any:
             "budget_spent": {"wallclock_s": elapsed_s, "tokens": tokens_spent},
         }
 
-    return dspy.Tool(func=goal_status, name="goal_status", desc=goal_status.__doc__, args={})
+    return native_tool(
+        goal_status,
+        name="goal_status",
+        desc=goal_status.__doc__,
+        title="Check goal status",
+        args={},
+    )

@@ -219,6 +219,12 @@ def current_tool_runtime() -> ToolRuntimeHooks:
     return fallback
 
 
+# Marker on a tool CALLABLE whose execution path already reaches the observer
+# (stamped by _make_dspy_tool here and by gact.agents.tool_instrumentation), so
+# the default-on instrumentation seam never double-notifies a call.
+TOOL_OBSERVED_ATTR = "_clio_tool_observed"
+
+
 def notify_tool_observer(
     observer: Optional[ToolObserver | LegacyToolObserver],
     name: str,
@@ -1119,6 +1125,9 @@ def _make_dspy_tool(
 
     tool_fn.__name__ = name
     tool_fn.__doc__ = description
+    # Bridged calls notify inside call_tool (this boundary): mark the callable
+    # so the instrumentation seam never adds a second notification.
+    setattr(tool_fn, TOOL_OBSERVED_ATTR, True)
 
     properties = _tool_input_schema(mcp_tool).get("properties", {})  # fastmcp-4 snake read
     if not isinstance(properties, dict):
@@ -1141,6 +1150,7 @@ __all__ = [
     "RepeatedToolFailureError",
     "SyncMCPToolExecutor",
     "SyncToolExecutor",
+    "TOOL_OBSERVED_ATTR",
     "ToolExecutor",
     "ToolRuntimeHooks",
     "UncertainMutatingToolOutcomeError",

@@ -177,6 +177,11 @@ class Part(BaseModel):
     # final assistant message metadata is attached.
     call_id: str = ""
     tool_name: str = ""
+    # Curated human title for a NATIVE tool's ``tool_call`` part, declared at
+    # tool registration (gact/agents/tool_instrumentation.py) and sanitized
+    # there (<=80 chars, control chars stripped). Empty for uncurated tools;
+    # native tools never carry a server_title.
+    tool_title: str = ""
     # The model's reasoning for THIS turn, carried on the action part itself
     # (#732): one LLM turn = text (thought, maybe thinking) + the action it
     # chose, as a single ordered event. Populated on ``tool_call`` (the step

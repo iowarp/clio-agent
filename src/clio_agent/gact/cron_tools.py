@@ -228,7 +228,7 @@ def run_cron_command(app: Any, sid: str, request_body: Mapping[str, Any]) -> str
 def build_cron_create_tool() -> Any:
     """Build the ``cron_create`` dspy.Tool (auto-attached; result-only schedule_id)."""
 
-    import dspy  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def cron_create(
         cron: str = "",
@@ -275,10 +275,11 @@ def build_cron_create_tool() -> Any:
             "next_fire_at": sch.next_fire_at,
         }
 
-    return dspy.Tool(
-        func=cron_create,
+    return native_tool(
+        cron_create,
         name="cron_create",
         desc=cron_create.__doc__,
+        title="Schedule future turn",
         args={
             "cron": {
                 "type": "string",
@@ -308,7 +309,7 @@ def build_cron_create_tool() -> Any:
 def build_cron_list_tool() -> Any:
     """Build the ``cron_list`` read-back dspy.Tool (prevents double-arming)."""
 
-    import dspy  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def cron_list() -> list:
         """List THIS session's scheduled turns (the read-back before you arm a new one).
@@ -331,13 +332,19 @@ def build_cron_list_tool() -> Any:
             for s in rows
         ]
 
-    return dspy.Tool(func=cron_list, name="cron_list", desc=cron_list.__doc__, args={})
+    return native_tool(
+        cron_list,
+        name="cron_list",
+        desc=cron_list.__doc__,
+        title="List scheduled turns",
+        args={},
+    )
 
 
 def build_cron_delete_tool() -> Any:
     """Build the ``cron_delete`` dspy.Tool (cancel-both: store row + daemon deferred)."""
 
-    import dspy  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def cron_delete(schedule_id: str) -> bool:
         """Cancel a scheduled turn by its ``schedule_id`` (from cron_create/cron_list).
@@ -350,10 +357,11 @@ def build_cron_delete_tool() -> Any:
         app, sid = _active()
         return cancel_owned_schedule(app, sid, str(schedule_id or "").strip())
 
-    return dspy.Tool(
-        func=cron_delete,
+    return native_tool(
+        cron_delete,
         name="cron_delete",
         desc=cron_delete.__doc__,
+        title="Cancel scheduled turn",
         args={
             "schedule_id": {
                 "type": "string",
