@@ -1408,6 +1408,93 @@ def test_result_declared_output_connects_downstream_hash_pair(tmp_path):
     assert not edge.external_ref
 
 
+def test_rerun_same_bytes_dedups_and_stamps_generated_edge(tmp_path):
+    """Regression for the 2026-08-05 ndp re-run (sess_847768a92f6f): a LATER session
+    re-runs the SAME pipeline in the SAME workspace, the tool really re-writes the
+    file (fresh mtime, byte-identical content), and the mint dedups per W&B #966.3 —
+    NO second ``artifact.created``, no new version. Without a marker the second call's
+    generated edge is indistinguishable on the trace from a fresh v1 mint; it must
+    carry ``note="same_sha_dedup"`` so the dedup is not silent."""
+    app, sess_a, arc = _make_app(tmp_path)
+    staged = tmp_path / "earthscope_converted_data.csv"
+    payload_bytes = b"Site,Latitude\nA,34.0\nB,33.0\n"
+    staged.write_bytes(payload_bytes)
+
+    # The REAL trace result shape (sess_847768a92f6f, call_28bcb449ca1f): the MCP
+    # envelope with the written path declared ONLY in structuredContent.local_path.
+    def _result() -> dict[str, Any]:
+        return {
+            "content": [{"type": "text", "text": "{...}"}],
+            "structuredContent": {
+                "ok": True,
+                "local_path": str(staged),
+                "size_bytes": len(payload_bytes),
+                "content_type": "text/csv",
+                "url": "https://ndp/earthscope_converted_data.csv",
+                "method": "http",
+                "_meta": {"tool": "stage_resource", "status": "success"},
+            },
+        }
+
+    observe_tool_transform(
+        app,
+        sess_a.id,
+        tool_name="ndp_stage_resource",
+        effective_args={"url": "https://ndp/x", "output_dir": str(tmp_path)},
+        call_id="call_first",
+        ok=True,
+        result=_result(),
+        call_started_at=time.time() - 5,
+    )
+    reg = get_registry(app)
+    match = reg.find_version_by_path("ws1", str(staged))
+    assert match is not None
+    v1 = match[1]
+    assert v1.version == 1
+    assert v1.producer.get("call_id") == "call_first"
+    assert len(_events(arc, "artifact.created")) == 1
+
+    # The re-run: a DIFFERENT session, same workspace; the tool re-writes the SAME
+    # bytes DURING the call (fresh mtime after call start — a produced mint, not a
+    # drift re-observation), exactly the live incident's shape.
+    sess_b = app.state.sessions.create(workspace_id="ws1", title="rerun")
+    rerun_started = time.time() - 1
+    staged.write_bytes(payload_bytes)
+    observe_tool_transform(
+        app,
+        sess_b.id,
+        tool_name="ndp_stage_resource",
+        effective_args={"url": "https://ndp/x", "output_dir": str(tmp_path)},
+        call_id="call_rerun",
+        ok=True,
+        result=_result(),
+        call_started_at=rerun_started,
+    )
+    # W&B same-sha dedup (#966.3): still ONE version, the ORIGINAL producer, and no
+    # second artifact.created — the no-op is at the mint, by design.
+    match2 = reg.find_version_by_path("ws1", str(staged))
+    assert match2 is not None
+    assert match2[1].artifact_id == v1.artifact_id
+    assert len(match2[0].versions) == 1
+    assert len(_events(arc, "artifact.created")) == 1
+    # The re-run's transform record still carries TRUE generated provenance (the call
+    # really wrote the bytes) — but marked, so the trace can tell dedup from mint.
+    rec = reg.get_transform("call_rerun")
+    assert rec is not None
+    assert len(rec.generated) == 1
+    edge = rec.generated[0]
+    assert edge.artifact_id == v1.artifact_id
+    assert edge.evidence is EdgeEvidence.HASH_PAIR
+    # Sabotage: drop the call_id comparison in _generated_edges -> note == "" -> red.
+    # (This is the exact ambiguity behind the sess_847768a92f6f investigation: three
+    # deduped CSV re-productions looked identical to fresh v1 mints on the trace.)
+    assert edge.note == "same_sha_dedup"
+    # The FIRST call's edge stays unmarked — a fresh mint is not a dedup.
+    first_rec = reg.get_transform("call_first")
+    assert first_rec is not None
+    assert first_rec.generated and first_rec.generated[0].note == ""
+
+
 # --------------------------------------------------------------------------- #
 # GAP B — parent aggregation (S5 live gate #971). A parent orchestrator's own
 # /transforms and /artifacts are empty while its spawned children hold everything;
