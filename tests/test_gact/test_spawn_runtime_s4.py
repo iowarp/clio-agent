@@ -1213,3 +1213,58 @@ def test_return_handoff_part_survives_unparseable_timestamps() -> None:
     )
     part = _return_handoff_part(_Def("main"), task, {"output": "done"})
     assert part.duration_ms == 0.0
+
+
+def test_terminal_handoff_updates_started_part_in_place() -> None:
+    """ONE delegation = ONE expert_handoff part (clean-wire rule): the terminal
+    return UPDATES the started part (same id/sequence, merged metadata carrying
+    the brief AND the output) and publishes message.part.updated — never a
+    second part for the same handle."""
+
+    from clio_agent.gact.transcript import TurnTranscript
+
+    events: list[tuple[str, dict]] = []
+
+    class _Pub:
+        def publish(self, event_type, payload):
+            events.append((event_type, payload))
+
+    transcript = TurnTranscript.__new__(TurnTranscript)
+    transcript.__init__(  # type: ignore[misc]
+        session_id="sess_x", turn_id="turn_1", publisher=_Pub()
+    )
+    started = Part(
+        id="p_started",
+        type="expert_handoff",
+        agent_id="main",
+        child_agent="geospatial",
+        stage="delegate.started",
+        handle_id="task_1",
+        status="running",
+        metadata={"question": "Resolve LA."},
+    )
+    terminal = Part(
+        id="p_terminal",
+        type="expert_handoff",
+        agent_id="main",
+        child_agent="geospatial",
+        stage="delegate.completed",
+        handle_id="task_1",
+        status="completed",
+        duration_ms=1234.0,
+        metadata={"output": "Resolved."},
+    )
+    transcript.upsert_delegation_part(started)
+    transcript.upsert_delegation_part(terminal)
+
+    parts = [p for p in transcript._parts if p.type == "expert_handoff"]
+    assert len(parts) == 1
+    merged = parts[0]
+    assert merged.id == "p_started"  # identity survives the update
+    assert merged.stage == "delegate.completed"
+    assert merged.metadata["question"] == "Resolve LA."
+    assert merged.metadata["output"] == "Resolved."
+    assert merged.duration_ms == 1234.0
+    kinds = [e for e, _ in events]
+    assert kinds.count("message.part.added") == 1
+    assert kinds.count("message.part.updated") == 1

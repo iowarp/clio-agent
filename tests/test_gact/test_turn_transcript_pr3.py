@@ -278,16 +278,24 @@ def test_route_banner_lands_exactly_once_live_or_finalize(tmp_path: Path) -> Non
         _complete_turn(client, sid, "call a routed tool")
         assistant = _assistant_message(client, sid)
 
+        # Clean-wire rule (owner 2026-08-05): routing decisions are semantic
+        # events, never transcript parts. The once-key still guards the EVENT:
+        # the live observer fired it, finalize's re-emit was blocked.
         routing_parts = [p for p in assistant["parts"] if p["type"] == "routing_decision"]
-        assert len(routing_parts) == 1
-        # The LIVE banner won (it arrived first); finalize's once-key was blocked.
-        assert routing_parts[0]["metadata"]["route_source"] == "live_tool_observer"
+        assert routing_parts == []
         added_routing = [
             e
             for e in app.state.bus._history.get(sid, [])
             if e.type == "message.part.added" and e.payload["part"]["type"] == "routing_decision"
         ]
-        assert len(added_routing) == 1
+        assert added_routing == []
+        routing_events = [
+            e
+            for e in app.state.bus._history.get(sid, [])
+            if e.type == "semantic.event" and e.payload.get("event_type") == "routing.decision"
+        ]
+        assert len(routing_events) == 1
+        assert routing_events[0].payload["payload"]["route_source"] == "live_tool_observer"
 
 
 # ---------------------------------------------------------------------------
@@ -427,11 +435,12 @@ def test_wrap_up_thinking_lands_when_reasoning_did_not_stream(tmp_path: Path) ->
         assistant = _assistant_message(client, sid)
 
         types = [p["type"] for p in assistant["parts"]]
-        assert types == ["routing_decision", "thinking", "text"]
-        thinking = assistant["parts"][1]
+        # routing decisions are semantic events now, never parts (clean wire).
+        assert types == ["thinking", "text"]
+        thinking = assistant["parts"][0]
         assert thinking["text"] == "Batch-only reasoning trace."
         assert thinking["agent_id"] == "code_expert"
-        assert [p["sequence"] for p in assistant["parts"]] == [1, 2, 3]
+        assert [p["sequence"] for p in assistant["parts"]] == [1, 2]
 
 
 def test_chat_answer_streamed_reasoning_batch_wraps_in_arrival_order(

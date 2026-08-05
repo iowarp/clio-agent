@@ -327,6 +327,53 @@ class TurnTranscript:
             )
             return part
 
+    def upsert_delegation_part(self, part: Part, *, stream_source: str = "live") -> Optional[Part]:
+        """One delegation = ONE ``expert_handoff`` part (clean-wire rule).
+
+        A terminal handoff whose ``handle_id`` matches an earlier handoff part
+        this turn UPDATES that part in place — keeping its id/sequence and the
+        started metadata (the brief) under the terminal fields — and publishes
+        ``message.part.updated``. Without a match it appends normally, so a
+        terminal that arrives without its start (resumed turns) is never lost.
+        """
+
+        handle_id = str(part.handle_id or "")
+        if not handle_id:
+            return self.append_part(part, stream_source=stream_source)
+        with self._lock:
+            if self._frozen:
+                self._audit_late_op("upsert_delegation_part", part_id=part.id, part_type=part.type)
+                return None
+            existing = next(
+                (
+                    row
+                    for row in self._parts
+                    if row.type == "expert_handoff" and str(row.handle_id or "") == handle_id
+                ),
+                None,
+            )
+            if existing is None:
+                pass  # fall through to a plain append below, outside the lock
+            else:
+                merged_metadata = {**existing.metadata, **part.metadata}
+                part.id = existing.id
+                part.sequence = existing.sequence
+                part.metadata = merged_metadata
+                index = self._parts.index(existing)
+                self._parts[index] = part
+                msg_id = self.ensure_message()
+                self._publisher.publish(
+                    "message.part.updated",
+                    {
+                        "turn_id": self.turn_id,
+                        "message_id": msg_id,
+                        "stream_source": str(part.metadata.get("stream_source") or stream_source),
+                        "part": part.to_wire(),
+                    },
+                )
+                return part
+        return self.append_part(part, stream_source=stream_source)
+
     def append_part_once(self, key: str, part: Part, **kw: Any) -> Optional[Part]:
         """:meth:`append_part` gated on a turn-scoped idempotency key.
 
@@ -349,6 +396,20 @@ class TurnTranscript:
 
         with self._lock:
             return key in self._once_keys
+
+    def mark_part_key(self, key: str) -> bool:
+        """Consume a turn-scoped once-key WITHOUT appending a part.
+
+        For emissions that moved off the transcript (routing decisions became
+        semantic events — clean-wire rule) but keep the same once-per-turn
+        identity the part had. Returns ``False`` when already consumed.
+        """
+
+        with self._lock:
+            if key in self._once_keys:
+                return False
+            self._once_keys.add(key)
+            return True
 
     def append_text_delta(self, agent_id: str, field: str, chunk: str) -> None:
         """Append a streamed text/thinking delta.

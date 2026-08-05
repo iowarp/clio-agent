@@ -429,7 +429,12 @@ def _append_live_assistant_part(app: "FastAPI", sid: str, part: Part) -> None:
     if transcript is not None:
         # #767 PR1: append through the single-writer ledger — it closes its own
         # open text, mints ids, and publishes message.part.added itself.
-        transcript.append_part(part)
+        # ONE delegation = ONE expert_handoff part (clean-wire rule): a terminal
+        # handoff updates its started part in place (message.part.updated).
+        if part.type == "expert_handoff":
+            transcript.upsert_delegation_part(part)
+        else:
+            transcript.append_part(part)
         _mirror_transcript_state(app, sid, transcript)
         return
 
@@ -438,15 +443,27 @@ def _append_live_assistant_part(app: "FastAPI", sid: str, part: Part) -> None:
     if live_parts is None:
         live_parts = {}
         app.state.live_assistant_parts = live_parts
-    live_parts.setdefault(sid, []).append(part)
+    rows = live_parts.setdefault(sid, [])
+    updated = False
+    if part.type == "expert_handoff" and str(part.handle_id or ""):
+        for index, row in enumerate(rows):
+            if row.type == "expert_handoff" and str(row.handle_id or "") == str(part.handle_id):
+                part.id = row.id
+                part.sequence = row.sequence
+                part.metadata = {**row.metadata, **part.metadata}
+                rows[index] = part
+                updated = True
+                break
+    if not updated:
+        rows.append(part)
     app.state.bus.publish(
         Event(
-            type="message.part.added",
+            type="message.part.updated" if updated else "message.part.added",
             session_id=sid,
             payload={
                 "turn_id": _active_semantic_turn_id(),
                 "message_id": msg_id,
-                # Real runtime parts (tool calls/results, routing) emitted live during
+                # Real runtime parts (tool calls/results) emitted live during
                 # the turn (#711); not provider-token text, but emitted in real time.
                 "stream_source": str(part.metadata.get("stream_source") or "live"),
                 "part": part.to_wire(),
@@ -514,33 +531,60 @@ def _agent_tool_owner(app: "FastAPI", tool_name: str) -> tuple[str, str]:
     return "", ""
 
 
+def _routing_event_once(app: "FastAPI", sid: str, key: str) -> bool:
+    """Once-per-turn guard for routing events (the part-once key store, reused)."""
+
+    transcript = _session_turn_transcript(app, sid)
+    if transcript is not None:
+        if transcript.has_part_key(key):
+            return False
+        transcript.mark_part_key(key)
+        return True
+    live_keys = getattr(app.state, "live_assistant_part_keys", None)
+    if live_keys is None:
+        live_keys = {}
+        app.state.live_assistant_part_keys = live_keys
+    session_keys = live_keys.setdefault(sid, set())
+    if key in session_keys:
+        return False
+    session_keys.add(key)
+    return True
+
+
 def _emit_live_tool_route_context(app: "FastAPI", sid: str, tool_name: str) -> None:
     """Emit route/handoff context immediately before a live tool call."""
 
     public_agent, owner = _agent_tool_owner(app, tool_name)
     if not public_agent or public_agent in {"chat", "none"}:
         return
-    _append_live_assistant_part_once(
+    # Clean-wire rule (owner 2026-08-05): a routing decision is OBSERVABILITY,
+    # not conversation — it rides the semantic highway (trace + obs SSE), never
+    # a transcript part. Same once-per-turn key the part used.
+    if not _routing_event_once(app, sid, f"route:{public_agent}"):
+        return
+    from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
+        _active_semantic_trace_id,
+        _active_semantic_turn_id,
+        _emit_semantic_event,
+    )
+
+    _emit_semantic_event(
         app,
         sid,
-        f"route:{public_agent}",
-        Part(
-            id=f"live_route_{public_agent}",
-            type="routing_decision",
-            # The routing decision is MADE by the orchestrator; ``selected_agent``
-            # below is the CHOSEN expert.
-            agent_id="main",
-            selected_agent=public_agent,
-            rationale=f"Agent planner selected {public_agent} for tool {tool_name}.",
-            confidence=0.0,
-            heuristic=False,
-            metadata={
-                "route_source": "live_tool_observer",
-                "route_reason": f"Resolved from live tool owner {owner}.",
-                "stream_source": "live",
-            },
-            execution_path=f"orchestrator -> {public_agent}",
-        ),
+        "routing.decision",
+        turn_id=_active_semantic_turn_id(),
+        trace_id=_active_semantic_trace_id(),
+        status="completed",
+        summary=f"routed to {public_agent}",
+        actor={"agent_id": "main", "role": "orchestrator"},
+        subject={"selected_agent": public_agent},
+        payload={
+            "selected_agent": public_agent,
+            "rationale": f"Agent planner selected {public_agent} for tool {tool_name}.",
+            "route_source": "live_tool_observer",
+            "route_reason": f"Resolved from live tool owner {owner}.",
+            "execution_path": f"orchestrator -> {public_agent}",
+        },
     )
     if owner and owner != public_agent:
         row = {

@@ -76,6 +76,9 @@ SSE_KEEP_KEYS_BY_EVENT: dict[str, frozenset[str]] = {
 SSE_UI_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "react.step.completed",
+        # Routing decisions are OBSERVABILITY events (the prototype's timeline
+        # "routing_decision" rows), never transcript parts (clean-wire rule).
+        "routing.decision",
         "expert.extract.completed",
         "expert.response.completed",
         "expert.lifecycle.started",
