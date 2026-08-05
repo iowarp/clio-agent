@@ -54,6 +54,7 @@ from clio_agent.gact.agent_blueprints import (
     load_agent_blueprints,
     load_mcp_descriptors,
     parse_agent_blueprint_root,
+    runtime_tool_names_for_validation,
     uninstall_agent_blueprint,
     update_installed_agent_blueprint,
     validate_agent_blueprint_path,
@@ -343,7 +344,11 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        return validate_agent_blueprint_path(Path(path), scope=str(req.get("scope") or "session"))
+        return validate_agent_blueprint_path(
+            Path(path),
+            scope=str(req.get("scope") or "session"),
+            runtime_tool_names=runtime_tool_names_for_validation(app),
+        )
 
     @app.post("/v1/agent-blueprints/install", status_code=201)
     async def install_agent_blueprint_route(req: dict[str, Any]) -> dict[str, Any]:
@@ -737,7 +742,11 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             blueprint.to_wire() if blueprint is not None else None
         )
         if blueprint is None and blueprint_path is not None:
-            validation = validate_agent_blueprint_path(blueprint_path, scope="session")
+            validation = validate_agent_blueprint_path(
+                blueprint_path,
+                scope="session",
+                runtime_tool_names=runtime_tool_names_for_validation(app),
+            )
             raw_blueprint = validation.get("agent_blueprint")
             blueprint_wire = raw_blueprint if isinstance(raw_blueprint, dict) else None
         return {
@@ -775,7 +784,11 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
         blueprint_path = str(req.get("path") or req.get("blueprint_path") or "").strip()
         cwd = _runtime_workspace_catalog_cwd(app, session_id=sid)
         if blueprint_path:
-            validation = validate_agent_blueprint_path(Path(blueprint_path), scope="session")
+            validation = validate_agent_blueprint_path(
+                Path(blueprint_path),
+                scope="session",
+                runtime_tool_names=runtime_tool_names_for_validation(app),
+            )
             if not validation.get("enabled", False):
                 raise HTTPException(
                     status_code=400,

@@ -1101,6 +1101,13 @@ async def _construct_agent_async(app: "FastAPI") -> None:
         )
         return agent
 
+    # Pre-import the heavy LM stack ON THIS THREAD before any builder thread
+    # runs: the deferred init here and a concurrent provider bind
+    # (construct_agent_with_relay) otherwise import litellm simultaneously on
+    # two executor threads, and the importlib race surfaces as KeyError('litellm')
+    # -> agent_init_error -> every turn 503s until a lucky reboot.
+    import litellm  # noqa: F401, PLC0415
+
     try:
         agent = await loop.run_in_executor(None, _build)
     except Exception as exc:  # noqa: BLE001

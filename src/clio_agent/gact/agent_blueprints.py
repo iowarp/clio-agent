@@ -15,7 +15,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -384,7 +384,12 @@ def load_agent_blueprints(
     return rows
 
 
-def validate_agent_blueprint_path(path: Path, *, scope: str = "session") -> dict[str, Any]:
+def validate_agent_blueprint_path(
+    path: Path,
+    *,
+    scope: str = "session",
+    runtime_tool_names: Collection[str] = (),
+) -> dict[str, Any]:
     blueprint = parse_agent_blueprint_root(path, scope=scope)
     mcp_descriptors = load_mcp_descriptors(blueprint.root, scope=scope, blueprint_id=blueprint.id)
     declared_servers = blueprint.metadata.get("mcp_servers")
@@ -395,6 +400,7 @@ def validate_agent_blueprint_path(path: Path, *, scope: str = "session") -> dict
         validate_agent_hierarchy(_load_blueprint_agents(blueprint), blueprint=blueprint),
         mcp_descriptors=mcp_descriptors,
         declared_server_names=declared_server_names,
+        runtime_tool_names=runtime_tool_names,
     )
     errors = list(blueprint.validation_errors)
     warnings: list[str] = []
@@ -534,11 +540,36 @@ def _local_mcp_script_from_metadata(meta: dict[str, Any]) -> str:
     ).strip()
 
 
+def runtime_tool_names_for_validation(app: Any) -> frozenset[str]:
+    """Names of tools the live serve has mounted (the agent runtime catalog).
+
+    The relay/federation surface (``remote_*``, ``relay_*``, curated ``jarvis_*``)
+    mounts on the serve independent of any pack's ``mcp_servers`` map, so a
+    blueprint expert that declares those tools is valid ONLY against the live
+    runtime. App-less callers (CLI validate, refresh) get an empty set and keep
+    the strict pack-only universe.
+    """
+
+    executor = getattr(getattr(app, "state", None), "agent", None)
+    executor = getattr(executor, "tool_executor", None)
+    get_definitions = getattr(executor, "get_all_tool_definitions", None)
+    if not callable(get_definitions):
+        return frozenset()
+    try:
+        definitions = get_definitions()
+    except Exception:  # noqa: BLE001 - a broken executor must not fail validation
+        return frozenset()
+    if not isinstance(definitions, Mapping):
+        return frozenset()
+    return frozenset(str(name) for name in definitions.keys() if str(name))
+
+
 def _validate_agent_tool_references(
     rows: list[AgentDef],
     *,
     mcp_descriptors: list[dict[str, Any]],
     declared_server_names: Iterable[str] = (),
+    runtime_tool_names: Collection[str] = (),
 ) -> list[AgentDef]:
     # Built-in tools are the universal in-process defaults (fs/shell) plus the
     # memory tools. Everything else is a declared MCP tool: a reference is valid
@@ -565,6 +596,18 @@ def _validate_agent_tool_references(
             namespace = tool_name.split("_", 1)[0] if "_" in tool_name else tool_name
             if namespace in declared_namespaces:
                 # Declared via the pack's mcp_servers map; declaration enables it.
+                continue
+            if tool_name in runtime_tool_names:
+                # Mounted on the live serve (relay/federation/curated surfaces
+                # arrive independent of any pack's mcp_servers map). Valid with
+                # typed provenance so the diagnostic trail names the source.
+                diagnostics.append(
+                    {
+                        "tool": tool_name,
+                        "status": "enabled",
+                        "source": "serve_runtime",
+                    }
+                )
                 continue
             descriptor_match = descriptor_tools.get(tool_name)
             if descriptor_match is not None:
