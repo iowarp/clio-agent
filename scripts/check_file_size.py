@@ -132,7 +132,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # (_scheduler_tick/_scheduler_tick_once/_fire_schedule/_seconds_until_next_minute)
     # moved to the owner module gact/scheduler_runtime.py; app.py only re-exports them.
     # P0.1d (#1105): -1 removing the stale _jsonish re-export after wire-mode migration.
-    "src/clio_agent/gact/app.py": 2538,  # -13: unhandled-error envelope wiring moved to gact/error_middleware.py
+    "src/clio_agent/gact/app.py": 2537,  # relay wiring moved to gact/relay_wiring.py
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -178,7 +178,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # (LMProviderConfig arg + app.state.lm_config + the GET's thinking_level /
     # thinking_effective fields). The mapping logic itself lives in the owner
     # module providers/thinking.py, not here.
-    "src/clio_agent/gact/routes/providers.py": 1320,
+    "src/clio_agent/gact/routes/providers.py": 1317,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the

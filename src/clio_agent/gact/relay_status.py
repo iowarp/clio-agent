@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -43,7 +42,11 @@ def resolve_relay_endpoint() -> RelayEndpoint:
         but malformed URL remains configured with no host so status can report a
         typed configuration failure instead of silently treating it as absent.
     """
-    raw_url = os.getenv(RELAY_MCP_URL_ENV, "").strip()
+    from clio_agent import conf  # noqa: PLC0415
+
+    raw_url = conf.resolve(
+        "relay.mcp_url", env=RELAY_MCP_URL_ENV, default="", cast=conf.as_str
+    ).strip()
     if not raw_url:
         return RelayEndpoint(configured=False, host=None, port=None)
     try:
@@ -61,14 +64,38 @@ def resolve_relay_endpoint() -> RelayEndpoint:
     return RelayEndpoint(configured=True, host=host, port=port)
 
 
-def relay_capabilities() -> dict[str, bool | str | None]:
+def relay_capabilities(runtime_status: dict[str, Any] | None = None) -> dict[str, Any]:
     """Project endpoint configuration without performing network I/O.
 
     Returns:
         The additive capabilities relay block.
     """
     endpoint = resolve_relay_endpoint()
-    return {"configured": endpoint.configured, "host": endpoint.host}
+    if runtime_status is None:
+        from clio_agent.tools.relay_transport import (  # noqa: PLC0415
+            RelayTransportUnavailable,
+            resolve_relay_transport_config,
+        )
+
+        resolved = resolve_relay_transport_config()
+        runtime_status = (
+            {
+                **resolved.to_wire(),
+                "reason": "relay_tools_not_configured",
+            }
+            if isinstance(resolved, RelayTransportUnavailable)
+            else {"configured": True, "reason": None}
+        )
+    return {
+        "configured": bool(runtime_status.get("configured", False)),
+        "host": endpoint.host,
+        "reason": runtime_status.get("reason"),
+        **(
+            {"details": dict(runtime_status["details"])}
+            if isinstance(runtime_status.get("details"), dict)
+            else {}
+        ),
+    }
 
 
 async def _tcp_connect(host: str, port: int, timeout_seconds: float) -> None:
@@ -93,13 +120,21 @@ async def probe_relay_status() -> dict[str, Any]:
         Relay configuration, reachability, probe time, and mechanism/error detail.
     """
     endpoint = resolve_relay_endpoint()
-    if not endpoint.configured:
+    from clio_agent.tools.relay_transport import (  # noqa: PLC0415
+        RelayTransportUnavailable,
+        resolve_relay_transport_config,
+    )
+
+    resolved = resolve_relay_transport_config()
+    if isinstance(resolved, RelayTransportUnavailable):
         return {
             "configured": False,
-            "host": None,
+            "host": endpoint.host,
             "reachable": None,
             "checked_at": None,
-            "detail": f"relay is not configured: {RELAY_MCP_URL_ENV} is unset",
+            "reason": "relay_tools_not_configured",
+            "details": dict(resolved.details),
+            "detail": "relay_tools_not_configured: relay transport configuration is incomplete",
         }
 
     checked_at = datetime.now(timezone.utc).isoformat()
@@ -109,6 +144,7 @@ async def probe_relay_status() -> dict[str, Any]:
             "host": None,
             "reachable": False,
             "checked_at": checked_at,
+            "reason": "relay_endpoint_invalid",
             "detail": f"relay_endpoint_invalid: {RELAY_MCP_URL_ENV} has no valid host/port",
         }
 
@@ -121,6 +157,7 @@ async def probe_relay_status() -> dict[str, Any]:
             "host": endpoint.host,
             "reachable": False,
             "checked_at": checked_at,
+            "reason": "relay_tcp_unreachable",
             "detail": f"relay_tcp_unreachable: TCP connect to {target} failed: {exc}",
         }
     return {
@@ -128,5 +165,6 @@ async def probe_relay_status() -> dict[str, Any]:
         "host": endpoint.host,
         "reachable": True,
         "checked_at": checked_at,
+        "reason": None,
         "detail": f"TCP connect to {target} succeeded",
     }

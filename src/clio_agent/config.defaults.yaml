@@ -356,6 +356,27 @@ providers.claude_code.stateful_capacity: 128.0
 # CLIO_CODEX_STATEFUL_CAPACITY  (float)  <- src/clio_agent/providers/codex_stateful.py
 providers.codex.stateful_capacity: 128.0
 
+# CLIO_RELAY_CLUSTER  (str)  <- src/clio_agent/gact/relay_wiring.py
+# relay.cluster:  # default unset; resolved in code
+
+# CLIO_RELAY_HTTP_URL  (str)  <- src/clio_agent/tools/relay_factory.py
+# relay.http_url:  # default unset; resolved in code
+
+# CLIO_RELAY_MCP_URL  (str)  <- src/clio_agent/gact/relay_status.py
+# relay.mcp_url:  # default unset; resolved in code
+
+# CLIO_RELAY_REMOTE_AGENT_MCP_CONFIG_PATH  (str)  <- src/clio_agent/gact/relay_wiring.py
+# relay.remote_agent.mcp_config_path:  # default unset; resolved in code
+
+# CLIO_RELAY_REMOTE_AGENT_MODEL  (str)  <- src/clio_agent/gact/relay_wiring.py
+# relay.remote_agent.model:  # default unset; resolved in code
+
+# CLIO_RELAY_REMOTE_AGENT_PROMPT_PATH  (str)  <- src/clio_agent/gact/relay_wiring.py
+# relay.remote_agent.prompt_path:  # default unset; resolved in code
+
+# CLIO_RELAY_REMOTE_AGENT_WORKDIR  (str)  <- src/clio_agent/gact/relay_wiring.py
+# relay.remote_agent.workdir:  # default unset; resolved in code
+
 # CLIO_API_BASE  (str)  <- src/clio_agent/runtime/status.py
 # runtime.api_base:  # default unset; resolved in code
 
@@ -397,6 +418,12 @@ tools.file_policy.allow_symlinks: false
 
 # CLIO_MAX_FILE_SIZE_BYTES  (str)  <- src/clio_agent/tools/file_policy.py
 tools.file_policy.max_file_size_bytes: "1073741824"
+
+# CLIO_MCP_CALL_TIMEOUT_S  (float)  <- src/clio_agent/tools/execution.py
+tools.mcp.call_timeout_s: 30.0
+
+# CLIO_MCP_CONNECT_MODE  (str)  <- src/clio_agent/tools/mcp_runtime.py
+tools.mcp.connect_mode: "auto"
 
 # CLIO_MCP_ELICITATION_URL_TRUSTED_ORIGINS  (list)  <- src/clio_agent/gact/elicitation_bridge.py
 # tools.mcp.elicitation.url_trusted_origins:  # computed at runtime: default

@@ -124,7 +124,12 @@ def test_every_resolved_knob_has_a_config_key_and_tracked_env() -> None:
 
 def test_secret_tokens_are_classified_secret_not_leaked_with_defaults() -> None:
     resolved, env_only = collect(ROOT)
-    secret_names = {"CLIO_LM_API_KEY", "CLIO_ARGONNE_TOKEN", "ALCF_INFERENCE_TOKEN"}
+    secret_names = {
+        "CLIO_LM_API_KEY",
+        "CLIO_ARGONNE_TOKEN",
+        "ALCF_INFERENCE_TOKEN",
+        "CLIO_RELAY_API_TOKEN",
+    }
     # Secrets must never appear as a file-resolvable knob (would invite a value
     # in config.yaml / .env.example).
     assert secret_names.isdisjoint({r.env for r in resolved})
@@ -148,8 +153,9 @@ def test_env_example_leaves_secrets_blank_and_comments_knobs() -> None:
     # Secrets render as an uncommented, blank assignment (never a real value).
     assert "CLIO_LM_API_KEY=" in lines
     assert "ALCF_INFERENCE_TOKEN=" in lines
+    assert "CLIO_RELAY_API_TOKEN=" in lines
     for line in lines:
-        if line.startswith("CLIO_LM_API_KEY") or line.startswith("ALCF_INFERENCE_TOKEN"):
+        if line.startswith(("CLIO_LM_API_KEY", "ALCF_INFERENCE_TOKEN", "CLIO_RELAY_API_TOKEN")):
             assert line.endswith("="), f"secret carries a value: {line!r}"
     # Configured knobs are commented out so an untouched copy overrides nothing.
     assert "# CLIO_LM_PROVIDER=lm_studio" in lines

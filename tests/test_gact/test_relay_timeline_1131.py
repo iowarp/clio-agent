@@ -49,6 +49,26 @@ class _StreamClient:
             yield event
 
 
+class _ReconnectStreamClient:
+    """One reusable fake that records the cursor requested on every reconnect."""
+
+    def __init__(self) -> None:
+        self.cursors: list[int] = []
+
+    async def __aenter__(self) -> "_ReconnectStreamClient":
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    async def stream_events(self, identity: Any, *, cursor: int = 1) -> AsyncIterator[Any]:
+        self.cursors.append(cursor)
+        yield {
+            **_row(identity.task_id, cursor),
+            "_relay_next_cursor": cursor + 1,
+        }
+
+
 def _running_event(task_id: str) -> dict[str, Any]:
     """Return a lifecycle event matching the retained relay handle."""
 
@@ -163,6 +183,38 @@ def test_live_door_sse_replays_timeline_rows_in_order(tmp_path: Path) -> None:
 
         json_view = client.get(f"/v1/agent-tasks/{task.task_id}/live").json()
         assert [row["sequence"] for row in json_view["timeline_rows"]] == [10, 11]
+
+
+def test_pump_reconnects_from_next_cursor_and_projection_deduplicates_seq(
+    tmp_path: Path,
+) -> None:
+    """Finding 8: reconnect resumes and a repeated task/seq row is appended once."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=_Agent())
+    stream = _ReconnectStreamClient()
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        task = seed_agent_task(
+            app,
+            parent_session_id=parent,
+            agent_ref={"expert_id": "remote"},
+            status=STATUS_RUNNING,
+            task_id="task_reconnect_cursor",
+            placement="relay:local",
+            host="local",
+        )
+        handle = TaskHandle.from_task(task)
+        key = TaskKey(server_id="relay", session_id=parent, task_id=task.task_id)
+        pump = RelayEventPump(app, lambda _sid: stream)
+
+        asyncio.run(pump._stream(handle, key))
+        asyncio.run(pump._stream(handle, key))
+        assert route_relay_timeline_event(app, handle, _row(task.task_id, 2)) is True
+
+        rows, _drops = relay_timeline_view(app, task.task_id)
+
+    assert stream.cursors == [1, 2]
+    assert [row["sequence"] for row in rows] == [1, 2]
 
 
 def test_timeline_wrong_inputs_are_typed_and_ring_evicts_oldest(tmp_path: Path) -> None:

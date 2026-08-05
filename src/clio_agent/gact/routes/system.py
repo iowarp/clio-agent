@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from clio_agent.errors import MCP_TASK_RECORD_STORE_ABSENT
 from clio_agent.gact.relay_status import relay_capabilities
 from clio_agent.gact.runtime.capabilities import (
     _capability_gap_metadata,
@@ -69,6 +70,7 @@ from clio_agent.runtime.status import (
     RuntimeReport,
     collect_runtime_status,
 )
+from clio_agent.tools.mcp_task_records import task_record_store_is_durable
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -433,6 +435,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
     @app.get("/v1/capabilities", response_model=Capabilities)
     async def capabilities() -> Capabilities:
         bearer_enabled = bool(getattr(app.state, "bearer_token", None))
+        task_store_durable = task_record_store_is_durable()
         return Capabilities(
             contract_version=CONTRACT_VERSION,
             backend=BackendInfo(
@@ -517,13 +520,20 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ),
                 x_clio_capability_gaps=_capability_gap_metadata(),
+                x_clio_task_record_store={
+                    "durable": task_store_durable,
+                    "reason": None if task_store_durable else MCP_TASK_RECORD_STORE_ABSENT,
+                },
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
             auth=AuthInfo(
                 schemes=["trust_socket", "bearer"] if bearer_enabled else ["trust_socket"],
                 current="bearer" if bearer_enabled else "trust_socket",
             ),
-            relay=relay_capabilities(),
+            relay=relay_capabilities(
+                getattr(app.state, "relay_tool_status", None)
+                or getattr(app.state, "relay_runtime_status", None)
+            ),
         )
 
     @app.get("/v1/hooks")

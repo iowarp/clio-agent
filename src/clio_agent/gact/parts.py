@@ -85,6 +85,7 @@ class CapabilityFlags(BaseModel):
     x_clio_hook_backend: str = ""
     x_clio_hook_events: dict[str, Any] = Field(default_factory=dict)
     x_clio_capability_gaps: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    x_clio_task_record_store: dict[str, Any] = Field(default_factory=dict)
 
 
 class Part(BaseModel):

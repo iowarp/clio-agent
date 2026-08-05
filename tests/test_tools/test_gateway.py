@@ -164,6 +164,17 @@ def test_build_gateway_no_specs_is_builtins_only():
     assert not any(n.startswith("demo_") for n in names)
 
 
+def test_build_gateway_reports_unconfigured_relay_tool_surface() -> None:
+    """Finding 5: an absent P2 relay surface is a typed, queryable degradation."""
+
+    gateway = build_gateway({})
+
+    degrade = gateway._clio_degraded_capabilities["relay"]
+    assert degrade["reason"] == "relay_tools_not_configured"
+    assert degrade["category"] == "relay_configuration"
+    assert "configure_relay" in degrade["recovery_actions"]
+
+
 def test_build_gateway_skips_unusable_spec(declared_server: FastMCP):
     bad = MCPServerSpec(
         name="bad",

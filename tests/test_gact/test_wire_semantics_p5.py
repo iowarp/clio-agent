@@ -123,7 +123,12 @@ def test_capabilities_carries_unconfigured_relay_block(
     response = client.get("/v1/capabilities")
 
     assert response.status_code == 200, response.text
-    assert response.json()["relay"] == {"configured": False, "host": None}
+    assert response.json()["relay"] == {
+        "configured": False,
+        "host": None,
+        "reason": "relay_tools_not_configured",
+        "details": {"missing": ["api_token", "http_url", "mcp_url"]},
+    }
 
 
 def test_relay_status_unconfigured_is_not_probed(
@@ -141,7 +146,9 @@ def test_relay_status_unconfigured_is_not_probed(
         "host": None,
         "reachable": None,
         "checked_at": None,
-        "detail": "relay is not configured: CLIO_RELAY_MCP_URL is unset",
+        "detail": "relay_tools_not_configured: relay transport configuration is incomplete",
+        "reason": "relay_tools_not_configured",
+        "details": {"missing": ["api_token", "http_url", "mcp_url"]},
     }
 
 
@@ -150,6 +157,8 @@ def test_relay_status_reports_mocked_tcp_reachability(
 ) -> None:
     """Configured status reports the result of the bounded TCP probe."""
     monkeypatch.setenv("CLIO_RELAY_MCP_URL", "http://relay.example:18783/mcp")
+    monkeypatch.setenv("CLIO_RELAY_HTTP_URL", "http://relay.example:8765")
+    monkeypatch.setenv("CLIO_RELAY_API_TOKEN", "relay-secret")
 
     async def _reachable(host: str, port: int, timeout_seconds: float) -> None:
         assert (host, port, timeout_seconds) == ("relay.example", 18783, 3.0)

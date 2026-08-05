@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Literal
 
 import pytest
@@ -481,6 +482,39 @@ async def test_wrong_inputs_and_terminal_failures_remain_typed(
         await surface.create_pipeline({"cluster": "ares", "pipeline_id": "fail-deploy"})
     assert failed_deploy.value.reason == "jarvis_dispatch_failed"
     assert failed_deploy.value.details["relay_error"]["code"] == "jarvis_deploy_failed"
+
+
+@pytest.mark.asyncio
+async def test_bounded_dispatch_reports_input_required_without_waiting_for_timeout() -> None:
+    """Finding 11: an unsupported input round is typed on first observation."""
+
+    class InputRequiredRelay:
+        def __init__(self) -> None:
+            self.polls = 0
+
+        async def poll(self, _identity: RelayTaskIdentity) -> Any:
+            self.polls += 1
+            return SimpleNamespace(
+                status="input_required",
+                poll_interval_ms=RELAY_POLL_INTERVAL_MS,
+                input_required={"schema": {"type": "object"}},
+            )
+
+    relay = InputRequiredRelay()
+    surface = JarvisJobs(
+        lambda: None,  # type: ignore[arg-type]
+        poll_sleep=asyncio.sleep,
+        dispatch_timeout_seconds=0.01,
+    )
+    identity = RelayTaskIdentity.from_key(
+        TaskKey("fake-relay", "session-alice", "jarvis-input-required")
+    )
+
+    with pytest.raises(JarvisJobError) as raised:
+        await surface._drive_to_terminal(relay, identity)  # type: ignore[arg-type]
+
+    assert raised.value.reason == "jarvis_dispatch_input_required_unsupported"
+    assert relay.polls == 1
 
 
 @pytest.mark.asyncio

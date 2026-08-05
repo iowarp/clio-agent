@@ -92,7 +92,11 @@ class _ProjectedRemoteMcpTool(Tool):
             description=definition.description,
             parameters=deepcopy(definition.input_schema),
             output_schema=deepcopy(REMOTE_MCP_JOB_HANDLE_OUTPUT_SCHEMA),
-            annotations=definition.annotations,
+            # Relay is the counterparty being classified. Its self-declared MCP
+            # hints cannot prove a federated tool safe/read-only at CLIO's local
+            # permission boundary; missing annotations intentionally take the
+            # existing external/unvetted fail-safe path.
+            annotations=None,
             meta=deepcopy(definition.meta),
         )
         self._alias = alias

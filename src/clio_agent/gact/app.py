@@ -327,6 +327,7 @@ def _enrich_cancellation_error_info(
 # (behavior-preserving extraction)                                              #
 # --------------------------------------------------------------------------- #
 # gact/_params.py -- user-agent generation-parameter parsing.
+from clio_agent.gact import relay_wiring  # noqa: E402
 from clio_agent.gact._params import (  # noqa: E402,F401
     _gact_turn_timeout_s,
     _semantic_trace_detail_level,
@@ -1042,15 +1043,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 async def _construct_agent_async(app: "FastAPI") -> None:
     """Build the real ClioAgent off the lifespan hot path.
 
-    DSPy import + ARC hydration + expert wiring takes ~10 s on Aurora's
-    frameworks Python (beartype import hook + Lustre cold reads). We
-    run it via ``run_in_executor`` so the event loop stays free for
-    /v1/capabilities, /v1/health, and the rest of the catalog while
-    the agent constructs. On success, stamps ``app.state.agent`` +
-    ``app.state.arc`` so the next POST /messages dispatches normally;
-    on failure, logs and leaves ``agent=None`` so /messages keeps
-    surfacing a structured 503 instead of a corrupted half-built
-    agent.
+    DSPy import, ARC hydration, and expert wiring take about 10 seconds on
+    Aurora, so ``run_in_executor`` keeps the event loop available. Success
+    publishes ``app.state.agent`` and ``app.state.arc``; failure leaves the
+    agent unset so message requests continue returning a structured 503
+    instead of observing a partially built agent.
     """
 
     loop = asyncio.get_running_loop()
@@ -1058,6 +1055,7 @@ async def _construct_agent_async(app: "FastAPI") -> None:
     # so the agent does not mint a fresh ARC — the same instance is app.state.arc for the
     # whole process across every later LM bind (no per-build ARC churn / trace ⊋ ARC split).
     arc = _process_arc(app)
+    relay_kwargs = await relay_wiring.relay_agent_kwargs(app)
 
     def _build() -> Any:
         import dspy  # noqa: PLC0415
@@ -1084,7 +1082,7 @@ async def _construct_agent_async(app: "FastAPI") -> None:
         # this exact config (credential included — the boot/default config is the
         # sanctioned env-credential read, design §6), so a GACT booted purely from
         # ``CLIO_LM_*`` still authenticates.
-        agent = ClioAgent(verbose=False, arc=arc, provider_config=cfg)
+        agent = ClioAgent(verbose=False, arc=arc, provider_config=cfg, **relay_kwargs)
         # Make the ProviderProfileStore the authoritative identity registry:
         # reseed its default from the agent's FINAL resolved config (post
         # lm_studio model discovery) so the store's default profile and
@@ -1351,6 +1349,7 @@ def build_app(
     # prevents a waiting parent from starving its children.
     install_agent_task_executor(app)
     app.state.expert_invoker = InProcessExpertInvoker(app)
+    relay_wiring.configure_relay_expert_invokers(app)
     # #948 S1: schedule ids deferred because their session was busy at the cron
     # minute; _scheduler_tick_once retries them until the session frees (a coarse
     # cron can't be retried via due_now, which only re-yields on a cron match).

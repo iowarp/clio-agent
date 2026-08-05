@@ -44,10 +44,6 @@ logger = logging.getLogger(__name__)
 # iowarp/clio-agent#7 + #2 + #735: the four tool-runtime hooks (permission
 # gate, telemetry observer, preflight interceptor, cancellation checker) are
 # resolved per tool call through the ``ToolRuntimeHooks`` seam below — gact
-# installs a stateless resolver that dispatches on the LIVE turn's app, so
-# concurrent apps in one process never share a hook. There is no process-global
-# hook state left; the sole retained net is the single ``_FALLBACK_TOOL_RUNTIME``
-# bundle consulted (loudly) only when no app resolves.
 ToolObserver = Callable[
     [str, Mapping[str, Any], Optional[str], Optional[str], Any | None],
     None,
@@ -87,17 +83,8 @@ def get_active_tool_workspace_root() -> str:
 
 # --------------------------------------------------------------------------- #
 # iowarp/clio-agent#735 — the tool-runtime hooks SEAM (unified concurrency §2). #
-#                                                                               #
-# The low ``tools`` layer owns an inversion-of-control SLOT: a frozen data      #
-# shape (``ToolRuntimeHooks``), one resolver function pointer, and one retained #
-# fallback bundle. gact installs a STATELESS resolver once (``build_app`` ->     #
-# ``set_tool_runtime_resolver``) that dispatches on the live turn's app; the    #
-# executor reads the bundle via ``current_tool_runtime()`` at call time. Nothing #
-# per-app is ever pushed into this layer, and this layer imports no ``gact``.    #
-#                                                                               #
 # This is the SOLE tool-hook mechanism: the resolver is the in-turn path and the #
 # single ``_FALLBACK_TOOL_RUNTIME`` bundle is the reason-logged app-less net.    #
-# --------------------------------------------------------------------------- #
 
 
 @dataclass(frozen=True)

@@ -545,15 +545,18 @@ class RelayExpertInvoker:
 
         workspace_id, session_mode, scope = validate_task_spec(self._app, spec)
         spec = replace(spec, placement=self._placement)
+        identity, current = self._runtime.submit_and_poll(
+            spec.parent_session_id,
+            self.remote_agent_task_spec(spec),
+        )
+        observation, _projection = self._relay_projection(current)
+        # Only local run-index allocation + registry mutation need serialization.
+        # The relay submit/poll round trip above is independent per invocation and
+        # must remain concurrent for advertised parallel fan-out.
         with self._spawn_lock:
             from clio_agent.gact.turn_spawn import _next_run_index  # noqa: PLC0415
 
             run_index = _next_run_index(self._app, spec)
-            identity, current = self._runtime.submit_and_poll(
-                spec.parent_session_id,
-                self.remote_agent_task_spec(spec),
-            )
-            observation, _projection = self._relay_projection(current)
             seeded = seed_agent_task(
                 self._app,
                 parent_session_id=spec.parent_session_id,

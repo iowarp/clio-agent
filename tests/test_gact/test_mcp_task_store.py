@@ -17,8 +17,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
 from clio_agent.errors import MCP_TASK_RECORD_HELD_LOCALLY, MCP_TASK_SESSION_DELETED
+from clio_agent.gact.app import build_app
 from clio_agent.gact.mcp_task_store import (
     SESSION_TASKS_METADATA_KEY,
     SessionMetadataTaskStore,
@@ -311,6 +313,26 @@ def test_in_memory_session_store_does_not_claim_durability() -> None:
     SessionStore(path=None)
 
     assert task_record_store_is_durable() is False
+
+
+def test_capabilities_reports_non_durable_task_record_store(tmp_path: Path) -> None:
+    """Finding 9: the in-memory fallback is queryable with its typed reason."""
+
+    class Agent:
+        def forward(self, question: str, session_id: str, **_kwargs: Any) -> Any:
+            return type("Prediction", (), {"answer": question, "selected_expert": ""})()
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=Agent())
+    set_task_record_store(None)
+
+    with TestClient(app) as client:
+        response = client.get("/v1/capabilities")
+
+    assert response.status_code == 200
+    assert response.json()["capabilities"]["x_clio_task_record_store"] == {
+        "durable": False,
+        "reason": "mcp_task_record_store_absent",
+    }
 
 
 async def test_reconnect_through_the_durable_home_after_a_restart(tmp_path: Path) -> None:

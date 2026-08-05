@@ -19,6 +19,7 @@ orthogonal to the substrate). Declared-children resolution is monkeypatched.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import threading
 import time
@@ -576,6 +577,50 @@ def test_taskspec_maps_to_remote_agent_task_spec_verbatim(
     }
 
 
+def test_relay_invoke_does_not_serialize_network_round_trips(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding 12: two relay submissions enter the network seam concurrently."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    backend = _FakeRelayBackend()
+    invoker = _relay_invoker(app, backend)
+    entered = 0
+    entered_lock = threading.Lock()
+    both_entered = threading.Event()
+    release = threading.Event()
+
+    def blocked_submit(parent_session_id: str, _remote_spec: Any) -> tuple[Any, Any]:
+        nonlocal entered
+        with entered_lock:
+            entered += 1
+            index = entered
+            if entered == 2:
+                both_entered.set()
+        assert release.wait(timeout=2.0)
+        identity = RelayTaskIdentity.from_key(
+            TaskKey("fake-relay", parent_session_id, f"parallel-relay-{index}")
+        )
+        return identity, _relay_current("queued")
+
+    monkeypatch.setattr(invoker._runtime, "submit_and_poll", blocked_submit)
+    monkeypatch.setattr(invoker, "_start_event_pump", lambda _handle: None)
+
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "parallel relay"}).json()["id"]
+        spec = _spec(parent)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(invoker.invoke, spec) for _ in range(2)]
+            overlapped = both_entered.wait(timeout=0.5)
+            release.set()
+            handles = [future.result(timeout=5) for future in futures]
+
+    assert overlapped is True
+    assert {handle.task_id for handle in handles} == {"parallel-relay-1", "parallel-relay-2"}
+    assert sorted(handle.run_index for handle in handles) == [0, 1]
+
+
 def test_relay_message_answers_post_admission_input_on_retained_task(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -722,6 +767,24 @@ def test_build_app_binds_in_process_expert_invoker(tmp_path: Path) -> None:
 
     assert isinstance(app.state.expert_invoker, InProcessExpertInvoker)
     assert app.state.expert_invoker.app is app
+
+
+def test_build_app_populates_configured_relay_expert_invoker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding 3: app assembly publishes a real invoker for the configured cluster."""
+
+    monkeypatch.setenv("CLIO_RELAY_MCP_URL", "http://127.0.0.1:18783/mcp")
+    monkeypatch.setenv("CLIO_RELAY_HTTP_URL", "http://127.0.0.1:8765")
+    monkeypatch.setenv("CLIO_RELAY_API_TOKEN", "relay-secret")
+    monkeypatch.setenv("CLIO_RELAY_CLUSTER", "local")
+    monkeypatch.setenv("CLIO_RELAY_REMOTE_AGENT_PROMPT_PATH", "/shared/prompts/worker.md")
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+
+    assert set(app.state.relay_expert_invokers) == {"local"}
+    assert isinstance(app.state.relay_expert_invokers["local"], RelayExpertInvoker)
+    assert app.state.relay_runtime_status == {"configured": True, "reason": None}
 
 
 def test_invoke_parity_records_and_events(tmp_path: Path, monkeypatch) -> None:

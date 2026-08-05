@@ -73,13 +73,24 @@ class RelayTimelineProjection:
         self._max_drops = max_drops
         self._lock = threading.RLock()
         self._rows: dict[str, deque[Event]] = {}
+        self._row_sequences: dict[str, set[int]] = {}
         self._drops: dict[str, deque[dict[str, Any]]] = {}
 
-    def append_row(self, task_id: str, event: Event) -> None:
-        """Append one row event, evicting the oldest row at the configured bound."""
+    def append_row(self, task_id: str, event: Event) -> bool:
+        """Append one unique task/sequence row and evict the oldest at the bound."""
 
         with self._lock:
-            self._rows.setdefault(task_id, deque(maxlen=self._max_rows)).append(event)
+            sequence = int(event.payload["sequence"])
+            seen = self._row_sequences.setdefault(task_id, set())
+            if sequence in seen:
+                return False
+            rows = self._rows.setdefault(task_id, deque())
+            if len(rows) >= self._max_rows:
+                evicted = rows.popleft()
+                seen.discard(int(evicted.payload["sequence"]))
+            rows.append(event)
+            seen.add(sequence)
+            return True
 
     def append_drop(self, task_id: str, drop: dict[str, Any]) -> None:
         """Record one structured routing drop at the configured bound."""
@@ -281,7 +292,8 @@ def route_relay_timeline_event(app: "FastAPI", handle: Any, raw: Any) -> bool:
     event = Event(type=TIMELINE_ROW_EVENT, session_id=expected.child_session_id, payload=row)
     projection = relay_timeline_projection(app)
     assert projection is not None
-    projection.append_row(expected_task_id, event)
+    if not projection.append_row(expected_task_id, event):
+        return True
     app.state.bus.publish(event)
     return True
 

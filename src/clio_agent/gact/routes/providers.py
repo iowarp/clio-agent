@@ -63,6 +63,7 @@ from clio_agent.gact.providers.lmstudio import (
     _lm_studio_headers,
     _release_owned_lm_studio_instance,
 )
+from clio_agent.gact.relay_wiring import construct_agent_with_relay
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.globals import _process_arc, _set_app_arc
 from clio_agent.gact.types import (
@@ -849,7 +850,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 }
 
         try:
-            from clio_agent.agent import ClioAgent
             from clio_agent.config import (
                 LMProviderConfig,
                 create_lm,
@@ -989,10 +989,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 # from env; its throwaway LMs are immediately replaced by the
                 # cfg-built ones below, so no env stamping is needed. Inject the
                 # ONE per-process ARC so this build reuses it (no per-bind ARC churn).
-                bound_arc = _process_arc(app)
-                agent = await asyncio.get_running_loop().run_in_executor(
-                    None, lambda: ClioAgent(verbose=False, arc=bound_arc)
-                )
+                agent = await construct_agent_with_relay(app, arc=_process_arc(app))
                 # The fresh agent built its config + LMs from env (pre-handshake);
                 # carry the handshake-applied cfg + cfg-based LMs onto it so the
                 # context-aware max_tokens / chosen_context are in effect on the

@@ -294,7 +294,7 @@ async def test_virtual_alias_submits_mcp_call_spec_and_returns_handle(
     projected = listed["remote_science_inspect"]
     assert projected.output_schema == REMOTE_MCP_JOB_HANDLE_OUTPUT_SCHEMA
     assert catalog["remote_science_inspect"].owner == "remote"
-    assert "read" in catalog["remote_science_inspect"].tags
+    assert "read" not in catalog["remote_science_inspect"].tags
     assert {
         field: getattr(result.data, field)
         for field in ("job_id", "state", "kind", "terminal", "catalog_revision")
@@ -320,6 +320,26 @@ async def test_virtual_alias_submits_mcp_call_spec_and_returns_handle(
     assert relay.jobs["job-1129"].stream_closed.is_set()
     assert relay.jobs["job-1129"].stream_task is not None
     assert relay.jobs["job-1129"].stream_task.done()
+
+
+@pytest.mark.asyncio
+async def test_remote_alias_cannot_self_declare_read_only(
+    fake_relay: _FakeRelayClient,
+) -> None:
+    """Finding 7: relay annotations never bypass the external permission boundary."""
+
+    federation = await RemoteMcpFederation.discover(lambda: fake_relay)
+    gateway = build_gateway({}, remote_mcp_federation=federation)
+    definitions = list_tool_definitions(gateway)
+    catalog = build_tool_catalog(gateway, tools=list(definitions.values()))
+
+    async with Client(gateway) as client:
+        projected = {tool.name: tool for tool in await client.list_tools()}[
+            "remote_science_inspect"
+        ]
+
+    assert projected.annotations is None
+    assert "read" not in catalog["remote_science_inspect"].tags
 
 
 @pytest.mark.asyncio

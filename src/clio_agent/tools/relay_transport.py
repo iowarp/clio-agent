@@ -21,17 +21,18 @@ import base64
 import binascii
 import json
 import os
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from typing import Any, Literal
 from urllib.parse import quote
 
 import httpx
-from fastmcp_tasks import call_tool_task
-from fastmcp_tasks.client_models import ClientGetTaskResult
+from fastmcp.telemetry import inject_trace_context
+from fastmcp.utilities.timeout import normalize_timeout_to_seconds
+from fastmcp_tasks.client_models import ClientCreateTaskResult, ClientGetTaskResult
 
-from clio_agent.errors import ConfigError, ToolError
+from clio_agent.errors import ConfigError
 from clio_agent.tools.mcp_runtime import make_mcp_client
 from clio_agent.tools.mcp_task_extension import (
     backend_identity,
@@ -51,19 +52,43 @@ from clio_agent.tools.mcp_tasks import (
     send_task_get,
     send_task_update,
 )
+from clio_agent.tools.relay_contract import (
+    RELAY_EVENT_NEXT_CURSOR_FIELD,
+    RELAY_INLINE_LIMIT_CODE,
+    RELAY_POLL_INTERVAL_MS,
+    RELAY_RESULT_DELIVERY_SCHEMA,
+    RelayInlineResultTooLargeError,
+    RelayMcpNameMismatchError,
+    RelayPollIntervalMismatchError,
+    RelayRemoteMcpCatalogStaleError,
+    RelayTaskJobMismatchError,
+    RelayTransportContractError,
+    decode_sse_payload,
+    raise_inline_submission,
+    validate_result,
+    validate_submit_arguments,
+)
+from clio_agent.tools.relay_factory import (
+    RelayToolSurfaces,
+    RelayTransportConfig,
+    RelayTransportUnavailable,
+    discover_relay_tool_surfaces,
+    relay_transport_from_env,
+    resolve_relay_transport_config,
+)
 
-RELAY_POLL_INTERVAL_MS = 1_000
-RELAY_RESULT_DELIVERY_SCHEMA = "clio-relay.mcp-result-delivery.v1"
-RELAY_INLINE_LIMIT_CODE = "inline_result_limit_exceeded"
 OWNER_SESSION_ID_HEADER = "X-Clio-Relay-Owner-Session-Id"
 SESSION_GENERATION_ID_HEADER = "X-Clio-Relay-Session-Generation-Id"
 REMOTE_MCP_ALIAS_PREFIX = "remote_"
 REMOTE_MCP_CATALOG_META_KEY = "clio-relay/catalog-revision"
 REMOTE_MCP_HANDLE_FIELDS = frozenset({"job_id", "state", "kind", "terminal"})
 REMOTE_MCP_FOLLOW_TOOLS = frozenset({"relay_observe", "relay_wait"})
+RELAY_API_TOKEN_ENV = "CLIO_RELAY_API_TOKEN"
 
 __all__ = [
     "OWNER_SESSION_ID_HEADER",
+    "RELAY_EVENT_NEXT_CURSOR_FIELD",
+    "RELAY_INLINE_LIMIT_CODE",
     "RELAY_POLL_INTERVAL_MS",
     "RELAY_RESULT_DELIVERY_SCHEMA",
     "SESSION_GENERATION_ID_HEADER",
@@ -75,83 +100,15 @@ __all__ = [
     "RelayRemoteMcpHandle",
     "RelayTaskIdentity",
     "RelayTaskJobMismatchError",
+    "RelayToolSurfaces",
     "RelayTransportClient",
+    "RelayTransportConfig",
     "RelayTransportContractError",
+    "RelayTransportUnavailable",
+    "discover_relay_tool_surfaces",
+    "relay_transport_from_env",
+    "resolve_relay_transport_config",
 ]
-
-
-class RelayTransportContractError(ToolError):
-    """A relay response or caller identity violated the transport contract."""
-
-    def __init__(self, message: str, *, reason: str, details: dict[str, Any]) -> None:
-        self.reason = reason
-        super().__init__(message, details={"reason": reason, **details})
-
-
-class RelayTaskJobMismatchError(RelayTransportContractError):
-    """The relay task id and durable job id are not identical."""
-
-    def __init__(self, task_id: str, job_id: str) -> None:
-        super().__init__(
-            f"relay taskId {task_id!r} does not equal jobId {job_id!r}",
-            reason="relay_task_job_id_mismatch",
-            details={"task_id": task_id, "job_id": job_id},
-        )
-
-
-class RelayMcpNameMismatchError(RelayTransportContractError):
-    """The task-management routing name differs from the task id."""
-
-    def __init__(self, task_id: str, mcp_name: str) -> None:
-        super().__init__(
-            f"Mcp-Name {mcp_name!r} does not equal relay task id {task_id!r}",
-            reason="relay_mcp_name_mismatch",
-            details={"task_id": task_id, "mcp_name": mcp_name},
-        )
-
-
-class RelayPollIntervalMismatchError(RelayTransportContractError):
-    """The relay advertised a task cadence other than its fixed one-second poll."""
-
-    def __init__(self, task_id: str, observed: float | None) -> None:
-        super().__init__(
-            f"relay task {task_id!r} advertised pollIntervalMs={observed!r}; "
-            f"expected {RELAY_POLL_INTERVAL_MS}",
-            reason="relay_poll_interval_mismatch",
-            details={
-                "task_id": task_id,
-                "poll_interval_ms": observed,
-                "expected_poll_interval_ms": RELAY_POLL_INTERVAL_MS,
-            },
-        )
-
-
-class RelayInlineResultTooLargeError(RelayTransportContractError):
-    """Relay's typed 64 KiB inline-delivery failure."""
-
-    def __init__(self, task_id: str, delivery: Mapping[str, Any]) -> None:
-        self.delivery = dict(delivery)
-        super().__init__(
-            str(delivery.get("message") or "relay result exceeded the inline delivery limit"),
-            reason=RELAY_INLINE_LIMIT_CODE,
-            details={"task_id": task_id, "delivery": self.delivery},
-        )
-
-
-class RelayRemoteMcpCatalogStaleError(RelayTransportContractError):
-    """A projected remote alias no longer belongs to the current relay catalog."""
-
-    def __init__(self, name: str, expected: str, observed: str) -> None:
-        super().__init__(
-            "relay remote MCP catalog changed after local tool projection",
-            reason="remote_mcp_catalog_revision_stale",
-            details={
-                "tool": name,
-                "expected_catalog_revision": expected,
-                "observed_catalog_revision": observed,
-                "action": "refresh_remote_mcp_catalog",
-            },
-        )
 
 
 @dataclass(frozen=True)
@@ -227,9 +184,9 @@ class RelayTransportClient:
         store: TaskRecordStore | None = None,
         request_timeout_seconds: float = 30.0,
     ) -> None:
-        token = api_token if api_token is not None else os.getenv("CLIO_RELAY_API_TOKEN")
+        token = api_token if api_token is not None else os.getenv(RELAY_API_TOKEN_ENV)
         if not token:
-            raise ConfigError("CLIO_RELAY_API_TOKEN is required for the relay transport")
+            raise ConfigError(f"{RELAY_API_TOKEN_ENV} is required for the relay transport")
         if (owner_session_id is None) != (owner_session_generation_id is None):
             raise ConfigError(
                 "relay owner_session_id and owner_session_generation_id must be supplied together"
@@ -251,6 +208,7 @@ class RelayTransportClient:
             )
         self._mcp_client: Any | None = None
         self._http_client: httpx.AsyncClient | None = None
+        self._tool_input_schemas: dict[str, Mapping[str, Any]] | None = None
 
     async def __aenter__(self) -> "RelayTransportClient":
         """Open both authenticated doors."""
@@ -313,19 +271,29 @@ class RelayTransportClient:
                 )
             payload["idempotency_key"] = idempotency_key
 
-        handle = await call_tool_task(
-            client,
-            tool_name,
-            payload,
-            timeout=timeout_seconds,
+        self._tool_input_schemas = await validate_submit_arguments(
+            client, self._tool_input_schemas, tool_name, payload
         )
-        create_result = handle.create_result
-        self._require_poll_interval(handle.task_id, create_result.poll_interval_ms)
+        read_timeout_seconds = normalize_timeout_to_seconds(timeout_seconds)
+        request_meta = inject_trace_context(None) or None
+        raw = await client._await_with_session_monitoring(
+            client.session.call_tool(
+                name=tool_name,
+                arguments=payload,
+                read_timeout_seconds=read_timeout_seconds,
+                meta=request_meta,
+                allow_claimed=True,
+            )
+        )
+        if not isinstance(raw, ClientCreateTaskResult):
+            raise_inline_submission(tool_name, raw)
+        create_result = raw
+        self._require_poll_interval(create_result.task_id, create_result.poll_interval_ms)
         backend = backend_identity(client.transport)
         key = TaskKey(
             server_id=backend.server_id,
             session_id=self._session_id,
-            task_id=handle.task_id,
+            task_id=create_result.task_id,
         )
         await persist_created_task(
             client.session,
@@ -463,11 +431,15 @@ class RelayTransportClient:
         self._require_poll_interval(task.task_id, current.poll_interval_ms)
         if current.task_id != task.task_id:
             raise RelayTaskJobMismatchError(task.task_id, current.task_id)
-        self._validate_result(task, current)
+        validate_result(task.task_id, current)
         if current.status in TERMINAL_TASK_STATES:
             store.drop(task.key)
         else:
-            store.put(replace(record, status=current.status))
+            # ``poll`` is a single observation, not a task driver, so it does not
+            # take the long-lived TaskLease. Merge onto the post-RPC row to retain
+            # a concurrent wait/resume driver's lease and input ledger.
+            latest = store.get(task.key) or record
+            store.put(replace(latest, status=current.status))
         return current
 
     async def wait(
@@ -486,7 +458,7 @@ class RelayTransportClient:
             store=self._record_store(),
         )
         self._require_poll_interval(task.task_id, final.poll_interval_ms)
-        self._validate_result(task, final)
+        validate_result(task.task_id, final)
         return final
 
     async def resume(
@@ -524,7 +496,12 @@ class RelayTransportClient:
             task.key,
             store=store,
         )
-        store.put(replace(record, cancel_requested=True))
+        # ``cancel_task`` drops the row after the acknowledgement. A concurrent
+        # driver may already have re-published a newer snapshot; merge onto that
+        # post-ack row rather than replaying the stale pre-cancel record. Cancel is
+        # deliberately not a task driver and therefore never steals its lease.
+        latest = store.get(task.key) or record
+        store.put(replace(latest, cancel_requested=True))
         return ack
 
     async def message(self, task: RelayTaskIdentity, text: str) -> None:
@@ -604,13 +581,13 @@ class RelayTransportClient:
                         data_lines.append(line.partition(":")[2].lstrip())
                     continue
                 if event_name == "task_events" and data_lines:
-                    payload = self._decode_sse_payload(task, "\n".join(data_lines))
+                    payload = decode_sse_payload(task.task_id, "\n".join(data_lines))
                     for event in payload:
                         yield event
                 event_name = ""
                 data_lines = []
             if event_name == "task_events" and data_lines:
-                for event in self._decode_sse_payload(task, "\n".join(data_lines)):
+                for event in decode_sse_payload(task.task_id, "\n".join(data_lines)):
                     yield event
 
     async def fetch_artifact(self, artifact_id: str) -> bytes:
@@ -721,79 +698,3 @@ class RelayTransportClient:
 
         if observed != RELAY_POLL_INTERVAL_MS:
             raise RelayPollIntervalMismatchError(task_id, observed)
-
-    @staticmethod
-    def _validate_result(task: RelayTaskIdentity, current: ClientGetTaskResult) -> None:
-        """Reject typed delivery failures and any task/job identity drift."""
-
-        if current.result is None:
-            return
-        for item in _walk_result_objects(current.result):
-            delivery = item.get("delivery")
-            if (
-                isinstance(delivery, Mapping)
-                and delivery.get("schema_version") == RELAY_RESULT_DELIVERY_SCHEMA
-                and delivery.get("status") == "failed"
-                and delivery.get("code") == RELAY_INLINE_LIMIT_CODE
-            ):
-                raise RelayInlineResultTooLargeError(task.task_id, delivery)
-            for field in ("job_id", "jobId"):
-                job_id = item.get(field)
-                if isinstance(job_id, str) and job_id != task.task_id:
-                    raise RelayTaskJobMismatchError(task.task_id, job_id)
-
-    @staticmethod
-    def _decode_sse_payload(task: RelayTaskIdentity, encoded: str) -> list[dict[str, Any]]:
-        """Decode one relay ``task_events`` SSE block and validate its identity."""
-
-        try:
-            payload = json.loads(encoded)
-        except json.JSONDecodeError as exc:
-            raise RelayTransportContractError(
-                "relay task event stream emitted invalid JSON",
-                reason="relay_task_event_invalid",
-                details={"task_id": task.task_id},
-            ) from exc
-        observed_task_id = payload.get("task_id") if isinstance(payload, Mapping) else ""
-        if observed_task_id != task.task_id:
-            raise RelayTaskJobMismatchError(task.task_id, str(observed_task_id))
-        events = payload.get("events")
-        if not isinstance(events, list):
-            raise RelayTransportContractError(
-                "relay task event stream omitted its events list",
-                reason="relay_task_event_invalid",
-                details={"task_id": task.task_id},
-            )
-        decoded: list[dict[str, Any]] = []
-        for event in events:
-            if not isinstance(event, Mapping) or event.get("task_id") != task.task_id:
-                observed = event.get("task_id") if isinstance(event, Mapping) else ""
-                raise RelayTaskJobMismatchError(task.task_id, str(observed))
-            decoded.append(dict(event))
-        return decoded
-
-
-def _walk_result_objects(value: Any) -> Iterator[Mapping[str, Any]]:
-    """Walk the bounded JSON-shaped task result, including JSON text content."""
-
-    stack = [value]
-    seen = 0
-    while stack:
-        current = stack.pop()
-        seen += 1
-        if seen > 100_000:
-            raise RelayTransportContractError(
-                "relay task result exceeds the client validation node bound",
-                reason="relay_task_result_too_complex",
-                details={"max_nodes": 100_000},
-            )
-        if isinstance(current, Mapping):
-            yield current
-            stack.extend(current.values())
-        elif isinstance(current, (list, tuple)):
-            stack.extend(current)
-        elif isinstance(current, str) and current.lstrip().startswith(("{", "[")):
-            try:
-                stack.append(json.loads(current))
-            except json.JSONDecodeError:
-                continue

@@ -440,6 +440,12 @@ class JarvisJobs:
             current = await relay.poll(identity)
             if current.status in TERMINAL_TASK_STATES:
                 return current
+            if current.status == "input_required":
+                raise JarvisJobError(
+                    f"{identity.task_id} requires input that curated JARVIS tools cannot answer",
+                    reason="jarvis_dispatch_input_required_unsupported",
+                    details={"task_id": identity.task_id},
+                )
             remaining = deadline - loop.time()
             if remaining <= 0:
                 raise JarvisJobError(

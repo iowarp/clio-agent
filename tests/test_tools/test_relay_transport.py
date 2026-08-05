@@ -8,6 +8,7 @@ import socket
 import threading
 import time
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -15,6 +16,7 @@ from typing import Any
 import pytest
 import uvicorn
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError as FastMCPToolError
 from fastmcp.utilities.tasks import TaskConfig
 from fastmcp_tasks import TasksExtension
 
@@ -32,6 +34,7 @@ from clio_agent.tools.relay_transport import (
     RelayTaskIdentity,
     RelayTaskJobMismatchError,
     RelayTransportClient,
+    RelayTransportContractError,
 )
 
 
@@ -64,6 +67,22 @@ def _fake_relay(capture: _RelayCapture) -> FastMCP:
         """Return a forged relay job identity for the client-side rejection test."""
 
         return {"job_id": "job-other", "outcome": "must-not-pass"}
+
+    @server.tool(task=relay_task)
+    async def nested_scheduler_job() -> dict[str, Any]:
+        """Return application scheduler ids below the delivery envelope."""
+
+        return {
+            "outcome": "done",
+            "services": {"web": {"job_id": "slurm-22567"}},
+            "progress": {"jobId": "pbs-913"},
+        }
+
+    @server.tool
+    async def relay_inline_reject(cluster: str) -> dict[str, str]:
+        """Reject synchronously so the client must retain the relay's real error."""
+
+        raise FastMCPToolError(f"pipeline not found on cluster {cluster}")
 
     @server.tool(task=relay_task)
     async def oversized_result() -> dict[str, Any]:
@@ -219,6 +238,32 @@ def _client(backend: _Backend) -> RelayTransportClient:
         owner_session_id="session-alice",
         owner_session_generation_id="generation-1",
     )
+
+
+def test_production_factory_resolves_both_doors_and_reports_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finding 2: config-first transport construction has a typed absent state."""
+
+    import clio_agent.tools.relay_transport as relay_module
+
+    factory = getattr(relay_module, "relay_transport_from_env", None)
+    assert callable(factory), "production relay factory is missing"
+
+    for key in ("CLIO_RELAY_MCP_URL", "CLIO_RELAY_HTTP_URL", "CLIO_RELAY_API_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    unavailable = factory()
+    assert unavailable.reason == "relay_not_configured"
+    assert sorted(unavailable.details["missing"]) == ["api_token", "http_url", "mcp_url"]
+
+    monkeypatch.setenv("CLIO_RELAY_MCP_URL", "http://127.0.0.1:18783/mcp")
+    monkeypatch.setenv("CLIO_RELAY_HTTP_URL", "http://127.0.0.1:8765")
+    monkeypatch.setenv("CLIO_RELAY_API_TOKEN", "relay-secret")
+    configured = factory(session_id="session-alice")
+    assert isinstance(configured, RelayTransportClient)
+    assert configured._mcp_url == "http://127.0.0.1:18783/mcp"
+    assert configured._http_base_url == "http://127.0.0.1:8765"
+    assert configured._session_id == "session-alice"
 
 
 async def _first(stream: AsyncIterator[dict[str, Any]]) -> dict[str, Any]:
@@ -386,6 +431,62 @@ async def test_task_job_mismatch_is_rejected_client_side(relay_backend: _Backend
     assert raised.value.details["job_id"] == "job-other"
 
 
+async def test_nested_application_job_ids_do_not_override_relay_task_identity(
+    relay_backend: _Backend,
+) -> None:
+    """Finding 1: scheduler-native ids below the top envelope remain application data."""
+
+    async with _client(relay_backend) as relay:
+        task = await relay.submit("nested_scheduler_job", {})
+        final = await relay.wait(task, timeout_seconds=15)
+
+    assert final.status == "completed"
+    assert final.result["structuredContent"]["services"]["web"]["job_id"] == "slurm-22567"
+    assert final.result["structuredContent"]["progress"]["jobId"] == "pbs-913"
+
+
+async def test_submit_rejects_missing_and_unknown_arguments_before_submission(
+    relay_backend: _Backend,
+) -> None:
+    """Finding 6: discovered inputSchema failures are typed before tools/call."""
+
+    async with _client(relay_backend) as relay:
+        before = len(
+            [
+                1
+                for path, headers in relay_backend.capture.requests
+                if path == "/mcp" and headers.get("mcp-method") == "tools/call"
+            ]
+        )
+        with pytest.raises(RelayTransportContractError) as raised:
+            await relay.submit("relay_run", {"unexpected": True})
+        after = len(
+            [
+                1
+                for path, headers in relay_backend.capture.requests
+                if path == "/mcp" and headers.get("mcp-method") == "tools/call"
+            ]
+        )
+
+    assert raised.value.reason == "relay_arguments_invalid"
+    assert raised.value.details["missing_keys"] == ["delay"]
+    assert raised.value.details["unknown_keys"] == ["unexpected"]
+    assert after == before
+
+
+async def test_submit_preserves_inline_relay_error_as_typed_reason(
+    relay_backend: _Backend,
+) -> None:
+    """Finding 6: a non-admitted inline rejection retains the relay error text."""
+
+    async with _client(relay_backend) as relay:
+        with pytest.raises(RelayTransportContractError) as raised:
+            await relay.submit("relay_inline_reject", {"cluster": "local"})
+
+    assert raised.value.reason == "relay_call_rejected_inline"
+    assert "pipeline not found on cluster local" in raised.value.details["relay_error"]
+
+
 async def test_mcp_name_mismatch_is_rejected_before_an_rpc(relay_backend: _Backend) -> None:
     """A forged Mcp-Name is refused locally rather than sent to the relay."""
 
@@ -421,3 +522,48 @@ async def test_reconnect_uses_persisted_record_after_originating_client_drops(
 
     assert final.status == "completed"
     assert task_record_store().get(task.key) is None
+
+
+async def test_cancel_merges_the_post_ack_record_instead_of_replaying_stale_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finding 10: cancel preserves a concurrent driver's status and lease fields."""
+
+    store = task_record_store()
+    key = TaskKey("relay-cancel-test", "session-alice", "task-cancel-race")
+    original = TaskRecord(key=key, tool="relay_run", status="created")
+    store.put(original)
+    relay = RelayTransportClient(
+        mcp_url="http://relay.invalid/mcp",
+        http_base_url="http://relay.invalid",
+        api_token="relay-secret",
+        session_id="session-alice",
+        store=store,
+    )
+    relay._mcp_client = SimpleNamespace(session=object())
+
+    async def cancel_with_concurrent_driver(
+        _session: Any, task_key: TaskKey, **_kwargs: Any
+    ) -> Any:
+        store.drop(task_key)
+        store.put(
+            replace(
+                original,
+                status="working",
+                lease_owner="driver-1",
+                lease_expires_at=time.time() + 30,
+            )
+        )
+        return {"acknowledged": True}
+
+    monkeypatch.setattr(
+        "clio_agent.tools.relay_transport.cancel_task", cancel_with_concurrent_driver
+    )
+
+    await relay.cancel(RelayTaskIdentity.from_key(key))
+
+    retained = store.get(key)
+    assert retained is not None
+    assert retained.status == "working"
+    assert retained.lease_owner == "driver-1"
+    assert retained.cancel_requested is True

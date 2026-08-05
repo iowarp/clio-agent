@@ -174,6 +174,7 @@ def build_gateway(
     capabilities: "MCPClientCapabilities | None" = None,
     remote_mcp_federation: "RemoteMcpFederation | None" = None,
     jarvis_jobs: "JarvisJobs | None" = None,
+    relay_status: Mapping[str, Any] | None = None,
 ) -> FastMCP:
     """Build the agent's tool gateway: built-ins PLUS the declared MCP servers.
 
@@ -212,6 +213,9 @@ def build_gateway(
 
         jarvis_jobs: Optional curated durable application surface mounted under the
             reserved jarvis namespace.
+        relay_status: Optional typed production wiring status. A non-empty reason is
+            retained on the gateway for diagnostics even when only part of the relay
+            surface could be mounted.
 
     Returns:
         The gateway with the built-ins and declared proxies mounted.
@@ -238,6 +242,41 @@ def build_gateway(
     # second build over the same base MERGES instead of overwriting.
     registry: dict[str, Any] = getattr(gw, "_clio_namespace_proxies", {})
     specs_registry: dict[str, MCPServerSpec] = getattr(gw, "_clio_namespace_specs", {})
+    degraded: dict[str, dict[str, Any]] = getattr(gw, "_clio_degraded_capabilities", {})
+
+    reason = str((relay_status or {}).get("reason") or "")
+    relay_details = (relay_status or {}).get("details")
+    if remote_mcp_federation is None and jarvis_jobs is None and not reason:
+        reason = "relay_tools_not_configured"
+    if reason:
+        definitions = {
+            "relay_tools_not_configured": {
+                "category": "relay_configuration",
+                "description": "Relay-backed remote MCP and JARVIS tools are not configured.",
+                "recovery_actions": ["configure_relay"],
+            },
+            "relay_catalog_discovery_failed": {
+                "category": "relay_connectivity",
+                "description": "Relay catalog discovery failed during agent construction.",
+                "recovery_actions": ["check_relay_service", "retry_agent_construction"],
+            },
+        }
+        definition = definitions.get(
+            reason,
+            {
+                "category": "relay_configuration",
+                "description": "Relay-backed tools are unavailable.",
+                "recovery_actions": ["configure_relay"],
+            },
+        )
+        degraded["relay"] = {
+            "reason": reason,
+            **definition,
+            **({"details": dict(relay_details)} if isinstance(relay_details, Mapping) else {}),
+        }
+        logger.warning("relay tool surface degraded reason=%s", reason)
+    else:
+        degraded.pop("relay", None)
 
     if remote_mcp_federation is not None:
         from clio_agent.tools.remote_mcp import (  # noqa: PLC0415
@@ -302,6 +341,7 @@ def build_gateway(
             logger.warning("failed to mount declared MCP %r: %s", name, exc)
     gw._clio_namespace_proxies = registry  # type: ignore[attr-defined]
     gw._clio_namespace_specs = specs_registry  # type: ignore[attr-defined]
+    gw._clio_degraded_capabilities = degraded  # type: ignore[attr-defined]
     return gw
 
 

@@ -124,6 +124,7 @@ class RelayEventPump:
         self._client_factory = client_factory
         self._lock = threading.Lock()
         self._threads: dict[str, threading.Thread] = {}
+        self._cursors: dict[str, int] = {}
 
     def start(
         self,
@@ -166,10 +167,15 @@ class RelayEventPump:
         key: Any,
     ) -> None:
         from clio_agent.gact.agents.invoker import InvokerError  # noqa: PLC0415
-        from clio_agent.tools.relay_transport import RelayTaskIdentity  # noqa: PLC0415
+        from clio_agent.tools.relay_transport import (  # noqa: PLC0415
+            RELAY_EVENT_NEXT_CURSOR_FIELD,
+            RelayTaskIdentity,
+        )
 
+        with self._lock:
+            cursor = self._cursors.get(handle.task_id, 1)
         async with self._client_factory(handle.parent_session_id) as client:
-            async for raw in client.stream_events(RelayTaskIdentity.from_key(key), cursor=1):
+            async for raw in client.stream_events(RelayTaskIdentity.from_key(key), cursor=cursor):
                 if not isinstance(raw, Mapping):
                     self._record_drop(
                         handle,
@@ -178,6 +184,29 @@ class RelayEventPump:
                         "relay event-stream item is not a mapping",
                     )
                     continue
+                next_cursor = raw.get(RELAY_EVENT_NEXT_CURSOR_FIELD)
+                if next_cursor is not None:
+                    if (
+                        isinstance(next_cursor, bool)
+                        or not isinstance(next_cursor, int)
+                        or next_cursor < 1
+                    ):
+                        self._record_drop(
+                            handle,
+                            "relay_timeline_malformed",
+                            raw,
+                            "relay next cursor must be a positive int",
+                        )
+                        continue
+                    with self._lock:
+                        self._cursors[handle.task_id] = max(
+                            self._cursors.get(handle.task_id, 1), next_cursor
+                        )
+                    raw = {
+                        key: value
+                        for key, value in raw.items()
+                        if key != RELAY_EVENT_NEXT_CURSOR_FIELD
+                    }
                 try:
                     event = relay_task_event(handle, raw)
                 except InvokerError as exc:
