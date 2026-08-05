@@ -139,6 +139,25 @@ def rebuild_registry_at_boot(app: "FastAPI") -> ArtifactRegistry:
     return registry
 
 
+def _raise_stall(arc: object, exc: Exception) -> "ArtifactRegistryBootStalled":
+    """Convert a hung-native-RPC liveness loss into the typed, actionable stall."""
+    store_path = _arc_store_path(arc)
+    logger.error(
+        "artifact registry boot fold STALLED reason=arc_boot_fold_stalled store=%s "
+        "scope=%s cause=%r",
+        store_path,
+        _ARC_FOLD_SCOPE,
+        exc,
+    )
+    raise ArtifactRegistryBootStalled(
+        f"artifact registry boot fold stalled reading ARC scope {_ARC_FOLD_SCOPE!r} "
+        f"from store {store_path}: a native clio-core RPC hung and the liveness "
+        "ladder could not recover it. Rotate the ARC store aside (rename it) or run "
+        "`clio doctor`, then restart.",
+        store_path=store_path,
+    ) from exc
+
+
 def _fold_from_arc(app: "FastAPI", registry: ArtifactRegistry) -> _SourceFold:
     """Fold artifact events from ARC's persisted ``_events`` log.
 
@@ -155,38 +174,70 @@ def _fold_from_arc(app: "FastAPI", registry: ArtifactRegistry) -> _SourceFold:
     if reader is None:
         return _SourceFold(reachable=False, folded_any=False)
     folded_any = False
+
+    def _fold_content(content: object) -> None:
+        nonlocal folded_any
+        if not isinstance(content, dict):
+            return
+        event_type = str(content.get("event_type") or "")
+        if event_type not in _FOLD_EVENT_TYPES:
+            return
+        payload = content.get("payload")
+        if isinstance(payload, dict):
+            registry.fold_event_by_type(event_type, payload)
+            folded_any = True
+
+    # Per-session granularity when the observer exposes it (the real ARC live
+    # plane): ONE session whose segments fail to read (observed live: a soured
+    # CTE GetBlob after long daemon churn) skips with a typed reason instead of
+    # abandoning the whole source — a partial fold beats an empty registry.
+    session_ids_fn = getattr(observer, "_event_session_ids", None)
+    per_session = getattr(observer, "iter_session_event_segments", None)
+    if callable(session_ids_fn) and callable(per_session):
+        try:
+            session_ids = list(session_ids_fn())
+        except ClioCoreRuntimeLostError as exc:
+            raise _raise_stall(arc, exc) from exc
+        except Exception as exc:  # noqa: BLE001 — enumeration itself unreadable
+            logger.warning(
+                "artifact boot fold ARC source unreadable reason=arc_iter_failed "
+                "folded_any=%s cause=%r",
+                folded_any,
+                exc,
+            )
+            return _SourceFold(reachable=False, folded_any=folded_any)
+        skipped = 0
+        for session_id in session_ids:
+            try:
+                for segment in per_session(session_id):
+                    _fold_content(getattr(segment, "content", None))
+            except ClioCoreRuntimeLostError as exc:
+                raise _raise_stall(arc, exc) from exc
+            except Exception as exc:  # noqa: BLE001 — skip ONE session, keep folding
+                skipped += 1
+                logger.warning(
+                    "artifact boot fold skipped a session reason=segment_unreadable "
+                    "session=%s cause=%r",
+                    session_id,
+                    exc,
+                )
+                continue
+        if skipped:
+            logger.warning(
+                "artifact boot fold completed with skips reason=segment_unreadable "
+                "skipped_sessions=%d folded_any=%s",
+                skipped,
+                folded_any,
+            )
+        return _SourceFold(reachable=True, folded_any=folded_any)
+
     try:
         for content in reader():
-            if not isinstance(content, dict):
-                continue
-            event_type = str(content.get("event_type") or "")
-            if event_type not in _FOLD_EVENT_TYPES:
-                continue
-            payload = content.get("payload")
-            if isinstance(payload, dict):
-                registry.fold_event_by_type(event_type, payload)
-                folded_any = True
+            _fold_content(content)
     except ClioCoreRuntimeLostError as exc:
-        # #971 defect 1b: an EXHAUSTED per-RPC liveness ladder (a hung native GetBlob) is
-        # NOT a "configured-but-unreadable" degrade — it is a wedged store. Do NOT silently
-        # boot an empty registry: re-raise a typed, actionable stall naming the store to
-        # rotate so agent construction aborts LOUD (the boot-time placement converts a
-        # mid-turn whole-server freeze into a diagnosable boot failure).
-        store_path = _arc_store_path(arc)
-        logger.error(
-            "artifact registry boot fold STALLED reason=arc_boot_fold_stalled store=%s "
-            "scope=%s cause=%r",
-            store_path,
-            _ARC_FOLD_SCOPE,
-            exc,
-        )
-        raise ArtifactRegistryBootStalled(
-            f"artifact registry boot fold stalled reading ARC scope {_ARC_FOLD_SCOPE!r} "
-            f"from store {store_path}: a native clio-core RPC hung and the liveness "
-            "ladder could not recover it. Rotate the ARC store aside (rename it) or run "
-            "`clio doctor`, then restart.",
-            store_path=store_path,
-        ) from exc
+        # #971 defect 1b: an EXHAUSTED per-RPC liveness ladder (a hung native GetBlob)
+        # is a wedged store, never a silent empty boot — typed + actionable.
+        raise _raise_stall(arc, exc) from exc
     except Exception as exc:  # noqa: BLE001 — a configured-but-unreadable source is unreachable
         logger.warning(
             "artifact boot fold ARC source unreadable reason=arc_iter_failed folded_any=%s "
