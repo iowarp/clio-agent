@@ -176,7 +176,12 @@ def _agent_definition_uses_blueprint_runtime(agent_def: "AgentDef") -> bool:
     # An Agent Blueprint expert ALWAYS runs on the blueprint runtime: the legacy
     # native-expert runtime it could route to (the deleted Tier-1 planner) is gone
     # (#948 S4b), so there is no configuration under which it routes elsewhere.
-    return _agent_definition_is_agent_blueprint(agent_def)
+    # The in-code builtin react main (catalog._builtin_main_agent) shares that
+    # runtime: a bare session executes it through the same module builder.
+    metadata = agent_def.metadata if isinstance(agent_def.metadata, Mapping) else {}
+    return _agent_definition_is_agent_blueprint(agent_def) or (
+        metadata.get("definition_kind") == "builtin_main"
+    )
 
 
 def _runtime_workspace_catalog_cwd(

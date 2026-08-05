@@ -332,20 +332,25 @@ class _ForwardSpyAgent:
         raise AssertionError("legacy planner forward must not run (#948 S4b)")
 
 
-def test_no_resolvable_agent_fails_typed_and_never_runs_forward(tmp_path: Path) -> None:
-    """#948 S4b: a default/main session with NO resolvable Agent Blueprint must fail
-    with a typed ``no_resolvable_agent`` error and must NEVER fall through to the
-    deleted legacy planner ``forward``.
+def test_bare_session_runs_builtin_main_and_fails_typed_on_inexecutable_host(
+    tmp_path: Path,
+) -> None:
+    """A BARE session resolves the in-code builtin react ``main`` — never nothing.
 
-    The autouse ``_isolate_config`` fixture drops the legacy-native-experts flag and
-    disables the default-registry bootstrap, and this session has no workspace
-    blueprint — so nothing resolves, which is exactly the else-branch condition
-    turn_forward now converts into a typed failure.
+    Owner ruling (2026-08-05) + RULE 2: a session that activated no blueprint
+    must never inherit a discoverable one, but it must still WORK — it executes
+    the shipped builtin main (``catalog._builtin_main_agent``) on the react
+    runtime. This host fake carries no tool executor, so the runtime genuinely
+    cannot execute the builtin main's declared native tool surface: the turn
+    must fail TYPED at module build (``not_implemented`` /
+    ``custom_agent_tool_executor_unavailable``) — a structured error turn, never
+    an EMPTY assistant message, and NEVER the deleted legacy planner
+    ``forward`` (spy count stays 0).
 
-    Sabotage check: restore the deleted else branch (dispatch to
-    ``app.state.agent.forward(...)`` instead of raising ``_NoResolvableAgent``) and
-    this goes red on BOTH the missing typed error and the non-zero spy ``forward``
-    count.
+    Sabotage checks: restore the pre-fix else branch (raise
+    ``_NoResolvableAgent`` for bare sessions) and the error flips back to
+    ``no_resolvable_agent``; restore the deleted legacy dispatch
+    (``app.state.agent.forward(...)``) and the spy count goes non-zero.
     """
 
     spy = _ForwardSpyAgent()
@@ -354,6 +359,41 @@ def test_no_resolvable_agent_fails_typed_and_never_runs_forward(tmp_path: Path) 
         from .conftest import complete_turn
 
         sid = client.post("/v1/sessions", json={"title": "no-blueprint"}).json()["id"]
+        assistant = complete_turn(client, sid, "do something")
+
+    error_info = assistant.get("error_info") or {}
+    assert error_info.get("error") == "not_implemented"
+    details = error_info.get("details") or {}
+    # The BUILTIN main resolved (never nothing, never a discoverable blueprint);
+    # what failed is this host's ability to execute its native tool surface.
+    assert details.get("agent_id") == "main"
+    assert details.get("reason") == "custom_agent_tool_executor_unavailable"
+    assert details.get("unsupported_tools"), "builtin main must declare its native tool surface"
+    # The deleted legacy planner dispatch must never have been reached.
+    assert spy.forward_calls == 0
+
+
+def test_activated_blueprint_resolving_nothing_fails_no_resolvable_agent(
+    tmp_path: Path,
+) -> None:
+    """An EXPLICITLY activated blueprint that resolves nothing stays TYPED.
+
+    The builtin main is for BARE sessions only: a session whose metadata names
+    an activated blueprint (here one missing from disk) must not be silently
+    downgraded to the builtin main — that would mask a broken activation. It
+    keeps the ``no_resolvable_agent`` envelope, and the deleted legacy planner
+    ``forward`` is still never reached.
+    """
+
+    spy = _ForwardSpyAgent()
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=spy)
+    with TestClient(app) as client:
+        from .conftest import complete_turn
+
+        sid = client.post("/v1/sessions", json={"title": "ghost-activation"}).json()["id"]
+        app.state.sessions.update(
+            sid, metadata_patch={"active_agent_blueprint_id": "ghost-blueprint"}
+        )
         assistant = complete_turn(client, sid, "do something")
 
     error_info = assistant.get("error_info") or {}

@@ -46,6 +46,36 @@ def _builtin_agents() -> list[AgentDef]:
     return builtin_rows
 
 
+def _builtin_main_agent() -> AgentDef:
+    """The in-code react ``main`` a session with NO activated Agent Blueprint runs.
+
+    Owner ruling (2026-08-05): a session never resolves a DISCOVERABLE Agent
+    Blueprint it did not activate. A bare session must still work (RULE 2), so
+    it executes THIS shipped definition — code, not disk discovery. It runs on
+    the same react runtime as blueprint mains (``definition_kind: builtin_main``
+    routes it through ``_build_blueprint_dspy_module``), and its tool surface is
+    the universal in-process builtins (``clio_agent.tools.catalog.TOOL_CATALOG``,
+    the fs/shell tools every host tool fleet mounts). Loose expert-pack experts
+    declaring ``parent_id: main`` hang off it in the builtin/expert-pack
+    hierarchy, so they remain reachable as declared spawn children.
+    """
+
+    from clio_agent.tools.catalog import TOOL_CATALOG  # noqa: PLC0415
+
+    return AgentDef(
+        id="main",
+        source="builtin",
+        title="CLIO Main Agent",
+        description=("Built-in react main executed by sessions with no activated Agent Blueprint."),
+        tier=1,
+        specialization="orchestrator",
+        module={"kind": "react"},
+        prompt_id="clio.chat",
+        tools=sorted(TOOL_CATALOG),
+        metadata={"definition_kind": "builtin_main"},
+    )
+
+
 def _load_command_files_from_disk(
     *,
     home: Path | None = None,

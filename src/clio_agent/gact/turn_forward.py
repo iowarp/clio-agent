@@ -38,13 +38,17 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.agents.composition import _apply_prompt_registry_to_agent
 from clio_agent.gact.agents.resolution import (
     _agent_definition_uses_blueprint_runtime,
     _resolve_runtime_dynamic_agent,
     _runtime_active_agent_blueprint_agent_ids,
+    _runtime_active_agent_blueprint_id,
+    _runtime_active_agent_blueprint_path,
     _runtime_active_agent_blueprint_root_id,
     _runtime_active_agent_blueprint_rows,
 )
+from clio_agent.gact.catalog import _builtin_main_agent
 from clio_agent.gact.evidence import _dynamic_agent_runtime_provenance
 from clio_agent.gact.messaging import _prediction_summary
 from clio_agent.gact.providers.auth import _refresh_argonne_lm_token
@@ -151,21 +155,28 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
         # no fall-through to the legacy planner (both observed on the live gate).
         rows = _runtime_active_agent_blueprint_rows(state.app, session_id=state.sid)
         root_errors = next(
-            (
-                list(row.validation_errors)
-                for row in rows
-                if row.id == active_blueprint_root_id
-            ),
+            (list(row.validation_errors) for row in rows if row.id == active_blueprint_root_id),
             [],
         )
-        blueprint_id = str(
-            rows[0].metadata.get("agent_blueprint_id") or "" if rows else ""
-        )
+        blueprint_id = str(rows[0].metadata.get("agent_blueprint_id") or "" if rows else "")
         raise _BlueprintRootDisabled(
             active_blueprint_root_id,
             blueprint_id=blueprint_id,
             validation_errors=root_errors,
         )
+    # BARE session (owner ruling 2026-08-05 + RULE 2): the session activated NO
+    # blueprint (no id, no path — not merely "nothing resolved"), so it executes
+    # the shipped builtin react main from code. An EXPLICITLY activated blueprint
+    # that resolves nothing stays on the typed _NoResolvableAgent path below —
+    # the builtin main never silently substitutes for a broken activation.
+    run_builtin_main = (
+        not active_blueprint_root_id
+        and state.active_agent_id in _EXECUTABLE_SESSION_AGENT_IDS
+        and not _runtime_active_agent_blueprint_id(state.app, state.sid)
+        and _runtime_active_agent_blueprint_path(state.app, state.sid) is None
+    )
+    if run_builtin_main:
+        state.active_agent_id = "main"
     routing_mode = getattr(state.sess, "routing_mode", "auto") or "auto"
     state.invocation_agent_id = state.active_agent_id or "orchestrator"
     _emit_semantic_event(
@@ -191,7 +202,8 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
     _refresh_argonne_lm_token(state.app.state.agent)
 
     if (
-        state.active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS
+        run_builtin_main
+        or state.active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS
         or state.active_agent_id in active_blueprint_agent_ids
     ):
         prompt_registry_factory = getattr(state.app.state, "prompt_registry_for_request", None)
@@ -203,12 +215,22 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
                 else None
             ),
         )
-        dynamic_agent = _resolve_runtime_dynamic_agent(
-            state.app,
-            state.active_agent_id,
-            session_id=state.sid,
-            prompt_registry=prompt_registry,
-        )
+        if run_builtin_main:
+            # The builtin main is code, not a discoverable definition: it is
+            # materialized here (prompt registry applied like every resolved
+            # agent), never via blueprint/pack discovery. A host that cannot
+            # execute it fails TYPED at module build (_UnsupportedSessionAgent
+            # from _dynamic_agent_tools) — never an empty assistant message.
+            dynamic_agent = _apply_prompt_registry_to_agent(
+                state.app, _builtin_main_agent(), prompt_registry=prompt_registry
+            )
+        else:
+            dynamic_agent = _resolve_runtime_dynamic_agent(
+                state.app,
+                state.active_agent_id,
+                session_id=state.sid,
+                prompt_registry=prompt_registry,
+            )
         if dynamic_agent is None:
             raise _UnsupportedSessionAgent(state.active_agent_id)
         state.prompt_resolution = dict(dynamic_agent.metadata.get("prompt_resolution") or {})
@@ -357,13 +379,15 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
                 payload=_prediction_summary(state.pred),
             )
     else:
-        # #948 S4b: the agent id is in {"", "main", "default"} but NO Agent
-        # Blueprint resolved for it — neither the active blueprint's declared
-        # root nor the default registry blueprint (normal pack-less sessions
-        # resolve the latter via _runtime_active_agent_blueprint_rows). The
-        # legacy Tier-1 planner (ClioAgent.forward) that used to run here is
-        # DELETED, so there is nothing to execute. Fail TYPED — never fall
-        # through to a legacy pathway.
+        # #948 S4b: the agent id is in {"", "main", "default"} but the session
+        # EXPLICITLY activated a blueprint (id/path set) that resolves no such
+        # executable agent — e.g. an activation naming a blueprint that is
+        # missing from disk or fully disabled. A bare session never reaches
+        # here (it runs the builtin react main above); an explicit activation
+        # must not be silently downgraded to the builtin main. The legacy
+        # Tier-1 planner (ClioAgent.forward) that used to run here is DELETED,
+        # so there is nothing to execute. Fail TYPED — never fall through to a
+        # legacy pathway.
         raise _NoResolvableAgent(state.active_agent_id or session_agent_id)
     _emit_semantic_event(
         state.app,

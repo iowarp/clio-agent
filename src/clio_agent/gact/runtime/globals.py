@@ -846,11 +846,11 @@ class _UnsupportedSessionAgent(RuntimeError):
 class _NoResolvableAgent(RuntimeError):
     """Raised when a default/main session resolves NO executable agent.
 
-    #948 S4b: the legacy Tier-1 ``ClioAgent.forward`` planner that used to run for
-    a default/``main`` session with no Agent Blueprint is DELETED. When neither the
-    active blueprint's declared root nor the default-registry blueprint resolves,
-    the turn MUST fail TYPED here — never fall through to a legacy planner pathway.
-    The turn handler maps this to a ``no_resolvable_agent`` error envelope.
+    #948 S4b: the legacy planner is DELETED, and a BARE session (nothing activated)
+    runs the in-code builtin react main (``catalog._builtin_main_agent``) — so this
+    marks the remaining hole: an EXPLICITLY activated blueprint (session id/path
+    set) that resolves no executable agent. Fail TYPED — never a legacy pathway,
+    never a silent builtin-main substitute; maps to ``no_resolvable_agent``.
     """
 
     def __init__(self, agent_id: str = "") -> None:
