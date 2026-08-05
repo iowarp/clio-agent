@@ -404,13 +404,20 @@ class TurnTranscript:
         then replaces the prior result the same way, carrying cumulative
         ``metadata.attempts`` + ``metadata.total_wait_ms`` (the attempts'
         summed durations) while the VISIBLE content is the newest result
-        VERBATIM — never a synthesized merge. Any other part between waits
-        (narration text, a different tool) breaks the chain and the pair
-        appends normally: collapsing across it would reorder reality.
+        VERBATIM — never a synthesized merge.
+
+        Narration TEXT parts between re-polls never break the chain (owner
+        amendment, round-4 live evidence: real turns interleave narration
+        between EVERY re-poll, so strict adjacency made the collapse inert).
+        The narration parts stay exactly where they are — order preserved,
+        never absorbed — while the duplicate pair is replaced in place at its
+        ORIGINAL position. The chain DOES break on different args, any OTHER
+        tool's call/result pair, or an ``expert_handoff`` between them:
+        collapsing across those would reorder reality.
 
         The caller (the tool observer) scopes this to the two collector tools
-        BY NAME; this method applies only the structural adjacency rule above
-        — no prose inspection, no generic tool collapsing.
+        BY NAME; this method applies only the structural rule above — no
+        prose inspection, no generic tool collapsing.
         """
 
         with self._lock:
@@ -419,6 +426,12 @@ class TurnTranscript:
                     "upsert_repeated_collector_call", part_id=part.id, part_type=part.type
                 )
                 return None
+            # The collapse is an atomic-part runtime boundary exactly like
+            # append_part: narration streamed since the last boundary closes
+            # here (and stays where it is) — the re-poll never absorbs it and
+            # later deltas never continue the pre-poll narration part.
+            self._close_open_text_locked()
+            self._current_stream_part_id = None
             if part.type == "tool_call":
                 index = self._repeated_collector_call_index_locked(part)
             elif part.type == "tool_result":
@@ -468,12 +481,14 @@ class TurnTranscript:
     def _repeated_collector_call_index_locked(self, part: Part) -> Optional[int]:
         """Ledger index of the prior same-args collector call ``part`` replaces.
 
-        Structural adjacency only: scanning back from the tail, every part
-        until the LAST ``tool_call`` must be that call's own ``tool_result``;
-        the call itself must carry the same tool name and canonically equal
-        args. Anything else — narration text (open streamed parts live in the
-        ledger, so they break the chain too), a different tool, different args
-        — yields ``None`` and the caller appends normally.
+        Walks back from the tail to the LAST ``tool_call``, skipping narration
+        ``text`` parts (they never break the chain — the pair collapses at its
+        original position and the narration stays where it is). The call must
+        carry the same tool name and canonically equal args, and every part
+        after it must be that call's own ``tool_result`` or narration text.
+        Anything else — different args, another tool's call/result, an
+        ``expert_handoff``, any other part type — yields ``None`` and the
+        caller appends normally.
         """
 
         new_args = _canonical_tool_args(part.input)
@@ -487,34 +502,47 @@ class TurnTranscript:
                 if _canonical_tool_args(candidate.input) != new_args:
                     return None
                 for trailing in self._parts[index + 1 :]:
-                    if trailing.type != "tool_result" or trailing.call_id != candidate.call_id:
-                        return None
+                    if trailing.type == "text":
+                        continue
+                    if trailing.type == "tool_result" and trailing.call_id == candidate.call_id:
+                        continue
+                    return None
                 return index
-            if candidate.type != "tool_result":
+            if candidate.type not in ("tool_result", "text"):
                 return None
         return None
 
     def _repeated_collector_result_index_locked(self, part: Part) -> Optional[int]:
         """Ledger index of the prior collector result ``part`` replaces.
 
-        Matches exactly the shape the sibling call-upsert leaves behind:
-        ``[..., tool_call(call_id == this result's), tool_result(prior
-        attempt, different call_id)]``. Anything else yields ``None``.
+        Matches the shape the sibling call-upsert leaves behind — the collapsed
+        ``tool_call`` (carrying THIS result's call_id) immediately followed by
+        the PRIOR attempt's ``tool_result`` — reached by walking back over any
+        narration text that streamed after the pair. Anything else yields
+        ``None`` (append normally: an uncollapsed call sits at the tail with
+        nothing after it, so its result never matches here).
         """
 
-        if len(self._parts) < 2 or not str(part.call_id or ""):
+        if not str(part.call_id or ""):
             return None
-        prior = self._parts[-1]
-        call = self._parts[-2]
-        if prior.type != "tool_result" or prior.tool_name != part.tool_name:
-            return None
-        if str(prior.call_id or "") == str(part.call_id or ""):
-            return None
-        if call.type != "tool_call" or call.tool_name != part.tool_name:
-            return None
-        if str(call.call_id or "") != str(part.call_id or ""):
-            return None
-        return len(self._parts) - 1
+        for index in range(len(self._parts) - 1, -1, -1):
+            candidate = self._parts[index]
+            if candidate.type == "tool_call":
+                if candidate.tool_name != part.tool_name:
+                    return None
+                if str(candidate.call_id or "") != str(part.call_id or ""):
+                    return None
+                if index + 1 >= len(self._parts):
+                    return None
+                prior = self._parts[index + 1]
+                if prior.type != "tool_result" or prior.tool_name != part.tool_name:
+                    return None
+                if str(prior.call_id or "") == str(part.call_id or ""):
+                    return None
+                return index + 1
+            if candidate.type not in ("tool_result", "text"):
+                return None
+        return None
 
     def append_part_once(self, key: str, part: Part, **kw: Any) -> Optional[Part]:
         """:meth:`append_part` gated on a turn-scoped idempotency key.

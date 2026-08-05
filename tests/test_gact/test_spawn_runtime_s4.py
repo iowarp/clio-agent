@@ -1421,9 +1421,13 @@ def test_different_args_waits_stay_separate_rows() -> None:
     assert [e for e, _ in events].count("message.part.updated") == 0
 
 
-def test_narration_between_waits_breaks_the_collapse_chain() -> None:
-    """Interleaved narration between same-args waits BREAKS the chain — collapsing
-    across it would reorder reality, so the second pair appends normally."""
+def test_narration_between_waits_collapses_and_keeps_narration() -> None:
+    """Real turns interleave narration TEXT between every re-poll (round-4 live
+    evidence, msg_asst_bf61e558ce51: 5 separate wait rows under the strict
+    adjacency rule). Narration never breaks the chain: the same-args re-poll
+    still collapses onto the prior pair at its ORIGINAL position, while the
+    narration parts stay exactly where they are, in order, as separate text
+    parts — never absorbed, never reordered."""
 
     from clio_agent.gact.tool_observer import _append_live_assistant_part
 
@@ -1436,17 +1440,104 @@ def test_narration_between_waits_breaks_the_collapse_chain() -> None:
     _append_live_assistant_part(
         app, "sess_x", _collector_call("call_b", task_ids=["task_1"], timeout_s=30.0)
     )
+    _append_live_assistant_part(
+        app, "sess_x", _collector_result("call_b", "still running", 30000.0)
+    )
+    transcript.append_text_delta("main", "next_thought", "Task_1 is close, polling again...")
+    _append_live_assistant_part(
+        app, "sess_x", _collector_call("call_c", task_ids=["task_1"], timeout_s=30.0)
+    )
+    _append_live_assistant_part(app, "sess_x", _collector_result("call_c", "completed", 30000.0))
+
+    parts = transcript.snapshot()
+    assert [p.type for p in parts] == ["tool_call", "tool_result", "text", "text"]
+    call, result, narration1, narration2 = parts
+    assert call.id == "live_call_a_call"  # the pair keeps its ORIGINAL position/id
+    assert call.call_id == "call_c"  # ...owned by the newest attempt
+    assert call.metadata["attempts"] == 3
+    assert result.id == "live_call_a_result"
+    assert result.metadata["attempts"] == 3
+    assert result.metadata["total_wait_ms"] == 90000.0
+    assert result.content[0].text == "completed"  # newest result VERBATIM
+    assert narration1.text == "Still waiting on task_1..."
+    assert narration2.text == "Task_1 is close, polling again..."
+    kinds = [e for e, _ in events]
+    assert kinds.count("message.part.added") == 4  # one pair + the two narrations
+    assert kinds.count("message.part.updated") == 4  # 2 re-polls x (call + result)
+
+
+def test_interleaved_other_tool_call_breaks_the_collapse_chain() -> None:
+    """A DIFFERENT tool's call/result pair between same-args waits BREAKS the
+    chain — collapsing across another tool's activity would reorder reality."""
+
+    from clio_agent.gact.tool_observer import _append_live_assistant_part
+
+    app, transcript, events = _collector_transcript_app()
+    _append_live_assistant_part(
+        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=30.0)
+    )
+    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
+    _append_live_assistant_part(
+        app, "sess_x", _collector_call("call_x", tool_name="read_file", filepath="x.h5")
+    )
+    _append_live_assistant_part(
+        app, "sess_x", _collector_result("call_x", "bytes", 5.0, tool_name="read_file")
+    )
+    _append_live_assistant_part(
+        app, "sess_x", _collector_call("call_b", task_ids=["task_1"], timeout_s=30.0)
+    )
     _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 30000.0))
 
     parts = transcript.snapshot()
     assert [p.type for p in parts] == [
         "tool_call",
         "tool_result",
-        "text",
+        "tool_call",
+        "tool_result",
         "tool_call",
         "tool_result",
     ]
-    assert parts[2].text == "Still waiting on task_1..."
+    assert "attempts" not in parts[4].metadata
+    assert [e for e, _ in events].count("message.part.updated") == 0
+
+
+def test_interleaved_expert_handoff_breaks_the_collapse_chain() -> None:
+    """A spawn (expert_handoff) between same-args waits BREAKS the chain — the
+    wait after a new delegation is a new activity, never a re-poll of the old."""
+
+    from clio_agent.gact.tool_observer import _append_live_assistant_part
+
+    app, transcript, events = _collector_transcript_app()
+    _append_live_assistant_part(
+        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=30.0)
+    )
+    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
+    _append_live_assistant_part(
+        app,
+        "sess_x",
+        Part(
+            id="p_handoff",
+            type="expert_handoff",
+            agent_id="main",
+            child_agent="data_expert",
+            stage="delegate.started",
+            handle_id="task_9",
+            status="running",
+        ),
+    )
+    _append_live_assistant_part(
+        app, "sess_x", _collector_call("call_b", task_ids=["task_1"], timeout_s=30.0)
+    )
+    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 30000.0))
+
+    parts = transcript.snapshot()
+    assert [p.type for p in parts] == [
+        "tool_call",
+        "tool_result",
+        "expert_handoff",
+        "tool_call",
+        "tool_result",
+    ]
     assert [e for e, _ in events].count("message.part.updated") == 0
 
 
