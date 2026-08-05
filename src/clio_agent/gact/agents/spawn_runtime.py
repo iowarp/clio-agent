@@ -36,6 +36,7 @@ import json
 import logging
 import uuid
 from collections.abc import Mapping
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
@@ -302,9 +303,28 @@ def _return_handoff_part(agent_def: "AgentDef", task: Any, payload: dict[str, An
         host=handle_fields["host"],
         placement=handle_fields["placement"],
         status=task.status,
+        duration_ms=_task_duration_ms(task),
         text=f"{agent_def.id} <- {child_id}",
         metadata={**_handoff_part_metadata(return_row), "stream_source": "live"},
     )
+
+
+def _task_duration_ms(task: Any) -> float:
+    """The child's wall-clock duration from its task record timestamps.
+
+    ``created_at`` is stamped at spawn and ``updated_at`` at the terminal
+    transition, so their difference is the run's real duration. Unparseable
+    timestamps leave the Part unstamped (0.0) — the return must never fail on
+    observability decoration.
+    """
+
+    try:
+        created = datetime.fromisoformat(str(task.created_at))
+        updated = datetime.fromisoformat(str(task.updated_at))
+    except (TypeError, ValueError):
+        return 0.0
+    delta_ms = (updated - created).total_seconds() * 1000
+    return delta_ms if delta_ms > 0 else 0.0
 
 
 def _emit_delegation_terminal(app: Any, session_id: str, agent_def: "AgentDef", task: Any) -> None:

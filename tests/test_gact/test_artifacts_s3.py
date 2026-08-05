@@ -995,7 +995,9 @@ def test_plan_mode_deny_carries_mode_message_and_target(tmp_path, monkeypatch):
     assert out.reason == RejectionReason.POLICY_DENIED.value
     detail = str(getattr(out, "detail", "") or getattr(out, "message", "") or out.to_wire())
     # The mode-aware message (names Plan Mode + the writable plan file) reached the model.
-    assert "plan" in detail.lower() and "read-only" in detail.lower() or "plan file" in detail.lower()
+    assert (
+        "plan" in detail.lower() and "read-only" in detail.lower() or "plan file" in detail.lower()
+    )
     # The judged target is named, so a wrong `name` is self-evident to the model.
     assert str((tmp_path / "my-plan.md").resolve()) in detail
 
@@ -1015,3 +1017,54 @@ def test_create_artifact_tool_doc_states_name_is_target_path():
     doc = str(getattr(tool, "desc", "") or getattr(tool, "__doc__", "") or "")
     lowered = doc.lower()
     assert "target path" in lowered and "content" in lowered
+
+
+def test_absolute_path_name_registers_under_basename(tmp_path):
+    """A create_artifact name that is a full path stays the WRITE TARGET but the
+    record identity is the basename — the same identity every tool/harness seam
+    mints (artifact_name_for_path). Live repro: the NDP report registered TWICE,
+    once as 'MTA1_LA_ground_motion_report.md' (tool seam) and once under its
+    absolute path (create_artifact), splitting one deliverable's version chain."""
+
+    app, sess, _ = _make_app(tmp_path)
+    target = tmp_path / "sub" / "MTA1_report.md"
+
+    out = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name=str(target), content="# body\n", kind="report"),
+        workspace_id="ws1",
+    )
+    assert out.accepted and out.created
+    assert out.name == "MTA1_report.md"
+    assert target.is_file()  # the full path is still where the file lands
+    assert get_registry(app).get("ws1", "MTA1_report.md") is not None
+    assert get_registry(app).get("ws1", str(target)) is None
+
+
+def test_path_seam_folds_into_the_same_record(tmp_path):
+    """After the identity normalization, a later basename-keyed mint of the same
+    bytes folds into the create_artifact record (already_registered, created=False)
+    instead of minting a second record."""
+
+    app, sess, _ = _make_app(tmp_path)
+    target = tmp_path / "MTA1_report.md"
+
+    first = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name=str(target), content="# body\n", kind="report"),
+        workspace_id="ws1",
+    )
+    assert first.accepted and first.created
+
+    second = promote_proposal(
+        app,
+        sess.id,
+        Proposal(path=str(target), kind="report"),
+        workspace_id="ws1",
+    )
+    assert second.accepted
+    assert second.created is False
+    assert second.reason == "already_registered"
+    assert second.name == "MTA1_report.md"

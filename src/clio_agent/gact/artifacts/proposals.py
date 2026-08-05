@@ -370,7 +370,15 @@ def promote_proposal(
             )
             return reject
         assert target is not None and evidence is not None  # narrowed by reject is None
-        name = proposal.name or artifact_name_for_path(target)
+        # proposal.name is the WRITE TARGET (may be a full path); the record
+        # identity is always the basename so every seam (tool-declared,
+        # harness-write, model-designated) folds one deliverable into ONE
+        # version chain instead of splitting on the name's spelling.
+        name = (
+            artifact_name_for_path(proposal.name)
+            if proposal.name
+            else artifact_name_for_path(target)
+        )
         path = target
     elif proposal.path:
         # Ground BOTH channels against the workspace root (finding [4/5/9]): a
@@ -397,7 +405,9 @@ def promote_proposal(
                 source=source,
             )
             return outcome
-        name = proposal.name or artifact_name_for_path(path)
+        name = (
+            artifact_name_for_path(proposal.name) if proposal.name else artifact_name_for_path(path)
+        )
         if not path.is_file():
             outcome = _rejected(
                 name, RejectionReason.PATH_MISSING, f"{proposal.path!r} does not exist"

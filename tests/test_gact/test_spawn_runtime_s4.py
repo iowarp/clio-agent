@@ -1173,3 +1173,43 @@ def test_parallel_spawn_pins_session_placement_once_for_batch(monkeypatch) -> No
     assert session_reads == 1
     assert len(relay.specs) == 2
     assert {row["placement"] for row in wire["spawned"]} == {"relay:ares"}
+
+
+def test_return_handoff_part_stamps_child_duration_ms() -> None:
+    """The terminal handoff Part carries the child's real wall-clock duration
+    (task.updated_at - task.created_at). The wire showed duration_ms: 0 on every
+    delegate.completed part (Part.to_wire drops the 0.0 default), leaving the UI
+    with no duration for the Call box."""
+
+    from clio_agent.gact.agents.spawn_runtime import _return_handoff_part
+
+    task = AgentTask(
+        task_id="task_dur",
+        parent_session_id="sess_x",
+        child_session_id="child_1",
+        agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
+        status="completed",
+        created_at="2026-08-05T10:00:00+00:00",
+        updated_at="2026-08-05T10:01:12+00:00",
+    )
+    part = _return_handoff_part(_Def("main"), task, {"output": "done"})
+    assert part.duration_ms == 72_000.0
+
+
+def test_return_handoff_part_survives_unparseable_timestamps() -> None:
+    """A malformed/missing timestamp never breaks the return Part — duration
+    stays unstamped (0.0) rather than raising mid-delegation."""
+
+    from clio_agent.gact.agents.spawn_runtime import _return_handoff_part
+
+    task = AgentTask(
+        task_id="task_nodur",
+        parent_session_id="sess_x",
+        child_session_id="child_1",
+        agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
+        status="completed",
+        created_at="not-a-timestamp",
+        updated_at="",
+    )
+    part = _return_handoff_part(_Def("main"), task, {"output": "done"})
+    assert part.duration_ms == 0.0
