@@ -183,25 +183,6 @@
     {
       "payload": {
         "message_id": "<msg#4>",
-        "part": {
-          "agent_id": "main",
-          "id": "<part#8>",
-          "metadata": {
-            "route_reason": "planner selected code expert",
-            "route_source": "dspy"
-          },
-          "rationale": "matched coding keywords",
-          "selected_agent": "code_expert",
-          "type": "routing_decision"
-        },
-        "stream_source": "batch",
-        "turn_id": "<msg#1>"
-      },
-      "type": "message.part.added"
-    },
-    {
-      "payload": {
-        "message_id": "<msg#4>",
         "metadata": {
           "agent_runtime": {
             "agent_blueprint": {
@@ -302,18 +283,6 @@
       "sequence": 3,
       "text": "The answer is 42.",
       "type": "text"
-    },
-    {
-      "agent_id": "main",
-      "id": "<part#8>",
-      "metadata": {
-        "route_reason": "planner selected code expert",
-        "route_source": "dspy"
-      },
-      "rationale": "matched coding keywords",
-      "selected_agent": "code_expert",
-      "sequence": 4,
-      "type": "routing_decision"
     }
   ]
 }

@@ -846,8 +846,17 @@ Check CSV schemas and quality.
 
     assert calls == [("csv_quality", "inspect data.csv", sid)]
     assert assistant["stop_reason"] == "end_turn"
-    assert assistant["parts"][0]["selected_agent"] == "csv_quality"
-    assert assistant["parts"][1]["text"] == "CSV_QUALITY_OK"
+    # Text answer only — the routing decision rides the semantic highway as a
+    # routing.decision event (a0e1d9a9), never a message part.
+    assert [part["type"] for part in assistant["parts"]] == ["text"]
+    assert assistant["parts"][0]["text"] == "CSV_QUALITY_OK"
+    routing_events = [
+        ev
+        for ev in app.state.bus._history.get(sid, [])
+        if ev.type == "semantic.event" and ev.payload.get("event_type") == "routing.decision"
+    ]
+    assert len(routing_events) == 1
+    assert routing_events[0].payload["payload"]["selected_agent"] == "csv_quality"
     assert assistant["metadata"]["stream_fallback"]["reason"] == "dynamic_prompt_stream_unavailable"
 
 

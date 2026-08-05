@@ -16,6 +16,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as ctx
@@ -1268,3 +1270,49 @@ def test_terminal_handoff_updates_started_part_in_place() -> None:
     kinds = [e for e, _ in events]
     assert kinds.count("message.part.added") == 1
     assert kinds.count("message.part.updated") == 1
+
+
+def test_collector_tools_notify_the_live_observer() -> None:
+    """wait/check are REAL tool calls the model makes; they must reach the
+    observer (started + completed with the verbatim result) instead of being
+    invisible mechanism the narration references (owner, 2026-08-05)."""
+
+    from clio_agent.gact.agents.spawn_runtime import _observed_collector
+    from clio_agent.tools import execution as _execution
+
+    calls: list[tuple[str, dict, str, str | None, object]] = []
+
+    def _capture(name, args, phase, error=None, result=None):
+        calls.append((name, args, phase, error, result))
+
+    original = _execution.notify_global_tool_observer
+    _execution.notify_global_tool_observer = _capture
+    try:
+        def fake_wait(task_ids: list[str], timeout_s: float) -> str:
+            return '{"results": []}'
+
+        wrapped = _observed_collector(fake_wait, "wait_agent_tasks")
+        out = wrapped(["task_1"], 30.0)
+        assert out == '{"results": []}'
+        assert [(c[0], c[2]) for c in calls] == [
+            ("wait_agent_tasks", "started"),
+            ("wait_agent_tasks", "completed"),
+        ]
+        assert calls[0][1] == {"task_ids": ["task_1"], "timeout_s": 30.0}
+        assert calls[1][4] == '{"results": []}'
+
+        calls.clear()
+
+        def boom(task_ids: list[str] | None = None) -> str:
+            raise RuntimeError("registry gone")
+
+        wrapped_boom = _observed_collector(boom, "check_agent_tasks")
+        with pytest.raises(RuntimeError):
+            wrapped_boom()
+        assert [(c[0], c[2], c[3]) for c in calls] == [
+            ("check_agent_tasks", "started", None),
+            ("check_agent_tasks", "completed", "registry gone"),
+        ]
+        assert calls[0][1] == {"task_ids": None}
+    finally:
+        _execution.notify_global_tool_observer = original

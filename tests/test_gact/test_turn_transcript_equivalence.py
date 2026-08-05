@@ -7,6 +7,9 @@ Two layers of proof that PR1 changes nothing on the wire:
    TestClient; the full transcript-vocabulary event stream plus the persisted
    assistant parts are normalized and compared against goldens captured on
    ``develop`` BEFORE this change (``goldens/turn_transcript_pr1/*.json``).
+   The goldens were recaptured after a0e1d9a9 (clean delegation wire): routing
+   decisions are ``routing.decision`` semantic events now, so the streams carry
+   no ``routing_decision`` ``message.part.added`` and persist no routing part.
    To (re)capture the goldens, check out the reference tree and run::
 
        CLIO_TURN_TRANSCRIPT_GOLDEN_REGEN=1 uv run --extra dev pytest \
@@ -381,26 +384,31 @@ def _drive_live_part_producers(app: Any, sid: str) -> None:
     from clio_agent.gact.types import Part
 
     to._ensure_live_assistant_message(app, sid)
+    # The once-key producer shape src still uses: the live tool observer's
+    # handoff-context part (routing decisions became semantic events with
+    # a0e1d9a9, so no routing_decision part rides the wire any more).
     to._append_live_assistant_part_once(
         app,
         sid,
-        "route:data",
+        "handoff:data:csv_expert",
         Part(
-            id="live_route_data",
-            type="routing_decision",
-            agent_id="main",
-            selected_agent="data",
-            rationale="Agent planner selected data for tool fs_read_file.",
-            metadata={"route_source": "live_tool_observer", "stream_source": "live"},
-            execution_path="orchestrator -> data",
+            id="live_handoff_data_csv_expert",
+            type="expert_handoff",
+            agent_id="data",
+            parent_agent="data",
+            child_agent="csv_expert",
+            stage="tool.started",
+            status="running",
+            text="data -> csv_expert",
+            metadata={"stream_source": "live", "route_source": "live_tool_observer"},
         ),
     )
-    # Duplicate banner: must be dropped on both paths.
+    # Duplicate once-key append: must be dropped on both paths.
     to._append_live_assistant_part_once(
         app,
         sid,
-        "route:data",
-        Part(id="live_route_data", type="routing_decision", agent_id="main"),
+        "handoff:data:csv_expert",
+        Part(id="live_handoff_data_csv_expert", type="expert_handoff", agent_id="data"),
     )
     to._append_live_assistant_part(
         app,
@@ -487,7 +495,7 @@ def test_shimmed_producers_emit_identical_stream_as_legacy(tmp_path: Path) -> No
         assert app.state.live_assistant_parts[shimmed_sid] is transcript.live_parts_alias()
         assert app.state.live_assistant_message_ids[shimmed_sid] == transcript.message_id
         assert [p.id for p in transcript.snapshot()] == [
-            "live_route_data",
+            "live_handoff_data_csv_expert",
             "live_call_1_call",
             "live_call_1_result",
             "live_handoff_a",

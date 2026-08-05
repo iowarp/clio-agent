@@ -1,8 +1,9 @@
 """tests for POST /v1/sessions/{sid}/messages.
 
 Drives the app with a FakeClioAgent so no LM is needed. Covers:
-  - happy path: user message stored, assistant reply returned with
-    text + routing_decision parts
+  - happy path: user message stored, assistant reply returned with the text
+    part; the routing decision rides the semantic highway as a
+    ``routing.decision`` event (clean-wire rule, a0e1d9a9), never a part
   - 404 for unknown session id
   - 503 when no agent is wired
   - agent exception -> assistant message carries error_info envelope
@@ -152,29 +153,47 @@ def _create_session(client: TestClient, title: str = "t") -> str:
     return client.post("/v1/sessions", json={"title": title}).json()["id"]
 
 
+def _routing_decision_events(app: Any, sid: str) -> list[Any]:
+    """The turn's ``routing.decision`` semantic events from the bus history.
+
+    Clean-wire rule (a0e1d9a9): routing decisions are OBSERVABILITY — they ride
+    the semantic highway as ``routing.decision`` events, never message parts.
+    """
+
+    return [
+        ev
+        for ev in app.state.bus._history.get(sid, [])
+        if ev.type == "semantic.event" and ev.payload.get("event_type") == "routing.decision"
+    ]
+
+
 def test_post_message_happy_path(client: TestClient, fake_agent: FakeClioAgent) -> None:
     from .conftest import complete_turn
 
     sid = _create_session(client)
     a = complete_turn(client, sid, "refactor this function")
 
-    # Assistant message: routing_decision first, then text answer.
+    # Assistant message: the text answer only — the routing decision is a
+    # routing.decision semantic event, never a message part (a0e1d9a9).
     assert a["role"] == "assistant"
     assert a["session_id"] == sid
     assert a.get("error_info") is None
     types = [p["type"] for p in a["parts"]]
-    assert types == ["routing_decision", "text"]
-    rd = a["parts"][0]
+    assert types == ["text"]
+    routing_events = _routing_decision_events(client.app, sid)
+    assert len(routing_events) == 1
+    rd = routing_events[0].payload["payload"]
     assert rd["selected_agent"] == "code_expert"
     assert rd["rationale"] == "matched coding keywords"
-    assert rd["metadata"]["route_source"] == "dspy"
-    assert rd["metadata"]["route_reason"] == "planner selected code expert"
-    # routing_decision is attributed to the orchestrator (the decider), while the
-    # answer text part carries the responding expert's agent_id so a client can
-    # attribute every part to its source without inference.
-    assert rd["agent_id"] == "main"
-    assert a["parts"][1]["text"] == "hello from fake"
-    assert a["parts"][1]["agent_id"] == "code_expert"
+    assert rd["route_source"] == "dspy"
+    assert rd["route_reason"] == "planner selected code expert"
+    # The routing decision is attributed to the orchestrator (the decider), while
+    # the answer text part carries the responding expert's agent_id so a client
+    # can attribute every part to its source without inference.
+    assert routing_events[0].payload["actor"]["agent_id"] == "main"
+    assert routing_events[0].payload["subject"]["selected_agent"] == "code_expert"
+    assert a["parts"][0]["text"] == "hello from fake"
+    assert a["parts"][0]["agent_id"] == "code_expert"
 
     # User message persisted under the session.
     msgs = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
@@ -639,7 +658,15 @@ def test_post_message_prediction_error_info_sets_error_turn(
     assert assistant["error_info"]["error"] == "routing_error"
     assert "rejected chat" in assistant["error_info"]["message"]
     assert assistant["error_info"]["details"]["recovery_actions"] == ["retry_with_auto_routing"]
-    assert [part["type"] for part in assistant["parts"]] == ["routing_decision"]
+    # No parts: the routing decision left the transcript (a0e1d9a9) and the
+    # prediction carried no user-visible output.
+    assert assistant["parts"] == []
+    routing_events = _routing_decision_events(app, sid)
+    assert len(routing_events) == 1
+    assert routing_events[0].payload["payload"]["selected_agent"] == "chat"
+    assert routing_events[0].payload["payload"]["rationale"] == (
+        "planner selected a direct chat route"
+    )
     assert assistant["metadata"]["stream_source"] == "batch"
     assert assistant["metadata"]["stream_fallback"]["reason"] == "agent_not_streamable"
     assert assistant["metadata"]["stream_fallback"]["live_streaming"] is False
@@ -678,7 +705,13 @@ def test_post_message_empty_prediction_without_error_info_sets_error_turn(
     assert assistant["error_info"]["error"] == "empty_response"
     assert "without user-visible output" in assistant["error_info"]["message"]
     assert assistant["error_info"]["details"]["routing_mode"] == "experts"
-    assert [part["type"] for part in assistant["parts"]] == ["routing_decision"]
+    # No parts: the routing decision is a semantic event (a0e1d9a9), and the
+    # empty prediction produced no user-visible output.
+    assert assistant["parts"] == []
+    routing_events = _routing_decision_events(app, sid)
+    assert len(routing_events) == 1
+    assert routing_events[0].payload["payload"]["selected_agent"] == "chat"
+    assert routing_events[0].payload["payload"]["rationale"] == "planner selected chat"
     assert sess["status"] == "error"
 
 
@@ -701,8 +734,12 @@ def test_post_message_unsupported_session_agent_sets_error_turn(
     assert assistant["stop_reason"] == "error"
     assert assistant["error_info"]["error"] == "not_implemented"
     assert assistant["error_info"]["details"]["agent_id"] == "code_reviewer"
-    assert [part["type"] for part in assistant["parts"]] == ["routing_decision"]
-    assert assistant["parts"][0]["selected_agent"] == "code_reviewer"
+    # No parts: the routing decision is a semantic event (a0e1d9a9); the
+    # selected-agent fact rides that event.
+    assert assistant["parts"] == []
+    routing_events = _routing_decision_events(app, sid)
+    assert len(routing_events) == 1
+    assert routing_events[0].payload["payload"]["selected_agent"] == "code_reviewer"
     assert sess["status"] == "error"
 
 
@@ -852,12 +889,12 @@ def test_post_message_prompt_user_agent_executes_registered_agent(
     assert calls == [("reviewer", "hi", sid)]
     assert assistant["stop_reason"] == "end_turn"
     assert assistant.get("error_info") is None
-    assert [part["type"] for part in assistant["parts"]] == [
-        "routing_decision",
-        "text",
-    ]
-    assert assistant["parts"][0]["selected_agent"] == "reviewer"
-    assert assistant["parts"][1]["text"] == "USER_AGENT_OK"
+    # Text answer only; the routing decision is a semantic event (a0e1d9a9).
+    assert [part["type"] for part in assistant["parts"]] == ["text"]
+    routing_events = _routing_decision_events(app, sid)
+    assert len(routing_events) == 1
+    assert routing_events[0].payload["payload"]["selected_agent"] == "reviewer"
+    assert assistant["parts"][0]["text"] == "USER_AGENT_OK"
     assert assistant["metadata"]["stream_source"] == "batch"
     assert assistant["metadata"]["stream_fallback"]["reason"] == (
         "dynamic_prompt_stream_unavailable"
@@ -962,8 +999,13 @@ def test_post_message_agent_override_executes_user_agent_for_one_turn(
     assert agent.calls == []
     assert calls == [("reviewer", "hi", sid)]
     assert sess["agent"]["id"] == "main"
-    assert assistant["parts"][0]["selected_agent"] == "reviewer"
-    assert assistant["parts"][1]["text"] == "OVERRIDE_AGENT_OK"
+    # Text answer only; the selected-agent fact rides the routing.decision
+    # semantic event (a0e1d9a9), never a part.
+    assert [part["type"] for part in assistant["parts"]] == ["text"]
+    assert assistant["parts"][0]["text"] == "OVERRIDE_AGENT_OK"
+    routing_events = _routing_decision_events(app, sid)
+    assert len(routing_events) == 1
+    assert routing_events[0].payload["payload"]["selected_agent"] == "reviewer"
     assert assistant["metadata"]["agent_override"] == {
         "requested_agent_id": "reviewer",
         "session_agent_id": "main",
@@ -995,7 +1037,11 @@ def test_post_message_agent_id_override_reports_structured_error_without_mutatin
     assert fake_agent.calls == []
     assert sess["agent"]["id"] == "main"
     assert assistant["stop_reason"] == "error"
-    assert assistant["parts"][0]["selected_agent"] == "missing_agent"
+    # No parts: the routing decision is a semantic event (a0e1d9a9).
+    assert assistant["parts"] == []
+    routing_events = _routing_decision_events(client.app, sid)
+    assert len(routing_events) == 1
+    assert routing_events[0].payload["payload"]["selected_agent"] == "missing_agent"
     assert assistant["error_info"]["error"] == "not_implemented"
     assert assistant["error_info"]["details"]["agent_id"] == "missing_agent"
     assert assistant["metadata"]["agent_override"] == {
@@ -1092,9 +1138,12 @@ def test_post_message_prompt_user_agent_streams_live_when_available(
     completed = [ev for ev in history if ev.type == "message.completed"]
 
     assert agent.calls == []
-    # #767 PR3 (#731): parts persist in ARRIVAL order — the streamed answer part
-    # landed live first; the routing banner is appended at finalize, after it.
-    assert [part["type"] for part in assistant["parts"]] == ["text", "routing_decision"]
+    # The streamed answer is the only part — the routing decision is a
+    # routing.decision semantic event (a0e1d9a9), never a part.
+    assert [part["type"] for part in assistant["parts"]] == ["text"]
+    routing_events = _routing_decision_events(app, sid)
+    assert len(routing_events) == 1
+    assert routing_events[0].payload["payload"]["selected_agent"] == "reviewer"
     assert assistant["parts"][0]["text"] == "USER_AGENT_LIVE_OK"
     assert assistant["metadata"]["stream_source"] == "live"
     assert [d.payload["delta"]["text_append"] for d in deltas] == [
@@ -1180,18 +1229,18 @@ def test_post_message_tool_user_agent_executes_registered_agent(
     assert assistant.get("error_info") is None
     # #731 / #767 PR3: the persisted message IS the ledger in ARRIVAL ORDER —
     # the observer's tool_call / tool_result parts landed live during the turn;
-    # the routing banner and the batch answer are appended at finalize, after
-    # them. (Before PR3 finalize hoisted its routing part above the live spine,
-    # so reload order differed from stream order.)
+    # the batch answer is appended at finalize, after them. The routing
+    # decision is a routing.decision semantic event (a0e1d9a9), never a part.
     assert [part["type"] for part in assistant["parts"]] == [
         "tool_call",
         "tool_result",
-        "routing_decision",
         "text",
     ]
     # #731: every persisted part carries a monotonic 1-based arrival-order key.
-    assert [part["sequence"] for part in assistant["parts"]] == [1, 2, 3, 4]
-    assert assistant["parts"][2]["selected_agent"] == "tool_reviewer"
+    assert [part["sequence"] for part in assistant["parts"]] == [1, 2, 3]
+    routing_events = _routing_decision_events(app, sid)
+    assert len(routing_events) == 1
+    assert routing_events[0].payload["payload"]["selected_agent"] == "tool_reviewer"
     assert assistant["parts"][0]["tool_name"] == "fs_read_file"
     assert assistant["parts"][-1]["text"] == "TOOL_USER_AGENT_OK"
     assert assistant["metadata"]["stream_source"] == "batch"
@@ -1287,9 +1336,12 @@ def test_post_message_tool_user_agent_streams_live_when_available(
     completed = [ev for ev in history if ev.type == "message.completed"]
 
     assert agent.calls == []
-    # #767 PR3 (#731): arrival order — the streamed answer part precedes the
-    # finalize-appended routing banner.
-    assert [part["type"] for part in assistant["parts"]] == ["text", "routing_decision"]
+    # The streamed answer is the only part — the routing decision is a
+    # routing.decision semantic event (a0e1d9a9), never a part.
+    assert [part["type"] for part in assistant["parts"]] == ["text"]
+    routing_events = _routing_decision_events(app, sid)
+    assert len(routing_events) == 1
+    assert routing_events[0].payload["payload"]["selected_agent"] == "tool_reviewer"
     assert assistant["parts"][0]["text"] == "TOOL_USER_AGENT_LIVE_OK"
     assert assistant["metadata"]["stream_source"] == "live"
     assert [d.payload["delta"]["text_append"] for d in deltas] == [
@@ -1339,8 +1391,11 @@ def test_post_message_tool_user_agent_missing_declared_tool_sets_error_turn(
     assert assistant["error_info"]["details"]["agent_id"] == "tool_reviewer"
     assert assistant["error_info"]["details"]["reason"] == "custom_agent_tools_unavailable"
     assert assistant["error_info"]["details"]["unsupported_tools"] == ["fs_read_file"]
-    assert [part["type"] for part in assistant["parts"]] == ["routing_decision"]
-    assert assistant["parts"][0]["selected_agent"] == "tool_reviewer"
+    # No parts: the routing decision is a semantic event (a0e1d9a9).
+    assert assistant["parts"] == []
+    routing_events = _routing_decision_events(app, sid)
+    assert len(routing_events) == 1
+    assert routing_events[0].payload["payload"]["selected_agent"] == "tool_reviewer"
     assert sess["status"] == "error"
 
 
@@ -1521,7 +1576,9 @@ def test_post_message_session_model_matching_global_config_runs(
 
     assistant = complete_turn(client, sid, "hi")
 
-    assert assistant["parts"][1]["text"] == "model matched"
+    # The text answer is the only part (routing decisions are semantic events).
+    assert [part["type"] for part in assistant["parts"]] == ["text"]
+    assert assistant["parts"][0]["text"] == "model matched"
     assert fake_agent.calls == [("hi", sid)]
 
 
@@ -1563,7 +1620,9 @@ def test_post_message_model_matching_global_config_runs(
         time.sleep(0.05)
 
     assert assistant is not None
-    assert assistant["parts"][1]["text"] == "message model matched"
+    # The text answer is the only part (routing decisions are semantic events).
+    assert [part["type"] for part in assistant["parts"]] == ["text"]
+    assert assistant["parts"][0]["text"] == "message model matched"
     assert fake_agent.calls == [("hi", sid)]
 
 

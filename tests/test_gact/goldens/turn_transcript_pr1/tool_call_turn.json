@@ -113,27 +113,8 @@
       "payload": {
         "message_id": "<msg#5>",
         "part": {
-          "agent_id": "main",
-          "id": "<part#6>",
-          "metadata": {
-            "route_reason": "planner selected code expert",
-            "route_source": "dspy"
-          },
-          "rationale": "matched coding keywords",
-          "selected_agent": "code_expert",
-          "type": "routing_decision"
-        },
-        "stream_source": "batch",
-        "turn_id": "<msg#1>"
-      },
-      "type": "message.part.added"
-    },
-    {
-      "payload": {
-        "message_id": "<msg#5>",
-        "part": {
           "agent_id": "code_expert",
-          "id": "<part#7>",
+          "id": "<part#6>",
           "metadata": {
             "signature_field_name": "answer",
             "stream_fallback": {
@@ -161,7 +142,7 @@
       "payload": {
         "final_text": "TOOL_TURN_DONE",
         "message_id": "<msg#5>",
-        "part_id": "<part#7>",
+        "part_id": "<part#6>",
         "stream_fallback": {
           "category": "capability_gap",
           "description": "The selected agent is not a DSPy module and cannot emit provider-token deltas.",
@@ -313,20 +294,8 @@
       "type": "tool_result"
     },
     {
-      "agent_id": "main",
-      "id": "<part#6>",
-      "metadata": {
-        "route_reason": "planner selected code expert",
-        "route_source": "dspy"
-      },
-      "rationale": "matched coding keywords",
-      "selected_agent": "code_expert",
-      "sequence": 3,
-      "type": "routing_decision"
-    },
-    {
       "agent_id": "code_expert",
-      "id": "<part#7>",
+      "id": "<part#6>",
       "metadata": {
         "signature_field_name": "answer",
         "stream_fallback": {
@@ -342,7 +311,7 @@
         },
         "stream_source": "batch"
       },
-      "sequence": 4,
+      "sequence": 3,
       "text": "TOOL_TURN_DONE",
       "type": "text"
     }

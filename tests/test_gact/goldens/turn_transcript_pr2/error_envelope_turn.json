@@ -99,25 +99,6 @@
     },
     {
       "payload": {
-        "message_id": "<msg#4>",
-        "part": {
-          "agent_id": "main",
-          "id": "<part#6>",
-          "metadata": {
-            "route_reason": "planner selected code expert",
-            "route_source": "dspy"
-          },
-          "rationale": "matched coding keywords",
-          "selected_agent": "code_expert",
-          "type": "routing_decision"
-        },
-        "stream_source": "batch",
-        "turn_id": "<msg#1>"
-      },
-      "type": "message.part.added"
-    },
-    {
-      "payload": {
         "error_info": {
           "details": {
             "original_error": "RuntimeError",
@@ -130,7 +111,7 @@
           "message": "turn finalize raised: simulated finalize failure",
           "recoverable": true
         },
-        "message_id": "<msg#7>",
+        "message_id": "<msg#6>",
         "stop_reason": "error",
         "turn_id": "<msg#1>"
       },

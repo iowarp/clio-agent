@@ -417,7 +417,10 @@ def test_user_agent_runtime_uses_resolved_prompt_profile(
     assert resolution["status"] == "resolved"
     assert assistant["metadata"]["prompt_resolution"]["id"] == "clio.reviewer"
     assert assistant["metadata"]["prompt_resolution"]["profile"] == "light"
-    assert assistant["parts"][1]["text"] == "PROMPT_PROFILE_OK"
+    # Text answer only — the routing decision is a routing.decision semantic
+    # event (a0e1d9a9), never a message part.
+    assert [part["type"] for part in assistant["parts"]] == ["text"]
+    assert assistant["parts"][0]["text"] == "PROMPT_PROFILE_OK"
 
 
 def test_planner_render_context_uses_agent_scoped_commands(

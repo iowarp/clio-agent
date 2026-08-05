@@ -32,10 +32,12 @@ inline in-thread child forward, no settle-loop routing vocabulary.
 
 from __future__ import annotations
 
+import functools
+import inspect
 import json
 import logging
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -53,6 +55,38 @@ if TYPE_CHECKING:
     from clio_agent.gact.agents.types import AgentDef
 
 logger = logging.getLogger(__name__)
+
+
+def _observed_collector(func: Callable[..., str], tool_name: str) -> Callable[..., str]:
+    """Route a native collector tool through the live tool observer.
+
+    The spawn tools already surface on the wire as ``expert_handoff`` parts
+    (the Call box IS the spawn's representation — wrapping them here would put
+    two representations of one action on the wire). The COLLECTORS had none:
+    the model's ``wait_agent_tasks``/``check_agent_tasks`` calls were invisible,
+    so the transcript showed narration about waiting with no visible mechanism
+    (owner, 2026-08-05). They now notify the observer exactly like a boundary
+    tool: a real ``tool_call`` part with the call's args, a real result with
+    the true wait duration, error surfaced on failure — never re-authored.
+    """
+
+    from clio_agent.tools.execution import notify_global_tool_observer  # noqa: PLC0415
+
+    @functools.wraps(func)
+    def wrapper(*call_args: Any, **call_kwargs: Any) -> str:
+        bound = inspect.signature(func).bind(*call_args, **call_kwargs)
+        bound.apply_defaults()
+        args = dict(bound.arguments)
+        notify_global_tool_observer(tool_name, args, "started")
+        try:
+            result = func(*call_args, **call_kwargs)
+        except Exception as exc:
+            notify_global_tool_observer(tool_name, args, "completed", error=str(exc))
+            raise
+        notify_global_tool_observer(tool_name, args, "completed", result=result)
+        return result
+
+    return wrapper
 
 
 def _fanout_batch_bound(agent_def: "AgentDef") -> int:
@@ -754,7 +788,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             },
         ),
         dspy.Tool(
-            func=wait_agent_tasks,
+            func=_observed_collector(wait_agent_tasks, "wait_agent_tasks"),
             name="wait_agent_tasks",
             desc=wait_agent_tasks.__doc__,
             args={
@@ -772,7 +806,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             },
         ),
         dspy.Tool(
-            func=check_agent_tasks,
+            func=_observed_collector(check_agent_tasks, "check_agent_tasks"),
             name="check_agent_tasks",
             desc=check_agent_tasks.__doc__,
             args={
