@@ -68,6 +68,15 @@ class RemoteMcpRelayClient(Protocol):
         """Call a relay follow tool while retaining its typed result."""
         ...
 
+    async def wait_for_submitted_job(
+        self,
+        job_id: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> Any | None:
+        """Resolve a projected handle via its durable task record, or ``None``."""
+        ...
+
 
 RemoteMcpClientFactory = Callable[[], AbstractAsyncContextManager[RemoteMcpRelayClient]]
 
@@ -115,6 +124,39 @@ class _ProjectedRemoteMcpTool(Tool):
         return ToolResult(structured_content=handle.to_wire())
 
 
+_TASK_TO_JOB_STATE = {
+    "completed": "succeeded",
+    "failed": "failed",
+    "cancelled": "canceled",
+}
+
+
+def _task_result_as_job_wire(job_id: str, resolved: Any) -> dict[str, Any]:
+    """Project a terminal task outcome into relay_wait's job-record shape.
+
+    ``resolved_via`` marks the divergence from relay's native path explicitly
+    (no silent alternate route); state names map onto relay's job vocabulary.
+    """
+
+    status = str(getattr(resolved, "status", "") or "")
+    state = _TASK_TO_JOB_STATE.get(status, status or "unknown")
+    payload: dict[str, Any] = {
+        "job": {
+            "job_id": job_id,
+            "state": state,
+            "terminal": True,
+        },
+        "resolved_via": "serve_task_record",
+    }
+    result = getattr(resolved, "result", None)
+    if result is not None:
+        payload["result"] = result
+    error = getattr(resolved, "error", None)
+    if error is not None:
+        payload["error"] = error
+    return payload
+
+
 class _ProjectedRelayFollowTool(Tool):
     """One relay-advertised bounded observation tool under the ``relay`` mount."""
 
@@ -135,9 +177,26 @@ class _ProjectedRelayFollowTool(Tool):
         self._client_factory = client_factory
 
     async def run(self, arguments: dict[str, Any]) -> ToolResult:
-        """Forward the exact typed relay result, including delivery failures."""
+        """Resolve serve-owned handles via their task records; else forward.
+
+        A ``relay_wait`` on a job this process submitted resolves through the
+        durable #1115 record (``task_id == job_id``): projected receipts carry
+        no ``route_revision``, so relay's native follow path cannot route them
+        to a remote cluster. Handles from anywhere else forward to relay
+        untouched, typed failures included.
+        """
 
         async with self._client_factory() as relay:
+            if self._relay_name == "relay_wait":
+                job_id = str((arguments or {}).get("job_id") or "").strip()
+                resolver = getattr(relay, "wait_for_submitted_job", None)
+                if job_id and callable(resolver):
+                    timeout = (arguments or {}).get("timeout_seconds")
+                    resolved = await resolver(job_id, timeout_seconds=timeout)
+                    if resolved is not None:
+                        return ToolResult(
+                            structured_content=_task_result_as_job_wire(job_id, resolved)
+                        )
             result = await relay.call_relay_tool(self._relay_name, arguments)
         return ToolResult(
             content=result.content,

@@ -423,3 +423,71 @@ async def test_transport_rejects_stale_revision_before_submit() -> None:
     assert raised.value.details["expected_catalog_revision"] == CATALOG_REVISION
     assert raised.value.details["observed_catalog_revision"] == NEXT_CATALOG_REVISION
     assert relay.submissions == []
+
+
+class _ResolvedTask:
+    """Terminal ClientGetTaskResult stand-in for the record-store resolver."""
+
+    def __init__(self, status: str = "completed", result: Any = None, error: Any = None) -> None:
+        self.status = status
+        self.result = result
+        self.error = error
+
+
+class _RecordResolvingRelayClient(_FakeRelayClient):
+    """Fake relay whose transport owns a persisted record for one job."""
+
+    def __init__(self, known_job_id: str) -> None:
+        super().__init__()
+        self.known_job_id = known_job_id
+        self.resolved_calls: list[tuple[str, Any]] = []
+
+    async def wait_for_submitted_job(
+        self, job_id: str, *, timeout_seconds: Any = None
+    ) -> _ResolvedTask | None:
+        self.resolved_calls.append((job_id, timeout_seconds))
+        if job_id != self.known_job_id:
+            return None
+        return _ResolvedTask(status="completed", result={"content": "task-door-result"})
+
+
+@pytest.mark.asyncio
+async def test_relay_wait_resolves_serve_owned_handle_via_task_record() -> None:
+    """A relay_wait on a job this process submitted resolves through the durable
+    task record (projected receipts carry no route_revision, so relay's native
+    follow path cannot route them) — with the divergence marked explicitly."""
+
+    relay = _RecordResolvingRelayClient(known_job_id="job-1129")
+    federation = await RemoteMcpFederation.discover(lambda: relay)
+    gateway = build_gateway({}, remote_mcp_federation=federation)
+
+    async with Client(gateway) as client:
+        waited = await client.call_tool(
+            "relay_wait", {"job_id": "job-1129", "timeout_seconds": 120}
+        )
+
+    assert relay.resolved_calls == [("job-1129", 120)]
+    assert waited.data["job"]["job_id"] == "job-1129"
+    assert waited.data["job"]["state"] == "succeeded"
+    assert waited.data["job"]["terminal"] is True
+    assert waited.data["resolved_via"] == "serve_task_record"
+    assert waited.data["result"] == {"content": "task-door-result"}
+
+
+@pytest.mark.asyncio
+async def test_relay_wait_forwards_foreign_handles_untouched() -> None:
+    """A job_id with no persisted record falls through to relay's native
+    relay_wait, byte-identical to the pre-resolver behavior."""
+
+    relay = _RecordResolvingRelayClient(known_job_id="job-other")
+    federation = await RemoteMcpFederation.discover(lambda: relay)
+    gateway = build_gateway({}, remote_mcp_federation=federation)
+
+    async with Client(gateway) as client:
+        await client.call_tool("remote_science_inspect", {"cluster": "ares", "request": {}})
+        waited = await client.call_tool("relay_wait", {"job_id": "job-1129"})
+
+    # The resolver was consulted and declined; the door's native path answered.
+    assert relay.resolved_calls == [("job-1129", None)]
+    assert waited.data["state"] == "succeeded"
+    assert waited.data["result"] == "bounded-result"

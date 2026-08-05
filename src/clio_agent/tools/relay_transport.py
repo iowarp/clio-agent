@@ -182,7 +182,13 @@ class RelayTransportClient:
         owner_session_generation_id: str | None = None,
         session_id: str | None = None,
         store: TaskRecordStore | None = None,
-        request_timeout_seconds: float = 30.0,
+        # A single relay RPC (``tools/call`` create, ``tasks/get`` poll) travels
+        # over a real SSH tunnel to a remote host and observed live round trips
+        # of 30-100+s are routine, not exceptional — a 30s default starved both
+        # the create call in ``JarvisJobs._bounded`` and this client's own
+        # ``poll()``/``tasks/get`` loop before the operation had a real chance to
+        # finish. 120s keeps individual RPCs bounded while matching reality.
+        request_timeout_seconds: float = 120.0,
     ) -> None:
         token = api_token if api_token is not None else os.getenv(RELAY_API_TOKEN_ENV)
         if not token:
@@ -471,6 +477,36 @@ class RelayTransportClient:
 
         return await self.wait(
             RelayTaskIdentity.from_key(key),
+            timeout_seconds=timeout_seconds,
+        )
+
+    async def wait_for_submitted_job(
+        self,
+        job_id: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> ClientGetTaskResult | None:
+        """Resolve a serve-projected job handle through its persisted task record.
+
+        Projected ``remote_*`` receipts carry no ``route_revision``, so relay's
+        own follow tools cannot route them to a remote cluster's core. The
+        durable #1115 record written at submission (``task_id == job_id`` under
+        SEP-2663) is the handle's resolution path instead. Returns ``None``
+        when this client's store holds no record for the job — the caller then
+        forwards to relay's native follow tool untouched.
+        """
+
+        wanted = str(job_id or "").strip()
+        if not wanted:
+            return None
+        record = next(
+            (row for row in self._record_store().list() if row.task_id == wanted),
+            None,
+        )
+        if record is None:
+            return None
+        return await self.wait(
+            RelayTaskIdentity.from_key(record.key),
             timeout_seconds=timeout_seconds,
         )
 
