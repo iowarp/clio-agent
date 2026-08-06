@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import skill_runtime as _skill_runtime
+from clio_agent.gact.agents import toolset_inventory
 from clio_agent.gact.agents.auto_tools import build_auto_react_tools
 from clio_agent.gact.agents.composition import (
     _runtime_active_workspace_context,
@@ -528,6 +529,7 @@ def _enabled_external_mcp_dspy_tools(app: Any, requested_tools: list[str]) -> di
                 args=properties,
                 title=title,
             )
+            toolset_inventory.register_tool_source(tool_name, str(server_id))
     return available
 
 
@@ -570,11 +572,19 @@ def _dynamic_agent_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
             )
         available_tools: dict[str, Any] = {}
     else:
-        available_tools = {
-            str(getattr(tool, "name", "")): tool
-            for tool in list(tool_executor.to_dspy_tools())
-            if getattr(tool, "name", "")
-        }
+        available_tools = {}
+        for tool in list(tool_executor.to_dspy_tools()):
+            name = str(getattr(tool, "name", "") or "")
+            if not name:
+                continue
+            available_tools[name] = tool
+            # Gateway-mounted tools (the universal fs/shell built-ins or a
+            # declared domain MCP server) carry a namespace-prefixed name
+            # (``<namespace>_<tool>``, ``tools/gateway.py``'s
+            # ``_mount_with_namespace``) -- the SAME encoding
+            # ``mcp_executor._route`` partitions on to dispatch a call, so
+            # reading it here is the real provenance, not a guess.
+            toolset_inventory.register_tool_source(name, name.partition("_")[0] or "gateway")
     app = _ctx.active_app()
     if app is not None:
         available_tools.update(_enabled_external_mcp_dspy_tools(app, requested_tools))
@@ -1267,16 +1277,23 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     build_spawn_runtime_tools,
                 )
 
+                _declared_tools = _dynamic_agent_tools(base_agent, agent_def)
+                _spawn_tools = build_spawn_runtime_tools(base_agent, agent_def)
+                toolset_inventory.register_tool_sources(_spawn_tools, "spawn-runtime")
                 tools = [
-                    *_dynamic_agent_tools(base_agent, agent_def),
-                    *build_spawn_runtime_tools(base_agent, agent_def),
+                    *_declared_tools,
+                    *_spawn_tools,
                 ]
                 if skill_rt.resolved:
                     # Auto-attached infra (like child-delegation tools), not a
                     # curated domain tool (#919).
-                    tools.append(_recorded_load_skill_tool(agent_def, skill_rt))
+                    _skill_tool = _recorded_load_skill_tool(agent_def, skill_rt)
+                    toolset_inventory.register_tool_sources([_skill_tool], "native")
+                    tools.append(_skill_tool)
                 # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
-                tools += build_auto_react_tools(agent_def)
+                _auto_tools = build_auto_react_tools(agent_def)
+                toolset_inventory.register_tool_sources(_auto_tools, "native")
+                tools += _auto_tools
                 # THE assembly seam (owner 2026-08-05): every tool is observed
                 # by definition — unmarked callables get the observer wrap and
                 # declared representations/titles register for the live observer.
@@ -1286,6 +1303,9 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
 
                 tools = instrument_tools(tools)
                 self.tools = tools
+                # Obs Tools tab "available" view: the REAL built toolset,
+                # captured once here where it is actually in hand.
+                toolset_inventory.emit_agent_toolset_recorded(agent_def, tools)
                 # The iteration default scales with the declared children — an
                 # orchestrator pays spawn+wait per child inside this loop (#948 S4).
                 _n_children = 0
@@ -1744,9 +1764,13 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             )
             if skill_rt.resolved:
                 # Same react tier-1 + load_skill contract as blueprint experts (#919).
-                self.tools.append(_recorded_load_skill_tool(agent_def, skill_rt))
+                _skill_tool = _recorded_load_skill_tool(agent_def, skill_rt)
+                toolset_inventory.register_tool_sources([_skill_tool], "native")
+                self.tools.append(_skill_tool)
             # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
-            self.tools += build_auto_react_tools(agent_def)
+            _auto_tools = build_auto_react_tools(agent_def)
+            toolset_inventory.register_tool_sources(_auto_tools, "native")
+            self.tools += _auto_tools
             # THE assembly seam (owner 2026-08-05): same default-on
             # instrumentation as the blueprint react branch.
             from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
@@ -1754,6 +1778,9 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             )
 
             self.tools = instrument_tools(self.tools)
+            # Obs Tools tab "available" view: the REAL built toolset,
+            # captured once here where it is actually in hand.
+            toolset_inventory.emit_agent_toolset_recorded(agent_def, self.tools)
             runtime = PromptRegistry().resolve("clio.runtime.tool_user_agent")
             runtime_text = str(getattr(runtime, "text", "") or "").strip()
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description

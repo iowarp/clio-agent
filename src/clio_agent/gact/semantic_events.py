@@ -178,6 +178,13 @@ SSE_TRACE_ONLY_EVENT_TYPES: frozenset[str] = frozenset(
         # grant produces, never the raw per-connection egress); declared trace-only so no
         # status can lift it onto the UI stream.
         "net.egress",
+        # Built-toolset inventory (obs Tools tab "called | available" toggle):
+        # one ``agent.toolset.recorded`` per built react expert, read back by
+        # GET /v1/sessions/{sid}/trace for the "available" view. Durable-trace
+        # substrate only -- never a live SSE row (the tab reads the trace poll,
+        # not the event stream) -- declared here so no future non-"completed"
+        # status can lift it onto the wire via ``_SSE_ALWAYS_STATUSES``.
+        "agent.toolset.recorded",
     }
 )
 
