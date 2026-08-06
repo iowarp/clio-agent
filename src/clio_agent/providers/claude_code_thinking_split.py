@@ -11,7 +11,13 @@ It also owns the bridge's thinking-channel EMISSION seams: forwarding surviving
 provider-thinking text to the live thinking lane (:func:`emit_provider_thinking`),
 and the typed no-silent-fallback reason for CoT-REDACTED thinking deltas
 (:func:`note_redacted_thinking`) that claude CLI >= 2.1.x produces when the SDK
-thinking config omits ``display: "summarized"``.
+thinking config omits ``display: "summarized"``. The redaction fact is recorded
+at two fidelities: the opt-in ``CLIO_STREAM_AUDIT_LOG`` row (every delta) and a
+``provider.thinking.redacted`` durable semantic-trace event (once per call, at
+:func:`_emit_redacted_thinking_trace_event`) — without the latter, "zero CoT"
+and "CoT sent but fully redacted" were indistinguishable after the fact on
+everything durable (trace/API), a silent degradation the cleanup program's
+no-silent-fallback rule forbids.
 """
 
 from __future__ import annotations
@@ -136,6 +142,77 @@ def emit_provider_thinking(text: str, *, call_index: int, event_index: int) -> N
         pass
 
 
+def _emit_redacted_thinking_trace_event(*, call_index: int, tokens: int) -> None:
+    """Best-effort durable trace event for a call's FIRST redacted-thinking delta.
+
+    Mirrors the ``agent.toolset.recorded`` funnel idiom
+    (:mod:`clio_agent.gact.agents.toolset_inventory`, commit 4942f779): resolve the
+    active GACT app/session from the ambient turn context and emit ONE
+    ``provider.thinking.redacted`` semantic event through
+    :func:`clio_agent.gact.runtime.globals._emit_semantic_event` — the same funnel
+    every other semantic event rides — so the redaction fact reaches the durable
+    session trace, not just the opt-in stream-audit JSONL and the log-only
+    :func:`clio_agent.runtime.trace.event` WARNING (which together left "provider
+    sent zero CoT" and "provider sent CoT but it was fully redacted" with
+    IDENTICAL zero-delta signatures on everything durable).
+
+    This module is a bare LiteLLM transport (imported below ``gact``), so the
+    import is lazy and best-effort — a build with no reachable app/session (CLI /
+    optimizer paths, or ``gact`` not installed in this process) leaves no event,
+    but the miss is ALWAYS logged with a structured reason, never a silent pass
+    (no-silent-fallback ground rule).
+    """
+    try:
+        from clio_agent.gact.context import (  # noqa: PLC0415
+            active_app,
+            active_session_id,
+            active_trace_id,
+            active_turn_id,
+        )
+        from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 - gact unavailable (CLI/optimizer paths)
+        trace.event(
+            "CLAUDE-CODE-THINKING",
+            "provider.thinking.redacted skipped call=%d reason=gact_unavailable",
+            call_index,
+        )
+        return
+    app = active_app()
+    sid = active_session_id()
+    if app is None or not sid:
+        trace.event(
+            "CLAUDE-CODE-THINKING",
+            "provider.thinking.redacted skipped call=%d reason=no_app_or_session",
+            call_index,
+        )
+        return
+    try:
+        _emit_semantic_event(
+            app,
+            sid,
+            "provider.thinking.redacted",
+            turn_id=active_turn_id(),
+            trace_id=active_trace_id(),
+            status="completed",
+            summary=f"Provider redacted chain-of-thought (call {call_index}).",
+            provider={"provider_id": "claude_code_sdk"},
+            payload={
+                "call_index": call_index,
+                "session_id": sid,
+                "provider": "claude_code_sdk",
+                "thinking_tokens_estimated": tokens,
+                "reason": "provider_thinking_redacted",
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - capture must never break the call
+        trace.event(
+            "CLAUDE-CODE-THINKING",
+            "provider.thinking.redacted emit failed call=%d: %r",
+            call_index,
+            exc,
+        )
+
+
 def note_redacted_thinking(
     event: dict[str, Any], *, call_index: int, event_index: int, total: int
 ) -> int:
@@ -191,4 +268,5 @@ def note_redacted_thinking(
             call_index,
             tokens,
         )
+        _emit_redacted_thinking_trace_event(call_index=call_index, tokens=tokens)
     return total + tokens

@@ -185,6 +185,7 @@ SSE_TRACE_ONLY_EVENT_TYPES: frozenset[str] = frozenset(
         # not the event stream) -- declared here so no future non-"completed"
         # status can lift it onto the wire via ``_SSE_ALWAYS_STATUSES``.
         "agent.toolset.recorded",
+        "provider.thinking.redacted",  # no-silent-fallback CoT-redaction reason: trace-only
     }
 )
 
