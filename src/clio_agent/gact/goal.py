@@ -605,6 +605,6 @@ def build_goal_status_tool() -> Any:
         goal_status,
         name="goal_status",
         desc=goal_status.__doc__,
-        title="Check goal status",
+        title="goal(status)",
         args={},
     )

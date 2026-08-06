@@ -459,7 +459,7 @@ def build_observe_tool() -> Any:
         observe_agent_tasks,
         name="observe_agent_tasks",
         desc=observe_agent_tasks.__doc__,
-        title="Observe agent tasks",
+        title="observe(tasks)",
         args={
             "task_ids": {
                 "type": "array",

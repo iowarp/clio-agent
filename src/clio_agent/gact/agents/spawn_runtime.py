@@ -755,7 +755,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             spawn_agent_task,
             name="spawn_agent_task",
             desc=spawn_agent_task.__doc__,
-            title="Spawn agent",
+            title="spawn(agent)",
             representation="handoff",
             args={
                 "agent": {"type": "string", "description": "Declared child expert id to spawn."},
@@ -773,7 +773,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             wait_agent_tasks,
             name="wait_agent_tasks",
             desc=wait_agent_tasks.__doc__,
-            title="Wait for agents",
+            title="wait(tasks)",
             args={
                 "task_ids": {"type": "array", "description": "Task ids returned by spawn."},
                 "timeout_s": {
@@ -792,7 +792,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             check_agent_tasks,
             name="check_agent_tasks",
             desc=check_agent_tasks.__doc__,
-            title="Check agent tasks",
+            title="check(tasks)",
             args={
                 "task_ids": {
                     "type": "array",
@@ -808,7 +808,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             spawn_agents_parallel,
             name="spawn_agents_parallel",
             desc=spawn_agents_parallel.__doc__,
-            title="Spawn agents in parallel",
+            title="spawn(parallel)",
             representation="handoff",
             args={
                 "spawns": {"type": "array", "description": "List of {agent, task} to fan out."},
@@ -829,7 +829,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                 run_workflow,
                 name="run_workflow",
                 desc=run_workflow.__doc__,
-                title="Run workflow",
+                title="workflow(run)",
                 representation="handoff",
                 args={
                     "request": {

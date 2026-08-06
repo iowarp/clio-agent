@@ -491,6 +491,7 @@ def _enabled_external_mcp_dspy_tools(app: Any, requested_tools: list[str]) -> di
             if str(tool_row.get("status") or "") != "ready":
                 continue
             description = str(tool_row.get("description") or tool_name)
+            title = str(tool_row.get("title") or "")
             schema = tool_row.get("input_schema") or {}
             properties = schema.get("properties", {}) if isinstance(schema, Mapping) else {}
             if not isinstance(properties, dict):
@@ -517,12 +518,14 @@ def _enabled_external_mcp_dspy_tools(app: Any, requested_tools: list[str]) -> di
             tool_fn.__doc__ = description
             # ``_run_external_mcp_tool_sync`` notifies the observer itself, so
             # the construction is marked observed — the assembly seam must not
-            # add a second notification (exactly-once).
+            # add a second notification (exactly-once). ``title`` carries the
+            # upstream MCP tool's declared title (#1188), when present.
             available[tool_name] = boundary_observed_tool(
                 tool_fn,
                 name=tool_name,
                 desc=description,
                 args=properties,
+                title=title,
             )
     return available
 

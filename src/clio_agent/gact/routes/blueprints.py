@@ -647,6 +647,13 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                             "description": getattr(live_tool, "description", "")
                             or declared.get("description")
                             or "",
+                            # #1188 MCP half: carry the upstream tool's declared
+                            # title (mcp.types.Tool.title) through so the dspy-tool
+                            # bridge (builders._enabled_external_mcp_dspy_tools) can
+                            # curate Part.tool_title from it, when present.
+                            "title": getattr(live_tool, "title", None)
+                            or declared.get("title")
+                            or "",
                             "status": "ready",
                             "enabled": True,
                             "server_id": sid,

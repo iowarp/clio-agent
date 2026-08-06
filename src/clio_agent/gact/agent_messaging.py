@@ -341,7 +341,7 @@ def build_message_agent_tool(agent_def: Any) -> Any:
         message_agent,
         name="message_agent",
         desc=message_agent.__doc__,
-        title="Message agent",
+        title="message(agent)",
         args={
             "task_id": {"type": "string", "description": "Task id returned by spawn."},
             "message": {"type": "string", "description": "Message for the child agent."},

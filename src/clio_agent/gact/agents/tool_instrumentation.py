@@ -89,6 +89,23 @@ def sanitize_tool_title(title: object) -> str:
     return " ".join(cleaned.split())[:TITLE_MAX_CHARS].strip()
 
 
+def stamp_mcp_tool_title(func: Callable[..., Any], mcp_tool: object) -> None:
+    """Stamp an MCP-bridged callable with its upstream tool's declared title.
+
+    #1188 MCP half: an ``mcp.types.Tool`` carries an optional ``title`` distinct
+    from its programmatic ``name``. When the upstream server declares one, this
+    stamps it (sanitized through the same :func:`sanitize_tool_title` curated
+    native titles use) so the assembly seam (:func:`instrument_tools`) registers
+    it for ``Part.tool_title`` exactly like a curated native title. Absent when
+    the server declares none — never invented. No ``server_title`` yet (needs
+    the serverInfo surface, tracked on the issue).
+    """
+
+    title = getattr(mcp_tool, "title", None)
+    if title:
+        setattr(func, TITLE_ATTR, sanitize_tool_title(title))
+
+
 def _validated_representation(representation: object, *, tool_name: str) -> str:
     """Return a valid representation or raise a typed error (never coerce silently)."""
 
@@ -131,17 +148,25 @@ def boundary_observed_tool(
     name: str,
     desc: str | None,
     args: dict[str, Any],
+    title: str = "",
 ) -> Any:
     """Construct a ``dspy.Tool`` whose callable ALREADY notifies the observer.
 
     For callables whose execution path reaches ``notify_tool_observer`` itself
     (the external-MCP dynamic-agent tools in ``builders``). Marks the callable
     so the assembly seam never adds a second notification (exactly-once).
+
+    ``title`` carries an upstream MCP tool's declared ``title`` (#1188 MCP
+    half), sanitized through the same :func:`sanitize_tool_title` curated
+    native titles use, so it registers into the presentation registry at the
+    assembly seam exactly like a curated native title and rides onto
+    ``Part.tool_title`` — no separate wire path.
     """
 
     import dspy  # noqa: PLC0415
 
     setattr(func, TOOL_OBSERVED_ATTR, True)
+    setattr(func, TITLE_ATTR, sanitize_tool_title(title))
     return dspy.Tool(func=func, name=name, desc=desc, args=args)
 
 

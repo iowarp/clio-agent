@@ -341,7 +341,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # marks its own constructions and gact may import tools, never the reverse) +
     # the one-line stamp in _make_dspy_tool. All other logic lives in the owner
     # module gact/agents/tool_instrumentation.py.
-    "src/clio_agent/tools/execution.py": 1167,
+    # #1188 MCP half: +4 — a lazy import + one-line call to the new owner-module
+    # helper stamp_mcp_tool_title (gact/agents/tool_instrumentation.py), which
+    # carries the upstream MCP tool's declared title onto Part.tool_title. The
+    # substantive logic (sanitize + stamp) lives in the owner module; this file
+    # only wires the boundary call.
+    "src/clio_agent/tools/execution.py": 1171,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.

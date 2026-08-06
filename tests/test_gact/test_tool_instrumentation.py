@@ -296,15 +296,70 @@ def test_mcp_bridged_tool_is_not_double_wrapped() -> None:
         _execution.notify_global_tool_observer = original
 
 
+def test_mcp_bridge_carries_the_upstream_tools_declared_title() -> None:
+    """#1188 MCP half: when the upstream MCP tool declares a ``title``
+    (mcp.types.Tool.title), the execution-boundary bridge stamps it, sanitized
+    through the SAME sanitizer curated native titles use, so it registers at
+    the assembly seam and would ride onto ``Part.tool_title``."""
+
+    from clio_agent.tools.execution import _make_dspy_tool
+
+    mcp_tool = SimpleNamespace(
+        description="rank stations",
+        title="Rank\nstations\x00",
+        inputSchema={"properties": {}},
+    )
+    tool = _make_dspy_tool("earthscope_rank_stations", mcp_tool, lambda name, kwargs: "")
+    (instrumented,) = instrument_tools([tool])
+    assert declared_tool_title("earthscope_rank_stations") == "Rank stations"
+    assert declared_tool_representation("earthscope_rank_stations") == "row"
+    assert instrumented is tool  # unchanged: already marked observed
+
+
+def test_mcp_bridge_never_invents_a_title_when_upstream_declares_none() -> None:
+    """A server that declares no ``title`` leaves the field absent (raw name
+    renders) — the bridge must never fabricate one."""
+
+    from clio_agent.tools.execution import _make_dspy_tool
+
+    mcp_tool = SimpleNamespace(description="d", inputSchema={"properties": {}})
+    tool = _make_dspy_tool("fs_untitled", mcp_tool, lambda name, kwargs: "")
+    instrument_tools([tool])
+    assert declared_tool_title("fs_untitled") == ""
+
+
+def test_boundary_observed_tool_curates_a_title_when_given() -> None:
+    """The agent-blueprint external-MCP bridge (``builders``) can hand
+    ``boundary_observed_tool`` a curated/upstream title; it registers exactly
+    like a native curated title and is sanitized the same way."""
+
+    from clio_agent.gact.agents.tool_instrumentation import boundary_observed_tool
+
+    def f() -> str:
+        return ""
+
+    tool = boundary_observed_tool(f, name="ext_rank", desc="d", args={}, title="Rank\tstations")
+    instrument_tools([tool])
+    assert declared_tool_title("ext_rank") == "Rank stations"
+
+    def g() -> str:
+        return ""
+
+    untitled = boundary_observed_tool(g, name="ext_untitled", desc="d", args={})
+    instrument_tools([untitled])
+    assert declared_tool_title("ext_untitled") == ""
+
+
 def test_recording_rewrap_propagates_the_observed_marker() -> None:
     """The blueprint recording wrapper re-constructs the tool around a new
     callable; the observed marker must survive (rebuilt_tool) or a bridged
-    tool would notify twice after the seam."""
+    tool would notify twice after the seam. The curated title marker must
+    survive the same re-wrap (#1188 MCP half)."""
 
     from clio_agent.gact.agents.builders import _recording_blueprint_tool
     from clio_agent.tools.execution import _make_dspy_tool
 
-    mcp_tool = SimpleNamespace(description="d", inputSchema={"properties": {}})
+    mcp_tool = SimpleNamespace(description="d", title="List files", inputSchema={"properties": {}})
     bridged = _make_dspy_tool("fs_list", mcp_tool, lambda name, kwargs: "listed")
     recorded = _recording_blueprint_tool(bridged)
     assert getattr(recorded.func, TOOL_OBSERVED_ATTR, False) is True
@@ -312,6 +367,7 @@ def test_recording_rewrap_propagates_the_observed_marker() -> None:
     recorded_func = recorded.func
     (instrumented,) = instrument_tools([recorded])
     assert instrumented.func is recorded_func  # marker honored through the re-wrap
+    assert declared_tool_title("fs_list") == "List files"  # title marker also survives
 
     # Sabotage twin: an UNMARKED callable in the same shape IS wrapped.
     def unmarked() -> str:
@@ -336,15 +392,15 @@ def test_auto_react_tools_carry_their_declared_presentation() -> None:
 
     instrument_tools(build_auto_react_tools(SimpleNamespace(id="tester")))
     assert declared_tool_representation("create_artifact") == "chip"
-    assert declared_tool_title("create_artifact") == "Create artifact"
+    assert declared_tool_title("create_artifact") == "artifact(create)"
     for name, title in [
-        ("plan_exit", "Exit plan mode"),
-        ("write_todos", "Update todo list"),
-        ("cron_create", "Schedule future turn"),
-        ("cron_list", "List scheduled turns"),
-        ("cron_delete", "Cancel scheduled turn"),
-        ("loop_wakeup", "Continue or stop loop"),
-        ("goal_status", "Check goal status"),
+        ("plan_exit", "plan(exit)"),
+        ("write_todos", "todos"),
+        ("cron_create", "cron(create)"),
+        ("cron_list", "cron(list)"),
+        ("cron_delete", "cron(delete)"),
+        ("loop_wakeup", "loop"),
+        ("goal_status", "goal(status)"),
     ]:
         assert declared_tool_representation(name) == "row", name
         assert declared_tool_title(name) == title, name
@@ -370,12 +426,12 @@ def test_spawn_runtime_tools_declare_handoff_for_spawn_and_row_for_collectors(
         )
     instrument_tools(tools)
     expected = {
-        "spawn_agent_task": ("handoff", "Spawn agent"),
-        "spawn_agents_parallel": ("handoff", "Spawn agents in parallel"),
-        "wait_agent_tasks": ("row", "Wait for agents"),
-        "check_agent_tasks": ("row", "Check agent tasks"),
-        "observe_agent_tasks": ("row", "Observe agent tasks"),
-        "message_agent": ("row", "Message agent"),
+        "spawn_agent_task": ("handoff", "spawn(agent)"),
+        "spawn_agents_parallel": ("handoff", "spawn(parallel)"),
+        "wait_agent_tasks": ("row", "wait(tasks)"),
+        "check_agent_tasks": ("row", "check(tasks)"),
+        "observe_agent_tasks": ("row", "observe(tasks)"),
+        "message_agent": ("row", "message(agent)"),
     }
     assert {t.name for t in tools} == set(expected)
     for name, (representation, title) in expected.items():

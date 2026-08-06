@@ -688,7 +688,7 @@ def build_loop_wakeup_tool() -> Any:
         loop_wakeup,
         name="loop_wakeup",
         desc=loop_wakeup.__doc__,
-        title="Continue or stop loop",
+        title="loop",
         args={
             "delay_seconds": {
                 "type": "integer",

@@ -1128,6 +1128,10 @@ def _make_dspy_tool(
     # Bridged calls notify inside call_tool (this boundary): mark the callable
     # so the instrumentation seam never adds a second notification.
     setattr(tool_fn, TOOL_OBSERVED_ATTR, True)
+    # #1188 MCP half; owner logic in tool_instrumentation (lazy: cross-package cycle).
+    from clio_agent.gact.agents.tool_instrumentation import stamp_mcp_tool_title  # noqa: PLC0415
+
+    stamp_mcp_tool_title(tool_fn, mcp_tool)
 
     properties = _tool_input_schema(mcp_tool).get("properties", {})  # fastmcp-4 snake read
     if not isinstance(properties, dict):
