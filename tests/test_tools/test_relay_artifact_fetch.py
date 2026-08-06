@@ -153,7 +153,7 @@ async def test_oversize_artifact_is_refused_before_any_download(workspace: Path)
     assert raised.value.reason == "relay_fetch_artifact_too_large"
     details = raised.value.details
     assert details["size_bytes"] == 2 * 1024 * 1024 * 1024
-    assert details["max_bytes"] == 100 * 1024 * 1024
+    assert details["configured_max_bytes"] == 100 * 1024 * 1024
     assert details["origin"]["artifact_id"] == ARTIFACT
     assert details["origin"]["cluster"] == CLUSTER
     # No download was started and nothing was written.
@@ -343,3 +343,41 @@ async def test_every_projected_relay_tool_has_a_plain_paren_free_title() -> None
         assert listed[name].title == title, name
         assert "(" not in (listed[name].title or ""), name
         assert ")" not in (listed[name].title or ""), name
+
+
+@pytest.mark.asyncio
+async def test_relay_own_transfer_ceiling_bounds_a_generous_local_cap(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The LOWER of the two ceilings decides, and the refusal says which.
+
+    clio-relay refuses an artifact-content read above its own
+    MAX_ARTIFACT_CONTENT_BYTES (16 MiB). Clearing our generous local cap only to
+    be refused mid-transfer would hand the agent an opaque HTTP failure instead
+    of a reportable reason, so a 32 MiB artifact is refused here even though the
+    configured cap is 100 MiB -- and ``bound_by`` names relay, not our knob.
+    """
+
+    from clio_agent.tools.relay_artifact_fetch import RELAY_ARTIFACT_CONTENT_LIMIT_BYTES
+
+    relay = _FakeRelay(records=[_record(size_bytes=32 * 1024 * 1024)])
+
+    with pytest.raises(RelayArtifactFetchError) as raised:
+        await fetch_relay_artifact(
+            lambda: relay, {"job_id": JOB, "artifact_id": ARTIFACT}, cluster_hint=CLUSTER
+        )
+
+    details = raised.value.details
+    assert raised.value.reason == "relay_fetch_artifact_too_large"
+    assert details["bound_by"] == "relay"
+    assert details["max_bytes"] == RELAY_ARTIFACT_CONTENT_LIMIT_BYTES
+    assert details["configured_max_bytes"] == 100 * 1024 * 1024
+    assert relay.fetched == []
+
+    # A cap set BELOW relay's ceiling binds instead, and says so.
+    monkeypatch.setenv("CLIO_RELAY_FETCH_MAX_BYTES", "1024")
+    with pytest.raises(RelayArtifactFetchError) as raised:
+        await fetch_relay_artifact(lambda: relay, {"job_id": JOB, "artifact_id": ARTIFACT})
+    assert raised.value.details["bound_by"] == "relay.fetch_max_bytes"
+    assert raised.value.details["max_bytes"] == 1024
+    assert list(workspace.iterdir()) == []

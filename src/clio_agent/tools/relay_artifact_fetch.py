@@ -47,6 +47,13 @@ RELAY_FETCH_ORIGIN_SCHEMA = "clio-agent.relay-artifact-origin.v1"
 # every other byte limit in the tool layer is resolved.
 _DEFAULT_FETCH_MAX_BYTES = 100 * 1024 * 1024
 
+# clio-relay's OWN ceiling on one artifact-content transfer
+# (``MAX_ARTIFACT_CONTENT_BYTES`` in ``clio_relay/relay_ops.py``, enforced in
+# ``read_artifact_bytes``): a larger request is refused server-side, never
+# truncated. Mirrored here so the refusal arrives as a reason an agent can
+# report rather than as an opaque HTTP failure part-way through a transfer.
+RELAY_ARTIFACT_CONTENT_LIMIT_BYTES = 16 * 1024 * 1024
+
 
 def fetch_max_bytes() -> int:
     """Resolve the maximum artifact size this deployment will transfer inline.
@@ -220,7 +227,16 @@ def _select(records: list[dict[str, Any]], artifact_id: str, job_id: str) -> dic
 
 
 def _require_within_limit(record: Mapping[str, Any], origin: Mapping[str, Any]) -> int:
-    """Refuse an oversize transfer from the LISTING, before any bytes move."""
+    """Refuse an oversize transfer from the LISTING, before any bytes move.
+
+    Two ceilings apply and the LOWER one decides, because clearing this check
+    only to be refused mid-transfer by relay would leave the agent holding an
+    opaque HTTP failure instead of a reason it can report. Relay's artifact
+    content endpoint enforces its own ``MAX_ARTIFACT_CONTENT_BYTES``
+    (16 MiB, ``clio_relay/relay_ops.py``) and answers a larger request with a
+    typed transfer-limit error, so this refuses at that boundary too and names
+    which of the two limits bound the call.
+    """
 
     size = record.get("size_bytes")
     if not isinstance(size, int) or isinstance(size, bool) or size < 0:
@@ -229,15 +245,22 @@ def _require_within_limit(record: Mapping[str, Any], origin: Mapping[str, Any]) 
             reason="relay_fetch_size_unknown",
             details={"origin": dict(origin), "observed_size_bytes": size},
         )
-    limit = fetch_max_bytes()
+    configured = fetch_max_bytes()
+    limit = min(configured, RELAY_ARTIFACT_CONTENT_LIMIT_BYTES)
     if size > limit:
+        bound_by = (
+            "relay.fetch_max_bytes" if configured <= RELAY_ARTIFACT_CONTENT_LIMIT_BYTES else "relay"
+        )
         raise RelayArtifactFetchError(
-            f"relay artifact is {size} bytes, above this deployment's {limit}-byte "
-            "transfer limit; it was not downloaded and stays where it was produced",
+            f"relay artifact is {size} bytes, above the {limit}-byte transfer limit; "
+            "it was not downloaded and stays where it was produced",
             reason="relay_fetch_artifact_too_large",
             details={
                 "size_bytes": size,
                 "max_bytes": limit,
+                "bound_by": bound_by,
+                "configured_max_bytes": configured,
+                "relay_max_bytes": RELAY_ARTIFACT_CONTENT_LIMIT_BYTES,
                 "config_key": "relay.fetch_max_bytes",
                 "env": "CLIO_RELAY_FETCH_MAX_BYTES",
                 "origin": dict(origin),
@@ -368,6 +391,7 @@ class RelayArtifactFetchTool(Tool):
 
 
 __all__ = [
+    "RELAY_ARTIFACT_CONTENT_LIMIT_BYTES",
     "RELAY_FETCH_BARE_NAME",
     "RELAY_FETCH_ORIGIN_SCHEMA",
     "RELAY_FETCH_TOOL_NAME",
