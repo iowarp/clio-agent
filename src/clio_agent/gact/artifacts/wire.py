@@ -18,13 +18,17 @@ route so a client can retrieve the content hash-verified.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.artifacts.records import ArtifactKind, ArtifactVersion
 from clio_agent.gact.types import Part
+from clio_agent.runtime.humanize import format_bytes
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
+    from clio_agent.gact.artifacts.proposals import ProposalOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +310,59 @@ def append_turn_child_resource_links(
         )
 
 
+def create_artifact_summary_message(outcomes: "Sequence[ProposalOutcome]") -> str:
+    """One-line wire summary for ``create_artifact``'s declared ``structured_content``
+    (P5 wire semantics — the ``wait_agent_tasks`` treatment): derived directly from
+    each outcome's own accepted/created/reason facts — never invented, never a
+    second guess at what ``promote_proposals`` already decided.
+
+    A single-item batch (the common case) names the ONE outcome: a fresh mint with
+    its size, a dedup against the existing version, or the typed rejection reason.
+    A multi-item batch reports the created/deduplicated/rejected tally plus a
+    bounded sample of the first few names (never a raw dump).
+    """
+
+    if len(outcomes) == 1:
+        outcome = outcomes[0]
+        if not outcome.accepted:
+            return f"rejected: {outcome.reason}"
+        if outcome.created:
+            size = outcome.version.size_bytes if outcome.version is not None else None
+            suffix = f" ({format_bytes(size)})" if isinstance(size, int) else ""
+            return f"created 1 artifact: {outcome.name}{suffix}"
+        version_n = outcome.version.version if outcome.version is not None else 0
+        return f"deduplicated against existing {outcome.name} v{version_n}"
+    created = sum(1 for o in outcomes if o.accepted and o.created)
+    deduplicated = sum(1 for o in outcomes if o.accepted and not o.created)
+    rejected = sum(1 for o in outcomes if not o.accepted)
+    names = [o.name for o in outcomes if o.name]
+    sample = ", ".join(names[:3])
+    if len(names) > 3:
+        sample += f", +{len(names) - 3} more"
+    summary = (
+        f"{len(outcomes)} artifacts: {created} created, "
+        f"{deduplicated} deduplicated, {rejected} rejected"
+    )
+    return f"{summary} ({sample})" if sample else summary
+
+
+def declare_create_artifact_structured_content(
+    outcomes: "Sequence[ProposalOutcome]", result: Mapping[str, Any]
+) -> None:
+    """Declare ``create_artifact``'s typed wire payload: the composed summary
+    ``message`` FIRST, then the SAME ``artifacts``/``created``/``deduplicated``/
+    ``rejected`` fields the model-facing ``result`` already carries. Both of
+    ``promote_proposals``'s return points stay a single call — the substantive
+    logic lives HERE so proposals.py's ratcheted line count stays flat.
+    """
+
+    from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+        declare_structured_content,
+    )
+
+    declare_structured_content({"message": create_artifact_summary_message(outcomes), **result})
+
+
 __all__ = [
     "ARTIFACT_SERVER_ID",
     "PROPOSED_ARTIFACT_EVENT",
@@ -313,6 +370,8 @@ __all__ = [
     "append_turn_child_resource_links",
     "append_turn_resource_links",
     "artifact_uri",
+    "create_artifact_summary_message",
+    "declare_create_artifact_structured_content",
     "fetch_url_for",
     "mime_for",
     "proposed_diff_payload",

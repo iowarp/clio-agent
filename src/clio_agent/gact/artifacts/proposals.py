@@ -54,6 +54,7 @@ from clio_agent.gact.artifacts.records import (
     Mechanism,
 )
 from clio_agent.gact.artifacts.registry import get_registry
+from clio_agent.gact.artifacts.wire import declare_create_artifact_structured_content
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -624,12 +625,14 @@ def promote_proposals(
             proposal=Proposal(),
             source="none",
         )
-        return {
+        result = {
             "artifacts": [outcome.to_wire()],
             "created": 0,
             "deduplicated": 0,
             "rejected": 1,
         }
+        declare_create_artifact_structured_content([outcome], result)
+        return result
     outcomes = [
         promote_proposal(
             app,
@@ -645,12 +648,14 @@ def promote_proposals(
     created = sum(1 for o in outcomes if o.accepted and o.created)
     deduplicated = sum(1 for o in outcomes if o.accepted and not o.created)
     rejected = sum(1 for o in outcomes if not o.accepted)
-    return {
+    result = {
         "artifacts": [o.to_wire() for o in outcomes],
         "created": created,
         "deduplicated": deduplicated,
         "rejected": rejected,
     }
+    declare_create_artifact_structured_content(outcomes, result)
+    return result
 
 
 def parse_proposals(

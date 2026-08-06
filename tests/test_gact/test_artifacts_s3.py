@@ -468,6 +468,129 @@ def test_dedup_only_batch_reads_honest_not_contradictory(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Declared structured_content (P5 wire semantics) — the wait_agent_tasks       #
+# treatment extended to create_artifact, wired AFTER the created/deduplicated/ #
+# rejected rename above (declare_create_artifact_structured_content reads the  #
+# SAME renamed counts).                                                        #
+# --------------------------------------------------------------------------- #
+
+
+def _declared(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    declared: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+    return declared
+
+
+def test_create_artifact_declares_structured_content_for_a_fresh_mint(tmp_path, monkeypatch):
+    declared = _declared(monkeypatch)
+    app, sess, _ = _make_app(tmp_path)
+    good = tmp_path / "smoke_hostname.sh"
+    good.write_text("echo hostname", encoding="utf-8")  # 13 bytes
+
+    result = promote_proposals(
+        app, sess.id, [Proposal(path=str(good), kind="script")], workspace_id="ws1"
+    )
+
+    assert len(declared) == 1
+    shape = declared[0]
+    assert next(iter(shape)) == "message"
+    assert shape["message"] == "created 1 artifact: smoke_hostname.sh (13 B)"
+    assert {k: v for k, v in shape.items() if k != "message"} == result
+
+
+def test_create_artifact_declares_structured_content_for_a_dedup(tmp_path, monkeypatch):
+    app, sess, _ = _make_app(tmp_path)
+    dup_src = tmp_path / "smoke_hostname.sh"
+    dup_src.write_text("echo hostname", encoding="utf-8")
+    promote_proposal(app, sess.id, Proposal(path=str(dup_src), kind="script"), workspace_id="ws1")
+
+    declared = _declared(monkeypatch)
+    result = promote_proposals(
+        app, sess.id, [Proposal(path=str(dup_src), kind="script")], workspace_id="ws1"
+    )
+
+    assert len(declared) == 1
+    shape = declared[0]
+    assert shape["message"] == "deduplicated against existing smoke_hostname.sh v1"
+    assert {k: v for k, v in shape.items() if k != "message"} == result
+
+
+def test_create_artifact_declares_structured_content_for_a_rejection(tmp_path, monkeypatch):
+    declared = _declared(monkeypatch)
+    app, sess, _ = _make_app(tmp_path)
+
+    result = promote_proposals(
+        app,
+        sess.id,
+        [Proposal(path=str(tmp_path / "missing.md"), kind="report")],
+        workspace_id="ws1",
+    )
+
+    assert len(declared) == 1
+    shape = declared[0]
+    assert shape["message"] == f"rejected: {RejectionReason.PATH_MISSING.value}"
+    assert {k: v for k, v in shape.items() if k != "message"} == result
+
+
+def test_create_artifact_declares_structured_content_for_a_batch(tmp_path, monkeypatch):
+    app, sess, _ = _make_app(tmp_path)
+    good = tmp_path / "g.md"
+    good.write_text("g", encoding="utf-8")
+    dup_src = tmp_path / "d.md"
+    dup_src.write_text("d", encoding="utf-8")
+    promote_proposal(app, sess.id, Proposal(path=str(dup_src), kind="report"), workspace_id="ws1")
+
+    declared = _declared(monkeypatch)
+    result = promote_proposals(
+        app,
+        sess.id,
+        [
+            Proposal(path=str(good), kind="report"),
+            Proposal(path=str(dup_src), kind="report"),
+            Proposal(path=str(tmp_path / "missing.md"), kind="report"),
+        ],
+        workspace_id="ws1",
+    )
+
+    assert len(declared) == 1
+    shape = declared[0]
+    assert next(iter(shape)) == "message"
+    assert shape["message"] == (
+        "3 artifacts: 1 created, 1 deduplicated, 1 rejected (g.md, d.md, missing.md)"
+    )
+    assert {k: v for k, v in shape.items() if k != "message"} == result
+
+
+def test_create_artifact_declares_structured_content_for_over_batch_rejection(
+    tmp_path, monkeypatch
+):
+    """The batch-cap short-circuit (finding [1]) is the OTHER promote_proposals
+    return point — it must declare too, not just the main summary path."""
+
+    monkeypatch.setattr(P, "proposals_batch_max", lambda: 1)
+    declared = _declared(monkeypatch)
+    app, sess, _ = _make_app(tmp_path)
+
+    result = promote_proposals(
+        app,
+        sess.id,
+        [
+            Proposal(path=str(tmp_path / "a.md"), kind="report"),
+            Proposal(path=str(tmp_path / "b.md"), kind="report"),
+        ],
+        workspace_id="ws1",
+    )
+
+    assert len(declared) == 1
+    shape = declared[0]
+    assert shape["message"] == f"rejected: {RejectionReason.OVER_BATCH.value}"
+    assert {k: v for k, v in shape.items() if k != "message"} == result
+
+
+# --------------------------------------------------------------------------- #
 # Tool injection + schema
 # --------------------------------------------------------------------------- #
 

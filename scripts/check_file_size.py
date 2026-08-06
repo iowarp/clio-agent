@@ -207,7 +207,14 @@ RATCHET_BASELINE: dict[str, int] = {
     # tool signature + desc/args schema); the resolver itself lives in the owner
     # module artifacts/declared_used_edges.py. Ratchets back with the #714
     # artifacts/proposals decomposition.
-    "src/clio_agent/gact/artifacts/proposals.py": 832,
+    # P5 (native tool declared output semantics): +5 -- promote_proposals's two
+    # return points now declare create_artifact's typed structured_content shape
+    # (message-first, wait_agent_tasks's own treatment) via ONE call each; the
+    # summary-message composition + the declare call itself live in the owner
+    # module artifacts/wire.py (create_artifact_summary_message /
+    # declare_create_artifact_structured_content), so only the two-line
+    # dict-then-declare-then-return conversion landed here.
+    "src/clio_agent/gact/artifacts/proposals.py": 837,
     # #971 GAP B (S5 live gate): not baselined before this entry (silently over the
     # 800 cap already, from earlier unbaselined growth on this branch).
     # #1191: +51 for the per-session artifact-USE index (record_artifact_used /
