@@ -304,6 +304,18 @@ _INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     },
 }
 
+# Plain human names for the six curated operations. Without a title the UI head
+# renders the raw wire name (``jarvis_add_step``); the surrounding UI supplies
+# arguments, so a title never carries parentheses.
+_TITLES = {
+    "jarvis_create_pipeline": "Create Pipeline",
+    "jarvis_describe": "Describe",
+    "jarvis_add_step": "Add Step",
+    "jarvis_edit_step": "Edit Step",
+    "jarvis_run": "Run Pipeline",
+    "jarvis_get_execution": "Get Execution",
+}
+
 _DESCRIPTIONS = {
     "jarvis_create_pipeline": (
         "Use this when an application needs a new durable JARVIS pipeline before steps "
@@ -369,6 +381,7 @@ class _ProjectedJarvisTool(Tool):
         )
         super().__init__(
             name=name.removeprefix("jarvis_"),
+            title=_TITLES[name],
             description=_with_cluster_hint(_DESCRIPTIONS[name], cluster_hint),
             parameters=deepcopy(_INPUT_SCHEMAS[name]),
             output_schema=deepcopy(output_schema),

@@ -626,6 +626,28 @@ class RelayTransportClient:
                 for event in decode_sse_payload(task.task_id, "\n".join(data_lines)):
                     yield event
 
+    async def list_job_artifacts(self, job_id: str) -> list[dict[str, Any]]:
+        """List one relay job's indexed artifact records, sizes included.
+
+        The size-check door for :func:`fetch_artifact`: relay's own index
+        carries ``size_bytes`` and ``sha256`` per record, so a caller can refuse
+        an oversize transfer from the LISTING and never start a download it
+        would have to abandon.
+        """
+
+        path = f"/jobs/{quote(job_id, safe='')}/artifacts"
+        response = await self._require_http_client().get(path)
+        response.raise_for_status()
+        payload = response.json()
+        records = payload.get("artifacts") if isinstance(payload, Mapping) else None
+        if not isinstance(records, list):
+            raise RelayTransportContractError(
+                "relay job artifact listing has no artifacts array",
+                reason="relay_artifact_listing_invalid",
+                details={"job_id": job_id},
+            )
+        return [dict(record) for record in records if isinstance(record, Mapping)]
+
     async def fetch_artifact(self, artifact_id: str) -> bytes:
         """Fetch and decode an out-of-band relay artifact content envelope."""
 

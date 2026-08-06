@@ -207,6 +207,17 @@ def _with_cluster_hint(
     return f"{description} {sentence}" if description else sentence
 
 
+# Plain human names for the relay-owned follow tools. Relay advertises these
+# without a title, so the UI head fell back to the raw wire name. Titles carry no
+# parentheses -- the surrounding UI supplies arguments. Only the tools projected
+# under this mount are named; a relay tool this mapping does not cover keeps
+# whatever title relay itself declared.
+_FOLLOW_TOOL_TITLES = {
+    "relay_observe": "Observe Job",
+    "relay_wait": "Wait For Job",
+}
+
+
 class _ProjectedRelayFollowTool(Tool):
     """One relay-advertised bounded observation tool under the ``relay`` mount."""
 
@@ -222,7 +233,7 @@ class _ProjectedRelayFollowTool(Tool):
             raise ValueError(f"relay follow tool is not namespaced: {definition.name!r}")
         super().__init__(
             name=bare_name,
-            title=definition.title,
+            title=definition.title or _FOLLOW_TOOL_TITLES.get(definition.name),
             description=_with_cluster_hint(
                 definition.description,
                 cluster_hint,
@@ -296,6 +307,17 @@ class RemoteMcpFederation:
                     cluster_hint=cluster_hint,
                 )
             )
+        # clio-agent's OWN bounded artifact transfer (#1200), mounted beside the
+        # relay-owned follow tools because it answers the same question they do
+        # -- what came out of this job -- for the one case they cannot serve:
+        # an output file that must be read locally rather than observed inline.
+        from clio_agent.tools.relay_artifact_fetch import (  # noqa: PLC0415
+            RelayArtifactFetchTool,
+        )
+
+        follow_server.add_tool(
+            RelayArtifactFetchTool(client_factory=client_factory, cluster_hint=cluster_hint)
+        )
         self._follow_server = follow_server
 
     @classmethod

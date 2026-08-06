@@ -25,6 +25,7 @@ non-edge (precision over recall) stays DETECTABLE on the record, never silent.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
@@ -67,6 +68,12 @@ _NDP_DETAILS_TOOLS: frozenset[str] = frozenset({"get_dataset_details"})
 #: ``catalog_hits_not_consumed`` so the discovery is honestly recorded.
 _NDP_SEARCH_TOOLS: frozenset[str] = frozenset({"search_datasets", "list_organizations"})
 _NDP_STAGE_TOOL = "stage_resource"
+# #1200: clio-agent's own bounded relay transfer. Named here for the same reason
+# ``stage_resource`` is -- the tool's result carries a REMOTE origin the generic
+# args-based scan cannot see, and that origin is the used-edge authority for the
+# local file it wrote. Both the gateway-mounted name and the bare mount name are
+# listed because the short-name match sees whichever the dispatch used.
+_RELAY_FETCH_TOOLS: frozenset[str] = frozenset({"relay_fetch_artifact", "fetch_artifact"})
 
 #: Bound on how many authority-asserted catalog resources one result contributes,
 #: so a large search result cannot grow a transform record unboundedly.
@@ -580,6 +587,8 @@ def detect_authority_edges(
     short = tool_name.rsplit(".", 1)[-1] if "." in tool_name else tool_name
     if short == _NDP_STAGE_TOOL:
         return EdgeScan(_stage_resource_edges(app, structured, workspace_id), [])
+    if short in _RELAY_FETCH_TOOLS:
+        return EdgeScan(_relay_fetch_edges(structured), [])
     if short in _NDP_DETAILS_TOOLS:
         return EdgeScan(_catalog_resource_edges(structured), [])
     if short in _NDP_SEARCH_TOOLS:
@@ -627,6 +636,41 @@ def _stage_resource_edges(
             sha256=sha,
             path=local_path,
             note="ndp_stage_resource",
+        )
+    ]
+
+
+def _relay_fetch_edges(structured: dict[str, Any]) -> list[ProvEdge]:
+    """Authority edge recording where a fetched artifact's bytes were produced.
+
+    The transfer is the transform: the local file exists because
+    ``relay_fetch_artifact`` moved custody of a remote artifact into this
+    workspace. The remote reference (cluster + relay job + artifact id) is the
+    authority for that file, so it rides a used-edge and the provenance graph
+    shows the local artifact standing on its cluster-side origin rather than
+    appearing from nowhere. The digest is relay's own recorded ``sha256``,
+    already verified against the transferred bytes by the tool -- so this edge
+    pins the REMOTE identity, not a re-hash of the local copy.
+    """
+    origin = structured.get("origin")
+    if not isinstance(origin, Mapping):
+        return []
+    artifact_id = str(origin.get("artifact_id") or "").strip()
+    job_id = str(origin.get("job_id") or "").strip()
+    if not artifact_id or not job_id:
+        return []
+    cluster = str(origin.get("cluster") or "").strip() or "unknown-cluster"
+    authority = str(origin.get("uri") or "").strip() or f"relay://{cluster}/{job_id}/{artifact_id}"
+    remote_sha = origin.get("remote_sha256")
+    return [
+        ProvEdge(
+            role=EdgeRole.USED,
+            evidence=EdgeEvidence.AUTHORITY,
+            authority=authority,
+            external_ref=f"external:relay://{cluster}/{job_id}/{artifact_id}",
+            sha256=remote_sha if isinstance(remote_sha, str) and remote_sha else None,
+            path=str(structured.get("local_path") or "").strip(),
+            note="relay_fetch_artifact",
         )
     ]
 

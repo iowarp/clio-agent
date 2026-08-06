@@ -86,6 +86,11 @@ ARTIFACT_SUFFIXES: frozenset[str] = frozenset(
         ".html",
         ".txt",
         ".md",
+        # #1200: a run's stdout/stderr log fetched off a cluster is a real,
+        # citeable output -- the same text a ``.txt`` sibling would be. Its
+        # absence here silently dropped every transferred log from the artifact
+        # record while the file sat in the workspace.
+        ".log",
         ".nc",
         ".h5",
         ".hdf5",
@@ -108,6 +113,7 @@ _SUFFIX_KIND: dict[str, ArtifactKind] = {
     ".html": ArtifactKind.REPORT,
     ".md": ArtifactKind.REPORT,
     ".txt": ArtifactKind.REPORT,
+    ".log": ArtifactKind.REPORT,
     ".csv": ArtifactKind.DATASET,
     ".tsv": ArtifactKind.DATASET,
     ".parquet": ArtifactKind.DATASET,
