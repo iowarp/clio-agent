@@ -266,7 +266,7 @@ def build_cron_create_tool() -> Any:
             recurring=bool(recurring),
             timezone_name=timezone,
         )
-        return {
+        result = {
             "schedule_id": sch.id,
             "cron": sch.cron,
             "run_at": sch.run_at,
@@ -274,6 +274,22 @@ def build_cron_create_tool() -> Any:
             "timezone": sch.timezone,
             "next_fire_at": sch.next_fire_at,
         }
+        # Declared structured payload (P5 wire semantics — the wait_agent_tasks
+        # treatment): a one-line ``message`` naming what armed FIRST, then the
+        # SAME fields the model-facing return already carries.
+        from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+            declare_structured_content,
+        )
+
+        kind = "recurring" if sch.recurring else "one-shot"
+        trigger = f"cron {sch.cron}" if sch.cron else f"run_at {sch.run_at}"
+        declare_structured_content(
+            {
+                "message": f"armed schedule {sch.id} — {kind} {trigger}; next fire {sch.next_fire_at}",
+                **result,
+            }
+        )
+        return result
 
     return native_tool(
         cron_create,
@@ -320,7 +336,7 @@ def build_cron_list_tool() -> Any:
 
         app, sid = _active()
         rows = app.state.schedules.list(session_id=sid)
-        return [
+        schedules = [
             {
                 "id": s.id,
                 "cron": s.cron,
@@ -331,6 +347,24 @@ def build_cron_list_tool() -> Any:
             }
             for s in rows
         ]
+        # Declared structured payload (P5 wire semantics — the wait_agent_tasks
+        # treatment): a one-line ``message`` tallying recurring vs one-shot
+        # FIRST, then the SAME rows the model-facing return already carries.
+        from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+            declare_structured_content,
+        )
+
+        n = len(schedules)
+        if n == 0:
+            message = "no schedules armed for this session"
+        else:
+            recurring_n = sum(1 for s in schedules if s["recurring"])
+            message = (
+                f"{n} schedule{'' if n == 1 else 's'}: "
+                f"{recurring_n} recurring, {n - recurring_n} one-shot"
+            )
+        declare_structured_content({"message": message, "schedules": schedules})
+        return schedules
 
     return native_tool(
         cron_list,
@@ -355,7 +389,24 @@ def build_cron_delete_tool() -> Any:
         recurring tick AND clears any pending busy-retry, so nothing fires afterward."""
 
         app, sid = _active()
-        return cancel_owned_schedule(app, sid, str(schedule_id or "").strip())
+        clean_id = str(schedule_id or "").strip()
+        deleted = cancel_owned_schedule(app, sid, clean_id)
+        # Declared structured payload (P5 wire semantics — the wait_agent_tasks
+        # treatment): the bare bool the model sees stays unchanged; the wire
+        # gets an honest one-line message derived from the SAME facts.
+        from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+            declare_structured_content,
+        )
+
+        message = (
+            f"cancelled schedule {clean_id}"
+            if deleted
+            else f"no schedule {clean_id} to cancel (already gone or never armed)"
+        )
+        declare_structured_content(
+            {"message": message, "schedule_id": clean_id, "deleted": deleted}
+        )
+        return deleted
 
     return native_tool(
         cron_delete,
