@@ -531,3 +531,79 @@ async def test_relay_wait_forwards_foreign_handles_untouched() -> None:
     assert relay.resolved_calls == [("job-1129", None)]
     assert waited.data["state"] == "succeeded"
     assert waited.data["result"] == "bounded-result"
+
+
+def _relay_observe_tool() -> Tool:
+    """relay_observe exactly as the live p5run2 relay advertises it (#1195).
+
+    The load-bearing part is ``dependentRequired``: supplying ``cluster``
+    obliges ``route_revision``, so ``cluster`` here is one half of a route
+    handle copied off a submission receipt -- not a value a caller may pick.
+    """
+
+    return Tool(
+        name="relay_observe",
+        description=(
+            "Read job events from a cursor and optionally return when a regex pattern "
+            "matches stdout, stderr, or event text. For a remote job, copy cluster, "
+            "job_id, and route_revision unchanged from its submission receipt on every "
+            "follow-up call, including on the same MCP connection. job_id alone is only "
+            "for a local relay job."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string"},
+                "cluster": {"type": "string"},
+                "route_revision": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "include_logs": {"type": "boolean", "default": True},
+            },
+            "required": ["job_id"],
+            "dependentRequired": {
+                "cluster": ["route_revision"],
+                "route_revision": ["cluster"],
+            },
+            "additionalProperties": False,
+        },
+        outputSchema={"type": "object"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_cluster_hint_never_stamps_a_route_handle_follow_tool(
+    fake_relay: _FakeRelayClient,
+) -> None:
+    """FAILING-FIRST (#1195): naming the cluster beside relay_observe broke it live.
+
+    relay_observe couples ``cluster`` with ``route_revision`` via
+    ``dependentRequired``. Appending "This deployment's registered cluster is
+    'ares-p5run2'." invited the agent to pass ``cluster``, and relay then
+    refused the call -- ``route_revision is required when cluster routes an
+    existing job handle`` -- with a revision the handle-first ``jarvis_run``
+    receipt never carries. Live check on the same relay: the identical job_id
+    with NO cluster succeeds. So the hint must be suppressed here and relay's
+    own description must survive byte-identical.
+    """
+
+    observe = _relay_observe_tool()
+    fake_relay.catalog = RelayRemoteMcpCatalog(
+        revision=fake_relay.catalog.revision,
+        tools=fake_relay.catalog.tools,
+        follow_tools={"relay_observe": observe, "relay_wait": _relay_wait_tool()},
+    )
+
+    federation = await RemoteMcpFederation.discover(
+        lambda: fake_relay, cluster_hint="ares-p5run2"
+    )
+    gateway = build_gateway({}, remote_mcp_federation=federation)
+
+    async with Client(gateway) as client:
+        listed = {tool.name: tool for tool in await client.list_tools()}
+
+    assert listed["relay_observe"].description == observe.description
+    assert "ares-p5run2" not in (listed["relay_observe"].description or "")
+    # A follow tool whose cluster is NOT a route handle still gets the hint --
+    # the suppression is decided by the schema's coupling, not by tool name.
+    assert listed["relay_wait"].description == (
+        "This deployment's registered cluster is 'ares-p5run2'."
+    )

@@ -157,20 +157,51 @@ def _task_result_as_job_wire(job_id: str, resolved: Any) -> dict[str, Any]:
     return payload
 
 
-def _with_cluster_hint(description: str | None, cluster_hint: str | None) -> str | None:
+def _cluster_is_route_handle(input_schema: Mapping[str, Any] | None) -> bool:
+    """Whether a follow tool's ``cluster`` is half of a receipt-copied route.
+
+    Relay's follow-tool schemas couple ``cluster`` and ``route_revision``
+    through JSON Schema ``dependentRequired``: supplying either obliges the
+    other. Where that coupling exists, ``cluster`` is not a value an agent may
+    choose -- it is one field of a route handle copied verbatim off a
+    submission receipt. Detected from the relay-supplied schema itself, so a
+    relay that later drops or adds the coupling changes this answer without a
+    tool-name list here needing an edit.
+    """
+
+    if not isinstance(input_schema, Mapping):
+        return False
+    dependent = input_schema.get("dependentRequired")
+    if not isinstance(dependent, Mapping):
+        return False
+    required_with_cluster = dependent.get("cluster")
+    return isinstance(required_with_cluster, (list, tuple)) and (
+        "route_revision" in required_with_cluster
+    )
+
+
+def _with_cluster_hint(
+    description: str | None,
+    cluster_hint: str | None,
+    *,
+    input_schema: Mapping[str, Any] | None = None,
+) -> str | None:
     """Append one cluster-identity sentence to a relay-owned follow-tool description.
 
-    ``relay_observe``/``relay_wait`` take no ``cluster`` argument -- their
-    schema is relay-owned, discovered fresh each boot -- so unlike the JARVIS
-    tools this states the fact only; it never instructs the agent to pass a
-    field that does not exist. Composed once from the resolved config value
-    (``relay.cluster`` / ``CLIO_RELAY_CLUSTER``, see
-    ``clio_agent.tools.relay_factory.resolve_relay_cluster``). Unset
+    Suppressed when the tool's own schema makes ``cluster`` half of a route
+    handle (:func:`_cluster_is_route_handle`). Naming the deployment's cluster
+    beside such a tool reads as an invitation to pass it, and relay then
+    refuses the call -- ``route_revision is required when cluster routes an
+    existing job handle`` -- with a revision our handle-first ``jarvis_run``
+    receipt does not carry. Observed live (#1195) on ``relay_observe``: the
+    same job_id, called with no ``cluster`` at all, succeeds. Composed once
+    from the resolved config value (``relay.cluster`` / ``CLIO_RELAY_CLUSTER``,
+    see ``clio_agent.tools.relay_factory.resolve_relay_cluster``). Unset
     (``cluster_hint`` falsy) leaves the relay-supplied description
     byte-identical -- no placeholder text, per the no-silent-fallback rule.
     """
 
-    if not cluster_hint:
+    if not cluster_hint or _cluster_is_route_handle(input_schema):
         return description
     sentence = f"This deployment's registered cluster is {cluster_hint!r}."
     return f"{description} {sentence}" if description else sentence
@@ -192,7 +223,11 @@ class _ProjectedRelayFollowTool(Tool):
         super().__init__(
             name=bare_name,
             title=definition.title,
-            description=_with_cluster_hint(definition.description, cluster_hint),
+            description=_with_cluster_hint(
+                definition.description,
+                cluster_hint,
+                input_schema=definition.input_schema,
+            ),
             parameters=deepcopy(definition.input_schema),
             output_schema=deepcopy(definition.output_schema),
             annotations=definition.annotations,
