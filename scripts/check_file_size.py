@@ -100,25 +100,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # per-call-site provenance registration (which sub-list a tool came from is
     # only known here) stayed in this file.
     "src/clio_agent/gact/agents/builders.py": 1923,
-    # #948 S4/S5/S6 growth already carried this file past the flat 800 cap (to 842)
-    # before it was ever added to this baseline — a pre-existing gap this change
-    # did not introduce (it was silently exempt from the ratchet, not under it).
-    # P5 (wire semantics): +81 net for the fan-out group identity (spawn_group_id/
-    # group_size threaded through _do_spawn/spawn_agents_parallel/the started+
-    # completed expert_handoff Parts) and wait_agent_tasks's structured-content
-    # declaration + per-task row building; the pure derivation logic (group-field
-    # projection, structured-row/summary shaping) was extracted to the new owner
-    # module agents/spawn_group.py to hold this file's growth down. Ratchet back
-    # with the #714/#767 decomposition (a spawn_agent_task / wait_agent_tasks /
-    # spawn_agents_parallel split is the natural next cut).
-    "src/clio_agent/gact/agents/spawn_runtime.py": 923,
-    # P5 (wire semantics): +3 for the fan-out group identity fields
-    # (spawn_group_id/group_size) on TaskHandle + TaskResult, projected from
-    # AgentTask in from_task() and threaded through RelayExpertInvoker.invoke —
-    # both dataclasses already carry ~15 parity fields each, so two more typed
-    # fields (kept to single-line trailing comments) is the honest cost of one
-    # more boundary-crossing fact, not a new logic cluster to decompose.
-    "src/clio_agent/gact/agents/invoker.py": 803,
     # #900: +14 for the lifespan child-reaper install + clean-shutdown teardown wiring
     # (both delegate to the owner module runtime/process_tree.py).
     # #918: +7 for the SkillNotDelegatableError exception handler (app.py owns
@@ -283,24 +264,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # P2.3 (#1071): +7 — _install_tool_runtime_hooks defaults in the tool_interceptor
     # + PostToolUse producers; both producers live in the owner module
     # gact/hooks/intercept.py, only the thin default-in wiring is here.
-    # #1190 + the collector-collapse work already on this branch grew the file to
-    # 1049 (>the recorded 964 baseline) before this entry was updated — a pre-
-    # existing gap this change did not introduce. P5 (wire semantics): +25 on top
-    # of that for the ONE new integration point wait_agent_tasks needs — the
-    # declared-structured-content pop/prefer in the "completed" phase and the
-    # waited_tasks registry resolution in the "started" phase (both call OUT to
-    # owner modules — tool_instrumentation.py / agent_tasks.py — for the actual
-    # logic; only the two call sites land here). +7 more landed on this branch
-    # concurrently with this change (unrelated; not audited here). Ratchet back
-    # with #714/#767.
-    "src/clio_agent/gact/tool_observer.py": 1081,
-    # Collector-collapse work already on this branch grew the file to 1303 (>the
-    # recorded 986 baseline) before this entry was updated — pre-existing, not
-    # introduced here. P5 (wire semantics): +34 for the waited_tasks union-merge
-    # in upsert_repeated_collector_call's tool_call branch (a collapsed re-poll on
-    # the same task set must never present fewer resolved rows than either
-    # attempt saw). Ratchet back with #714/#767.
-    "src/clio_agent/gact/transcript.py": 1337,
+    "src/clio_agent/gact/tool_observer.py": 964,
+    "src/clio_agent/gact/transcript.py": 986,
     # #918: +17 for the typed SkillNotDelegatableError ladder arm (a skill-bound
     # turn fails typed, never as generic agent_error).
     # #952 S4 Pass C: -1 (the suppressed_parent_resume_offsets init was removed
