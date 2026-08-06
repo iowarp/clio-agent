@@ -279,7 +279,7 @@ def build_cron_create_tool() -> Any:
         cron_create,
         name="cron_create",
         desc=cron_create.__doc__,
-        title="cron(create)",
+        title="Create Cron",
         args={
             "cron": {
                 "type": "string",
@@ -336,7 +336,7 @@ def build_cron_list_tool() -> Any:
         cron_list,
         name="cron_list",
         desc=cron_list.__doc__,
-        title="cron(list)",
+        title="List Crons",
         args={},
     )
 
@@ -361,7 +361,7 @@ def build_cron_delete_tool() -> Any:
         cron_delete,
         name="cron_delete",
         desc=cron_delete.__doc__,
-        title="cron(delete)",
+        title="Delete Cron",
         args={
             "schedule_id": {
                 "type": "string",

@@ -384,7 +384,7 @@ def build_plan_exit_tool(agent_def: Any) -> Any:
         plan_exit,
         name="plan_exit",
         desc=plan_exit.__doc__,
-        title="plan(exit)",
+        title="Exit Plan",
         args={
             "summary": {
                 "type": "string",

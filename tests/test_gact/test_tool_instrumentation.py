@@ -755,15 +755,15 @@ def test_auto_react_tools_carry_their_declared_presentation() -> None:
 
     instrument_tools(build_auto_react_tools(SimpleNamespace(id="tester")))
     assert declared_tool_representation("create_artifact") == "chip"
-    assert declared_tool_title("create_artifact") == "artifact(create)"
+    assert declared_tool_title("create_artifact") == "Create Artifact"
     for name, title in [
-        ("plan_exit", "plan(exit)"),
-        ("write_todos", "todos"),
-        ("cron_create", "cron(create)"),
-        ("cron_list", "cron(list)"),
-        ("cron_delete", "cron(delete)"),
-        ("loop_wakeup", "loop"),
-        ("goal_status", "goal(status)"),
+        ("plan_exit", "Exit Plan"),
+        ("write_todos", "Write Todos"),
+        ("cron_create", "Create Cron"),
+        ("cron_list", "List Crons"),
+        ("cron_delete", "Delete Cron"),
+        ("loop_wakeup", "Loop Wakeup"),
+        ("goal_status", "Goal Status"),
     ]:
         assert declared_tool_representation(name) == "row", name
         assert declared_tool_title(name) == title, name
@@ -789,12 +789,12 @@ def test_spawn_runtime_tools_declare_handoff_for_spawn_and_row_for_collectors(
         )
     instrument_tools(tools)
     expected = {
-        "spawn_agent_task": ("handoff", "spawn(agent)"),
-        "spawn_agents_parallel": ("handoff", "spawn(parallel)"),
-        "wait_agent_tasks": ("row", "wait(tasks)"),
-        "check_agent_tasks": ("row", "check(tasks)"),
-        "observe_agent_tasks": ("row", "observe(tasks)"),
-        "message_agent": ("row", "message(agent)"),
+        "spawn_agent_task": ("handoff", "Spawn Agent"),
+        "spawn_agents_parallel": ("handoff", "Spawn Agents"),
+        "wait_agent_tasks": ("row", "Wait"),
+        "check_agent_tasks": ("row", "Check Tasks"),
+        "observe_agent_tasks": ("row", "Observe"),
+        "message_agent": ("row", "Message Agent"),
     }
     assert {t.name for t in tools} == set(expected)
     for name, (representation, title) in expected.items():
@@ -823,6 +823,48 @@ def test_title_sanitization_strips_controls_and_clamps() -> None:
     assert sanitize_tool_title("  spaced\t\ttitle  ") == "spaced title"
     assert sanitize_tool_title(None) == ""
     assert len(sanitize_tool_title("x" * 500)) == 80
+
+
+# --------------------------------------------------------------------------- #
+# 6b. No registered title contains a paren (owner correction 2026-08-06): a   #
+#     curated title is a plain human name — the UI injects the               #
+#     parenthesized call arguments itself, so a title must never smuggle its #
+#     own parens back in.                                                     #
+# --------------------------------------------------------------------------- #
+
+
+def test_no_registered_native_title_contains_a_paren(tmp_path: Path, monkeypatch) -> None:
+    """Sweeps every curated native/auto/spawn-runtime title through the real
+    builder functions (not a source-grep) and asserts none carries parens.
+
+    Sabotage baseline: before the 2026-08-06 rename this failed on
+    ``spawn_agent_task``/``wait_agent_tasks``/``check_agent_tasks``/
+    ``spawn_agents_parallel``/``run_workflow``/``create_artifact``/
+    ``observe_agent_tasks``/``message_agent``/``plan_exit``/``goal_status``/
+    ``load_skill``/``cron_create``/``cron_list``/``cron_delete`` — every one
+    of them baked a ``verb(object)`` shape into the title."""
+
+    from clio_agent.gact.agents import spawn_runtime
+    from clio_agent.gact.agents.auto_tools import build_auto_react_tools
+    from clio_agent.gact.agents.skill_runtime import SkillRuntime, build_load_skill_tool
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.resolution._runtime_declared_child_ids",
+        lambda a, pid, session_id="": {"child_a"},
+    )
+    tools = build_auto_react_tools(SimpleNamespace(id="tester"))
+    tools.append(build_load_skill_tool(SimpleNamespace(id="tester"), SkillRuntime()))
+    with TestClient(app), _gact_app_context(app), _tool_session_context("sess_x"):
+        tools += spawn_runtime.build_spawn_runtime_tools(
+            SimpleNamespace(),
+            SimpleNamespace(id="main", metadata={"agent_blueprint_id": "bp"}),
+        )
+    instrument_tools(tools)
+    assert len(tools) >= 12, "expected the full curated native/auto/spawn-runtime set"
+    for tool in tools:
+        title = declared_tool_title(tool.name)
+        assert "(" not in title and ")" not in title, (tool.name, title)
 
 
 # --------------------------------------------------------------------------- #

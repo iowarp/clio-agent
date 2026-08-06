@@ -755,7 +755,7 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
     return native_tool(
         create_artifact,
         name="create_artifact",
-        title="artifact(create)",
+        title="Create Artifact",
         representation="chip",
         desc=(
             "Designate a deliverable as a first-class artifact — YOU decide what is "
