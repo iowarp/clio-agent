@@ -64,7 +64,14 @@ RATCHET_BASELINE: dict[str, int] = {
     # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
     # down with the #714/#767 decomposition.
     "src/clio_agent/arc/working_set_fold.py": 919,
-    "src/clio_agent/gact/agent_blueprints.py": 1035,
+    # 2026-08-04 (78f81d6f, unrelated to the P5 wire-semantics wave): +43 for
+    # validate_agent_blueprint_path's new runtime_tool_names parameter -- pack
+    # validation only knew builtins + pack mcp_servers namespaces, so an expert
+    # declaring a serve-mounted relay tool (remote_*, relay_observe/relay_wait) was
+    # disabled as "unknown tool reference" and took its whole root down by
+    # hierarchy. The ratchet was not bumped in that commit; recorded here as
+    # pre-existing CI-blocking debt this change closes (P5 adversarial review [A]).
+    "src/clio_agent/gact/agent_blueprints.py": 1078,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -160,7 +167,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # (_scheduler_tick/_scheduler_tick_once/_fire_schedule/_seconds_until_next_minute)
     # moved to the owner module gact/scheduler_runtime.py; app.py only re-exports them.
     # P0.1d (#1105): -1 removing the stale _jsonish re-export after wire-mode migration.
-    "src/clio_agent/gact/app.py": 2537,  # relay wiring moved to gact/relay_wiring.py
+    # 2026-08-04 (78f81d6f, unrelated to the P5 wire-semantics wave): +7 for the
+    # lifespan pre-import of litellm -- concurrent imports (deferred agent init vs
+    # provider-bind construct_agent_with_relay) raced importlib to
+    # KeyError('litellm'), turning every message POST into a 503. The ratchet was
+    # not bumped in that commit; recorded here as pre-existing CI-blocking debt
+    # this change closes (P5 adversarial review [A]).
+    "src/clio_agent/gact/app.py": 2544,  # relay wiring moved to gact/relay_wiring.py
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
