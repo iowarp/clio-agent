@@ -266,6 +266,49 @@ def test_stale_declaration_from_before_this_call_never_attaches_to_it(
         client.__exit__(None, None, None)
 
 
+def test_real_p5_tool_declared_structured_content_does_not_leak_across_sequential_calls(
+    tmp_path: Path,
+) -> None:
+    """Extends the machinery proof above onto a REAL P5-declared native tool
+    (``goal_status``, the sweep this module's docstring describes for every
+    native tool) instead of a synthetic fixture: two sequential calls on the
+    SAME thread through the REAL observed pipeline must each carry ONLY their
+    OWN declared structured_content -- the second call's Part must never
+    inherit the first call's stale value (Finding A, the proven leak)."""
+
+    from clio_agent.gact import context as _ctx
+    from clio_agent.gact.goal import arm_goal, build_goal_status_tool
+
+    app, client, sid = _observing_app(tmp_path)
+    try:
+        (tool,) = instrument_tools([build_goal_status_tool()])
+        with _gact_app_context(app), _tool_session_context(sid):
+            session_token = _ctx.set_session_id(sid)
+            try:
+                assert tool()["active"] is False  # first call: no goal armed
+                arm_goal(app, sid, condition="ship the report")
+                assert tool()["active"] is True  # second call: DIFFERENT facts
+            finally:
+                _ctx.reset(session_token)
+
+        parts = (app.state.live_assistant_parts or {}).get(sid, [])
+        result_parts = [p for p in parts if p.type == "tool_result"]
+        assert len(result_parts) == 2
+        first, second = result_parts[0].structured_content, result_parts[1].structured_content
+        assert first == {
+            "message": "no active goal",
+            "active": False,
+            "condition": "",
+            "iters_elapsed": 0,
+        }
+        assert second is not None and second["message"].startswith("goal active:")
+        # Sabotage lock: the second call's declaration is its OWN, not a leaked copy.
+        assert second != first
+        assert second.get("active") is True
+    finally:
+        client.__exit__(None, None, None)
+
+
 # --------------------------------------------------------------------------- #
 # 2. Full chain: seam -> notify -> per-app observer -> live parts + title.     #
 # --------------------------------------------------------------------------- #

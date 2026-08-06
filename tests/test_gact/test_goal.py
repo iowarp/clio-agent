@@ -313,6 +313,37 @@ def test_goal_status_does_not_run_judge(tmp_path: Path, monkeypatch: Any) -> Non
     _in_ctx(body)
 
 
+def test_goal_status_declares_typed_structured_content(tmp_path: Path, monkeypatch: Any) -> None:
+    """goal_status gets wait_agent_tasks's OWN treatment: an honest ``message``
+    naming the armed state FIRST, then the SAME fields the model-facing return
+    already carries. Never a readback the model could steer toward (rule 2's
+    "no active goal" / "goal active" wording carries no ``met``)."""
+
+    declared: list[dict] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+
+    def body() -> None:
+        app = _app(tmp_path)
+        sid = _session(app)
+        _bind(app, sid)
+        tool = build_goal_status_tool()
+
+        inactive = tool.func()
+        assert declared[-1] == {"message": "no active goal", **inactive}
+
+        arm_goal(app, sid, condition="ship the report", max_goal_iters=9)
+        active = tool.func()
+        shape = declared[-1]
+        assert next(iter(shape)) == "message"
+        assert shape["message"] == "goal active: 'ship the report' (0/9 iters)"
+        assert {k: v for k, v in shape.items() if k != "message"} == active
+
+    _in_ctx(body)
+
+
 # =========================================================================== #
 # /goal command + arm/clear seam                                               #
 # =========================================================================== #
