@@ -388,10 +388,11 @@ def test_estimate_bytes_counts_nested_and_image_payloads() -> None:
     # at ~256 bytes. Sabotage: revert _estimate_bytes to text-only -> these go tiny.
     assert _estimate_bytes(nested) > 900_000
     assert _estimate_bytes(image) > 900_000
-    # P2.11's three additive empty Part fields contribute 75 serialized bytes,
-    # moving this light fixture from 960 to 1,035; it remains three orders of
-    # magnitude lighter than either heavy payload.
-    assert 1_000 <= light_bytes < 1_100
+    # Additive Part fields grow the light fixture's serialized floor: P2.11's
+    # three empty fields moved it 960 -> 1,035; P2.14's four background-exit
+    # fields (#1131) -> 1,111; #1190's ``structured_content`` -> 1,137. It
+    # remains three orders of magnitude lighter than either heavy payload.
+    assert 1_100 <= light_bytes < 1_250
 
 
 def test_byte_cap_evicts_tool_result_heavy_sessions() -> None:

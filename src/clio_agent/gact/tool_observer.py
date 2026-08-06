@@ -891,6 +891,11 @@ def _make_tool_observer(app: "FastAPI"):
                     is_error=not ok,
                     duration_ms=duration_ms,
                     cached=False,
+                    # #1190: the structured copy is a TOP-LEVEL part field (the UI
+                    # render ladder's contract) — ONE home, never mirrored into
+                    # ``metadata``. Wire-only: the model's observation is the
+                    # separate ``model_text`` built at the execution boundary.
+                    structured_content=structured_content,
                     content=[
                         Part(
                             id=f"live_{call_id}_result_text",
@@ -902,11 +907,6 @@ def _make_tool_observer(app: "FastAPI"):
                     metadata={
                         "stream_source": "live",
                         "telemetry_source": "live_observer",
-                        **(
-                            {"structured_content": structured_content}
-                            if structured_content is not None
-                            else {}
-                        ),
                         **(
                             {"result": _bounded_tool_call_result(result)}
                             if result is not None

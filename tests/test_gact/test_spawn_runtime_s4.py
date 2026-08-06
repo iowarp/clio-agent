@@ -1308,6 +1308,7 @@ def _collector_result(
     duration_ms: float,
     tool_name: str = "wait_agent_tasks",
     is_error: bool = False,
+    structured_content: object | None = None,
 ) -> Part:
     """A live tool_result Part shaped exactly like the observer's completed append."""
 
@@ -1319,6 +1320,8 @@ def _collector_result(
         tool_name=tool_name,
         is_error=is_error,
         duration_ms=duration_ms,
+        # #1190: the structured copy rides the part TOP LEVEL (never metadata).
+        structured_content=structured_content,
         content=[Part(id=f"live_{call_id}_result_text", type="text", agent_id="main", text=text)],
         metadata={
             "stream_source": "live",
@@ -1397,6 +1400,54 @@ def test_check_error_repoll_collapses_and_shows_newest_error_verbatim() -> None:
     assert result.metadata["attempts"] == 2
     assert result.metadata["total_wait_ms"] == 8.0
     assert "result" not in result.metadata  # no stale prior-attempt evidence
+
+
+def test_repoll_structured_content_follows_the_newest_attempt() -> None:
+    """#1190: the TOP-LEVEL ``structured_content`` field stays consistent across
+    collector re-poll upserts — the newest attempt's value (or absence) owns the
+    merged part, exactly like the visible result text. A prior attempt's
+    structured payload must never survive under a newer attempt that lacks it,
+    and never leak back in via the metadata merge (metadata carries no copy)."""
+
+    from clio_agent.gact.tool_observer import _append_live_assistant_part
+
+    app, transcript, _events = _collector_transcript_app()
+    # Attempt 1 carries a structured payload; the re-poll (attempt 2) does not.
+    _append_live_assistant_part(
+        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=30.0)
+    )
+    _append_live_assistant_part(
+        app,
+        "sess_x",
+        _collector_result("call_a", "running", 30000.0, structured_content={"status": "running"}),
+    )
+    _append_live_assistant_part(
+        app, "sess_x", _collector_call("call_b", task_ids=["task_1"], timeout_s=30.0)
+    )
+    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 5.0))
+
+    parts = transcript.snapshot()
+    assert [p.type for p in parts] == ["tool_call", "tool_result"]
+    result = parts[1]
+    assert result.metadata["attempts"] == 2
+    assert result.structured_content is None  # newest attempt owns the facts
+    assert "structured_content" not in result.to_wire()  # absent-when-None
+    assert "structured_content" not in result.metadata  # ONE home: never metadata
+
+    # And the reverse: a re-poll that GAINS a structured payload serves it.
+    _append_live_assistant_part(
+        app, "sess_x", _collector_call("call_c", task_ids=["task_1"], timeout_s=30.0)
+    )
+    _append_live_assistant_part(
+        app,
+        "sess_x",
+        _collector_result("call_c", "completed", 3.0, structured_content={"status": "completed"}),
+    )
+    result = transcript.snapshot()[1]
+    assert result.metadata["attempts"] == 3
+    assert result.structured_content == {"status": "completed"}
+    assert result.to_wire()["structured_content"] == {"status": "completed"}
+    assert "structured_content" not in result.metadata
 
 
 def test_different_args_waits_stay_separate_rows() -> None:

@@ -460,10 +460,12 @@ class TurnTranscript:
                     )
                     # The newest attempt owns the result facts: a prior
                     # attempt's evidence must not survive under a newer
-                    # attempt that lacks it (e.g. a failed re-poll).
-                    for stale_key in ("result", "structured_content"):
-                        if stale_key in merged_metadata and stale_key not in part.metadata:
-                            merged_metadata.pop(stale_key)
+                    # attempt that lacks it (e.g. a failed re-poll). The
+                    # TOP-LEVEL ``structured_content`` field (#1190) needs no
+                    # scrub here: the replacing part is stored wholesale below,
+                    # so the newest attempt's value (or absence) already wins.
+                    if "result" in merged_metadata and "result" not in part.metadata:
+                        merged_metadata.pop("result")
                 part.id = existing.id
                 part.sequence = existing.sequence
                 part.metadata = merged_metadata

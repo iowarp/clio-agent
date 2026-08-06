@@ -531,20 +531,36 @@ def test_live_observer_records_completed_tool_result_evidence(tmp_path: Path) ->
             "datasets": ["safe_float"],
             "checksum": "abc123",
         }
+        # #1190: a result WITHOUT structuredContent serves NO structured_content
+        # field at all (absent-when-None wire semantics), and never a metadata copy.
+        assert "structured_content" not in tool_results[0]
+        assert "structured_content" not in tool_results[0]["metadata"]
 
 
 def test_live_observer_keeps_exact_large_mcp_structured_content(tmp_path: Path) -> None:
-    """The public structured result remains exact when the display preview is bounded."""
+    """The public structured result remains exact when the display preview is bounded.
+
+    #1190: ``structured_content`` is a TOP-LEVEL field on the wire ``tool_result``
+    part — the exact path the shipped UI render ladder reads
+    (``extractStructuredContent`` → ``part['structured_content']``) — with ONE
+    home: no ``metadata`` mirror. The served part (GET /messages) carries the
+    same top-level copy with the object intact.
+    """
 
     from .conftest import complete_turn
 
+    structured = {
+        "schema_version": "jarvis.execution.v1",
+        "execution_id": "execution-structured",
+        "payload": "x" * 13_000,
+    }
     app = build_app(
         sessions_path=tmp_path / "s.json",
         agent=_LiveObservedLargeMcpResultAgent(),
     )
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-        complete_turn(client, sid, "analyze")
+        assistant = complete_turn(client, sid, "analyze")
 
         history = _settled_history(app, sid)
         tool_result = next(
@@ -555,11 +571,18 @@ def test_live_observer_keeps_exact_large_mcp_structured_content(tmp_path: Path) 
         )
 
         assert tool_result["metadata"]["result"]["truncated"] is True
-        assert tool_result["metadata"]["structured_content"] == {
-            "schema_version": "jarvis.execution.v1",
-            "execution_id": "execution-structured",
-            "payload": "x" * 13_000,
-        }
+        # The wire part serves the structured copy at the TOP LEVEL, intact.
+        assert tool_result["structured_content"] == structured
+        # ONE home: the metadata mirror is gone.
+        assert "structured_content" not in tool_result["metadata"]
+
+        # The persisted/served message (GET /v1/sessions/{sid}/messages — what
+        # complete_turn returns) carries the same top-level copy, intact.
+        served_result = next(
+            part for part in assistant["parts"] if part.get("type") == "tool_result"
+        )
+        assert served_result["structured_content"] == structured
+        assert "structured_content" not in served_result.get("metadata", {})
 
 
 def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(tmp_path: Path) -> None:
@@ -583,13 +606,23 @@ def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(tmp_path:
 
         assert agent.model_text == str(agent.root)
         assert tool_result["metadata"]["result"]["truncated"] is True
-        assert tool_result["metadata"]["structured_content"] == {
+        # #1190: the structured copy is served at the part TOP LEVEL (the UI
+        # render ladder's read path), with no metadata mirror (ONE home).
+        assert tool_result["structured_content"] == {
             "schema_version": "jarvis.execution.v1",
             "execution_id": "execution-live-root",
             "schedulerNativeId": None,
             "payload": "x" * 13_000,
         }
+        assert "structured_content" not in tool_result["metadata"]
         assert "must-not-enter-telemetry" not in json.dumps(tool_result)
+        # #1190 model-context contract: the ReAct observation (the executor's
+        # return value — exactly what the model ingests) is the ``.data``-derived
+        # ``model_text`` and NEVER a second serialization of the structuredContent
+        # payload the wire part carries. The structured copy is wire/UI-only.
+        assert agent.model_text == str(agent.root)
+        assert json.dumps(tool_result["structured_content"]) not in agent.model_text
+        assert '"schema_version"' not in agent.model_text  # no JSON-keyed twin
 
 
 def test_live_observer_preserves_failed_structured_tool_result_evidence(tmp_path: Path) -> None:

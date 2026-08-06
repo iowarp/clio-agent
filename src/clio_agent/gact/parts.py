@@ -195,6 +195,14 @@ class Part(BaseModel):
     is_error: bool = False
     cached: bool = False
     duration_ms: float = 0.0
+    # tool_result (#1190): the MCP result's ``structuredContent`` payload, served
+    # at the part TOP LEVEL — the exact path the UI render ladder reads
+    # (gact-tui ``extractStructuredContent`` → ``part['structured_content']``).
+    # ONE home: never mirrored into ``metadata``. Wire/UI-only — the model-facing
+    # ReAct observation is the independent ``model_text`` serialization built at
+    # the execution boundary (tools/mcp_executor.py::_result_to_text) and never
+    # reads this field. ``None`` = absent on the wire (``to_wire`` drops defaults).
+    structured_content: Optional[Any] = None
 
     # resource_link (SPEC §4.5 core type; #968). Reused to give a generated ARTIFACT
     # outbound wire identity (#966.9): ``uri`` is ``artifact://<ws>/<name>@vN`` (or
