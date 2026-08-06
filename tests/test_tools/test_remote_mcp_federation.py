@@ -323,6 +323,46 @@ async def test_virtual_alias_submits_mcp_call_spec_and_returns_handle(
 
 
 @pytest.mark.asyncio
+async def test_cluster_hint_stamps_relay_follow_tool_only(fake_relay: _FakeRelayClient) -> None:
+    """FAILING-FIRST (#1171 cluster-discovery gap): CLIO_RELAY_CLUSTER's resolved
+    value reaches relay_wait's (a relay-follow tool's) description verbatim,
+    composed once at construction -- and never touches the remote_* alias
+    descriptions, which stay relay-owned and byte-untouched."""
+
+    federation = await RemoteMcpFederation.discover(
+        lambda: fake_relay, cluster_hint="ares-p5run2"
+    )
+    gateway = build_gateway({}, remote_mcp_federation=federation)
+
+    async with Client(gateway) as client:
+        listed = {tool.name: tool for tool in await client.list_tools()}
+
+    assert listed["relay_wait"].description == (
+        "This deployment's registered cluster is 'ares-p5run2'."
+    )
+    assert listed["remote_science_inspect"].description == "Inspect a registered cluster dataset."
+
+
+@pytest.mark.asyncio
+async def test_cluster_hint_unset_leaves_relay_follow_description_unchanged(
+    fake_relay: _FakeRelayClient,
+) -> None:
+    """Unset cluster_hint (the default) -> relay_wait's relay-supplied description
+    stays exactly what the fixture declared -- no placeholder, no sentence
+    (no-silent-fallback: nothing else about the description changes)."""
+
+    federation = await RemoteMcpFederation.discover(lambda: fake_relay)
+    gateway = build_gateway({}, remote_mcp_federation=federation)
+
+    async with Client(gateway) as client:
+        listed = {tool.name: tool for tool in await client.list_tools()}
+
+    assert listed["relay_wait"].description == _relay_wait_tool().description
+    assert (listed["relay_wait"].description or "") == ""
+    assert listed["remote_science_inspect"].description == "Inspect a registered cluster dataset."
+
+
+@pytest.mark.asyncio
 async def test_remote_alias_cannot_self_declare_read_only(
     fake_relay: _FakeRelayClient,
 ) -> None:

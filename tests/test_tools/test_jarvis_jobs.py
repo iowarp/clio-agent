@@ -15,6 +15,7 @@ from fastmcp_tasks.client_models import ClientGetTaskResult
 
 from clio_agent.tools.gateway import build_gateway
 from clio_agent.tools.jarvis_jobs import (
+    _DESCRIPTIONS,
     JARVIS_RUN_HANDLE_OUTPUT_SCHEMA,
     JarvisJobError,
     JarvisJobs,
@@ -443,6 +444,55 @@ async def test_curated_surface_has_six_agent_story_tools_and_handle_schema(
     assert run.output_schema == JARVIS_RUN_HANDLE_OUTPUT_SCHEMA
     assert "wait" not in run.input_schema["properties"]
     assert all("Use this when" in listed[name].description for name in names)
+
+
+@pytest.mark.asyncio
+async def test_cluster_hint_stamps_all_six_descriptions(fake_route: _FakeJarvisRoute) -> None:
+    """FAILING-FIRST (#1171 cluster-discovery gap): CLIO_RELAY_CLUSTER's resolved
+    value reaches every curated JARVIS tool's description verbatim, composed once
+    at construction from the config value -- never via prose/keyword inference on
+    a model's own output."""
+
+    surface = JarvisJobs(fake_route.client, poll_sleep=_no_sleep, cluster_hint="ares-p5run2")
+    gateway = build_gateway({}, jarvis_jobs=surface)
+
+    async with Client(gateway) as client:
+        listed = {tool.name: tool for tool in await client.list_tools()}
+
+    names = {name for name in listed if name.startswith("jarvis_")}
+    assert names == {
+        "jarvis_create_pipeline",
+        "jarvis_describe",
+        "jarvis_add_step",
+        "jarvis_edit_step",
+        "jarvis_run",
+        "jarvis_get_execution",
+    }
+    for name in names:
+        description = listed[name].description
+        assert description.startswith(_DESCRIPTIONS[name])
+        assert "This deployment's registered cluster is 'ares-p5run2'" in description
+        assert "pass it as `cluster` verbatim" in description
+
+
+@pytest.mark.asyncio
+async def test_cluster_hint_unset_leaves_descriptions_byte_identical(
+    fake_route: _FakeJarvisRoute,
+) -> None:
+    """Unset CLIO_RELAY_CLUSTER (cluster_hint=None, the default) -> no placeholder,
+    no cluster sentence -- descriptions stay byte-identical to the static catalog
+    (no-silent-fallback: nothing else about the description changes)."""
+
+    surface = _surface(fake_route)
+    gateway = build_gateway({}, jarvis_jobs=surface)
+
+    async with Client(gateway) as client:
+        listed = {tool.name: tool for tool in await client.list_tools()}
+
+    names = {name for name in listed if name.startswith("jarvis_")}
+    for name in names:
+        assert listed[name].description == _DESCRIPTIONS[name]
+        assert "registered cluster" not in listed[name].description
 
 
 @pytest.mark.asyncio

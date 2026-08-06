@@ -90,6 +90,27 @@ def resolve_relay_transport_config() -> RelayTransportConfig | RelayTransportUna
     return RelayTransportConfig(mcp_url=mcp_url, http_url=http_url, api_token=api_token)
 
 
+def resolve_relay_cluster() -> str:
+    """Resolve this deployment's registered relay cluster identity, config -> env -> default.
+
+    Reads the same ``relay.cluster`` / ``CLIO_RELAY_CLUSTER`` knob the relay
+    placement path already consulted
+    (:func:`clio_agent.gact.relay_wiring.configure_relay_expert_invokers`) --
+    this is now the single seam both that path and the curated tool-definition
+    builders (:class:`clio_agent.tools.jarvis_jobs.JarvisJobs`,
+    :class:`clio_agent.tools.remote_mcp.RemoteMcpFederation`) call, so the
+    value is parsed once. Returns ``""`` when unset; callers decide what unset
+    means for their own surface -- this function never gates, degrades, or
+    fabricates a value, it only reads config.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415 - keep transport import-light
+
+    return conf.resolve(
+        "relay.cluster", env="CLIO_RELAY_CLUSTER", default="", cast=conf.as_str
+    ).strip()
+
+
 def relay_transport_from_env(
     *,
     owner_session_id: str | None = None,
@@ -125,9 +146,10 @@ async def discover_relay_tool_surfaces() -> RelayToolSurfaces:
     from clio_agent.tools.remote_mcp import RemoteMcpFederation  # noqa: PLC0415
 
     factory: Callable[[], AbstractAsyncContextManager[RelayTransportClient]] = resolved.client
-    jarvis_jobs = JarvisJobs(factory)
+    cluster_hint = resolve_relay_cluster() or None
+    jarvis_jobs = JarvisJobs(factory, cluster_hint=cluster_hint)
     try:
-        federation = await RemoteMcpFederation.discover(factory)
+        federation = await RemoteMcpFederation.discover(factory, cluster_hint=cluster_hint)
     except Exception as exc:  # noqa: BLE001 - queryable typed boot degrade
         status = {
             "configured": True,

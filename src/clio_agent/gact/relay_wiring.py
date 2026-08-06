@@ -54,6 +54,7 @@ def configure_relay_expert_invokers(app: FastAPI) -> None:
     """Publish configured ``relay:<cluster>`` placement owners at app assembly."""
 
     from clio_agent import conf  # noqa: PLC0415
+    from clio_agent.tools.relay_factory import resolve_relay_cluster  # noqa: PLC0415
     from clio_agent.tools.relay_transport import (  # noqa: PLC0415
         RelayTransportUnavailable,
         resolve_relay_transport_config,
@@ -67,9 +68,7 @@ def configure_relay_expert_invokers(app: FastAPI) -> None:
             "reason": "relay_tools_not_configured",
         }
         return
-    cluster = conf.resolve(
-        "relay.cluster", env="CLIO_RELAY_CLUSTER", default="", cast=conf.as_str
-    ).strip()
+    cluster = resolve_relay_cluster()
     prompt_path = conf.resolve(
         "relay.remote_agent.prompt_path",
         env="CLIO_RELAY_REMOTE_AGENT_PROMPT_PATH",

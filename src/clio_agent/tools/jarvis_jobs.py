@@ -268,10 +268,33 @@ _DESCRIPTIONS = {
 }
 
 
+def _with_cluster_hint(description: str, cluster_hint: str | None) -> str:
+    """Append one cluster-identity sentence when ``CLIO_RELAY_CLUSTER`` is configured.
+
+    Every curated JARVIS tool declares a required ``cluster`` input (see
+    ``_INPUT_SCHEMAS``), so the sentence tells the calling agent the exact
+    value to pass -- composed once here from the resolved config value
+    (``relay.cluster`` / ``CLIO_RELAY_CLUSTER``, see
+    ``clio_agent.tools.relay_factory.resolve_relay_cluster``), never guessed
+    or inferred from prose. Unset (``cluster_hint`` falsy) leaves the
+    description byte-identical to ``_DESCRIPTIONS`` -- no placeholder text,
+    per the no-silent-fallback rule.
+    """
+
+    if not cluster_hint:
+        return description
+    return (
+        f"{description} This deployment's registered cluster is "
+        f"{cluster_hint!r}; pass it as `cluster` verbatim."
+    )
+
+
 class _ProjectedJarvisTool(Tool):
     """One curated operation exposed below the gateway's jarvis mount."""
 
-    def __init__(self, name: str, owner: "JarvisJobs") -> None:
+    def __init__(
+        self, name: str, owner: "JarvisJobs", *, cluster_hint: str | None = None
+    ) -> None:
         read_only = name in {"jarvis_describe", "jarvis_get_execution"}
         output_schema = (
             JARVIS_RUN_HANDLE_OUTPUT_SCHEMA
@@ -282,7 +305,7 @@ class _ProjectedJarvisTool(Tool):
         )
         super().__init__(
             name=name.removeprefix("jarvis_"),
-            description=_DESCRIPTIONS[name],
+            description=_with_cluster_hint(_DESCRIPTIONS[name], cluster_hint),
             parameters=deepcopy(_INPUT_SCHEMAS[name]),
             output_schema=deepcopy(output_schema),
             annotations=ToolAnnotations(
@@ -313,6 +336,7 @@ class JarvisJobs:
         poll_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         dispatch_timeout_seconds: float = 600.0,
         request_timeout_seconds: float = 30.0,
+        cluster_hint: str | None = None,
     ) -> None:
         if dispatch_timeout_seconds <= 0 or request_timeout_seconds <= 0:
             raise ValueError("JARVIS dispatch and request timeouts must be positive")
@@ -320,9 +344,10 @@ class JarvisJobs:
         self._poll_sleep = poll_sleep
         self._dispatch_timeout_seconds = dispatch_timeout_seconds
         self._request_timeout_seconds = request_timeout_seconds
+        self._cluster_hint = cluster_hint
         server = FastMCP("clio-jarvis-jobs")
         for name in JARVIS_TOOL_NAMES:
-            server.add_tool(_ProjectedJarvisTool(name, self))
+            server.add_tool(_ProjectedJarvisTool(name, self, cluster_hint=cluster_hint))
         self._server = server
 
     @property

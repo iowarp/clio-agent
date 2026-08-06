@@ -157,17 +157,42 @@ def _task_result_as_job_wire(job_id: str, resolved: Any) -> dict[str, Any]:
     return payload
 
 
+def _with_cluster_hint(description: str | None, cluster_hint: str | None) -> str | None:
+    """Append one cluster-identity sentence to a relay-owned follow-tool description.
+
+    ``relay_observe``/``relay_wait`` take no ``cluster`` argument -- their
+    schema is relay-owned, discovered fresh each boot -- so unlike the JARVIS
+    tools this states the fact only; it never instructs the agent to pass a
+    field that does not exist. Composed once from the resolved config value
+    (``relay.cluster`` / ``CLIO_RELAY_CLUSTER``, see
+    ``clio_agent.tools.relay_factory.resolve_relay_cluster``). Unset
+    (``cluster_hint`` falsy) leaves the relay-supplied description
+    byte-identical -- no placeholder text, per the no-silent-fallback rule.
+    """
+
+    if not cluster_hint:
+        return description
+    sentence = f"This deployment's registered cluster is {cluster_hint!r}."
+    return f"{description} {sentence}" if description else sentence
+
+
 class _ProjectedRelayFollowTool(Tool):
     """One relay-advertised bounded observation tool under the ``relay`` mount."""
 
-    def __init__(self, definition: McpTool, *, client_factory: RemoteMcpClientFactory) -> None:
+    def __init__(
+        self,
+        definition: McpTool,
+        *,
+        client_factory: RemoteMcpClientFactory,
+        cluster_hint: str | None = None,
+    ) -> None:
         bare_name = definition.name.removeprefix(f"{RELAY_FOLLOW_NAMESPACE}_")
         if bare_name == definition.name or not bare_name:
             raise ValueError(f"relay follow tool is not namespaced: {definition.name!r}")
         super().__init__(
             name=bare_name,
             title=definition.title,
-            description=definition.description,
+            description=_with_cluster_hint(definition.description, cluster_hint),
             parameters=deepcopy(definition.input_schema),
             output_schema=deepcopy(definition.output_schema),
             annotations=definition.annotations,
@@ -212,6 +237,8 @@ class RemoteMcpFederation:
         self,
         catalog: RelayRemoteMcpCatalog,
         client_factory: RemoteMcpClientFactory,
+        *,
+        cluster_hint: str | None = None,
     ) -> None:
         self._catalog = catalog
         self._client_factory = client_factory
@@ -231,17 +258,23 @@ class RemoteMcpFederation:
                 _ProjectedRelayFollowTool(
                     definition,
                     client_factory=client_factory,
+                    cluster_hint=cluster_hint,
                 )
             )
         self._follow_server = follow_server
 
     @classmethod
-    async def discover(cls, client_factory: RemoteMcpClientFactory) -> "RemoteMcpFederation":
+    async def discover(
+        cls,
+        client_factory: RemoteMcpClientFactory,
+        *,
+        cluster_hint: str | None = None,
+    ) -> "RemoteMcpFederation":
         """Read the relay catalog once and bind every projected call to its revision."""
 
         async with client_factory() as relay:
             catalog = await relay.discover_remote_mcp()
-        return cls(catalog, client_factory)
+        return cls(catalog, client_factory, cluster_hint=cluster_hint)
 
     @property
     def catalog(self) -> RelayRemoteMcpCatalog:
