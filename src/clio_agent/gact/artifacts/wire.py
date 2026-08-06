@@ -230,10 +230,87 @@ def append_turn_resource_links(
         )
 
 
+def append_turn_child_resource_links(
+    app: "FastAPI", sid: str, turn_id: str, transcript: Any, *, agent_id: str = ""
+) -> None:
+    """Roll up artifacts minted by CHILD sessions spawned THIS turn (owner ask
+    2026-08-06): "show at the end of the turn ALL artifacts that have been
+    generated in that turn by any of the agents or subagents".
+
+    :func:`append_turn_resource_links` gives the PARENT's own mints wire identity
+    from its per-session turn buffer; a delegated child's mints only ever chipped
+    into the CHILD's own transcript because that buffer is session-scoped and
+    already drained by the child's OWN finalize by the time this parent finalize
+    runs — so the buffer is not a source here. Instead this walks the agent-task
+    registry for the child sessions this parent TURN spawned (``parent_turn_id ==
+    turn_id`` — a prior turn's child never matches) plus their full descendant
+    tree (a child's own children, still entirely owned by this turn's work: each
+    spawn mints a brand-new session, never reused across turns or parents), then
+    reads every version those sessions produced from the artifact REGISTRY — the
+    authoritative in-process projection (RULE 4), not a heuristic.
+
+    Appended as one contiguous run, ordered by mint time, AFTER
+    :func:`append_turn_resource_links` so both runs land adjacent on the message
+    (one ARTIFACTS grid client-side); any ``artifact_id`` already riding a
+    ``resource_link`` part on this message is skipped, so the parent's own chips
+    can never duplicate. No descendant spawned this turn -> no registry scan, no
+    parts (never an empty grid marker). Fully guarded: a rollup failure must
+    never break the turn's answer.
+    """
+    try:
+        reg = getattr(app.state, "agent_task_registry", None)
+        if reg is None:
+            return
+        direct_children = [
+            str(task.child_session_id)
+            for task in reg.for_parent(sid)
+            if task.child_session_id and task.parent_turn_id == turn_id
+        ]
+        if not direct_children:
+            return
+
+        from clio_agent.gact.agent_tasks import descendant_session_ids  # noqa: PLC0415
+        from clio_agent.gact.artifacts.registry import get_registry  # noqa: PLC0415
+        from clio_agent.gact.runtime.globals import _new_part_id  # noqa: PLC0415
+
+        session_ids: set[str] = set(direct_children)
+        for child_sid in direct_children:
+            session_ids.update(descendant_session_ids(app, child_sid))
+
+        already = {
+            str(part.metadata.get("artifact_id") or "")
+            for part in transcript.snapshot()
+            if part.type == "resource_link"
+        }
+
+        rows: list[tuple[str, str, ArtifactVersion]] = []
+        for record in get_registry(app).all_records():
+            for version in record.versions:
+                producer_sid = str((version.producer or {}).get("session_id") or "")
+                if producer_sid not in session_ids or version.artifact_id in already:
+                    continue
+                rows.append((record.workspace_id, record.name, version))
+        rows.sort(key=lambda row: row[2].created_at or "")
+
+        for workspace_id, name, version in rows:
+            transcript.append_part(
+                resource_link_part(
+                    workspace_id, name, version, part_id=_new_part_id(), agent_id=agent_id
+                ),
+                stream_source="batch",
+            )
+    except Exception:  # noqa: BLE001 — a wire-identity rollup must never break a turn
+        logger.warning(
+            "artifact child resource_link rollup skipped reason=turn_rollup_failed session=%s",
+            sid,
+        )
+
+
 __all__ = [
     "ARTIFACT_SERVER_ID",
     "PROPOSED_ARTIFACT_EVENT",
     "UI_PAYLOAD_MIME",
+    "append_turn_child_resource_links",
     "append_turn_resource_links",
     "artifact_uri",
     "fetch_url_for",

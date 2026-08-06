@@ -1698,3 +1698,203 @@ def test_collector_tools_notify_the_live_observer() -> None:
         assert calls[0][1] == {"task_ids": None}
     finally:
         _execution.notify_global_tool_observer = original
+
+
+# ---------------------------------------------------------------------------
+# Turn-end artifact rollup (owner ask 2026-08-06): "show at the end of the turn
+# ALL artifacts that have been generated in that turn by any of the agents or
+# subagents". A child's mints only ever chipped into the CHILD's own transcript
+# (its per-session turn buffer is drained by ITS OWN finalize); these tests drive
+# ``artifacts/wire.append_turn_child_resource_links`` — the finalize seam that
+# rolls a spawned child's (and its descendants') registry-sourced mints onto the
+# PARENT's settled message — directly, matching the ``test_finalize_append_helper
+# _builds_resource_link_parts`` unit idiom (test_artifacts_s2.py) rather than a
+# live turn, so mint ORDER and the turn/session scoping are exactly controlled.
+# ---------------------------------------------------------------------------
+
+
+class _FakeTranscript:
+    """Minimal transcript stand-in: records appended parts and lets a test seed
+    parts already "on the message" (the exactly-once dedup precondition)."""
+
+    def __init__(self, parts: list[Part] | None = None) -> None:
+        self._parts = list(parts or [])
+
+    def snapshot(self) -> list[Part]:
+        return list(self._parts)
+
+    def append_part(self, part: Part, *, stream_source: str = "batch") -> Part:
+        del stream_source
+        self._parts.append(part)
+        return part
+
+
+def _rollup_app(tmp_path: Path) -> SimpleNamespace:
+    """A real SessionStore + AgentTaskRegistry + ArtifactRegistry, no semantic
+    sink wired (``mint_artifact``'s ``_emit_semantic_event`` short-circuits
+    harmlessly with no sink — the rollup reads the registry + agent-task index
+    directly, never the sink)."""
+
+    from clio_agent.gact.artifacts.registry import ArtifactRegistry
+    from clio_agent.gact.sessions import SessionStore
+
+    store = SessionStore(path=tmp_path / "sessions.json")
+    return SimpleNamespace(
+        state=SimpleNamespace(
+            sessions=store,
+            agent_task_registry=AgentTaskRegistry(),
+            artifact_registry=ArtifactRegistry(),
+        )
+    )
+
+
+def _rollup_mint(app: Any, sid: str, name: str, sha: str, *, call_id: str = "c1") -> Any:
+    """Mint one synthetic artifact version, producer-stamped to ``sid``."""
+
+    from clio_agent.gact.artifacts.minting import mint_artifact
+    from clio_agent.gact.artifacts.records import ArtifactKind, IdentityEvidence, Mechanism
+
+    return mint_artifact(
+        app,
+        sid,
+        name=name,
+        workspace_id="ws1",
+        evidence=IdentityEvidence.hashed_at_use(sha256=sha, size_bytes=10),
+        kind=ArtifactKind.IMAGE,
+        mechanism=Mechanism.TOOL_SCHEMA,
+        producer={"tool": "plot", "call_id": call_id, "session_id": sid},
+    )
+
+
+def _rollup_task(app: Any, *, parent_sid: str, child_sid: str, parent_turn_id: str) -> None:
+    """Register a child AgentTask directly — the rollup only reads the registry
+    projection, so a full ``persist_agent_task`` round-trip is unnecessary."""
+
+    app.state.agent_task_registry.register(
+        AgentTask(
+            task_id=f"task_{child_sid}",
+            parent_session_id=parent_sid,
+            child_session_id=child_sid,
+            parent_turn_id=parent_turn_id,
+            agent_ref={"expert_id": "worker", "requesting_expert_id": "main"},
+            status="completed",
+            created_at="2026-08-05T00:00:00+00:00",
+            updated_at="2026-08-05T00:00:00+00:00",
+        )
+    )
+
+
+def test_child_rollup_appends_child_mints_ordered_by_mint_time(tmp_path: Path) -> None:
+    """A turn whose child mints two artifacts: the settled parent message ends
+    with exactly those two ``resource_link`` parts, metadata intact, oldest first."""
+
+    from clio_agent.gact.artifacts.wire import append_turn_child_resource_links
+
+    app = _rollup_app(tmp_path)
+    _rollup_task(app, parent_sid="sess_p", child_sid="sess_c", parent_turn_id="T1")
+
+    # Minted in this order; named so a name-sort (instead of mint-time-sort)
+    # would flip the assertion below — the lock proves ORDER, not naming luck.
+    older = _rollup_mint(app, "sess_c", "zzz_first_minted.png", "a" * 64, call_id="c1")
+    time.sleep(0.005)
+    newer = _rollup_mint(app, "sess_c", "aaa_second_minted.png", "b" * 64, call_id="c2")
+
+    transcript = _FakeTranscript()
+    append_turn_child_resource_links(app, "sess_p", "T1", transcript, agent_id="main")
+
+    parts = transcript.snapshot()
+    # Sabotage: sort by name instead of created_at -> this order flips, red.
+    assert [p.name for p in parts] == ["zzz_first_minted.png", "aaa_second_minted.png"]
+    assert [p.type for p in parts] == ["resource_link", "resource_link"]
+    assert parts[0].metadata["artifact_id"] == older.artifact_id
+    assert parts[1].metadata["artifact_id"] == newer.artifact_id
+    assert parts[0].agent_id == "main"
+    # The full #966.9 metadata block rides verbatim (11 keys), not a subset.
+    assert set(parts[0].metadata) == {
+        "artifact_id",
+        "sha256",
+        "size_bytes",
+        "kind",
+        "version",
+        "custody",
+        "fetch_url",
+        "producer_activity_id",
+        "mechanism",
+        "workspace_id",
+        "name",
+    }
+    assert parts[0].uri == "artifact://ws1/zzz_first_minted.png@v1"
+
+
+def test_child_rollup_includes_grandchild_mints(tmp_path: Path) -> None:
+    """Any of the agents or subagents (owner ask): a grandchild — spawned by the
+    CHILD, not the parent — still rolls up, because the grandchild session exists
+    solely because of this turn's spawn chain."""
+
+    from clio_agent.gact.artifacts.wire import append_turn_child_resource_links
+
+    app = _rollup_app(tmp_path)
+    _rollup_task(app, parent_sid="sess_p", child_sid="sess_c", parent_turn_id="T1")
+    _rollup_task(app, parent_sid="sess_c", child_sid="sess_gc", parent_turn_id="child_own_turn")
+    grand = _rollup_mint(app, "sess_gc", "deep.png", "c" * 64, call_id="c3")
+
+    transcript = _FakeTranscript()
+    append_turn_child_resource_links(app, "sess_p", "T1", transcript, agent_id="main")
+
+    parts = transcript.snapshot()
+    # Sabotage: scope to direct children only (skip descendant_session_ids) -> [], red.
+    assert len(parts) == 1
+    assert parts[0].metadata["artifact_id"] == grand.artifact_id
+
+
+def test_child_rollup_skips_artifact_id_already_on_the_message(tmp_path: Path) -> None:
+    """The exactly-once guard: an artifact_id already riding a ``resource_link``
+    part on this message (the parent's own live-chipped mint) is never re-added."""
+
+    from clio_agent.gact.artifacts.wire import append_turn_child_resource_links, resource_link_part
+
+    app = _rollup_app(tmp_path)
+    _rollup_task(app, parent_sid="sess_p", child_sid="sess_c", parent_turn_id="T1")
+    minted = _rollup_mint(app, "sess_c", "already.png", "d" * 64, call_id="c4")
+    existing_part = resource_link_part(
+        "ws1", "already.png", minted, part_id="part_existing", agent_id="main"
+    )
+    transcript = _FakeTranscript(parts=[existing_part])
+
+    append_turn_child_resource_links(app, "sess_p", "T1", transcript, agent_id="main")
+
+    parts = transcript.snapshot()
+    # Sabotage: drop the "already present" dedup set -> len becomes 2, red.
+    assert len(parts) == 1
+    assert parts[0] is existing_part
+
+
+def test_child_rollup_excludes_a_child_spawned_in_a_previous_turn(tmp_path: Path) -> None:
+    """A mint from a PREVIOUS turn does not leak in: the child was spawned under
+    an earlier ``parent_turn_id`` (T0), not the turn finalizing now (T1)."""
+
+    from clio_agent.gact.artifacts.wire import append_turn_child_resource_links
+
+    app = _rollup_app(tmp_path)
+    _rollup_task(app, parent_sid="sess_p", child_sid="sess_c", parent_turn_id="T0")
+    _rollup_mint(app, "sess_c", "stale.png", "e" * 64, call_id="c5")
+
+    transcript = _FakeTranscript()
+    append_turn_child_resource_links(app, "sess_p", "T1", transcript, agent_id="main")
+
+    # Sabotage: drop the parent_turn_id filter -> the stale child's mint leaks in, red.
+    assert transcript.snapshot() == []
+
+
+def test_child_rollup_appends_nothing_when_no_child_spawned_this_turn(tmp_path: Path) -> None:
+    """No descendant spawned this turn -> no registry scan, no parts (never an
+    empty grid marker)."""
+
+    from clio_agent.gact.artifacts.wire import append_turn_child_resource_links
+
+    app = _rollup_app(tmp_path)
+
+    transcript = _FakeTranscript()
+    append_turn_child_resource_links(app, "sess_p", "T1", transcript, agent_id="main")
+
+    assert transcript.snapshot() == []

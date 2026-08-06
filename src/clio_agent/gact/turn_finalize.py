@@ -471,6 +471,14 @@ def finalize_turn(
     append_turn_resource_links(
         state.app, state.sid, state.turn_id, state.transcript, agent_id=responder_agent_id
     )
+    # Owner ask 2026-08-06: roll up child/subagent mints too (owner module:
+    # artifacts/wire.py) — a delegated child's artifacts otherwise never surface
+    # on the parent's own settled message.
+    from clio_agent.gact.artifacts.wire import append_turn_child_resource_links  # noqa: PLC0415
+
+    append_turn_child_resource_links(
+        state.app, state.sid, state.turn_id, state.transcript, agent_id=responder_agent_id
+    )
 
     # #972: cheap post-turn CAS budget check (owner-module guarded one-liner) — a
     # running total vs the budget; the reachability eviction scan runs ONLY on a breach.

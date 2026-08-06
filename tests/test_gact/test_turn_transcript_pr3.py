@@ -504,3 +504,96 @@ def test_chat_answer_streamed_reasoning_batch_wraps_in_arrival_order(
             if e.type == "message.part.added" and e.payload["part"]["type"] == "thinking"
         ]
         assert len(thinking_added) == 1, thinking_added
+
+
+# ---------------------------------------------------------------------------
+# Turn-end artifact rollup (owner ask 2026-08-06): a delegated child's mints must
+# surface on the settled PARENT message too. This is the end-to-end proof
+# (real turn, real spawn+wait, real finalize) that ``turn_finalize`` wires
+# ``artifacts/wire.append_turn_child_resource_links`` correctly — the unit-level
+# coverage of the rollup logic itself lives in
+# ``test_spawn_runtime_s4.py::test_child_rollup_*``.
+# ---------------------------------------------------------------------------
+
+
+class _RollupAgent:
+    """Parent forward spawns ONE child (self-declared as ``main``), blocks for
+    its completion (the ``_NestingAgent`` pattern, test_turn_spawn_s3.py — a real
+    ``threading.Event.wait`` on the child's dedicated pool thread never stalls
+    the loop thread the parent forward runs on), then answers. The CHILD's own
+    forward mints two artifacts directly onto the registry — the mint funnel
+    itself is covered elsewhere; here the concern is the PARENT's settled
+    message."""
+
+    def __init__(self) -> None:
+        self.app: Any = None
+
+    def forward(self, question: str, session_id: str, **_kw: Any) -> Any:
+        from clio_agent.gact import context as ctx
+
+        app = self.app
+        sess = app.state.sessions.get(session_id)
+        if sess is not None and sess.parent_session_id:
+            from clio_agent.gact.artifacts.minting import mint_artifact
+            from clio_agent.gact.artifacts.records import (
+                ArtifactKind,
+                IdentityEvidence,
+                Mechanism,
+            )
+
+            for i in range(2):
+                mint_artifact(
+                    app,
+                    session_id,
+                    name=f"child_plot_{i}.png",
+                    workspace_id=sess.workspace_id,
+                    evidence=IdentityEvidence.hashed_at_use(sha256=f"{i:064x}", size_bytes=10),
+                    kind=ArtifactKind.IMAGE,
+                    mechanism=Mechanism.TOOL_SCHEMA,
+                    producer={"tool": "plot", "call_id": f"c{i}", "session_id": session_id},
+                    turn_id=ctx.active_turn_id(),
+                )
+            return _Pred(answer="child made two plots", selected_expert="")
+
+        from clio_agent.gact.turn_spawn import TaskSpec, spawn_child_turn_threadsafe
+
+        task = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(
+                child_expert_id="main",
+                task_text="make plots",
+                parent_session_id=session_id,
+                requesting_expert_id="main",
+                parent_turn_id=ctx.active_turn_id(),
+            ),
+        )
+        app.state.agent_task_registry.event(task.task_id).wait(timeout=30.0)
+        return _Pred(answer="parent turn done", selected_expert="")
+
+
+def test_full_turn_rolls_up_child_mints_onto_the_parent_message(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """End-to-end: a parent turn that spawns + waits on a child mid-turn ends
+    with the child's TWO artifacts visible as ``resource_link`` parts on the
+    settled PARENT message — an adjacent run at the end, not just on the
+    child's own transcript."""
+
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.resolution._runtime_declared_child_ids",
+        lambda app, pid, session_id="", **_bindings: {"main"},
+    )
+    agent = _RollupAgent()
+    app = _build(tmp_path, "rollup", agent)
+    agent.app = app
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        _complete_turn(client, sid, "spawn and roll up", timeout=30.0)
+        assistant = _assistant_message(client, sid)
+
+        links = [p for p in assistant["parts"] if p["type"] == "resource_link"]
+        assert len(links) == 2, assistant["parts"]
+        assert {p["name"] for p in links} == {"child_plot_0.png", "child_plot_1.png"}
+        assert all(p["metadata"]["artifact_id"] for p in links)
+        # One contiguous run at the end of the message (the ARTIFACTS grid).
+        assert [p["type"] for p in assistant["parts"]][-2:] == ["resource_link", "resource_link"]
