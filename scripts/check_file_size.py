@@ -185,7 +185,14 @@ RATCHET_BASELINE: dict[str, int] = {
     # #956 MCP-apps runtime tool exposure (runtime MCP tools surfaced in the GACT
     # catalog + reconnect/streamable-http route growth). Part of the #947 MCP-apps
     # decomposition debt; ratchets back with the mcp_app_* owner-module split.
-    "src/clio_agent/gact/routes/blueprints.py": 861,
+    # #1192: +149 (861 -> 1010; the branch already carried an unbaselined +20 --
+    # 881 actual before this change) for the two new file-explorer routes
+    # (GET .../{id}/files + .../files/read). The bulk of the logic (listing walk,
+    # traversal hardening, text/binary content typing, session-path-activation
+    # resolution) lives in the new owner module gact/agent_blueprint_files.py; only
+    # the two thin route handlers + their docstrings + the import block land here.
+    # Ratchets back with the mcp_app_* / #714 route decomposition.
+    "src/clio_agent/gact/routes/blueprints.py": 1010,
     "src/clio_agent/gact/routes/catalog.py": 938,  # +4: /goal command dispatch wiring (#1080; logic in gact/goal.py)
     "src/clio_agent/gact/routes/mcp.py": 979,  # -14: handshake row shaping moved to routes/mcp_rows.py (#1111)
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew

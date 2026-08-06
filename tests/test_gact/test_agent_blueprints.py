@@ -3184,3 +3184,186 @@ def test_active_base_agent_tool_executor_falls_back_without_seam() -> None:
     default_executor = object()
     base_agent = SimpleNamespace(tool_executor=default_executor)
     assert _active_base_agent_tool_executor(base_agent) is default_executor
+
+
+# --------------------------------------------------------------------------- #
+# #1192: GET /v1/agent-blueprints/{id}/files + .../files/read -- the explorer  #
+# surface behind the blueprint window (previously metadata-only routes).      #
+# --------------------------------------------------------------------------- #
+
+
+def _install_genomics_blueprint(tmp_path: Path, client: Any) -> tuple[str, Path]:
+    """Install ``genomics`` (AGENT.md + experts/root.md + experts/variant.md)
+    into a fresh workspace; returns ``(workspace_id, marketplace_source_root)``.
+    """
+
+    marketplace = tmp_path / "marketplace"
+    _write_blueprint(marketplace / "genomics")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    wid = client.post(
+        "/v1/workspaces",
+        json={
+            "name": "Workspace",
+            "root_path": str(workspace),
+            "storage_root": str(workspace / ".clio"),
+        },
+    ).json()["id"]
+    installed = client.post(
+        "/v1/agent-blueprints/install",
+        json={"source": str(marketplace / "genomics"), "scope": "workspace", "workspace_id": wid},
+    )
+    assert installed.status_code == 201, installed.text
+    return wid, marketplace / "genomics"
+
+
+def test_agent_blueprint_files_lists_agent_md_and_experts(tmp_path: Path) -> None:
+    """Listing is a flat recursive walk: AGENT.md + experts/*.md, relative paths."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid, _ = _install_genomics_blueprint(tmp_path, client)
+        listed = client.get("/v1/agent-blueprints/genomics/files", params={"workspace_id": wid})
+
+    assert listed.status_code == 200, listed.text
+    rows = {row["path"]: row for row in listed.json()["entries"]}
+    assert "AGENT.md" in rows
+    assert rows["AGENT.md"]["type"] == "file"
+    assert isinstance(rows["AGENT.md"]["size"], int) and rows["AGENT.md"]["size"] > 0
+    assert "experts" in rows
+    assert rows["experts"]["type"] == "dir"
+    assert "experts/root.md" in rows
+    assert rows["experts/root.md"]["type"] == "file"
+    assert "experts/variant.md" in rows
+    assert rows["experts/variant.md"]["type"] == "file"
+
+
+def test_agent_blueprint_files_read_returns_raw_markdown(tmp_path: Path) -> None:
+    """Read serves the raw file content decoded as text/plain (#673/#676 convention)."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid, _ = _install_genomics_blueprint(tmp_path, client)
+        read = client.get(
+            "/v1/agent-blueprints/genomics/files/read",
+            params={"workspace_id": wid, "path": "experts/root.md"},
+        )
+
+    assert read.status_code == 200, read.text
+    assert read.headers["content-type"].startswith("text/plain")
+    assert "Coordinate genomics work." in read.text
+    assert "id: root" in read.text
+
+
+def test_agent_blueprint_files_read_rejects_path_traversal(tmp_path: Path) -> None:
+    """A ``..`` escape past the blueprint root is a typed 400, never a 200/500."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid, _ = _install_genomics_blueprint(tmp_path, client)
+        escaped = client.get(
+            "/v1/agent-blueprints/genomics/files/read",
+            params={"workspace_id": wid, "path": "../../../../etc/passwd"},
+        )
+
+    assert escaped.status_code == 400, escaped.text
+    body = escaped.json()
+    assert body["error"]["error"] == "path_outside_blueprint"
+
+
+def test_agent_blueprint_files_read_missing_file_is_404(tmp_path: Path) -> None:
+    """A well-formed relative path that does not exist under the root is a typed 404."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid, _ = _install_genomics_blueprint(tmp_path, client)
+        missing = client.get(
+            "/v1/agent-blueprints/genomics/files/read",
+            params={"workspace_id": wid, "path": "experts/does-not-exist.md"},
+        )
+
+    assert missing.status_code == 404, missing.text
+    assert missing.json()["error"]["error"] == "not_found"
+
+
+def test_agent_blueprint_files_unknown_id_is_404(tmp_path: Path) -> None:
+    """Listing (and reading) an unknown blueprint id is a typed 404, not an empty list."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid, _ = _install_genomics_blueprint(tmp_path, client)
+        listed = client.get(
+            "/v1/agent-blueprints/does-not-exist/files", params={"workspace_id": wid}
+        )
+        read = client.get(
+            "/v1/agent-blueprints/does-not-exist/files/read",
+            params={"workspace_id": wid, "path": "AGENT.md"},
+        )
+
+    assert listed.status_code == 404, listed.text
+    assert listed.json()["error"]["error"] == "not_found"
+    assert read.status_code == 404, read.text
+    assert read.json()["error"]["error"] == "not_found"
+
+
+def test_agent_blueprint_files_session_scoped_path_activation_resolves(
+    tmp_path: Path,
+) -> None:
+    """#1192 demo case: a blueprint activated by ON-DISK PATH (not an installed
+    id -- never discoverable via the catalog) resolves its files ONLY through
+    the session-scoped seam (``session_id`` + ``metadata.active_agent_blueprint_path``),
+    mirroring how ``earthscope-flat`` is activated in the desktop demo.
+    """
+
+    external_root = tmp_path / "external" / "earthscope-flat"
+    _write_blueprint(external_root, blueprint_id="earthscope-flat")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post("/v1/sessions", json={"workspace_id": wid, "title": "demo"}).json()["id"]
+        activated = client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"path": str(external_root / "AGENT.md")},
+        )
+        assert activated.status_code == 200, activated.text
+        assert activated.json()["active_agent_blueprint_id"] == "earthscope-flat"
+
+        # Never installed into any catalog root -- the bare (no session_id)
+        # lookup is a typed 404, proving the session-scoped assertion below
+        # exercises the path-activation seam and not an accidental catalog hit.
+        bare = client.get(
+            "/v1/agent-blueprints/earthscope-flat/files", params={"workspace_id": wid}
+        )
+        assert bare.status_code == 404, bare.text
+
+        listed = client.get(
+            "/v1/agent-blueprints/earthscope-flat/files", params={"session_id": sid}
+        )
+        assert listed.status_code == 200, listed.text
+        paths = {row["path"] for row in listed.json()["entries"]}
+        assert "AGENT.md" in paths
+        assert "experts/root.md" in paths
+        assert "experts/variant.md" in paths
+
+        read = client.get(
+            "/v1/agent-blueprints/earthscope-flat/files/read",
+            params={"session_id": sid, "path": "experts/root.md"},
+        )
+        assert read.status_code == 200, read.text
+        assert "Coordinate genomics work." in read.text
+
+        # A session_id whose ACTIVE blueprint id does not match the requested
+        # id must NOT leak that active path -- falls back to catalog resolution
+        # (404 here, since "genomics" was never installed either).
+        mismatched = client.get("/v1/agent-blueprints/genomics/files", params={"session_id": sid})
+        assert mismatched.status_code == 404, mismatched.text
