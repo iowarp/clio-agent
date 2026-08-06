@@ -314,8 +314,15 @@ RATCHET_BASELINE: dict[str, int] = {
     # introduced here. P5 (wire semantics): +34 for the waited_tasks union-merge
     # in upsert_repeated_collector_call's tool_call branch (a collapsed re-poll on
     # the same task set must never present fewer resolved rows than either
-    # attempt saw). Ratchet back with #714/#767.
-    "src/clio_agent/gact/transcript.py": 1337,
+    # attempt saw). D15: +43 for discard_open_text — the fix for the duplicated-
+    # narration wire defect (a transient LM retry re-streamed the SAME
+    # next_thought text into the still-open transcript part). It is a genuinely
+    # new TurnTranscript primitive tightly coupled to _lock/_open_part/_parts/
+    # _buffers (no clean extraction to a sibling module without breaking
+    # encapsulation), trimmed from an initial 77-line addition to 43 by cutting
+    # the docstring and collapsing the log call before accepting this ratchet.
+    # Ratchet back with #714/#767.
+    "src/clio_agent/gact/transcript.py": 1380,
     # #918: +17 for the typed SkillNotDelegatableError ladder arm (a skill-bound
     # turn fails typed, never as generic agent_error).
     # #952 S4 Pass C: -1 (the suppressed_parent_resume_offsets init was removed

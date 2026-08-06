@@ -785,6 +785,49 @@ class TurnTranscript:
         with self._lock:
             self._close_open_text_locked()
 
+    def discard_open_text(self) -> bool:
+        """Abandon the open streamed part WITHOUT closing/publishing it (D15).
+
+        Sibling of :meth:`close_open_text` for an attempt that never counted: the
+        LM transient-retry boundary (``lm.io_logging``) re-issues a call through
+        a fresh field extractor with no memory of a failed attempt, and
+        ``append_text_delta`` keeps re-using the open ``(agent_id, field)`` part
+        -- without this, the retry's text lands on top of the abandoned
+        attempt's in the SAME part (the duplicated-paragraph defect observed
+        live, ``sess_539d24da07bf`` ``part_2b645566433b``). Unconditionally
+        removes the part from ``self._parts`` (never a ``message.part.completed``
+        publish) -- append-only/no-rewrite still holds; it never counted. A
+        no-op when nothing is open, or frozen (audited, never silently absorbed).
+        """
+
+        with self._lock:
+            if self._frozen:
+                self._audit_late_op("discard_open_text")
+                return False
+            part = self._open_part
+            if part is None:
+                return False
+            self._open_part = None
+            self._open_agent = ""
+            self._open_field = ""
+            self._current_stream_part_id = None
+            buffered = "".join(self._buffers.pop(part.id, []))
+            for index, candidate in enumerate(self._parts):
+                if candidate is part:
+                    del self._parts[index]
+                    break
+            logger.info("transcript discarded_retry_part part=%s chars=%d", part.id, len(buffered))
+            stream_audit(
+                "transcript.discarded_retry_part",
+                session_id=self.session_id,
+                turn_id=self.turn_id,
+                part_id=part.id,
+                part_type=part.type,
+                chunk_len=len(buffered),
+                head=buffered[:120],
+            )
+            return True
+
     def annotate(self, part_id: str, **metadata: Any) -> None:
         """Merge post-hoc facts into a part's metadata — never its text.
 

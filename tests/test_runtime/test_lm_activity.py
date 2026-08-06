@@ -291,6 +291,130 @@ def test_call_exhausts_transient_retries_then_raises(monkeypatch):
     assert calls["n"] == 3  # initial + 2 retries
 
 
+# --- D15: retry-boundary discard (duplicated narration on the wire) --------
+
+
+def test_call_retry_discards_live_streamed_part_before_reissue(monkeypatch):
+    """D15 root cause: a transient failure can land AFTER the failed attempt
+    already streamed its answer/next_thought text live (the streamed path
+    flushes per-chunk and on close, both BEFORE the exception propagates —
+    ``io_logging.py``'s ``_clio_streamed_call``). Re-issuing without discarding
+    that already-streamed content lands the retry's fresh stream on top of it in
+    the SAME still-open transcript part -- the exact duplicate paragraph observed
+    live (sess_539d24da07bf part_2b645566433b). The retry loop must call
+    ``note_lm_retry_reset`` exactly once per actual retry, BEFORE re-issuing --
+    never on the call that finally succeeds."""
+
+    lm = cfg._io_logging_lm_cls()(model="openai/dummy")
+    monkeypatch.setattr(io_logging, "_lm_transient_retries", lambda: 2)
+    monkeypatch.setattr(io_logging, "_lm_transient_backoff_s", lambda: 0.0)
+
+    reset_calls = {"n": 0}
+    monkeypatch.setattr(
+        lm_activity,
+        "note_lm_retry_reset",
+        lambda: reset_calls.__setitem__("n", reset_calls["n"] + 1),
+    )
+
+    calls = {"n": 0}
+
+    def flaky_twice(self, prompt=None, messages=None, **kwargs):  # noqa: ANN001
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise _FakeMidStreamFallbackError("the model has crashed")
+        return ["RECOVERED"]
+
+    monkeypatch.setattr(type(lm), "_clio_invoke_once", flaky_twice, raising=False)
+    out = lm(messages=[{"role": "user", "content": "hi"}])
+    assert out == ["RECOVERED"]
+    assert calls["n"] == 3  # crashed twice, retried twice, succeeded on the 3rd
+    assert reset_calls["n"] == 2  # once per retry -- NOT on the final success
+
+
+def test_call_non_transient_error_never_discards(monkeypatch):
+    """A non-transient (typed-output/parse) error is never retried, so it must
+    never trigger a discard either -- the repair loop owns it unchanged."""
+
+    lm = cfg._io_logging_lm_cls()(model="openai/dummy")
+    monkeypatch.setattr(io_logging, "_lm_transient_retries", lambda: 3)
+    monkeypatch.setattr(io_logging, "_lm_transient_backoff_s", lambda: 0.0)
+
+    reset_calls = {"n": 0}
+    monkeypatch.setattr(
+        lm_activity,
+        "note_lm_retry_reset",
+        lambda: reset_calls.__setitem__("n", reset_calls["n"] + 1),
+    )
+    monkeypatch.setattr(
+        type(lm),
+        "_clio_invoke_once",
+        lambda self, prompt=None, messages=None, **kw: (_ for _ in ()).throw(
+            _FakeAdapterParseError("missing fields")
+        ),
+        raising=False,
+    )
+    with pytest.raises(_FakeAdapterParseError):
+        lm(messages=[{"role": "user", "content": "hi"}])
+    assert reset_calls["n"] == 0
+
+
+def test_call_success_without_retry_never_discards(monkeypatch):
+    """The overwhelmingly common (non-retried) call path must never discard --
+    that would defeat live progressive streaming for every ordinary call."""
+
+    lm = cfg._io_logging_lm_cls()(model="openai/dummy")
+    reset_calls = {"n": 0}
+    monkeypatch.setattr(
+        lm_activity,
+        "note_lm_retry_reset",
+        lambda: reset_calls.__setitem__("n", reset_calls["n"] + 1),
+    )
+    monkeypatch.setattr(
+        type(lm),
+        "_clio_invoke_once",
+        lambda self, prompt=None, messages=None, **kw: ["OK"],
+        raising=False,
+    )
+    out = lm(messages=[{"role": "user", "content": "hi"}])
+    assert out == ["OK"]
+    assert reset_calls["n"] == 0
+
+
+def test_note_lm_retry_reset_calls_bound_discard_hook():
+    """The lm_activity-level wiring: ``note_lm_retry_reset`` calls whatever
+    ``discard_open`` hook ``set_live_chunk_emitter`` bound, synchronously, in
+    THIS thread -- no cross-thread scheduling (unlike ``note_lm_answer_delta``),
+    matching ``record_dedup``'s calling convention."""
+
+    calls: list[int] = []
+    token = lm_activity._LIVE_CHUNK_EMITTER.set(
+        (None, None, None, lambda: calls.append(1))
+    )
+    try:
+        lm_activity.note_lm_retry_reset()
+    finally:
+        lm_activity._LIVE_CHUNK_EMITTER.reset(token)
+    assert calls == [1]
+
+
+def test_note_lm_retry_reset_is_noop_without_discard_hook():
+    """A pre-D15 3-arg ``set_live_chunk_emitter`` bind (``discard_open`` unset)
+    must be a safe no-op, never an error."""
+
+    token = lm_activity._LIVE_CHUNK_EMITTER.set((None, None, None, None))
+    try:
+        lm_activity.note_lm_retry_reset()  # must not raise
+    finally:
+        lm_activity._LIVE_CHUNK_EMITTER.reset(token)
+
+
+def test_note_lm_retry_reset_is_noop_off_turn():
+    """No emitter bound at all (CLI/optimizer/off-turn) -- must not raise."""
+
+    assert lm_activity._LIVE_CHUNK_EMITTER.get() is None
+    lm_activity.note_lm_retry_reset()
+
+
 def test_process_completion_falls_back_to_reasoning_content(monkeypatch):
     # Reasoning models (qwopus) intermittently put the full formatted output in
     # reasoning_content with content empty; dspy parses output["text"] (content) ->

@@ -195,6 +195,98 @@ def test_was_closed_live_covers_closed_and_dropped_parts() -> None:
     assert all(p.id != dropped_id for p in transcript.snapshot())
 
 
+GEOSPATIAL_NARRATION = (
+    "Three ndp children are now running for Los Angeles, San Diego, and Seattle. "
+    "Each runs the full discover, so I'll wait with a longer budget to collect "
+    "their ranked station counts."
+)
+
+
+def test_same_field_restream_without_discard_duplicates_content() -> None:
+    """D15 root-cause pin: TWO ``append_text_delta`` calls for the SAME still-open
+    ``(agent_id, field)`` concatenate into ONE part -- correct for a legitimate
+    same-field continuation (more tokens of the SAME answer), but exactly the
+    mechanism that produced the live duplicate (sess_539d24da07bf part
+    part_2b645566433b: one 224-char next_thought paragraph, twice, 472 chars
+    total). Characterizes the vulnerability :meth:`TurnTranscript.discard_open_text`
+    exists to close off at the LM transient-retry boundary."""
+
+    transcript, _ = _make_transcript()
+    transcript.append_text_delta("main", "next_thought", GEOSPATIAL_NARRATION)
+    # An abandoned attempt's retry re-streams the SAME text from scratch, through
+    # a brand-new field extractor with no memory of the first attempt -- and lands
+    # on the SAME still-open part because (agent_id, field) hasn't changed.
+    transcript.append_text_delta("main", "next_thought", GEOSPATIAL_NARRATION)
+    transcript.close_open_text()
+
+    parts = [p for p in transcript.snapshot() if p.type == "text"]
+    assert len(parts) == 1
+    assert parts[0].text == GEOSPATIAL_NARRATION + GEOSPATIAL_NARRATION
+
+
+def test_discard_open_text_prevents_retry_duplication() -> None:
+    """D15 fix: calling ``discard_open_text`` at the retry boundary (what
+    ``lm_activity.note_lm_retry_reset`` does, from
+    ``lm.io_logging.IOLoggingLM.__call__``'s transient-retry loop) abandons the
+    failed attempt's contribution BEFORE the retry streams, so the retry's fresh
+    text is the part's ONLY content -- the fix for the duplication characterized
+    above."""
+
+    transcript, publisher = _make_transcript()
+    transcript.append_text_delta("main", "next_thought", GEOSPATIAL_NARRATION)
+    abandoned_id = transcript.current_stream_part_id
+    assert abandoned_id is not None
+
+    discarded = transcript.discard_open_text()
+    assert discarded is True
+    # Never published as closed/completed -- it never counted.
+    assert not any(evt == "message.part.completed" for evt, _ in publisher.events)
+    # Idempotent: nothing open the second time.
+    assert transcript.discard_open_text() is False
+
+    transcript.append_text_delta("main", "next_thought", GEOSPATIAL_NARRATION)
+    retry_id = transcript.current_stream_part_id
+    assert retry_id is not None
+    assert retry_id != abandoned_id  # the retry opens a genuinely fresh part
+    transcript.close_open_text()
+
+    parts = [p for p in transcript.snapshot() if p.type == "text"]
+    assert len(parts) == 1
+    assert parts[0].text == GEOSPATIAL_NARRATION  # exactly once, not doubled
+    assert all(p.id != abandoned_id for p in transcript.snapshot())
+
+
+def test_discard_open_text_is_noop_when_nothing_open() -> None:
+    """The common case: most transient failures happen before any field starts
+    streaming, so there is nothing to discard -- must be a safe, cheap no-op."""
+
+    transcript, publisher = _make_transcript()
+    assert transcript.discard_open_text() is False
+    assert publisher.events == []
+
+
+def test_discard_open_text_on_frozen_ledger_is_audited_not_silent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retry landing after the turn already settled must not silently corrupt
+    the frozen ledger -- audited as a late op, same discipline as every other
+    post-freeze mutation this module rejects (mirrors
+    ``test_abandon_freezes_without_closing_or_publishing``'s late-op assertion)."""
+
+    audits: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.transcript.stream_audit",
+        lambda stage, **fields: audits.append((stage, fields)),
+    )
+    transcript, _ = _make_transcript()
+    transcript.append_text_delta("main", "next_thought", GEOSPATIAL_NARRATION)
+    transcript.abandon()
+
+    assert transcript.discard_open_text() is False
+    late_ops = [f["op"] for stage, f in audits if stage == "transcript.late_op"]
+    assert late_ops == ["discard_open_text"]
+
+
 def test_raw_streamed_text_concatenates_across_agents_fields_and_thinking() -> None:
     """The whole-turn concat the timeout/streaming-failure partials report —
     byte-identical to the legacy ``streamed_assistant_buffer`` join."""

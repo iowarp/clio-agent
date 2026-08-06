@@ -203,6 +203,21 @@ def _io_logging_lm_cls() -> Any:
                     if attempt + 1 < attempts and _is_transient_provider_error(exc):
                         import time as _time  # noqa: PLC0415
 
+                        # D15: the failed attempt may have ALREADY streamed part or
+                        # all of its answer/next_thought text live (the streamed
+                        # path flushes per-chunk and on close, both BEFORE this
+                        # exception propagates). The retry re-issues the SAME call
+                        # through a brand-new field extractor with no memory of
+                        # that text, so without this the retry's fresh stream lands
+                        # on top of the abandoned attempt's text in the SAME still-
+                        # open transcript part instead of replacing it -- an exact
+                        # duplicate of whatever streamed before the failure. Discard
+                        # it here, before the retry, so the next chunk opens clean.
+                        from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
+                            note_lm_retry_reset,
+                        )
+
+                        note_lm_retry_reset()
                         _time.sleep(_lm_transient_backoff_s())
                         continue
                     raise
