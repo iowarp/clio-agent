@@ -325,6 +325,33 @@ def _read_once(
     }
 
 
+def _declare_observe_structured_content(result: Mapping[str, Any]) -> None:
+    """Declare the wire's typed structured payload for a successful observe read
+    (P5 wire semantics — the ``wait_agent_tasks`` treatment): a ``message``
+    tallying every requested task's status FIRST, then the SAME per-task
+    ``tasks`` rows + cursor/limit/matched internals the model-facing return
+    already carries (never invented, never re-authored). The tally/format
+    logic lives in the owner module ``task_summary`` (shared with
+    ``check_agent_tasks``)."""
+
+    from clio_agent.gact.agents.task_summary import task_status_message  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+        declare_structured_content,
+    )
+
+    tasks = result.get("tasks") or []
+    statuses = [str(row.get("status") or row.get("error") or "") for row in tasks]
+    declare_structured_content({"message": task_status_message(statuses), **result})
+
+
+def _finish_observe(result: dict[str, Any]) -> str:
+    """Declare the structured content then serialize the model-facing return —
+    the ONE exit point every successful observe read shares."""
+
+    _declare_observe_structured_content(result)
+    return json.dumps(result, sort_keys=True, default=str)
+
+
 def observe_agent_tasks_impl(
     app: Any,
     *,
@@ -399,12 +426,12 @@ def observe_agent_tasks_impl(
             include_state=include_state,
         )
         if not blocking:
-            return json.dumps(result, sort_keys=True, default=str)
+            return _finish_observe(result)
         if compiled is not None and result["matched"]:
-            return json.dumps(result, sort_keys=True, default=str)
+            return _finish_observe(result)
         remaining = deadline - time.monotonic()
         if remaining <= 0.0 or _no_more_events(resolved):
-            return json.dumps(result, sort_keys=True, default=str)
+            return _finish_observe(result)
         time.sleep(min(OBSERVE_POLL_SECONDS, remaining))
         # Refresh task records so a running→terminal transition is seen next poll.
         resolved = {tid: registry.get(tid) for tid in requested}

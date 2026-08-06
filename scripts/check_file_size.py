@@ -122,7 +122,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # (group_size reconciliation on a refused batch spawn) + the fanout.started
     # group_size field, offset by trimming this file's own docstrings (the pure
     # metadata-row builder lives in the owner module spawn_group.py).
-    "src/clio_agent/gact/agents/spawn_runtime.py": 922,
+    # P5 (native tool declared output semantics): +11 -- check_agent_tasks now
+    # declares its typed structured_content shape (message-first, wait_agent_tasks's
+    # own treatment) at its one return site; the tally/format logic lives in the new
+    # owner module agents/task_summary.py (shared with observe_agent_tasks), so only
+    # the two-import + one-call declaration site landed here.
+    "src/clio_agent/gact/agents/spawn_runtime.py": 933,
     # P5 (wire semantics): +3 for the fan-out group identity fields
     # (spawn_group_id/group_size) on TaskHandle + TaskResult, projected from
     # AgentTask in from_task() and threaded through RelayExpertInvoker.invoke —

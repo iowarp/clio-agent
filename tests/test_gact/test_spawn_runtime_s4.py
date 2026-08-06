@@ -517,6 +517,63 @@ def test_wait_agent_tasks_declares_typed_structured_content_shape(monkeypatch) -
     assert shape["merged_workflow_state"] == {"profile": {"status": "ready", "rows": 1024}}
 
 
+# --------------------------------------------------------------------------- #
+# check_agent_tasks — the SAME declared structured_content grammar (P5).       #
+# --------------------------------------------------------------------------- #
+
+
+def test_check_agent_tasks_declares_typed_structured_content_shape(monkeypatch) -> None:
+    """check_agent_tasks gets wait_agent_tasks's OWN treatment: a tally ``message``
+    FIRST, then the SAME per-task rows the model-facing return already carries."""
+
+    registry = AgentTaskRegistry()
+    registry.register(_completed_task("task_done"))
+    registry.register(
+        AgentTask(
+            task_id="task_running",
+            parent_session_id="sess_x",
+            child_session_id="child_2",
+            agent_ref={"expert_id": "hpc_expert", "requesting_expert_id": "main"},
+            status="running",
+        )
+    )
+    app = _fake_app(registry)
+    _capture_emits(monkeypatch)
+    declared: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert", "hpc_expert"}, monkeypatch)
+        tools["check_agent_tasks"].func()
+
+    assert len(declared) == 1
+    shape = declared[0]
+    assert list(shape.keys()) == ["message", "tasks"]
+    assert shape["message"] == "2 tasks: 1 running, 1 completed"
+    assert {row["task_id"] for row in shape["tasks"]} == {"task_done", "task_running"}
+
+
+def test_check_agent_tasks_structured_content_empty_case(monkeypatch) -> None:
+    """No spawned tasks at all -> the honest "no tasks" message, never "0 tasks: "."""
+
+    app = _fake_app()
+    _capture_emits(monkeypatch)
+    declared: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        tools["check_agent_tasks"].func()
+
+    assert declared == [{"message": "no tasks", "tasks": []}]
+
+
 def test_wait_agent_tasks_failed_emits_delegation_failed_with_status(monkeypatch) -> None:
     registry = AgentTaskRegistry()
     # register bypasses transition validation, so a terminal failed record with a

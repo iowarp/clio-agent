@@ -374,3 +374,74 @@ def test_unknown_task_returns_typed_row_and_state_snapshot(tmp_path: Path, monke
     assert unknown["error"] == "unknown_task"
     known = _from_parent(out["tasks"], task.task_id)
     assert known["workflow_state"] == {"selected_station": "CI.PASA"}
+
+
+# --------------------------------------------------------------------------- #
+# 7. Declared structured_content — the wait_agent_tasks treatment (P5).        #
+# --------------------------------------------------------------------------- #
+
+
+def test_observe_agent_tasks_declares_typed_structured_content_shape(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """observe_agent_tasks gets wait_agent_tasks's OWN declared-structured_content
+    treatment: a status-tally ``message`` FIRST, then the SAME ``tasks`` rows +
+    cursor/limit/matched internals the model-facing return already carries."""
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    declared: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        task_a = _seed_running_task(app, parent, task_id="task_a")
+        task_b = _seed_running_task(app, parent, task_id="task_b")
+        tools = _tools(app, parent)
+        _observe(
+            app,
+            parent,
+            tools,
+            task_ids=[task_a.task_id, task_b.task_id, "task_missing"],
+            cursor=1,
+        )
+
+    assert len(declared) == 1
+    shape = declared[0]
+    assert next(iter(shape)) == "message"
+    assert shape["message"] == "3 tasks: 2 running, 1 unknown_task"
+    assert [row["task_id"] for row in shape["tasks"]] == ["task_a", "task_b", "task_missing"]
+    # Internals (cursor/next_cursor/limit/matched/events_truncated) still ride after.
+    assert "cursor" in shape and "next_cursor" in shape and "limit" in shape
+
+
+def test_observe_agent_tasks_structured_content_empty_case(tmp_path: Path, monkeypatch) -> None:
+    """No requested task ids at all -> the honest "no tasks" message."""
+
+    from clio_agent.gact.agents.observe_runtime import DEFAULT_OBSERVE_LIMIT
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    declared: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        tools = _tools(app, parent)
+        _observe(app, parent, tools, task_ids=[], cursor=1)
+
+    assert declared == [
+        {
+            "message": "no tasks",
+            "tasks": [],
+            "cursor": 1,
+            "next_cursor": 1,
+            "limit": DEFAULT_OBSERVE_LIMIT,
+            "matched": False,
+            "events_truncated": False,
+        }
+    ]

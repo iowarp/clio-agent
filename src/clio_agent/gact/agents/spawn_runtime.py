@@ -751,6 +751,17 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                 consume_notification(app, t.task_id)
                 _emit_delegation_terminal(app, session_id, agent_def, t)
             rows.append(row)
+        # Declared structured payload (P5 wire semantics, wait_agent_tasks's
+        # treatment): message FIRST, rows after. The tally/format logic lives
+        # in the owner module task_summary (shared with observe_agent_tasks).
+        from clio_agent.gact.agents.task_summary import task_status_message  # noqa: PLC0415
+        from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+            declare_structured_content,
+        )
+
+        declare_structured_content(
+            {"message": task_status_message([r.get("status", "") for r in rows]), "tasks": rows}
+        )
         return json.dumps({"tasks": rows}, sort_keys=True)
 
     def spawn_agents_parallel(spawns: list[dict], placement: str | None = None) -> str:
