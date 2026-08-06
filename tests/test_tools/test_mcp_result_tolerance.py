@@ -187,6 +187,114 @@ def test_list_result_round_trip_is_json_not_python_repr() -> None:
     assert json.loads(text) == expected
 
 
+# --------------------------------------------------------------------------- #
+# Finding E: ``_result_to_text``'s last-resort ``str()`` fallback must widen   #
+# its except tuple past bare ``TypeError`` (a circular structure now raises   #
+# ValueError, not TypeError) and must never emit invalid JSON (NaN/Infinity), #
+# while logging a typed, structured reason instead of degrading silently.     #
+# --------------------------------------------------------------------------- #
+
+
+def test_result_to_text_circular_structure_falls_back_without_raising(caplog) -> None:
+    """A circular structure must degrade to the str() fallback -- never raise.
+
+    json.dumps's own cycle guard raises ValueError ("Circular reference
+    detected"), which the OLD ``except TypeError`` alone never caught.
+    """
+
+    from clio_agent.tools.mcp_executor import (
+        MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON,
+        _result_to_text,
+    )
+
+    circular: dict[str, Any] = {"self": None}
+    circular["self"] = circular
+
+    with caplog.at_level("WARNING"):
+        text = _result_to_text(circular)
+
+    assert text == str(circular)
+    assert MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON in caplog.text
+
+
+def test_result_to_text_nan_falls_back_instead_of_emitting_invalid_json() -> None:
+    """NaN/Infinity are non-standard JSON tokens; ``allow_nan=False`` routes
+    them to the typed fallback instead of landing on the wire as JSON that
+    isn't actually valid JSON everywhere else."""
+
+    from clio_agent.tools.mcp_executor import _result_to_text
+
+    payload = {"value": float("nan")}
+    text = _result_to_text(payload)
+
+    assert text == str(payload)
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(text)
+
+
+def test_result_to_text_infinity_falls_back_instead_of_emitting_invalid_json() -> None:
+    from clio_agent.tools.mcp_executor import _result_to_text
+
+    payload = {"value": float("inf")}
+    text = _result_to_text(payload)
+
+    assert text == str(payload)
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(text)
+
+
+def test_result_to_text_bytes_falls_back_without_raising() -> None:
+    """``bytes`` has no JSON mapping -- TypeError, the ORIGINAL caught case,
+    stays green."""
+
+    from clio_agent.tools.mcp_executor import _result_to_text
+
+    raw = b"\x00\x01raw"
+    assert _result_to_text(raw) == str(raw)
+
+
+def test_result_to_text_recursion_error_from_json_dumps_falls_back(monkeypatch) -> None:
+    """RecursionError raised inside json.dumps (a pathologically deep,
+    non-circular structure can exhaust the recursion limit before json's own
+    cycle guard fires) must degrade like every other unencodable shape --
+    proven via a controlled monkeypatch so the test itself doesn't depend on
+    fragile, platform-specific stack-depth math."""
+
+    import clio_agent.tools.mcp_executor as mcp_executor_module
+
+    def _raise_recursion(*_args: Any, **_kwargs: Any) -> str:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(mcp_executor_module.json, "dumps", _raise_recursion)
+
+    payload = {"deep": "structure"}
+    assert mcp_executor_module._result_to_text(payload) == str(payload)
+
+
+def test_result_to_text_overflow_error_from_json_dumps_falls_back(monkeypatch) -> None:
+    """An int outside the encoder's range raises OverflowError -- also part of
+    the widened except tuple."""
+
+    import clio_agent.tools.mcp_executor as mcp_executor_module
+
+    def _raise_overflow(*_args: Any, **_kwargs: Any) -> str:
+        raise OverflowError("int too large to convert")
+
+    monkeypatch.setattr(mcp_executor_module.json, "dumps", _raise_overflow)
+
+    payload = {"huge": 10**400}
+    assert mcp_executor_module._result_to_text(payload) == str(payload)
+
+
+def test_result_to_text_still_prefers_json_for_encodable_values() -> None:
+    """Regression guard: the widened except tuple must not change the happy
+    path -- an ordinary encodable value still returns real JSON, not repr."""
+
+    from clio_agent.tools.mcp_executor import _result_to_text
+
+    assert _result_to_text([{"a": 1}, {"b": 2}]) == json.dumps([{"a": 1}, {"b": 2}])
+
+
 @pytest.mark.asyncio
 async def test_missing_required_client_capability_is_typed() -> None:
     """JSON-RPC -32021 maps by numeric code to the capability-refused type."""
