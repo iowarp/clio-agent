@@ -290,10 +290,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # declared-structured-content pop/prefer in the "completed" phase and the
     # waited_tasks registry resolution in the "started" phase (both call OUT to
     # owner modules — tool_instrumentation.py / agent_tasks.py — for the actual
-    # logic; only the two call sites land here). +7 more landed on this branch
-    # concurrently with this change (unrelated; not audited here). Ratchet back
-    # with #714/#767.
-    "src/clio_agent/gact/tool_observer.py": 1081,
+    # logic; only the two call sites land here). Ratchet back with #714/#767.
+    "src/clio_agent/gact/tool_observer.py": 1074,
     # Collector-collapse work already on this branch grew the file to 1303 (>the
     # recorded 986 baseline) before this entry was updated — pre-existing, not
     # introduced here. P5 (wire semantics): +34 for the waited_tasks union-merge
