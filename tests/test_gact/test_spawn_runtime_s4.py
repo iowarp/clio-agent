@@ -429,6 +429,94 @@ def test_wait_agent_tasks_completed_returns_wire_payload_and_emits_completed(mon
     assert completed["payload"]["stage"] == "delegate.completed"
 
 
+def test_wait_agent_tasks_return_key_order_matches_declared_tail(monkeypatch) -> None:
+    """Harmless-but-matching courtesy (owner amendment): the model-facing return's
+    TOP-LEVEL key order is ``results``, then ``workflow_state_conflicts``, then
+    ``merged_workflow_state`` LAST — matching the declared structured_content
+    shape's tail so the raw-JSON view reads the same way. This is NOT the
+    presentation mechanism (see the declared-structured_content test below); it
+    is a courtesy that must still hold."""
+
+    registry = AgentTaskRegistry()
+    registry.register(_completed_task())
+    app = _fake_app(
+        registry,
+        messages={
+            "child_1": [_assistant_message("msg_1", "child_1", "child produced the staged CSV")]
+        },
+    )
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        raw = tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
+
+    # Content is unchanged (parses to the same rows the wire-payload test above
+    # asserts) — only ORDER is under test here, on the raw JSON text itself
+    # (json.loads discards key order, so the earlier content test cannot see it).
+    positions = {
+        key: raw.index(f'"{key}"')
+        for key in ("results", "workflow_state_conflicts", "merged_workflow_state")
+    }
+    assert sorted(positions, key=positions.get) == [
+        "results",
+        "workflow_state_conflicts",
+        "merged_workflow_state",
+    ]
+
+
+def test_wait_agent_tasks_declares_typed_structured_content_shape(monkeypatch) -> None:
+    """Owner ruling (P5 wire semantics): wait_agent_tasks DECLARES a typed
+    structured payload for the wire's structured_content channel — summary line
+    FIRST, per-task ``results`` rows, ``workflow_state_conflicts``, then
+    ``merged_workflow_state`` LAST — instead of the UI inferring presentation
+    from JSON key order. The declaration rides ``declare_structured_content``
+    (tool_instrumentation's one-shot side channel), NOT the tool's own return
+    value, so the model-facing return (asserted separately above) is untouched."""
+
+    registry = AgentTaskRegistry()
+    registry.register(_completed_task())
+    app = _fake_app(
+        registry,
+        messages={
+            "child_1": [_assistant_message("msg_1", "child_1", "child produced the staged CSV")]
+        },
+    )
+    _capture_emits(monkeypatch)
+    declared: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
+
+    assert len(declared) == 1
+    shape = declared[0]
+    assert list(shape.keys()) == [
+        "summary",
+        "results",
+        "workflow_state_conflicts",
+        "merged_workflow_state",
+    ]
+    assert shape["summary"].startswith("waited ")
+    assert "1 completed" in shape["summary"]
+    (row,) = shape["results"]
+    # The compact UI-ladder row: display name (the SAME rule waited_tasks uses),
+    # typed status, duration, and the ALREADY-BOUNDED excerpt (never the full
+    # verbatim output — that stays on the model-facing row, the #880 contract).
+    assert row == {
+        "name": "data_expert #1",
+        "status": "completed",
+        "duration_ms": 0.0,
+        "answer_excerpt": "child produced the staged CSV",
+    }
+    assert shape["workflow_state_conflicts"] == []
+    assert shape["merged_workflow_state"] == {"profile": {"status": "ready", "rows": 1024}}
+
+
 def test_wait_agent_tasks_failed_emits_delegation_failed_with_status(monkeypatch) -> None:
     registry = AgentTaskRegistry()
     # register bypasses transition validation, so a terminal failed record with a
@@ -543,6 +631,89 @@ def test_spawn_agents_parallel_emits_fanout_started_and_spawns_each(monkeypatch)
         "parent_expert": "main",
         "child_expert": "",
     }
+
+
+class _GroupSpy(_InvokeSpy):
+    """Invoker spy that projects a TaskSpec's spawn_group_id/group_size onto its
+    returned handle exactly like the real substrate does (spawn_child_turn's
+    minted AgentTask -> TaskHandle.from_task) — proves the id
+    spawn_agents_parallel mints reaches the started Part without driving the
+    full real spawn machinery (that real, end-to-end path is covered
+    separately in test_spawn_ensemble_s5.py)."""
+
+    def invoke(self, spec: Any) -> TaskHandle:
+        self.specs.append(spec)
+        return TaskHandle(
+            task_id=f"task_{spec.child_expert_id}",
+            parent_session_id=spec.parent_session_id,
+            child_session_id=f"child_{spec.child_expert_id}",
+            status="running",
+            run_index=0,
+            depth=spec.depth,
+            spawn_group_id=spec.spawn_group_id,
+            group_size=spec.group_size,
+        )
+
+
+def test_spawn_agents_parallel_mints_one_group_id_shared_by_every_spawn(monkeypatch) -> None:
+    """spawn_agents_parallel mints ONE spawn_group_id for the whole call and
+    stamps it (+ group_size == len(spawns)) on EVERY sibling's TaskSpec —
+    reaching the started expert_handoff Part's metadata via the returned
+    TaskHandle. The blueprint.fanout.started event carries the SAME id for
+    cross-referencing."""
+
+    app = _fake_app()
+    spy = _GroupSpy()
+    app.state.expert_invoker = spy
+    emitted = _capture_emits(monkeypatch)
+    parts = _capture_parts(monkeypatch)
+
+    spawns = [
+        {"agent": "geo_a", "task": "t1"},
+        {"agent": "geo_b", "task": "t2"},
+        {"agent": "geo_c", "task": "t3"},
+    ]
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"geo_a", "geo_b", "geo_c"}, monkeypatch)
+        json.loads(tools["spawn_agents_parallel"].func(spawns=spawns))
+
+    group_ids = {spec.spawn_group_id for spec in spy.specs}
+    assert len(group_ids) == 1, "every sibling spawn must share ONE minted group id"
+    (group_id,) = group_ids
+    assert group_id.startswith("fanout_")
+    assert {spec.group_size for spec in spy.specs} == {3}
+
+    fanout_started = next(e for e in emitted if e["event_type"] == "blueprint.fanout.started")
+    assert fanout_started["payload"]["spawn_group_id"] == group_id
+
+    started_handoffs = [p for _sid, p in parts if p.type == "expert_handoff"]
+    assert len(started_handoffs) == 3
+    assert {p.metadata["spawn_group_id"] for p in started_handoffs} == {group_id}
+    assert {p.metadata["group_size"] for p in started_handoffs} == {3}
+
+
+def test_spawn_agent_task_single_spawn_carries_neither_group_field(monkeypatch) -> None:
+    """A bare spawn_agent_task call — never through spawn_agents_parallel — mints
+    NEITHER spawn_group_id NOR group_size: the TaskSpec carries the empty/0
+    default, and the started Part's metadata has NEITHER key (absent, not
+    null/empty — the UI never sees a grouping signal for a solo spawn)."""
+
+    app = _fake_app()
+    spy = _GroupSpy()
+    app.state.expert_invoker = spy
+    _capture_emits(monkeypatch)
+    parts = _capture_parts(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        json.loads(tools["spawn_agent_task"].func(agent="data_expert", task="analyze"))
+
+    assert len(spy.specs) == 1
+    assert spy.specs[0].spawn_group_id == ""
+    assert spy.specs[0].group_size == 0
+    (started,) = [p for _sid, p in parts if p.type == "expert_handoff"]
+    assert "spawn_group_id" not in started.metadata
+    assert "group_size" not in started.metadata
 
 
 # ---------------------------------------------------------------------------
@@ -1176,6 +1347,86 @@ def test_parallel_spawn_pins_session_placement_once_for_batch(monkeypatch) -> No
     assert {row["placement"] for row in wire["spawned"]} == {"relay:ares"}
 
 
+def test_started_handoff_part_stamps_group_fields_when_present() -> None:
+    """spawn_agents_parallel's minted spawn_group_id/group_size ride the run
+    handle (TaskHandle) all the way onto the STARTED expert_handoff Part."""
+
+    from clio_agent.gact.agents.spawn_runtime import _started_handoff_part
+
+    spawned = TaskHandle(
+        task_id="task_g1",
+        parent_session_id="sess_x",
+        child_session_id="child_g1",
+        status="running",
+        run_index=0,
+        depth=1,
+        spawn_group_id="fanout_abc123",
+        group_size=3,
+    )
+    part = _started_handoff_part(_Def("main"), "geospatial", "scan LA", 1, spawned)
+    assert part.metadata["spawn_group_id"] == "fanout_abc123"
+    assert part.metadata["group_size"] == 3
+
+
+def test_started_handoff_part_omits_group_fields_when_absent() -> None:
+    """A single spawn_agent_task run (spawn_group_id empty on the handle) never
+    stamps spawn_group_id/group_size on the Part — absent, not null/empty."""
+
+    from clio_agent.gact.agents.spawn_runtime import _started_handoff_part
+
+    spawned = TaskHandle(
+        task_id="task_solo",
+        parent_session_id="sess_x",
+        child_session_id="child_solo",
+        status="running",
+        run_index=0,
+        depth=1,
+    )
+    part = _started_handoff_part(_Def("main"), "geospatial", "scan LA", 1, spawned)
+    assert "spawn_group_id" not in part.metadata
+    assert "group_size" not in part.metadata
+
+
+def test_return_handoff_part_stamps_group_fields_when_present() -> None:
+    """The COMPLETED expert_handoff Part is minted at wait-time from the
+    AgentTask/TaskResult record — the group identity must ride THAT record
+    (durable on AgentTask, projected onto TaskResult) to reach here, not be
+    reconstructed heuristically."""
+
+    from clio_agent.gact.agents.spawn_runtime import _return_handoff_part
+
+    task = AgentTask(
+        task_id="task_g1",
+        parent_session_id="sess_x",
+        child_session_id="child_g1",
+        agent_ref={"expert_id": "geospatial", "requesting_expert_id": "main"},
+        status="completed",
+        spawn_group_id="fanout_abc123",
+        group_size=3,
+    )
+    part = _return_handoff_part(_Def("main"), task, {"output": "done"})
+    assert part.metadata["spawn_group_id"] == "fanout_abc123"
+    assert part.metadata["group_size"] == 3
+
+
+def test_return_handoff_part_omits_group_fields_when_absent() -> None:
+    """A single-spawn task (no spawn_group_id on the record) never stamps the
+    group fields on its completed Part."""
+
+    from clio_agent.gact.agents.spawn_runtime import _return_handoff_part
+
+    task = AgentTask(
+        task_id="task_solo",
+        parent_session_id="sess_x",
+        child_session_id="child_solo",
+        agent_ref={"expert_id": "geospatial", "requesting_expert_id": "main"},
+        status="completed",
+    )
+    part = _return_handoff_part(_Def("main"), task, {"output": "done"})
+    assert "spawn_group_id" not in part.metadata
+    assert "group_size" not in part.metadata
+
+
 def test_return_handoff_part_stamps_child_duration_ms() -> None:
     """The terminal handoff Part carries the child's real wall-clock duration
     (task.updated_at - task.created_at). The wire showed duration_ms: 0 on every
@@ -1288,9 +1539,23 @@ def _collector_transcript_app(sid: str = "sess_x") -> tuple[Any, Any, list[tuple
     return app, transcript, events
 
 
-def _collector_call(call_id: str, tool_name: str = "wait_agent_tasks", **args: Any) -> Part:
-    """A live tool_call Part shaped exactly like the observer's started append."""
+def _collector_call(
+    call_id: str,
+    tool_name: str = "wait_agent_tasks",
+    *,
+    waited_tasks: list[dict[str, Any]] | None = None,
+    **args: Any,
+) -> Part:
+    """A live tool_call Part shaped exactly like the observer's started append.
 
+    ``waited_tasks`` mirrors the observer's ``wait_agent_tasks``-only resolved
+    display rows (metadata) when a test needs to exercise the collector-collapse
+    union merge.
+    """
+
+    metadata: dict[str, Any] = {"stream_source": "live", "telemetry_source": "live_observer"}
+    if waited_tasks is not None:
+        metadata["waited_tasks"] = waited_tasks
     return Part(
         id=f"live_{call_id}_call",
         type="tool_call",
@@ -1298,7 +1563,7 @@ def _collector_call(call_id: str, tool_name: str = "wait_agent_tasks", **args: A
         call_id=call_id,
         tool_name=tool_name,
         input=dict(args),
-        metadata={"stream_source": "live", "telemetry_source": "live_observer"},
+        metadata=metadata,
     )
 
 
@@ -1512,6 +1777,62 @@ def test_repoll_structured_content_follows_the_newest_attempt() -> None:
     assert result.structured_content == {"status": "completed"}
     assert result.to_wire()["structured_content"] == {"status": "completed"}
     assert "structured_content" not in result.metadata
+
+
+def test_repoll_waited_tasks_union_by_task_id() -> None:
+    """A collapsed wait covering two re-poll attempts on the SAME task set must
+    carry the UNION of resolved ``waited_tasks`` rows, never a narrower result
+    than either attempt saw (the collector collapse's generic ``{**existing,
+    **new}`` metadata merge would otherwise let the newest attempt silently
+    drop a row an earlier attempt resolved)."""
+
+    from clio_agent.gact.tool_observer import _append_live_assistant_part
+
+    app, transcript, _events = _collector_transcript_app()
+    row_a = {
+        "task_id": "task_1",
+        "agent_id": "geospatial",
+        "run_index": 0,
+        "run_label": "",
+        "child_session_id": "child_1",
+        "name": "geospatial #1",
+    }
+    row_b = {
+        "task_id": "task_2",
+        "agent_id": "ndp",
+        "run_index": 0,
+        "run_label": "",
+        "child_session_id": "child_2",
+        "name": "ndp #1",
+    }
+    # Attempt 1 resolves only task_1 (task_2's registry row wasn't there yet, or
+    # attempt 1 simply requested a subset); attempt 2 resolves BOTH, with an
+    # updated row_a (its run_label got set in between).
+    _append_live_assistant_part(
+        app,
+        "sess_x",
+        _collector_call(
+            "call_a", task_ids=["task_1", "task_2"], timeout_s=30.0, waited_tasks=[row_a]
+        ),
+    )
+    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
+    row_a_updated = {**row_a, "run_label": "LA scan", "name": "LA scan"}
+    _append_live_assistant_part(
+        app,
+        "sess_x",
+        _collector_call(
+            "call_b",
+            task_ids=["task_1", "task_2"],
+            timeout_s=30.0,
+            waited_tasks=[row_a_updated, row_b],
+        ),
+    )
+    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 5.0))
+
+    call_part = next(p for p in transcript.snapshot() if p.type == "tool_call")
+    assert call_part.metadata["attempts"] == 2
+    # Union by task_id: BOTH rows present, and task_1's NEWEST (attempt 2) facts win.
+    assert call_part.metadata["waited_tasks"] == [row_a_updated, row_b]
 
 
 def test_different_args_waits_stay_separate_rows() -> None:

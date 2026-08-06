@@ -91,6 +91,19 @@ ERROR_REASONS = frozenset(
 )
 
 
+def display_run_name(agent_id: str, run_index: int, run_label: str) -> str:
+    """The ONE server-side display-name rule for a spawned run (wire semantics).
+
+    ``run_label`` wins when the task carries one; otherwise
+    ``"{agent_id} #{run_index + 1}"``. Shared by every wire surface that needs a
+    human-facing name for a task (``wait_agent_tasks``'s resolved
+    ``waited_tasks``/structured ``results`` rows) so the rule lives in exactly
+    ONE place — the server decides, the UI never infers.
+    """
+
+    return run_label or f"{agent_id} #{run_index + 1}"
+
+
 class AgentTaskError(ValueError):
     """A rejected AgentTask operation (illegal transition, unknown typed reason,
     wrong input). Carries a typed ``reason`` so callers surface it structurally."""
@@ -130,6 +143,20 @@ class AgentTask:
     # admission (``_admit_next_queued``) honors the bound after a boot rebuild too; 0
     # means only the global per-depth cap applies.
     fanout_bound: int = 0
+    # Fan-out GROUP identity (wire semantics, P5): minted ONCE per
+    # ``spawn_agents_parallel`` call and stamped on every sibling spawned in that
+    # call, so the wire carries explicit grouping instead of the UI inferring it
+    # by adjacency/timing (the clean-wire rule: the SERVER emits display
+    # semantics). Empty for a single ``spawn_agent_task`` spawn and for declared
+    # ``run_workflow`` steps — never invented; absent, not a null/empty sentinel
+    # value the UI would have to special-case. Durable on the record (assigned
+    # once at spawn) so it survives the queued->running->completed lifecycle and
+    # a boot rebuild, and rides ``TaskHandle``/``TaskResult`` across the invoker
+    # boundary to reach the completed ``expert_handoff`` Part at wait-time.
+    spawn_group_id: str = ""
+    # The batch's total spawn count (>= 1) when ``spawn_group_id`` is set; 0 when
+    # absent (mirrors ``spawn_group_id``'s presence, never invented independently).
+    group_size: int = 0
     # P2.10 (#1127): additive run-handle vocabulary. These fields remain on the
     # authoritative child-session record so local and relay runs project identically.
     handle_id: str = ""
@@ -392,6 +419,53 @@ class AgentTaskRegistry:
             return n
 
 
+def resolve_waited_task_rows(app: "FastAPI", task_ids: Iterable[str]) -> list[dict[str, Any]]:
+    """Resolve each ``task_id``'s DISPLAY row from the registry AT CALL TIME.
+
+    The clean-wire rule for ``wait_agent_tasks``: the tool_call Part carries
+    ``metadata.waited_tasks`` — one row per requested id —
+    ``{task_id, agent_id, run_index, run_label, child_session_id, name}`` —
+    so the UI never has to re-derive a display name from a raw task-id array.
+    ``name`` is :func:`display_run_name`. Static task identity (agent, run
+    index, run label, child session) is already durable on the record at
+    spawn time, so this is resolvable BEFORE the wait ever blocks — it does
+    not wait for or depend on the outcome.
+
+    An id the registry does not (yet, or no longer) know still yields a row —
+    never silently dropped from the array — with empty resolved fields and
+    ``name`` falling back to the raw id (the best the server can say).
+    """
+
+    reg = getattr(app.state, "agent_task_registry", None)
+    rows: list[dict[str, Any]] = []
+    for tid in task_ids:
+        task = reg.get(tid) if reg is not None else None
+        if task is None:
+            rows.append(
+                {
+                    "task_id": tid,
+                    "agent_id": "",
+                    "run_index": 0,
+                    "run_label": "",
+                    "child_session_id": "",
+                    "name": tid,
+                }
+            )
+            continue
+        agent_id = task.agent_ref.get("expert_id", "")
+        rows.append(
+            {
+                "task_id": task.task_id,
+                "agent_id": agent_id,
+                "run_index": task.run_index,
+                "run_label": task.run_label,
+                "child_session_id": task.child_session_id,
+                "name": display_run_name(agent_id, task.run_index, task.run_label),
+            }
+        )
+    return rows
+
+
 #: Default ceiling on descendant-session traversal (:func:`descendant_session_ids`).
 #: Spawn depth is already bounded (``spawn_depth_exceeded``), but the aggregation
 #: walk carries its own cap so a pathological / cyclic task graph can never loop
@@ -545,6 +619,8 @@ def seed_agent_task(
     placement: str = "local",
     host: str = "",
     run_label: str = "",
+    spawn_group_id: str = "",
+    group_size: int = 0,
 ) -> AgentTask:
     """Mint a child session + its AgentTask projection, persist, register, and
     publish the initial lifecycle event.
@@ -583,6 +659,8 @@ def seed_agent_task(
         depth=depth,
         run_index=run_index,
         fanout_bound=fanout_bound,
+        spawn_group_id=spawn_group_id,
+        group_size=group_size,
         handle_id=tid,
         run_label=run_label or f"{agent_ref.get('expert_id', 'agent')} #{run_index + 1}",
         live_state=status,

@@ -25,7 +25,9 @@ from clio_agent.gact.agent_tasks import (
     AgentTask,
     AgentTaskError,
     AgentTaskRegistry,
+    display_run_name,
     persist_agent_task,
+    resolve_waited_task_rows,
     seed_agent_task,
 )
 from clio_agent.gact.app import build_app
@@ -319,3 +321,119 @@ def test_runs_api_projects_local_and_relay_handles_with_live_state(tmp_path: Pat
             assert remaining == {local.task_id}
     finally:
         set_task_record_store(None)
+
+
+# --------------------------------------------------------------------------- #
+# P5 wire semantics: fan-out group identity + wait_agent_tasks display rows.  #
+# --------------------------------------------------------------------------- #
+
+
+def test_display_run_name_prefers_run_label_else_agent_and_run_index() -> None:
+    """The ONE server-side display-name rule: run_label wins when set; a bare
+    agent_id/run_index falls back to "{agent_id} #{run_index + 1}"."""
+
+    assert display_run_name("data_expert", 0, "") == "data_expert #1"
+    assert display_run_name("data_expert", 2, "") == "data_expert #3"
+    # A custom run_label ALWAYS wins, even over a plausible-looking default.
+    assert display_run_name("data_expert", 0, "geo scan") == "geo scan"
+
+
+def test_agent_task_spawn_group_fields_default_absent_and_survive_metadata_round_trip(
+    tmp_path: Path,
+) -> None:
+    """A plain (non-fan-out) task defaults spawn_group_id/group_size to their
+    empty/0 sentinel. A fan-out task's group identity survives the
+    to_metadata()/from_session() persisted round trip (#737-forward-compat:
+    an OLD persisted record with no such keys tolerates the missing fields via
+    the same defaults, never raising)."""
+
+    bare = _task()
+    assert bare.spawn_group_id == ""
+    assert bare.group_size == 0
+
+    grouped = _task(spawn_group_id="fanout_abc123", group_size=3)
+    assert grouped.spawn_group_id == "fanout_abc123"
+    assert grouped.group_size == 3
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        parent = app.state.sessions.create(workspace_id="ws_default", title="p")
+        task = seed_agent_task(
+            app,
+            parent_session_id=parent.id,
+            agent_ref={"expert_id": "data_expert"},
+            spawn_group_id="fanout_xyz789",
+            group_size=2,
+        )
+        assert task.spawn_group_id == "fanout_xyz789"
+        assert task.group_size == 2
+        child = app.state.sessions.get(task.child_session_id)
+        # Simulate an OLD persisted record predating these fields (strip them from
+        # the durable metadata) — from_session must tolerate the gap via defaults.
+        stripped_block = dict(child.metadata["agent_task"])
+        stripped_block.pop("spawn_group_id", None)
+        stripped_block.pop("group_size", None)
+        child.metadata["agent_task"] = stripped_block
+        reloaded = AgentTask.from_session(child)
+        assert reloaded is not None
+        assert reloaded.spawn_group_id == ""
+        assert reloaded.group_size == 0
+
+
+def test_resolve_waited_task_rows_resolves_known_and_falls_back_for_unknown(
+    tmp_path: Path,
+) -> None:
+    """Each requested id resolves to a display row FROM THE REGISTRY (static
+    spawn-time facts) — never dropped for an unknown id, which still yields a
+    row with empty resolved fields and ``name`` falling back to the raw id."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        parent = app.state.sessions.create(workspace_id="ws_default", title="p")
+        labeled = seed_agent_task(
+            app,
+            parent_session_id=parent.id,
+            agent_ref={"expert_id": "geospatial"},
+            run_label="LA dense scan",
+        )
+        # seed_agent_task/spawn_child_turn always bake a computed default into
+        # run_label at creation time, so an EMPTY run_label (the fallback branch
+        # display_run_name exercises) only occurs on a bare record — register one
+        # directly into the registry, as the wait/ensemble tests already do.
+        unlabeled = _task(
+            task_id="task_unlabeled",
+            child_session_id="child_unlabeled",
+            agent_ref={"expert_id": "ndp"},
+            run_index=1,
+        )
+        app.state.agent_task_registry.register(unlabeled)
+
+        rows = resolve_waited_task_rows(
+            app, [labeled.task_id, unlabeled.task_id, "task_never_spawned"]
+        )
+
+    assert rows[0] == {
+        "task_id": labeled.task_id,
+        "agent_id": "geospatial",
+        "run_index": 0,
+        "run_label": "LA dense scan",
+        "child_session_id": labeled.child_session_id,
+        "name": "LA dense scan",
+    }
+    assert rows[1] == {
+        "task_id": unlabeled.task_id,
+        "agent_id": "ndp",
+        "run_index": 1,
+        "run_label": "",
+        "child_session_id": unlabeled.child_session_id,
+        "name": "ndp #2",
+    }
+    # Unknown id: never silently dropped from the array.
+    assert rows[2] == {
+        "task_id": "task_never_spawned",
+        "agent_id": "",
+        "run_index": 0,
+        "run_label": "",
+        "child_session_id": "",
+        "name": "task_never_spawned",
+    }

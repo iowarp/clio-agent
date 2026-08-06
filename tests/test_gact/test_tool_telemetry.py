@@ -223,6 +223,97 @@ class _LiveObservedResultAgent:
         return _Pred()
 
 
+class _LiveObservedWaitAgentTasksAgent:
+    """Drives the observer directly for ``wait_agent_tasks`` (#... P5 wire
+    semantics): the started tool_call Part must carry ``metadata.waited_tasks``
+    resolved from the agent-task registry AT CALL TIME — never a raw task-id
+    array the UI would have to render/derive a name for."""
+
+    def __init__(self) -> None:
+        self.app: Any = None
+
+    def forward(self, question: str, session_id: str):
+        from clio_agent.gact.agent_tasks import AgentTask
+        from clio_agent.tools.execution import current_tool_runtime, notify_global_tool_observer
+
+        assert current_tool_runtime().tool_observer is not None
+        registry = self.app.state.agent_task_registry
+        registry.register(
+            AgentTask(
+                task_id="task_a",
+                parent_session_id=session_id,
+                child_session_id="child_a",
+                agent_ref={"expert_id": "geospatial", "requesting_expert_id": "main"},
+                run_index=0,
+                run_label="LA dense scan",
+            )
+        )
+        registry.register(
+            AgentTask(
+                task_id="task_b",
+                parent_session_id=session_id,
+                child_session_id="child_b",
+                agent_ref={"expert_id": "ndp", "requesting_expert_id": "main"},
+                run_index=0,
+            )
+        )
+        args = {"task_ids": ["task_a", "task_b", "task_missing"], "timeout_s": 30.0}
+        notify_global_tool_observer("wait_agent_tasks", args, "started", None)
+        notify_global_tool_observer(
+            "wait_agent_tasks",
+            args,
+            "completed",
+            None,
+            '{"results": [], "workflow_state_conflicts": [], "merged_workflow_state": {}}',
+        )
+        return _Pred()
+
+
+class _LiveObservedDeclaredStructuredContentAgent:
+    """Drives the observer directly to prove a native tool's DECLARED structured
+    payload (:func:`declare_structured_content`) wins over the plain-string
+    return for ``structured_content`` (owner ruling, P5), never mirrors into
+    metadata, and never leaks onto a LATER unrelated call on the same thread
+    (one-shot pop)."""
+
+    def forward(self, question: str, session_id: str):
+        from clio_agent.gact.agents.tool_instrumentation import declare_structured_content
+        from clio_agent.tools.execution import current_tool_runtime, notify_global_tool_observer
+
+        assert current_tool_runtime().tool_observer is not None
+        args = {"task_ids": ["task_a"], "timeout_s": 5.0}
+        notify_global_tool_observer("wait_agent_tasks", args, "started", None)
+        declare_structured_content(
+            {
+                "summary": "waited 0.0s for 1 task — 1 completed",
+                "results": [
+                    {
+                        "name": "geospatial #1",
+                        "status": "completed",
+                        "duration_ms": 12.0,
+                        "answer_excerpt": "ok",
+                    }
+                ],
+                "workflow_state_conflicts": [],
+                "merged_workflow_state": {},
+            }
+        )
+        notify_global_tool_observer(
+            "wait_agent_tasks",
+            args,
+            "completed",
+            None,
+            '{"results": [], "workflow_state_conflicts": [], "merged_workflow_state": {}}',
+        )
+        # A SECOND, unrelated call on the SAME thread that never declares anything
+        # must NEVER see the prior call's declared shape leak onto it.
+        notify_global_tool_observer("hdf5_list_datasets", {"filepath": "x.h5"}, "started", None)
+        notify_global_tool_observer(
+            "hdf5_list_datasets", {"filepath": "x.h5"}, "completed", None, "some string result"
+        )
+        return _Pred()
+
+
 class _LiveObservedLargeMcpResultAgent:
     def forward(self, question: str, session_id: str) -> object:
         from clio_agent.tools.execution import current_tool_runtime, notify_global_tool_observer
@@ -535,6 +626,110 @@ def test_live_observer_records_completed_tool_result_evidence(tmp_path: Path) ->
         # field at all (absent-when-None wire semantics), and never a metadata copy.
         assert "structured_content" not in tool_results[0]
         assert "structured_content" not in tool_results[0]["metadata"]
+
+
+def test_wait_agent_tasks_tool_call_stamps_waited_tasks_display_rows(tmp_path: Path) -> None:
+    """P5 wire semantics: the wait_agent_tasks STARTED tool_call Part carries
+    ``metadata.waited_tasks`` — one resolved display row per requested id,
+    including a typed fallback row for an id the registry does not know — so
+    the UI never renders a raw task-id array."""
+
+    from .conftest import complete_turn
+
+    agent = _LiveObservedWaitAgentTasksAgent()
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    agent.app = app
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        complete_turn(client, sid, "wait")
+
+        history = _settled_history(app, sid)
+        tool_call = next(
+            e.payload["part"]
+            for e in history
+            if e.type == "message.part.added"
+            and e.payload.get("part", {}).get("type") == "tool_call"
+            and e.payload["part"].get("tool_name") == "wait_agent_tasks"
+        )
+
+    assert tool_call["metadata"]["waited_tasks"] == [
+        {
+            "task_id": "task_a",
+            "agent_id": "geospatial",
+            "run_index": 0,
+            "run_label": "LA dense scan",
+            "child_session_id": "child_a",
+            "name": "LA dense scan",
+        },
+        {
+            "task_id": "task_b",
+            "agent_id": "ndp",
+            "run_index": 0,
+            "run_label": "",
+            "child_session_id": "child_b",
+            "name": "ndp #1",
+        },
+        {
+            "task_id": "task_missing",
+            "agent_id": "",
+            "run_index": 0,
+            "run_label": "",
+            "child_session_id": "",
+            "name": "task_missing",
+        },
+    ]
+
+
+def test_declared_structured_content_wins_over_raw_result_and_is_one_shot(
+    tmp_path: Path,
+) -> None:
+    """Owner ruling (P5 wire semantics): a native tool's DECLARED structured
+    payload (declare_structured_content) is served as ``structured_content`` —
+    NOT derived from the plain-string return value — never mirrored into
+    metadata (the #1190 ONE-home rule), and never leaks onto a LATER unrelated
+    tool call on the same thread (one-shot: read + cleared per completed call)."""
+
+    from .conftest import complete_turn
+
+    app = build_app(
+        sessions_path=tmp_path / "s.json",
+        agent=_LiveObservedDeclaredStructuredContentAgent(),
+    )
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        complete_turn(client, sid, "wait")
+
+        history = _settled_history(app, sid)
+        tool_results = [
+            e.payload["part"]
+            for e in history
+            if e.type == "message.part.added"
+            and e.payload.get("part", {}).get("type") == "tool_result"
+        ]
+
+    assert len(tool_results) == 2
+    wait_result, other_result = tool_results
+    assert wait_result["structured_content"] == {
+        "summary": "waited 0.0s for 1 task — 1 completed",
+        "results": [
+            {
+                "name": "geospatial #1",
+                "status": "completed",
+                "duration_ms": 12.0,
+                "answer_excerpt": "ok",
+            }
+        ],
+        "workflow_state_conflicts": [],
+        "merged_workflow_state": {},
+    }
+    assert "structured_content" not in wait_result["metadata"]
+    # The plain string this tool ACTUALLY returned to the model is untouched —
+    # served as the ordinary result preview, never replaced.
+    assert wait_result["metadata"]["result"] == (
+        '{"results": [], "workflow_state_conflicts": [], "merged_workflow_state": {}}'
+    )
+    # The unrelated NEXT call never declared anything: no leak, no field at all.
+    assert "structured_content" not in other_result
 
 
 def test_live_observer_keeps_exact_large_mcp_structured_content(tmp_path: Path) -> None:

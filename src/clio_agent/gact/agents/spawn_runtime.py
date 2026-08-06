@@ -40,6 +40,11 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.agents.spawn_group import (
+    spawn_group_fields,
+    wait_structured_row,
+    wait_summary,
+)
 from clio_agent.gact.agents.spawn_placement import run_handle_fields
 from clio_agent.gact.runtime.globals import (
     _active_semantic_trace_id,
@@ -243,6 +248,7 @@ def _started_handoff_part(
         "depth": depth,
         "run_index": spawned.run_index,
     }
+    started_row.update(spawn_group_fields(spawned))
     handle_fields = run_handle_fields(spawned, child_id)
     return Part(
         id=f"live_handoff_{uuid.uuid4().hex[:12]}",
@@ -285,6 +291,7 @@ def _return_handoff_part(agent_def: "AgentDef", task: Any, payload: dict[str, An
         "error": task.error_reason or "",
         "run_index": task.run_index,
     }
+    return_row.update(spawn_group_fields(task))
     # Surface the verbatim-output degradation markers (never silent) onto the Part too.
     for marker in ("output_source", "output_fallback_reason"):
         if marker in payload:
@@ -474,11 +481,16 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         *,
         fanout_bound: int = 0,
         placement: str | None = None,
+        spawn_group_id: str = "",
+        group_size: int = 0,
     ) -> str:
         """Spawn one declared child through the invoker + emit the started wire
         parity. ``fanout_bound`` (> 0) caps how many of THIS parent's concurrent
         children at this depth may run before a spawn queues — the fan-out admission
-        bound (#948 S5); 0 means only the global per-depth cap applies."""
+        bound (#948 S5); 0 means only the global per-depth cap applies. ``spawn_group_id``
+        / ``group_size`` (P5 wire semantics) are set ONLY by ``spawn_agents_parallel``
+        (one id shared by the whole batch) — a bare ``spawn_agent_task`` call leaves
+        them at their empty/0 default, so the minted record carries neither field."""
 
         app, session_id = _ctx_app_session()
         # Computed depth: a child spawns at (its own depth) + 1, so nesting
@@ -509,6 +521,8 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                         mode="async",
                         fanout_bound=fanout_bound,
                         placement=binding.placement,
+                        spawn_group_id=spawn_group_id,
+                        group_size=group_size,
                     ),
                 ),
             )
@@ -571,10 +585,20 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         registry = app.state.agent_task_registry
         import time as _time  # noqa: PLC0415
 
-        from clio_agent.gact.agent_tasks import consume_notification  # noqa: PLC0415
+        from clio_agent.gact.agent_tasks import (  # noqa: PLC0415
+            consume_notification,
+            display_run_name,
+        )
 
-        deadline = _time.monotonic() + max(0.0, float(timeout_s or 0.0))
+        call_start = _time.monotonic()
+        deadline = call_start + max(0.0, float(timeout_s or 0.0))
         results = []
+        # Typed structured shape (owner ruling, P5): a tool DECLARES its wire
+        # presentation instead of the UI inferring it from JSON key order —
+        # built alongside ``results`` from the SAME per-task facts, and declared
+        # onto the wire's structured_content channel below (never returned to
+        # the model — that lane stays the compact ``results``/conflict rows).
+        structured_rows: list[dict[str, Any]] = []
         for tid in task_ids or []:
             # Validate the id BEFORE waiting: registry.event() would setdefault a
             # fresh never-set Event for an unknown/typo id and block the FULL budget
@@ -583,6 +607,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             task = registry.get(tid)
             if task is None:
                 results.append({"task_id": tid, "error": "unknown_task"})
+                structured_rows.append(wait_structured_row(tid, "unknown_task", 0.0, ""))
                 continue
             remaining = max(0.0, deadline - _time.monotonic())
             try:
@@ -590,9 +615,22 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                 task_result = binding.invoker.wait(TaskHandle.from_task(task), timeout_s=remaining)
             except (InvokerError, SpawnError) as exc:
                 results.append({"task_id": tid, "error": exc.reason})
+                structured_rows.append(wait_structured_row(tid, exc.reason, 0.0, ""))
                 continue
             payload = _completion_payload(app, task_result)
             results.append(payload)
+            structured_rows.append(
+                wait_structured_row(
+                    display_run_name(
+                        task_result.agent_ref.get("expert_id", ""),
+                        task_result.run_index,
+                        task_result.run_label,
+                    ),
+                    task_result.status,
+                    _task_duration_ms(task_result),
+                    (task_result.result or {}).get("answer_excerpt", ""),
+                )
+            )
             if task_result.is_terminal:
                 # Collecting a terminal task in-turn consumes its observe-later
                 # notification (#948 S6): the model saw the result HERE, so the next
@@ -625,13 +663,34 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                 ],
                 session_id,
             )
+        # Declare the typed structured shape (owner ruling, P5 wire semantics):
+        # summary line first, per-task rows, conflicts, merged state last — wired
+        # through the SAME structured_content channel MCP tool results use, so the
+        # UI's existing result ladder renders it with zero wait-specific client
+        # code. This does NOT change what the model itself receives below.
+        from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+            declare_structured_content,
+        )
+
+        elapsed_s = _time.monotonic() - call_start
+        declare_structured_content(
+            {
+                "summary": wait_summary(elapsed_s, structured_rows),
+                "results": structured_rows,
+                "workflow_state_conflicts": conflicts,
+                "merged_workflow_state": merged_state,
+            }
+        )
+        # The model-facing return stays the FULL-fidelity per-task rows (verbatim
+        # #880 output, typed conflicts, merged state) — compact is a UI concern,
+        # not a fidelity cut. Key order matches the declared shape's tail (harmless
+        # + helps the raw-JSON view); it is NOT the presentation mechanism.
         return json.dumps(
             {
                 "results": results,
-                "merged_workflow_state": merged_state,
                 "workflow_state_conflicts": conflicts,
+                "merged_workflow_state": merged_state,
             },
-            sort_keys=True,
             default=str,
         )
 
@@ -707,6 +766,14 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
 
         app, session_id = _ctx_app_session()
         bound = _fanout_batch_bound(agent_def)
+        spawn_list = spawns or []
+        # Fan-out GROUP identity (P5 wire semantics): ONE id minted for this whole
+        # call and stamped on every sibling's started + completed expert_handoff
+        # metadata (spawn_group_fields) — the server emits explicit grouping so
+        # the UI never infers sibling Call boxes by adjacency/timing. A bare
+        # spawn_agent_task call never mints one.
+        spawn_group_id = f"fanout_{uuid.uuid4().hex[:12]}"
+        group_size = len(spawn_list)
         _emit_semantic_event(
             app,
             session_id,
@@ -714,17 +781,31 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             turn_id=_active_semantic_turn_id(),
             trace_id=_active_semantic_trace_id(),
             status="running",
-            summary=f"{agent_def.id} fanned out to {len(spawns or [])} children",
+            summary=f"{agent_def.id} fanned out to {group_size} children",
             actor={"agent_id": agent_def.id, "role": "parent_expert"},
             blueprint=_blueprint_block(agent_def, ""),
-            payload={"max_workers": bound} if bound else {},
+            payload={
+                **({"max_workers": bound} if bound else {}),
+                "spawn_group_id": spawn_group_id,
+            },
         )
         out = []
         placement = resolve_batch_placement(app, session_id, placement)
-        for entry in spawns or []:
+        for entry in spawn_list:
             agent = str((entry or {}).get("agent") or "")
             task = str((entry or {}).get("task") or "")
-            out.append(json.loads(_do_spawn(agent, task, fanout_bound=bound, placement=placement)))
+            out.append(
+                json.loads(
+                    _do_spawn(
+                        agent,
+                        task,
+                        fanout_bound=bound,
+                        placement=placement,
+                        spawn_group_id=spawn_group_id,
+                        group_size=group_size,
+                    )
+                )
+            )
         return json.dumps({"spawned": out}, sort_keys=True)
 
     def run_workflow(request: str = "") -> str:

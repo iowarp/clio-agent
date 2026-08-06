@@ -21,14 +21,19 @@ module replaces that per-tool opt-in with ONE assembly seam:
   - ``"row"`` (default): the live observer appends real ``tool_call`` /
     ``tool_result`` parts (with ``tool_title`` when curated);
   - ``"handoff"``: the action's wire representation IS its ``expert_handoff``
-    part (spawn_agent_task / spawn_agents_parallel / run_workflow) — the
-    observer records telemetry (semantic events + ledger) but appends no tool
-    parts;
-  - ``"chip"``: the action's wire representation is its ``resource_link`` chip
-    (create_artifact) — telemetry only, no tool parts.
+    part (spawn_agent_task / spawn_agents_parallel / run_workflow) — that part
+    already IS call evidence, so the observer records telemetry (semantic
+    events + ledger) but skips the redundant ``tool_call``/``tool_result`` row;
+  - ``"chip"``: the action gets its normal ``tool_call``/``tool_result`` row
+    PLUS a ``resource_link`` chip appended separately at turn finalize
+    (create_artifact) — the chip is adornment, never a replacement for the
+    call row.
 
-  One representation per action on the wire — the existing principle, now
-  EXPLICIT at definition instead of implicit by unshimmed omission.
+  Every EXECUTED tool call emits its ``tool_call``/``tool_result`` parts
+  unconditionally (owner ruling, P5 wire semantics); a declared representation
+  may only ADD adornment on top, never remove the call row. ``"handoff"`` is
+  the one exception, because its own runtime already emits equivalent call
+  evidence (no double-emission).
 * :func:`boundary_observed_tool` / the bridge marker in
   ``clio_agent.tools.execution._make_dspy_tool`` — MCP-bridged tools already
   notify the observer through the execution boundary, so they carry
@@ -53,6 +58,7 @@ from __future__ import annotations
 import functools
 import inspect
 import logging
+import threading
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
@@ -233,6 +239,48 @@ def rebuilt_tool(
         if value is not None:
             setattr(func, attr, value)
     return dspy.Tool(func=func, name=name, desc=desc, args=args)
+
+
+# Per-thread one-shot declaration (owner ruling, wire semantics): a native tool
+# call and its instrumentation wrapper always run SYNCHRONOUSLY on the SAME
+# thread (call -> func() -> notify completed, no interleaving with another
+# tool's call on that thread), so a thread-local is a safe, simple channel —
+# the same pattern ``tool_observer``'s ``_OBSERVER_CALL_IDS``/``_OBSERVER_CALL_T0``
+# already use for the same reason.
+_DECLARED_STRUCTURED_CONTENT = threading.local()
+
+
+def declare_structured_content(value: Mapping[str, Any]) -> None:
+    """Attach a typed structured payload to THIS call's wire ``structured_content``
+    WITHOUT changing what the caller (the model) receives as the tool's actual
+    return value (owner ruling, P5 wire semantics: a tool DECLARES its
+    presentation the way an MCP tool's ``outputSchema``/``structuredContent``
+    does — the UI's existing result ladder then renders it top-down with zero
+    tool-specific client code, instead of the presentation riding on
+    incidental dict-key ORDER in the model-facing return).
+
+    Call this from inside a native tool's own function body, any time before
+    it returns. The instrumentation wrapper reads + clears it the moment the
+    call completes (:func:`pop_declared_structured_content`) — one-shot, so a
+    stale value can never leak onto a later, unrelated call on the same
+    thread. A tool that never calls this gets the unchanged default
+    (``structured_content`` derived from an MCP-shaped ``result``, or absent).
+    """
+
+    _DECLARED_STRUCTURED_CONTENT.value = dict(value)
+
+
+def pop_declared_structured_content() -> dict[str, Any] | None:
+    """Read + clear the current thread's declared structured payload, if any.
+
+    Called by the tool observer exactly once per completed call (success or
+    error) so a declaration never survives past the call that made it. Returns
+    ``None`` when the just-completed tool never declared one.
+    """
+
+    value = getattr(_DECLARED_STRUCTURED_CONTENT, "value", None)
+    _DECLARED_STRUCTURED_CONTENT.value = None
+    return value
 
 
 def observed_tool_callable(func: Callable[..., Any], tool_name: str) -> Callable[..., Any]:

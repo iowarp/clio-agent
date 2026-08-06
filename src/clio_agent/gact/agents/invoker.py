@@ -158,6 +158,8 @@ class TaskHandle:
     live_state: str = ""
     host: str = "local"
     placement: str = "local"
+    spawn_group_id: str = ""  # fan-out group identity (P5) — AgentTask.spawn_group_id
+    group_size: int = 0
 
     @classmethod
     def from_task(cls, task: AgentTask) -> "TaskHandle":
@@ -179,6 +181,8 @@ class TaskHandle:
             live_state=task.live_state or task.status,
             host=task.host,
             placement=task.placement,
+            spawn_group_id=task.spawn_group_id,
+            group_size=task.group_size,
         )
 
     def to_wire(self) -> dict[str, Any]:
@@ -237,6 +241,8 @@ class TaskResult:
     live_state: str = ""
     host: str = "local"
     placement: str = "local"
+    spawn_group_id: str = ""  # fan-out group identity (P5) — AgentTask.spawn_group_id
+    group_size: int = 0
 
     @property
     def is_terminal(self) -> bool:
@@ -270,6 +276,8 @@ class TaskResult:
             live_state=task.live_state or task.status,
             host=task.host,
             placement=task.placement,
+            spawn_group_id=task.spawn_group_id,
+            group_size=task.group_size,
         )
 
     def to_wire(self) -> dict[str, Any]:
@@ -575,6 +583,8 @@ class RelayExpertInvoker:
                 queued_reason="",
                 placement=self._placement,
                 host=self._placement.split(":", 1)[1],
+                spawn_group_id=spec.spawn_group_id,
+                group_size=spec.group_size,
             )
             handle = TaskHandle.from_task(seeded)
             self._apply_poll(handle, current)

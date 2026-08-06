@@ -654,6 +654,7 @@ def _make_tool_observer(app: "FastAPI"):
     from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
         declared_tool_representation,
         declared_tool_title,
+        pop_declared_structured_content,
     )
 
     def observe(
@@ -756,6 +757,18 @@ def _make_tool_observer(app: "FastAPI"):
                 )
             if decision.clear or not step_thought:
                 step_thought = ""
+            call_metadata = {"stream_source": "live", "telemetry_source": "live_observer"}
+            if name == "wait_agent_tasks":
+                # Clean-wire rule (P5): the server resolves the display identity of
+                # every task this call is about to wait on — from the agent-task
+                # registry, AT CALL TIME (static spawn-time facts, not the wait's
+                # outcome) — so the UI never renders a raw task-id array and never
+                # infers a name by adjacency/timing.
+                from clio_agent.gact.agent_tasks import resolve_waited_task_rows  # noqa: PLC0415
+
+                call_metadata["waited_tasks"] = resolve_waited_task_rows(
+                    app, list(args.get("task_ids") or [])
+                )
             _append_live_assistant_part(
                 app,
                 sid,
@@ -770,7 +783,7 @@ def _make_tool_observer(app: "FastAPI"):
                     # model's text and the action it chose are one ordered event.
                     thought=step_thought,
                     input=dict(args),
-                    metadata={"stream_source": "live", "telemetry_source": "live_observer"},
+                    metadata=call_metadata,
                 ),
             )
         elif phase == "completed":
@@ -793,10 +806,22 @@ def _make_tool_observer(app: "FastAPI"):
                     "executor_work_may_continue": True,
                 }
             ok = completion_error is None
+            # A native tool may DECLARE its own typed structured payload (P5 wire
+            # semantics — the same declared-presentation contract an MCP tool's
+            # structuredContent gives, without changing what the model itself
+            # received as the tool's plain return value). Read + clear it exactly
+            # once per completed call — success or error — so a stale declaration
+            # can never leak onto a later call on this thread. Falls back to the
+            # MCP-shaped extraction below when nothing was declared.
+            declared_structured = pop_declared_structured_content()
             structured_content = (
-                result.get("structuredContent")
-                if isinstance(result, Mapping) and "structuredContent" in result
-                else None
+                declared_structured
+                if declared_structured is not None
+                else (
+                    result.get("structuredContent")
+                    if isinstance(result, Mapping) and "structuredContent" in result
+                    else None
+                )
             )
             result_summary = f"Tool {name} {'completed' if ok else 'failed'}."
             # Served payload = the tool-response atom's FACTS (ok/duration/cached/result/

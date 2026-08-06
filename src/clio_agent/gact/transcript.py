@@ -143,6 +143,29 @@ def _collector_timeout_budget(args: Mapping[str, Any] | None) -> Optional[float]
         return None
 
 
+def _union_waited_tasks(prior: Any, new: Any) -> list[dict[str, Any]]:
+    """Union two ``waited_tasks`` display-row lists by ``task_id`` (P5 wire
+    semantics). A collapsed collector re-poll's canonical identity requires
+    the SAME sorted ``task_ids`` on both attempts (:func:`_canonical_collector_key`),
+    so in practice the two lists already describe the same task set — this
+    guards the merge defensively (never a narrower result than either side)
+    and lets the NEWEST attempt's row win per id when the two disagree, the
+    same "newest attempt owns the facts" rule the rest of the collapse
+    follows. Non-mapping / non-list inputs are treated as empty, never raise.
+    """
+
+    by_id: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for row in (*(prior or []), *(new or [])):
+        if not isinstance(row, Mapping):
+            continue
+        task_id = str(row.get("task_id") or "")
+        if task_id not in by_id:
+            order.append(task_id)
+        by_id[task_id] = dict(row)  # last write (from ``new``) wins per id
+    return [by_id[task_id] for task_id in order]
+
+
 class TranscriptFrozenError(RuntimeError):
     """A producer asked a FROZEN, never-minted ledger to mint the message id.
 
@@ -525,6 +548,17 @@ class TurnTranscript:
                         prior_budgets.append(new_budget)
                     if prior_budgets:
                         merged_metadata["budgets"] = prior_budgets
+                    # A collapsed wait covering two attempts on the SAME task set
+                    # (P5 wire semantics) must never present FEWER resolved
+                    # ``waited_tasks`` rows than either attempt saw — union by
+                    # task_id rather than the generic ``{**existing, **new}``
+                    # merge's plain overwrite.
+                    prior_waited = existing.metadata.get("waited_tasks")
+                    new_waited = part.metadata.get("waited_tasks")
+                    if prior_waited is not None or new_waited is not None:
+                        merged_metadata["waited_tasks"] = _union_waited_tasks(
+                            prior_waited, new_waited
+                        )
                 if part.type == "tool_result":
                     prior_total = existing.metadata.get("total_wait_ms")
                     if prior_total is None:

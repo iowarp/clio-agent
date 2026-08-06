@@ -90,6 +90,13 @@ class TaskSpec:
     # expert, depth) children RUN before the next spawn queues. 0 = only the global
     # per-depth cap applies.
     fanout_bound: int = 0
+    # Fan-out GROUP identity (wire semantics, P5): set by ``spawn_agents_parallel``
+    # to ONE id shared by every spawn in that call (empty for a single
+    # ``spawn_agent_task`` spawn / a declared workflow step — never invented).
+    # Rides onto the minted :class:`AgentTask` so it survives to the completed
+    # ``expert_handoff`` Part at wait-time. See ``AgentTask.spawn_group_id``.
+    spawn_group_id: str = ""
+    group_size: int = 0
     # P1.0 (#1062): verbatim context prepended to the child's staged user message —
     # used by ``spawn_subagent_with_skill`` to SEED a fresh subagent with a skill body
     # instead of inlining it into the caller's context. Empty for a normal spawn.
@@ -333,6 +340,8 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         depth=spec.depth,
         run_index=run_index,
         fanout_bound=spec.fanout_bound,
+        spawn_group_id=spec.spawn_group_id,
+        group_size=spec.group_size,
         handle_id="task_" + child.id.split("_")[-1],
         run_label=f"{spec.child_expert_id} #{run_index + 1}",
         live_state=STATUS_QUEUED,
