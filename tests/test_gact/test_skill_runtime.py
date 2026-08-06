@@ -130,6 +130,57 @@ def test_load_skill_bundled_file_and_traversal_twin(pack: Path) -> None:
     assert "outside" in str(excinfo.value)
 
 
+# ---- declared structured_content (P5 wire semantics) ------------------------------
+
+
+def test_load_skill_declares_typed_structured_content_for_body(pack: Path, monkeypatch) -> None:
+    """load_skill gets wait_agent_tasks's OWN treatment: a ``message`` naming what
+    loaded + its line count FIRST, then the skill id/scope facts. The BODY stays the
+    model-facing return UNCHANGED (asserted separately above)."""
+
+    declared: list[dict] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+    out = tool.func(skill_id="quality-rubric")
+
+    assert "SECRET_PROCEDURE_MARKER" in out  # model-facing body unchanged
+    assert len(declared) == 1
+    shape = declared[0]
+    assert next(iter(shape)) == "message"
+    assert shape["message"] == "loaded skill 'quality-rubric' (1 line)"
+    assert shape["skill_id"] == "quality-rubric"
+    assert shape["scope"] == "pack"
+    assert shape["lines"] == 1
+    assert "file" not in shape
+
+
+def test_load_skill_declares_typed_structured_content_for_bundled_file(
+    pack: Path, monkeypatch
+) -> None:
+    declared: list[dict] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+    out = tool.func(skill_id="quality-rubric", file="references/checklist.md")
+
+    assert out == "THE CHECKLIST"  # model-facing content unchanged
+    assert len(declared) == 1
+    shape = declared[0]
+    assert (
+        shape["message"]
+        == "loaded file 'references/checklist.md' from skill 'quality-rubric' (1 line)"
+    )
+    assert shape["skill_id"] == "quality-rubric"
+    assert shape["file"] == "references/checklist.md"
+
+
 # ---- tool-less experts get bodies -------------------------------------------------
 
 

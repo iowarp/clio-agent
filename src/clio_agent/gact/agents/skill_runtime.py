@@ -211,6 +211,42 @@ def skill_bodies_context(runtime: SkillRuntime) -> str:
     return "\n\n".join(parts) if len(parts) > 1 else ""
 
 
+def _declare_load_skill_structured_content(
+    *,
+    skill_id: str,
+    scope: str,
+    path: str,
+    text: str,
+    file: str = "",
+    bundled_files: list[str] | None = None,
+) -> None:
+    """Declare ``load_skill``'s typed wire payload (P5 wire semantics — the
+    ``wait_agent_tasks`` treatment): a ``message`` naming what loaded + its
+    line count FIRST, then the id/scope/path facts. The BODY itself stays the
+    model-facing return unchanged (:func:`load_skill`'s own text) — this only
+    curates the wire's presentation, never a second copy of the content."""
+
+    from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+        declare_structured_content,
+    )
+
+    lines = len(text.splitlines())
+    label = f"file {file!r} from skill {skill_id!r}" if file else f"skill {skill_id!r}"
+    payload: dict[str, Any] = {
+        "message": f"loaded {label} ({lines} line{'' if lines == 1 else 's'})",
+        "skill_id": skill_id,
+        "scope": scope,
+        "path": path,
+        "lines": lines,
+        "bytes": len(text.encode("utf-8")),
+    }
+    if file:
+        payload["file"] = file
+    if bundled_files:
+        payload["bundled_files"] = bundled_files
+    declare_structured_content(payload)
+
+
 def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
     """The tier-2 ``load_skill`` DSPy tool (auto-attached infrastructure)."""
 
@@ -294,6 +330,9 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                 raise ValueError(f"bundled file {file!r} unreadable: {exc}") from exc
             trace.event("SKILLS", "agent %s loaded %s file %s", agent_id, skill_id, file)
             _emit_loaded(len(content.encode("utf-8")), bundled_file=file)
+            _declare_load_skill_structured_content(
+                skill_id=skill_id, scope=ref.scope, path=ref.path, text=content, file=file
+            )
             return content
         # P1.0 (#1062): a skill may declare a PRIVILEGED runtime EFFECT in its
         # frontmatter (enter_mode / spawn_subagent_with_skill). Invoking the skill
@@ -328,6 +367,9 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             + "\n".join(f"- {name}" for name in bundled)
             if bundled
             else ""
+        )
+        _declare_load_skill_structured_content(
+            skill_id=skill_id, scope=ref.scope, path=ref.path, text=body, bundled_files=bundled
         )
         return f"# Skill: {skill_id}\n{body}{listing}"
 
