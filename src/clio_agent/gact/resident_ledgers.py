@@ -298,6 +298,7 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
         is_active: Optional[Callable[[str], bool]] = None,
         audit: Optional[Callable[[dict[str, Any]], None]] = None,
         materialize: Optional[Callable[[str], Optional[list["Message"]]]] = None,
+        on_rehydrate: Optional[Callable[[str, list["Message"]], None]] = None,
         clock: Callable[[], float] = monotonic,
     ) -> None:
         """Wire the set to its durable store and its residency policy.
@@ -316,6 +317,15 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
                 regime-aware transcript projection so an atoms-regime session rehydrates
                 from the canonical log. Only the SOURCE moves — the LRU/TTL/pin mechanics
                 are unchanged.
+            on_rehydrate: Optional once-per-materialization hook fired AFTER a
+                cache-miss install completes (session id, the just-materialized rows) —
+                never on a resident cache hit. The app wires this to the lazy stale-
+                handoff reconcile sweep
+                (:func:`clio_agent.gact.background_exit.sweep_stale_handoff_parts`,
+                round-9 wire defect D1): a session's first load since boot/eviction is
+                the natural, already-lazy seam to repair historical data without
+                reintroducing the eager whole-corpus boot walk #889 removed. Defaults
+                to a no-op.
             clock: Monotonic time source (injectable for deterministic TTL tests).
         """
 
@@ -324,6 +334,7 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
         self._is_active = is_active or (lambda _sid: False)
         self._audit = audit or (lambda _payload: None)
         self._materialize = materialize or store.load_session
+        self._on_rehydrate = on_rehydrate
         self._clock = clock
         self._resident: "OrderedDict[str, _Entry]" = OrderedDict()
         self._total_bytes = 0
@@ -350,6 +361,12 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
         if rows is None:
             raise KeyError(sid)
         self._install(sid, rows, rehydrated=True)
+        if self._on_rehydrate is not None:
+            # Fires exactly once per cache-miss materialization, AFTER install so
+            # a hook that mutates the ledger in place (a reconcile-and-replace)
+            # sees — and can safely re-``self[sid]`` against — the already-cached
+            # entry rather than re-triggering materialization.
+            self._on_rehydrate(sid, self._resident[sid].messages)
         return self._resident[sid].messages
 
     def __setitem__(self, sid: str, messages: list["Message"]) -> None:
@@ -680,10 +697,17 @@ def _record_resident_audit(app: "FastAPI", payload: dict[str, Any]) -> None:
 def build_resident_ledger_set(app: "FastAPI") -> ResidentLedgerSet:
     """Construct the app's resident transcript set from its message store.
 
-    Wires the active-session pin (bus subscribers + running/​waiting sessions) and
-    the typed audit sink. Requires ``app.state.message_store`` to be set.
+    Wires the active-session pin (bus subscribers + running/​waiting sessions), the
+    typed audit sink, and the lazy stale-handoff reconcile sweep (D1: a session
+    whose child completed BEFORE the terminal-transition writeback existed keeps a
+    ``delegate.started`` part stuck "running" forever — see
+    :func:`clio_agent.gact.background_exit.sweep_stale_handoff_parts`). Requires
+    ``app.state.message_store`` to be set.
     """
 
+    from clio_agent.gact.background_exit import (  # noqa: PLC0415 - avoid import cycle
+        sweep_stale_handoff_parts,
+    )
     from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - avoid import cycle
         materialize_ledger,
     )
@@ -694,4 +718,5 @@ def build_resident_ledger_set(app: "FastAPI") -> ResidentLedgerSet:
         is_active=lambda sid: _session_is_active(app, sid),
         audit=lambda payload: _record_resident_audit(app, payload),
         materialize=lambda sid: materialize_ledger(app, sid),
+        on_rehydrate=lambda sid, rows: sweep_stale_handoff_parts(app, sid, rows),
     )

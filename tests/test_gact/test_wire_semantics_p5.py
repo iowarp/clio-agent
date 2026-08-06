@@ -389,3 +389,118 @@ def test_terminal_task_fold_stored_handoff_writeback_is_idempotent(tmp_path: Pat
     assert after_updates == before_updates
     assert len(state.messages[parent][0].parts) == 1
     assert state.messages[parent][0].parts[0].stage == "delegate.completed"
+
+
+def _seed_historically_stale_handoff(client: TestClient, *, task_id: str) -> tuple[str, object]:
+    """Seed a parent session shaped like it PREDATES the terminal-transition
+    writeback (f7066068) entirely: the child task is already terminal in the
+    agent-task registry (seeded straight to ``completed``, bypassing
+    ``fold_agent_task_transition``/``finish_agent_task_transition`` so
+    ``reconcile_stored_handoff_part`` never ran for it), and its
+    ``delegate.started`` part is written through the REAL durable session
+    store -- not just the resident cache -- so a cold-start reload actually
+    rehydrates it from disk, exactly like a real historical session would."""
+
+    from clio_agent.gact.agent_tasks import STATUS_COMPLETED, seed_agent_task
+    from clio_agent.gact.session_store import _replace_session_messages
+    from clio_agent.gact.types import Message, Part
+
+    app = client.app
+    parent = _session(client)
+    completed = seed_agent_task(
+        app,
+        parent_session_id=parent,
+        agent_ref={"expert_id": "ndp_worker", "requesting_expert_id": "main"},
+        status=STATUS_COMPLETED,
+        task_id=task_id,
+    )
+    now = "2026-08-04T10:10:47+00:00"
+    _replace_session_messages(
+        app,
+        parent,
+        [
+            Message(
+                id="msg_parent_turn",
+                session_id=parent,
+                turn_id="msg_parent_turn",
+                role="assistant",
+                created_at=now,
+                updated_at=now,
+                parts=[
+                    Part(
+                        id="part_handoff_started",
+                        type="expert_handoff",
+                        agent_id="main",
+                        parent_agent="main",
+                        child_agent="ndp_worker",
+                        stage="delegate.started",
+                        status="running",
+                        handle_id=completed.handle_id,
+                        text="main -> ndp_worker",
+                        metadata={"question": "profile the dataset"},
+                    )
+                ],
+            )
+        ],
+    )
+    return parent, completed
+
+
+def test_stale_handoff_reconciled_lazily_on_session_load(tmp_path: Path) -> None:
+    """D1: a session whose child completed BEFORE the terminal-transition
+    writeback existed keeps a delegate.started expert_handoff part frozen
+    "running" forever -- GET /messages never re-runs
+    task_fold.finish_agent_task_transition, so the live writeback (f7066068)
+    never reaches it. The lazy reconcile-on-load sweep
+    (background_exit.sweep_stale_handoff_parts, wired at ResidentLedgerSet's
+    on_rehydrate seam) must close it the first time the session is (re)loaded
+    after a cold start -- simulated here via discard() (drop the resident copy
+    only) + a real GET, which forces rehydration from the durable store -- and
+    record ONE typed handoff.reconciled.stale provenance row."""
+
+    client, state = _client(tmp_path)
+    parent, completed = _seed_historically_stale_handoff(client, task_id="task_predates_writeback")
+
+    assert list(getattr(state, "handoff_reconciliations", [])) == []
+
+    # Cold-start simulation: only the RESIDENT copy is dropped -- the durable
+    # store (what a real restart rehydrates from) still has the stale part.
+    state.messages.discard(parent)
+
+    fetched = client.get(f"/v1/sessions/{parent}/messages").json()["messages"]
+    handoff = next(p for m in fetched for p in m["parts"] if p["type"] == "expert_handoff")
+    assert handoff["stage"] == "delegate.completed"
+    assert handoff["status"] == "completed"
+
+    events = list(state.handoff_reconciliations)
+    assert len(events) == 1
+    assert events[0]["event"] == "handoff.reconciled.stale"
+    assert events[0]["session_id"] == parent
+    assert events[0]["handle_id"] == completed.handle_id
+    assert events[0]["task_status"] == "completed"
+
+
+def test_stale_handoff_reconcile_sweep_is_idempotent_across_reloads(tmp_path: Path) -> None:
+    """The sweep must not re-fire (double-write the part or double-record the
+    typed event) on a session that was already reconciled by an earlier load
+    -- the idempotency twin of the reconcile-on-load test above."""
+
+    client, state = _client(tmp_path)
+    parent, completed = _seed_historically_stale_handoff(client, task_id="task_predates_idem")
+
+    state.messages.discard(parent)
+    first = client.get(f"/v1/sessions/{parent}/messages").json()["messages"]
+    first_handoff = next(p for m in first for p in m["parts"] if p["type"] == "expert_handoff")
+    assert first_handoff["stage"] == "delegate.completed"
+    assert len(state.handoff_reconciliations) == 1
+
+    # A second cold load of the SAME (now-reconciled, durably-persisted) session.
+    state.messages.discard(parent)
+    second = client.get(f"/v1/sessions/{parent}/messages").json()["messages"]
+    second_handoff = next(p for m in second for p in m["parts"] if p["type"] == "expert_handoff")
+
+    assert second_handoff["stage"] == "delegate.completed"
+    assert second_handoff["status"] == "completed"
+    # No re-write, no second typed event.
+    assert len(state.handoff_reconciliations) == 1
+    assert state.handoff_reconciliations[0]["handle_id"] == completed.handle_id

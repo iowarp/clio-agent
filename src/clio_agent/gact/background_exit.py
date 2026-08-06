@@ -13,17 +13,20 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING
+from collections import deque
+from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.agents.spawn_placement import run_handle_fields
 from clio_agent.gact.events import Event
 from clio_agent.gact.parts import Part
 from clio_agent.gact.session_store import _replace_session_messages
+from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from clio_agent.gact.agent_tasks import AgentTask
+    from clio_agent.gact.types import Message
 
 logger = logging.getLogger(__name__)
 
@@ -204,3 +207,192 @@ def _stored_terminal_handoff_part(app: "FastAPI", task: "AgentTask") -> Part:
     agent_def = AgentDef(id=parent_id, title=parent_id)
     payload = _completion_payload(app, task)
     return _return_handoff_part(agent_def, task, payload)
+
+
+# --------------------------------------------------------------------------- #
+# D1: lazy per-session reconcile sweep for HISTORICAL stale parts
+# --------------------------------------------------------------------------- #
+#
+# The terminal-transition writeback above (``reconcile_stored_handoff_part``,
+# f7066068) closes every NEW started->terminal edge going forward, but a session
+# whose child completed BEFORE that fix landed already has its part frozen
+# "running" on disk -- no live fold will ever revisit it (the parent may never
+# get another turn). Live evidence: sess_539d24da07bf, all 6 spawned children
+# completed, three ``expert_handoff`` parts still read ``delegate.started`` /
+# "running" on every ``GET /messages``.
+#
+# SEAM CHOICE: lazy, per-session, on first (re)load -- NOT a boot-time sweep over
+# every stored session. ``ResidentLedgerSet`` (#889) deliberately replaced GACT's
+# old eager "parse every messages/*.json before the port binds" boot path with a
+# bounded LRU that materializes a session's ledger only when something actually
+# reads it; that was the single biggest resident-memory win in the codebase. A
+# boot-time reconcile sweep would have to either duplicate that full body walk
+# (regressing #889) or re-derive it from the boot session INDEX alone, which
+# carries no part data to inspect. Hooking ``ResidentLedgerSet``'s existing
+# cache-miss seam instead costs nothing extra: the session's body is ALREADY
+# being paged in for a real reader, so piggy-backing one more pass over the
+# rows it just parsed is free, and this is the ONLY session shape a user could
+# still observe "running" on (anything never read again is never rendered
+# either).
+
+
+_HANDOFF_RECONCILE_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "stale": {
+        "category": "handoff_reconcile",
+        "policy": "reconcile_on_session_load",
+        "description": (
+            "A stored expert_handoff part was still delegate.started ('running') "
+            "for a task the agent-task registry already reports terminal -- the "
+            "child completed BEFORE the terminal-transition writeback "
+            "(task_fold.finish_agent_task_transition -> "
+            "reconcile_stored_handoff_part, f7066068) ever ran for it, so it was "
+            "never closed live. Reconciled the first time this session's ledger "
+            "is (re)loaded into the resident set, through the SAME "
+            "reconcile_stored_handoff_part path the live writeback uses."
+        ),
+    },
+}
+
+
+def handoff_reconciled_stale_payload(
+    *, session_id: str, handle_id: str, task_status: str
+) -> dict[str, Any]:
+    """Build the typed ``handoff.reconciled.stale`` provenance payload.
+
+    Mirrors :func:`clio_agent.gact.resident_ledgers.resident_ledger_reason_payload`:
+    a closed reason catalog supplies the static category/description, folded with
+    the dynamic per-repair identity, so a repair is queryable after the fact --
+    never a silent read-time rewrite.
+
+    Args:
+        session_id: The parent session whose stored part was reconciled.
+        handle_id: The reconciled ``expert_handoff`` part's ``handle_id``.
+        task_status: The terminal :class:`~clio_agent.gact.agent_tasks.AgentTask`
+            status that justified the reconcile (``completed``/``failed``/``cancelled``).
+
+    Returns:
+        A self-describing payload: ``event``, ``reason``, the dynamic identity
+        fields, plus the reason catalog's static ``category``/``policy``/
+        ``description``.
+    """
+
+    definition = _HANDOFF_RECONCILE_REASON_DEFINITIONS["stale"]
+    return {
+        "event": "handoff.reconciled.stale",
+        "reason": "stale",
+        "session_id": session_id,
+        "handle_id": handle_id,
+        "task_status": task_status,
+        **dict(definition),
+    }
+
+
+def _record_handoff_reconciliation(app: "FastAPI", payload: dict[str, Any]) -> None:
+    """Record one reconciliation to the trace plane + a bounded per-app audit ring.
+
+    Mirrors :func:`clio_agent.gact.resident_ledgers._record_resident_audit`'s
+    two-sink shape: ``trace.event`` for the log-plane, plus a small bounded deque
+    on ``app.state`` so the repair is queryable via the process, not just grep-able
+    in logs (no silent fallback).
+    """
+
+    trace.event(
+        "HANDOFF-RECONCILE",
+        "handoff.reconciled.stale session=%s handle=%s task_status=%s",
+        payload.get("session_id", ""),
+        payload.get("handle_id", ""),
+        payload.get("task_status", ""),
+    )
+    ring = getattr(app.state, "handoff_reconciliations", None)
+    if ring is None:
+        ring = deque(maxlen=256)
+        app.state.handoff_reconciliations = ring
+    ring.append(payload)
+
+
+def sweep_stale_handoff_parts(app: "FastAPI", session_id: str, messages: list["Message"]) -> int:
+    """Reconcile HISTORICAL stale ``delegate.started`` parts on one session's ledger.
+
+    Wired as :class:`~clio_agent.gact.resident_ledgers.ResidentLedgerSet`'s
+    ``on_rehydrate`` hook, so this runs exactly once per cache-miss materialization
+    -- a session's first load since boot, or since its resident copy was last
+    evicted. See the module-level seam-choice note above for why lazy-per-session
+    (not a boot-time full sweep) is the right call here.
+
+    Cheap for the overwhelming common case: a single pass over the just-
+    materialized rows collects candidate ``handle_id``s BEFORE touching the
+    agent-task registry at all (the "skip sessions with no running-stage parts
+    -- check before loading task records" requirement) -- only a session that
+    actually carries a ``delegate.started`` expert_handoff part pays for a
+    registry lookup.
+
+    Idempotent: the actual repair is delegated to
+    :func:`reconcile_stored_handoff_part` -- the SAME function the live
+    terminal-transition writeback calls -- whose own idempotency (a part whose
+    ``stage`` is no longer ``"delegate.started"`` is a no-op) means re-running
+    this sweep on an already-reconciled session (by a prior sweep, or a live
+    fold that ran since) never double-writes the part or double-publishes
+    ``message.part.updated``. A successful repair additionally records ONE typed
+    ``handoff.reconciled.stale`` provenance row
+    (:func:`handoff_reconciled_stale_payload`) -- distinct from, and in addition
+    to, the live path's own SSE publish -- so a lazy sweep-time repair is
+    explicit and queryable, never a silent read-time rewrite.
+
+    Args:
+        app: The GACT app (agent-task registry + message store on ``app.state``).
+        session_id: The session whose ledger was just materialized.
+        messages: The freshly materialized ledger (used only for the cheap
+            candidate scan -- the actual reconcile re-reads through
+            ``app.state.messages``, so it always mutates the resident copy of
+            record rather than this possibly-stale local snapshot).
+
+    Returns:
+        The number of parts reconciled (0 for the common no-op case).
+
+    Never raises: called synchronously from a resident-ledger cache miss on the
+    ``GET /messages`` read path (and every other reader), so a failure here must
+    degrade to a typed, logged no-op rather than break the read -- the same
+    discipline :func:`reconcile_stored_handoff_part` documents for itself.
+    """
+
+    try:
+        return _sweep_stale_handoff_parts(app, session_id, messages)
+    except Exception as exc:  # noqa: BLE001 - a read-path hook must never crash the read
+        logger.warning(
+            "stale expert_handoff sweep failed reason=sweep_error session=%s err=%r",
+            session_id,
+            exc,
+        )
+        return 0
+
+
+def _sweep_stale_handoff_parts(
+    app: "FastAPI", session_id: str, messages: list["Message"]
+) -> int:
+    registry = getattr(app.state, "agent_task_registry", None)
+    if registry is None:
+        return 0
+
+    stale_handle_ids = {
+        str(part.handle_id or "")
+        for message in messages
+        for part in message.parts
+        if part.type == "expert_handoff" and part.stage == "delegate.started" and part.handle_id
+    }
+    if not stale_handle_ids:
+        return 0
+
+    reconciled = 0
+    for handle_id in stale_handle_ids:
+        task = registry.get(handle_id)
+        if task is None or not task.is_terminal:
+            continue
+        if reconcile_stored_handoff_part(app, task):
+            reconciled += 1
+            _record_handoff_reconciliation(
+                app,
+                handoff_reconciled_stale_payload(
+                    session_id=session_id, handle_id=handle_id, task_status=task.status
+                ),
+            )
+    return reconciled
