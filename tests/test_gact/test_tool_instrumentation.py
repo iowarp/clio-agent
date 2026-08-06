@@ -328,6 +328,97 @@ def test_mcp_bridge_never_invents_a_title_when_upstream_declares_none() -> None:
     assert declared_tool_title("fs_untitled") == ""
 
 
+def test_mcp_tool_title_prefers_tool_title_over_annotations_title() -> None:
+    """#1188 annotations fallback: ``Tool.title`` WINS when both are present,
+    for either the object-shaped (execution.py) or dict-row-shaped
+    (builders.py) seam."""
+
+    from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
+
+    obj = SimpleNamespace(
+        title="Top-level Title", annotations=SimpleNamespace(title="Annotations Title")
+    )
+    assert mcp_tool_title(obj) == "Top-level Title"
+
+    row = {"title": "Top-level Title", "annotations": {"title": "Annotations Title"}}
+    assert mcp_tool_title(row) == "Top-level Title"
+
+
+def test_mcp_tool_title_falls_back_to_annotations_title_when_tool_title_absent() -> None:
+    """The shape clio-kit actually populates today (hdf5/arxiv/plot/web declare
+    ``annotations={"title": ...}``, never the top-level ``Tool.title``): the
+    fallback unlocks it for both the object and dict-row seam shapes."""
+
+    from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
+
+    obj = SimpleNamespace(title=None, annotations=SimpleNamespace(title="Open HDF5 File"))
+    assert mcp_tool_title(obj) == "Open HDF5 File"
+
+    obj_no_title_attr = SimpleNamespace(annotations=SimpleNamespace(title="Open HDF5 File"))
+    assert mcp_tool_title(obj_no_title_attr) == "Open HDF5 File"
+
+    row = {"title": "", "annotations": {"title": "Open HDF5 File"}}
+    assert mcp_tool_title(row) == "Open HDF5 File"
+
+
+def test_mcp_tool_title_both_absent_stays_empty() -> None:
+    """Never invented: no ``Tool.title`` and no ``ToolAnnotations.title`` ->
+    ``""``, across every shape either field could be missing in."""
+
+    from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
+
+    assert mcp_tool_title(SimpleNamespace()) == ""
+    assert mcp_tool_title(SimpleNamespace(annotations=None)) == ""
+    assert mcp_tool_title(SimpleNamespace(annotations=SimpleNamespace(title=None))) == ""
+    assert mcp_tool_title({}) == ""
+    assert mcp_tool_title({"annotations": {}}) == ""
+    assert mcp_tool_title({"annotations": None}) == ""
+
+
+def test_mcp_bridge_annotations_title_rides_to_declared_title_when_tool_title_absent() -> None:
+    """End-to-end through the execution-boundary bridge: a clio-kit-shaped tool
+    (``ToolAnnotations.title`` only, no ``Tool.title``) still curates
+    ``Part.tool_title`` — this is the fleet unlock (hdf5/arxiv/plot/web, 41
+    occurrences) with zero changes required on clio-kit's side."""
+
+    from clio_agent.tools.execution import _make_dspy_tool
+
+    mcp_tool = SimpleNamespace(
+        description="open an hdf5 file",
+        title=None,
+        annotations=SimpleNamespace(title="Open HDF5 File"),
+        inputSchema={"properties": {}},
+    )
+    tool = _make_dspy_tool("hdf5_open_file", mcp_tool, lambda name, kwargs: "")
+    instrument_tools([tool])
+    assert declared_tool_title("hdf5_open_file") == "Open HDF5 File"
+
+
+def test_external_mcp_tool_row_annotations_title_fallback() -> None:
+    """The external-MCP builder seam (``builders._enabled_external_mcp_dspy_tools``
+    resolves via ``mcp_tool_title(tool_row)``): a persisted row carrying only an
+    annotations-dict title (the shape ``_normalize_mcp_tool_annotations``
+    produces in blueprints.py) still curates a title through
+    ``boundary_observed_tool``."""
+
+    from clio_agent.gact.agents.tool_instrumentation import boundary_observed_tool, mcp_tool_title
+
+    tool_row = {
+        "name": "hdf5_open_file",
+        "title": "",
+        "annotations": {"title": "Open HDF5 File", "readOnlyHint": False},
+    }
+
+    def f() -> str:
+        return ""
+
+    tool = boundary_observed_tool(
+        f, name="hdf5_open_file", desc="d", args={}, title=mcp_tool_title(tool_row)
+    )
+    instrument_tools([tool])
+    assert declared_tool_title("hdf5_open_file") == "Open HDF5 File"
+
+
 def test_boundary_observed_tool_curates_a_title_when_given() -> None:
     """The agent-blueprint external-MCP bridge (``builders``) can hand
     ``boundary_observed_tool`` a curated/upstream title; it registers exactly

@@ -472,6 +472,7 @@ def _enabled_external_mcp_dspy_tools(app: Any, requested_tools: list[str]) -> di
 
     from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
         boundary_observed_tool,
+        mcp_tool_title,
     )
 
     requested = set(requested_tools)
@@ -491,7 +492,7 @@ def _enabled_external_mcp_dspy_tools(app: Any, requested_tools: list[str]) -> di
             if str(tool_row.get("status") or "") != "ready":
                 continue
             description = str(tool_row.get("description") or tool_name)
-            title = str(tool_row.get("title") or "")
+            title = mcp_tool_title(tool_row)  # #1188: Tool.title, else ToolAnnotations.title
             schema = tool_row.get("input_schema") or {}
             properties = schema.get("properties", {}) if isinstance(schema, Mapping) else {}
             if not isinstance(properties, dict):

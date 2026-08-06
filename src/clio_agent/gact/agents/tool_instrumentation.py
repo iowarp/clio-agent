@@ -53,7 +53,7 @@ from __future__ import annotations
 import functools
 import inspect
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from clio_agent.tools.execution import TOOL_OBSERVED_ATTR
@@ -89,19 +89,57 @@ def sanitize_tool_title(title: object) -> str:
     return " ".join(cleaned.split())[:TITLE_MAX_CHARS].strip()
 
 
+def _annotations_title(annotations: object) -> str:
+    """Read ``ToolAnnotations.title`` from either shape annotations arrive in.
+
+    FastMCP/mcp exposes ``annotations`` as a ``ToolAnnotations`` model on a live
+    listed tool; persisted/descriptor rows carry it as a plain mapping (e.g.
+    :func:`clio_agent.tools.catalog.normalize_mcp_annotations`'s output). Both
+    normalize to the same ``title`` read.
+    """
+
+    if annotations is None:
+        return ""
+    if isinstance(annotations, Mapping):
+        return str(annotations.get("title") or "")
+    return str(getattr(annotations, "title", None) or "")
+
+
+def mcp_tool_title(mcp_tool: object) -> str:
+    """Resolve an upstream MCP tool's display title (#1188 MCP half).
+
+    ``Tool.title`` (the first-class display-name field) WINS when present;
+    ``ToolAnnotations.title`` (the ``annotations={"title": ...}`` field
+    clio-kit's servers actually populate today — hdf5/arxiv/plot/web) is the
+    fallback when ``Tool.title`` is absent. Both absent -> ``""`` — never
+    invented. Accepts either an ``mcp.types.Tool``-shaped object (the
+    execution-boundary bridge) or a plain mapping row (the external-MCP
+    registry's ``tool_row``), so this is the ONE precedence rule for every
+    bridge seam.
+    """
+
+    if isinstance(mcp_tool, Mapping):
+        title = mcp_tool.get("title") or ""
+        annotations = mcp_tool.get("annotations")
+    else:
+        title = getattr(mcp_tool, "title", None) or ""
+        annotations = getattr(mcp_tool, "annotations", None)
+    return str(title) if title else _annotations_title(annotations)
+
+
 def stamp_mcp_tool_title(func: Callable[..., Any], mcp_tool: object) -> None:
     """Stamp an MCP-bridged callable with its upstream tool's declared title.
 
-    #1188 MCP half: an ``mcp.types.Tool`` carries an optional ``title`` distinct
-    from its programmatic ``name``. When the upstream server declares one, this
-    stamps it (sanitized through the same :func:`sanitize_tool_title` curated
-    native titles use) so the assembly seam (:func:`instrument_tools`) registers
-    it for ``Part.tool_title`` exactly like a curated native title. Absent when
-    the server declares none — never invented. No ``server_title`` yet (needs
-    the serverInfo surface, tracked on the issue).
+    #1188 MCP half: resolves via :func:`mcp_tool_title` (``Tool.title`` then
+    ``ToolAnnotations.title``), sanitized through the same
+    :func:`sanitize_tool_title` curated native titles use, so it rides the
+    assembly seam (:func:`instrument_tools`) onto ``Part.tool_title`` exactly
+    like a curated native title. Absent when the server declares neither —
+    never invented. No ``server_title`` yet (needs the serverInfo surface,
+    tracked on the issue).
     """
 
-    title = getattr(mcp_tool, "title", None)
+    title = mcp_tool_title(mcp_tool)
     if title:
         setattr(func, TITLE_ATTR, sanitize_tool_title(title))
 

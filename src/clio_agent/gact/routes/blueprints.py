@@ -65,6 +65,7 @@ from clio_agent.gact.agents.resolution import (
     _runtime_session_agent_overlay,
     _runtime_workspace_catalog_cwd,
 )
+from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
 from clio_agent.gact.permission_gate import _normalize_mcp_tool_annotations
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
 
@@ -648,12 +649,11 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                             or declared.get("description")
                             or "",
                             # #1188 MCP half: carry the upstream tool's declared
-                            # title (mcp.types.Tool.title) through so the dspy-tool
-                            # bridge (builders._enabled_external_mcp_dspy_tools) can
-                            # curate Part.tool_title from it, when present.
-                            "title": getattr(live_tool, "title", None)
-                            or declared.get("title")
-                            or "",
+                            # title (Tool.title, else ToolAnnotations.title) through
+                            # so the dspy-tool bridge
+                            # (builders._enabled_external_mcp_dspy_tools) can curate
+                            # Part.tool_title from it, when present.
+                            "title": mcp_tool_title(live_tool) or declared.get("title") or "",
                             "status": "ready",
                             "enabled": True,
                             "server_id": sid,
