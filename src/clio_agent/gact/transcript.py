@@ -82,12 +82,65 @@ def _canonical_tool_args(args: Mapping[str, Any] | None) -> str:
     Sorted keys make two calls with the same argument dict compare equal
     regardless of insertion order; an unencodable dict yields the empty
     sentinel, which every caller treats as "no identity — never collapse".
+
+    Generic helper — kept for any future caller that wants whole-args
+    identity. The collector re-poll collapse does NOT use this (see
+    :func:`_canonical_collector_key`): a collector's full args dict includes
+    ``timeout_s``, which the model legitimately varies per re-poll.
     """
 
     try:
         return json.dumps(dict(args or {}), sort_keys=True, default=str)
     except (TypeError, ValueError):
         return ""
+
+
+# Sentinel task-set identity for a collector call that polls EVERYTHING
+# (``check_agent_tasks`` with ``task_ids`` omitted/``None``) — distinct from
+# any real task id so it can never collide with a literal one-task poll.
+_COLLECTOR_ALL_TASKS_KEY = "__all__"
+
+
+def _canonical_collector_key(tool_name: str, args: Mapping[str, Any] | None) -> str:
+    """Semantic re-poll identity for a collector call: tool name + task set.
+
+    ``wait_agent_tasks`` / ``check_agent_tasks`` re-polls are the SAME
+    logical activity — waiting on the same tasks — even when the per-poll
+    ``timeout_s`` budget differs; a real turn re-polls the same task set with
+    a DIFFERENT budget each time (round-6 live evidence: 60s then 90s), so
+    canonicalizing the FULL args dict (as :func:`_canonical_tool_args` does)
+    never collapses the exact case this feature exists for. The identity is
+    therefore just the tool name plus the sorted ``task_ids`` (order-
+    insensitive — a re-poll may list the remaining tasks in a different
+    order); a missing/``None`` ``task_ids`` (``check_agent_tasks``'s "poll
+    everything" call) canonicalizes to :data:`_COLLECTOR_ALL_TASKS_KEY`
+    consistently, never to the empty-list identity of "polling zero tasks".
+    """
+
+    task_ids = (args or {}).get("task_ids")
+    ids_key: Any = (
+        _COLLECTOR_ALL_TASKS_KEY if task_ids is None else sorted(str(tid) for tid in task_ids)
+    )
+    try:
+        return json.dumps([str(tool_name or ""), ids_key], sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return ""
+
+
+def _collector_timeout_budget(args: Mapping[str, Any] | None) -> Optional[float]:
+    """The requested ``timeout_s`` budget on a collector call's args, if any.
+
+    ``check_agent_tasks`` carries no budget (it never blocks); ``None`` means
+    "nothing to record", not "budget zero" — callers must not coerce it.
+    """
+
+    value = (args or {}).get("timeout_s")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class TranscriptFrozenError(RuntimeError):
@@ -396,15 +449,20 @@ class TurnTranscript:
 
         ``wait_agent_tasks`` / ``check_agent_tasks`` re-polls are one logical
         activity (waiting on the same tasks), not N transcript rows. A NEW
-        ``tool_call`` whose canonical args equal the LAST ``tool_call`` part's
-        — with nothing between them but that call's own ``tool_result`` —
-        REPLACES the prior call in place: same part id/sequence,
-        ``metadata.attempts`` incremented, ``message.part.updated`` published
-        (:meth:`upsert_delegation_part` is the precedent). Its ``tool_result``
-        then replaces the prior result the same way, carrying cumulative
-        ``metadata.attempts`` + ``metadata.total_wait_ms`` (the attempts'
-        summed durations) while the VISIBLE content is the newest result
-        VERBATIM — never a synthesized merge.
+        ``tool_call`` whose SEMANTIC identity — tool name + sorted
+        ``task_ids`` (:func:`_canonical_collector_key`), NOT the full args
+        dict — equals the LAST ``tool_call`` part's, with nothing between
+        them but that call's own ``tool_result``, REPLACES the prior call in
+        place: same part id/sequence, ``metadata.attempts`` incremented,
+        ``metadata.budgets`` appended with the re-poll's ``timeout_s`` (round-
+        6 evidence: the model legitimately varies the wait budget per re-poll
+        — 60s then 90s on the SAME task set — so the identity must ignore it
+        or the collapse never fires on real turns), ``message.part.updated``
+        published (:meth:`upsert_delegation_part` is the precedent). Its
+        ``tool_result`` then replaces the prior result the same way, carrying
+        cumulative ``metadata.attempts`` + ``metadata.total_wait_ms`` (the
+        attempts' summed durations) while the VISIBLE content is the newest
+        result VERBATIM — never a synthesized merge.
 
         Narration parts (``text`` AND ``thinking`` — ``_STREAMED_TEXT_TYPES``,
         the same narration lane) between re-polls never break the chain (owner
@@ -446,11 +504,27 @@ class TurnTranscript:
                 existing = self._parts[index]
                 merged_metadata = {**existing.metadata, **part.metadata}
                 merged_metadata["attempts"] = int(existing.metadata.get("attempts") or 1) + 1
-                if part.type == "tool_call" and not part.thought:
-                    # Keep the started reasoning under the re-poll (the same way
-                    # the delegation upsert keeps the brief) when the new
-                    # attempt carries none of its own.
-                    part.thought = existing.thought
+                if part.type == "tool_call":
+                    if not part.thought:
+                        # Keep the started reasoning under the re-poll (the same
+                        # way the delegation upsert keeps the brief) when the
+                        # new attempt carries none of its own.
+                        part.thought = existing.thought
+                    # Honest per-attempt detail (owner amendment, round-6): the
+                    # collapse identity now ignores timeout_s, so record every
+                    # attempt's requested budget explicitly rather than losing
+                    # it silently. Absent when neither attempt carried one
+                    # (e.g. check_agent_tasks, which never blocks).
+                    prior_budgets = list(existing.metadata.get("budgets") or [])
+                    if not prior_budgets:
+                        first_budget = _collector_timeout_budget(existing.input)
+                        if first_budget is not None:
+                            prior_budgets = [first_budget]
+                    new_budget = _collector_timeout_budget(part.input)
+                    if new_budget is not None:
+                        prior_budgets.append(new_budget)
+                    if prior_budgets:
+                        merged_metadata["budgets"] = prior_budgets
                 if part.type == "tool_result":
                     prior_total = existing.metadata.get("total_wait_ms")
                     if prior_total is None:
@@ -492,22 +566,24 @@ class TurnTranscript:
         the narration lane, same order-preservation rationale: they never
         break the chain because the pair collapses at its original position
         and the narration stays exactly where it streamed). The call must
-        carry the same tool name and canonically equal args, and every part
-        after it must be that call's own ``tool_result`` or narration
-        text/thinking. Anything else — different args, another tool's
-        call/result, an ``expert_handoff``, any other part type — yields
-        ``None`` and the caller appends normally.
+        carry the same SEMANTIC identity — tool name + sorted ``task_ids``
+        (:func:`_canonical_collector_key`; deliberately NOT the full args
+        dict, so a re-poll with a different ``timeout_s`` still collapses),
+        and every part after it must be that call's own ``tool_result`` or
+        narration text/thinking. Anything else — a different task set,
+        another tool's call/result, an ``expert_handoff``, any other part
+        type — yields ``None`` and the caller appends normally.
         """
 
-        new_args = _canonical_tool_args(part.input)
-        if not new_args:
+        new_key = _canonical_collector_key(part.tool_name, part.input)
+        if not new_key:
             return None
         for index in range(len(self._parts) - 1, -1, -1):
             candidate = self._parts[index]
             if candidate.type == "tool_call":
                 if candidate.tool_name != part.tool_name:
                     return None
-                if _canonical_tool_args(candidate.input) != new_args:
+                if _canonical_collector_key(candidate.tool_name, candidate.input) != new_key:
                     return None
                 for trailing in self._parts[index + 1 :]:
                     if trailing.type in _STREAMED_TEXT_TYPES:

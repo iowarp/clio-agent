@@ -1365,6 +1365,70 @@ def test_repeated_same_args_waits_collapse_to_one_tool_pair() -> None:
     assert kinds.count("message.part.updated") == 4  # 2 re-polls x (call + result)
 
 
+def test_different_timeout_budget_same_task_ids_still_collapses() -> None:
+    """Round-6 real-turn evidence: the model re-polls the SAME task set with a
+    DIFFERENT ``timeout_s`` each time (observed 60 then 90 on one task set —
+    the owner's original wait-wall varied budgets 60/90/120s too). Canonicalizing
+    the FULL args dict (timeout_s included) never collapses this shape — the
+    EXACT case the feature exists for. The collapse identity is the SEMANTIC
+    activity (tool name + task set) only, so this still collapses to one pair,
+    and the per-attempt budgets are recorded honestly rather than silently
+    dropped."""
+
+    from clio_agent.gact.tool_observer import _append_live_assistant_part
+
+    app, transcript, events = _collector_transcript_app()
+    _append_live_assistant_part(
+        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=60.0)
+    )
+    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 60000.0))
+    _append_live_assistant_part(
+        app, "sess_x", _collector_call("call_b", task_ids=["task_1"], timeout_s=90.0)
+    )
+    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 90000.0))
+
+    parts = transcript.snapshot()
+    assert [p.type for p in parts] == ["tool_call", "tool_result"]
+    call, result = parts
+    assert call.id == "live_call_a_call"  # identity survives the collapse
+    assert call.call_id == "call_b"  # ...but the newest attempt owns the call
+    assert call.metadata["attempts"] == 2
+    assert call.metadata["budgets"] == [60.0, 90.0]  # honest per-attempt budgets
+    assert result.id == "live_call_a_result"
+    assert result.metadata["attempts"] == 2
+    assert result.metadata["total_wait_ms"] == 150000.0
+    assert result.content[0].text == "completed"  # newest result VERBATIM
+    kinds = [e for e, _ in events]
+    assert kinds.count("message.part.added") == 2  # one pair, ever
+    assert kinds.count("message.part.updated") == 2  # 1 re-poll x (call + result)
+
+
+def test_task_ids_reordered_between_polls_still_collapses() -> None:
+    """The collapse identity sorts ``task_ids`` (order-insensitive): a re-poll
+    that lists the same task set in a different order is still ONE activity."""
+
+    from clio_agent.gact.tool_observer import _append_live_assistant_part
+
+    app, transcript, _events = _collector_transcript_app()
+    _append_live_assistant_part(
+        app,
+        "sess_x",
+        _collector_call("call_a", task_ids=["task_1", "task_2"], timeout_s=30.0),
+    )
+    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
+    _append_live_assistant_part(
+        app,
+        "sess_x",
+        _collector_call("call_b", task_ids=["task_2", "task_1"], timeout_s=45.0),
+    )
+    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 45000.0))
+
+    parts = transcript.snapshot()
+    assert [p.type for p in parts] == ["tool_call", "tool_result"]
+    assert parts[0].metadata["attempts"] == 2
+    assert parts[0].metadata["budgets"] == [30.0, 45.0]
+
+
 def test_check_error_repoll_collapses_and_shows_newest_error_verbatim() -> None:
     """check_agent_tasks collapses the same way, and a failed re-poll's VISIBLE
     result is the newest error verbatim — never a merge that keeps the prior
