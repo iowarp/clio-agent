@@ -118,7 +118,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # module agents/spawn_group.py to hold this file's growth down. Ratchet back
     # with the #714/#767 decomposition (a spawn_agent_task / wait_agent_tasks /
     # spawn_agents_parallel split is the natural next cut).
-    "src/clio_agent/gact/agents/spawn_runtime.py": 923,
+    # P5 adversarial review [E]: 923 -> 922 net -- the failed-sibling terminal Part
+    # (group_size reconciliation on a refused batch spawn) + the fanout.started
+    # group_size field, offset by trimming this file's own docstrings (the pure
+    # metadata-row builder lives in the owner module spawn_group.py).
+    "src/clio_agent/gact/agents/spawn_runtime.py": 922,
     # P5 (wire semantics): +3 for the fan-out group identity fields
     # (spawn_group_id/group_size) on TaskHandle + TaskResult, projected from
     # AgentTask in from_task() and threaded through RelayExpertInvoker.invoke —

@@ -716,6 +716,107 @@ def test_spawn_agent_task_single_spawn_carries_neither_group_field(monkeypatch) 
     assert "group_size" not in started.metadata
 
 
+class _PartialFailureSpy(_InvokeSpy):
+    """Invoker spy that refuses ONE specific child id with a typed SpawnError
+    and otherwise succeeds like ``_GroupSpy`` (stamping spawn_group_id/group_size
+    onto the returned handle) -- proves a parallel batch's declared group_size
+    reconciles even when one sibling never gets a child session (finding [E])."""
+
+    def __init__(self, fail_agent: str) -> None:
+        super().__init__()
+        self._fail_agent = fail_agent
+
+    def invoke(self, spec: Any) -> TaskHandle:
+        if spec.child_expert_id == self._fail_agent:
+            raise SpawnError("child not declared", reason="undeclared_child")
+        self.specs.append(spec)
+        return TaskHandle(
+            task_id=f"task_{spec.child_expert_id}",
+            parent_session_id=spec.parent_session_id,
+            child_session_id=f"child_{spec.child_expert_id}",
+            status="running",
+            run_index=0,
+            depth=spec.depth,
+            spawn_group_id=spec.spawn_group_id,
+            group_size=spec.group_size,
+        )
+
+
+def test_spawn_agents_parallel_failed_sibling_still_reconciles_group_size(monkeypatch) -> None:
+    """Failing-first for finding [E]: spawn_runtime.py:776 set group_size to the
+    declared batch size, but ``_do_spawn`` returned early on SpawnError BEFORE
+    appending any Part — a refused sibling silently vanished, leaving
+    group_size=3 with only 2 parts forever and no visible reason. A batch of 3
+    with ONE undeclared child must still produce 3 expert_handoff Parts sharing
+    the SAME spawn_group_id/group_size; the refused slot concludes DIRECTLY on
+    the terminal lane (status "failed", stage "delegate.completed") carrying the
+    typed SpawnError reason — never a dangling started with no terminal."""
+
+    app = _fake_app()
+    spy = _PartialFailureSpy("geo_b")
+    app.state.expert_invoker = spy
+    emitted = _capture_emits(monkeypatch)
+    parts = _capture_parts(monkeypatch)
+
+    spawns = [
+        {"agent": "geo_a", "task": "t1"},
+        {"agent": "geo_b", "task": "t2"},  # undeclared -> refused mid-batch
+        {"agent": "geo_c", "task": "t3"},
+    ]
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"geo_a", "geo_b", "geo_c"}, monkeypatch)
+        result = json.loads(tools["spawn_agents_parallel"].func(spawns=spawns))
+
+    # The refused slot's own model-facing return still carries the typed reason.
+    assert result["spawned"][1] == {"error": "undeclared_child", "message": "child not declared"}
+
+    handoffs = [p for _sid, p in parts if p.type == "expert_handoff"]
+    assert len(handoffs) == 3, "one Part per declared slot, including the refused one"
+    group_ids = {p.metadata["spawn_group_id"] for p in handoffs}
+    assert len(group_ids) == 1, "every sibling — success or failure — shares ONE group id"
+    assert {p.metadata["group_size"] for p in handoffs} == {3}
+
+    by_child = {p.child_agent: p for p in handoffs}
+    failed = by_child["geo_b"]
+    assert failed.status == "failed"
+    assert failed.stage == "delegate.completed"
+    assert failed.metadata["error"] == "undeclared_child"
+    # The two real siblings still spawned normally, unaffected by geo_b's refusal.
+    assert by_child["geo_a"].status == "running"
+    assert by_child["geo_c"].status == "running"
+
+    # blueprint.fanout.started declares the SAME group id + the declared total
+    # (finding [13]: it carried spawn_group_id but not group_size before).
+    fanout_started = next(e for e in emitted if e["event_type"] == "blueprint.fanout.started")
+    assert fanout_started["payload"]["spawn_group_id"] == next(iter(group_ids))
+    assert fanout_started["payload"]["group_size"] == 3
+
+
+def test_spawn_agent_task_bare_spawn_error_still_emits_nothing(monkeypatch) -> None:
+    """A BARE (non-batch) spawn_agent_task failure has no group to reconcile --
+    the finding [E] fix is scoped to spawn_agents_parallel batches, so a solo
+    refusal keeps its pre-existing behavior: no Part, no event, just the typed
+    error returned to the model (regression guard for
+    test_spawn_agent_task_spawn_error_returns_reason_and_emits_nothing)."""
+
+    app = _fake_app()
+    emitted = _capture_emits(monkeypatch)
+    parts = _capture_parts(monkeypatch)
+
+    def _raise(spec: Any) -> Any:
+        raise SpawnError("child not declared", reason="undeclared_child")
+
+    monkeypatch.setattr(app.state.expert_invoker, "invoke", _raise)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        result = json.loads(tools["spawn_agent_task"].func(agent="ghost_expert", task="x"))
+
+    assert result == {"error": "undeclared_child", "message": "child not declared"}
+    assert emitted == []
+    assert parts == []
+
+
 # ---------------------------------------------------------------------------
 # Fix 1 (#880 verbatim output): the delegation ``output`` is the child's FULL
 # answer byte-for-byte, re-read at wait-time — NOT the registry's bounded excerpt.

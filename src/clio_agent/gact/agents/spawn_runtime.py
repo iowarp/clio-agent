@@ -2,32 +2,28 @@
 
 The routing surface that REPLACES the deleted settle/synthesis orchestration and
 the deleted inline per-child delegate/fan-out tools. A tier-1 main is now a react
-agent whose answer IS the user deliverable; instead of emitting a typed routing
-field consumed by a settle loop, it CALLS these tools:
+agent whose answer IS the user deliverable; instead of a typed routing field
+consumed by a settle loop, it CALLS these tools:
 
 * ``spawn_agent_task(agent, task)`` — spawn a declared child as a REAL child turn
-  (S3 ``spawn_child_turn``, on the dedicated executor) and return its ``task_id``.
+  (S3 ``spawn_child_turn``) and return its ``task_id``.
 * ``wait_agent_tasks(task_ids, timeout_s)`` — block on the children's completion
-  Events and return their results (spawn + wait COMPOSE the old synchronous
-  delegate; the child runs on the dedicated pool so the waiting parent thread can
-  never starve it).
-* ``check_agent_tasks()`` — the parent's spawned tasks + their status (CONSUMES a
+  and return their results (spawn + wait COMPOSE the old synchronous delegate;
+  the child runs on the dedicated pool so waiting here never starves it).
+* ``check_agent_tasks()`` — the parent's spawned tasks + status (consumes a
   finished child: collect-and-close).
-* ``observe_agent_tasks(task_ids, cursor=...)`` — the OBSERVE posture (#1000): read a
-  child's event stream incrementally from a resumable cursor, with optional regex
-  pattern-return, WITHOUT consuming it (the read-only sibling of check; owner module
-  ``observe_runtime``). Acts on intermediate evidence while the child keeps running.
-* ``spawn_agents_parallel(spawns)`` — fan out several children at once (replaces
-  the deleted inline fan-out tool).
+* ``observe_agent_tasks(task_ids, cursor=...)`` — the OBSERVE posture (#1000):
+  read a child's event stream incrementally without consuming it (owner module
+  ``observe_runtime``).
+* ``spawn_agents_parallel(spawns)`` — fan out several children at once.
 
 Each tool re-emits the wire-facing ``blueprint.delegation.*`` / ``blueprint.fanout.*``
-events the old tools emitted AND appends the ``expert_handoff`` Parts the deleted
-sync-delegate path appended, so TUI handoff rendering stays lit (wire parity): the
-semantic events feed the activity label / execution trace / active-agent indicator,
-while the canonical transcript renderer keys the delegation header / nesting / return
-row exclusively off ``type=='expert_handoff'`` Parts (#948 S4 findings [6]/[7]).
-The child sessions + AgentTask records are the real substrate underneath — no
-inline in-thread child forward, no settle-loop routing vocabulary.
+events AND appends the ``expert_handoff`` Parts the deleted sync-delegate path
+appended (wire parity, #948 S4 findings [6]/[7]): events feed the activity label /
+trace / active-agent indicator, while the transcript renderer keys the delegation
+header/nesting/return row off ``type=='expert_handoff'`` Parts exclusively. The
+child sessions + AgentTask records are the real substrate — no inline in-thread
+child forward, no settle-loop routing vocabulary.
 """
 
 from __future__ import annotations
@@ -41,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents.spawn_group import (
+    failed_spawn_metadata_row,
     spawn_group_fields,
     wait_structured_row,
     wait_summary,
@@ -111,16 +108,13 @@ def _current_session_depth(app: Any, session_id: str) -> int:
 
 def _resolve_verbatim_output(app: Any, task: Any) -> tuple[str, dict[str, str]]:
     """Resolve the child's FULL final message text — the #880 verbatim contract:
-    the delegation ``output`` IS the child's answer, byte-for-byte, ALWAYS.
+    the delegation ``output`` IS the child's answer, byte-for-byte, ALWAYS. The
+    AgentTask record keeps only a BOUNDED excerpt (registry memory stays bounded),
+    so the full text is re-read at wait-time via the result's ``message_ref``.
 
-    The AgentTask record deliberately keeps only a BOUNDED excerpt (registry memory
-    stays bounded), so the full text is re-read at wait-time from the child session's
-    message store via the result's ``message_ref``.
-
-    Returns ``(output, markers)``. On success ``markers`` is empty and ``output`` is
-    the byte-identical child answer. If the child session/message is gone, falls back
-    to the bounded excerpt WITH a typed marker (never silently):
-    ``output_source='excerpt_fallback'`` + ``output_fallback_reason='child_message_gone'``.
+    Returns ``(output, markers)``: ``markers`` empty on success, else a typed
+    fallback to the bounded excerpt (``output_source='excerpt_fallback'`` +
+    ``output_fallback_reason='child_message_gone'``) when the message is gone.
     """
 
     from clio_agent.gact.turn_spawn import _message_text  # noqa: PLC0415
@@ -145,20 +139,14 @@ def _resolve_verbatim_output(app: Any, task: Any) -> tuple[str, dict[str, str]]:
 
 def _persist_delegation_reported(app: Any, task: Any) -> None:
     """Persist the once-per-task report flag to the child-session metadata so a
-    boot-rebuilt registry does not re-emit the terminal event.
-
-    Best-effort: if the child session is already gone the flag cannot be durably
-    written, but the task will not survive a reboot either (the boot fold folds only
-    existing sessions), so there is no re-emit risk — surface the typed reason,
-    never crash the wait (no-silent-fallback)."""
+    boot-rebuilt registry does not re-emit the terminal event. Best-effort: a gone
+    child session cannot survive a reboot either (no re-emit risk) -- surface the
+    typed reason, never crash the wait (no-silent-fallback)."""
 
     from clio_agent.gact.agent_tasks import AgentTaskError, persist_agent_task  # noqa: PLC0415
 
-    # Catch the FULL surface persist_agent_task can raise — AgentTaskError (child
-    # gone) AND the OSError family from the authoritative store's disk flush — so a
-    # transient store fault never crashes the wait/collect ([3] parity). At-least-
-    # once re-emit across a crash is acceptable and guarded by the delegation_reported
-    # once-gate on reboot.
+    # Catch the FULL raise surface (child-gone + the store's disk-flush OSError
+    # family) so a transient store fault never crashes the wait/collect ([3] parity).
     try:
         persist_agent_task(app, task)
     except (AgentTaskError, OSError) as exc:
@@ -173,10 +161,8 @@ def _merge_wait_workflow_states(
     results: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Deterministic request-order merge of a wait batch's per-run workflow_state
-    (#948 S5). Considers only rows that carry BOTH a ``run_index`` and a mapping
-    ``workflow_state`` (a completed run) — ``unknown_task`` / failed-empty rows
-    contribute nothing. Delegates the ordering + conflict detection to the owner
-    module (``workflow_state.merge``); returns ``(merged, conflicts)``."""
+    (#948 S5). Only rows carrying BOTH ``run_index`` and a mapping ``workflow_state``
+    contribute; ordering/conflict detection delegates to ``workflow_state.merge``."""
 
     from clio_agent.gact.workflow_state.merge import (  # noqa: PLC0415
         RunWorkflowState,
@@ -230,14 +216,9 @@ def _started_handoff_part(
     agent_def: "AgentDef", child_id: str, task_text: str, depth: int, spawned: Any
 ) -> Part:
     """The ``delegate.started`` expert_handoff Part appended to the PARENT transcript
-    when a child is spawned (#948 S4 finding [7]).
-
-    The canonical transcript renderer (transcriptDelegationModel.ts) drives the
-    delegation header, depth/indentation (from ``child_agent``/``parent_agent`` links)
-    and nested rows off ``type=='expert_handoff'`` Parts — NOT the semantic events — so
-    without this Part a spawned child renders nothing in the main transcript. Field
-    shape matches the pinned TUI: ``child_agent``/``parent_agent`` links, ``stage``
-    lifecycle, and ``metadata.question`` (the task the header shows)."""
+    when a child is spawned (#948 S4 finding [7]). The transcript renderer drives the
+    delegation header/depth/nesting off ``type=='expert_handoff'`` Parts — NOT the
+    semantic events — so without this Part a spawned child renders nothing."""
 
     started_row = {
         "agent_id": child_id,
@@ -268,17 +249,35 @@ def _started_handoff_part(
     )
 
 
+def _failed_spawn_handoff_part(
+    agent_def: "AgentDef", child_id: str, spawn_group_id: str, group_size: int, exc: Exception
+) -> Part:
+    """Terminal Part for a batch sibling refused before it ever spawned (finding
+    [E]): builds directly on the terminal lane so the group's declared total
+    always reconciles even when one sibling never got a child session."""
+
+    reason = getattr(exc, "reason", type(exc).__name__)
+    row = failed_spawn_metadata_row(child_id, agent_def.id, reason, spawn_group_id, group_size)
+    return Part(
+        id=f"live_handoff_{uuid.uuid4().hex[:12]}",
+        type="expert_handoff",
+        agent_id=agent_def.id,
+        parent_agent=agent_def.id,
+        child_agent=child_id,
+        stage="delegate.completed",
+        status="failed",
+        text=f"{agent_def.id} -> {child_id}",
+        metadata={**_handoff_part_metadata(row), "stream_source": "live"},
+    )
+
+
 def _return_handoff_part(agent_def: "AgentDef", task: Any, payload: dict[str, Any]) -> Part:
     """The terminal RETURN expert_handoff Part appended to the PARENT transcript when a
-    spawned child reaches a terminal state (#948 S4 finding [7]).
-
-    Both success AND failure conclude on the SAME terminal lane —
-    ``stage='delegate.completed'`` with the outcome riding ``status`` (#882) — so a
-    verbatim (dedup-free) client renders one return row per child, never a second
-    header, and a FAILED child is visible (not buried in raw tool JSON).
-    ``metadata.output`` is the child's FULL answer byte-for-byte (#880, resolved in
-    ``payload``); a failure carries empty output with the typed reason on
-    ``status``/``error`` and any verbatim-output degradation marker."""
+    spawned child reaches a terminal state (#948 S4 finding [7]). Success AND failure
+    conclude on the SAME terminal lane — ``stage='delegate.completed'`` with the
+    outcome riding ``status`` (#882) — so a failed child is visible, not buried in
+    raw tool JSON. ``metadata.output`` is the child's FULL answer byte-for-byte
+    (#880, resolved in ``payload``)."""
 
     child_id = task.agent_ref.get("expert_id", "")
     return_row = {
@@ -317,13 +316,9 @@ def _return_handoff_part(agent_def: "AgentDef", task: Any, payload: dict[str, An
 
 
 def _task_duration_ms(task: Any) -> float:
-    """The child's wall-clock duration from its task record timestamps.
-
-    ``created_at`` is stamped at spawn and ``updated_at`` at the terminal
-    transition, so their difference is the run's real duration. Unparseable
-    timestamps leave the Part unstamped (0.0) — the return must never fail on
-    observability decoration.
-    """
+    """The child's wall-clock duration from its task record timestamps
+    (``created_at`` at spawn, ``updated_at`` at terminal transition). Unparseable
+    timestamps leave the Part unstamped (0.0) — never fail on decoration."""
 
     try:
         created = datetime.fromisoformat(str(task.created_at))
@@ -337,11 +332,10 @@ def _task_duration_ms(task: Any) -> float:
 def _emit_delegation_terminal(app: Any, session_id: str, agent_def: "AgentDef", task: Any) -> None:
     """Emit a terminal task's once-per-task delegation event + return Part + resume.
 
-    Shared by :func:`wait_agent_tasks` and the declared-workflow runner
-    (:func:`emit_workflow_step_return`): BOTH spawn+wait through the same invoker,
-    so BOTH reach a terminal task and must render it exactly once. The once-per-task
-    claim (``mark_delegation_reported``) guarantees exactly-once wire emission no
-    matter which path gets there first (the server owns the de-duplicated stream)."""
+    Shared by :func:`wait_agent_tasks` and :func:`emit_workflow_step_return` (both
+    spawn+wait through the same invoker); ``mark_delegation_reported`` guarantees
+    exactly-once wire emission no matter which path gets there first (the server
+    owns the de-duplicated stream)."""
 
     registry = app.state.agent_task_registry
     reported = registry.mark_delegation_reported(task.task_id)
@@ -349,11 +343,8 @@ def _emit_delegation_terminal(app: Any, session_id: str, agent_def: "AgentDef", 
         return
     _persist_delegation_reported(app, reported)
     # Clean-wire (owner, 2026-08-05): a task collected here may have reached
-    # terminal without crossing THIS process's result-sealing fold seam (a
-    # boot-refolded record collected after restart, a seeded/forwarded terminal),
-    # so the child's final assistant message is stamped with its return-to-parent
-    # edge here too — idempotent per task, so the fold-seam stamp and this one
-    # never duplicate (delegation_return.stamp_delegation_return).
+    # terminal off THIS process's result-sealing fold seam (boot-refolded, seeded,
+    # or forwarded) -- stamp the return-to-parent edge here too, idempotent per task.
     from clio_agent.gact.delegation_return import stamp_delegation_return  # noqa: PLC0415
 
     stamp_delegation_return(app, task)
@@ -527,6 +518,13 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                 ),
             )
         except SpawnError as exc:
+            if spawn_group_id:
+                # A batch sibling's slot must reconcile even on refusal (finding [E]).
+                _append_live_assistant_part(
+                    app,
+                    session_id,
+                    _failed_spawn_handoff_part(agent_def, agent, spawn_group_id, group_size, exc),
+                )
             return json.dumps({"error": exc.reason, "message": str(exc)}, sort_keys=True)
         _emit_semantic_event(
             app,
@@ -787,6 +785,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             payload={
                 **({"max_workers": bound} if bound else {}),
                 "spawn_group_id": spawn_group_id,
+                "group_size": group_size,  # finding [13]: declared total, not just the id
             },
         )
         out = []

@@ -23,6 +23,31 @@ from __future__ import annotations
 from typing import Any
 
 
+def failed_spawn_metadata_row(
+    child_id: str, parent_id: str, reason: str, spawn_group_id: str, group_size: int
+) -> dict[str, Any]:
+    """Terminal ``expert_handoff`` metadata row for a batch sibling that never
+    spawned (P5 review finding [E]): a refused spawn inside a
+    ``spawn_agents_parallel`` batch must still occupy its slot on the SAME
+    ``spawn_group_id``/``group_size`` -- otherwise a 3-wide fanout with one
+    refusal leaves ``group_size`` 3 with only 2 parts, unreconcilable forever.
+    Concludes directly on the terminal lane (#882: success/failure share one
+    lane); ``reason`` is the typed ``SpawnError.reason`` (e.g. "undeclared_child"),
+    matching the SAME "error" key convention ``_return_handoff_part`` stamps a
+    failed task's typed ``error_reason`` under -- never a raw exception message.
+    """
+
+    return {
+        "agent_id": child_id,
+        "parent_id": parent_id,
+        "status": "failed",
+        "stage": "delegate.completed",
+        "error": reason,
+        "spawn_group_id": spawn_group_id,
+        "group_size": group_size,
+    }
+
+
 def spawn_group_fields(run: Any) -> dict[str, Any]:
     """The fan-out GROUP identity fields for an ``expert_handoff`` Part's metadata
     row: ``spawn_group_id`` + ``group_size`` when ``run`` (a
