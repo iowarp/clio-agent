@@ -750,8 +750,8 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             agent_id=agent_id,
         )
 
-    # Declared "chip": the artifact's wire representation is its resource_link
-    # chip — the observer records telemetry but appends no tool parts.
+    # Declared "chip": normal tool_call/tool_result parts PLUS its resource_link
+    # chip, appended at turn finalize — adornment, never a call-row replacement.
     return native_tool(
         create_artifact,
         name="create_artifact",

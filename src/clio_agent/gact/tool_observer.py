@@ -667,10 +667,10 @@ def _make_tool_observer(app: "FastAPI"):
         sid, _current = _resolve_tool_session(app)
         if not sid:
             return
-        # One representation per action on the wire: a declared non-"row" tool
-        # (handoff/chip) records full telemetry but appends no live tool parts —
-        # its wire representation is the expert_handoff / resource_link part its
-        # own runtime emits. Stamped into the payloads so the trace shows why.
+        # A representation may only ADD adornment, never remove the call row
+        # (owner ruling, P5 wire semantics) -- every EXECUTED call emits its
+        # tool_call/tool_result parts unconditionally. "handoff" alone skips
+        # the row (its own expert_handoff part already IS call evidence).
         representation = declared_tool_representation(name)
         representation_fields = (
             {"representation": representation} if representation != "row" else {}
@@ -725,7 +725,7 @@ def _make_tool_observer(app: "FastAPI"):
                     },
                 )
             )
-            if representation != "row":
+            if representation == "handoff":
                 return
             step_thought = _ctx.active_step_thought()
             # #732/#883: next_thought owns its OWN streamed text row; the copy on
@@ -899,7 +899,7 @@ def _make_tool_observer(app: "FastAPI"):
             _OBSERVER_CALL_T0.value = (
                 None  # finding [3]: clear the latch (idle thread -> DIRTY lease)
             )
-            if representation != "row":
+            if representation == "handoff":
                 return
             result_text = completion_error or (
                 _tool_result_preview(result) if result is not None else "completed"

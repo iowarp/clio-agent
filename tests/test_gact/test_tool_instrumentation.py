@@ -7,9 +7,14 @@ These tests lock the assembly seam (``gact/agents/tool_instrumentation.py``):
   through the seam, notifies the observer (started + completed with bound
   args / verbatim result) and lands live ``tool_call``/``tool_result`` parts
   (with ``tool_title`` when curated);
-* a ``representation="handoff"`` / ``"chip"`` declaration notifies (telemetry:
-  semantic events + ledger) but appends NO tool parts — one representation per
-  action on the wire, explicit at definition;
+* every EXECUTED call emits its ``tool_call``/``tool_result`` parts
+  unconditionally (owner ruling, P5 wire semantics) — a declared
+  representation may only ADD adornment, never remove the call row. A
+  ``representation="chip"`` declaration (create_artifact) notifies (telemetry:
+  semantic events + ledger) AND still lands the normal tool parts, plus its
+  ``resource_link`` chip separately at turn finalize. ``representation="handoff"``
+  is the one exception: its own runtime already emits an ``expert_handoff``
+  part that IS call evidence, so the row is skipped (no double-emission);
 * MCP-bridged tools (constructed by the execution-boundary bridge) notify
   exactly ONCE — the seam never double-wraps a marked callable, including
   through the blueprint recording re-wrap;
@@ -201,18 +206,19 @@ def test_uncurated_bare_tool_lands_parts_without_title(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 3. Non-"row" representations: telemetry yes, tool parts no.                  #
+# 3. Non-"row" representations: a representation may only ADD adornment, it   #
+#    may never remove the call row (owner ruling, P5 wire semantics). The ONE #
+#    exception is "handoff": its own runtime already emits an expert_handoff  #
+#    part that IS call evidence, so the row would be a redundant second       #
+#    representation of the same action.                                       #
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("representation", ["handoff", "chip"])
-def test_non_row_representation_notifies_but_appends_no_tool_parts(
-    tmp_path: Path, representation: str
-) -> None:
-    """A declared handoff/chip tool notifies the observer (semantic events +
+def test_handoff_representation_notifies_but_appends_no_tool_parts(tmp_path: Path) -> None:
+    """A declared "handoff" tool notifies the observer (semantic events +
     ledger — the telemetry record) but appends NO live tool_call/tool_result
-    parts: its ONE wire representation is the expert_handoff / resource_link
-    part its own runtime emits."""
+    parts: its ONE wire representation is the expert_handoff part its own
+    runtime emits (spawn_agent_task / spawn_agents_parallel / run_workflow)."""
 
     app, client, sid = _observing_app(tmp_path)
     try:
@@ -225,10 +231,10 @@ def test_non_row_representation_notifies_but_appends_no_tool_parts(
             [
                 native_tool(
                     declared_action,
-                    name=f"declared_{representation}",
+                    name="declared_handoff",
                     desc=declared_action.__doc__,
                     title="Declared action",
-                    representation=representation,
+                    representation="handoff",
                     args={"task": {"type": "string"}},
                 )
             ]
@@ -241,14 +247,151 @@ def test_non_row_representation_notifies_but_appends_no_tool_parts(
         started = [e for e in history if e.type == "tool.call.started"]
         completed = [e for e in history if e.type == "tool.call.completed"]
         assert len(started) == 1 and len(completed) == 1
-        assert started[0].payload["representation"] == representation
-        assert completed[0].payload["representation"] == representation
+        assert started[0].payload["representation"] == "handoff"
+        assert completed[0].payload["representation"] == "handoff"
         # …and the ledger keeps the call (args + result evidence).
         ledger = (app.state.tool_call_ledger or {}).get(sid, [])
-        assert [row["name"] for row in ledger] == [f"declared_{representation}"]
+        assert [row["name"] for row in ledger] == ["declared_handoff"]
         assert ledger[0]["result"] == "did t1"
-        # But NO tool parts reach the live transcript (one representation per action).
+        # But NO tool parts reach the live transcript (its own expert_handoff
+        # part elsewhere on the wire already IS the call evidence).
         assert _live_part_types(app, sid) == []
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_chip_representation_notifies_and_still_appends_tool_parts(tmp_path: Path) -> None:
+    """A declared "chip" tool (create_artifact) gets BOTH: the normal
+    tool_call/tool_result row here AND its resource_link chip, appended
+    separately at turn finalize (turn_finalize.py, not under test here). The
+    chip is adornment on top of the call row, never a replacement for it —
+    unlike "handoff", "chip" must NOT suppress the live tool parts.
+
+    Sabotage baseline: before the fix, ``tool_observer._make_tool_observer``'s
+    ``observe`` short-circuited on ANY non-"row" representation
+    (``if representation != "row": return``), so a "chip" tool's call was
+    exactly as invisible on the wire as a "handoff" call — this is the
+    defect #1's fix closes. Asserting real tool_call/tool_result parts here
+    (not just telemetry) is what would have failed pre-fix."""
+
+    app, client, sid = _observing_app(tmp_path)
+    try:
+
+        def declared_action(task: str) -> str:
+            """Perform a chip-represented action."""
+            return f"did {task}"
+
+        (tool,) = instrument_tools(
+            [
+                native_tool(
+                    declared_action,
+                    name="declared_chip",
+                    desc=declared_action.__doc__,
+                    title="Declared action",
+                    representation="chip",
+                    args={"task": {"type": "string"}},
+                )
+            ]
+        )
+        with _gact_app_context(app), _tool_session_context(sid):
+            assert tool(task="t1") == "did t1"
+
+        # Telemetry recorded exactly like handoff…
+        history = app.state.bus._history.get(sid, [])
+        started = [e for e in history if e.type == "tool.call.started"]
+        completed = [e for e in history if e.type == "tool.call.completed"]
+        assert len(started) == 1 and len(completed) == 1
+        assert started[0].payload["representation"] == "chip"
+        assert completed[0].payload["representation"] == "chip"
+        ledger = (app.state.tool_call_ledger or {}).get(sid, [])
+        assert [row["name"] for row in ledger] == ["declared_chip"]
+        # …AND the live transcript still carries the real call row (the fix).
+        parts = (app.state.live_assistant_parts or {}).get(sid, [])
+        call_parts = [p for p in parts if p.type == "tool_call"]
+        result_parts = [p for p in parts if p.type == "tool_result"]
+        assert [p.tool_name for p in call_parts] == ["declared_chip"]
+        assert call_parts[0].tool_title == "Declared action"
+        assert [p.tool_name for p in result_parts] == ["declared_chip"]
+        assert result_parts[0].content and result_parts[0].content[0].text == "did t1"
+    finally:
+        client.__exit__(None, None, None)
+
+
+# --------------------------------------------------------------------------- #
+# 3b. Sabotage: EVERY executed call — every auto-attached tool (enumerated    #
+#     from auto_tools.build_auto_react_tools) plus a plain native tool — gets #
+#     tool_call evidence, success or error, on the REAL observed-call path.   #
+# --------------------------------------------------------------------------- #
+
+
+def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path) -> None:
+    """Drive the real react-runtime observed-call path for every tool
+    auto-attached to a dynamic react expert (``auto_tools.build_auto_react_tools``:
+    create_artifact, plan_exit, write_todos, the cron triad, loop_wakeup,
+    goal_status) plus a plain curated native "row" tool, and assert each
+    EXECUTED call lands at least one ``tool_call`` part on the live transcript
+    — whether the call itself succeeds or raises (the tool_call part is
+    appended at the "started" phase, before the underlying function even
+    runs, so an eventual exception never erases the call evidence).
+
+    This is the sabotage proof for defect #1 (P5 wire semantics: "every tool
+    call emits its tool_call/tool_result parts unconditionally"). Run against
+    the pre-fix ``tool_observer.py`` (``if representation != "row": return``
+    at both the started and completed phases), this test fails specifically
+    on ``create_artifact`` — its "chip" declaration hit that short-circuit and
+    the call executed with zero wire evidence, exactly the invisible-call bug
+    this module closes. It passes post-fix because only "handoff" still
+    short-circuits, and no auto-attached tool declares "handoff"."""
+
+    from clio_agent.gact.agents.auto_tools import build_auto_react_tools
+
+    app, client, sid = _observing_app(tmp_path)
+    try:
+        agent_def = SimpleNamespace(id="tester")
+        auto_tools = {t.name: t for t in instrument_tools(build_auto_react_tools(agent_def))}
+
+        def plain_native() -> str:
+            return "ok"
+
+        (row_tool,) = instrument_tools(
+            [native_tool(plain_native, name="plain_native", desc="plain", args={})]
+        )
+
+        # Minimal args per tool: exercise its real body. Several are expected
+        # to RAISE (create_artifact's own missing-input path returns rather
+        # than raises; plan_exit is out-of-mode by default) — that is fine and
+        # deliberate, since the invariant under test holds regardless of the
+        # call's own success/failure.
+        calls: dict[str, dict[str, object]] = {
+            "create_artifact": {},
+            "plan_exit": {"summary": "handing back for approval"},
+            "write_todos": {"todos": [{"content": "step 1", "status": "pending"}]},
+            "cron_create": {},
+            "cron_list": {},
+            "cron_delete": {"schedule_id": "does-not-exist"},
+            "loop_wakeup": {"stop": True},
+            "goal_status": {},
+        }
+        assert set(calls) == set(auto_tools), (
+            "auto_tools.build_auto_react_tools grew/shrank — update this sabotage test's "
+            "per-tool call table so every auto-attached tool stays covered"
+        )
+
+        exercised: list[str] = []
+        with _gact_app_context(app), _tool_session_context(sid):
+            for name, kwargs in calls.items():
+                try:
+                    auto_tools[name](**kwargs)
+                except Exception:
+                    pass  # only tool_call/tool_result wire evidence is under test
+                exercised.append(name)
+            row_tool()
+            exercised.append("plain_native")
+
+        parts = (app.state.live_assistant_parts or {}).get(sid, [])
+        called_names = {p.tool_name for p in parts if p.type == "tool_call"}
+        missing = [name for name in exercised if name not in called_names]
+        assert not missing, f"executed calls with no tool_call part: {missing}"
     finally:
         client.__exit__(None, None, None)
 
