@@ -243,3 +243,149 @@ def test_post_message_missing_parts_is_typed_400_validation_error(tmp_path: Path
     assert error["recoverable"] is True
     # No user message was persisted for the rejected body.
     assert client.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []
+
+
+def _seed_stranded_handoff(
+    client: TestClient, state: object, *, task_id: str
+) -> tuple[str, object]:
+    """Seed a parent session whose turn already ended with a spawned child's
+    delegate.started expert_handoff part committed to a STORED message -- the
+    "main ended on the circuit breaker without waiting" shape (round-9 wire
+    defect, observed live in session sess_539d24da07bf)."""
+
+    from clio_agent.gact.agent_tasks import STATUS_RUNNING, seed_agent_task
+    from clio_agent.gact.types import Message, Part
+
+    app = client.app
+    parent = _session(client)
+    running = seed_agent_task(
+        app,
+        parent_session_id=parent,
+        agent_ref={"expert_id": "ndp_worker", "requesting_expert_id": "main"},
+        status=STATUS_RUNNING,
+        task_id=task_id,
+    )
+    now = "2026-08-04T12:00:00+00:00"
+    state.messages[parent] = [
+        Message(
+            id="msg_parent_turn",
+            session_id=parent,
+            turn_id="msg_parent_turn",
+            role="assistant",
+            created_at=now,
+            updated_at=now,
+            parts=[
+                Part(
+                    id="part_handoff_started",
+                    type="expert_handoff",
+                    agent_id="main",
+                    parent_agent="main",
+                    child_agent="ndp_worker",
+                    stage="delegate.started",
+                    status="running",
+                    handle_id=running.handle_id,
+                    text="main -> ndp_worker",
+                    metadata={"question": "profile the dataset"},
+                )
+            ],
+        )
+    ]
+    return parent, running
+
+
+def _fold_completed(app: object, running: object, *, answer: str) -> object:
+    """Fold ``running`` to completed via the SAME transport-fold seam a relay
+    completion (or the local done-callback) uses -- ``task_fold.fold_agent_task_event``
+    runs the winning transition + ALL terminal effects (task_fold.finish_agent_task_transition)."""
+
+    import dataclasses
+
+    from clio_agent.gact import agent_tasks
+    from clio_agent.gact.agents.invoker import TaskEvent
+    from clio_agent.gact.task_fold import fold_agent_task_event
+
+    completed = dataclasses.replace(
+        running,
+        status="completed",
+        live_state="completed",
+        result={"message_ref": "", "answer_excerpt": answer, "workflow_state": {}},
+        notify_pending=True,
+        updated_at="2026-08-04T12:07:31+00:00",
+    )
+    event = TaskEvent(
+        event_type=agent_tasks.AGENT_TASK_EVENTS[completed.status],
+        task_id=completed.task_id,
+        session_id=completed.child_session_id,
+        status=completed.status,
+        payload=dataclasses.asdict(completed),
+    )
+    return fold_agent_task_event(app, event)
+
+
+def test_terminal_task_fold_closes_dangling_started_handoff(tmp_path: Path) -> None:
+    """Round-9 wire defect: a parent turn that ends WITHOUT waiting on a spawned
+    child leaves that child's delegate.started expert_handoff part stuck
+    "running" forever on the parent's STORED message once the child later
+    completes -- neither the next-turn notification drain
+    (enrichment.consume_pending_agent_task_notifications) nor a mid-turn inbox
+    drain (loop_inbox) ever runs for a parent that gets no further turn. The
+    task-terminal-transition seam (task_fold.finish_agent_task_transition ->
+    background_exit.reconcile_stored_handoff_part) must upsert the STORED part
+    to terminal directly and publish message.part.updated so an already-open
+    client corrects too."""
+
+    client, state = _client(tmp_path)
+    parent, running = _seed_stranded_handoff(client, state, task_id="task_stranded")
+
+    outcome = _fold_completed(client.app, running, answer="3 stations profiled")
+    assert outcome.applied is True
+
+    # The STORED message's part flips to terminal IN PLACE (same part id) --
+    # the started row's own fields (e.g. "question") survive under the terminal ones.
+    stored = state.messages[parent][0].parts[0]
+    assert stored.id == "part_handoff_started"
+    assert stored.stage == "delegate.completed"
+    assert stored.status == "completed"
+    assert stored.metadata["question"] == "profile the dataset"
+    assert stored.metadata["output"] == "3 stations profiled"
+
+    # A client already watching the session gets the correction pushed over SSE.
+    updates = [e for e in state.bus._history.get(parent, []) if e.type == "message.part.updated"]
+    assert len(updates) == 1
+    assert updates[0].payload["message_id"] == "msg_parent_turn"
+    assert updates[0].payload["part"]["stage"] == "delegate.completed"
+    assert updates[0].payload["part"]["id"] == "part_handoff_started"
+
+    # GET /messages agrees -- no more lying "running" render on a fresh load.
+    fetched = client.get(f"/v1/sessions/{parent}/messages").json()["messages"]
+    handoff = next(p for m in fetched for p in m["parts"] if p["type"] == "expert_handoff")
+    assert handoff["stage"] == "delegate.completed"
+    assert handoff["status"] == "completed"
+
+
+def test_terminal_task_fold_stored_handoff_writeback_is_idempotent(tmp_path: Path) -> None:
+    """A later fold/wait reaching the SAME terminal task must not double-write or
+    double-publish the stored parent message's terminal handoff part."""
+
+    from clio_agent.gact.background_exit import reconcile_stored_handoff_part
+
+    client, state = _client(tmp_path)
+    parent, running = _seed_stranded_handoff(client, state, task_id="task_stranded_idem")
+
+    outcome = _fold_completed(client.app, running, answer="done")
+    assert outcome.applied is True
+    before_updates = len(
+        [e for e in state.bus._history.get(parent, []) if e.type == "message.part.updated"]
+    )
+
+    # Simulate a later consumer reaching this SAME terminal task again (a
+    # retried fold, or a duplicate transport observation).
+    again = reconcile_stored_handoff_part(client.app, outcome.task)
+
+    after_updates = len(
+        [e for e in state.bus._history.get(parent, []) if e.type == "message.part.updated"]
+    )
+    assert again is False
+    assert after_updates == before_updates
+    assert len(state.messages[parent][0].parts) == 1
+    assert state.messages[parent][0].parts[0].stage == "delegate.completed"

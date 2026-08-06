@@ -89,6 +89,7 @@ def finish_agent_task_transition(app: "FastAPI", outcome: AgentTaskFoldOutcome) 
 
     if not outcome.applied or not outcome.task.is_terminal:
         return
+    from clio_agent.gact.background_exit import reconcile_stored_handoff_part  # noqa: PLC0415
     from clio_agent.gact.delegation_return import stamp_delegation_return  # noqa: PLC0415
     from clio_agent.gact.loop_inbox import enqueue_completion_wake  # noqa: PLC0415
     from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
@@ -101,6 +102,12 @@ def finish_agent_task_transition(app: "FastAPI", outcome: AgentTaskFoldOutcome) 
     # effect observes the terminal. Idempotent per task and never-raising, so a
     # re-fold or the collect-seam stamp can never duplicate it.
     stamp_delegation_return(app, outcome.task)
+    # Round-9 wire defect: a parent that never waits (idle, or the runaway
+    # circuit breaker) must not leave its child's delegate.started handoff part
+    # stuck "running" on the STORED message forever -- close it here,
+    # independent of whether/when the parent gets another turn. Idempotent and
+    # never-raising, the same discipline as stamp_delegation_return above.
+    reconcile_stored_handoff_part(app, outcome.task)
     _fire_subagent_stop(app, outcome.task, outcome.task.child_session_id)
     enqueue_completion_wake(app, outcome.task)
     _admit_next_queued(app)
