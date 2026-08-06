@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
@@ -153,6 +154,37 @@ def test_real_fastmcp_round_trip_has_no_spurious_degrade() -> None:
     assert isinstance(payload, dict)
     assert "degrade" not in payload
     assert "resultType" not in payload
+
+
+def test_list_result_round_trip_is_json_not_python_repr() -> None:
+    """A list-returning tool's model-facing text is JSON, never Python repr.
+
+    FastMCP wraps a bare-list return in ``{"result": [...]}`` structuredContent
+    (``x-fastmcp-wrap-result``); the client's ``CallToolResult.data`` unwraps that
+    back to a plain ``list``. ``_result_to_text`` special-cased ``dict`` and fell
+    through to ``str(data)`` for everything else, and Python's ``str()`` on a
+    list of dicts renders single-quoted repr syntax (``ast.literal_eval``-only,
+    not valid JSON) -- observed live as ``geo_geocode`` results rendering as
+    repr text in the UI instead of structured JSON.
+    """
+
+    server = FastMCP("list-result-probe")
+
+    @server.tool
+    def geocode() -> list[dict[str, object]]:
+        """Return a list of geocoded results."""
+
+        return [{"display_name": "Los Angeles, CA", "lat": 34.05, "lon": -118.24}]
+
+    with SyncMCPToolExecutor(server, timeout=1.0) as executor:
+        text = executor.call_tool("geocode", {})
+
+    expected = [{"display_name": "Los Angeles, CA", "lat": 34.05, "lon": -118.24}]
+    assert text == json.dumps(expected)
+    # Explicit guard against the historical Python-repr regression: single-quoted
+    # keys are never valid JSON and must never reach the model-facing text lane.
+    assert "'display_name'" not in text
+    assert json.loads(text) == expected
 
 
 @pytest.mark.asyncio

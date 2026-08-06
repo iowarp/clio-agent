@@ -534,11 +534,29 @@ class AsyncMCPToolExecutor:
 
 
 def _result_to_text(result: Any) -> str:
-    """Convert a FastMCP call result to the legacy string result shape."""
+    """Convert a FastMCP call result to the legacy string model-facing text.
+
+    ``data`` is the client's structured projection of the tool result: FastMCP
+    wraps a non-object return (list, str, bool, ...) in ``{"result": ...}`` on
+    the wire, and the client unwraps it back to the tool's native Python type
+    (``fastmcp.client.mixins.tools._parse_call_tool_result``). Only ``dict``
+    was JSON-encoded here; every other structured shape fell through to
+    Python's ``str()``, which renders single-quoted repr syntax for a list of
+    dicts (valid only via ``ast.literal_eval``, not JSON) and capitalized
+    ``True``/``False`` for booleans -- observed live as MCP fleet results
+    (e.g. ``geo_geocode``) rendering as Python repr text on the wire instead
+    of structured JSON that the UI's result ladder can render. A bare string
+    ``data`` is returned verbatim (it is already model-facing text, not a
+    value to re-encode); every other shape is JSON-encoded, falling back to
+    ``str()`` only for genuinely unserializable values.
+    """
     data = getattr(result, "data", result)
-    if isinstance(data, dict):
+    if isinstance(data, str):
+        return data
+    try:
         return json.dumps(data)
-    return str(data)
+    except TypeError:
+        return str(data)
 
 
 def _tool_ui_metadata(tool: Any) -> Mapping[str, Any]:
