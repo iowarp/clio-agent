@@ -494,18 +494,79 @@ def _terminal_payload(tool_name: str, final: ClientGetTaskResult) -> dict[str, A
     return _structured_payload(final.result)
 
 
+_STRUCTURED_RESULT_KEYS = ("structured_result", "structuredContent", "structured_content")
+_RELAY_JOB_ENVELOPE_SIBLING_KEYS = ("job", "relay_queue")
+
+
+def _is_relay_job_envelope(candidate: Mapping[str, Any]) -> bool:
+    """Whether ``candidate`` is clio-relay's durable job record, not a tool result.
+
+    A relay job envelope carries the job's own bookkeeping (``job`` /
+    ``relay_queue`` / ``artifacts`` / ``scheduler`` / ...) alongside a nested
+    ``mcp_result`` that holds the tool's real structured output one hop
+    deeper. The JARVIS tool's own structured result never carries those
+    relay-owned siblings, so their presence is the shape signal -- not a
+    guess about field names inside the tool's own schema.
+    """
+
+    return "mcp_result" in candidate and any(
+        key in candidate for key in _RELAY_JOB_ENVELOPE_SIBLING_KEYS
+    )
+
+
+def _structured_from_envelope(envelope: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Descend one hop into a relay job envelope's own ``mcp_result``.
+
+    Returns ``None`` when the envelope's ``mcp_result`` is absent or does not
+    itself carry a structured-result key -- the caller must not fall back to
+    returning the envelope in that case, so the existing identity-mismatch
+    error still fires downstream instead of a malformed payload being masked.
+    """
+
+    inner = envelope.get("mcp_result")
+    if not isinstance(inner, Mapping):
+        return None
+    for key in _STRUCTURED_RESULT_KEYS:
+        structured = inner.get(key)
+        if isinstance(structured, Mapping):
+            return dict(structured)
+    return None
+
+
 def _structured_payload(result: Mapping[str, Any]) -> dict[str, Any]:
-    """Unwrap relay terminal evidence to the JARVIS tool's structured result."""
+    """Unwrap relay terminal evidence to the JARVIS tool's structured result.
+
+    Two shapes reach here. A **direct** payload already carries the tool's
+    own fields at this level, or one ``mcp_result`` hop down, under a
+    ``structured_result``/``structuredContent``/``structured_content`` key.
+    A **relay job envelope** happens to satisfy that same key match --
+    ``structuredContent`` also names the field the ``tasks/get`` transport
+    itself uses to carry clio-relay's whole durable job record when a
+    dispatch resolves through a resumed/replayed record -- so matching the
+    key alone silently returns relay's bookkeeping instead of the tool's
+    result (observed live: ``jarvis_get_execution`` reading
+    ``pipeline_id: None`` off the envelope and failing its identity check).
+    An envelope match is detected by shape (:func:`_is_relay_job_envelope`)
+    and unwrapped one further hop into its own ``mcp_result``. If that hop
+    also comes up empty, this still returns the untouched input rather than
+    guessing at a shape -- the caller's typed identity-mismatch error stands.
+    """
 
     candidates: list[Mapping[str, Any]] = [result]
     mcp_result = result.get("mcp_result")
     if isinstance(mcp_result, Mapping):
         candidates.insert(0, mcp_result)
     for candidate in candidates:
-        for key in ("structured_result", "structuredContent", "structured_content"):
+        for key in _STRUCTURED_RESULT_KEYS:
             structured = candidate.get(key)
-            if isinstance(structured, Mapping):
-                return dict(structured)
+            if not isinstance(structured, Mapping):
+                continue
+            if _is_relay_job_envelope(structured):
+                nested = _structured_from_envelope(structured)
+                if nested is not None:
+                    return nested
+                continue
+            return dict(structured)
     return dict(result)
 
 

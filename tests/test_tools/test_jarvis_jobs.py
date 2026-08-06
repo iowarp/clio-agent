@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -18,6 +19,8 @@ from clio_agent.tools.jarvis_jobs import (
     JarvisJobError,
     JarvisJobs,
     JarvisRunHandle,
+    _execution_projection,
+    _structured_payload,
 )
 from clio_agent.tools.mcp_task_records import TaskKey
 from clio_agent.tools.relay_transport import (
@@ -532,3 +535,205 @@ async def test_oversize_and_unknown_resume_keep_relay_error_types(
     with pytest.raises(RelayTransportContractError) as unknown_task:
         await surface.resume_run(missing)
     assert unknown_task.value.reason == "relay_task_record_missing"
+
+
+def _relay_job_envelope(
+    *,
+    pipeline_id: str,
+    execution_id: str,
+    scheduler_native_id: str,
+) -> dict[str, Any]:
+    """Build a clio-relay job envelope shaped exactly like the live #1171 wire capture.
+
+    Top-level keys mirror the exact production shape observed on the live
+    wire (verified against a captured ``jarvis_get_execution`` relay job
+    record): ``artifacts``, ``job``, ``last_error``, ``mcp_result``,
+    ``mcp_result_artifact``, ``observation``, ``relay_queue``, ``scheduler``,
+    ``terminal``, ``transform``. The JARVIS tool's own structured output does
+    NOT live at this level -- it sits one hop deeper, at
+    ``envelope["mcp_result"]["structured_result"]``.
+    """
+
+    return {
+        "mcp_result_artifact": {
+            "artifact_id": "artifact_test",
+            "job_id": "job_test",
+            "kind": "mcp_result",
+            "size_bytes": 1234,
+            "sha256": "deadbeef",
+            "created_at": "2026-08-05T13:56:17.080847Z",
+        },
+        "terminal": True,
+        "last_error": None,
+        "mcp_result": {
+            "operation": "tools/call",
+            "tool": "jarvis_get_execution",
+            "returncode": 0,
+            "timed_out": False,
+            "protocol_error": None,
+            "structured_result": {
+                "schema_version": "clio-kit.jarvis-execution.v2",
+                "pipeline_id": pipeline_id,
+                "execution_id": execution_id,
+                "execution_handle": {
+                    "pipeline_id": pipeline_id,
+                    "execution_id": execution_id,
+                    "scheduler_native_id": scheduler_native_id,
+                    "scheduler_provider": "slurm",
+                    "schema_version": "jarvis.execution.handle.v1",
+                },
+                "execution_record": {"state": "completed", "terminal": True},
+                "progress": {"execution_state": "completed", "terminal": True},
+                "artifact_page": None,
+                "service_runtimes": None,
+            },
+            "protocol_version": "2024-11-05",
+            "server_info": {"name": "jarvis", "version": "3.4.5"},
+            "result_validation": None,
+        },
+        "transform": None,
+        "relay_queue": {"state": "succeeded", "jobs_ahead": None, "position": None},
+        "scheduler": [],
+        "observation": {
+            "outcome": "terminal",
+            "scheduler_action": "none",
+            "relay_action": "none",
+        },
+        "job": {"job_id": "job_test", "state": "succeeded", "kind": "mcp_call"},
+        "artifacts": [],
+    }
+
+
+def _tasks_get_structured_content_wrapper(envelope: dict[str, Any]) -> dict[str, Any]:
+    """Wrap a job envelope the way a resumed/replayed ``tasks/get`` reply does.
+
+    ``structuredContent`` here names clio-relay's own durable job record, not
+    the JARVIS tool's structured output -- the key collision (#1171) that let
+    ``_structured_payload`` match on the generic key name and return the
+    envelope untouched instead of descending one more hop.
+    """
+
+    return {
+        "content": [{"type": "text", "text": json.dumps(envelope)}],
+        "structuredContent": envelope,
+        "isError": False,
+        "resultType": "complete",
+    }
+
+
+def test_structured_payload_unwraps_relay_job_envelope_from_structured_content() -> None:
+    """FAILING-FIRST (#1171): live wire evidence showed ``jarvis_get_execution``
+    always raising ``jarvis_execution_identity_mismatch`` with
+    ``pipeline_id: None`` / ``execution_id: None``. Root cause: a resumed
+    ``tasks/get`` reply wraps the relay job envelope under
+    ``structuredContent`` -- the exact key JARVIS's own direct result also
+    uses -- so the unwrap must detect the envelope shape (``mcp_result`` plus
+    a ``job``/``relay_queue`` sibling) and descend one further hop into its
+    ``mcp_result.structured_result`` instead of returning clio-relay's
+    bookkeeping untouched.
+    """
+
+    envelope = _relay_job_envelope(
+        pipeline_id="cu-eam-elastic-v2",
+        execution_id="jarvis_7999c467cfb94ac4826b73c78f38a709",
+        scheduler_native_id="22827",
+    )
+    wire = _tasks_get_structured_content_wrapper(envelope)
+
+    payload = _structured_payload(wire)
+
+    assert payload["pipeline_id"] == "cu-eam-elastic-v2"
+    assert payload["execution_id"] == "jarvis_7999c467cfb94ac4826b73c78f38a709"
+    assert payload["execution_handle"]["scheduler_native_id"] == "22827"
+    # The raw envelope's own relay bookkeeping must never leak through.
+    assert "job" not in payload
+    assert "relay_queue" not in payload
+    assert "mcp_result" not in payload
+
+
+def test_execution_projection_resolves_identity_through_relay_job_envelope() -> None:
+    """The full get_execution projection succeeds once the envelope is unwrapped."""
+
+    envelope = _relay_job_envelope(
+        pipeline_id="cu-eam-elastic-v2",
+        execution_id="jarvis_7999c467cfb94ac4826b73c78f38a709",
+        scheduler_native_id="22827",
+    )
+    wire = _tasks_get_structured_content_wrapper(envelope)
+    requested = {
+        "pipeline_id": "cu-eam-elastic-v2",
+        "execution_id": "jarvis_7999c467cfb94ac4826b73c78f38a709",
+    }
+
+    projected = _execution_projection(_structured_payload(wire), requested)
+
+    assert projected["pipeline_id"] == "cu-eam-elastic-v2"
+    assert projected["execution_id"] == "jarvis_7999c467cfb94ac4826b73c78f38a709"
+    assert projected["scheduler_native_id"] == "22827"
+    assert projected["scheduler_provider"] == "slurm"
+
+
+def test_structured_payload_direct_payload_regression() -> None:
+    """Direct (already-unwrapped) payloads must keep working unchanged.
+
+    Covers both direct shapes the curated tools rely on: a flat structured
+    result with no wrapping at all (create/describe/add_step/edit_step,
+    and jarvis_get_execution's own already-projected fields), and a relay
+    job envelope handed straight as ``result`` with no ``structuredContent``
+    wrapper -- resolved via the existing ``mcp_result`` first-candidate path,
+    which this fix must not disturb.
+    """
+
+    direct = {
+        "schema_version": "clio-kit.jarvis-execution.v2",
+        "pipeline_id": "direct-pipeline",
+        "execution_id": "direct-execution",
+        "execution_handle": {"scheduler_native_id": "9001", "scheduler_provider": "slurm"},
+        "execution_record": {"state": "running", "terminal": False},
+        "progress": {"execution_state": "running", "terminal": False},
+    }
+    assert _structured_payload(direct) == direct
+
+    envelope = _relay_job_envelope(
+        pipeline_id="direct-pipeline",
+        execution_id="direct-execution",
+        scheduler_native_id="9002",
+    )
+    payload = _structured_payload(envelope)
+    assert payload["pipeline_id"] == "direct-pipeline"
+    assert payload["execution_id"] == "direct-execution"
+    assert payload["execution_handle"]["scheduler_native_id"] == "9002"
+
+
+def test_structured_payload_both_shapes_miss_keeps_typed_identity_error() -> None:
+    """A malformed envelope with no reachable structured_result anywhere must
+    not be silently returned as if it carried the identity -- no double-try
+    that masks a malformed payload. The caller's typed
+    ``jarvis_execution_identity_mismatch`` error must still fire.
+    """
+
+    malformed_envelope = {
+        # Bears the envelope shape (mcp_result + job/relay_queue siblings)
+        # but mcp_result itself carries none of the accepted structured keys.
+        "mcp_result": {"operation": "tools/call", "tool": "jarvis_get_execution"},
+        "job": {"job_id": "job_test", "state": "succeeded"},
+        "relay_queue": {"state": "succeeded"},
+        "terminal": True,
+        "last_error": None,
+    }
+    wire = _tasks_get_structured_content_wrapper(malformed_envelope)
+
+    payload = _structured_payload(wire)
+    # Neither shape resolved an identity, so the untouched top-level input is
+    # returned rather than a guessed/synthesized structured result.
+    assert payload == wire
+    assert payload.get("pipeline_id") is None
+
+    with pytest.raises(JarvisJobError) as raised:
+        _execution_projection(
+            payload,
+            {"pipeline_id": "cu-eam-elastic-v2", "execution_id": "jarvis_exec"},
+        )
+    assert raised.value.reason == "jarvis_execution_identity_mismatch"
+    assert raised.value.details["observed_pipeline_id"] is None
+    assert raised.value.details["observed_execution_id"] is None
