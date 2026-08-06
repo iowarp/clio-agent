@@ -190,7 +190,7 @@ def test_model_supplied_hash_is_ignored_harness_wins(tmp_path):
         ),
         workspace_id="ws1",
     )
-    assert result["accepted"] == 1
+    assert result["created"] == 1
     rec = get_registry(app).get("ws1", "r.md")
     assert rec is not None and rec.head is not None
     recorded = rec.head.sha256
@@ -408,10 +408,63 @@ def test_promote_batch_summary_counts(tmp_path):
         ],
         workspace_id="ws1",
     )
-    assert result["accepted"] == 1
+    assert result["created"] == 1
     assert result["deduplicated"] == 1
     assert result["rejected"] == 1
+    assert "accepted" not in result
     assert len(result["artifacts"]) == 3
+
+
+def test_dedup_only_batch_reads_honest_not_contradictory(tmp_path):
+    """Owner-flagged defect: the top-level count keys must never collide with the
+    per-item ``accepted`` BOOLEAN name. A batch of exactly one dedup previously
+    returned ``{"accepted": 0, "artifacts": [{"accepted": true, ...}]}`` — each
+    field individually honest, but the same name meaning a COUNT at the top and a
+    BOOLEAN per item reads as a flat contradiction to a consumer skimming one key.
+
+    Fix: the top-level summary uses unambiguous, disjoint names (``created``,
+    ``deduplicated``, ``rejected``) and drops ``accepted`` entirely; the per-item
+    wire dict's own ``accepted`` boolean is untouched (true for a dedup)."""
+    app, sess, _ = _make_app(tmp_path)
+    dup_src = tmp_path / "dup.md"
+    dup_src.write_text("same bytes", encoding="utf-8")
+    # Prime the registry with one existing version so the batch call below is a
+    # pure byte-identical re-designation (created=False, accepted=True).
+    promote_proposal(app, sess.id, Proposal(path=str(dup_src), kind="report"), workspace_id="ws1")
+
+    result = promote_proposals(
+        app,
+        sess.id,
+        [Proposal(path=str(dup_src), kind="report")],
+        workspace_id="ws1",
+    )
+
+    # Sabotage: reintroduce a top-level "accepted" count (or reuse `created` as
+    # the sum of accepted-and-created-or-deduped) -> this collides with the
+    # per-item boolean name again and these assertions redden.
+    assert result == {
+        "artifacts": [
+            {
+                "accepted": True,
+                "created": False,
+                "name": "dup.md",
+                "artifact_id": result["artifacts"][0]["artifact_id"],
+                "version": result["artifacts"][0]["version"],
+                "sha256": result["artifacts"][0]["sha256"],
+                "kind": "report",
+                "custody": result["artifacts"][0]["custody"],
+                "mechanism": result["artifacts"][0]["mechanism"],
+                "reason": "already_registered",
+            }
+        ],
+        "created": 0,
+        "deduplicated": 1,
+        "rejected": 0,
+    }
+    assert "accepted" not in result
+    # The per-item boolean is untouched: true for a dedup, honest on its own.
+    assert result["artifacts"][0]["accepted"] is True
+    assert result["artifacts"][0]["created"] is False
 
 
 # --------------------------------------------------------------------------- #
@@ -450,7 +503,7 @@ def test_create_artifact_tool_accepts_used_without_touching_promotion(tmp_path):
         _ctx.reset(token_app)
     # Sabotage: thread `used` into the mint decision (e.g. reject an unresolvable
     # ref) -> this flips to rejected/0 -> red.
-    assert result["accepted"] == 1
+    assert result["created"] == 1
     assert result["artifacts"][0]["accepted"] is True
 
 
@@ -895,15 +948,16 @@ def test_batch_over_max_rejected_with_single_event(tmp_path, monkeypatch):
         f.write_text(f"b{i}", encoding="utf-8")
         ok_items.append(Proposal(path=str(f), kind="report"))
     res_ok = promote_proposals(app, sess.id, ok_items, workspace_id="ws1")
-    assert res_ok["accepted"] == 3
+    assert res_ok["created"] == 3
     # One over the max -> the WHOLE batch is rejected with ONE typed over_batch event.
     before = len(_proposal_events(arc))
     over = [Proposal(kind="report") for _ in range(4)]
     res = promote_proposals(app, sess.id, over, workspace_id="ws1")
     # Sabotage: drop the batch bound -> each of the 4 items emits an event and
     # rejected==4 -> these assertions redden.
-    assert res["accepted"] == 0
+    assert res["created"] == 0
     assert res["rejected"] == 1
+    assert "accepted" not in res
     assert len(res["artifacts"]) == 1
     assert res["artifacts"][0]["reason"] == RejectionReason.OVER_BATCH.value
     assert len(_proposal_events(arc)) - before == 1

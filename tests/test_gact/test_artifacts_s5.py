@@ -1431,7 +1431,7 @@ def _mint_report_via_create_artifact(app, sess, tmp_path: Path, name: str) -> tu
         ),
         workspace_id="ws1",
     )
-    assert result["accepted"] == 1, result
+    assert result["created"] == 1, result
     return report, result
 
 

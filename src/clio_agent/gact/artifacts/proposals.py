@@ -597,8 +597,8 @@ def promote_proposals(
     """Promote a batch of proposals; return the model-facing summary + per-item wire.
 
     Each item is validated + minted independently (one over-cap item does not abort
-    the rest — the model sees exactly which succeeded). The summary counts make the
-    turn's designation footprint legible for bounded repair.
+    the rest — the model sees exactly which succeeded): ``created``/``deduplicated``/
+    ``rejected`` — no top-level ``accepted`` (it collided with the per-item boolean).
 
     A batch carrying more than ``proposals_batch_max()`` items is rejected WHOLE
     with ONE typed ``over_batch`` event (finding [1]): otherwise every item — even
@@ -626,7 +626,7 @@ def promote_proposals(
         )
         return {
             "artifacts": [outcome.to_wire()],
-            "accepted": 0,
+            "created": 0,
             "deduplicated": 0,
             "rejected": 1,
         }
@@ -642,12 +642,12 @@ def promote_proposals(
         )
         for p in proposals
     ]
-    accepted = sum(1 for o in outcomes if o.accepted and o.created)
+    created = sum(1 for o in outcomes if o.accepted and o.created)
     deduplicated = sum(1 for o in outcomes if o.accepted and not o.created)
     rejected = sum(1 for o in outcomes if not o.accepted)
     return {
         "artifacts": [o.to_wire() for o in outcomes],
-        "accepted": accepted,
+        "created": created,
         "deduplicated": deduplicated,
         "rejected": rejected,
     }
@@ -724,7 +724,7 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
         if app is None or not sid:
             return {
                 "artifacts": [],
-                "accepted": 0,
+                "created": 0,
                 "deduplicated": 0,
                 "rejected": 0,
                 "error": "create_artifact called outside an active session",
