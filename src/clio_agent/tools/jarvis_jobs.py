@@ -14,13 +14,21 @@ from fastmcp.tools import Tool, ToolResult
 from fastmcp_tasks.client_models import ClientGetTaskResult
 from mcp.types import ToolAnnotations
 
+from clio_agent.tools.jarvis_result_contract import (
+    JarvisJobError,
+)
+from clio_agent.tools.jarvis_result_contract import (
+    raise_inline_delivery_failure as _raise_inline_delivery_failure,
+)
+from clio_agent.tools.jarvis_result_contract import (
+    raise_remote_call_failure as _raise_remote_call_failure,
+)
+from clio_agent.tools.jarvis_result_contract import (
+    structured_payload as _structured_payload,
+)
 from clio_agent.tools.mcp_task_records import TERMINAL_TASK_STATES, TaskKey
 from clio_agent.tools.relay_transport import (
-    RELAY_INLINE_LIMIT_CODE,
-    RELAY_RESULT_DELIVERY_SCHEMA,
-    RelayInlineResultTooLargeError,
     RelayTaskIdentity,
-    RelayTransportContractError,
 )
 
 JARVIS_NAMESPACE = "jarvis"
@@ -84,10 +92,6 @@ __all__ = [
 ]
 
 
-class JarvisJobError(RelayTransportContractError):
-    """A curated JARVIS dispatch or execution violated its durable contract."""
-
-
 @dataclass(frozen=True)
 class JarvisRunHandle:
     """Persisted identity for one admitted handle-first JARVIS execution."""
@@ -142,6 +146,66 @@ _OPTIONAL_IDENTITY = {"anyOf": [_IDENTITY, {"type": "null"}], "default": None}
 _CONTROL_PROPERTIES = {
     "idempotency_key": {"type": "string", "minLength": 1},
     "timeout_seconds": {"type": "integer", "minimum": 1},
+}
+# The exact artifact-page filter JARVIS accepts, mirrored from the relay-advertised
+# ``jarvis_get_execution`` input schema (captured live off clio-relay's tools/list,
+# #1195). Declaring it closed is the root fix for a caller inventing a filter key:
+# an opaque ``{"type": "object"}`` gave the model no contract, so a plausible-looking
+# ``include_content`` reached JARVIS and came back as a remote pydantic
+# ``extra_forbidden`` rejection. The page is a manifest of artifact RECORDS --
+# identity, role, state, and location -- and carries no artifact content.
+_ARTIFACT_PAGE_FILTER: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "Optional filters for one bounded page of execution artifact records "
+        "(identity, role, state, location). This page never carries artifact content."
+    ),
+    "properties": {
+        "artifact_id": {
+            "anyOf": [{"type": "string", "maxLength": 90}, {"type": "null"}],
+            "default": None,
+            "description": "Exact opaque JARVIS artifact ID filter.",
+        },
+        "package_id": {
+            "anyOf": [{"type": "string", "maxLength": 256}, {"type": "null"}],
+            "default": None,
+            "description": "Exact JARVIS package alias filter.",
+        },
+        "role": {
+            "anyOf": [
+                {
+                    "type": "string",
+                    "enum": [
+                        "intermediate",
+                        "output",
+                        "log",
+                        "checkpoint",
+                        "provenance",
+                        "validation",
+                    ],
+                },
+                {"type": "null"},
+            ],
+            "default": None,
+        },
+        "state": {
+            "anyOf": [
+                {
+                    "type": "string",
+                    "enum": ["producing", "available", "finalized", "incomplete", "failed"],
+                },
+                {"type": "null"},
+            ],
+            "default": None,
+        },
+        "page_size": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
+        "cursor": {
+            "anyOf": [{"type": "string", "maxLength": 1024}, {"type": "null"}],
+            "default": None,
+            "description": "Opaque next-page cursor.",
+        },
+    },
+    "additionalProperties": False,
 }
 _INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "jarvis_create_pipeline": {
@@ -232,7 +296,7 @@ _INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "execution_id": _IDENTITY,
             "include_progress": {"type": "boolean", "default": True},
             "include_service_runtimes": {"type": "boolean", "default": False},
-            "artifacts": {"type": ["object", "null"], "default": None},
+            "artifacts": {"anyOf": [_ARTIFACT_PAGE_FILTER, {"type": "null"}], "default": None},
             **_CONTROL_PROPERTIES,
         },
         "required": ["cluster", "pipeline_id", "execution_id"],
@@ -263,7 +327,9 @@ _DESCRIPTIONS = {
     ),
     "jarvis_get_execution": (
         "Use this when an agent needs the current execution lifecycle, progress, "
-        "artifacts, services, and scheduler-native identity."
+        "artifacts, services, and scheduler-native identity. Pass `artifacts` to "
+        "add one bounded page of artifact records; that page lists each artifact's "
+        "identity, role, state, and location, and never its content."
     ),
 }
 
@@ -292,9 +358,7 @@ def _with_cluster_hint(description: str, cluster_hint: str | None) -> str:
 class _ProjectedJarvisTool(Tool):
     """One curated operation exposed below the gateway's jarvis mount."""
 
-    def __init__(
-        self, name: str, owner: "JarvisJobs", *, cluster_hint: str | None = None
-    ) -> None:
+    def __init__(self, name: str, owner: "JarvisJobs", *, cluster_hint: str | None = None) -> None:
         read_only = name in {"jarvis_describe", "jarvis_get_execution"}
         output_schema = (
             JARVIS_RUN_HANDLE_OUTPUT_SCHEMA
@@ -516,111 +580,8 @@ def _terminal_payload(tool_name: str, final: ClientGetTaskResult) -> dict[str, A
             details={"tool": tool_name, "task_id": final.task_id},
         )
     _raise_inline_delivery_failure(final.task_id, final.result)
+    _raise_remote_call_failure(tool_name, final.task_id, final.result)
     return _structured_payload(final.result)
-
-
-_STRUCTURED_RESULT_KEYS = ("structured_result", "structuredContent", "structured_content")
-_RELAY_JOB_ENVELOPE_SIBLING_KEYS = ("job", "relay_queue")
-
-
-def _is_relay_job_envelope(candidate: Mapping[str, Any]) -> bool:
-    """Whether ``candidate`` is clio-relay's durable job record, not a tool result.
-
-    A relay job envelope carries the job's own bookkeeping (``job`` /
-    ``relay_queue`` / ``artifacts`` / ``scheduler`` / ...) alongside a nested
-    ``mcp_result`` that holds the tool's real structured output one hop
-    deeper. The JARVIS tool's own structured result never carries those
-    relay-owned siblings, so their presence is the shape signal -- not a
-    guess about field names inside the tool's own schema.
-    """
-
-    return "mcp_result" in candidate and any(
-        key in candidate for key in _RELAY_JOB_ENVELOPE_SIBLING_KEYS
-    )
-
-
-def _structured_from_envelope(envelope: Mapping[str, Any]) -> dict[str, Any] | None:
-    """Descend one hop into a relay job envelope's own ``mcp_result``.
-
-    Returns ``None`` when the envelope's ``mcp_result`` is absent or does not
-    itself carry a structured-result key -- the caller must not fall back to
-    returning the envelope in that case, so the existing identity-mismatch
-    error still fires downstream instead of a malformed payload being masked.
-    """
-
-    inner = envelope.get("mcp_result")
-    if not isinstance(inner, Mapping):
-        return None
-    for key in _STRUCTURED_RESULT_KEYS:
-        structured = inner.get(key)
-        if isinstance(structured, Mapping):
-            return dict(structured)
-    return None
-
-
-def _structured_payload(result: Mapping[str, Any]) -> dict[str, Any]:
-    """Unwrap relay terminal evidence to the JARVIS tool's structured result.
-
-    Two shapes reach here. A **direct** payload already carries the tool's
-    own fields at this level, or one ``mcp_result`` hop down, under a
-    ``structured_result``/``structuredContent``/``structured_content`` key.
-    A **relay job envelope** happens to satisfy that same key match --
-    ``structuredContent`` also names the field the ``tasks/get`` transport
-    itself uses to carry clio-relay's whole durable job record when a
-    dispatch resolves through a resumed/replayed record -- so matching the
-    key alone silently returns relay's bookkeeping instead of the tool's
-    result (observed live: ``jarvis_get_execution`` reading
-    ``pipeline_id: None`` off the envelope and failing its identity check).
-    An envelope match is detected by shape (:func:`_is_relay_job_envelope`)
-    and unwrapped one further hop into its own ``mcp_result``. If that hop
-    also comes up empty, this still returns the untouched input rather than
-    guessing at a shape -- the caller's typed identity-mismatch error stands.
-    """
-
-    candidates: list[Mapping[str, Any]] = [result]
-    mcp_result = result.get("mcp_result")
-    if isinstance(mcp_result, Mapping):
-        candidates.insert(0, mcp_result)
-    for candidate in candidates:
-        for key in _STRUCTURED_RESULT_KEYS:
-            structured = candidate.get(key)
-            if not isinstance(structured, Mapping):
-                continue
-            if _is_relay_job_envelope(structured):
-                nested = _structured_from_envelope(structured)
-                if nested is not None:
-                    return nested
-                continue
-            return dict(structured)
-    return dict(result)
-
-
-def _raise_inline_delivery_failure(task_id: str, value: Any) -> None:
-    """Preserve relay's typed oversized-result failure through the owner layer."""
-
-    stack = [value]
-    visited = 0
-    while stack:
-        current = stack.pop()
-        visited += 1
-        if visited > 100_000:
-            raise JarvisJobError(
-                "JARVIS dispatch result exceeded the validation node bound",
-                reason="jarvis_dispatch_result_too_complex",
-                details={"task_id": task_id, "max_nodes": 100_000},
-            )
-        if isinstance(current, Mapping):
-            delivery = current.get("delivery")
-            if (
-                isinstance(delivery, Mapping)
-                and delivery.get("schema_version") == RELAY_RESULT_DELIVERY_SCHEMA
-                and delivery.get("status") == "failed"
-                and delivery.get("code") == RELAY_INLINE_LIMIT_CODE
-            ):
-                raise RelayInlineResultTooLargeError(task_id, delivery)
-            stack.extend(current.values())
-        elif isinstance(current, (list, tuple)):
-            stack.extend(current)
 
 
 def _execution_projection(

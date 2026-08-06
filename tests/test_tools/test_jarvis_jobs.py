@@ -16,11 +16,13 @@ from fastmcp_tasks.client_models import ClientGetTaskResult
 from clio_agent.tools.gateway import build_gateway
 from clio_agent.tools.jarvis_jobs import (
     _DESCRIPTIONS,
+    _INPUT_SCHEMAS,
     JARVIS_RUN_HANDLE_OUTPUT_SCHEMA,
     JarvisJobError,
     JarvisJobs,
     JarvisRunHandle,
     _execution_projection,
+    _raise_remote_call_failure,
     _structured_payload,
 )
 from clio_agent.tools.mcp_task_records import TaskKey
@@ -787,3 +789,266 @@ def test_structured_payload_both_shapes_miss_keeps_typed_identity_error() -> Non
     assert raised.value.reason == "jarvis_execution_identity_mismatch"
     assert raised.value.details["observed_pipeline_id"] is None
     assert raised.value.details["observed_execution_id"] is None
+
+
+def _failed_remote_call_envelope(
+    *,
+    remote_message: str,
+    tool: str = "jarvis_get_execution",
+) -> dict[str, Any]:
+    """Reproduce clio-relay's envelope for a DELIVERED but FAILED JARVIS call.
+
+    Captured verbatim off the live p5run2 relay (#1195) by calling
+    ``jarvis_get_execution`` with ``artifacts={"include_content": true}``
+    against a real completed execution. The relay task itself reaches
+    ``completed`` -- the dispatch was delivered -- while the job inside it is
+    ``failed`` and the remote tool's own rejection sits in
+    ``mcp_result.protocol_result``. ``structured_result`` is ``None``, which is
+    what previously sent the unwrap down the both-shapes-miss path and produced
+    an identity error about the wrong thing.
+    """
+
+    return {
+        "job": {
+            "job_id": "job_705ee07dd8894bcd8416324db328ddb8",
+            "cluster": "ares-p5run2",
+            "kind": "mcp_call",
+            "state": "failed",
+            "last_error": "exit code 1",
+        },
+        "transform": None,
+        "relay_queue": {"state": "failed", "jobs_ahead": None, "position": None},
+        "scheduler": [],
+        "terminal": True,
+        "observation": {"outcome": "terminal", "scheduler_action": "none"},
+        "last_error": "exit code 1",
+        "mcp_result_artifact": {
+            "artifact_id": "artifact_b1cf082ecb79496da80321ffe96c0384",
+            "kind": "mcp_result",
+            "size_bytes": 18475,
+        },
+        "mcp_result": {
+            "operation": "tools/call",
+            "tool": tool,
+            "returncode": 1,
+            "timed_out": False,
+            "protocol_error": "tools/call returned isError=true",
+            "structured_result": None,
+            "protocol_result": {
+                "content": [{"text": remote_message, "type": "text"}],
+                "isError": True,
+            },
+            "protocol_version": "2024-11-05",
+            "server_info": {"name": "jarvis", "version": "3.4.4"},
+            "result_validation": None,
+        },
+        "artifacts": [],
+    }
+
+
+_REMOTE_REJECTION = (
+    "1 validation error for call[jarvis_get_execution_tool]\n"
+    "artifacts.include_content\n"
+    "  Extra inputs are not permitted [type=extra_forbidden, input_value=True, "
+    "input_type=bool]"
+)
+
+
+def test_failed_remote_call_raises_its_own_reason_not_identity_mismatch() -> None:
+    """FAILING-FIRST (#1195): the live artifacts-parameterized shape.
+
+    A relay task status of ``completed`` only proves the dispatch was
+    delivered. When the JARVIS call inside it failed, this layer must fail with
+    the remote tool's own reason -- carrying the message that names the exact
+    bad field -- instead of unwrapping an envelope that has no
+    ``structured_result`` and blaming execution identity.
+    """
+
+    wire = _tasks_get_structured_content_wrapper(
+        _failed_remote_call_envelope(remote_message=_REMOTE_REJECTION)
+    )
+
+    with pytest.raises(JarvisJobError) as raised:
+        _raise_remote_call_failure("jarvis_get_execution", "job_705ee0", wire)
+
+    assert raised.value.reason == "jarvis_remote_call_failed"
+    details = raised.value.details
+    assert details["job_state"] == "failed"
+    assert details["returncode"] == 1
+    assert details["protocol_error"] == "tools/call returned isError=true"
+    # The remote message reaches the caller verbatim; it is the only text that
+    # says which field JARVIS rejected.
+    assert "artifacts.include_content" in details["remote_message"]
+    assert "extra_forbidden" in details["remote_message"]
+
+
+def test_failed_remote_call_is_detected_in_every_envelope_carrier() -> None:
+    """The same failure must be caught wherever the envelope sits.
+
+    Three carriers reach ``_terminal_payload``: the result IS the envelope; the
+    envelope is nested under a structured-result key (a replayed ``tasks/get``
+    reply, the #1171 shape); or it is nested under the result's ``mcp_result``
+    hop. Shape detection, not position, decides.
+    """
+
+    envelope = _failed_remote_call_envelope(remote_message=_REMOTE_REJECTION)
+    carriers = {
+        "direct_envelope": envelope,
+        "replayed_wrapper": _tasks_get_structured_content_wrapper(envelope),
+        "snake_case_wrapper": {"structured_result": envelope},
+        "mcp_result_hop": {"mcp_result": {"structured_content": envelope}},
+    }
+    for label, wire in carriers.items():
+        with pytest.raises(JarvisJobError) as raised:
+            _raise_remote_call_failure("jarvis_get_execution", "job_test", wire)
+        assert raised.value.reason == "jarvis_remote_call_failed", label
+
+
+def test_successful_remote_call_is_never_flagged_as_failed() -> None:
+    """A healthy dispatch must pass through untouched.
+
+    Live success evidence carries ``protocol_error: null``, ``returncode: 0``
+    and omits ``protocol_result`` altogether, so no successful envelope can
+    match the failure evidence.
+    """
+
+    healthy = _relay_job_envelope(
+        pipeline_id="smoke-hostname-p1",
+        execution_id="jarvis_01f33476ad965a1abca1146189464282",
+        scheduler_native_id=None,
+    )
+    for wire in (healthy, _tasks_get_structured_content_wrapper(healthy)):
+        _raise_remote_call_failure("jarvis_get_execution", "job_test", wire)
+        payload = _structured_payload(wire)
+        assert payload["pipeline_id"] == "smoke-hostname-p1"
+
+
+def test_malformed_envelope_without_failure_evidence_keeps_identity_error() -> None:
+    """No failure evidence must not become a fabricated failure.
+
+    The #1171 both-shapes-miss case has no ``protocol_error``, no non-zero
+    ``returncode`` and no ``protocol_result``: it is a malformed payload, not a
+    remote rejection, so the typed identity error still owns it.
+    """
+
+    malformed = {
+        "mcp_result": {"operation": "tools/call", "tool": "jarvis_get_execution"},
+        "job": {"job_id": "job_test", "state": "succeeded"},
+        "relay_queue": {"state": "succeeded"},
+        "terminal": True,
+    }
+    wire = _tasks_get_structured_content_wrapper(malformed)
+
+    _raise_remote_call_failure("jarvis_get_execution", "job_test", wire)
+
+    with pytest.raises(JarvisJobError) as raised:
+        _execution_projection(
+            _structured_payload(wire),
+            {"pipeline_id": "p", "execution_id": "e"},
+        )
+    assert raised.value.reason == "jarvis_execution_identity_mismatch"
+
+
+def test_artifacts_filter_schema_is_closed_and_content_free() -> None:
+    """FAILING-FIRST (#1195): the schema that let a caller invent a filter key.
+
+    ``artifacts`` was declared as an opaque object, so nothing told a caller
+    which filters exist and an invented ``include_content`` only failed after a
+    live remote dispatch. The declared filter now mirrors the relay-advertised
+    contract exactly and is closed, and no key promises content.
+    """
+
+    artifacts = _INPUT_SCHEMAS["jarvis_get_execution"]["properties"]["artifacts"]
+    filter_schema = artifacts["anyOf"][0]
+
+    assert filter_schema["additionalProperties"] is False
+    assert set(filter_schema["properties"]) == {
+        "artifact_id",
+        "package_id",
+        "role",
+        "state",
+        "page_size",
+        "cursor",
+    }
+    assert "include_content" not in filter_schema["properties"]
+    assert filter_schema["properties"]["page_size"]["maximum"] == 100
+    assert set(filter_schema["properties"]["state"]["anyOf"][0]["enum"]) == {
+        "producing",
+        "available",
+        "finalized",
+        "incomplete",
+        "failed",
+    }
+
+
+class _FailedRemoteCallRelay:
+    """Relay client whose dispatch is DELIVERED (task completed) but failed inside."""
+
+    def __init__(self, envelope: dict[str, Any]) -> None:
+        self._envelope = envelope
+        self.submitted: list[tuple[str, dict[str, Any]]] = []
+
+    async def __aenter__(self) -> "_FailedRemoteCallRelay":
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        return None
+
+    async def submit(
+        self,
+        tool_name: str,
+        arguments: Mapping[str, Any] | None = None,
+        *,
+        idempotency_key: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> RelayTaskIdentity:
+        self.submitted.append((tool_name, dict(arguments or {})))
+        return RelayTaskIdentity.from_key(TaskKey("fake-relay", "session-alice", "job_705ee0"))
+
+    async def poll(self, task: RelayTaskIdentity) -> ClientGetTaskResult:
+        return ClientGetTaskResult(
+            taskId=task.task_id,
+            status="completed",
+            createdAt="2026-08-06T19:34:57Z",
+            lastUpdatedAt="2026-08-06T19:34:57Z",
+            pollIntervalMs=RELAY_POLL_INTERVAL_MS,
+            resultType="complete",
+            result=_tasks_get_structured_content_wrapper(self._envelope) | {"isError": True},
+            error=None,
+        )
+
+    async def resume(
+        self, key: TaskKey, *, timeout_seconds: float | None = None
+    ) -> ClientGetTaskResult:
+        raise AssertionError("resume is not part of this regression")
+
+
+@pytest.mark.asyncio
+async def test_get_execution_reports_the_remote_reason_the_caller_must_act_on() -> None:
+    """FAILING-FIRST (#1195), at the surface the agent actually calls.
+
+    Before the fix this exact wire produced
+    ``jarvis_execution_identity_mismatch`` with both observed identities
+    ``None`` -- an error naming a problem that did not exist, while the one
+    piece of actionable information (JARVIS rejected the ``artifacts`` filter
+    key) was discarded. The caller must instead receive the remote reason.
+    """
+
+    relay = _FailedRemoteCallRelay(
+        _failed_remote_call_envelope(remote_message=_REMOTE_REJECTION)
+    )
+    jobs = JarvisJobs(lambda: relay, poll_sleep=_no_sleep)
+
+    with pytest.raises(JarvisJobError) as raised:
+        await jobs.get_execution(
+            {
+                "cluster": "ares-p5run2",
+                "pipeline_id": "smoke-hostname-p1",
+                "execution_id": "jarvis_01f33476ad965a1abca1146189464282",
+                "artifacts": {"artifact_id": "art_F1viBUWePupgP06PTyAQLpmV"},
+            }
+        )
+
+    assert raised.value.reason == "jarvis_remote_call_failed"
+    assert raised.value.reason != "jarvis_execution_identity_mismatch"
+    assert "artifacts.include_content" in raised.value.details["remote_message"]
