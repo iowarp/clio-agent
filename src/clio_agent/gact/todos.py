@@ -168,11 +168,21 @@ def _write_todos(app: "FastAPI", sid: str, session: Any, todos: Any) -> str:
     from clio_agent.gact.planning import advance_execution_step  # noqa: PLC0415
 
     advance_execution_step(app, sid, completed_todos=counts["completed"])
-    return (
+    confirmation = (
         f"Recorded {len(normalized)} todo(s): "
         f"{counts['completed']} completed, {counts['in_progress']} in_progress, "
         f"{counts['pending']} pending."
     )
+    # Declared structured payload (P5 wire semantics — the wait_agent_tasks
+    # treatment): the SAME confirmation text as the wire's ``message`` (never a
+    # second, divergent phrasing), then the full list + counts. Model-facing
+    # return (above) is unchanged.
+    from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+        declare_structured_content,
+    )
+
+    declare_structured_content({"message": confirmation, "todos": normalized, "counts": counts})
+    return confirmation
 
 
 def build_write_todos_tool(agent_def: Any) -> Any:
