@@ -308,7 +308,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # waited_tasks registry resolution in the "started" phase (both call OUT to
     # owner modules — tool_instrumentation.py / agent_tasks.py — for the actual
     # logic; only the two call sites land here). Ratchet back with #714/#767.
-    "src/clio_agent/gact/tool_observer.py": 1074,
+    # #1188 (MCP content-block half): +2 for the ONE new field this call site
+    # wires — a top-level import + the inline ``content_blocks=`` argument on
+    # the tool_result Part construction. The actual bounding/elision/lookup
+    # logic lives in the owner module (tools/mcp_results.py::content_blocks_
+    # for_wire); this is the theoretical floor for wiring a new Part field.
+    "src/clio_agent/gact/tool_observer.py": 1076,
     # Collector-collapse work already on this branch grew the file to 1303 (>the
     # recorded 986 baseline) before this entry was updated — pre-existing, not
     # introduced here. P5 (wire semantics): +34 for the waited_tasks union-merge

@@ -55,6 +55,7 @@ from clio_agent.gact.thought_dedup import TOOL_THOUGHT_STAGE, classify_live_thou
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime import trace
 from clio_agent.runtime.stream_audit import stream_audit
+from clio_agent.tools.mcp_results import content_blocks_for_wire
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -921,6 +922,7 @@ def _make_tool_observer(app: "FastAPI"):
                     # ``metadata``. Wire-only: the model's observation is the
                     # separate ``model_text`` built at the execution boundary.
                     structured_content=structured_content,
+                    content_blocks=content_blocks_for_wire(result),  # #1188
                     content=[
                         Part(
                             id=f"live_{call_id}_result_text",

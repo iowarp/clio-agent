@@ -239,6 +239,9 @@ limits.lm_transient_backoff_s: 8.0
 # CLIO_LM_TRANSIENT_RETRIES  (float)  <- src/clio_agent/lm/io_logging.py
 limits.lm_transient_retries: 2.0
 
+# CLIO_MCP_CONTENT_BLOCK_MAX_BYTES  (int)  <- src/clio_agent/tools/mcp_results.py
+limits.mcp_content_block_max_bytes: 524288
+
 # CLIO_GACT_MCP_RECONNECT_TIMEOUT_S  (float)  <- src/clio_agent/gact/routes/mcp.py
 limits.mcp_reconnect_timeout_s: 15.0
 

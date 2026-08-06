@@ -204,6 +204,20 @@ class Part(BaseModel):
     # reads this field. ``None`` = absent on the wire (``to_wire`` drops defaults).
     structured_content: Optional[Any] = None
 
+    # tool_result (#1188 MCP content-block half): the MCP result's typed
+    # ``content`` blocks (``TextContent``/``ImageContent``/``AudioContent``/
+    # ``EmbeddedResource``/``ResourceLink``), preserved verbatim (camelCase,
+    # ``_meta`` stripped) instead of being flattened into the single
+    # ``content[0].text`` preview. An oversized binary payload (image/audio
+    # ``data``, an embedded resource ``blob``) is already bounded by the typed
+    # elision marker applied at the source (``tools/mcp_results.py``'s
+    # ``_public_content``) -- never raw, unbounded base64. Wire-only, like
+    # ``structured_content``: the model-facing observation is the independent
+    # ``model_text`` built at the execution boundary
+    # (``tools/mcp_executor.py::_result_to_text``), which never carries these
+    # bytes either (a placeholder only). ``None`` = absent on the wire.
+    content_blocks: Optional[list[dict[str, Any]]] = None
+
     # resource_link (SPEC §4.5 core type; #968). Reused to give a generated ARTIFACT
     # outbound wire identity (#966.9): ``uri`` is ``artifact://<ws>/<name>@vN`` (or
     # ``ui://…`` for a ``ui_payload``), ``server_id`` the ``clio-artifacts`` sentinel,

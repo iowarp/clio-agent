@@ -8,6 +8,7 @@ executor.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -545,6 +546,109 @@ class AsyncMCPToolExecutor:
 MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON = "mcp_result_to_text_repr_fallback"
 
 
+def _content_block_field(block: Any, *names: str) -> Any:
+    """Read the first present field from a content block (mapping or SDK model)."""
+
+    if isinstance(block, Mapping):
+        for field_name in names:
+            value = block.get(field_name)
+            if value is not None:
+                return value
+        return None
+    for field_name in names:
+        value = getattr(block, field_name, None)
+        if value is not None:
+            return value
+    return None
+
+
+def _base64_decoded_length(data: str) -> int:
+    """Approximate decoded byte length of a base64 string without decoding it."""
+
+    if not data:
+        return 0
+    padding = len(data) - len(data.rstrip("="))
+    return max(0, (len(data) * 3) // 4 - padding)
+
+
+def _human_bytes(num_bytes: int) -> str:
+    """Compact human-readable byte size for a model-facing placeholder."""
+
+    if num_bytes < 1024:
+        return f"{num_bytes}B"
+    if num_bytes < 1024 * 1024:
+        return f"{num_bytes / 1024:.1f}KB"
+    return f"{num_bytes / (1024 * 1024):.1f}MB"
+
+
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_GIF_SIGNATURES = (b"GIF87a", b"GIF89a")
+
+
+def _raster_dimensions(mime_type: str, data_b64: str) -> tuple[int, int] | None:
+    """Best-effort ``(width, height)`` for a PNG/GIF block from a bounded prefix.
+
+    Decodes only the leading ~48 raw bytes (never the full image) -- just
+    enough to cover the PNG IHDR chunk or the GIF logical screen descriptor.
+    Any other format, or a prefix too short/garbled to parse, returns ``None``
+    (never guessed); the caller falls back to a byte-size placeholder.
+    """
+
+    prefix = data_b64[:80]
+    prefix += "=" * (-len(prefix) % 4)
+    try:
+        raw = base64.b64decode(prefix, validate=False)
+    except ValueError:
+        return None
+    mime = (mime_type or "").lower()
+    if mime == "image/png" and raw[:8] == _PNG_SIGNATURE and len(raw) >= 24:
+        return int.from_bytes(raw[16:20], "big"), int.from_bytes(raw[20:24], "big")
+    if mime == "image/gif" and raw[:6] in _GIF_SIGNATURES and len(raw) >= 10:
+        return int.from_bytes(raw[6:8], "little"), int.from_bytes(raw[8:10], "little")
+    return None
+
+
+def _content_block_model_text(block: Any) -> str:
+    """Compact model-facing placeholder/text for one MCP content block.
+
+    A ``text`` block contributes its text VERBATIM (the common unstructured-
+    content case: the tool's whole result IS its text). Every other block
+    type contributes a short bracket placeholder -- NEVER the block's raw
+    payload (base64 image/audio data, an embedded resource blob). The model
+    gets enough to know the evidence exists and reason about it; the bytes
+    themselves reach the wire only through the tool_result Part's own
+    ``content_blocks`` field (``gact/tool_observer.py``), never through this
+    model-facing lane.
+    """
+
+    block_type = str(_content_block_field(block, "type") or "")
+    if block_type == "text":
+        return str(_content_block_field(block, "text") or "")
+    mime_type = str(_content_block_field(block, "mime_type", "mimeType") or "")
+    if block_type == "image":
+        data = str(_content_block_field(block, "data") or "")
+        dims = _raster_dimensions(mime_type, data)
+        detail = f"{dims[0]}x{dims[1]}" if dims else _human_bytes(_base64_decoded_length(data))
+        return f"[image {mime_type or 'unknown'} {detail}]"
+    if block_type == "audio":
+        data = str(_content_block_field(block, "data") or "")
+        return f"[audio {mime_type or 'unknown'} {_human_bytes(_base64_decoded_length(data))}]"
+    if block_type == "resource":
+        resource = _content_block_field(block, "resource")
+        uri = str(_content_block_field(resource, "uri") or "") if resource is not None else ""
+        resource_mime = (
+            str(_content_block_field(resource, "mime_type", "mimeType") or "")
+            if resource is not None
+            else ""
+        )
+        return f"[resource {resource_mime or mime_type or 'unknown'} {uri}]".rstrip()
+    if block_type == "resource_link":
+        uri = str(_content_block_field(block, "uri") or "")
+        name = str(_content_block_field(block, "name") or "")
+        return f"[resource_link {name or uri}]"
+    return f"[{block_type}]" if block_type else ""
+
+
 def _result_to_text(result: Any) -> str:
     """Convert a FastMCP call result to the legacy string model-facing text.
 
@@ -561,6 +665,17 @@ def _result_to_text(result: Any) -> str:
     ``data`` is returned verbatim (it is already model-facing text, not a
     value to re-encode); every other shape is JSON-encoded, falling back to
     ``str()`` only for genuinely unserializable values.
+
+    ``data`` is derived ONLY from ``structuredContent`` on the client side
+    (``_parse_call_tool_result``) -- a tool that returns PURE content blocks
+    with no structured output (``fastmcp.Image``/``Audio``, or a bare list of
+    ``TextContent`` blocks) parses to ``data=None``. Before this fix that flowed
+    straight into ``json.dumps(None)`` and the model observed the literal
+    string ``"null"`` for a result that plainly carried evidence. When ``data``
+    is ``None`` and ``result.content`` is non-empty, the text is now built from
+    the content blocks themselves via :func:`_content_block_model_text` instead
+    (TEXT blocks verbatim, everything else a short placeholder -- never raw
+    base64 in the model-facing lane).
 
     ``allow_nan=False`` keeps NaN/Infinity out of the encoded text: Python's
     ``json`` module happily emits the non-standard tokens ``NaN`` / ``Infinity``
@@ -580,6 +695,18 @@ def _result_to_text(result: Any) -> str:
     data = getattr(result, "data", result)
     if isinstance(data, str):
         return data
+    if data is None:
+        content = getattr(result, "content", None)
+        if (
+            isinstance(content, Sequence)
+            and not isinstance(content, (str, bytes, bytearray))
+            and content
+        ):
+            placeholder = "\n".join(
+                piece for piece in (_content_block_model_text(block) for block in content) if piece
+            )
+            if placeholder:
+                return placeholder
     try:
         return json.dumps(data, allow_nan=False)
     except (TypeError, ValueError, RecursionError, OverflowError) as exc:
