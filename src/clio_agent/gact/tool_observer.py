@@ -649,12 +649,14 @@ def _make_tool_observer(app: "FastAPI"):
     deterministic short-circuit paths).
     """
 
-    # Declared-presentation registry (populated at the instrumentation seam;
-    # default "row" for undeclared names — never a name-matching heuristic).
+    # Declared-presentation + call-metadata registries (populated at the seam;
+    # default "row"/no-metadata for undeclared names — never name-matching).
     from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+        bounded_tool_call_input,
         declared_tool_representation,
         declared_tool_title,
         pop_declared_structured_content,
+        tool_call_metadata_resolver,
     )
 
     def observe(
@@ -664,6 +666,10 @@ def _make_tool_observer(app: "FastAPI"):
         error: Optional[str],
         result: Any | None = None,
     ) -> None:
+        if phase == "started":
+            # Belt-and-braces leak fix: discard a PRIOR call's leaked
+            # declare_structured_content() before it can be misread as this call's.
+            pop_declared_structured_content()
         sid, _current = _resolve_tool_session(app)
         if not sid:
             return
@@ -758,17 +764,11 @@ def _make_tool_observer(app: "FastAPI"):
             if decision.clear or not step_thought:
                 step_thought = ""
             call_metadata = {"stream_source": "live", "telemetry_source": "live_observer"}
-            if name == "wait_agent_tasks":
-                # Clean-wire rule (P5): the server resolves the display identity of
-                # every task this call is about to wait on — from the agent-task
-                # registry, AT CALL TIME (static spawn-time facts, not the wait's
-                # outcome) — so the UI never renders a raw task-id array and never
-                # infers a name by adjacency/timing.
-                from clio_agent.gact.agent_tasks import resolve_waited_task_rows  # noqa: PLC0415
-
-                call_metadata["waited_tasks"] = resolve_waited_task_rows(
-                    app, list(args.get("task_ids") or [])
-                )
+            # Per-tool STARTED metadata via the registry (tool_instrumentation.py)
+            # -- never a hardcoded tool name in this generic path.
+            metadata_resolver = tool_call_metadata_resolver(name)
+            if metadata_resolver is not None:
+                call_metadata.update(metadata_resolver(app, args))
             _append_live_assistant_part(
                 app,
                 sid,
@@ -782,7 +782,7 @@ def _make_tool_observer(app: "FastAPI"):
                     # The step's reasoning rides the tool_call part (#732): the
                     # model's text and the action it chose are one ordered event.
                     thought=step_thought,
-                    input=dict(args),
+                    input=bounded_tool_call_input(name, args),
                     metadata=call_metadata,
                 ),
             )

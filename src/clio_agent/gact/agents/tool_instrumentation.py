@@ -62,6 +62,7 @@ import threading
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
+from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.tools.execution import TOOL_OBSERVED_ATTR
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,97 @@ TITLE_MAX_CHARS = 80
 # (:func:`instrument_tools`); read by the live tool observer. Tool names are
 # stable process-wide, so a plain module dict is the registry.
 _TOOL_PRESENTATIONS: dict[str, tuple[str, str]] = {}
+
+# name -> resolver(app, args) -> extra STARTED-phase ``tool_call`` metadata.
+# Declared HERE, next to the representation/title registries, instead of a
+# hardcoded ``if name == ...`` inside ``tool_observer._make_tool_observer`` —
+# the observer only ever consults the registry (:func:`tool_call_metadata_resolver`).
+TOOL_CALL_METADATA_RESOLVERS: dict[str, Callable[[Any, Mapping[str, Any]], dict[str, Any]]] = {}
+
+
+def register_tool_call_metadata_resolver(
+    name: str, resolver: Callable[[Any, Mapping[str, Any]], dict[str, Any]]
+) -> None:
+    """Register a per-tool STARTED-phase ``tool_call`` metadata resolver.
+
+    ``resolver(app, args)`` returns extra keys merged into the observer's
+    ``call_metadata`` for THIS tool's ``started`` phase only.
+    """
+
+    TOOL_CALL_METADATA_RESOLVERS[str(name)] = resolver
+
+
+def tool_call_metadata_resolver(
+    name: str,
+) -> Callable[[Any, Mapping[str, Any]], dict[str, Any]] | None:
+    """Return the registered call-metadata resolver for ``name``, if any."""
+
+    return TOOL_CALL_METADATA_RESOLVERS.get(str(name or ""))
+
+
+def _wait_agent_tasks_call_metadata(app: Any, args: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve ``wait_agent_tasks``'s STARTED-phase ``waited_tasks`` display rows.
+
+    Clean-wire rule (P5): resolved from the agent-task registry AT CALL TIME
+    (static spawn-time facts) so the UI never renders a raw task-id array.
+    ``task_ids`` is model-authored: a bare STRING used to reach
+    ``list(args.get("task_ids") or [])``, which iterates its CHARACTERS —
+    fabricating one bogus row per character. Anything that isn't absent or a
+    genuine list of string ids gets a typed marker instead of invented rows;
+    the tool's own argument validation surfaces the real error.
+    """
+
+    from clio_agent.gact.agent_tasks import resolve_waited_task_rows  # noqa: PLC0415
+
+    task_ids = args.get("task_ids")
+    if task_ids is None:
+        task_ids = []
+    if isinstance(task_ids, list) and all(isinstance(item, str) for item in task_ids):
+        return {"waited_tasks": resolve_waited_task_rows(app, task_ids)}
+    return {"waited_tasks": [{"invalid": "task_ids_not_a_list"}]}
+
+
+register_tool_call_metadata_resolver("wait_agent_tasks", _wait_agent_tasks_call_metadata)
+
+# create_artifact's own ``content`` (+ batch ``artifacts[].content``) is a
+# model-authored DELIVERABLE, not call evidence — the minted artifact file +
+# its resource_link chip is already the durable copy. Scoped strictly to the
+# tool(s) that carry it, never a generic content-sniffing heuristic.
+_ARTIFACT_CONTENT_TOOL_NAMES = frozenset({"create_artifact"})
+
+
+def _elided_artifact_content(value: Any) -> Any:
+    """Typed elision marker for one artifact ``content`` value (never silent)."""
+
+    if not isinstance(value, str) or not value:
+        return value
+    return {"elided": "artifact_content", "bytes": len(value.encode("utf-8"))}
+
+
+def bounded_tool_call_input(name: str, args: Mapping[str, Any]) -> dict[str, Any]:
+    """Wire-safe projection of a tool call's input args for the observer.
+
+    create_artifact's deliverable content is elided (above) before the
+    generic bound (:func:`clio_agent.gact.evidence._bounded_tool_call_result`,
+    the same 12000-char limit tool RESULTS use) covers any other oversized
+    argument on any tool.
+    """
+
+    projected: dict[str, Any] = dict(args)
+    if name in _ARTIFACT_CONTENT_TOOL_NAMES:
+        if "content" in projected:
+            projected["content"] = _elided_artifact_content(projected["content"])
+        artifacts = projected.get("artifacts")
+        if isinstance(artifacts, list):
+            projected["artifacts"] = [
+                (
+                    {**item, "content": _elided_artifact_content(item["content"])}
+                    if isinstance(item, Mapping) and "content" in item
+                    else item
+                )
+                for item in artifacts
+            ]
+    return _bounded_tool_call_result(projected)
 
 
 def sanitize_tool_title(title: object) -> str:
@@ -273,9 +365,21 @@ def declare_structured_content(value: Mapping[str, Any]) -> None:
 def pop_declared_structured_content() -> dict[str, Any] | None:
     """Read + clear the current thread's declared structured payload, if any.
 
-    Called by the tool observer exactly once per completed call (success or
-    error) so a declaration never survives past the call that made it. Returns
-    ``None`` when the just-completed tool never declared one.
+    Idempotent (a second pop with nothing declared just returns ``None``), so
+    it is safe to call from more than one place in the same call's lifecycle.
+    Two call sites consume it (finding A, proven leak fix):
+
+    * the tool observer (``tool_observer._make_tool_observer``) reads it once
+      per completed call to attach ``structured_content`` to the wire
+      ``tool_result`` part -- the happy path;
+    * :func:`observed_tool_callable`'s wrapper ALSO pops it, in a
+      ``finally``, immediately after notifying "completed" -- regardless of
+      whether the observer ever reached its own read (an unresolved session
+      id, an observer exception ``execution.notify_tool_observer`` swallows,
+      or no observer installed at all all used to leave a stale value for the
+      NEXT unrelated call on this thread to inherit). This is the channel's
+      REAL one-shot guarantee: consumption is tied to the call boundary, not
+      to how far the observer got.
     """
 
     value = getattr(_DECLARED_STRUCTURED_CONTENT, "value", None)
@@ -292,6 +396,19 @@ def observed_tool_callable(func: Callable[..., Any], tool_name: str) -> Callable
     ``completed`` with the verbatim result and the true duration, the error
     surfaced on failure — never invisible mechanism the narration references,
     and never re-authored.
+
+    Finding A (proven leak, three independent paths): a declared structured
+    payload (:func:`declare_structured_content`) is meant to be one-shot, but
+    the observer's own read (``tool_observer.py``'s completed-phase pop) sits
+    behind an unresolved session id, an observer exception
+    ``execution.notify_tool_observer`` swallows, and the observer being
+    ``None`` entirely -- any of which used to skip the pop and leave the
+    declaration for the NEXT, unrelated call on this thread to inherit. This
+    wrapper now consumes the channel itself, at the call boundary, in a
+    ``finally`` -- regardless of what the observer did or didn't do -- and
+    clears it BEFORE ``func`` runs too (belt-and-braces: a stale value from a
+    call whose cleanup was somehow skipped anyway must never survive to be
+    read as if it belonged to THIS call).
     """
 
     @functools.wraps(func)
@@ -304,12 +421,26 @@ def observed_tool_callable(func: Callable[..., Any], tool_name: str) -> Callable
         bound.apply_defaults()
         args = dict(bound.arguments)
         _execution.notify_global_tool_observer(tool_name, args, "started")
+        # Belt-and-braces: THIS call hasn't run ``func`` yet, so nothing it
+        # declares exists -- any value still sitting here belongs to an
+        # earlier, unrelated call whose own cleanup was skipped. Discard it
+        # now so it can never be misread as THIS call's declaration.
+        pop_declared_structured_content()
         try:
             result = func(*call_args, **call_kwargs)
         except Exception as exc:
-            _execution.notify_global_tool_observer(tool_name, args, "completed", error=str(exc))
+            try:
+                _execution.notify_global_tool_observer(tool_name, args, "completed", error=str(exc))
+            finally:
+                # The real one-shot guarantee: consumed HERE, tied to the call
+                # boundary, whether or not the observer ever reached its own
+                # pop (idempotent -- a no-op when it already did).
+                pop_declared_structured_content()
             raise
-        _execution.notify_global_tool_observer(tool_name, args, "completed", result=result)
+        try:
+            _execution.notify_global_tool_observer(tool_name, args, "completed", result=result)
+        finally:
+            pop_declared_structured_content()
         return result
 
     setattr(wrapper, TOOL_OBSERVED_ATTR, True)

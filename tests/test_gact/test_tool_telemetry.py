@@ -949,3 +949,216 @@ def test_tool_result_full_in_trace_but_bounded_in_ledger(tmp_path: Path, monkeyp
     # ...while the per-session ledger (assistant-metadata projection) is BOUNDED.
     led = app.state.tool_call_ledger.get(sid, [])
     assert led and isinstance(led[0]["result"], dict) and led[0]["result"].get("truncated") is True
+
+
+# --------------------------------------------------------------------------- #
+# Finding A (proven leak, end-to-end through the REAL observe() chain): a     #
+# declare_structured_content() payload must never ride onto a call it was    #
+# never declared for -- neither via an unresolved session id (leak path #1)  #
+# nor via an observer exception execution.notify_tool_observer swallows      #
+# (leak path #2).                                                             #
+# --------------------------------------------------------------------------- #
+
+
+def test_declared_structured_content_does_not_leak_when_sid_is_unresolved(tmp_path: Path) -> None:
+    """Leak path #1: ``if not sid: return`` (no session yet, no recency
+    fallback) exits BEFORE the completed-phase pop ever runs. The observer's
+    own started-phase clear must discard the leak once a session exists,
+    before it can be misread as belonging to the NEXT, unrelated call."""
+
+    from clio_agent.gact.agents.tool_instrumentation import declare_structured_content
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    observer = _make_tool_observer(app)
+
+    # No session exists yet: _resolve_tool_session(app) resolves "" for both
+    # calls below -- observe() returns before ever reaching its own pop.
+    observer("wait_agent_tasks", {"task_ids": []}, "started", None)
+    declare_structured_content({"leaked": "should never survive an unresolved sid"})
+    observer("wait_agent_tasks", {"task_ids": []}, "completed", None, "result-text")
+
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    observer("hdf5_list_datasets", {"filepath": "x.h5"}, "started", None)
+    observer("hdf5_list_datasets", {"filepath": "x.h5"}, "completed", None, "some string result")
+
+    parts = (app.state.live_assistant_parts or {}).get(sid, [])
+    result_parts = [p for p in parts if p.type == "tool_result"]
+    assert len(result_parts) == 1
+    assert result_parts[0].structured_content is None
+
+
+def test_declared_structured_content_does_not_leak_when_observer_raises_before_its_own_pop(
+    tmp_path: Path,
+) -> None:
+    """Leak path #2: execution.notify_tool_observer swallows any exception the
+    observer raises. Forcing the REAL observe() to raise partway through its
+    completed-phase bookkeeping (well before its own pop, via a broken
+    ``app.state.cancel_events``) must not let the declaration ride onto a
+    later, unrelated call."""
+
+    from clio_agent.gact.agents.tool_instrumentation import declare_structured_content
+    from clio_agent.tools import execution as _execution
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    observer = _make_tool_observer(app)
+
+    observer("wait_agent_tasks", {"task_ids": []}, "started", None)
+    declare_structured_content({"leaked": "should never survive an observer crash"})
+    app.state.cancel_events = None  # forces an AttributeError deep in "completed"
+    _execution.notify_tool_observer(
+        observer, "wait_agent_tasks", {"task_ids": []}, "completed", None, "result-text"
+    )  # swallowed exactly like production's notify_global_tool_observer
+
+    app.state.cancel_events = {}
+    observer("hdf5_list_datasets", {"filepath": "x.h5"}, "started", None)
+    observer("hdf5_list_datasets", {"filepath": "x.h5"}, "completed", None, "some string result")
+
+    parts = (app.state.live_assistant_parts or {}).get(sid, [])
+    result_parts = [p for p in parts if p.type == "tool_result"]
+    assert result_parts  # the crashed call emitted none; the later call did
+    assert all(p.structured_content is None for p in result_parts)
+
+
+# --------------------------------------------------------------------------- #
+# Finding B (proven, MAJOR): create_artifact's own ``content`` (a            #
+# model-authored deliverable the minted artifact file already durably        #
+# stores) must never ride the wire a second time, unbounded, inside the      #
+# started tool_call Part's ``input``.                                        #
+# --------------------------------------------------------------------------- #
+
+
+def test_create_artifact_content_is_elided_not_mirrored_unbounded(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    observer = _make_tool_observer(app)
+
+    big_content = "x" * 50_000
+    args = {"name": "report.md", "kind": "document", "content": big_content}
+    observer("create_artifact", args, "started", None)
+
+    parts = (app.state.live_assistant_parts or {}).get(sid, [])
+    call_part = next(p for p in parts if p.type == "tool_call")
+    assert call_part.input["name"] == "report.md"
+    assert call_part.input["content"] == {"elided": "artifact_content", "bytes": 50_000}
+    assert big_content not in json.dumps(call_part.to_wire())
+
+
+def test_create_artifact_batch_content_is_elided_per_item(tmp_path: Path) -> None:
+    """The batch form (``artifacts=[{...content...}, ...]``) elides EACH
+    item's own content independently; a path-only item is untouched."""
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    observer = _make_tool_observer(app)
+
+    args = {
+        "artifacts": [
+            {"name": "a.md", "content": "y" * 20_000},
+            {"name": "b.md", "path": "already/on/disk.md"},
+        ]
+    }
+    observer("create_artifact", args, "started", None)
+
+    parts = (app.state.live_assistant_parts or {}).get(sid, [])
+    call_part = next(p for p in parts if p.type == "tool_call")
+    assert call_part.input["artifacts"][0]["content"] == {
+        "elided": "artifact_content",
+        "bytes": 20_000,
+    }
+    assert call_part.input["artifacts"][1] == {"name": "b.md", "path": "already/on/disk.md"}
+
+
+def test_other_tools_input_is_not_elided_only_generically_bounded(tmp_path: Path) -> None:
+    """The elision is scoped STRICTLY to create_artifact; an unrelated tool's
+    ``content``-named argument passes through untouched (small enough to
+    never hit the generic 12000-char bound tool RESULTS already respect)."""
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    observer = _make_tool_observer(app)
+
+    observer("fs_write_file", {"path": "a.txt", "content": "small"}, "started", None)
+
+    parts = (app.state.live_assistant_parts or {}).get(sid, [])
+    call_part = next(p for p in parts if p.type == "tool_call")
+    assert call_part.input == {"path": "a.txt", "content": "small"}
+
+
+# --------------------------------------------------------------------------- #
+# Finding C (proven, wire-corrupting): a model emitting ``task_ids`` as       #
+# anything other than a list of ids must never be turned into fabricated     #
+# rows -- ``list("task_a")`` iterates a STRING's characters.                  #
+# --------------------------------------------------------------------------- #
+
+
+def test_wait_agent_tasks_string_task_ids_does_not_fabricate_per_character_rows(
+    tmp_path: Path,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    observer = _make_tool_observer(app)
+
+    observer("wait_agent_tasks", {"task_ids": "task_a"}, "started", None)
+
+    parts = (app.state.live_assistant_parts or {}).get(sid, [])
+    call_part = next(p for p in parts if p.type == "tool_call")
+    assert call_part.metadata["waited_tasks"] == [{"invalid": "task_ids_not_a_list"}]
+
+
+def test_wait_agent_tasks_non_string_list_items_does_not_fabricate_rows(
+    tmp_path: Path,
+) -> None:
+    """A list with non-string items is ALSO not a valid task_ids array."""
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    observer = _make_tool_observer(app)
+
+    observer("wait_agent_tasks", {"task_ids": [1, 2, 3]}, "started", None)
+
+    parts = (app.state.live_assistant_parts or {}).get(sid, [])
+    call_part = next(p for p in parts if p.type == "tool_call")
+    assert call_part.metadata["waited_tasks"] == [{"invalid": "task_ids_not_a_list"}]
+
+
+def test_wait_agent_tasks_missing_task_ids_resolves_empty_not_invalid(tmp_path: Path) -> None:
+    """Absent task_ids keeps its ORIGINAL behavior (an empty resolved list) --
+    only a genuinely malformed value gets the typed marker."""
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    observer = _make_tool_observer(app)
+
+    observer("wait_agent_tasks", {}, "started", None)
+
+    parts = (app.state.live_assistant_parts or {}).get(sid, [])
+    call_part = next(p for p in parts if p.type == "tool_call")
+    assert call_part.metadata["waited_tasks"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Finding D (refactor): the generic observer path must never hardcode a      #
+# tool name -- per-tool STARTED metadata comes from a registry declared in   #
+# tool_instrumentation.py.                                                    #
+# --------------------------------------------------------------------------- #
+
+
+def test_wait_agent_tasks_call_metadata_is_registered_not_hardcoded() -> None:
+    import inspect
+
+    from clio_agent.gact import tool_observer as _tool_observer_module
+    from clio_agent.gact.agents.tool_instrumentation import tool_call_metadata_resolver
+
+    assert tool_call_metadata_resolver("wait_agent_tasks") is not None
+
+    source = inspect.getsource(_tool_observer_module._make_tool_observer)
+    assert 'name == "wait_agent_tasks"' not in source

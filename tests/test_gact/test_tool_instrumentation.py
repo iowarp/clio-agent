@@ -138,6 +138,135 @@ def test_seam_is_idempotent() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 1b. Finding A (proven leak): declare_structured_content is consumed at the  #
+#     wrapper's OWN call boundary, regardless of what the observer did — an   #
+#     observer exception execution.notify_tool_observer swallows, or no      #
+#     observer installed at all, must never leave a stale declaration for    #
+#     the NEXT unrelated call on this thread to inherit.                      #
+# --------------------------------------------------------------------------- #
+
+
+def test_declared_structured_content_never_leaks_when_observer_raises() -> None:
+    """Leak path #2: execution.notify_tool_observer swallows ANY exception the
+    observer raises. If that happens BEFORE the observer reaches its own
+    pop_declared_structured_content(), the declaration used to survive —
+    proven here with the REAL swallowing function, not a reimplementation."""
+
+    from clio_agent.gact.agents.tool_instrumentation import (
+        declare_structured_content,
+        pop_declared_structured_content,
+    )
+    from clio_agent.tools import execution as _execution
+
+    def _raising_observer(name, args, phase, error=None, result=None):
+        if phase == "completed":
+            raise RuntimeError("observer blew up before its own pop")
+
+    def _notify(name, args, phase, error=None, result=None):
+        _execution.notify_tool_observer(_raising_observer, name, args, phase, error, result)
+
+    original = _execution.notify_global_tool_observer
+    _execution.notify_global_tool_observer = _notify
+    try:
+
+        def leaking_tool(task: str) -> str:
+            declare_structured_content({"leaked": "should never survive"})
+            return f"did {task}"
+
+        (tool,) = instrument_tools([_bare_tool(leaking_tool, "leaking_tool_a")])
+        assert tool(task="t1") == "did t1"
+        # Without the fix this is the leaked payload; the wrapper's own
+        # finally-pop must have already consumed it.
+        assert pop_declared_structured_content() is None
+    finally:
+        _execution.notify_global_tool_observer = original
+
+
+def test_declared_structured_content_never_leaks_when_observer_is_none() -> None:
+    """Leak path #3: no observer installed at all — execution.notify_tool_observer's
+    ``if observer is None: return`` means the declaration is never even read."""
+
+    from clio_agent.gact.agents.tool_instrumentation import (
+        declare_structured_content,
+        pop_declared_structured_content,
+    )
+    from clio_agent.tools import execution as _execution
+
+    def _notify(name, args, phase, error=None, result=None):
+        _execution.notify_tool_observer(None, name, args, phase, error, result)
+
+    original = _execution.notify_global_tool_observer
+    _execution.notify_global_tool_observer = _notify
+    try:
+
+        def leaking_tool(task: str) -> str:
+            declare_structured_content({"leaked": "should never survive"})
+            return f"did {task}"
+
+        (tool,) = instrument_tools([_bare_tool(leaking_tool, "leaking_tool_b")])
+        assert tool(task="t1") == "did t1"
+        assert pop_declared_structured_content() is None
+    finally:
+        _execution.notify_global_tool_observer = original
+
+
+def test_declared_structured_content_never_leaks_on_a_raised_tool_call() -> None:
+    """The declaration must also not survive a call whose own function raises
+    (the wrapper's error branch pops too)."""
+
+    from clio_agent.gact.agents.tool_instrumentation import (
+        declare_structured_content,
+        pop_declared_structured_content,
+    )
+
+    def leaking_then_raising(task: str) -> str:
+        declare_structured_content({"leaked": "should never survive"})
+        raise RuntimeError("backend gone")
+
+    (tool,) = instrument_tools([_bare_tool(leaking_then_raising, "leaking_tool_c")])
+    with pytest.raises(RuntimeError):
+        tool(task="t1")
+    assert pop_declared_structured_content() is None
+
+
+def test_stale_declaration_from_before_this_call_never_attaches_to_it(
+    tmp_path: Path,
+) -> None:
+    """The observer's own started-phase clear matters independently from the
+    wrapper's finally: a declaration that leaked from BEFORE this call began
+    must never be attached to a DIFFERENT, later call that never declared
+    anything itself — proven through the REAL observe() chain, not just the
+    wrapper's own bookkeeping."""
+
+    app, client, sid = _observing_app(tmp_path)
+    try:
+        from clio_agent.gact.agents.tool_instrumentation import declare_structured_content
+
+        def plain(task: str) -> str:
+            return f"did {task}"  # never declares its own structured content
+
+        (tool,) = instrument_tools(
+            [
+                native_tool(
+                    plain, name="plain_after_leak", desc="d", args={"task": {"type": "string"}}
+                )
+            ]
+        )
+        with _gact_app_context(app), _tool_session_context(sid):
+            # Simulate a PRIOR call's declaration that leaked past its own
+            # cleanup (one of the three proven leak paths) — set BEFORE this
+            # call's wrapper ever runs.
+            declare_structured_content({"leaked": "from an earlier, unrelated call"})
+            assert tool(task="t1") == "did t1"
+
+        parts = (app.state.live_assistant_parts or {}).get(sid, [])
+        result_parts = [p for p in parts if p.type == "tool_result"]
+        assert result_parts[0].structured_content is None
+    finally:
+        client.__exit__(None, None, None)
+
+
+# --------------------------------------------------------------------------- #
 # 2. Full chain: seam -> notify -> per-app observer -> live parts + title.     #
 # --------------------------------------------------------------------------- #
 
