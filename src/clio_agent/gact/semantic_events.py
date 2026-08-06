@@ -152,6 +152,7 @@ SSE_TRACE_ONLY_EVENT_TYPES: frozenset[str] = frozenset(
         "replan.stall_scored",
         "replan.suggested",
         "artifact.used",
+        "artifact.enriched",  # A9 (#1176) dedup-enrichment side index — substrate, not a UI row.
         "artifact.transform.recorded",
         "artifact.transform.failed",
         "artifact.proposed",

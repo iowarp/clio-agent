@@ -433,6 +433,8 @@ def record_transform(
         trace_id=trace_id,
         call_started_at=started_at,
         allowed_workspace_ids=allowed_workspace_ids,
+        call_id=call_id,
+        tool_name=tool_name,
     )
     authority_scan = detect_authority_edges(
         app, tool_name=tool_name, result=result, workspace_id=workspace_id

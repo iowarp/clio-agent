@@ -223,6 +223,8 @@ def detect_used_edges(
     trace_id: str,
     call_started_at: Optional[float] = None,
     allowed_workspace_ids: Optional[set[str]] = None,
+    call_id: str = "",
+    tool_name: str = "",
 ) -> EdgeScan:
     """Detect ``used`` edges from call args (item 3 — precision over recall).
 
@@ -247,6 +249,13 @@ def detect_used_edges(
     REUSES the foreign version's ``artifact_id`` (never a minted local id) and carries
     ``cross_workspace_bind=True``. Threaded IN (never reached via ``app`` here) so
     this detector keeps its acyclic position.
+
+    ``call_id`` / ``tool_name`` (A8, #1176) identify the CONSUMING call whose args
+    are being scanned — the caller (:func:`~clio_agent.gact.artifacts.transforms.record_transform`)
+    always has both. They stamp the producer of a designate-on-USE script mint
+    (below) so that version is joinable by session/call exactly like every other
+    tool-schema mint; omitted (module default ``""``) only by a caller — a direct
+    unit-test invocation — that genuinely has no call to attribute, never invented.
     """
     from clio_agent.gact.artifacts.minting import (  # noqa: PLC0415
         _contained,
@@ -336,6 +345,24 @@ def detect_used_edges(
                     path=resolved,
                     turn_id=turn_id,
                     trace_id=trace_id,
+                    # A8 (#1176): this mint seam was dropping ``producer`` entirely
+                    # (no kwarg → ``mint_artifact_outcome`` defaults it to ``{}``),
+                    # so a consumed script's OWN version carried no session/call
+                    # identity — unlike every other tool-schema mint. That breaks
+                    # the session-scoped artifacts route (it joins on
+                    # ``producer.session_id``) for exactly this record. Stamp the
+                    # SAME shape the other tool-schema seams use: the consuming
+                    # call's session/tool/call_id, plus a designation note so the
+                    # weaker "observed as a used input, not a designated output"
+                    # basis stays visible (never invented — arrives as "" only
+                    # when the caller genuinely has no call to attribute).
+                    producer={
+                        "designation": "used-script",
+                        "session_id": sid,
+                        "tool": tool_name,
+                        "call_id": call_id,
+                        "turn_id": turn_id,
+                    },
                 )
                 if outcome is not None:
                     minted_version = outcome.version

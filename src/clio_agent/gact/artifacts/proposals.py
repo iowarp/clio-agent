@@ -42,8 +42,10 @@ from clio_agent.gact.artifacts.minting import (
 )
 from clio_agent.gact.artifacts.proposal_effects import (
     PROPOSED_ARTIFACT_EVENT,
+    _dedup_enrich,
     _emit_proposal_event,
     _gate_content_write,
+    _mint_producer,
     _write_inline_content,
 )
 from clio_agent.gact.artifacts.records import (
@@ -190,6 +192,10 @@ class ProposalOutcome:
     created: bool = False
     version: Optional[ArtifactVersion] = None
     workspace_id: str = ""
+    #: A9 (#1176): typed dedup-enrichment outcome (see ``proposal_effects._dedup_enrich``).
+    #: ``""`` (nothing to merge) omits the key from ``to_wire`` — a plain dedup's wire
+    #: shape stays byte-identical to before this field existed.
+    enrichment: str = ""
 
     def to_wire(self) -> dict[str, Any]:
         """Project to the model-facing observation dict (bounded-repair-friendly)."""
@@ -201,7 +207,7 @@ class ProposalOutcome:
                 "detail": self.detail,
             }
         ver = self.version
-        return {
+        wire = {
             "accepted": True,
             "created": self.created,
             "name": self.name,
@@ -213,6 +219,9 @@ class ProposalOutcome:
             "mechanism": ver.mechanism.value if ver is not None else "",
             "reason": self.reason,
         }
+        if self.enrichment:
+            wire["enrichment"] = self.enrichment
+        return wire
 
 
 def _rejected(name: str, reason: RejectionReason, detail: str = "") -> ProposalOutcome:
@@ -466,6 +475,17 @@ def promote_proposal(
     existing = registry.get(workspace_id, name)
     existing_version = existing.version_for_sha(evidence.sha256) if existing is not None else None
     if existing_version is not None:
+        # A9 (#1176): a dedup is not a no-op for the caller's OWN declared enrichment.
+        enrichment = _dedup_enrich(
+            app,
+            sid,
+            proposal,
+            workspace_id=workspace_id,
+            name=name,
+            version=existing_version,
+            turn_id=turn_id,
+            trace_id=trace_id,
+        )
         outcome = ProposalOutcome(
             accepted=True,
             name=name,
@@ -473,6 +493,7 @@ def promote_proposal(
             created=False,
             version=existing_version,
             workspace_id=workspace_id,
+            enrichment=enrichment,
         )
         _emit_proposal_event(
             app,
@@ -513,12 +534,7 @@ def promote_proposal(
         evidence=evidence,
         kind=kind,
         mechanism=Mechanism.MODEL,
-        producer={
-            "designation": "agent-proposed",
-            "session_id": sid,
-            "turn_id": turn_id,
-            "agent_id": agent_id,
-        },
+        producer=_mint_producer(sid, turn_id, agent_id),
         custody=path_ingest.custody if path_ingest is not None else Custody.WORKSPACE_REFERENCED,
         path=str(path),
         annotation=proposal.annotation,
@@ -545,6 +561,17 @@ def promote_proposal(
         # bytes first. Report created=False and consume NO cap budget — a
         # re-designation of identical bytes is never a new promotion, even under a
         # race — instead of the stale created=True + cap consumption.
+        # A9 (#1176): the SAME enrichment merge as the pre-check dedup above (idempotent).
+        enrichment = _dedup_enrich(
+            app,
+            sid,
+            proposal,
+            workspace_id=workspace_id,
+            name=name,
+            version=mint.version,
+            turn_id=turn_id,
+            trace_id=trace_id,
+        )
         outcome = ProposalOutcome(
             accepted=True,
             name=name,
@@ -552,6 +579,7 @@ def promote_proposal(
             created=False,
             version=mint.version,
             workspace_id=workspace_id,
+            enrichment=enrichment,
         )
         _emit_proposal_event(
             app,

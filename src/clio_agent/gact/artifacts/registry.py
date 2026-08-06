@@ -61,11 +61,14 @@ ARTIFACT_TRANSFORM_RECORDED_EVENT = "artifact.transform.recorded"
 #: this is the honest "the deduping session used it" fact, folded (below) into a
 #: per-session USE index only. Trace-only, like ``artifact.transform.recorded``.
 ARTIFACT_USED_EVENT = "artifact.used"
+#: A9 (#1176) dedup-enrichment atom — see :mod:`~clio_agent.gact.artifacts.dedup_enrichment`.
+#: Trace-only, like ``artifact.used``; folded into its own side index below.
+ARTIFACT_ENRICHED_EVENT = "artifact.enriched"
 
 #: The event types the boot fold rebuilds the registry from: v1 creation (S1), v2+
-#: revisions + alias moves (S4 #970), TransformRecords (S5 #971), and the per-session
-#: USE index (#1191). ``.proposed`` is NOT here. Transform + use events rebuild
-#: their own indexes only — they never touch the version chains.
+#: revisions + alias moves (S4 #970), TransformRecords (S5 #971), the per-session
+#: USE index (#1191), and the dedup-enrichment index (A9, #1176). ``.proposed`` is
+#: NOT here — transform/use/enriched events rebuild their own indexes only.
 _FOLD_EVENT_TYPES: frozenset[str] = frozenset(
     {
         ARTIFACT_CREATED_EVENT,
@@ -73,6 +76,7 @@ _FOLD_EVENT_TYPES: frozenset[str] = frozenset(
         ARTIFACT_ALIAS_MOVED_EVENT,
         ARTIFACT_TRANSFORM_RECORDED_EVENT,
         ARTIFACT_USED_EVENT,
+        ARTIFACT_ENRICHED_EVENT,
     }
 )
 
@@ -247,6 +251,11 @@ class ArtifactRegistry:
         #: idempotently (:meth:`fold_artifact_used`) or recorded live at mint time
         #: (:meth:`record_artifact_used`); read by ``?include_used=true``.
         self._used_by_session: dict[str, set[str]] = {}
+        #: Dedup-enrichment side index (A9, #1176): ``artifact_id`` -> a SUPPLEMENTAL
+        #: annotation a later ``create_artifact`` dedup declared (decision logic in
+        #: :mod:`~clio_agent.gact.artifacts.dedup_enrichment`; read via
+        #: :meth:`supplemental_annotation`).
+        self._supplemental_annotations: dict[str, str] = {}
 
     # ---- fold --------------------------------------------------------------
 
@@ -274,6 +283,8 @@ class ArtifactRegistry:
             return self.fold_transform_recorded(payload)
         if event_type == ARTIFACT_USED_EVENT:
             return self.fold_artifact_used(payload)
+        if event_type == ARTIFACT_ENRICHED_EVENT:
+            return self.fold_artifact_enriched(payload)
         if event_type in _FOLD_EVENT_TYPES:
             return self.fold_payload(payload)
         return FoldResult(applied=False, reason="unfolded_type")
@@ -364,6 +375,40 @@ class ArtifactRegistry:
         """Relay ``artifact_id``s ``session_id`` USED via dedup (#1191, never produced)."""
         with self._lock:
             return set(self._used_by_session.get(session_id, ()))
+
+    def record_artifact_enrichment(
+        self, artifact_id: str, *, annotation: str = "", event_id: str = ""
+    ) -> str:
+        """Attach a SUPPLEMENTAL annotation to ``artifact_id`` (A9, #1176).
+
+        Decision logic lives in the owner module
+        :func:`~clio_agent.gact.artifacts.dedup_enrichment.decide_enrichment`
+        (no-accretion — this file is at its ratchet ceiling); returns one of its
+        typed reasons, never a silent drop.
+        """
+        from clio_agent.gact.artifacts.dedup_enrichment import decide_enrichment  # noqa: PLC0415
+
+        with self._lock:
+            return decide_enrichment(self, artifact_id, annotation, event_id)
+
+    def fold_artifact_enriched(self, payload: dict[str, Any]) -> FoldResult:
+        """Fold one ``artifact.enriched`` payload (A9, #1176) via
+        :meth:`record_artifact_enrichment` — malformed (no artifact id) is a
+        typed skip."""
+        artifact_id = str(payload.get("artifact_id") or "")
+        if not artifact_id:
+            return FoldResult(applied=False, reason="malformed")
+        reason = self.record_artifact_enrichment(
+            artifact_id,
+            annotation=str(payload.get("annotation") or ""),
+            event_id=str(payload.get("event_id") or ""),
+        )
+        return FoldResult(applied=(reason == "merged"), reason=reason)
+
+    def supplemental_annotation(self, artifact_id: str) -> str:
+        """The dedup-enrichment annotation attached to ``artifact_id``, or ``""``."""
+        with self._lock:
+            return self._supplemental_annotations.get(artifact_id, "")
 
     def all_transforms(self) -> list[Any]:
         """A snapshot of every TransformRecord known (for lineage traversal / tests)."""
@@ -868,6 +913,7 @@ def get_registry(app: "FastAPI") -> ArtifactRegistry:
 __all__ = [
     "ARTIFACT_ALIAS_MOVED_EVENT",
     "ARTIFACT_CREATED_EVENT",
+    "ARTIFACT_ENRICHED_EVENT",
     "ARTIFACT_TRANSFORM_RECORDED_EVENT",
     "ARTIFACT_USED_EVENT",
     "ARTIFACT_VERSION_ADDED_EVENT",

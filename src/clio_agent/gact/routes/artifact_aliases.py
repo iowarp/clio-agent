@@ -186,7 +186,7 @@ def register_artifact_alias_routes(app: FastAPI) -> None:
         )
         _audit(app, route="move_artifact_alias", workspace_id=wid, name=name, alias=alias)
         return {
-            "artifact": _record_wire(record),
+            "artifact": _record_wire(record, registry),
             "alias": alias,
             "from_version": from_version,
             "to_version": to_version,

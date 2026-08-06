@@ -214,7 +214,14 @@ RATCHET_BASELINE: dict[str, int] = {
     # module artifacts/wire.py (create_artifact_summary_message /
     # declare_create_artifact_structured_content), so only the two-line
     # dict-then-declare-then-return conversion landed here.
-    "src/clio_agent/gact/artifacts/proposals.py": 837,
+    # A8/A9 (#1176): +28 for the create_artifact producer parity fix (tool/call_id
+    # via proposal_effects._mint_producer) and the dedup-enrichment wiring
+    # (ProposalOutcome.enrichment + the two promote_proposal dedup branches calling
+    # proposal_effects._dedup_enrich). The decision/emit logic itself lives in the
+    # owner modules artifacts/proposal_effects.py, artifacts/dedup_enrichment.py and
+    # artifacts/versions.py (emit_artifact_enriched) — only the call sites + the
+    # typed outcome field landed here. Ratchets back with the #714 decomposition.
+    "src/clio_agent/gact/artifacts/proposals.py": 865,
     # #971 GAP B (S5 live gate): not baselined before this entry (silently over the
     # 800 cap already, from earlier unbaselined growth on this branch).
     # #1191: +51 for the per-session artifact-USE index (record_artifact_used /
@@ -223,7 +230,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # same-sha dedup leaves unrecorded otherwise. Mirrors the existing
     # record_transform/fold_transform_recorded pattern on this same class. Ratchets
     # back with the #714 mint/registry split.
-    "src/clio_agent/gact/artifacts/registry.py": 892,
+    # A9 (#1176): +46 for the dedup-enrichment fold wiring (ARTIFACT_ENRICHED_EVENT +
+    # its _FOLD_EVENT_TYPES/fold_event_by_type entries, the _supplemental_annotations
+    # index, and the three thin record_artifact_enrichment/fold_artifact_enriched/
+    # supplemental_annotation methods) — mirrors the #1191 USE-index footprint above.
+    # The actual decision logic was pushed OUT to the new owner module
+    # artifacts/dedup_enrichment.py (not appended here) precisely to hold this down.
+    "src/clio_agent/gact/artifacts/registry.py": 938,
     # #971 GAP B (S5 live gate): +51 for ``?include_children=true`` parent
     # aggregation — a parent orchestrator's own listing is empty while its spawned
     # children hold everything, so the flag unions descendant child-session
@@ -233,7 +246,15 @@ RATCHET_BASELINE: dict[str, int] = {
     # OPTIONAL ?include_used=true param surfacing dedup-reused (not produced)
     # records in a separate `used` list. Ratchets back with the #714
     # routes/artifacts decomposition.
-    "src/clio_agent/gact/routes/artifacts.py": 919,
+    # A9 (#1176): +18 for threading an ``Optional[ArtifactRegistry]`` param through
+    # ``_version_wire``/``_record_wire``/``_record_wire_attributed`` + their call
+    # sites — the session-scoped/workspace/by-name/by-id/pin routes ALL need the
+    # registry in hand so a dedup-time SUPPLEMENTAL annotation (a version's own
+    # ``annotation`` is immutable) merges into what the route actually SERVES. The
+    # merge DECISION itself is a one-line call into the owner module
+    # ``artifacts/dedup_enrichment.py`` (``merged_annotation``) — only the
+    # threading landed here. Ratchets back with the #714 decomposition.
+    "src/clio_agent/gact/routes/artifacts.py": 937,
     # #948 S4: +10 for round-tripping the module: declaration in the overlay
     # export (an exported react parent re-loaded as predict and failed the new
     # hierarchy validation).
