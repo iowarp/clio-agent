@@ -363,11 +363,17 @@ def _path_under(path: Path, base: Path) -> bool:
 
 def _write_test_default_registry_blueprint(xdg_root: Path) -> None:
     # Bind the fixture blueprint id to the loader's DEFAULT_AGENT_BLUEPRINT_ID so
-    # the two can never drift again: _builtin_agents() filters load_agent_blueprints
-    # by that id, so a mismatch yields an EMPTY /v1/agents catalog and breaks every
-    # agent-catalog/expert-pack test. (Commit 3bf695b changed the constant to
-    # "earthscope-gnss-region" for the demo default registry but left this fixture
-    # on the old "data-semantics" id.)
+    # the two can never drift again: every explicit
+    # ``POST /v1/sessions/{sid}/agent-blueprint`` activation test that names
+    # DEFAULT_AGENT_BLUEPRINT_ID resolves THIS fixture's rows via
+    # load_agent_blueprints(blueprint_id=...), so a mismatch breaks every
+    # activated-session agent-catalog/expert-pack test. (Commit 3bf695b changed
+    # the constant to "earthscope-gnss-region" for the demo default registry but
+    # left this fixture on the old "data-semantics" id.) NOTE: this snapshot is
+    # no longer implicitly loaded for a BARE/unactivated session --
+    # catalog._builtin_agents() (owner ruling 2026-08-05) always returns just the
+    # code-shipped builtin main; only an EXPLICIT activation resolves this
+    # fixture's rows.
     from clio_agent.gact.agent_blueprints import DEFAULT_AGENT_BLUEPRINT_ID  # noqa: PLC0415
 
     root = xdg_root / "clio-agent" / "agent-blueprints" / DEFAULT_AGENT_BLUEPRINT_ID

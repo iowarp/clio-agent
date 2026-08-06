@@ -205,10 +205,23 @@ def test_default_registry_agent_blueprint_is_discoverable(
     )
 
 
-def test_builtin_agents_are_loaded_from_default_registry_snapshot(
+def test_builtin_agents_never_implicitly_load_an_installed_default_registry_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """DELIBERATE FLIP (was ``test_builtin_agents_are_loaded_from_default_registry_snapshot``).
+
+    ``_builtin_agents()`` used to silently load whatever Agent Blueprint snapshot
+    was pinned as ``DEFAULT_AGENT_BLUEPRINT_ID`` and relabel its rows "builtin" --
+    the same implicit-selection anti-pattern the blueprint lane's
+    explicit-activation-only ruling (owner, 2026-08-05, commit aa906022) forbids
+    for ``_runtime_active_agent_blueprint_id``, just surviving in this parallel
+    "builtin catalog" seam. An installed-but-never-activated snapshot is now
+    irrelevant to ``_builtin_agents()``: it always returns just the code-shipped
+    react main (``catalog._builtin_main_agent``), regardless of what happens to
+    be installed on disk.
+    """
+
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     # Isolate the per-user config dir with the cross-OS ``CLIO_USER_DIR``
     # override (Linux-only home/.config layout does not take effect on Windows).
@@ -219,11 +232,10 @@ def test_builtin_agents_are_loaded_from_default_registry_snapshot(
 
     agents = {row.id: row for row in _builtin_agents()}
 
-    assert {"root", "variant"} <= set(agents)
-    assert agents["root"].source == "expert_pack"
-    assert agents["root"].metadata["source_blueprint"] == "default_registry"
-    assert "agent_blueprints/builtin" not in agents["root"].metadata["definition_path"]
-    assert agents["variant"].metadata["install"]["commit"] == DEFAULT_REGISTRY_COMMIT
+    assert set(agents) == {"main"}
+    assert agents["main"].source == "builtin"
+    assert agents["main"].metadata.get("definition_kind") == "builtin_main"
+    assert "source_blueprint" not in agents["main"].metadata
 
 
 def test_default_registry_url_default_is_https() -> None:
@@ -2699,7 +2711,14 @@ def test_active_agent_blueprint_drives_turn_runtime_and_overrides_builtin_ids(
         assistant = complete_turn(client, sid_blueprint, "prove runtime")
 
     assert [row["id"] for row in agents_blueprint] == ["data"]
-    assert any(row["id"] == "analysis" for row in agents_builtin)
+    # DELIBERATE FLIP: this used to assert the bare sibling session ("builtin",
+    # no activation) surfaced "analysis" -- which only ever came from
+    # catalog._builtin_agents() silently loading the conftest's installed
+    # default-registry snapshot (autouse allow_pytest_tmp_path fixture). Now that
+    # implicit load is deleted, the bare session honestly shows only the
+    # code-shipped builtin main, proving session-scoped activation isolation:
+    # sid_blueprint's activation of "remote-data" never leaks into sid_builtin.
+    assert [row["id"] for row in agents_builtin] == ["main"]
     assert calls == [
         {
             "agent_id": "data",

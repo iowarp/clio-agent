@@ -170,16 +170,28 @@ def test_default_root_auto_declares_workspace_skills_on_real_runtime_rows(
         assert "user-skill" in effective_declared_skills(root, catalog)
     for child in [r for r in rows if r.parent_id]:
         assert "user-skill" not in effective_declared_skills(child, catalog)
-    # And the listing seam (source_blueprint stamp) matches:
+    # A root tagged with the EXECUTING seam's own agent_blueprint_id matches:
     listing_root = AgentDef(
+        id="main",
+        source="expert_pack",
+        title="Main",
+        metadata={"agent_blueprint_id": DEFAULT_AGENT_BLUEPRINT_ID},
+    )
+    # Workspace skills lead the surface; clio's shipped built-in skills (the ``planning``
+    # entry-skill) are auto-declared after them onto the default-registry root (P1.5 #1067).
+    assert effective_declared_skills(listing_root, catalog) == ["user-skill", "planning"]
+    # DELETED SEAM regression pin: the retired "listing seam" stamp
+    # (metadata["source_blueprint"] == "default_registry") -- the tag
+    # catalog._builtin_agents() used to attach when it implicitly loaded the
+    # installed-but-unactivated default registry snapshot -- must NEVER
+    # auto-declare on its own; only the executing seam's agent_blueprint_id does.
+    stale_listing_tag_root = AgentDef(
         id="main",
         source="expert_pack",
         title="Main",
         metadata={"source_blueprint": "default_registry"},
     )
-    # Workspace skills lead the surface; clio's shipped built-in skills (the ``planning``
-    # entry-skill) are auto-declared after them onto the default-registry root (P1.5 #1067).
-    assert effective_declared_skills(listing_root, catalog) == ["user-skill", "planning"]
+    assert effective_declared_skills(stale_listing_tag_root, catalog) == []
     # A non-default blueprint root does NOT auto-declare:
     other_root = AgentDef(
         id="root",
@@ -251,9 +263,7 @@ def test_appless_rebuild_serves_cached_surface(pack: Path, tmp_path: Path) -> No
 # ---- builder integration ------------------------------------------------------------
 
 
-def test_react_builder_wires_block_and_tool(
-    pack: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_react_builder_wires_block_and_tool(pack: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """End-to-end through the REAL builder: system prompt carries the metadata
     block (not the body) and the tools include load_skill."""
 

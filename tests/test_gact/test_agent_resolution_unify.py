@@ -166,9 +166,15 @@ def test_unbound_session_resolves_no_blueprint_and_parity_holds(tmp_path: Path) 
         activated_runtime_ids = _runtime_active_agent_blueprint_agent_ids(app, sid)
         activated_route_ids = _route_enabled_ids(client, sid, wid)
 
-    # No activation -> no blueprint experts, and the route agrees on emptiness.
+    # No activation -> no blueprint experts, on the runtime blueprint-lane seam.
     assert unbound_runtime_ids == set()
-    assert unbound_route_ids == unbound_runtime_ids
+    # The route's own emptiness-parity is scoped to the BLUEPRINT lane only: the
+    # route additionally reports the in-code builtin main (catalog._builtin_agents
+    # -> _builtin_main_agent, no accretion of a discoverable-but-unactivated
+    # registry snapshot) -- the SAME agent a bare turn actually executes
+    # (turn_forward.run_builtin_main). It is the one honest non-blueprint entry a
+    # bare session's route always carries.
+    assert unbound_route_ids == {"main"}
     # Explicit activation -> the blueprint's experts, identical on both seams.
     assert activated_runtime_ids == {"root", "variant"}
     assert activated_route_ids == activated_runtime_ids
@@ -473,8 +479,11 @@ def test_discoverable_pack_and_default_blueprint_resolve_no_blueprint(tmp_path: 
     AND a global manifest expert-pack all on disk but NOTHING activated, the
     session resolves NO blueprint at all — there is no implicit default left to
     suppress or protect. What the route honestly serves for such an unbound
-    session is the expert-pack/builtin hierarchy (here: the discoverable loose
-    workspace expert plus the global pack's expert).
+    session is the expert-pack/builtin hierarchy: the code-shipped builtin
+    ``main`` (``catalog._builtin_agents`` no longer smuggles in the discoverable
+    default registry snapshot either, closing the parallel implicit-selection
+    seam the blueprint-lane ruling left open) plus the discoverable loose
+    workspace expert and the global pack's expert.
     """
 
     workspace = tmp_path / "workspace"
@@ -510,7 +519,7 @@ def test_discoverable_pack_and_default_blueprint_resolve_no_blueprint(tmp_path: 
         # NOT the un-activated blueprint's experts.
         route_ids = _route_enabled_ids(client, sid, wid)
 
-    assert route_ids == {"helper", "ghelper"}
+    assert route_ids == {"main", "helper", "ghelper"}
 
 
 def test_activated_pack_without_blueprint_activation_resolves_no_blueprint(
@@ -561,10 +570,11 @@ def test_activated_pack_without_blueprint_activation_resolves_no_blueprint(
         assert _resolution._runtime_active_agent_blueprint_id(app, sid) == ""
         assert _runtime_active_agent_blueprint_agent_ids(app, sid) == set()
 
-        # The activated pack's experts are the effective agent set the route serves.
+        # The activated pack's experts are the effective agent set the route serves,
+        # alongside the code-shipped builtin ``main`` that is always present.
         route_ids = _route_enabled_ids(client, sid, wid)
 
-    assert route_ids == {"helper"}
+    assert route_ids == {"main", "helper"}
 
 
 def test_discoverable_default_blueprint_never_implicitly_activates(tmp_path: Path) -> None:
@@ -610,3 +620,127 @@ def test_discoverable_default_blueprint_never_implicitly_activates(tmp_path: Pat
 
         # ...and it must STILL never resolve without explicit activation.
         assert _resolution._runtime_active_agent_blueprint_id(app, sid) == ""
+
+
+def test_installed_default_registry_never_implicitly_selected_by_builtin_catalog(
+    tmp_path: Path,
+) -> None:
+    """REGRESSION PIN (live defect, session sess_4c373a7185ca, 2026-08-06).
+
+    aa906022 deleted the implicit fallback from
+    ``_runtime_active_agent_blueprint_id`` (the BLUEPRINT lane) but left a SECOND,
+    parallel implicit-selection seam alive: ``catalog._builtin_agents()``
+    unconditionally loaded whatever Agent Blueprint snapshot was pinned as
+    ``DEFAULT_AGENT_BLUEPRINT_ID`` and relabeled its rows "builtin" -- so a bare
+    session on a box where the default registry IS actually installed (the
+    live/production case: ``earthscope-gnss-region`` under
+    ``<user-config>/agent-blueprints/``) still silently inherited its full
+    expert hierarchy via ``GET /v1/agents`` and ``_resolve_runtime_dynamic_agent``,
+    even though the blueprint lane correctly reported no active blueprint. This
+    reproduces the live defect: a session with
+    ``metadata.active_agent_blueprint_id`` unset resolved to the installed
+    pack's root with ``source: expert_pack`` instead of the code-shipped
+    builtin main.
+
+    Sabotage: restore ``_builtin_agents()``'s old body (``load_agent_blueprints``
+    filtered by ``DEFAULT_AGENT_BLUEPRINT_ID``, tagging ``source_blueprint``) ->
+    ``route_ids`` gains ``"root"``/``"variant"`` and ``runtime_main.source``
+    flips to ``"expert_pack"``; this goes red.
+    """
+
+    from clio_agent import paths
+
+    config_root = paths.user_config_dir_for(tmp_path, os.environ)
+    installed = config_root / "agent-blueprints" / DEFAULT_AGENT_BLUEPRINT_ID
+    _write_simple_blueprint(installed, DEFAULT_AGENT_BLUEPRINT_ID, variant_tools=["noop_tool"])
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "bare-no-workspace"}).json()["id"]
+
+        # The blueprint lane correctly reports no active blueprint...
+        assert _resolution._runtime_active_agent_blueprint_id(app, sid) == ""
+        assert _runtime_active_agent_blueprint_agent_ids(app, sid) == set()
+
+        # ...and the expert-pack/builtin fallback must resolve ONLY the
+        # code-shipped main -- never the installed-but-unactivated snapshot.
+        route_ids = _route_enabled_ids(client, sid)
+        runtime_main = _resolve_runtime_dynamic_agent(app, "main", session_id=sid)
+
+    assert route_ids == {"main"}
+    assert runtime_main is not None
+    assert runtime_main.source == "builtin"
+    assert runtime_main.metadata.get("definition_kind") == "builtin_main"
+
+
+def test_bare_main_never_inherits_installed_default_registry_children(
+    tmp_path: Path,
+) -> None:
+    """REGRESSION PIN: a bare session's ``main`` gains no declared children from
+    an installed-but-unactivated default registry snapshot.
+
+    Mirrors the live defect exactly: the real installed default registry
+    (``earthscope-gnss-region``) declares its OWN root expert with id ``main``
+    plus children (``geospatial``, ``data``, ...). Before this fix,
+    ``_runtime_child_agent_rows`` (and its detached-execution twin
+    ``spawn_context.declared_child_ids_from_bindings``) merged
+    ``catalog._builtin_agents()`` -- which silently loaded that installed
+    snapshot -- with genuinely-installed packs, so a BARE session's
+    code-shipped ``main`` (the agent the turn actually executes,
+    ``catalog._builtin_main_agent``) would see the pack's children as if IT had
+    declared them, and the spawn-runtime tools would let it spawn them. A bare
+    session must see NO declared children for the builtin main unless a
+    workspace/global expert genuinely declares ``parent_id: main``.
+    """
+
+    from clio_agent import paths
+    from clio_agent.gact.agents.resolution import _runtime_child_agent_rows
+
+    config_root = paths.user_config_dir_for(tmp_path, os.environ)
+    installed = config_root / "agent-blueprints" / DEFAULT_AGENT_BLUEPRINT_ID
+    (installed / "experts").mkdir(parents=True)
+    installed.joinpath("AGENT.md").write_text(
+        f"""---
+id: {DEFAULT_AGENT_BLUEPRINT_ID}
+version: 0.1.0
+title: Installed Default
+root_expert: main
+---
+Installed default registry blueprint.
+""",
+        encoding="utf-8",
+    )
+    installed.joinpath("experts", "main.md").write_text(
+        """---
+id: main
+title: Installed Main
+tier: 1
+module:
+  kind: react
+---
+Coordinate installed-pack work.
+""",
+        encoding="utf-8",
+    )
+    installed.joinpath("experts", "geospatial.md").write_text(
+        """---
+id: geospatial
+title: Installed Geospatial
+parent_id: main
+tier: 2
+tools:
+  - noop_tool
+---
+Resolve geography.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "bare-children"}).json()["id"]
+
+        assert _resolution._runtime_active_agent_blueprint_id(app, sid) == ""
+        children = _runtime_child_agent_rows(app, "main", session_id=sid)
+
+    assert children == []

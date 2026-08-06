@@ -256,7 +256,7 @@ def test_prompt_id_expert_preserves_markdown_body(
         """---
 id: waveform_main
 title: Waveform Main
-parent_id: analysis
+parent_id: main
 tier: 2
 prompt_id: clio.main.planner
 prompt_profile: heavy
@@ -432,6 +432,16 @@ def test_agents_catalog_includes_expert_pack_and_parent_metadata(
     isolated_env: Path,
     tmp_path: Path,
 ) -> None:
+    """A loose workspace expert augments the (bare-session-honest) hierarchy.
+
+    Declares ``parent_id: main`` -- the ONLY parent genuinely available for an
+    unactivated session post-fix (``catalog._builtin_agents()`` no longer
+    implicitly loads the installed default-registry snapshot's "analysis"/
+    "sac_format" rows; the loose expert must hang off the code-shipped
+    builtin main directly, matching the "augment the resolved default main"
+    contract the loose-expert lane always intended, #770 C1).
+    """
+
     root = isolated_env / ".clio" / "experts"
     root.mkdir(parents=True)
     root.joinpath("csv_quality.md").write_text(
@@ -439,8 +449,8 @@ def test_agents_catalog_includes_expert_pack_and_parent_metadata(
 id: csv_quality
 title: CSV Quality Expert
 description: Checks CSV quality
-parent_id: analysis
-tier: 3
+parent_id: main
+tier: 2
 keywords: csv, quality
 tools: csv.inspect
 prompt_id: clio.expert.csv_quality
@@ -455,12 +465,11 @@ Check CSV schemas and quality.
     body = client.get("/v1/agents").json()
     rows = {row["id"]: row for row in body["agents"]}
 
-    assert rows["analysis"]["parent_id"] == "main"
-    assert rows["sac_format"]["parent_id"] == "analysis"
+    assert rows["main"]["source"] == "builtin"
     expert = rows["csv_quality"]
     assert expert["source"] == "expert_pack"
-    assert expert["parent_id"] == "analysis"
-    assert expert["tier"] == 3
+    assert expert["parent_id"] == "main"
+    assert expert["tier"] == 2
     assert expert["prompt_id"] == "clio.expert.csv_quality"
     assert expert["prompt_profile"] == "light"
     assert expert["enabled"] is True
@@ -786,7 +795,10 @@ def test_expert_pack_agent_can_be_selected_and_executed(
         del base_agent
         assert agent_def.id == "csv_quality"
         assert agent_def.source == "expert_pack"
-        assert agent_def.parent_id == "analysis"
+        # parent_id: main -- the ONLY parent genuinely available for an
+        # unactivated session (catalog._builtin_agents() no longer implicitly
+        # loads the installed default-registry snapshot's "analysis" row).
+        assert agent_def.parent_id == "main"
         assert agent_def.prompt_profile == "light"
         return module
 
@@ -827,8 +839,8 @@ def test_expert_pack_agent_can_be_selected_and_executed(
         """---
 id: csv_quality
 title: CSV Quality Expert
-parent_id: analysis
-tier: 3
+parent_id: main
+tier: 2
 profile: light
 ---
 Check CSV schemas and quality.

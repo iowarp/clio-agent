@@ -1,9 +1,10 @@
 """User-registered agent store (iowarp/clio-agent#19).
 
 Mirrors WorkspaceStore: dataclass + threading.Lock + atomic JSON
-flush. Built-ins (main, data, analysis, visualization) live in
-``app.gact.app._builtin_agents`` and are NOT in this store; PUT/
-DELETE on those ids is rejected at the HTTP layer.
+flush. The code-shipped builtin (``main``, from
+``catalog._builtin_agents`` / ``_builtin_main_agent``) is NOT in this
+store; PUT/DELETE on the reserved ids in
+``routes.agents._RESERVED_AGENT_IDS`` is rejected at the HTTP layer.
 
 Each row is the same wire shape as AgentDef so the user can pass
 the result of GET /v1/agents back into POST /v1/agents to clone.
