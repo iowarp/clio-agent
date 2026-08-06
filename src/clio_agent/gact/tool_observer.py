@@ -681,6 +681,11 @@ def _make_tool_observer(app: "FastAPI"):
         representation_fields = (
             {"representation": representation} if representation != "row" else {}
         )
+        # Round-9: tool.call.* events carry the same curated title (never
+        # fabricated) Part.tool_title uses below, so obs "called" rows stop
+        # rendering the raw tool name.
+        tool_title = declared_tool_title(name)
+        tool_title_fields = {"tool_title": tool_title} if tool_title else {}
         # The expert that OWNS (runs) this tool, for per-part attribution (#732).
         _public_agent, tool_owner = _agent_tool_owner(app, name)
         # Attribute to the INVOKING expert (active ReAct scope), not the tool's owning
@@ -700,6 +705,16 @@ def _make_tool_observer(app: "FastAPI"):
             # floor / built-in namespaces → the egress mint abstains). See ingest_edges.
             join_call_to_serving_child(app, sid, name, call_id)
             _emit_live_tool_route_context(app, sid, name)
+            # Shared by the semantic event + the dedicated bus event below (safe:
+            # _build_semantic_event copies rather than mutating it).
+            started_payload = {
+                "call_id": call_id,
+                "tool": name,
+                "args": dict(args),
+                "telemetry_source": "live_observer",
+                **representation_fields,
+                **tool_title_fields,
+            }
             _emit_semantic_event(
                 app,
                 sid,
@@ -710,26 +725,10 @@ def _make_tool_observer(app: "FastAPI"):
                 summary=f"Tool {name} started.",
                 actor={"tool": name},
                 subject={"call_id": call_id},
-                payload={
-                    "call_id": call_id,
-                    "tool": name,
-                    "args": dict(args),
-                    "telemetry_source": "live_observer",
-                    **representation_fields,
-                },
+                payload=started_payload,
             )
             app.state.bus.publish(
-                Event(
-                    type="tool.call.started",
-                    session_id=sid,
-                    payload={
-                        "call_id": call_id,
-                        "tool": name,
-                        "args": dict(args),
-                        "telemetry_source": "live_observer",
-                        **representation_fields,
-                    },
-                )
+                Event(type="tool.call.started", session_id=sid, payload=started_payload)
             )
             if representation == "handoff":
                 return
@@ -835,6 +834,7 @@ def _make_tool_observer(app: "FastAPI"):
                 "cached": False,
                 "telemetry_source": "live_observer",
                 **representation_fields,
+                **tool_title_fields,
                 **({"error": completion_error} if completion_error else {}),
                 **({"result": _bounded_tool_call_result(result)} if result is not None else {}),
                 **cancellation_metadata,
