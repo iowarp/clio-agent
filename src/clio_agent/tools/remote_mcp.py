@@ -11,6 +11,7 @@ from fastmcp import FastMCP
 from fastmcp.tools import Tool, ToolResult
 from mcp.types import Tool as McpTool
 
+from clio_agent.tools.mcp_results import consume_dual_emission_twin
 from clio_agent.tools.relay_transport import (
     RelayRemoteMcpCatalog,
     RelayRemoteMcpHandle,
@@ -136,6 +137,15 @@ def _task_result_as_job_wire(job_id: str, resolved: Any) -> dict[str, Any]:
 
     ``resolved_via`` marks the divergence from relay's native path explicitly
     (no silent alternate route); state names map onto relay's job vocabulary.
+
+    ``resolved.result`` is the durable #1115 record's own inlined task result,
+    which can carry the relay door's standard MCP dual emission one hop
+    inside this payload (a ``content[].text`` stringified fallback beside a
+    ``structuredContent`` object). :func:`consume_dual_emission_twin` applies
+    the same #832 clean-stream consume rule
+    :func:`clio_agent.tools.mcp_results.call_tool_result_to_observer` applies
+    at the top level -- the structured object is authoritative, a verified
+    twin is dropped, and a genuinely distinct block is left untouched.
     """
 
     status = str(getattr(resolved, "status", "") or "")
@@ -150,7 +160,7 @@ def _task_result_as_job_wire(job_id: str, resolved: Any) -> dict[str, Any]:
     }
     result = getattr(resolved, "result", None)
     if result is not None:
-        payload["result"] = result
+        payload["result"] = consume_dual_emission_twin(result)
     error = getattr(resolved, "error", None)
     if error is not None:
         payload["error"] = error

@@ -17,10 +17,28 @@ oversized binary field HERE, once, bounds all of them. The elision marker
 mirrors the artifact-content idiom
 (``gact/agents/tool_instrumentation._elided_artifact_content``): declare the
 degradation with a typed reason + byte count, never silently truncate.
+
+Dual-emission twin consumption (#832 clean-stream rule, P5 wire-semantics
+fix): the MCP protocol's own client-compat fallback -- and FastMCP's
+``ToolResult`` auto-fill when only ``structured_content`` is supplied -- both
+attach a ``content[].text`` block that is nothing but the SAME object a
+``structuredContent`` sibling already carries, JSON-stringified. That is a
+dual emission, not real evidence, and the standing rule is to CONSUME it: the
+object is authoritative, the redundant text twin is dropped, and a genuinely
+distinct text block (or any non-text block) is left untouched. Detection is
+parse-and-compare (:func:`_is_json_serialization_twin`), never a heuristic or
+prose match, and always conservative -- a parse failure or any structural
+mismatch means "not proven a twin", so the text survives.
+:func:`call_tool_result_to_observer` applies this at the top level (the ONE
+seam described above); :func:`consume_dual_emission_twin` applies the same
+rule to a plain CallToolResult-shaped mapping that never reaches that
+function -- e.g. a durable relay task's own inlined ``result`` field, one hop
+inside a tool's ``structuredContent``.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -190,6 +208,85 @@ def _public_content(content: Any) -> list[Any]:
     return public
 
 
+def _is_json_serialization_twin(text: Any, structured: Any) -> bool:
+    """Whether ``text`` is verifiably the JSON serialization of ``structured``.
+
+    Parse-and-compare, never a heuristic/prose match: a parse failure or any
+    structural mismatch means "not proven a twin", so the text is kept.
+    Whitespace and key-order differences from re-serialization do not defeat
+    the match (mapping/list equality ignores both).
+    """
+
+    if not isinstance(text, str) or not text:
+        return False
+    if not isinstance(structured, (Mapping, list)):
+        return False
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+    return parsed == structured
+
+
+def _drop_serialization_twin_blocks(blocks: Sequence[Any], structured: Any) -> list[Any]:
+    """Drop wire-projected text blocks that are serialization twins of ``structured``.
+
+    Only a ``type: "text"`` block whose ``text`` is verifiably the JSON
+    serialization of ``structured`` (:func:`_is_json_serialization_twin`) is
+    dropped -- every other block (a genuinely distinct text block, an image,
+    a resource, ...) survives untouched. ``structured`` absent is a no-op.
+    """
+
+    if structured is None or not blocks:
+        return list(blocks)
+    kept: list[Any] = []
+    for block in blocks:
+        if (
+            isinstance(block, Mapping)
+            and block.get("type") == "text"
+            and _is_json_serialization_twin(block.get("text"), structured)
+        ):
+            continue
+        kept.append(block)
+    return kept
+
+
+def consume_dual_emission_twin(result: Any) -> Any:
+    """Consume a CallToolResult-shaped mapping's redundant content/structured twin.
+
+    Applies the module's #832 dual-emission consume rule (see module
+    docstring) to a plain mapping that never passes through
+    :func:`call_tool_result_to_observer` -- e.g. a durable relay task's own
+    inlined ``result`` field (``tools/remote_mcp.py``'s
+    ``_task_result_as_job_wire``), which can carry the SAME standard MCP dual
+    emission a live ``CallToolResult`` does. The structured object is
+    authoritative; a verified twin ``content[].text`` block is dropped, a
+    genuinely distinct block is left untouched. Non-mapping input, or a
+    mapping with no structured sibling to compare against, passes through
+    unchanged -- never invents a twin to drop.
+    """
+
+    if not isinstance(result, Mapping):
+        return result
+    structured = result.get("structuredContent")
+    if structured is None:
+        structured = result.get("structured_content")
+    if structured is None:
+        return result
+    content = result.get("content")
+    if not isinstance(content, list) or not content:
+        return result
+    filtered = _drop_serialization_twin_blocks(content, structured)
+    if filtered == content:
+        return result
+    updated = dict(result)
+    if filtered:
+        updated["content"] = filtered
+    else:
+        updated.pop("content", None)
+    return updated
+
+
 def content_blocks_for_wire(observer_result: Any) -> list[dict[str, Any]] | None:
     """Return one observer projection's content blocks for a wire ``Part``.
 
@@ -237,13 +334,24 @@ def call_tool_result_to_observer(result: Any) -> dict[str, Any]:
         is_error = result_map.get("isError", result_map.get("is_error", False))
 
     classification = classify_call_tool_result(result)
-    observer: dict[str, Any] = {"content": _public_content(content)}
+    public_content = _public_content(content)
+    structured_wire: Any = _MISSING
     if structured is not _MISSING and structured is not None:
-        observer["structuredContent"] = wire_value(
+        structured_wire = wire_value(
             structured,
             mode="mcp_results",
             exclude_none=False,
         )
+        # #832 clean-stream consume rule (see module docstring): a text block
+        # that only re-stringifies this SAME structuredContent sibling is a
+        # redundant dual-emission twin, not real evidence -- dropped here, the
+        # ONE seam every downstream reader (wire bus event, ledger, durable
+        # trace, the tool_result Part's own content_blocks field) inherits
+        # from, so it never has to be re-filtered per consumer.
+        public_content = _drop_serialization_twin_blocks(public_content, structured_wire)
+    observer: dict[str, Any] = {"content": public_content}
+    if structured_wire is not _MISSING:
+        observer["structuredContent"] = structured_wire
     if is_error is True:
         observer["isError"] = True
     if classification.explicitly_carried:
@@ -265,5 +373,6 @@ __all__ = [
     "MCPResultClassification",
     "call_tool_result_to_observer",
     "classify_call_tool_result",
+    "consume_dual_emission_twin",
     "content_blocks_for_wire",
 ]
