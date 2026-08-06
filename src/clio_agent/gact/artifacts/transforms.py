@@ -36,6 +36,10 @@ from typing import TYPE_CHECKING, Any, Optional
 from clio_schemas import TransformRecord
 
 from clio_agent import conf
+from clio_agent.gact.artifacts.declared_used_edges import (
+    create_artifact_used_refs,
+    detect_declared_used_edges,
+)
 from clio_agent.gact.artifacts.environment import (
     EnvironmentRecord,
     EnvironmentTier,
@@ -313,6 +317,45 @@ def _generated_edges(
     return edges
 
 
+def _declared_generated_versions(
+    app: "FastAPI", *, tool_name: str, args: dict[str, Any], result: Any
+) -> list[ArtifactVersion]:
+    """The version(s) a ``create_artifact`` call minted THIS call, for #1191.
+
+    Resolved from the tool's OWN result wire (``result["artifacts"][*].artifact_id``)
+    via a registry lookup — never a re-mint. Gated on the SAME non-blank ``used``
+    check :mod:`declared_used_edges` uses (never on the tool name alone): a call
+    without declared inputs mints nothing here either, so its lineage graph stays
+    a single node exactly as before (#1191's regression pin — declaring inputs is
+    what earns the mint a producing-activity node; the two sides land together,
+    or neither does).
+    """
+    short = tool_name.rsplit(".", 1)[-1] if "." in tool_name else tool_name
+    if short != "create_artifact":
+        return []
+    if not create_artifact_used_refs(args):
+        return []
+    items = result.get("artifacts") if isinstance(result, dict) else None
+    if not isinstance(items, list):
+        return []
+    from clio_agent.gact.artifacts.registry import get_registry  # noqa: PLC0415
+
+    registry = get_registry(app)
+    out: list[ArtifactVersion] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict) or not item.get("accepted"):
+            continue
+        artifact_id = str(item.get("artifact_id") or "")
+        if not artifact_id or artifact_id in seen:
+            continue
+        seen.add(artifact_id)
+        found = registry.get_by_artifact_id(artifact_id)
+        if found is not None:
+            out.append(found[1])
+    return out
+
+
 def _script_instrument(tool_name: str, args: dict[str, Any], used: list[ProvEdge]) -> Instrument:
     """Build the instrument, promoting a used script to ``{cmd, script_hash}`` (DVC).
 
@@ -394,8 +437,12 @@ def record_transform(
     authority_scan = detect_authority_edges(
         app, tool_name=tool_name, result=result, workspace_id=workspace_id
     )
-    used = [*used_scan.edges, *authority_scan.edges]
-    notes = [*used_scan.notes, *authority_scan.notes]
+    # #1191: create_artifact's own used=[...] refs (a no-op for every other tool).
+    declared_scan = detect_declared_used_edges(
+        app, tool_name=tool_name, args=args, workspace_id=workspace_id
+    )
+    used = [*used_scan.edges, *authority_scan.edges, *declared_scan.edges]
+    notes = [*used_scan.notes, *authority_scan.notes, *declared_scan.notes]
     # B4 (#978): join in-window ``net.egress`` records onto the used edges as
     # ``used web:<domain>@<time>`` — enriching a staged-download/catalog URL edge whose host
     # the chokepoint observed (step 1, one edge two evidence bases), or minting one fresh web
@@ -428,8 +475,13 @@ def record_transform(
         generated_fence_proven,
     )
 
+    # #1191: fold a used=[...]-declaring create_artifact call's OWN mint into
+    # `generated` too (see _declared_generated_versions).
     generated = _generated_edges(
-        minted,
+        [
+            *minted,
+            *_declared_generated_versions(app, tool_name=tool_name, args=args, result=result),
+        ],
         call_id=call_id,
         fence_proven=generated_fence_proven(app, workspace_id, sid, kind=kind),
     )

@@ -437,6 +437,69 @@ def emit_alias_moved(
         )
 
 
+def emit_artifact_used(
+    app: "FastAPI",
+    sid: str,
+    *,
+    workspace_id: str,
+    name: str,
+    version: ArtifactVersion,
+    turn_id: str = "",
+    trace_id: str = "",
+) -> None:
+    """Emit + materialize the durable ``artifact.used`` use/custody event (#1191).
+
+    A same-sha DEDUP mint (``same_sha_dedup`` — see :func:`decide_version`) records
+    no new version/``generated`` edge by design (W&B dedup, #966.3), leaving the
+    DEDUPING session's own provenance surface with nothing to show for the
+    re-stage. This is the separate, honest fact: ``sid`` USED the pre-existing
+    version, even though it did not PRODUCE it. Materializes into the per-session
+    USE index (:meth:`~clio_agent.gact.artifacts.registry.ArtifactRegistry.record_artifact_used`)
+    under a FRESH event id (the mint's own is already marked seen — reusing it
+    would look like a duplicate replay and skip the first occurrence). Trace-only.
+    Guarded — a wire emit must never break a live mint.
+    """
+    try:
+        from clio_agent.gact.artifacts.registry import (  # noqa: PLC0415
+            ARTIFACT_USED_EVENT,
+            get_registry,
+        )
+        from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
+        from clio_agent.gact.semantic_events import _event_id  # noqa: PLC0415
+
+        event_id = _event_id()
+        if not get_registry(app).record_artifact_used(sid, version.artifact_id, event_id=event_id):
+            return
+        subject = {"artifact_id": version.artifact_id, "name": name, "workspace_id": workspace_id}
+        _emit_semantic_event(
+            app,
+            sid,
+            ARTIFACT_USED_EVENT,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            status="completed",
+            summary=f"Session {sid} used existing artifact {name} v{version.version} (dedup).",
+            actor={"session_id": sid, "mechanism": Mechanism.HARNESS.value},
+            subject=subject,
+            payload={
+                **subject,
+                "event_id": event_id,
+                "version": version.version,
+                "session_id": sid,
+                "reason": "same_sha_dedup",
+            },
+            detail_level="semantic",
+        )
+    except Exception:  # noqa: BLE001 — a wire emit must never break a live mint
+        logger.warning(
+            "artifact used emit skipped reason=artifact_used_emit_failed "
+            "session=%s name=%s version=%s",
+            sid,
+            name,
+            getattr(version, "version", "?"),
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Drift observation (item 4) — the honest re-observation reconcile.
 # --------------------------------------------------------------------------- #
@@ -721,6 +784,7 @@ __all__ = [
     "alias_moved_payload",
     "decide_version",
     "emit_alias_moved",
+    "emit_artifact_used",
     "emit_version_added",
     "reconcile_designated_path",
     "reconcile_if_content_revert",

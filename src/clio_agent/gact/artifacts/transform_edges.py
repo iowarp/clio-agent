@@ -85,15 +85,28 @@ _MAX_CANDIDATE_STRLEN = 4096
 # --------------------------------------------------------------------------- #
 
 
+#: Declared-channel arg names EXCLUDED from the generic heuristic scan — each has
+#: its OWN dedicated resolver, so letting the generic path-guesser ALSO walk it
+#: would produce a redundant/duplicate edge for the same input (#1191): ``used``
+#: is create_artifact's own explicit input-refs field, resolved by
+#: :mod:`clio_agent.gact.artifacts.declared_used_edges`.
+_DECLARED_CHANNEL_ARG_NAMES: frozenset[str] = frozenset({"used"})
+
+
 def _candidate_arg_strings(args: Any) -> list[tuple[str, str]]:
     """Walk call args for candidate path strings as ``(arg_name, value)`` pairs.
 
     Output-path args (:data:`OUTPUT_PATH_ARG_NAMES`) are EXCLUDED — those are the
-    generated side, not used inputs. Nested dicts/lists are walked to a bounded
-    depth and fan-out so a pathological arg blob cannot explode the scan (precision
-    over recall — a missed deep path is a lost edge, never a false one).
+    generated side, not used inputs. :data:`_DECLARED_CHANNEL_ARG_NAMES` (``used``)
+    is ALSO excluded — a dedicated resolver already owns it, so the generic
+    heuristic must not double-edge the same ref. Nested dicts/lists are walked to a
+    bounded depth and fan-out so a pathological arg blob cannot explode the scan
+    (precision over recall — a missed deep path is a lost edge, never a false one).
     """
     out: list[tuple[str, str]] = []
+
+    def _excluded(key: str) -> bool:
+        return key in OUTPUT_PATH_ARG_NAMES or key in _DECLARED_CHANNEL_ARG_NAMES
 
     def walk(name: str, value: Any, depth: int) -> None:
         if len(out) >= _MAX_ARG_STRINGS or depth > _MAX_ARG_DEPTH:
@@ -104,7 +117,7 @@ def _candidate_arg_strings(args: Any) -> list[tuple[str, str]]:
             return
         if isinstance(value, dict):
             for key, sub in value.items():
-                if str(key) in OUTPUT_PATH_ARG_NAMES:
+                if _excluded(str(key)):
                     continue
                 walk(str(key), sub, depth + 1)
         elif isinstance(value, (list, tuple)):
@@ -113,7 +126,7 @@ def _candidate_arg_strings(args: Any) -> list[tuple[str, str]]:
 
     if isinstance(args, dict):
         for key, value in args.items():
-            if str(key) in OUTPUT_PATH_ARG_NAMES:
+            if _excluded(str(key)):
                 continue
             walk(str(key), value, 0)
     return out

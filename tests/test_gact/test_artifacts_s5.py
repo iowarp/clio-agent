@@ -36,6 +36,7 @@ from clio_agent.gact.artifacts.environment import (
 )
 from clio_agent.gact.artifacts.lineage import build_lineage
 from clio_agent.gact.artifacts.minting import mint_tool_declared_outputs
+from clio_agent.gact.artifacts.proposals import parse_proposals, promote_proposals
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.artifacts.transforms import (
     ARTIFACT_TRANSFORM_RECORDED_EVENT,
@@ -1408,6 +1409,180 @@ def test_result_declared_output_connects_downstream_hash_pair(tmp_path):
     assert not edge.external_ref
 
 
+# --------------------------------------------------------------------------- #
+# #1191 (a) — create_artifact's declared used=[...] input refs.
+# --------------------------------------------------------------------------- #
+
+
+def _mint_report_via_create_artifact(app, sess, tmp_path: Path, name: str) -> tuple[Path, dict]:
+    """Mint a deliverable through the REAL create_artifact promotion path.
+
+    Returns ``(path, result)`` where ``result`` is exactly the wire dict the
+    ``create_artifact`` tool function returns (``promote_proposals``'s summary) —
+    the same shape :func:`observe_tool_transform` receives as its ``result`` arg.
+    """
+    report = tmp_path / name
+    report.write_text(f"# {name}\n", encoding="utf-8")
+    result = promote_proposals(
+        app,
+        sess.id,
+        parse_proposals(
+            name="", kind="report", path=str(report), content="", annotation="", artifacts=None
+        ),
+        workspace_id="ws1",
+    )
+    assert result["accepted"] == 1, result
+    return report, result
+
+
+def test_create_artifact_declared_used_refs_gain_lineage_input_chain(tmp_path):
+    """A used=[path, artifact_id] ref list resolves to real ``used`` PROV edges on
+    this call's producing activity, so the new artifact's UPSTREAM lineage graph
+    carries an input chain instead of the single-node graph every agent-proposed
+    artifact had before (#1191 issue evidence: producer_activity_id was always
+    "")."""
+    app, sess, arc = _make_app(tmp_path)
+    csv_path = tmp_path / "input.csv"
+    csv_path.write_bytes(b"a,b\n1,2\n")
+    csv_v = mint_tool_declared_outputs(
+        app,
+        sess.id,
+        tool_name="producer",
+        effective_args={"output_path": str(csv_path)},
+        call_id="call_in_csv",
+        workspace_id="ws1",
+    )[0]
+
+    png_path = tmp_path / "plot.png"
+    png_path.write_bytes(b"\x89PNGfakebytes")
+    png_v = mint_tool_declared_outputs(
+        app,
+        sess.id,
+        tool_name="producer2",
+        effective_args={"output_path": str(png_path)},
+        call_id="call_in_png",
+        workspace_id="ws1",
+    )[0]
+
+    report, result = _mint_report_via_create_artifact(app, sess, tmp_path, "report.md")
+    new_id = result["artifacts"][0]["artifact_id"]
+
+    call_args = {
+        "name": "",
+        "kind": "report",
+        "path": str(report),
+        "content": "",
+        "annotation": "",
+        "artifacts": None,
+        # cite the CSV by PATH, the PNG by its relay ARTIFACT ID.
+        "used": [str(csv_path), png_v.artifact_id],
+    }
+    observe_tool_transform(app, sess.id, "create_artifact", call_args, "call_create", True, result)
+
+    graph = build_lineage(get_registry(app), new_id, direction="upstream", depth=5)
+    assert graph is not None
+    node_ids = {n["id"] for n in graph["nodes"]}
+    # Sabotage: gate detect_declared_used_edges/_declared_generated_versions off
+    # (or drop them from record_transform entirely) -> produced_by(new_id) finds
+    # nothing -> the graph stays the single root node -> every assert below reds.
+    assert csv_v.artifact_id in node_ids
+    assert png_v.artifact_id in node_ids
+    assert len(graph["nodes"]) >= 3  # root + activity + >=1 input
+    used_edge_sources = {e["from"] for e in graph["edges"] if e["type"] == "used"}
+    assert csv_v.artifact_id in used_edge_sources
+    assert png_v.artifact_id in used_edge_sources
+
+    rec = get_registry(app).get_transform("call_create")
+    assert rec is not None
+    # Scoped to the `used` arg's own edges (arg="used") — create_artifact's `path`
+    # registration arg is ALSO walked by the pre-existing generic path-scanner
+    # (unrelated to #1191: it self-references the artifact this call just minted),
+    # which this assertion deliberately does not assert on either way.
+    declared_used = {e.artifact_id for e in rec.used if e.arg == "used"}
+    # Sabotage: drop detect_declared_used_edges from record_transform's `used` merge
+    # -> declared_used stays empty -> red. Sabotage 2: let the generic scanner ALSO
+    # walk the `used` arg (drop the _DECLARED_CHANNEL_ARG_NAMES exclusion) -> each id
+    # here duplicates -> a stricter len() check below would catch it too.
+    assert declared_used == {csv_v.artifact_id, png_v.artifact_id}
+    assert len([e for e in rec.used if e.arg == "used"]) == 2
+    assert len(rec.generated) == 1
+    assert rec.generated[0].artifact_id == new_id
+
+
+def test_create_artifact_declared_used_unresolvable_ref_is_typed_never_fabricated(tmp_path):
+    """An unresolvable used ref (bad id, path naming no registered artifact) never
+    becomes an edge — it lands as a typed ``used_ref_unresolved`` note. The declared
+    inputs the model DID cite are still non-blank, so the mint still gets its
+    producing-activity ``generated`` edge (declaring intent, even partly wrong, is
+    what earns the activity node — see the omitted-vs-declared regression pin)."""
+    app, sess, arc = _make_app(tmp_path)
+    report, result = _mint_report_via_create_artifact(app, sess, tmp_path, "report2.md")
+    new_id = result["artifacts"][0]["artifact_id"]
+
+    bogus_id = "artifact_" + "0" * 32
+    missing_path = str(tmp_path / "does_not_exist.csv")
+    call_args = {
+        "name": "",
+        "kind": "report",
+        "path": str(report),
+        "content": "",
+        "annotation": "",
+        "artifacts": None,
+        "used": [bogus_id, missing_path],
+    }
+    observe_tool_transform(app, sess.id, "create_artifact", call_args, "call_create2", True, result)
+
+    rec = get_registry(app).get_transform("call_create2")
+    assert rec is not None
+    # Scoped to arg="used" (see the sibling test above — create_artifact's own
+    # `path` registration arg is separately, pre-existingly walked by the generic
+    # path-scanner; unrelated to #1191, not asserted on here).
+    # Sabotage: fabricate an edge from an unresolved ref instead of a typed note ->
+    # this list gains an item -> red.
+    assert [e for e in rec.used if e.arg == "used"] == []
+    reasons = [n for n in rec.notes if n.get("reason") == "used_ref_unresolved"]
+    assert {n.get("ref") for n in reasons} == {bogus_id, missing_path}
+    # The declared-but-unresolved intent still earns the activity its generated edge.
+    assert len(rec.generated) == 1
+    assert rec.generated[0].artifact_id == new_id
+
+
+def test_create_artifact_without_used_stays_single_node_lineage(tmp_path):
+    """Regression pin: an ORDINARY create_artifact call — no used=[...] at all —
+    mints exactly as it did before #1191. No generated edge, no used edge, the
+    new artifact's upstream lineage graph is a single node."""
+    app, sess, arc = _make_app(tmp_path)
+    report, result = _mint_report_via_create_artifact(app, sess, tmp_path, "report3.md")
+    new_id = result["artifacts"][0]["artifact_id"]
+
+    call_args = {
+        "name": "",
+        "kind": "report",
+        "path": str(report),
+        "content": "",
+        "annotation": "",
+        "artifacts": None,
+        "used": None,
+    }
+    observe_tool_transform(app, sess.id, "create_artifact", call_args, "call_create3", True, result)
+
+    rec = get_registry(app).get_transform("call_create3")
+    assert rec is not None
+    # Sabotage: drop the `used` gate on _declared_generated_versions (attach the
+    # generated edge unconditionally for create_artifact) -> rec.generated gains
+    # an entry even without a declared `used` -> red.
+    assert rec.generated == []
+    # Scoped to arg="used" (create_artifact's own `path` registration arg is
+    # separately, pre-existingly walked by the generic path-scanner regardless of
+    # #1191 — unrelated, not asserted on here; it never reaches the lineage graph
+    # below since produced_by(new_id) finds no producing transform either way).
+    assert [e for e in rec.used if e.arg == "used"] == []
+
+    graph = build_lineage(get_registry(app), new_id, direction="upstream", depth=5)
+    assert graph is not None
+    assert len(graph["nodes"]) == 1
+
+
 def test_rerun_same_bytes_dedups_and_stamps_generated_edge(tmp_path):
     """Regression for the 2026-08-05 ndp re-run (sess_847768a92f6f): a LATER session
     re-runs the SAME pipeline in the SAME workspace, the tool really re-writes the
@@ -1493,6 +1668,124 @@ def test_rerun_same_bytes_dedups_and_stamps_generated_edge(tmp_path):
     first_rec = reg.get_transform("call_first")
     assert first_rec is not None
     assert first_rec.generated and first_rec.generated[0].note == ""
+
+
+# --------------------------------------------------------------------------- #
+# #1191 (b) — cache-hit use/custody: a same-sha dedup records the DEDUPING
+# session's honest "used the existing artifact" fact, surfaced OPTIONALLY via
+# ?include_used=true on the session-scoped artifacts route.
+# --------------------------------------------------------------------------- #
+
+
+def test_same_sha_dedup_records_artifact_used_for_deduping_session(tmp_path):
+    """A same-sha dedup from a DIFFERENT session records a use/custody fact — a
+    per-session USE index entry distinct from the (unchanged) version chain."""
+    app, sess_a, arc = _make_app(tmp_path)
+    csv_path = tmp_path / "shared.csv"
+    payload_bytes = b"Site,Latitude\nA,34.0\n"
+    csv_path.write_bytes(payload_bytes)
+    v1 = mint_tool_declared_outputs(
+        app,
+        sess_a.id,
+        tool_name="t",
+        effective_args={"output_path": str(csv_path)},
+        call_id="call_a",
+        workspace_id="ws1",
+    )[0]
+
+    reg = get_registry(app)
+    # Sabotage: skip emit_artifact_used on the ordinary v1 mint path (it must NOT
+    # fire on a fresh mint, only a dedup) -> this stays empty regardless, but a
+    # broken gate that fires on EVERY mint would make it non-empty here -> red.
+    assert reg.used_artifact_ids_for_session(sess_a.id) == set()
+    assert _events(arc, "artifact.used") == []
+
+    sess_b = app.state.sessions.create(workspace_id="ws1", title="b")
+    csv_path.write_bytes(payload_bytes)  # same bytes, re-written by a DIFFERENT session
+    mint_tool_declared_outputs(
+        app,
+        sess_b.id,
+        tool_name="t",
+        effective_args={"output_path": str(csv_path)},
+        call_id="call_b",
+        workspace_id="ws1",
+    )
+
+    # Sabotage: drop emit_artifact_used from mint_artifact_outcome's dedup branch
+    # -> this set stays empty -> red.
+    assert reg.used_artifact_ids_for_session(sess_b.id) == {v1.artifact_id}
+    used_events = _events(arc, "artifact.used")
+    assert len(used_events) == 1
+    assert used_events[0].payload["session_id"] == sess_b.id
+    assert used_events[0].payload["artifact_id"] == v1.artifact_id
+    assert used_events[0].payload["reason"] == "same_sha_dedup"
+    # No new version, no new artifact.created — the use/custody fact rides a
+    # SEPARATE atom, it never mutates the (unchanged) version chain.
+    assert len(reg.get("ws1", "shared.csv").versions) == 1
+    assert len(_events(arc, "artifact.created")) == 1
+
+
+def test_route_session_artifacts_include_used_surfaces_dedup_reuse(tmp_path, monkeypatch):
+    """#1191 acceptance: session B dedups a CSV session A produced. B's own
+    ?include_used=true listing surfaces it as `used`; the flag-off response stays
+    BYTE-IDENTICAL before and after the dedup happens (the regression pin)."""
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    with TestClient(build_app(sessions_path=tmp_path / "s.json")) as client:
+        app = client.app
+        wid, sid_a = _workspace_session(client, tmp_path)
+        sid_b = client.post("/v1/sessions", json={"workspace_id": wid}).json()["id"]
+
+        staged = tmp_path / "shared.csv"
+        payload_bytes = b"Site,Latitude\nA,34.0\n"
+        staged.write_bytes(payload_bytes)
+        mint_tool_declared_outputs(
+            app,
+            sid_a,
+            tool_name="t",
+            effective_args={"output_path": str(staged)},
+            call_id="call_a",
+            workspace_id=wid,
+        )
+
+        # B, flag off, BEFORE any dedup — the byte-identical baseline.
+        b_off_before = client.get(f"/v1/sessions/{sid_b}/artifacts")
+        assert b_off_before.status_code == 200
+        assert b_off_before.json() == {"artifacts": [], "count": 0, "next_cursor": None}
+
+        # B re-runs the SAME tool producing byte-identical content -> W&B dedup.
+        staged.write_bytes(payload_bytes)
+        mint_tool_declared_outputs(
+            app,
+            sid_b,
+            tool_name="t",
+            effective_args={"output_path": str(staged)},
+            call_id="call_b",
+            workspace_id=wid,
+        )
+
+        # B, flag off, AFTER the dedup: response STILL byte-identical (the pin) —
+        # B never PRODUCED anything, a dedup use never leaks into `artifacts`.
+        b_off_after = client.get(f"/v1/sessions/{sid_b}/artifacts")
+        assert b_off_after.status_code == 200
+        # Sabotage: fold a used-only record into `artifacts` unconditionally ->
+        # this equality goes red.
+        assert b_off_after.json() == {"artifacts": [], "count": 0, "next_cursor": None}
+
+        # B, flag on: the SAME record now appears under `used` — reused via dedup,
+        # never duplicated into `artifacts` (B still produced nothing).
+        b_on = client.get(f"/v1/sessions/{sid_b}/artifacts?include_used=true").json()
+        # Sabotage: forget to gate `used` population on include_used -> either this
+        # list stays empty (feature dead) or `include_used`/`used` leak onto the
+        # flag-off response above -> one of the two assertions in this test reds.
+        assert b_on["artifacts"] == []
+        assert b_on["include_used"] is True
+        assert [r["name"] for r in b_on["used"]] == ["shared.csv"]
+
+        # A, flag on: A PRODUCED it -> stays under `artifacts`; never duplicated
+        # into `used` even though everyone else's dedup lands on A's own mint.
+        a_on = client.get(f"/v1/sessions/{sid_a}/artifacts?include_used=true").json()
+        assert [r["name"] for r in a_on["artifacts"]] == ["shared.csv"]
+        assert a_on["used"] == []
 
 
 # --------------------------------------------------------------------------- #

@@ -423,9 +423,35 @@ def test_create_artifact_tool_shape():
     agent_def = SimpleNamespace(id="expert-x")
     tool = build_create_artifact_tool(agent_def)
     assert tool.name == "create_artifact"
-    # Batch + single-item args are all present on the schema.
-    for arg in ("name", "kind", "path", "content", "annotation", "artifacts"):
+    # Batch + single-item args are all present on the schema, including the #1191
+    # OPTIONAL used=[...] input-refs field.
+    for arg in ("name", "kind", "path", "content", "annotation", "artifacts", "used"):
         assert arg in tool.args
+
+
+def test_create_artifact_tool_accepts_used_without_touching_promotion(tmp_path):
+    """#1191: `used` is accepted by the tool's own signature (so the observer
+    captures it in the call's args) but the mint decision itself is byte-identical
+    whether or not it is supplied — used=[...] never changes acceptance/created."""
+    app, sess, _arc = _make_app(tmp_path)
+    report = tmp_path / "cited.md"
+    report.write_text("# report\n", encoding="utf-8")
+    agent_def = SimpleNamespace(id="expert-x")
+    tool = build_create_artifact_tool(agent_def)
+
+    from clio_agent.gact import context as _ctx
+
+    token_app = _ctx.set_app(app)
+    token_sid = _ctx.set_session_id(sess.id)
+    try:
+        result = tool.func(kind="report", path=str(report), used=["artifact_bogus", str(tmp_path)])
+    finally:
+        _ctx.reset(token_sid)
+        _ctx.reset(token_app)
+    # Sabotage: thread `used` into the mint decision (e.g. reject an unresolvable
+    # ref) -> this flips to rejected/0 -> red.
+    assert result["accepted"] == 1
+    assert result["artifacts"][0]["accepted"] is True
 
 
 SKILL_BODY = "PROCEDURE_BODY_MARKER"

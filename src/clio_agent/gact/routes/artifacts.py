@@ -311,6 +311,7 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
         limit: int | None = None,
         before: str | None = None,
         include_children: bool = False,
+        include_used: bool = False,
     ) -> dict[str, Any]:
         """List THIS session's artifacts (newest-first, paginated), SESSION-scoped.
 
@@ -327,6 +328,15 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
         records dedup by ``(workspace_id, name)``, and each row carries its
         ``producing_session_ids``. Flag off → own workspace + own session only,
         byte-identical to before.
+
+        ``?include_used=true`` (#1191, OPTIONAL): additionally surfaces records this
+        session USED but did not produce — a same-sha DEDUP onto a pre-existing
+        version (:meth:`~clio_agent.gact.artifacts.registry.ArtifactRegistry.record_artifact_used`).
+        Rides a SEPARATE top-level ``used`` list (same wire shape as ``artifacts``)
+        — never merged in, and a record already under ``artifacts`` is never
+        duplicated into ``used``. With ``include_children``, a descendant's uses
+        count too. Flag off (the default): BYTE-IDENTICAL to before this param
+        existed — no ``used``/``include_used`` key at all.
         """
         workspace_id = _session_workspace_id(app, sid)
         if workspace_id is None:
@@ -381,6 +391,7 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
             workspace_id=workspace_id,
             returned=len(page),
             include_children=include_children,
+            include_used=include_used,
         )
         wire = _record_wire_attributed if include_children else _record_wire
         body: dict[str, Any] = {
@@ -391,6 +402,26 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
         if include_children:
             body["include_children"] = True
             body["child_session_ids"] = child_ids
+        if include_used:
+            produced_keys = {(r.workspace_id, r.name) for r in records}
+            used_artifact_ids: set[str] = set()
+            for scope_sid in allowed_session_ids:
+                used_artifact_ids |= registry.used_artifact_ids_for_session(scope_sid)
+            seen_used_keys: set[tuple[str, str]] = set()
+            used_records: list[ArtifactRecord] = []
+            for artifact_id in used_artifact_ids:
+                found = registry.get_by_artifact_id(artifact_id)
+                if found is None:
+                    continue
+                used_record, _used_version = found
+                key = (used_record.workspace_id, used_record.name)
+                if key in produced_keys or key in seen_used_keys:
+                    continue
+                seen_used_keys.add(key)
+                used_records.append(used_record)
+            used_records.sort(key=lambda r: (r.workspace_id, r.name))
+            body["include_used"] = True
+            body["used"] = [_record_wire(r) for r in used_records]
         return body
 
     @app.get("/v1/workspaces/{wid}/artifacts")

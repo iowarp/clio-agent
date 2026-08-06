@@ -704,11 +704,20 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
         content: str = "",
         annotation: str = "",
         artifacts: Optional[list[dict[str, Any]]] = None,
+        used: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         """Register a session output as an artifact (model contract lives in the dspy ``desc``).
 
         ``path`` registers an EXISTING file; ``content`` authors a NEW file WRITTEN AT
         ``name`` — the target path (workspace-relative or absolute), not a display label.
+
+        ``used`` (#1191, OPTIONAL): cites the inputs this deliverable was DERIVED
+        FROM (paths and/or artifact ids). NOT threaded into the promotion below —
+        the mint decision is unaffected. The tool-observer transform seam
+        (``declared_used_edges.detect_declared_used_edges``, fired AFTER this call
+        returns) reads it from this call's own args and records real ``used`` PROV
+        edges on the producing activity; an unresolvable ref is typed, never
+        fabricated; omitted/blank leaves the mint exactly as it is today.
         """
         app = _ctx.active_app()
         sid = _ctx.active_session_id()
@@ -760,10 +769,12 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             "dataset|image|report|script|config|model|ui_payload|other. Put your "
             "intent (why it matters, deliverable vs scratch) in annotation. To "
             "designate several at once pass artifacts=[{name,kind,path|content,"
-            "annotation}, ...]. Returns each record on acceptance, or a typed "
-            "rejection reason (path_missing, escapes_root, over_cap, invalid_kind, "
-            "missing_input) you can correct and retry. Nothing is auto-registered; "
-            "the artifact exists only because you called this."
+            "annotation}, ...]. OPTIONAL: cite what this deliverable was DERIVED "
+            "FROM via used=[...] (paths and/or artifact ids) so its lineage graph "
+            "shows its real inputs. Returns each record on acceptance, or a typed rejection reason "
+            "(path_missing, escapes_root, over_cap, invalid_kind, missing_input) you "
+            "can correct and retry. Nothing is auto-registered; the artifact exists "
+            "only because you called this."
         ),
         args={
             "name": {
@@ -792,6 +803,14 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             "artifacts": {
                 "type": "array",
                 "description": "Batch: a list of {name,kind,path|content,annotation} proposals.",
+            },
+            "used": {
+                "type": "array",
+                "description": (
+                    "OPTIONAL: workspace paths and/or artifact ids this deliverable was "
+                    "derived from. Recorded as real provenance edges on this mint; an "
+                    "unresolvable ref is typed on the trace, never silently dropped."
+                ),
             },
         },
     )

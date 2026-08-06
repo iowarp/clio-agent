@@ -50,23 +50,29 @@ logger = logging.getLogger(__name__)
 
 ARTIFACT_CREATED_EVENT = "artifact.created"
 #: The version-chain + alias atoms of the ``artifact.*`` family (SSE-served, #968),
-#: emitted from S4 (#970). ``artifact.used`` is deliberately absent — it stays
-#: trace-only. ``artifact.transform.recorded`` (S5 #971) IS folded (below) to
-#: rebuild the transform/lineage index, but stays OFF the SSE wire (the S2 split).
+#: emitted from S4 (#970). ``artifact.used`` is deliberately absent from the SSE
+#: wire — it stays trace-only (:data:`~clio_agent.gact.semantic_events.SSE_TRACE_ONLY_EVENT_TYPES`
+#: already reserves it). ``artifact.transform.recorded`` (S5 #971) IS folded (below)
+#: to rebuild the transform/lineage index, but stays OFF the SSE wire (the S2 split).
 ARTIFACT_VERSION_ADDED_EVENT = "artifact.version.added"
 ARTIFACT_ALIAS_MOVED_EVENT = "artifact.alias.moved"
 ARTIFACT_TRANSFORM_RECORDED_EVENT = "artifact.transform.recorded"
+#: The use/custody atom (#1191): a same-sha DEDUP mint emits no new version/edge —
+#: this is the honest "the deduping session used it" fact, folded (below) into a
+#: per-session USE index only. Trace-only, like ``artifact.transform.recorded``.
+ARTIFACT_USED_EVENT = "artifact.used"
 
 #: The event types the boot fold rebuilds the registry from: v1 creation (S1), v2+
-#: revisions + alias moves (S4 #970), and TransformRecords (S5 #971). ``artifact.used``
-#: / ``.proposed`` are NOT here. Transform events rebuild the lineage index only —
-#: they never touch the version chains.
+#: revisions + alias moves (S4 #970), TransformRecords (S5 #971), and the per-session
+#: USE index (#1191). ``.proposed`` is NOT here. Transform + use events rebuild
+#: their own indexes only — they never touch the version chains.
 _FOLD_EVENT_TYPES: frozenset[str] = frozenset(
     {
         ARTIFACT_CREATED_EVENT,
         ARTIFACT_VERSION_ADDED_EVENT,
         ARTIFACT_ALIAS_MOVED_EVENT,
         ARTIFACT_TRANSFORM_RECORDED_EVENT,
+        ARTIFACT_USED_EVENT,
     }
 )
 
@@ -236,6 +242,11 @@ class ArtifactRegistry:
         #: ``(workspace_id, name, alias)`` → the winning move's ``(at, event_id)``, so
         #: an order-shuffled replay rebuilds the identical alias map (greatest wins).
         self._alias_move_keys: dict[tuple[str, str, str], tuple[str, str]] = {}
+        #: Per-session USE index (#1191): ``session_id`` -> relay ``artifact_id``s
+        #: that session USED via a same-sha dedup (never produced). Folded
+        #: idempotently (:meth:`fold_artifact_used`) or recorded live at mint time
+        #: (:meth:`record_artifact_used`); read by ``?include_used=true``.
+        self._used_by_session: dict[str, set[str]] = {}
 
     # ---- fold --------------------------------------------------------------
 
@@ -261,6 +272,8 @@ class ArtifactRegistry:
             return self.fold_alias_moved(payload)
         if event_type == ARTIFACT_TRANSFORM_RECORDED_EVENT:
             return self.fold_transform_recorded(payload)
+        if event_type == ARTIFACT_USED_EVENT:
+            return self.fold_artifact_used(payload)
         if event_type in _FOLD_EVENT_TYPES:
             return self.fold_payload(payload)
         return FoldResult(applied=False, reason="unfolded_type")
@@ -314,6 +327,43 @@ class ArtifactRegistry:
         """Every TransformRecord produced in ``session_id`` (chronological by call)."""
         with self._lock:
             return [t for t in self._transforms.values() if t.session_id == session_id]
+
+    def record_artifact_used(
+        self, session_id: str, artifact_id: str, *, event_id: str = ""
+    ) -> bool:
+        """Record a live same-sha-dedup USE for ``session_id`` (#1191, materialize half —
+        paired with the durable :func:`~clio_agent.gact.artifacts.versions.emit_artifact_used`
+        emit). Idempotent by ``event_id``; returns whether newly recorded."""
+        if not session_id or not artifact_id:
+            return False
+        with self._lock:
+            if event_id:
+                if event_id in self._seen_event_ids:
+                    return False
+                self._seen_event_ids.add(event_id)
+            used = self._used_by_session.setdefault(session_id, set())
+            if artifact_id in used:
+                return False
+            used.add(artifact_id)
+            return True
+
+    def fold_artifact_used(self, payload: dict[str, Any]) -> FoldResult:
+        """Fold one ``artifact.used`` payload (#1191) via :meth:`record_artifact_used`
+        (the SAME index the live mint path writes) — malformed (no session/artifact
+        id) is dropped with a typed reason."""
+        session_id = str(payload.get("session_id") or "")
+        artifact_id = str(payload.get("artifact_id") or "")
+        event_id = str(payload.get("event_id") or "")
+        if not session_id or not artifact_id:
+            return FoldResult(applied=False, reason="malformed")
+        if not self.record_artifact_used(session_id, artifact_id, event_id=event_id):
+            return FoldResult(applied=False, reason="duplicate_event_id")
+        return FoldResult(applied=True, reason="")
+
+    def used_artifact_ids_for_session(self, session_id: str) -> set[str]:
+        """Relay ``artifact_id``s ``session_id`` USED via dedup (#1191, never produced)."""
+        with self._lock:
+            return set(self._used_by_session.get(session_id, ()))
 
     def all_transforms(self) -> list[Any]:
         """A snapshot of every TransformRecord known (for lineage traversal / tests)."""
@@ -819,6 +869,7 @@ __all__ = [
     "ARTIFACT_ALIAS_MOVED_EVENT",
     "ARTIFACT_CREATED_EVENT",
     "ARTIFACT_TRANSFORM_RECORDED_EVENT",
+    "ARTIFACT_USED_EVENT",
     "ARTIFACT_VERSION_ADDED_EVENT",
     "ArtifactRegistry",
     "FoldResult",

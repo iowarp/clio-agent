@@ -45,6 +45,7 @@ from clio_agent.gact.artifacts.registry import (
 )
 from clio_agent.gact.artifacts.versions import (
     emit_alias_moved,
+    emit_artifact_used,
     emit_version_added,
     reconcile_if_content_revert,
     reconcile_if_tool_drift,
@@ -351,8 +352,9 @@ def mint_artifact_outcome(
     )
     version = outcome.version
     if not outcome.created:
-        # W&B same-sha dedup: content already versioned — emit NOTHING (the no-op is
-        # at the mint, not merely the fold). Keep the badge index fresh (idempotent).
+        # W&B same-sha dedup: content already versioned — no new ``artifact.created``/
+        # ``.version.added`` (the no-op is at the mint, not merely the fold). Keep the
+        # badge index fresh (idempotent).
         logger.info(
             "artifact mint dedup no-op reason=%s ws=%s name=%s sha=%s existing_version=%d",
             outcome.reason,
@@ -362,6 +364,18 @@ def mint_artifact_outcome(
             version.version,
         )
         patch_session_index(app, sid, registry, workspace_id)
+        if outcome.reason == "same_sha_dedup":
+            # #1191: an ORDINARY dedup (not the drift-reconcile "unchanged_head"
+            # no-op) — THIS session used the pre-existing version; record it.
+            emit_artifact_used(
+                app,
+                sid,
+                workspace_id=workspace_id,
+                name=name,
+                version=version,
+                turn_id=turn_id,
+                trace_id=trace_id,
+            )
         return outcome
 
     # v1 emits ``artifact.created``; v2+ revisions (incl. re-link / gap) emit

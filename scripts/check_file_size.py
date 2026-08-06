@@ -144,13 +144,39 @@ RATCHET_BASELINE: dict[str, int] = {
     # cas.harness_write_identity, not added here) and the single-site running-byte
     # counter bump (finding [6/7], one call at the mint funnel). Ratchets back with
     # the #714 mint/registry split.
-    "src/clio_agent/gact/artifacts/minting.py": 842,
+    # #1191: +14 for the same-sha-dedup use/custody emit call in the mint funnel's
+    # DEDUP branch (the honest "this session used the pre-existing version" fact —
+    # a same-sha re-production previously left the deduping session's own artifact
+    # surface with nothing to show for it). All logic (materialize + emit) lives in
+    # the owner module artifacts/versions.py (emit_artifact_used); only the guarded
+    # call site is here. Ratchets back with the #714 mint/registry split.
+    "src/clio_agent/gact/artifacts/minting.py": 856,
+    # #1191: not previously baselined (silently over the 800 cap already, from
+    # earlier unbaselined growth on this branch — the create_artifact tool floor).
+    # +19 net for the OPTIONAL used=[...] input-refs param on create_artifact (the
+    # tool signature + desc/args schema); the resolver itself lives in the owner
+    # module artifacts/declared_used_edges.py. Ratchets back with the #714
+    # artifacts/proposals decomposition.
+    "src/clio_agent/gact/artifacts/proposals.py": 832,
+    # #971 GAP B (S5 live gate): not baselined before this entry (silently over the
+    # 800 cap already, from earlier unbaselined growth on this branch).
+    # #1191: +51 for the per-session artifact-USE index (record_artifact_used /
+    # fold_artifact_used / used_artifact_ids_for_session + the ARTIFACT_USED_EVENT
+    # fold wiring) — the honest "this session used the pre-existing version" fact a
+    # same-sha dedup leaves unrecorded otherwise. Mirrors the existing
+    # record_transform/fold_transform_recorded pattern on this same class. Ratchets
+    # back with the #714 mint/registry split.
+    "src/clio_agent/gact/artifacts/registry.py": 892,
     # #971 GAP B (S5 live gate): +51 for ``?include_children=true`` parent
     # aggregation — a parent orchestrator's own listing is empty while its spawned
     # children hold everything, so the flag unions descendant child-session
     # workspaces (resolved via the agent-task registry) and attributes each row.
-    # Ratchets back with the #714 routes/artifacts decomposition.
-    "src/clio_agent/gact/routes/artifacts.py": 865,
+    # #1191: baseline was already stale (865 recorded vs. 888 actual) from earlier
+    # unbaselined growth on this branch before this entry; +31 more for the
+    # OPTIONAL ?include_used=true param surfacing dedup-reused (not produced)
+    # records in a separate `used` list. Ratchets back with the #714
+    # routes/artifacts decomposition.
+    "src/clio_agent/gact/routes/artifacts.py": 919,
     # #948 S4: +10 for round-tripping the module: declaration in the overlay
     # export (an exported react parent re-loaded as predict and failed the new
     # hierarchy validation).
