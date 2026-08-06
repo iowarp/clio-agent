@@ -468,7 +468,9 @@ def _run_external_mcp_tool_sync(
     return str(result.get("value", ""))
 
 
-def _enabled_external_mcp_dspy_tools(app: Any, requested_tools: list[str]) -> dict[str, Any]:
+def _enabled_external_mcp_dspy_tools(
+    app: Any, requested_tools: list[str], sources: dict[str, str]
+) -> dict[str, Any]:
     """Return DSPy Tool wrappers for enabled Agent Blueprint MCP tools."""
 
     from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
@@ -529,7 +531,7 @@ def _enabled_external_mcp_dspy_tools(app: Any, requested_tools: list[str]) -> di
                 args=properties,
                 title=title,
             )
-            toolset_inventory.register_tool_source(tool_name, str(server_id))
+            toolset_inventory.register_tool_source(sources, tool_name, str(server_id))
     return available
 
 
@@ -558,7 +560,9 @@ def _active_base_agent_tool_executor(base_agent: Any) -> Any:
     return getattr(base_agent, "tool_executor", None)
 
 
-def _dynamic_agent_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
+def _dynamic_agent_tools(
+    base_agent: Any, agent_def: "AgentDef", sources: dict[str, str]
+) -> list[Any]:
     """Resolve the exact DSPy tools a tool-declaring dynamic agent may use."""
 
     requested_tools = [str(t).strip() for t in agent_def.tools if str(t).strip()]
@@ -572,22 +576,20 @@ def _dynamic_agent_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
             )
         available_tools: dict[str, Any] = {}
     else:
+        mounted = toolset_inventory.mounted_namespace_set(tool_executor)
         available_tools = {}
         for tool in list(tool_executor.to_dspy_tools()):
             name = str(getattr(tool, "name", "") or "")
             if not name:
                 continue
             available_tools[name] = tool
-            # Gateway-mounted tools (the universal fs/shell built-ins or a
-            # declared domain MCP server) carry a namespace-prefixed name
-            # (``<namespace>_<tool>``, ``tools/gateway.py``'s
-            # ``_mount_with_namespace``) -- the SAME encoding
-            # ``mcp_executor._route`` partitions on to dispatch a call, so
-            # reading it here is the real provenance, not a guess.
-            toolset_inventory.register_tool_source(name, name.partition("_")[0] or "gateway")
+            # prefix is real provenance only if mounted (finding [D]); else "gateway".
+            prefix, sep, bare = name.partition("_")
+            source = prefix if (sep and bare and prefix in mounted) else "gateway"
+            toolset_inventory.register_tool_source(sources, name, source)
     app = _ctx.active_app()
     if app is not None:
-        available_tools.update(_enabled_external_mcp_dspy_tools(app, requested_tools))
+        available_tools.update(_enabled_external_mcp_dspy_tools(app, requested_tools, sources))
     missing_tools = [name for name in requested_tools if name not in available_tools]
     if missing_tools:
         raise _UnsupportedSessionAgent(
@@ -1277,9 +1279,9 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     build_spawn_runtime_tools,
                 )
 
-                _declared_tools = _dynamic_agent_tools(base_agent, agent_def)
+                _declared_tools = _dynamic_agent_tools(base_agent, agent_def, (_sources := {}))
                 _spawn_tools = build_spawn_runtime_tools(base_agent, agent_def)
-                toolset_inventory.register_tool_sources(_spawn_tools, "spawn-runtime")
+                toolset_inventory.register_tool_sources(_sources, _spawn_tools, "spawn-runtime")
                 tools = [
                     *_declared_tools,
                     *_spawn_tools,
@@ -1288,15 +1290,14 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     # Auto-attached infra (like child-delegation tools), not a
                     # curated domain tool (#919).
                     _skill_tool = _recorded_load_skill_tool(agent_def, skill_rt)
-                    toolset_inventory.register_tool_sources([_skill_tool], "native")
+                    toolset_inventory.register_tool_sources(_sources, [_skill_tool], "native")
                     tools.append(_skill_tool)
                 # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
                 _auto_tools = build_auto_react_tools(agent_def)
-                toolset_inventory.register_tool_sources(_auto_tools, "native")
+                toolset_inventory.register_tool_sources(_sources, _auto_tools, "native")
                 tools += _auto_tools
-                # THE assembly seam (owner 2026-08-05): every tool is observed
-                # by definition — unmarked callables get the observer wrap and
-                # declared representations/titles register for the live observer.
+                # THE assembly seam (owner 2026-08-05): every tool is observed by
+                # definition -- unmarked callables get the observer wrap + titles registered.
                 from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
                     instrument_tools,
                 )
@@ -1305,7 +1306,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 self.tools = tools
                 # Obs Tools tab "available" view: the REAL built toolset,
                 # captured once here where it is actually in hand.
-                toolset_inventory.emit_agent_toolset_recorded(agent_def, tools)
+                toolset_inventory.emit_agent_toolset_recorded(agent_def, tools, _sources)
                 # The iteration default scales with the declared children — an
                 # orchestrator pays spawn+wait per child inside this loop (#948 S4).
                 _n_children = 0
@@ -1758,21 +1759,20 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             self._cred_resolver = CredentialResolver()
             self.config = self._resolved_spec.materialize(self._cred_resolver)
             self._provider_config = self.config
-            self.tools = _dynamic_agent_tools(base_agent, agent_def)
+            self.tools = _dynamic_agent_tools(base_agent, agent_def, (_sources := {}))
             skill_rt = _skill_runtime.skill_runtime_for_agent(
                 _ctx.active_app(), agent_def, session_id=_ctx.active_session_id()
             )
             if skill_rt.resolved:
                 # Same react tier-1 + load_skill contract as blueprint experts (#919).
                 _skill_tool = _recorded_load_skill_tool(agent_def, skill_rt)
-                toolset_inventory.register_tool_sources([_skill_tool], "native")
+                toolset_inventory.register_tool_sources(_sources, [_skill_tool], "native")
                 self.tools.append(_skill_tool)
             # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
             _auto_tools = build_auto_react_tools(agent_def)
-            toolset_inventory.register_tool_sources(_auto_tools, "native")
+            toolset_inventory.register_tool_sources(_sources, _auto_tools, "native")
             self.tools += _auto_tools
-            # THE assembly seam (owner 2026-08-05): same default-on
-            # instrumentation as the blueprint react branch.
+            # THE assembly seam (owner 2026-08-05): same default-on instrumentation as above.
             from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
                 instrument_tools,
             )
@@ -1780,7 +1780,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             self.tools = instrument_tools(self.tools)
             # Obs Tools tab "available" view: the REAL built toolset,
             # captured once here where it is actually in hand.
-            toolset_inventory.emit_agent_toolset_recorded(agent_def, self.tools)
+            toolset_inventory.emit_agent_toolset_recorded(agent_def, self.tools, _sources)
             runtime = PromptRegistry().resolve("clio.runtime.tool_user_agent")
             runtime_text = str(getattr(runtime, "text", "") or "").strip()
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description

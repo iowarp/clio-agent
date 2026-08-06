@@ -3141,7 +3141,7 @@ def test_dynamic_agent_tools_include_enabled_agent_blueprint_mcp_tool(tmp_path: 
     )
 
     with _gact_app_context(app):
-        tools = _dynamic_agent_tools(base_agent, agent_def)
+        tools = _dynamic_agent_tools(base_agent, agent_def, {})
 
     assert [tool.name for tool in tools] == ["earthscope_query"]
 
