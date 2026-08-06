@@ -212,3 +212,34 @@ def test_blueprint_tools_validate_against_serve_runtime_catalog(tmp_path):
     assert warm_main["enabled"]
     diags = warm_main.get("metadata", {}).get("tool_diagnostics", [])
     assert any(d.get("source") == "serve_runtime" for d in diags if isinstance(d, dict))
+
+
+class _AckAgent:
+    """Minimal host agent -- the missing-parts request must 400 before this runs."""
+
+    def forward(self, question: str, session_id: str, **_kwargs: object) -> object:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(answer="ok", selected_expert="", routing_rationale="")
+
+
+def test_post_message_missing_parts_is_typed_400_validation_error(tmp_path: Path) -> None:
+    """Round-9 wire defect: {"content": "..."} (missing parts[]/text) is an
+    unrecognized shape -- extract_text() legitimately returns "", so the route
+    must reject it as a typed CLIENT validation error, never "internal_error"
+    (that tag is reserved for a >=500 server-side fault, see
+    ``_error_code_for_status`` in app.py)."""
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=_AckAgent())
+    client = TestClient(app)
+    sid = _session(client)
+
+    response = client.post(f"/v1/sessions/{sid}/messages", json={"content": "hi there"})
+
+    assert response.status_code == 400, response.text
+    error = response.json()["error"]
+    assert error["error"] == "validation_error"
+    assert "parts" in error["message"]
+    assert error["details"] == {"session_id": sid}
+    assert error["recoverable"] is True
+    # No user message was persisted for the rejected body.
+    assert client.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []

@@ -311,15 +311,23 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
         if not user_text and not image_parts:
+            # Round-9 wire defect: a body with no recognizable text (e.g. a
+            # client that sent {"content": "..."} instead of the documented
+            # shape) is a CLIENT input problem, not a server fault -- it must
+            # carry the "validation_error" taxonomy tag (see
+            # ``_error_code_for_status`` in app.py), never "internal_error"
+            # (which implies a >=500 server-side break).
             raise HTTPException(
-                status_code=422,
+                status_code=400,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
+                        error="validation_error",
                         message=(
-                            "request body carried no text: expected "
-                            "parts[] containing a text part or legacy "
-                            "top-level text field"
+                            "request body carried no recognizable text: expected "
+                            'either parts[] containing a text part (e.g. {"type": '
+                            '"text", "text": "..."}) or the legacy top-level '
+                            '"text" field; unrecognized fields (e.g. "content") '
+                            "are ignored, not accepted"
                         ),
                         details={"session_id": sid},
                         recoverable=True,
