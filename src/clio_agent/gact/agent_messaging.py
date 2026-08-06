@@ -302,6 +302,42 @@ def message_agent_task(
     )
 
 
+def _declare_message_agent_structured_content(
+    wire: Mapping[str, Any], *, is_error: bool = False
+) -> None:
+    """Declare ``message_agent``'s typed wire payload (P5 wire semantics — the
+    ``wait_agent_tasks`` treatment): an honest ``message`` naming what happened
+    FIRST, then the SAME fields the model-facing JSON already carries."""
+
+    from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+        declare_structured_content,
+    )
+
+    if is_error:
+        # The error shape's own "message" field (the raw exception text) would
+        # otherwise collide with — and silently overwrite — our composed
+        # presentation message under the SAME key, so it rides under "detail"
+        # instead (renamed, never dropped: the model-facing JSON built by the
+        # caller still carries the original "message" field unchanged).
+        detail = str(wire.get("message", ""))
+        message = f"message rejected: {wire.get('error', '')} — {detail}"
+        fields = {k: v for k, v in wire.items() if k != "message"}
+        fields["detail"] = detail
+    else:
+        if wire.get("action") == "wake":
+            message = (
+                f"woke child as task {wire.get('task_id', '')} "
+                f"(supersedes {wire.get('supersedes_task_id', '')})"
+            )
+        else:
+            message = (
+                f"queued message to task {wire.get('task_id', '')} "
+                f"(transport={wire.get('transport', '')})"
+            )
+        fields = dict(wire)
+    declare_structured_content({"message": message, **fields})
+
+
 def build_message_agent_tool(agent_def: Any) -> Any:
     """Build the one model-facing message tool bound to the requesting expert."""
 
@@ -326,16 +362,17 @@ def build_message_agent_tool(agent_def: Any) -> Any:
                 message,
                 parent_agent_id=str(getattr(agent_def, "id", "") or "main"),
             )
-            return json.dumps(result.to_wire(), sort_keys=True)
+            wire = result.to_wire()
+            _declare_message_agent_structured_content(wire)
+            return json.dumps(wire, sort_keys=True)
         except MessageAgentError as exc:
-            return json.dumps(
-                {
-                    "error": exc.reason,
-                    "message": str(exc),
-                    "details": exc.details,
-                },
-                sort_keys=True,
-            )
+            error_wire = {
+                "error": exc.reason,
+                "message": str(exc),
+                "details": exc.details,
+            }
+            _declare_message_agent_structured_content(error_wire, is_error=True)
+            return json.dumps(error_wire, sort_keys=True)
 
     return native_tool(
         message_agent,

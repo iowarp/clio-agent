@@ -292,3 +292,90 @@ def test_unknown_and_terminal_unwakeable_edges_are_typed(
 def test_message_agent_part_matches_committed_fixture(index: int) -> None:
     rows = json.loads(FIXTURE.read_text(encoding="utf-8"))
     assert Part(**rows[index]).to_wire() == rows[index]
+
+
+# --------------------------------------------------------------------------- #
+# Declared structured_content (P5 wire semantics) — the wait_agent_tasks       #
+# treatment extended to message_agent, via the REAL tool (not message_agent_task #
+# directly), so the closure's own declare_structured_content call is under test. #
+# --------------------------------------------------------------------------- #
+
+
+def test_message_agent_tool_declares_typed_structured_content_for_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact import context as _ctx
+    from clio_agent.gact.agent_messaging import build_message_agent_tool
+
+    declared: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.agent_messaging._append_live_assistant_part",
+        lambda _app, _sid, _part: None,
+    )
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        task = _seed(
+            app, parent, status=STATUS_RUNNING, placement="local", task_id="task_queue_msg"
+        )
+        monkeypatch.setattr(app.state.turn_runner, "busy", lambda sid: sid == task.child_session_id)
+        tool = build_message_agent_tool(SimpleNamespace(id="main"))
+        token_a = _ctx.set_app(app)
+        token_s = _ctx.set_session_id(parent)
+        try:
+            out = tool.func(task_id=task.task_id, message="focus locally")
+        finally:
+            _ctx.reset(token_s)
+            _ctx.reset(token_a)
+
+    wire = json.loads(out)
+    assert wire["accepted"] is True
+    assert len(declared) == 1
+    shape = declared[0]
+    assert next(iter(shape)) == "message"
+    assert shape["message"] == (
+        f"queued message to task {task.task_id} (transport={wire['transport']})"
+    )
+    assert {k: v for k, v in shape.items() if k != "message"} == wire
+
+
+def test_message_agent_tool_declares_typed_structured_content_for_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact import context as _ctx
+    from clio_agent.gact.agent_messaging import build_message_agent_tool
+
+    declared: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        tool = build_message_agent_tool(SimpleNamespace(id="main"))
+        token_a = _ctx.set_app(app)
+        token_s = _ctx.set_session_id(parent)
+        try:
+            out = tool.func(task_id="task_never_existed", message="hello")
+        finally:
+            _ctx.reset(token_s)
+            _ctx.reset(token_a)
+
+    wire = json.loads(out)
+    assert wire["error"] == "unknown_task"
+    assert len(declared) == 1
+    shape = declared[0]
+    assert next(iter(shape)) == "message"
+    assert shape["message"] == f"message rejected: unknown_task — {wire['message']}"
+    # The raw exception text is preserved (never dropped) — renamed to "detail" in
+    # the structured payload only, since "message" now carries our composed
+    # presentation summary; the model-facing wire's own "message" is untouched.
+    assert shape["detail"] == wire["message"]
+    assert {k: v for k, v in shape.items() if k not in ("message", "detail")} == {
+        k: v for k, v in wire.items() if k != "message"
+    }
