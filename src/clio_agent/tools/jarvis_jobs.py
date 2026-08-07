@@ -446,15 +446,10 @@ def _split_dispatch_budget(
 ) -> tuple[dict[str, Any], float]:
     """Consume a programmatic caller's ``timeout_seconds``, keeping it off the wire.
 
-    It is a budget for one dispatch, never a door argument: the registered JARVIS
-    route's discovered inputSchema is closed and spells the same bound
-    ``wait_timeout_seconds``, so forwarding it verbatim made every curated
-    dispatch fail pre-flight with ``relay_arguments_invalid`` (the compact
-    virtual route accepted it, which is why the default namespace flip exposed
-    this). Agents no longer see the knob at all -- ``_CONTROL_PROPERTIES``.
-
-    Returns the door payload without the knob, plus the budget bounding both the
-    remote wait and this client's own read timeout.
+    It bounds one dispatch and was never a door argument: the registered JARVIS
+    route's schema is closed and spells the same bound ``wait_timeout_seconds``,
+    so forwarding it verbatim failed every dispatch pre-flight with
+    ``relay_arguments_invalid``. Agents no longer see it -- ``_CONTROL_PROPERTIES``.
     """
 
     payload = dict(arguments)
@@ -482,7 +477,7 @@ class JarvisJobs:
         *,
         poll_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         dispatch_timeout_seconds: float = 600.0,
-        request_timeout_seconds: float = 30.0,
+        request_timeout_seconds: float | None = None,
         cluster_hint: str | None = None,
         door_namespace: str = JARVIS_DEFAULT_DOOR_NAMESPACE,
     ) -> None:
@@ -493,8 +488,12 @@ class JarvisJobs:
             poll_sleep: Injected clock for the bounded-dispatch poll loop.
             dispatch_timeout_seconds: Budget for create/deploy/execution-query
                 dispatches driven to terminal.
-            request_timeout_seconds: Budget for the fire-and-forget ``jarvis_run``
-                submit call.
+            request_timeout_seconds: Budget for the ``jarvis_run`` submit,
+                defaulting to ``dispatch_timeout_seconds``. That submit is
+                fire-and-forget in JOB terms only; its ``tools/call`` travels the
+                same SSH-relayed transport as every other operation, so the old
+                flat 30s made ``jarvis_run`` impossible on a remote deployment
+                (live: two submits abandoned at ~51s where a call costs ~200s).
             cluster_hint: Resolved ``relay.cluster`` value stamped into every
                 curated tool's description, or ``None`` when unset.
             door_namespace: Resolved ``relay.jarvis_door_namespace`` value this
@@ -504,6 +503,8 @@ class JarvisJobs:
                 compact door names instead.
         """
 
+        if request_timeout_seconds is None:
+            request_timeout_seconds = dispatch_timeout_seconds
         if dispatch_timeout_seconds <= 0 or request_timeout_seconds <= 0:
             raise ValueError("JARVIS dispatch and request timeouts must be positive")
         self._client_factory = client_factory
@@ -612,16 +613,11 @@ class JarvisJobs:
         payload["wait_for_terminal"] = True
         payload["wait_timeout_seconds"] = budget
         async with self._client_factory() as relay:
-            # The create-task call itself carries ``wait_for_terminal=True`` /
-            # ``wait_timeout_seconds=self._dispatch_timeout_seconds`` — the remote
-            # side is told it may take up to the full dispatch budget before
-            # replying at all. The client's own read timeout on THAT call must
-            # therefore be at least as generous, or it gives up long before the
-            # server-side deadline it was just told to honor (observed live: a
-            # real SSH-relayed JARVIS describe/create_pipeline/add_step/edit_step
-            # dispatch routinely takes 40-100+s, well past the short
-            # ``request_timeout_seconds`` budget meant for quick control calls
-            # like ``jarvis_run``'s fire-and-forget submit).
+            # The create-task call carries ``wait_for_terminal=True`` and the
+            # same budget, so the remote side is told it may take that long
+            # before replying at all. The client's own read timeout must be at
+            # least as generous or it abandons the server-side deadline it just
+            # asked for (live: SSH-relayed dispatches routinely take 190-220s).
             identity = await self._submit_door_call(
                 relay,
                 tool_name,

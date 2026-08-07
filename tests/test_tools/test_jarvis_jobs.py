@@ -827,6 +827,33 @@ async def test_curated_timeout_seconds_is_consumed_and_never_reaches_the_door() 
 
 
 @pytest.mark.asyncio
+async def test_run_submit_gets_the_full_dispatch_budget_by_default() -> None:
+    """FAILING-FIRST: the ``jarvis_run`` submit carried a separate flat 30s
+    budget on the theory that it is a quick control call. It is not -- the
+    ``tools/call`` travels the same SSH-relayed transport as every other
+    operation, where one call costs ~200s, so the submit could never complete
+    (observed live: two consecutive submits abandoned at ~51s, then a
+    repeated-failure circuit breaker, on a pipeline that was created and
+    configured correctly). It defaults to the dispatch budget now, and an
+    explicit value still wins."""
+
+    relay = _CapturingRelay()
+    jobs = JarvisJobs(lambda: relay, poll_sleep=_no_sleep, dispatch_timeout_seconds=480.0)
+    await jobs.run({"cluster": "ares", "pipeline_id": "p"})
+    assert relay.submitted_timeouts[0] == 480.0
+
+    pinned = _CapturingRelay()
+    explicit = JarvisJobs(
+        lambda: pinned,
+        poll_sleep=_no_sleep,
+        dispatch_timeout_seconds=480.0,
+        request_timeout_seconds=15.0,
+    )
+    await explicit.run({"cluster": "ares", "pipeline_id": "p"})
+    assert pinned.submitted_timeouts[0] == 15.0
+
+
+@pytest.mark.asyncio
 async def test_curated_timeout_seconds_is_consumed_on_the_fire_and_forget_run() -> None:
     """``jarvis_run``'s submit takes the same knob down the same seam -- it must
     not leak into the door payload there either, and it must bound the submit."""
