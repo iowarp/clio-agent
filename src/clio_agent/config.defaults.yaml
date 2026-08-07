@@ -362,6 +362,9 @@ providers.codex.stateful_capacity: 128.0
 # CLIO_RELAY_CLUSTER  (str)  <- src/clio_agent/tools/relay_factory.py
 # relay.cluster:  # default unset; resolved in code
 
+# CLIO_RELAY_FETCH_MAX_BYTES  (int)  <- src/clio_agent/tools/relay_artifact_fetch.py
+relay.fetch_max_bytes: 104857600
+
 # CLIO_RELAY_HTTP_URL  (str)  <- src/clio_agent/tools/relay_factory.py
 # relay.http_url:  # default unset; resolved in code
 
