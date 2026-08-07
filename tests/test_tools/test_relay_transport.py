@@ -472,6 +472,14 @@ async def test_submit_rejects_missing_and_unknown_arguments_before_submission(
     assert raised.value.details["missing_keys"] == ["delay"]
     assert raised.value.details["unknown_keys"] == ["unexpected"]
     assert after == before
+    # FAILING-FIRST: the typed ``details`` never reach an agent -- the tool layer
+    # renders only the exception's own text, so a live expert saw a bare "do not
+    # match its discovered inputSchema" and had no way to learn WHICH key was
+    # wrong. It burned three consecutive remote dispatches guessing. The message
+    # itself must name the offending keys.
+    message = str(raised.value)
+    assert "missing ['delay']" in message
+    assert "unknown ['unexpected']" in message
 
 
 async def test_submit_preserves_inline_relay_error_as_typed_reason(

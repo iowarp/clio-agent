@@ -439,6 +439,40 @@ class _ProjectedJarvisTool(Tool):
         return ToolResult(structured_content=payload)
 
 
+def _split_dispatch_budget(
+    arguments: Mapping[str, Any], default_seconds: float
+) -> tuple[dict[str, Any], float]:
+    """Consume this surface's own ``timeout_seconds`` control knob locally.
+
+    ``timeout_seconds`` is declared by the CURATED schema (``_CONTROL_PROPERTIES``)
+    and is a budget for one dispatch -- it was never a relay door argument. The
+    registered JARVIS route's discovered inputSchema is closed
+    (``additionalProperties: false``) and carries no such property; it spells the
+    same bound ``wait_timeout_seconds``. Forwarding the caller's value verbatim
+    therefore made every curated dispatch fail pre-flight against the registered
+    route with ``relay_arguments_invalid`` while the same payload was accepted by
+    the compact virtual route, whose schema does declare it.
+
+    Returns the door payload with the knob removed, plus the budget that bounds
+    both the remote wait and this client's own read timeout for the call.
+    """
+
+    payload = dict(arguments)
+    if "timeout_seconds" not in payload:
+        return payload, default_seconds
+    raw = payload.pop("timeout_seconds")
+    budget = None
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        budget = float(raw)
+    if budget is None or budget <= 0:
+        raise JarvisJobError(
+            "timeout_seconds must be a positive number of seconds",
+            reason="jarvis_timeout_seconds_invalid",
+            details={"timeout_seconds": raw},
+        )
+    return payload, budget
+
+
 class JarvisJobs:
     """Six application-level JARVIS tools composed over RelayTransportClient."""
 
@@ -507,7 +541,7 @@ class JarvisJobs:
     async def run(self, arguments: Mapping[str, Any]) -> JarvisRunHandle:
         """Submit jarvis_run and return its durable identity without workload waiting."""
 
-        payload = dict(arguments)
+        payload, budget = _split_dispatch_budget(arguments, self._request_timeout_seconds)
         forbidden = {"wait", "wait_for_terminal", "wait_timeout_seconds", "poll_seconds"}
         smuggled = sorted(forbidden.intersection(payload))
         if smuggled:
@@ -521,7 +555,7 @@ class JarvisJobs:
                 relay,
                 "jarvis_run",
                 payload,
-                timeout_seconds=self._request_timeout_seconds,
+                timeout_seconds=budget,
             )
         return JarvisRunHandle(identity)
 
@@ -574,9 +608,9 @@ class JarvisJobs:
     async def _bounded(self, tool_name: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         """Run one deploy/query dispatch to terminal with an injected poll clock."""
 
-        payload = dict(arguments)
+        payload, budget = _split_dispatch_budget(arguments, self._dispatch_timeout_seconds)
         payload["wait_for_terminal"] = True
-        payload["wait_timeout_seconds"] = self._dispatch_timeout_seconds
+        payload["wait_timeout_seconds"] = budget
         async with self._client_factory() as relay:
             # The create-task call itself carries ``wait_for_terminal=True`` /
             # ``wait_timeout_seconds=self._dispatch_timeout_seconds`` — the remote
@@ -592,7 +626,7 @@ class JarvisJobs:
                 relay,
                 tool_name,
                 payload,
-                timeout_seconds=self._dispatch_timeout_seconds,
+                timeout_seconds=budget,
             )
             final = await self._drive_to_terminal(relay, identity)
         return _terminal_payload(tool_name, final)

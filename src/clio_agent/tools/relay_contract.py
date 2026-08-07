@@ -140,8 +140,20 @@ async def validate_submit_arguments(
         sorted(set(payload) - properties) if schema.get("additionalProperties") is False else []
     )
     if missing or unknown:
+        # The typed ``details`` below never reach an agent -- the tool layer
+        # renders only this exception's own text. A bare "do not match its
+        # discovered inputSchema" leaves a caller with no way to learn WHICH key
+        # was wrong, and it guesses (observed live: three consecutive remote
+        # dispatches burned on the same unknown key). Name the keys in the
+        # message itself so one rejection is enough to correct the call.
+        faults = []
+        if missing:
+            faults.append(f"missing {missing}")
+        if unknown:
+            faults.append(f"unknown {unknown}")
         raise RelayTransportContractError(
-            f"relay arguments for {tool_name!r} do not match its discovered inputSchema",
+            f"relay arguments for {tool_name!r} do not match its discovered "
+            f"inputSchema: {'; '.join(faults)}",
             reason="relay_arguments_invalid",
             details={
                 "tool": tool_name,

@@ -644,6 +644,7 @@ class _CapturingRelay:
     def __init__(self, *, reject: str | None = None) -> None:
         self.submitted: list[str] = []
         self.submitted_arguments: list[dict[str, Any]] = []
+        self.submitted_timeouts: list[float | None] = []
         self._reject = reject
 
     async def __aenter__(self) -> "_CapturingRelay":
@@ -660,9 +661,10 @@ class _CapturingRelay:
         idempotency_key: str | None = None,
         timeout_seconds: float | None = None,
     ) -> RelayTaskIdentity:
-        del idempotency_key, timeout_seconds
+        del idempotency_key
         self.submitted.append(tool_name)
         self.submitted_arguments.append(dict(arguments or {}))
+        self.submitted_timeouts.append(timeout_seconds)
         if self._reject is not None and tool_name == self._reject:
             raise RelayTransportContractError(
                 f"relay tool {tool_name!r} was not present in the discovered catalog",
@@ -781,6 +783,79 @@ async def test_door_tool_not_found_surfaces_curated_name_and_namespace_without_r
         "door_namespace": "remote_jarvis",
     }
     assert relay.submitted == ["remote_jarvis_jarvis_run"]
+
+
+@pytest.mark.asyncio
+async def test_curated_timeout_seconds_is_consumed_and_never_reaches_the_door() -> None:
+    """FAILING-FIRST: ``timeout_seconds`` is THIS surface's declared control knob
+    (``_CONTROL_PROPERTIES``), not a relay door argument. The registered JARVIS
+    route's discovered inputSchema is closed and has no such property -- it
+    spells the same bound ``wait_timeout_seconds`` -- so forwarding the caller's
+    value verbatim made EVERY curated dispatch die pre-flight with
+    ``relay_arguments_invalid`` (observed live: three consecutive
+    jarvis_describe/jarvis_create_pipeline rejections). Consuming it locally is
+    what makes the declared knob mean what it says: the budget for this
+    dispatch, on both the remote wait and this client's own read timeout."""
+
+    relay = _CapturingRelay()
+    jobs = JarvisJobs(lambda: relay, poll_sleep=_no_sleep)
+
+    await jobs.describe({"cluster": "ares", "target": "packages", "timeout_seconds": 60})
+
+    sent = relay.submitted_arguments[0]
+    assert "timeout_seconds" not in sent
+    assert sent["wait_for_terminal"] is True
+    assert sent["wait_timeout_seconds"] == 60.0
+    assert relay.submitted_timeouts[0] == 60.0
+
+
+@pytest.mark.asyncio
+async def test_curated_timeout_seconds_is_consumed_on_the_fire_and_forget_run() -> None:
+    """``jarvis_run``'s submit takes the same knob down the same seam -- it must
+    not leak into the door payload there either, and it must bound the submit."""
+
+    relay = _CapturingRelay()
+    jobs = JarvisJobs(lambda: relay, poll_sleep=_no_sleep)
+
+    await jobs.run({"cluster": "ares", "pipeline_id": "p", "timeout_seconds": 45})
+
+    sent = relay.submitted_arguments[0]
+    assert "timeout_seconds" not in sent
+    assert "wait_timeout_seconds" not in sent
+    assert relay.submitted_timeouts[0] == 45.0
+
+
+@pytest.mark.asyncio
+async def test_omitted_timeout_seconds_keeps_the_configured_dispatch_budget() -> None:
+    """Omitting the knob is unchanged behaviour: the instance's own dispatch
+    budget still bounds the call, and no caller value is invented."""
+
+    relay = _CapturingRelay()
+    jobs = JarvisJobs(lambda: relay, poll_sleep=_no_sleep, dispatch_timeout_seconds=123.0)
+
+    await jobs.describe({"cluster": "ares", "target": "packages"})
+
+    assert relay.submitted_arguments[0]["wait_timeout_seconds"] == 123.0
+    assert relay.submitted_timeouts[0] == 123.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [0, -5, "soon", None])
+async def test_unusable_timeout_seconds_is_a_typed_refusal_not_a_silent_default(
+    bad: object,
+) -> None:
+    """A knob that cannot bound anything must be refused by name -- never
+    quietly replaced with the default, which would hide the caller's mistake."""
+
+    relay = _CapturingRelay()
+    jobs = JarvisJobs(lambda: relay, poll_sleep=_no_sleep)
+
+    with pytest.raises(JarvisJobError) as raised:
+        await jobs.describe({"cluster": "ares", "target": "packages", "timeout_seconds": bad})
+
+    assert raised.value.reason == "jarvis_timeout_seconds_invalid"
+    assert raised.value.details["timeout_seconds"] == bad
+    assert relay.submitted == []
 
 
 def _relay_job_envelope(
