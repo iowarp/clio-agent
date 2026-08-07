@@ -17,13 +17,16 @@ from clio_agent.tools.gateway import build_gateway
 from clio_agent.tools.jarvis_jobs import (
     _DESCRIPTIONS,
     _INPUT_SCHEMAS,
+    JARVIS_DEFAULT_DOOR_NAMESPACE,
     JARVIS_RUN_HANDLE_OUTPUT_SCHEMA,
+    JARVIS_TOOL_NAMES,
     JarvisJobError,
     JarvisJobs,
     JarvisRunHandle,
     _execution_projection,
     _raise_remote_call_failure,
     _structured_payload,
+    resolve_jarvis_door_tool_name,
 )
 from clio_agent.tools.mcp_task_records import TaskKey
 from clio_agent.tools.relay_transport import (
@@ -78,8 +81,35 @@ class _Dispatch:
     stream_task: asyncio.Task[None] | None = None
 
 
+def _curated_tool_name(door_tool_name: str) -> str:
+    """Normalize a dispatched door tool name back to its curated operation.
+
+    ``_FakeJarvisRoute``'s own dispatch logic branches on the CURATED
+    operation (create_pipeline/describe/...), independent of which door
+    namespace the ``JarvisJobs`` surface under test is configured to dispatch
+    through -- mirrors the real relay door's namespaced projection
+    (``remote_jarvis_jarvis_create_pipeline``) without pinning one namespace
+    into every behavior assertion in this file (the dedicated door-namespace
+    tests below pin the exact wire name instead).
+    """
+
+    if door_tool_name in JARVIS_TOOL_NAMES:
+        return door_tool_name
+    prefix = f"{JARVIS_DEFAULT_DOOR_NAMESPACE}_"
+    if door_tool_name.startswith(prefix) and door_tool_name[len(prefix) :] in JARVIS_TOOL_NAMES:
+        return door_tool_name[len(prefix) :]
+    raise AssertionError(f"unrecognized door tool name: {door_tool_name!r}")
+
+
 class _FakeJarvisRoute:
-    """In-memory relay route enforcing the compact registered JARVIS contract."""
+    """In-memory relay route enforcing the curated JARVIS contract.
+
+    Dispatched door tool names are normalized back to their curated operation
+    (:func:`_curated_tool_name`) before any behavior branch runs, so this fake
+    exercises whichever door namespace the ``JarvisJobs`` surface under test is
+    configured with -- by default the registered-route namespace, the new
+    default a fresh ``JarvisJobs()`` dispatches through.
+    """
 
     def __init__(self) -> None:
         self.pipelines: dict[str, list[tuple[str, dict[str, Any]]]] = {}
@@ -107,16 +137,17 @@ class _FakeJarvisRoute:
             assert dispatch.stream_task is not None and dispatch.stream_task.done()
 
     async def submit(self, tool: str, arguments: Mapping[str, Any]) -> RelayTaskIdentity:
+        curated = _curated_tool_name(tool)
         args = dict(arguments)
         pipeline_id = str(args.get("pipeline_id", ""))
-        if tool == "jarvis_run" and "wait" in args:
+        if curated == "jarvis_run" and "wait" in args:
             raise RelayTransportContractError(
                 "jarvis_run does not accept internal wait",
                 reason="jarvis_run_wait_not_allowed",
                 details={"field": "wait"},
             )
         manifest = args.get("jarvis_input_manifest")
-        if tool == "jarvis_run" and isinstance(manifest, Mapping):
+        if curated == "jarvis_run" and isinstance(manifest, Mapping):
             route = manifest.get("route")
             registered = route.get("pipeline_id") if isinstance(route, Mapping) else None
             if registered != pipeline_id:
@@ -125,7 +156,7 @@ class _FakeJarvisRoute:
                     reason="jarvis_input_manifest_pipeline_mismatch",
                     details={"pipeline_id": pipeline_id, "registered_pipeline_id": registered},
                 )
-        if tool not in {"jarvis_create_pipeline", "jarvis_describe"} and (
+        if curated not in {"jarvis_create_pipeline", "jarvis_describe"} and (
             pipeline_id not in self.pipelines
         ):
             raise RelayTransportContractError(
@@ -136,7 +167,7 @@ class _FakeJarvisRoute:
         self._next_job += 1
         task_id = f"jarvis-job-{self._next_job}"
         identity = RelayTaskIdentity.from_key(TaskKey("fake-relay", "session-alice", task_id))
-        dispatch = _Dispatch(identity, tool, args)
+        dispatch = _Dispatch(identity, curated, args)
         dispatch.stream_task = asyncio.create_task(self._stream(dispatch))
         self.dispatches[task_id] = dispatch
         self._prepare(dispatch)
@@ -589,6 +620,169 @@ async def test_oversize_and_unknown_resume_keep_relay_error_types(
     assert unknown_task.value.reason == "relay_task_record_missing"
 
 
+# --------------------------------------------------------------------------- #
+# Door tool name resolution (P5 correct-shape door): the door this surface was
+# built against exposed compact aliases (jarvis_create_pipeline, ...). The
+# correct-shape local relay door projects only the OPERATOR-REGISTERED route
+# (remote_jarvis_jarvis_create_pipeline, ...) -- the compact names are ABSENT
+# from its catalog. These tests pin the resolved dispatch name reaching
+# ``relay.submit`` directly, independent of ``_FakeJarvisRoute``'s own curated
+# normalization above.
+# --------------------------------------------------------------------------- #
+
+
+class _CapturingRelay:
+    """Records every door tool name a ``JarvisJobs`` dispatch actually submits.
+
+    ``poll`` immediately reports a terminal, benign result (echoing the
+    submitted ``pipeline_id``/``execution_id`` so ``get_execution``'s identity
+    check passes) so the bounded dispatch path completes in one round trip --
+    this fake exists to pin the WIRE NAME reaching relay, not to simulate
+    JARVIS job semantics.
+    """
+
+    def __init__(self, *, reject: str | None = None) -> None:
+        self.submitted: list[str] = []
+        self.submitted_arguments: list[dict[str, Any]] = []
+        self._reject = reject
+
+    async def __aenter__(self) -> "_CapturingRelay":
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        return None
+
+    async def submit(
+        self,
+        tool_name: str,
+        arguments: Mapping[str, Any] | None = None,
+        *,
+        idempotency_key: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> RelayTaskIdentity:
+        del idempotency_key, timeout_seconds
+        self.submitted.append(tool_name)
+        self.submitted_arguments.append(dict(arguments or {}))
+        if self._reject is not None and tool_name == self._reject:
+            raise RelayTransportContractError(
+                f"relay tool {tool_name!r} was not present in the discovered catalog",
+                reason="relay_tool_not_found",
+                details={"tool": tool_name},
+            )
+        return RelayTaskIdentity.from_key(
+            TaskKey("fake-relay", "session-alice", f"job-{len(self.submitted)}")
+        )
+
+    async def poll(self, task: RelayTaskIdentity) -> ClientGetTaskResult:
+        arguments = self.submitted_arguments[-1]
+        result = {
+            "pipeline_id": arguments.get("pipeline_id"),
+            "execution_id": arguments.get("execution_id"),
+            "state": "completed",
+            "terminal": True,
+        }
+        return ClientGetTaskResult(
+            taskId=task.task_id,
+            status="completed",
+            createdAt="2026-08-06T00:00:00Z",
+            lastUpdatedAt="2026-08-06T00:00:01Z",
+            pollIntervalMs=RELAY_POLL_INTERVAL_MS,
+            resultType="complete",
+            result=result,
+            error=None,
+        )
+
+    async def resume(
+        self, key: TaskKey, *, timeout_seconds: float | None = None
+    ) -> ClientGetTaskResult:
+        raise AssertionError("resume is not exercised by these dispatch-name tests")
+
+
+def test_resolve_jarvis_door_tool_name_prefixes_by_default() -> None:
+    assert (
+        resolve_jarvis_door_tool_name("jarvis_create_pipeline", "remote_jarvis")
+        == "remote_jarvis_jarvis_create_pipeline"
+    )
+
+
+def test_resolve_jarvis_door_tool_name_empty_namespace_reproduces_the_compact_door() -> None:
+    """The OLD compact door name is expressed ONLY through an empty namespace --
+    never a second hardcoded literal anywhere in the module."""
+
+    assert resolve_jarvis_door_tool_name("jarvis_create_pipeline", "") == "jarvis_create_pipeline"
+
+
+def test_resolve_jarvis_door_tool_name_rejects_a_name_outside_the_curated_six() -> None:
+    with pytest.raises(ValueError):
+        resolve_jarvis_door_tool_name("jarvis_not_a_real_operation", "remote_jarvis")
+
+
+@pytest.mark.asyncio
+async def test_default_door_namespace_dispatches_registered_route_names_for_every_op() -> None:
+    """FAILING-FIRST: before this change every curated dispatch submitted the
+    bare curated name (e.g. "jarvis_create_pipeline") straight to relay --
+    exactly the compact alias ABSENT from the correct-shape local relay door.
+    With no override, every one of the six curated operations must now resolve
+    through the registered-route door name (namespace prefix "remote_jarvis")."""
+
+    relay = _CapturingRelay()
+    jobs = JarvisJobs(lambda: relay, poll_sleep=_no_sleep)
+
+    await jobs.create_pipeline({"cluster": "ares", "pipeline_id": "p"})
+    await jobs.describe({"cluster": "ares", "target": "packages"})
+    await jobs.add_step({"cluster": "ares", "pipeline_id": "p", "package_name": "pkg"})
+    await jobs.edit_step({"cluster": "ares", "pipeline_id": "p", "step_id": "s1"})
+    await jobs.run({"cluster": "ares", "pipeline_id": "p"})
+    await jobs.get_execution({"cluster": "ares", "pipeline_id": "p", "execution_id": "e1"})
+
+    assert relay.submitted == [
+        "remote_jarvis_jarvis_create_pipeline",
+        "remote_jarvis_jarvis_describe",
+        "remote_jarvis_jarvis_add_step",
+        "remote_jarvis_jarvis_edit_step",
+        "remote_jarvis_jarvis_run",
+        "remote_jarvis_jarvis_get_execution",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_door_namespace_config_override_dispatches_the_old_compact_names() -> None:
+    """The OLD compact door (the p5run2 evidence door used it) stays reachable
+    purely through the ``door_namespace`` config value -- config-over-env-vars,
+    never a second hardcoded branch."""
+
+    relay = _CapturingRelay()
+    jobs = JarvisJobs(lambda: relay, poll_sleep=_no_sleep, door_namespace="")
+
+    await jobs.create_pipeline({"cluster": "ares", "pipeline_id": "p"})
+    await jobs.run({"cluster": "ares", "pipeline_id": "p"})
+
+    assert relay.submitted == ["jarvis_create_pipeline", "jarvis_run"]
+
+
+@pytest.mark.asyncio
+async def test_door_tool_not_found_surfaces_curated_name_and_namespace_without_retry() -> None:
+    """No silent fallback: a relay rejection of the configured door name must
+    name the curated operation, the exact door tool that was dispatched, and
+    the configured namespace -- and must never retry against the other
+    namespace on its own (exactly one dispatch attempt reaches relay)."""
+
+    relay = _CapturingRelay(reject="remote_jarvis_jarvis_run")
+    jobs = JarvisJobs(lambda: relay, poll_sleep=_no_sleep)
+
+    with pytest.raises(JarvisJobError) as raised:
+        await jobs.run({"cluster": "ares", "pipeline_id": "p"})
+
+    assert raised.value.reason == "jarvis_door_tool_not_found"
+    assert raised.value.details == {
+        "reason": "jarvis_door_tool_not_found",
+        "curated_tool": "jarvis_run",
+        "door_tool": "remote_jarvis_jarvis_run",
+        "door_namespace": "remote_jarvis",
+    }
+    assert relay.submitted == ["remote_jarvis_jarvis_run"]
+
+
 def _relay_job_envelope(
     *,
     pipeline_id: str,
@@ -1034,9 +1228,7 @@ async def test_get_execution_reports_the_remote_reason_the_caller_must_act_on() 
     key) was discarded. The caller must instead receive the remote reason.
     """
 
-    relay = _FailedRemoteCallRelay(
-        _failed_remote_call_envelope(remote_message=_REMOTE_REJECTION)
-    )
+    relay = _FailedRemoteCallRelay(_failed_remote_call_envelope(remote_message=_REMOTE_REJECTION))
     jobs = JarvisJobs(lambda: relay, poll_sleep=_no_sleep)
 
     with pytest.raises(JarvisJobError) as raised:

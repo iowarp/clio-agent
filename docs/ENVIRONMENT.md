@@ -136,6 +136,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_RELAY_CLUSTER` | `relay.cluster` | str | _(unset)_ | `src/clio_agent/tools/relay_factory.py` |
 | `CLIO_RELAY_FETCH_MAX_BYTES` | `relay.fetch_max_bytes` | int | `104857600` | `src/clio_agent/tools/relay_artifact_fetch.py` |
 | `CLIO_RELAY_HTTP_URL` | `relay.http_url` | str | _(unset)_ | `src/clio_agent/tools/relay_factory.py` |
+| `CLIO_RELAY_JARVIS_DOOR_NAMESPACE` | `relay.jarvis_door_namespace` | str | `remote_jarvis` | `src/clio_agent/tools/relay_factory.py` |
 | `CLIO_RELAY_MCP_URL` | `relay.mcp_url` | str | _(unset)_ | `src/clio_agent/gact/relay_status.py` |
 | `CLIO_RELAY_REMOTE_AGENT_MCP_CONFIG_PATH` | `relay.remote_agent.mcp_config_path` | str | _(unset)_ | `src/clio_agent/gact/relay_wiring.py` |
 | `CLIO_RELAY_REMOTE_AGENT_MODEL` | `relay.remote_agent.model` | str | _(unset)_ | `src/clio_agent/gact/relay_wiring.py` |

@@ -368,6 +368,9 @@ relay.fetch_max_bytes: 104857600
 # CLIO_RELAY_HTTP_URL  (str)  <- src/clio_agent/tools/relay_factory.py
 # relay.http_url:  # default unset; resolved in code
 
+# CLIO_RELAY_JARVIS_DOOR_NAMESPACE  (str)  <- src/clio_agent/tools/relay_factory.py
+relay.jarvis_door_namespace: "remote_jarvis"
+
 # CLIO_RELAY_MCP_URL  (str)  <- src/clio_agent/gact/relay_status.py
 # relay.mcp_url:  # default unset; resolved in code
 

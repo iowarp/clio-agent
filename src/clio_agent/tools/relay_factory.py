@@ -111,6 +111,34 @@ def resolve_relay_cluster() -> str:
     ).strip()
 
 
+def resolve_relay_jarvis_door_namespace() -> str:
+    """Resolve the relay-registered JARVIS door namespace, config -> env -> default.
+
+    The correct-shape local relay door projects the six curated JARVIS
+    operations under the OPERATOR-REGISTERED route
+    (``remote_jarvis_jarvis_create_pipeline``, ...) rather than the compact
+    aliases (``jarvis_create_pipeline``, ...) this surface was originally built
+    against -- the compact names are ABSENT from that door's catalog, and only
+    the registered route engages relay's input-staging contract. This is the
+    single seam :class:`clio_agent.tools.jarvis_jobs.JarvisJobs` calls to
+    resolve its door dispatch names
+    (:func:`clio_agent.tools.jarvis_jobs.resolve_jarvis_door_tool_name`).
+    Default ``"remote_jarvis"`` reproduces the new door; setting this to ``""``
+    reproduces the OLD compact door verbatim (the evidence door used them) --
+    expressed through config, not hardcoded as an alternate branch anywhere
+    else. Never gates, degrades, or fabricates a value; only reads config.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415 - keep transport import-light
+
+    return conf.resolve(
+        "relay.jarvis_door_namespace",
+        env="CLIO_RELAY_JARVIS_DOOR_NAMESPACE",
+        default="remote_jarvis",
+        cast=conf.as_str,
+    ).strip()
+
+
 def relay_transport_from_env(
     *,
     owner_session_id: str | None = None,
@@ -147,7 +175,8 @@ async def discover_relay_tool_surfaces() -> RelayToolSurfaces:
 
     factory: Callable[[], AbstractAsyncContextManager[RelayTransportClient]] = resolved.client
     cluster_hint = resolve_relay_cluster() or None
-    jarvis_jobs = JarvisJobs(factory, cluster_hint=cluster_hint)
+    door_namespace = resolve_relay_jarvis_door_namespace()
+    jarvis_jobs = JarvisJobs(factory, cluster_hint=cluster_hint, door_namespace=door_namespace)
     try:
         federation = await RemoteMcpFederation.discover(factory, cluster_hint=cluster_hint)
     except Exception as exc:  # noqa: BLE001 - queryable typed boot degrade

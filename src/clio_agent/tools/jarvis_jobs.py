@@ -29,6 +29,7 @@ from clio_agent.tools.jarvis_result_contract import (
 from clio_agent.tools.mcp_task_records import TERMINAL_TASK_STATES, TaskKey
 from clio_agent.tools.relay_transport import (
     RelayTaskIdentity,
+    RelayTransportContractError,
 )
 
 JARVIS_NAMESPACE = "jarvis"
@@ -40,6 +41,18 @@ JARVIS_TOOL_NAMES = (
     "jarvis_run",
     "jarvis_get_execution",
 )
+# The correct-shape local relay door projects the six curated operations above
+# under the OPERATOR-REGISTERED jarvis route, not the compact aliases this
+# surface was originally built against: the compact names (``jarvis_create_pipeline``,
+# ...) are ABSENT from that door's catalog, and only the registered route engages
+# relay's input-staging contract (verified live: expected_registered_contract
+# "clio-kit-jarvis-user-v3.6", staging proof passed). This is the door-side
+# namespace prefix :func:`resolve_jarvis_door_tool_name` composes onto a curated
+# name by default -- see
+# ``clio_agent.tools.relay_factory.resolve_relay_jarvis_door_namespace`` for the
+# config seam that resolves it (file -> ``CLIO_RELAY_JARVIS_DOOR_NAMESPACE`` -> this
+# default).
+JARVIS_DEFAULT_DOOR_NAMESPACE = "remote_jarvis"
 JARVIS_RUN_HANDLE_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -82,6 +95,7 @@ JARVIS_EXECUTION_OUTPUT_SCHEMA: dict[str, Any] = {
 }
 
 __all__ = [
+    "JARVIS_DEFAULT_DOOR_NAMESPACE",
     "JARVIS_EXECUTION_OUTPUT_SCHEMA",
     "JARVIS_NAMESPACE",
     "JARVIS_RUN_HANDLE_OUTPUT_SCHEMA",
@@ -89,6 +103,7 @@ __all__ = [
     "JarvisJobError",
     "JarvisJobs",
     "JarvisRunHandle",
+    "resolve_jarvis_door_tool_name",
 ]
 
 
@@ -367,6 +382,27 @@ def _with_cluster_hint(description: str, cluster_hint: str | None) -> str:
     )
 
 
+def resolve_jarvis_door_tool_name(curated_name: str, door_namespace: str) -> str:
+    """Map one curated JARVIS operation to its configured relay door tool name.
+
+    The curated (agent-facing) name is stable -- ``jarvis_create_pipeline`` and
+    its five siblings never change. What changes is the wire name this surface
+    dispatches to relay's MCP door under, which is why the mapping is driven by
+    config rather than a hardcoded literal (see ``JARVIS_DEFAULT_DOOR_NAMESPACE``
+    for the door-shape rationale). ``door_namespace`` is a simple prefix: the
+    registered-route default ``"remote_jarvis"`` composes
+    ``"remote_jarvis_jarvis_create_pipeline"``; an empty namespace reproduces the
+    OLD compact door name (``"jarvis_create_pipeline"``) verbatim -- the only way
+    the compact door is ever expressed, never a second hardcoded branch.
+    """
+
+    if curated_name not in JARVIS_TOOL_NAMES:
+        raise ValueError(f"unsupported curated JARVIS tool: {curated_name!r}")
+    if not door_namespace:
+        return curated_name
+    return f"{door_namespace}_{curated_name}"
+
+
 class _ProjectedJarvisTool(Tool):
     """One curated operation exposed below the gateway's jarvis mount."""
 
@@ -414,7 +450,26 @@ class JarvisJobs:
         dispatch_timeout_seconds: float = 600.0,
         request_timeout_seconds: float = 30.0,
         cluster_hint: str | None = None,
+        door_namespace: str = JARVIS_DEFAULT_DOOR_NAMESPACE,
     ) -> None:
+        """Construct the six curated JARVIS tools over one relay client factory.
+
+        Args:
+            client_factory: Opens one owner-bound relay transport client.
+            poll_sleep: Injected clock for the bounded-dispatch poll loop.
+            dispatch_timeout_seconds: Budget for create/deploy/execution-query
+                dispatches driven to terminal.
+            request_timeout_seconds: Budget for the fire-and-forget ``jarvis_run``
+                submit call.
+            cluster_hint: Resolved ``relay.cluster`` value stamped into every
+                curated tool's description, or ``None`` when unset.
+            door_namespace: Resolved ``relay.jarvis_door_namespace`` value this
+                surface dispatches curated operations under (see
+                :func:`resolve_jarvis_door_tool_name`). Defaults to the
+                registered-route namespace; an empty string dispatches the old
+                compact door names instead.
+        """
+
         if dispatch_timeout_seconds <= 0 or request_timeout_seconds <= 0:
             raise ValueError("JARVIS dispatch and request timeouts must be positive")
         self._client_factory = client_factory
@@ -422,6 +477,7 @@ class JarvisJobs:
         self._dispatch_timeout_seconds = dispatch_timeout_seconds
         self._request_timeout_seconds = request_timeout_seconds
         self._cluster_hint = cluster_hint
+        self._door_namespace = door_namespace
         server = FastMCP("clio-jarvis-jobs")
         for name in JARVIS_TOOL_NAMES:
             server.add_tool(_ProjectedJarvisTool(name, self, cluster_hint=cluster_hint))
@@ -461,7 +517,8 @@ class JarvisJobs:
                 details={"fields": smuggled},
             )
         async with self._client_factory() as relay:
-            identity = await relay.submit(
+            identity = await self._submit_door_call(
+                relay,
                 "jarvis_run",
                 payload,
                 timeout_seconds=self._request_timeout_seconds,
@@ -531,13 +588,53 @@ class JarvisJobs:
             # dispatch routinely takes 40-100+s, well past the short
             # ``request_timeout_seconds`` budget meant for quick control calls
             # like ``jarvis_run``'s fire-and-forget submit).
-            identity = await relay.submit(
+            identity = await self._submit_door_call(
+                relay,
                 tool_name,
                 payload,
                 timeout_seconds=self._dispatch_timeout_seconds,
             )
             final = await self._drive_to_terminal(relay, identity)
         return _terminal_payload(tool_name, final)
+
+    async def _submit_door_call(
+        self,
+        relay: JarvisRelayClient,
+        curated_name: str,
+        payload: Mapping[str, Any],
+        *,
+        timeout_seconds: float,
+    ) -> RelayTaskIdentity:
+        """Submit one dispatch against this instance's configured door tool name.
+
+        No silent fallback: when relay rejects the resolved door name with its
+        typed ``relay_tool_not_found`` reason, this re-raises carrying the
+        curated operation, the exact door tool name that was dispatched, and the
+        configured ``door_namespace`` -- it never retries the other namespace on
+        its own (see :func:`resolve_jarvis_door_tool_name`).
+        """
+
+        door_name = self._door_tool_name(curated_name)
+        try:
+            return await relay.submit(door_name, payload, timeout_seconds=timeout_seconds)
+        except RelayTransportContractError as exc:
+            if exc.reason != "relay_tool_not_found":
+                raise
+            raise JarvisJobError(
+                f"{curated_name} dispatched door tool {door_name!r}, which relay's "
+                "catalog does not expose",
+                reason="jarvis_door_tool_not_found",
+                details={
+                    "curated_tool": curated_name,
+                    "door_tool": door_name,
+                    "door_namespace": self._door_namespace,
+                },
+            ) from exc
+
+    def _door_tool_name(self, curated_name: str) -> str:
+        """Resolve one curated operation to this instance's configured door name."""
+
+        return resolve_jarvis_door_tool_name(curated_name, self._door_namespace)
 
     async def _drive_to_terminal(
         self,
