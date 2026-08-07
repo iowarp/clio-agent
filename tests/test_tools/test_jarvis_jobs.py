@@ -785,6 +785,23 @@ async def test_door_tool_not_found_surfaces_curated_name_and_namespace_without_r
     assert relay.submitted == ["remote_jarvis_jarvis_run"]
 
 
+def test_agent_facing_schemas_do_not_offer_a_dispatch_timeout_knob() -> None:
+    """FAILING-FIRST: the curated schemas declared an undescribed
+    ``timeout_seconds`` integer that an agent had to guess at, and every guess
+    was wrong -- one real registered-route dispatch costs minutes, so a model
+    picking 60 then 180 abandoned a describe at 94s and again at 212s and then
+    tripped a repeated-failure circuit breaker. A relay dispatch is durable, so
+    a shorter caller budget cannot make it faster; it only loses the result.
+    The budget is deployment configuration, so the knob must not be on the
+    agent-facing surface at all."""
+
+    for name in JARVIS_TOOL_NAMES:
+        properties = _INPUT_SCHEMAS[name]["properties"]
+        assert "timeout_seconds" not in properties, name
+        assert "idempotency_key" in properties, name
+        assert _INPUT_SCHEMAS[name]["additionalProperties"] is False, name
+
+
 @pytest.mark.asyncio
 async def test_curated_timeout_seconds_is_consumed_and_never_reaches_the_door() -> None:
     """FAILING-FIRST: ``timeout_seconds`` is THIS surface's declared control knob

@@ -158,9 +158,11 @@ JarvisClientFactory = Callable[[], AbstractAsyncContextManager[JarvisRelayClient
 _CLUSTER = {"type": "string", "minLength": 1}
 _IDENTITY = {"type": "string", "minLength": 1, "maxLength": 256}
 _OPTIONAL_IDENTITY = {"anyOf": [_IDENTITY, {"type": "null"}], "default": None}
+# ``timeout_seconds`` is deliberately absent: an undescribed budget an agent had
+# to guess at, where one real dispatch costs minutes and a durable job cannot
+# finish sooner for being observed less. See :func:`_split_dispatch_budget`.
 _CONTROL_PROPERTIES = {
     "idempotency_key": {"type": "string", "minLength": 1},
-    "timeout_seconds": {"type": "integer", "minimum": 1},
 }
 # The exact artifact-page filter JARVIS accepts, mirrored from the relay-advertised
 # ``jarvis_get_execution`` input schema (captured live off clio-relay's tools/list,
@@ -442,19 +444,17 @@ class _ProjectedJarvisTool(Tool):
 def _split_dispatch_budget(
     arguments: Mapping[str, Any], default_seconds: float
 ) -> tuple[dict[str, Any], float]:
-    """Consume this surface's own ``timeout_seconds`` control knob locally.
+    """Consume a programmatic caller's ``timeout_seconds``, keeping it off the wire.
 
-    ``timeout_seconds`` is declared by the CURATED schema (``_CONTROL_PROPERTIES``)
-    and is a budget for one dispatch -- it was never a relay door argument. The
-    registered JARVIS route's discovered inputSchema is closed
-    (``additionalProperties: false``) and carries no such property; it spells the
-    same bound ``wait_timeout_seconds``. Forwarding the caller's value verbatim
-    therefore made every curated dispatch fail pre-flight against the registered
-    route with ``relay_arguments_invalid`` while the same payload was accepted by
-    the compact virtual route, whose schema does declare it.
+    It is a budget for one dispatch, never a door argument: the registered JARVIS
+    route's discovered inputSchema is closed and spells the same bound
+    ``wait_timeout_seconds``, so forwarding it verbatim made every curated
+    dispatch fail pre-flight with ``relay_arguments_invalid`` (the compact
+    virtual route accepted it, which is why the default namespace flip exposed
+    this). Agents no longer see the knob at all -- ``_CONTROL_PROPERTIES``.
 
-    Returns the door payload with the knob removed, plus the budget that bounds
-    both the remote wait and this client's own read timeout for the call.
+    Returns the door payload without the knob, plus the budget bounding both the
+    remote wait and this client's own read timeout.
     """
 
     payload = dict(arguments)
