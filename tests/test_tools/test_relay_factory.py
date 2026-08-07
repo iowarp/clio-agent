@@ -21,13 +21,17 @@ from mcp.types import Tool as McpTool
 from clio_agent.tools import relay_factory
 from clio_agent.tools.mcp_task_records import TaskKey
 from clio_agent.tools.relay_factory import (
+    RelayTransportConfig,
     RelayTransportUnavailable,
     discover_relay_tool_surfaces,
     resolve_relay_cluster,
     resolve_relay_jarvis_door_namespace,
+    resolve_relay_transport_config,
 )
 from clio_agent.tools.relay_transport import (
+    OWNER_SESSION_ID_HEADER,
     RELAY_POLL_INTERVAL_MS,
+    SESSION_GENERATION_ID_HEADER,
     RelayRemoteMcpCatalog,
     RelayTaskIdentity,
 )
@@ -125,6 +129,19 @@ def _clear_relay_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.delenv("CLIO_RELAY_CLUSTER", raising=False)
     monkeypatch.delenv("CLIO_RELAY_JARVIS_DOOR_NAMESPACE", raising=False)
+    monkeypatch.delenv("CLIO_RELAY_MCP_URL", raising=False)
+    monkeypatch.delenv("CLIO_RELAY_HTTP_URL", raising=False)
+    monkeypatch.delenv("CLIO_RELAY_API_TOKEN", raising=False)
+    monkeypatch.delenv("CLIO_RELAY_OWNER_SESSION_ID", raising=False)
+    monkeypatch.delenv("CLIO_RELAY_SESSION_GENERATION_ID", raising=False)
+
+
+def _configure_relay_doors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Set the three always-required transport knobs, owner session left unset."""
+
+    monkeypatch.setenv("CLIO_RELAY_MCP_URL", "http://127.0.0.1:18795/mcp")
+    monkeypatch.setenv("CLIO_RELAY_HTTP_URL", "http://127.0.0.1:8795")
+    monkeypatch.setenv("CLIO_RELAY_API_TOKEN", "token-alice")
 
 
 def test_resolve_relay_cluster_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -249,6 +266,103 @@ async def test_discover_relay_tool_surfaces_unset_cluster_leaves_descriptions_un
     follow_tool = await surfaces.remote_mcp_federation.follow_server.get_tool("wait")
     assert follow_tool is not None
     assert not (follow_tool.description or "")
+
+
+def test_owner_session_identity_reaches_the_relay_api_request_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FAILING-FIRST: the relay HTTP API that serves artifact bytes is an OWNED
+    SESSION API -- it answers every read with 403 ``exact owner session and
+    generation headers are required`` unless the request carries them. The
+    transport has always been able to send them; nothing ever resolved them from
+    configuration, so ``relay_fetch_artifact`` could not reach that door at all.
+
+    Proven on the header map the client actually sends (the same dict handed to
+    both the httpx client and the MCP client), not on an intermediate config
+    read."""
+
+    _configure_relay_doors(monkeypatch)
+    monkeypatch.setenv("CLIO_RELAY_OWNER_SESSION_ID", "  p5local-gate-1  ")
+    monkeypatch.setenv("CLIO_RELAY_SESSION_GENERATION_ID", "  d2bf4aaa  ")
+
+    resolved = resolve_relay_transport_config()
+    assert isinstance(resolved, RelayTransportConfig)
+    assert resolved.owner_session_id == "p5local-gate-1"
+    assert resolved.owner_session_generation_id == "d2bf4aaa"
+
+    headers = resolved.client()._headers
+    assert headers[OWNER_SESSION_ID_HEADER] == "p5local-gate-1"
+    assert headers[SESSION_GENERATION_ID_HEADER] == "d2bf4aaa"
+
+
+def test_unset_owner_session_identity_sends_no_owner_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deployment whose relay API is not owned-session bound is unchanged: no
+    owner headers are invented, and the transport stays configured."""
+
+    _configure_relay_doors(monkeypatch)
+
+    resolved = resolve_relay_transport_config()
+    assert isinstance(resolved, RelayTransportConfig)
+    assert resolved.owner_session_id == ""
+    assert resolved.owner_session_generation_id == ""
+
+    headers = resolved.client()._headers
+    assert OWNER_SESSION_ID_HEADER not in headers
+    assert SESSION_GENERATION_ID_HEADER not in headers
+
+
+def test_explicit_owner_session_argument_still_wins_over_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The configured identity is a DEFAULT, never an override: a caller that
+    binds its own owned session (the per-session seam) keeps that binding."""
+
+    _configure_relay_doors(monkeypatch)
+    monkeypatch.setenv("CLIO_RELAY_OWNER_SESSION_ID", "p5local-gate-1")
+    monkeypatch.setenv("CLIO_RELAY_SESSION_GENERATION_ID", "d2bf4aaa")
+
+    resolved = resolve_relay_transport_config()
+    assert isinstance(resolved, RelayTransportConfig)
+
+    headers = resolved.client(
+        owner_session_id="other-session",
+        owner_session_generation_id="other-generation",
+    )._headers
+    assert headers[OWNER_SESSION_ID_HEADER] == "other-session"
+    assert headers[SESSION_GENERATION_ID_HEADER] == "other-generation"
+
+
+@pytest.mark.parametrize(
+    ("owner_session_id", "generation_id", "missing"),
+    [
+        ("p5local-gate-1", "", ["owner_session_generation_id"]),
+        ("", "d2bf4aaa", ["owner_session_id"]),
+    ],
+)
+def test_half_configured_owner_session_is_a_typed_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+    owner_session_id: str,
+    generation_id: str,
+    missing: list[str],
+) -> None:
+    """FAILING-FIRST: a half-configured owned session must be a loud, queryable
+    reason -- never a client that silently drops one header and then gets 403s
+    from the relay API with no local explanation."""
+
+    _configure_relay_doors(monkeypatch)
+    if owner_session_id:
+        monkeypatch.setenv("CLIO_RELAY_OWNER_SESSION_ID", owner_session_id)
+    if generation_id:
+        monkeypatch.setenv("CLIO_RELAY_SESSION_GENERATION_ID", generation_id)
+
+    resolved = resolve_relay_transport_config()
+
+    assert isinstance(resolved, RelayTransportUnavailable)
+    assert resolved.reason == "relay_owner_session_identity_incomplete"
+    assert resolved.details["missing"] == missing
+    assert resolved.to_wire()["configured"] is False
 
 
 def test_relay_transport_unavailable_short_circuits_without_cluster_read(

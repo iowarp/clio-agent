@@ -374,6 +374,12 @@ relay.jarvis_door_namespace: "remote_jarvis"
 # CLIO_RELAY_MCP_URL  (str)  <- src/clio_agent/gact/relay_status.py
 # relay.mcp_url:  # default unset; resolved in code
 
+# CLIO_RELAY_SESSION_GENERATION_ID  (str)  <- src/clio_agent/tools/relay_factory.py
+# relay.owner_session_generation_id:  # default unset; resolved in code
+
+# CLIO_RELAY_OWNER_SESSION_ID  (str)  <- src/clio_agent/tools/relay_factory.py
+# relay.owner_session_id:  # default unset; resolved in code
+
 # CLIO_RELAY_REMOTE_AGENT_MCP_CONFIG_PATH  (str)  <- src/clio_agent/gact/relay_wiring.py
 # relay.remote_agent.mcp_config_path:  # default unset; resolved in code
 

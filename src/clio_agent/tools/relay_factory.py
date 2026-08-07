@@ -36,6 +36,11 @@ class RelayTransportConfig:
     mcp_url: str
     http_url: str
     api_token: str
+    #: This deployment's owned relay session, or ``""`` when the relay HTTP API
+    #: is not owned-session bound. Both fields move together -- see
+    #: :func:`resolve_relay_transport_config`.
+    owner_session_id: str = ""
+    owner_session_generation_id: str = ""
 
     def client(
         self,
@@ -45,9 +50,19 @@ class RelayTransportConfig:
         session_id: str | None = None,
         store: TaskRecordStore | None = None,
     ) -> RelayTransportClient:
-        """Construct one fresh owner-bound transport client."""
+        """Construct one fresh owner-bound transport client.
+
+        An explicitly supplied owned session wins; the configured identity is
+        the DEFAULT applied when the caller binds none, which is what lets the
+        boot-time tool surfaces (``relay_fetch_artifact`` above all) reach an
+        owned-session relay API at all.
+        """
 
         from clio_agent.tools.relay_transport import RelayTransportClient  # noqa: PLC0415
+
+        if owner_session_id is None and owner_session_generation_id is None:
+            owner_session_id = self.owner_session_id or None
+            owner_session_generation_id = self.owner_session_generation_id or None
 
         return RelayTransportClient(
             self.mcp_url,
@@ -87,7 +102,40 @@ def resolve_relay_transport_config() -> RelayTransportConfig | RelayTransportUna
         return RelayTransportUnavailable(
             reason="relay_not_configured", details={"missing": missing}
         )
-    return RelayTransportConfig(mcp_url=mcp_url, http_url=http_url, api_token=api_token)
+
+    # The relay HTTP API can be an OWNED SESSION API -- the shape a desktop door
+    # runs in, where the cluster serves job and artifact records through the
+    # session ``session start`` created. That API answers every authenticated
+    # read with "exact owner session and generation headers are required" unless
+    # the request also carries this identity, so an unresolved identity means
+    # the artifact-bytes door is simply unreachable. Both halves are one fact
+    # and are refused together rather than half-sent.
+    owner_session_id = conf.resolve(
+        "relay.owner_session_id", env="CLIO_RELAY_OWNER_SESSION_ID", default="", cast=conf.as_str
+    ).strip()
+    owner_session_generation_id = conf.resolve(
+        "relay.owner_session_generation_id",
+        env="CLIO_RELAY_SESSION_GENERATION_ID",
+        default="",
+        cast=conf.as_str,
+    ).strip()
+    owner_values = {
+        "owner_session_id": owner_session_id,
+        "owner_session_generation_id": owner_session_generation_id,
+    }
+    if any(owner_values.values()) and not all(owner_values.values()):
+        return RelayTransportUnavailable(
+            reason="relay_owner_session_identity_incomplete",
+            details={"missing": sorted(key for key, value in owner_values.items() if not value)},
+        )
+
+    return RelayTransportConfig(
+        mcp_url=mcp_url,
+        http_url=http_url,
+        api_token=api_token,
+        owner_session_id=owner_session_id,
+        owner_session_generation_id=owner_session_generation_id,
+    )
 
 
 def resolve_relay_cluster() -> str:

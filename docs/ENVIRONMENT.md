@@ -138,10 +138,12 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_RELAY_HTTP_URL` | `relay.http_url` | str | _(unset)_ | `src/clio_agent/tools/relay_factory.py` |
 | `CLIO_RELAY_JARVIS_DOOR_NAMESPACE` | `relay.jarvis_door_namespace` | str | `remote_jarvis` | `src/clio_agent/tools/relay_factory.py` |
 | `CLIO_RELAY_MCP_URL` | `relay.mcp_url` | str | _(unset)_ | `src/clio_agent/gact/relay_status.py` |
+| `CLIO_RELAY_OWNER_SESSION_ID` | `relay.owner_session_id` | str | _(unset)_ | `src/clio_agent/tools/relay_factory.py` |
 | `CLIO_RELAY_REMOTE_AGENT_MCP_CONFIG_PATH` | `relay.remote_agent.mcp_config_path` | str | _(unset)_ | `src/clio_agent/gact/relay_wiring.py` |
 | `CLIO_RELAY_REMOTE_AGENT_MODEL` | `relay.remote_agent.model` | str | _(unset)_ | `src/clio_agent/gact/relay_wiring.py` |
 | `CLIO_RELAY_REMOTE_AGENT_PROMPT_PATH` | `relay.remote_agent.prompt_path` | str | _(unset)_ | `src/clio_agent/gact/relay_wiring.py` |
 | `CLIO_RELAY_REMOTE_AGENT_WORKDIR` | `relay.remote_agent.workdir` | str | _(unset)_ | `src/clio_agent/gact/relay_wiring.py` |
+| `CLIO_RELAY_SESSION_GENERATION_ID` | `relay.owner_session_generation_id` | str | _(unset)_ | `src/clio_agent/tools/relay_factory.py` |
 | `CLIO_RESIDENT_LEDGERS_MAX` | `gact.resident_ledgers.max_sessions` | int | `512` | `src/clio_agent/gact/resident_ledgers.py` |
 | `CLIO_RESIDENT_LEDGERS_MAX_BYTES` | `gact.resident_ledgers.max_bytes` | int | `536870912` | `src/clio_agent/gact/resident_ledgers.py` |
 | `CLIO_RESIDENT_LEDGERS_TTL_S` | `gact.resident_ledgers.idle_ttl_s` | float | `1800.0` | `src/clio_agent/gact/resident_ledgers.py` |
