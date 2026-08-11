@@ -179,6 +179,45 @@ async def test_async_mcp_tool_executor_uses_explicit_async_lifecycle():
 
 
 @pytest.mark.asyncio
+async def test_create_async_tool_executor_forwards_server_id():
+    """#1201 finding #2: create_async_tool_executor threads server_id through
+    to AsyncMCPToolExecutor, reaching its per-server connection_era record."""
+    fake_client = FakeClient()
+    executor = create_async_tool_executor(
+        object(), timeout=1.0, client_factory=lambda _: fake_client, server_id="real-server-id"
+    )
+    async with executor:
+        assert executor.connection_era is not None
+        assert executor.connection_era.server_id == "real-server-id"
+
+
+def test_create_sync_tool_executor_forwards_server_id():
+    """#1201 finding #2: create_sync_tool_executor threads server_id through
+    SyncMCPToolExecutor -> AsyncMCPToolExecutor. The constructor itself starts
+    the async executor synchronously, so connection_era is populated already."""
+    fake_client = FakeClient()
+    executor = create_sync_tool_executor(
+        object(), timeout=1.0, client_factory=lambda _: fake_client, server_id="real-sync-id"
+    )
+    try:
+        era = executor._async_executor.connection_era  # noqa: SLF001
+        assert era is not None
+        assert era.server_id == "real-sync-id"
+    finally:
+        executor.close()
+
+
+def test_create_async_tool_executor_default_server_id_is_empty():
+    """Without an explicit server_id, the constructor default is empty (the
+    executor falls back to a generic 'primary' label only at connect time)."""
+    fake_client = FakeClient()
+    executor = create_async_tool_executor(
+        object(), timeout=1.0, client_factory=lambda _: fake_client
+    )
+    assert executor._server_id == ""  # noqa: SLF001
+
+
+@pytest.mark.asyncio
 async def test_resource_read_is_pinned_to_exact_namespace_client() -> None:
     """An App resource read must not search or fan out through the composite."""
 

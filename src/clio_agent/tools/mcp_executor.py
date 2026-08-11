@@ -287,6 +287,10 @@ class AsyncMCPToolExecutor:
         """A namespace-direct backend's classified era; ``None`` if unconnected (#1201)."""
         return self._namespace_connection_eras.get(namespace)
 
+    def namespaces(self) -> tuple[str, ...]:
+        """Declared server namespaces this executor routes to (#1201 gact readers)."""
+        return tuple(self._namespace_servers)
+
     async def __aenter__(self) -> "AsyncMCPToolExecutor":
         """Start the executor in an async context manager."""
         return await self.start()

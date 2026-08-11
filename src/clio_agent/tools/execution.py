@@ -429,6 +429,7 @@ def create_async_tool_executor(
     client_factory: ClientFactory | None = None,
     preloaded_tools: Mapping[str, Any] | None = None,
     namespace_servers: Mapping[str, Any] | None = None,
+    server_id: str = "",
 ) -> "AsyncMCPToolExecutor":
     """Create an async FastMCP-backed tool executor.
 
@@ -444,6 +445,7 @@ def create_async_tool_executor(
         client_factory=client_factory,
         preloaded_tools=preloaded_tools,
         namespace_servers=namespace_servers,
+        server_id=server_id,
     )
 
 
@@ -456,6 +458,7 @@ def create_sync_tool_executor(
     client_factory: ClientFactory | None = None,
     preloaded_tools: Mapping[str, Any] | None = None,
     namespace_servers: Mapping[str, Any] | None = None,
+    server_id: str = "",
 ) -> SyncToolExecutor:
     """Create a sync executor for CLI and deterministic expert call sites."""
     # #1186 follow-on: the per-call ceiling is config-resolved like setup_timeout.
@@ -489,6 +492,7 @@ def create_sync_tool_executor(
         client_factory=client_factory,
         preloaded_tools=preloaded_tools,
         namespace_servers=namespace_servers,
+        server_id=server_id,
     )
 
 
@@ -511,6 +515,7 @@ class SyncMCPToolExecutor:
         tool_observer: Optional[ToolObserver | LegacyToolObserver] = None,
         preloaded_tools: Mapping[str, Any] | None = None,
         namespace_servers: Mapping[str, Any] | None = None,
+        server_id: str = "",
     ):
         if timeout <= 0:
             raise ValueError("timeout must be positive")
@@ -528,6 +533,7 @@ class SyncMCPToolExecutor:
             namespace_servers=namespace_servers,
             tool_timeouts=cleaned_tool_timeouts,
             client_factory=client_factory,
+            server_id=server_id,
         )
         # iowarp/clio-agent#7: optional gate called BEFORE every
         # tool invocation. Returns one of:
@@ -896,6 +902,10 @@ class SyncMCPToolExecutor:
         """Return all definitions, including app-only tools."""
 
         return self._async_executor.get_all_tool_definitions()
+
+    def namespaces(self) -> tuple[str, ...]:
+        """Declared server namespaces this executor routes to (#1201 gact readers)."""
+        return self._async_executor.namespaces()
 
     def to_dspy_tools(self) -> list[dspy.Tool]:
         """Convert MCP tools to DSPy Tool objects."""

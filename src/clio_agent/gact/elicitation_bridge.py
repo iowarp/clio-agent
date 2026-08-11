@@ -766,12 +766,11 @@ def make_elicitation_client(
 ) -> Any:
     """Build a per-call, elicitation-capable execution client (#1113).
 
-    Wires the handler bound to ``invocation`` (per-call correlation) and declares the
+    Wires the handler bound to ``invocation`` (per-call correlation); declares the
     capability at served granularity (form always; url only with a configured trust
-    list — no over-advertisement). Keeps NORMAL (auto) era negotiation: a legacy server
-    negotiates legacy and the handler fires; a modern-only server keeps working and
-    elicitation never arrives (SEP-2577). ``invocation`` omitted -> built from
-    ``namespace`` / ``tool_name`` + the driving session.
+    list). Keeps NORMAL (auto) era negotiation -- a legacy server negotiates legacy
+    and the handler fires (SEP-2577). A DIRECT, unmirrored connect (#1201): classified
+    + recorded under ``namespace`` the moment it connects (see mcp_connection_era.py).
     """
 
     from clio_agent.tools.mcp_runtime import MCPClientHandlers, make_mcp_client  # noqa: PLC0415
@@ -797,4 +796,5 @@ def make_elicitation_client(
         handlers=MCPClientHandlers(elicitation=hook),
         capabilities=capabilities,
         client_cls=client_cls,
+        server_id=namespace,
     )
