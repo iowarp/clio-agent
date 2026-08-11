@@ -62,7 +62,15 @@ from clio_agent.gact.app import build_app
 # fetch, owned by routes/mcp.py (prompts/get client support).
 # 165 -> 168 (#1127 P2.10): +3 run-projection routes owned by
 # routes/agent_tasks.py: GET /v1/runs plus POST detach and dismiss actions.
-EXPECTED_ROUTE_METHOD_PAIRS = 170
+# 168 -> 170 (83f18a00, #1185/#1179): +2 routes owned by routes/relay.py and
+# routes/sessions.py — GET /v1/relay/status, GET /v1/sessions/{sid}/trace.
+# 170 -> 172 (ad71fe87, #1192): +2 blueprint file-browsing routes owned by
+# routes/blueprints.py — GET /v1/agent-blueprints/{blueprint_id}/files
+# (capped flat recursive listing) and GET
+# /v1/agent-blueprints/{blueprint_id}/files/read (traversal-hardened raw
+# read), registered ahead of the greedy {id:path} matcher. The commit
+# shipped the routes but left this fingerprint stale; recorded now.
+EXPECTED_ROUTE_METHOD_PAIRS = 172
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
