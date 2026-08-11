@@ -29,7 +29,7 @@ import threading
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Literal, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import skill_runtime as _skill_runtime
@@ -1279,7 +1279,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     build_spawn_runtime_tools,
                 )
 
-                _declared_tools = _dynamic_agent_tools(base_agent, agent_def, (_sources := {}))
+                _declared_tools = _dynamic_agent_tools(base_agent, agent_def, (_sources := cast(dict[str, str], {})))
                 _spawn_tools = build_spawn_runtime_tools(base_agent, agent_def)
                 toolset_inventory.register_tool_sources(_sources, _spawn_tools, "spawn-runtime")
                 tools = [
@@ -1759,7 +1759,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             self._cred_resolver = CredentialResolver()
             self.config = self._resolved_spec.materialize(self._cred_resolver)
             self._provider_config = self.config
-            self.tools = _dynamic_agent_tools(base_agent, agent_def, (_sources := {}))
+            self.tools = _dynamic_agent_tools(base_agent, agent_def, (_sources := cast(dict[str, str], {})))
             skill_rt = _skill_runtime.skill_runtime_for_agent(
                 _ctx.active_app(), agent_def, session_id=_ctx.active_session_id()
             )

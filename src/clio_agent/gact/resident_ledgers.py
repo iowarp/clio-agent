@@ -298,7 +298,7 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
         is_active: Optional[Callable[[str], bool]] = None,
         audit: Optional[Callable[[dict[str, Any]], None]] = None,
         materialize: Optional[Callable[[str], Optional[list["Message"]]]] = None,
-        on_rehydrate: Optional[Callable[[str, list["Message"]], None]] = None,
+        on_rehydrate: Optional[Callable[[str, list["Message"]], object]] = None,
         clock: Callable[[], float] = monotonic,
     ) -> None:
         """Wire the set to its durable store and its residency policy.

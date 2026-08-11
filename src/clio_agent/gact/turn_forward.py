@@ -71,6 +71,7 @@ from clio_agent.gact.turn_watchdog import await_turn_work, cancel_requested
 
 if TYPE_CHECKING:
     from clio_agent.gact.turn_state import TurnState
+    from clio_agent.gact.types import AgentDef
     from clio_agent.prompts import PromptRegistry
 
 
@@ -221,7 +222,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
             # agent), never via blueprint/pack discovery. A host that cannot
             # execute it fails TYPED at module build (_UnsupportedSessionAgent
             # from _dynamic_agent_tools) — never an empty assistant message.
-            dynamic_agent = _apply_prompt_registry_to_agent(
+            dynamic_agent: "AgentDef | None" = _apply_prompt_registry_to_agent(
                 state.app, _builtin_main_agent(), prompt_registry=prompt_registry
             )
         else:

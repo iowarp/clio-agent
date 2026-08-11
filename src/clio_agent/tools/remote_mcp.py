@@ -78,6 +78,21 @@ class RemoteMcpRelayClient(Protocol):
         """Resolve a projected handle via its durable task record, or ``None``."""
         ...
 
+    async def list_job_artifacts(self, job_id: str) -> list[dict[str, Any]]:
+        """List one relay job's indexed artifact records, sizes included.
+
+        Declared here (not just on the narrower ``RelayArtifactClient``
+        protocol) because the same relay client factory this federation is
+        built from is reused, unmodified, to mount the bounded artifact-fetch
+        tool onto ``follow_server`` below -- the federation's client contract
+        has to name every operation that mount actually calls.
+        """
+        ...
+
+    async def fetch_artifact(self, artifact_id: str) -> bytes:
+        """Return one relay artifact's decoded content bytes."""
+        ...
+
 
 RemoteMcpClientFactory = Callable[[], AbstractAsyncContextManager[RemoteMcpRelayClient]]
 
