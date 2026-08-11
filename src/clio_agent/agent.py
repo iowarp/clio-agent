@@ -261,6 +261,7 @@ class ClioAgent(dspy.Module):
             self._tool_gateway,
             preloaded_tools=self._tool_definitions,
             namespace_servers=namespace_proxies(self._tool_gateway),
+            server_id="gateway:default",
         )
         # Cache of workspace root -> sync tool executor (lazy, one per workspace).
         # Guarded by _workspace_executor_lock (shared with the #933 reaper);
@@ -410,6 +411,7 @@ class ClioAgent(dspy.Module):
                     gateway,
                     preloaded_tools=self._tool_definitions,
                     namespace_servers=namespace_proxies(gateway),
+                    server_id=f"gateway:{root}",
                 )
                 executors[root] = executor
             return executor

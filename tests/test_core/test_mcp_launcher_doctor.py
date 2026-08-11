@@ -89,3 +89,63 @@ def test_discovery_failure_is_a_structured_reason_not_a_swallow():
     assert findings[0].state == IntegrationState.DEGRADED
     assert findings[0].required is False
     assert "blueprint discovery exploded" in findings[0].summary
+
+
+# --------------------------------------------------------------------------- #
+# #1201 finding #4: a malformed mcp.yaml must reach doctor as a typed row, not
+# just a logger.warning invisible to anyone running `clio doctor`.
+# --------------------------------------------------------------------------- #
+
+
+def test_malformed_mcp_yaml_produces_a_typed_doctor_row(tmp_path, monkeypatch):
+    """A malformed mcp.yaml surfaces as a non-fatal, typed DEGRADED row."""
+    home = tmp_path / "home"
+    cwd = tmp_path / "proj"
+    (home / ".config" / "clio-agent").mkdir(parents=True)
+    (cwd / ".clio").mkdir(parents=True)
+    (home / ".config" / "clio-agent" / "mcp.yaml").write_text(
+        "mcp_servers: [unterminated\n", encoding="utf-8"
+    )
+    env = {"XDG_CONFIG_HOME": str(home / ".config")}
+
+    import clio_agent.runtime.mcp_launcher as module
+
+    def _discover(*, env=None):
+        from clio_agent.tools.mcp_config import load_mcp_servers
+
+        return load_mcp_servers(home=home, cwd=cwd, env=env)
+
+    monkeypatch.setattr(module, "discover_declared_mcp_servers", _discover)
+
+    findings = module.probe_mcp_yaml_declarations(env=env)
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.state == IntegrationState.DEGRADED
+    assert finding.name == "mcp_yaml:mcp.yaml"
+    assert finding.required is False
+    assert "unreadable" in finding.summary.lower()
+    assert str(home / ".config" / "clio-agent" / "mcp.yaml") == finding.config_source
+
+
+def test_well_formed_mcp_yaml_produces_no_doctor_row(tmp_path, monkeypatch):
+    """No noise for the common case: nothing wrong, nothing reported."""
+    home = tmp_path / "home"
+    cwd = tmp_path / "proj"
+    (home / ".config" / "clio-agent").mkdir(parents=True)
+    (cwd / ".clio").mkdir(parents=True)
+    (home / ".config" / "clio-agent" / "mcp.yaml").write_text(
+        "mcp_servers:\n  ndp: uvx clio-kit run ndp\n", encoding="utf-8"
+    )
+    env = {"XDG_CONFIG_HOME": str(home / ".config")}
+
+    import clio_agent.runtime.mcp_launcher as module
+
+    def _discover(*, env=None):
+        from clio_agent.tools.mcp_config import load_mcp_servers
+
+        return load_mcp_servers(home=home, cwd=cwd, env=env)
+
+    monkeypatch.setattr(module, "discover_declared_mcp_servers", _discover)
+
+    assert module.probe_mcp_yaml_declarations(env=env) == []

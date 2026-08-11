@@ -180,6 +180,42 @@ def test_elicitation_client_preserves_modern_negotiation(client: TestClient) -> 
     assert protocol == "2026-07-28", f"handler wiring forced a non-modern era: {protocol}"
 
 
+def test_elicitation_client_classifies_its_connection_era(client: TestClient) -> None:
+    """#1201 finding #3: make_elicitation_client is a DIRECT, unmirrored
+    execution-path connect (its own docstring says so) -- it must classify
+    under the real declared-server namespace, reaching the shared registry
+    used for doctor/status visibility, not stay invisible like before."""
+
+    from clio_agent.gact.elicitation_bridge import make_elicitation_client
+    from clio_agent.tools.mcp_connection_era import latest_mcp_connection_era
+
+    app = client.app  # type: ignore[attr-defined]
+    sid = _create_session(client)
+    backend = FastMCP("classified-backend")
+
+    @backend.tool
+    def ping() -> str:
+        return "pong"
+
+    invocation = MCPInvocationContext(
+        invocation_id="inv", session_id=sid, namespace="ext-classified", tool_name="ping"
+    )
+    client_ctx = make_elicitation_client(
+        app, backend, "ext-classified", "ping", invocation=invocation
+    )
+
+    async def _run() -> None:
+        async with client_ctx as c:
+            await c.call_tool("ping", {})
+
+    asyncio.run(_run())
+
+    era = latest_mcp_connection_era("ext-classified")
+    assert era is not None
+    assert era.server_id == "ext-classified"
+    assert era.era == "modern"
+
+
 def test_declining_via_answer_route_returns_sdk_decline(client: TestClient) -> None:
     """A user decline delivers the SDK decline result to the tool, not a hang/crash."""
 

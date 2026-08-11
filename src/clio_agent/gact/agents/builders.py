@@ -556,8 +556,24 @@ def _active_base_agent_tool_executor(base_agent: Any) -> Any:
         except Exception:  # noqa: BLE001 - degrade to default executor
             executor = None
         if executor is not None:
+            _emit_mcp_downgrade_events(executor)
             return executor
-    return getattr(base_agent, "tool_executor", None)
+    executor = getattr(base_agent, "tool_executor", None)
+    _emit_mcp_downgrade_events(executor)
+    return executor
+
+
+def _emit_mcp_downgrade_events(executor: Any) -> None:
+    """Surface any recorded era downgrade for ``executor``'s servers (#1201)."""
+
+    app = _ctx.active_app()
+    if app is None:
+        return
+    from clio_agent.gact.mcp_connection_observability import (  # noqa: PLC0415
+        emit_downgrade_events_for_executor,
+    )
+
+    emit_downgrade_events_for_executor(app, _ctx.active_session_id(), executor)
 
 
 def _dynamic_agent_tools(

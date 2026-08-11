@@ -122,7 +122,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MCP_CACHE_TEMP_MAX_AGE_DAYS` | `tools.mcp_cache.temp_max_age_days` | float | `3.0` | `src/clio_agent/runtime/disk_gc.py` |
 | `CLIO_MCP_CACHE_TEMP_ROOTS` | `tools.mcp_cache.temp_roots` | str | _(unset)_ | `src/clio_agent/runtime/disk_gc.py` |
 | `CLIO_MCP_CALL_TIMEOUT_S` | `tools.mcp.call_timeout_s` | float | `30.0` | `src/clio_agent/tools/execution.py` |
-| `CLIO_MCP_CONNECT_MODE` | `tools.mcp.connect_mode` | str | `auto` | `src/clio_agent/tools/mcp_runtime.py` |
+| `CLIO_MCP_CONNECT_MODE` | `tools.mcp.connect_mode` | str | `auto` | `src/clio_agent/tools/mcp_connection_era.py` |
 | `CLIO_MCP_CONTENT_BLOCK_MAX_BYTES` | `limits.mcp_content_block_max_bytes` | int | `524288` | `src/clio_agent/tools/mcp_results.py` |
 | `CLIO_MCP_ELICITATION_URL_TRUSTED_ORIGINS` | `tools.mcp.elicitation.url_trusted_origins` | list | `default` _(computed)_ | `src/clio_agent/gact/elicitation_bridge.py` |
 | `CLIO_MCP_INPUT_REQUIRED_MAX_ROUNDS` | `tools.mcp.input_required_max_rounds` | int | `DEFAULT_INPUT_REQUIRED_MAX_ROUNDS` _(computed)_ | `src/clio_agent/tools/mcp_runtime.py` |

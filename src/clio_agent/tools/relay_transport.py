@@ -223,8 +223,11 @@ class RelayTransportClient:
             raise RuntimeError("relay transport client is already open")
         # Credential attach stays with the factory owners (#1118 single-owner
         # guard): the runtime-dict spec routes headers through transport_from_spec.
+        # server_id="relay" (#1201): a direct, unmirrored connect to the relay's
+        # own MCP door -- classified + recorded like any other declared server.
         mcp_client = make_mcp_client(
-            {"transport": "http", "url": self._mcp_url, "headers": dict(self._headers)}
+            {"transport": "http", "url": self._mcp_url, "headers": dict(self._headers)},
+            server_id="relay",
         )
         await mcp_client.__aenter__()
         self._mcp_client = mcp_client

@@ -34,10 +34,14 @@ def handshake_server_row(report: "MCPServerReport") -> dict[str, Any]:
     Returns:
         The JSON-serializable row for the ``/v1/mcp/handshake`` ``servers`` list,
         including the discovered ``protocol_version`` / ``server_version`` /
-        ``instructions`` (``None`` when the server did not report them).
+        ``instructions`` (``None`` when the server did not report them), and
+        (#1201) ``execution_era`` / ``execution_downgrade_reason`` -- the latest
+        era ANY execution-path connection actually observed for this server,
+        which may differ from this probe's own ``protocol_version`` above.
     """
 
     status = report.to_integration_status()
+    era = report.execution_era
     return {
         "name": report.name,
         "reachable": report.ok,
@@ -50,6 +54,8 @@ def handshake_server_row(report: "MCPServerReport") -> dict[str, Any]:
         "protocol_version": report.protocol_version,
         "server_version": report.server_version,
         "instructions": report.instructions,
+        "execution_era": era.era if era else None,
+        "execution_downgrade_reason": era.degrade_reason if era else None,
     }
 
 

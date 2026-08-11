@@ -49,6 +49,18 @@ MCP_TASK_SESSION_DELETED = "mcp_task_session_deleted"
 #: caller gets this reason plus the taskId and backend identity so the orphan can be
 #: reconciled by hand (SEP-2663 has no tasks/list to rediscover it).
 MCP_TASK_RECORD_NOT_DURABLE = "mcp_task_record_not_durable"
+#: #1201: an execution-path client resolved ``tools.mcp.connect_mode=auto`` but
+#: negotiated the LEGACY era anyway (the #1186 race: a slow first response burns
+#: the modern probe and its one re-probe, so the client falls back to the
+#: ``initialize`` handshake even though client and server both speak 2026-07-28).
+#: Recorded ONLY under auto mode; a pinned mode (an explicit version or the
+#: literal ``"legacy"``) is operator intent and never emits this.
+MCP_PROTOCOL_DOWNGRADED_TO_LEGACY = "mcp_protocol_downgraded_to_legacy"
+#: #1201: an ``mcp.yaml`` declaration file exists but could not be read/parsed
+#: (OS error or malformed YAML). Previously swallowed into ``{}`` -- silently
+#: treating "malformed" the same as "no servers declared". A MISSING file is
+#: still normal and returns ``{}`` without this reason.
+MCP_YAML_DECLARATION_UNREADABLE = "mcp_yaml_declaration_unreadable"
 
 
 class ClioError(Exception):

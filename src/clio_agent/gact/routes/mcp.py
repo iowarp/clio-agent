@@ -516,7 +516,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                 from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
 
                 transport = transport_from_spec(spec)
-                client_ctx = make_mcp_client(transport)
+                client_ctx = make_mcp_client(transport, server_id=sid)  # #1201: direct connect
             except MCPTransportError as exc:
                 raise HTTPException(
                     status_code=422,
@@ -862,6 +862,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         try:
             from fastmcp import Client
 
+            from clio_agent.tools.mcp_connection_era import instrument_client_era
             from clio_agent.tools.mcp_runtime import make_mcp_client
         except Exception as exc:  # noqa: BLE001 - safe exception type is returned
             raise HTTPException(
@@ -891,7 +892,12 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             ) from exc
         rows: list[dict[str, Any]] = []
         try:
-            client_context = make_mcp_client(transport) if kind == "prompt" else Client(transport)
+            # #1201: a direct connect either way -- classify under both branches.
+            client_context = (
+                make_mcp_client(transport, server_id=sid)
+                if kind == "prompt"
+                else instrument_client_era(Client(transport), server_id=sid)
+            )
             async with client_context as client:
                 if kind == "tools":
                     items = await client.list_tools()

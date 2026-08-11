@@ -465,6 +465,13 @@ def _bound_executor(app: FastAPI, sid: str) -> Any:
     executor = resolver() if callable(resolver) else getattr(agent, "tool_executor", None)
     if executor is None:
         raise RuntimeError("agent tool executor is not available")
+    # #1201: surface any recorded era downgrade for this executor's servers
+    # into the session's semantic-event trace.
+    from clio_agent.gact.mcp_connection_observability import (  # noqa: PLC0415
+        emit_downgrade_events_for_executor,
+    )
+
+    emit_downgrade_events_for_executor(app, sid, executor)
     return executor
 
 

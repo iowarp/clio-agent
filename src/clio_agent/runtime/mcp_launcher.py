@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import shutil
 from collections.abc import Callable, Mapping
+from pathlib import Path
 
 from clio_agent.runtime.status import IntegrationState, IntegrationStatus
 from clio_agent.tools.mcp_config import MCPServerSpec
@@ -145,3 +146,38 @@ def probe_mcp_launchers(
             )
         )
     return findings
+
+
+def probe_mcp_yaml_declarations(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
+    """Report a structured finding for every unreadable/malformed ``mcp.yaml`` file (#1201).
+
+    ``mcp_config.py::_read_mcp_yaml`` raises a typed ``MCPConfigError`` on a
+    genuine read/parse failure; ``load_mcp_servers`` (called below, via
+    :func:`discover_declared_mcp_servers`) catches it per-file and degrades to
+    a loud ``logger.warning`` rather than crash boot (RULE 2) -- but a log
+    line alone is invisible here. This surfaces the SAME degradation as a
+    typed doctor row instead, so a config typo does not silently look like
+    "no servers declared" to anyone checking ``clio doctor``.
+
+    Args:
+        env: Environment used for declaration discovery (defaults to the
+            process environment).
+
+    Returns:
+        Zero or more findings -- one per unreadable file.
+    """
+    from clio_agent.tools.mcp_config import unreadable_mcp_yaml_snapshot
+
+    discover_declared_mcp_servers(env=env)
+    return [
+        IntegrationStatus(
+            name=f"mcp_yaml:{Path(row['path']).name}",
+            state=IntegrationState.DEGRADED,
+            summary=f"mcp.yaml declaration file unreadable: {row['error']}",
+            config_source=row["path"],
+            next_action="Fix the YAML syntax (or file permissions) at the path above; the "
+            "servers it would have declared are absent until then.",
+            required=False,
+        )
+        for row in unreadable_mcp_yaml_snapshot()
+    ]

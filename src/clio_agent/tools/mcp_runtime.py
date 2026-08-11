@@ -366,6 +366,7 @@ def make_mcp_client(
     handlers: MCPClientHandlers | None = None,
     capabilities: MCPClientCapabilities | None = None,
     client_cls: Callable[..., Any] | None = None,
+    server_id: str = "",
 ) -> Any:
     """Construct an execution-path FastMCP client with CLIO identity + the handler slot.
 
@@ -422,6 +423,15 @@ def make_mcp_client(
         client_cls: Injection seam for the client class. Defaults to
             ``fastmcp.Client``; tests substitute a fake to inspect the
             construction without spawning a real backend.
+        server_id: #1201 -- when non-empty, the constructed client is
+            instrumented (:func:`clio_agent.tools.mcp_connection_era.
+            instrument_client_era`) so its connect-time protocol era is
+            classified and recorded under this id the moment it is entered.
+            Every execution-path caller SHOULD pass a real declared-server or
+            connection identity here (the composite gateway/executor's own
+            front leg is comparatively low-value -- see that module's
+            docstring for why a PROXIED backend's real era is only ever
+            observable at the seam that dials it, not at the front).
     Tasks (#1115): every client built here declares the SEP-2663 tasks extension, so
     a task-serving backend may run a call as a background task and CLIO drives it to
     the real result. There is deliberately no per-call opt-out knob: a client that
@@ -505,6 +515,12 @@ def make_mcp_client(
         # domain it models (elicitation today): empty pins elicitation absent even
         # over a wired/forwarding handler. Unmodeled domains stay base-derived.
         _install_capability_declaration(client, capabilities)
+    if server_id:
+        # #1201: classify + record this connection's era the moment it is
+        # entered (instrument_client_era wraps __aenter__ on THIS instance).
+        from clio_agent.tools.mcp_connection_era import instrument_client_era  # noqa: PLC0415
+
+        instrument_client_era(client, server_id=server_id)
     return client
 
 

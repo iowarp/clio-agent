@@ -26,11 +26,13 @@ turns a spec into a transport the existing ``execution.py`` machinery accepts.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shlex
 import shutil
 import sys
+import threading
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -38,9 +40,13 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 import yaml
 
+from clio_agent.errors import MCP_YAML_DECLARATION_UNREADABLE
+
 if TYPE_CHECKING:
     from mcp.client.auth.oauth2 import TokenStorage
     from mcp.shared.auth import AuthorizationCodeResult, OAuthClientMetadata
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "MCPAuthConfig",
@@ -57,6 +63,7 @@ __all__ = [
     "transport_from_spec",
     "redact_mcp_spec",
     "MCPTransportError",
+    "unreadable_mcp_yaml_snapshot",
 ]
 
 # clio-agent's built-in universal defaults (always present, not declarations).
@@ -447,14 +454,35 @@ def resolve_expert_servers(
 
 
 def _read_mcp_yaml(path: Path) -> dict[str, Any]:
+    """Read one ``mcp.yaml`` file. Missing -> ``{}`` (normal); unreadable/malformed
+    -> raises :class:`MCPConfigError` (#1201: no longer folded into the same ``{}``
+    as "no servers"). :func:`load_mcp_servers` catches it per-file and warns loud
+    rather than crash boot over a config typo (RULE 2)."""
     if not path.is_file():
         return {}
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
-        return {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise MCPConfigError(f"could not read MCP declaration file {path}: {exc}") from exc
     servers = data.get("mcp_servers") if isinstance(data, Mapping) else None
     return {str(k): v for k, v in servers.items()} if isinstance(servers, Mapping) else {}
+
+
+#: #1201: paths that failed to read/parse during the LAST load_mcp_servers()
+#: call -- a snapshot (reset+repopulated each call), not an append-forever
+#: ring: doctor wants "is this a problem RIGHT NOW", not history. logger.
+#: warning alone (the #1201 first-pass fix) is invisible to
+#: runtime/mcp_launcher.py's doctor sub-check; this is the queryable surface
+#: it reads instead (see probe_mcp_yaml_declarations).
+_UNREADABLE_MCP_YAML: list[dict[str, str]] = []
+_UNREADABLE_MCP_YAML_LOCK = threading.Lock()
+
+
+def unreadable_mcp_yaml_snapshot() -> list[dict[str, str]]:
+    """Return ``{"path": ..., "error": ...}`` rows from the last :func:`load_mcp_servers`."""
+
+    with _UNREADABLE_MCP_YAML_LOCK:
+        return list(_UNREADABLE_MCP_YAML)
 
 
 def load_mcp_servers(
@@ -475,6 +503,8 @@ def load_mcp_servers(
     cwd = cwd or Path.cwd()
     lookup = env if env is not None else os.environ
     merged: dict[str, MCPServerSpec] = {}
+    with _UNREADABLE_MCP_YAML_LOCK:
+        _UNREADABLE_MCP_YAML.clear()
 
     # lowest precedence first
     for pack_id, servers in dict(pack_servers).items():
@@ -483,12 +513,32 @@ def load_mcp_servers(
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
     user_mcp = paths.user_config_dir_for(home, lookup) / "mcp.yaml"
-    for name, value in _read_mcp_yaml(user_mcp).items():
-        merged[name] = spec_from_declaration(name, value, source="user", env=env)
-    for name, value in _read_mcp_yaml(cwd / ".clio" / "mcp.yaml").items():
-        merged[name] = spec_from_declaration(name, value, source="workspace", env=env)
+    _merge_mcp_yaml(merged, user_mcp, source="user", env=env)
+    _merge_mcp_yaml(merged, cwd / ".clio" / "mcp.yaml", source="workspace", env=env)
 
     return {n: replace(s, name=n) for n, s in merged.items()}
+
+
+def _merge_mcp_yaml(
+    merged: dict[str, MCPServerSpec], path: Path, *, source: str, env: Mapping[str, str] | None
+) -> None:
+    """Merge one ``mcp.yaml`` file's servers into ``merged``; a malformed file
+    logs a typed warning, records it (queryable via
+    :func:`unreadable_mcp_yaml_snapshot`), and is skipped -- never raised (#1201)."""
+    try:
+        declared = _read_mcp_yaml(path)
+    except MCPConfigError as exc:
+        logger.warning(
+            "mcp yaml declaration unreadable reason=%s path=%s error=%s",
+            MCP_YAML_DECLARATION_UNREADABLE,
+            path,
+            exc,
+        )
+        with _UNREADABLE_MCP_YAML_LOCK:
+            _UNREADABLE_MCP_YAML.append({"path": str(path), "error": str(exc)})
+        return
+    for name, value in declared.items():
+        merged[name] = spec_from_declaration(name, value, source=source, env=env)
 
 
 def pdeathsig_wrapped_command(command: str, args: Sequence[str]) -> tuple[str, list[str]]:

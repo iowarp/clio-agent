@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 
 import pytest
 import yaml
 
+from clio_agent.errors import MCP_YAML_DECLARATION_UNREADABLE
 from clio_agent.tools.mcp_config import (
     MCPConfigError,
     MCPTransportError,
+    _read_mcp_yaml,
     expand_env,
     load_mcp_servers,
     resolve_expert_servers,
@@ -117,6 +120,62 @@ def test_load_precedence_frontmatter_user_workspace(tmp_path):
     assert servers["ndp"].source == "workspace"
     assert servers["geo"].command == "pack-geo"  # only in pack frontmatter
     assert servers["weather"].command == "user-weather"
+
+
+# --------------------------------------------------------------------------- #
+# #1201: _read_mcp_yaml no longer swallows a malformed file into "no servers".
+# --------------------------------------------------------------------------- #
+
+
+def test_read_mcp_yaml_missing_file_is_silently_empty(tmp_path):
+    """A file that does not exist is normal -- no servers, no noise."""
+    assert _read_mcp_yaml(tmp_path / "absent.yaml") == {}
+
+
+def test_read_mcp_yaml_well_formed_empty_file_is_silently_empty(tmp_path, caplog):
+    """A well-formed file declaring nothing still yields {} without a warning."""
+    path = tmp_path / "mcp.yaml"
+    path.write_text("mcp_servers: {}\n", encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="clio_agent.tools.mcp_config"):
+        assert _read_mcp_yaml(path) == {}
+    assert caplog.records == []
+
+
+def test_read_mcp_yaml_malformed_syntax_raises_typed_error_not_empty_dict(tmp_path):
+    """Malformed YAML raises MCPConfigError -- never silently becomes {}."""
+    path = tmp_path / "mcp.yaml"
+    path.write_text("mcp_servers: [unterminated\n", encoding="utf-8")
+    with pytest.raises(MCPConfigError):
+        _read_mcp_yaml(path)
+
+
+def test_load_mcp_servers_malformed_yaml_warns_loud_and_never_crashes_boot(tmp_path, caplog):
+    """RULE 2: a malformed mcp.yaml must never crash the boot-reachable
+    load_mcp_servers -- it logs the typed reason and the file's servers are
+    simply absent, while OTHER valid sources (pack frontmatter, the sibling
+    well-formed file) still load normally."""
+    home = tmp_path / "home"
+    cwd = tmp_path / "proj"
+    (home / ".config" / "clio-agent").mkdir(parents=True)
+    (cwd / ".clio").mkdir(parents=True)
+
+    (home / ".config" / "clio-agent" / "mcp.yaml").write_text(
+        "mcp_servers: [unterminated\n", encoding="utf-8"
+    )
+    (cwd / ".clio" / "mcp.yaml").write_text(
+        yaml.safe_dump({"mcp_servers": {"ndp": "workspace-ndp"}})
+    )
+    pack_servers = {"earthscope": {"geo": "pack-geo"}}
+    env = {"XDG_CONFIG_HOME": str(home / ".config")}
+
+    with caplog.at_level(logging.WARNING, logger="clio_agent.tools.mcp_config"):
+        servers = load_mcp_servers(home=home, cwd=cwd, pack_servers=pack_servers, env=env)
+
+    assert servers["ndp"].command == "workspace-ndp"
+    assert servers["geo"].command == "pack-geo"
+    warnings = [r for r in caplog.records if MCP_YAML_DECLARATION_UNREADABLE in r.getMessage()]
+    assert len(warnings) == 1
+    assert "mcp.yaml" in warnings[0].getMessage()
 
 
 def test_resolve_expert_servers_select_and_local():

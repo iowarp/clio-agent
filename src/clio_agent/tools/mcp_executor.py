@@ -21,6 +21,11 @@ from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
 
 from clio_agent.tools import spawn_diet
+from clio_agent.tools.mcp_connection_era import (
+    MCPConnectionEra,
+    classify_connection_era,
+    resolved_connect_mode,
+)
 from clio_agent.tools.mcp_errors import typed_mcp_call_error, typed_mcp_protocol_error
 from clio_agent.tools.mcp_runtime import make_mcp_client
 
@@ -229,12 +234,15 @@ class AsyncMCPToolExecutor:
         client_factory: ClientFactory | None = None,
         preloaded_tools: Mapping[str, Any] | None = None,
         namespace_servers: Mapping[str, Any] | None = None,
+        server_id: str = "",
     ) -> None:
         if timeout <= 0:
             raise ValueError("timeout must be positive")
         cleaned_tool_timeouts = _clean_tool_timeouts(tool_timeouts)
 
         self._server = server
+        # #1201: identity label for the primary connection's era record below.
+        self._server_id = server_id
         # #932: namespace -> mounted proxy. A namespaced call routes straight
         # at ONE proxy (lazy client per namespace), so only the called
         # namespace backend ever spawns. The composite client remains the
@@ -256,6 +264,9 @@ class AsyncMCPToolExecutor:
         self._call_lock: asyncio.Lock | None = None
         self._started = False
         self._closed = False
+        # #1201: per-server runtime record of the negotiated protocol era.
+        self._connection_era: MCPConnectionEra | None = None
+        self._namespace_connection_eras: dict[str, MCPConnectionEra] = {}
 
     @property
     def started(self) -> bool:
@@ -266,6 +277,19 @@ class AsyncMCPToolExecutor:
     def closed(self) -> bool:
         """Return whether the executor has been closed."""
         return self._closed
+
+    @property
+    def connection_era(self) -> MCPConnectionEra | None:
+        """The primary connection's classified protocol era; ``None`` pre-start (#1201)."""
+        return self._connection_era
+
+    def namespace_connection_era(self, namespace: str) -> MCPConnectionEra | None:
+        """A namespace-direct backend's classified era; ``None`` if unconnected (#1201)."""
+        return self._namespace_connection_eras.get(namespace)
+
+    def namespaces(self) -> tuple[str, ...]:
+        """Declared server namespaces this executor routes to (#1201 gact readers)."""
+        return tuple(self._namespace_servers)
 
     async def __aenter__(self) -> "AsyncMCPToolExecutor":
         """Start the executor in an async context manager."""
@@ -302,6 +326,12 @@ class AsyncMCPToolExecutor:
         # spawn every mounted stdio server. Backends connect lazily per namespace.
         self._client_ctx = client_ctx
         self._client = client
+        # #1201: stamp + record the negotiated era (typed downgrade under auto mode).
+        self._connection_era = classify_connection_era(
+            server_id=self._server_id or "primary",
+            protocol_version=getattr(client, "protocol_version", None),
+            connect_mode=resolved_connect_mode(),
+        )
         self._mcp_tools = (
             dict(self._preloaded_tools)
             if self._preloaded_tools is not None
@@ -395,13 +425,24 @@ class AsyncMCPToolExecutor:
                     raise ValueError(f"unknown MCP namespace {namespace!r}")
                 client = self._namespace_clients.get(namespace)
                 if client is None:
-                    ctx = self._client_factory(proxy)
-                    client = await ctx.__aenter__()
-                    self._namespace_ctxs[namespace] = ctx
-                    self._namespace_clients[namespace] = client
+                    client = await self._connect_namespace(namespace, proxy)
             else:
                 client = self._client
             return await asyncio.wait_for(client.read_resource(uri), timeout=self._timeout)
+
+    async def _connect_namespace(self, namespace: str, proxy: Any) -> Any:
+        """Connect + cache a namespace-direct client, stamping its era (#1201)."""
+
+        ctx = self._client_factory(proxy)
+        client = await ctx.__aenter__()
+        self._namespace_ctxs[namespace] = ctx
+        self._namespace_clients[namespace] = client
+        self._namespace_connection_eras[namespace] = classify_connection_era(
+            server_id=namespace,
+            protocol_version=getattr(client, "protocol_version", None),
+            connect_mode=resolved_connect_mode(),
+        )
+        return client
 
     async def _route(self, name: str) -> tuple[Any, str, str | None]:
         """Resolve (client, on-server tool name, namespace|None) for a call.
@@ -428,10 +469,7 @@ class AsyncMCPToolExecutor:
             return self._client, name, None
         client = self._namespace_clients.get(namespace)
         if client is None:
-            ctx = self._client_factory(proxy)
-            client = await ctx.__aenter__()
-            self._namespace_ctxs[namespace] = ctx
-            self._namespace_clients[namespace] = client
+            client = await self._connect_namespace(namespace, proxy)
         return client, bare, namespace
 
     def _timeout_for_tool(self, name: str) -> float:
