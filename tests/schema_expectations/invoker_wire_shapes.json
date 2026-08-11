@@ -37,7 +37,9 @@
         "run_label",
         "live_state",
         "host",
-        "placement"
+        "placement",
+        "spawn_group_id",
+        "group_size"
       ],
       "required_fields": [
         "task_id",
@@ -56,7 +58,9 @@
         "run_label",
         "live_state",
         "host",
-        "placement"
+        "placement",
+        "spawn_group_id",
+        "group_size"
       ]
     },
     "TaskResult": {
@@ -78,7 +82,9 @@
         "run_label",
         "live_state",
         "host",
-        "placement"
+        "placement",
+        "spawn_group_id",
+        "group_size"
       ],
       "required_fields": [
         "task_id",
@@ -103,7 +109,9 @@
         "run_label",
         "live_state",
         "host",
-        "placement"
+        "placement",
+        "spawn_group_id",
+        "group_size"
       ]
     },
     "TaskSpec": {
@@ -117,6 +125,8 @@
         "mode",
         "workflow_state",
         "fanout_bound",
+        "spawn_group_id",
+        "group_size",
         "seed_context",
         "skip_declared_check",
         "workspace_id",
@@ -139,6 +149,8 @@
         "mode",
         "workflow_state",
         "fanout_bound",
+        "spawn_group_id",
+        "group_size",
         "seed_context",
         "skip_declared_check",
         "workspace_id",
