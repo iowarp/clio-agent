@@ -42,12 +42,21 @@ def test_unknown_session_maps_to_not_found_despite_legacy_tag(client: ClioClient
 
 
 def test_empty_message_body_maps_to_invalid_request(client: ClioClient) -> None:
+    """A body with no recognizable text is a client validation error.
+
+    cc44a593 retagged this from ``internal_error``/422 (a taxonomy
+    violation -- ``internal_error`` implies a >=500 server-side fault) to
+    ``validation_error``/400. Assert the contract (status + tag +
+    recoverable), not the message prose, which is free to keep evolving.
+    """
+
     sess = client.sessions.create(title="errors")
 
     with pytest.raises(InvalidRequestError) as excinfo:
         client.messages.post(sess.id, parts=[])
 
-    assert excinfo.value.status_code == 422
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.error == "validation_error"
     assert excinfo.value.recoverable is True
 
 
