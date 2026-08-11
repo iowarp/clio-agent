@@ -671,11 +671,11 @@ class JarvisJobs:
         relay: JarvisRelayClient,
         identity: RelayTaskIdentity,
     ) -> ClientGetTaskResult:
-        """Poll a bounded dispatch without replacing the process event-loop clock."""
+        """Poll a bounded dispatch without replacing the process event-loop clock.
 
-        if identity.initial_result is not None:
-            # Already terminal at submit time; skip the poll relay#213 kills.
-            return identity.initial_result
+        Always polls at least once: a create response can already report
+        terminal, but only ``tasks/get`` carries a ``result``/``error``.
+        """
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._dispatch_timeout_seconds
