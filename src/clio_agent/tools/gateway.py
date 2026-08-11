@@ -120,6 +120,16 @@ def _proxy_for_spec(
     the first request's era onto later requests. Constructing the base opens no
     connection; a subprocess spawns only when a clone connects.
 
+    #1201 (adversarial review, PR #1202): THIS clone -- the one ``_client_factory``
+    returns -- is the ONE seam that dials the real backend transport for real.
+    ``base_backend`` itself is never entered (only its clones are), so era
+    instrumentation is applied fresh to ``fresh`` on every call, never to
+    ``base_backend`` (a live probe, ``scripts/diagnostics/
+    probe_1201_era_detectability.py``, proved the executor's own front-leg
+    capture on the composite gateway is BLIND here: ``_mirror_front_era_mode``
+    just above forces this SAME clone's mode to match the front's
+    already-negotiated, always-modern era before it ever connects for real).
+
     ``cwd`` (when given) is passed to stdio transports so the subprocess is
     spawned in that working directory; http transports ignore it.
     """
@@ -129,6 +139,7 @@ def _proxy_for_spec(
 
     from fastmcp.server.providers.proxy import ProxyClient, _mirror_front_era_mode  # noqa: PLC0415
 
+    from clio_agent.tools.mcp_connection_era import instrument_client_era  # noqa: PLC0415
     from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
 
     base_backend = make_mcp_client(
@@ -141,7 +152,10 @@ def _proxy_for_spec(
         if mode is not None:
             fresh.mode = mode
             fresh._transport_options = replace(fresh._transport_options, backend_mode=mode)
-        return fresh
+        # Applied to THIS clone, never base_backend (.new() shallow-copies
+        # __dict__, so an override captured on base_backend would incorrectly
+        # keep re-entering base_backend when called through a clone instead).
+        return instrument_client_era(fresh, server_id=spec.name)
 
     return FastMCPProxy(client_factory=_client_factory)
 

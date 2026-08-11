@@ -14,14 +14,38 @@ captured which era a connection actually landed on; only the diagnostic
 downgrading left no typed reason, log line, or trace entry -- the exact
 no-silent-fallback violation this module closes.
 
-This is the ONE place execution-path connect sites (the executor's
-``start()`` / ``_route()`` / ``read_resource()`` in
-:mod:`clio_agent.tools.mcp_executor`) stamp a :class:`MCPConnectionEra`
-immediately after entering a client, mirroring the
+This is the ONE place execution-path connect sites stamp a
+:class:`MCPConnectionEra` immediately after entering a client, mirroring the
 ``MCP_RESULT_DOWNGRADED_TO_COMPLETE`` (:mod:`clio_agent.tools.mcp_results`) /
 ``mcp_tasks_declaration_suppressed`` (:mod:`clio_agent.tools.mcp_task_extension`)
 degrade-reason conventions already used in this package: a typed catalog
 entry, never a silently absorbed fact.
+
+Adversarial review on #1201's first PR (a live probe, ``scripts/diagnostics/
+probe_1201_era_detectability.py``) proved the executor's OWN front-leg
+capture (``AsyncMCPToolExecutor.start()`` / ``_route()``) is BLIND on the
+standard gateway-mounted path: FastMCP's ``_mirror_front_era_mode``
+(``fastmcp/server/providers/proxy.py``) forces a proxy's backend leg to adopt
+whatever era its FRONT connection negotiated, and the front is always an
+in-process connection (to the composite gateway or a mounted
+``FastMCPProxy`` object), which negotiates trivially and is therefore always
+modern -- independent of what the REAL backend (a real stdio/http
+connection, subject to the actual #1186 timing race) would have negotiated
+on its own. The probe confirmed this directly: a ``ProxyClient`` instrumented
+at its own ``__aenter__`` (the real backend leg) reports the identical
+protocol_version as the front, regardless of how slow the real subprocess is.
+
+The fix is :func:`instrument_client_era`, applied at the seam that actually
+dials the real backend (``tools/gateway.py::_proxy_for_spec``'s
+``_client_factory`` closure, on the per-request clone -- the ONE place the
+real, unmirrored connection is entered) and at every other DIRECT
+(non-proxied) execution-path connect site: the executor's own front leg
+(still meaningful for a directly-targeted executor, e.g. tests, and kept for
+the per-server runtime record), the dynamic-agent external tool call
+(``gact/elicitation_bridge.py``), the per-call REST dispatch
+(``gact/routes/mcp.py``), the relay door (``tools/relay_transport.py``), and
+the diagnostic handshake probe (``providers/handshake/mcp.py``, which now
+ALSO feeds this module's registry instead of only its own one-off report).
 
 Era determination reads the SDK's own protocol-version registry
 (``mcp_types.version``) instead of re-deriving it: a version in
@@ -44,7 +68,7 @@ import logging
 import threading
 from collections import deque
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal, TypeVar
 
 from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS, MODERN_PROTOCOL_VERSIONS
 
@@ -132,6 +156,7 @@ def classify_connection_era(
         pinned=pinned,
         degrade_reason=degrade_reason,
     )
+    _record_latest(record)
     if degrade_reason is not None:
         _record_downgrade(record)
     return record
@@ -145,9 +170,27 @@ def classify_connection_era(
 _DOWNGRADES: "deque[MCPConnectionEra]" = deque(maxlen=256)
 _DOWNGRADES_LOCK = threading.Lock()
 
+#: Latest classification PER server_id, updated on every classify (not just
+#: downgrades) -- the per-server operator surface (doctor/status,
+#: /v1/mcp/handshake rows, the gact reader sites) queries "what is this
+#: server's era right now", not just "has it ever downgraded".
+_LATEST_BY_SERVER: dict[str, MCPConnectionEra] = {}
+_LATEST_LOCK = threading.Lock()
+
+
+def _record_latest(record: MCPConnectionEra) -> None:
+    """Update the per-server latest-classification map (no-op for an unlabeled id)."""
+
+    if not record.server_id:
+        return
+    with _LATEST_LOCK:
+        _LATEST_BY_SERVER[record.server_id] = record
+
 
 def _record_downgrade(record: MCPConnectionEra) -> None:
-    """Append a real downgrade to the queryable ring and log it loudly."""
+    """Append a real downgrade to the queryable ring, log it loudly, and audit it."""
+
+    from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
 
     with _DOWNGRADES_LOCK:
         _DOWNGRADES.append(record)
@@ -159,6 +202,13 @@ def _record_downgrade(record: MCPConnectionEra) -> None:
         record.protocol_version,
         record.connect_mode,
     )
+    stream_audit(
+        "mcp_connection_downgrade",
+        reason=record.degrade_reason,
+        server_id=record.server_id,
+        protocol_version=record.protocol_version,
+        connect_mode=record.connect_mode,
+    )
 
 
 def recorded_mcp_connection_downgrades() -> list[MCPConnectionEra]:
@@ -168,10 +218,101 @@ def recorded_mcp_connection_downgrades() -> list[MCPConnectionEra]:
         return list(_DOWNGRADES)
 
 
+def latest_mcp_connection_era(server_id: str) -> MCPConnectionEra | None:
+    """Return the most recent classification observed for ``server_id``, if any."""
+
+    with _LATEST_LOCK:
+        return _LATEST_BY_SERVER.get(server_id)
+
+
+def all_latest_mcp_connection_eras() -> dict[str, MCPConnectionEra]:
+    """Return a snapshot of the latest classification for every observed server."""
+
+    with _LATEST_LOCK:
+        return dict(_LATEST_BY_SERVER)
+
+
+_ClientT = TypeVar("_ClientT")
+
+#: Per-base-class instrumented subclasses, cached like
+#: ``mcp_runtime.py``'s ``_CAPABILITY_SESSION_CLASSES`` -- a class-COMPOSITION
+#: seam the SDK itself uses (``TransportOptions.session_class``), not a
+#: monkeypatch. One subclass per distinct base type, reused across every
+#: client instance of that type regardless of ``server_id`` (stored PER
+#: INSTANCE below, never baked into the shared class).
+_INSTRUMENTED_CLASSES: dict[type, type] = {}
+_INSTRUMENTED_CLASSES_LOCK = threading.Lock()
+
+#: Instance-``__dict__`` key the composed ``__aenter__`` reads its server_id
+#: from. Not a "private name mangled" attribute so it survives ``copy.copy``
+#: (FastMCP's ``Client.new()`` clone path) like every other instance attribute.
+_SERVER_ID_ATTR = "_clio_mcp_connection_era_server_id"
+
+
+def _instrumented_class(base_cls: type) -> type:
+    """Return (building + caching once) a ``base_cls`` subclass that classifies
+    on ``__aenter__``.
+
+    A dynamic subclass, not an instance-level ``__aenter__`` override: Python
+    resolves dunder methods invoked via syntax (``async with client:``) on the
+    TYPE, never the instance -- an instance attribute named ``__aenter__``
+    is silently ignored by that syntax (confirmed by a live regression: the
+    proxy backend leg in ``tools/gateway.py::_proxy_for_spec`` is entered via
+    ``async with``, not an explicit ``client.__aenter__()`` call, and an
+    instance-patched version never fired there). Subclassing makes
+    ``type(client).__aenter__`` resolve correctly either way.
+    """
+
+    with _INSTRUMENTED_CLASSES_LOCK:
+        cached = _INSTRUMENTED_CLASSES.get(base_cls)
+        if cached is not None:
+            return cached
+
+        async def __aenter__(self: Any) -> Any:  # noqa: N807 - dunder override
+            result = await base_cls.__aenter__(self)  # type: ignore[attr-defined]
+            classify_connection_era(
+                server_id=getattr(self, _SERVER_ID_ATTR, ""),
+                protocol_version=getattr(self, "protocol_version", None),
+                connect_mode=resolved_connect_mode(),
+            )
+            return result
+
+        subclass = type(f"_EraInstrumented{base_cls.__name__}", (base_cls,), {"__aenter__": __aenter__})
+        _INSTRUMENTED_CLASSES[base_cls] = subclass
+        return subclass
+
+
+def instrument_client_era(client: _ClientT, *, server_id: str) -> _ClientT:
+    """Make ONE client instance auto-classify its era the moment it connects.
+
+    Applied at the seam that actually enters a client onto a real (possibly
+    proxied-behind-mirroring) transport -- see the module docstring for why
+    the executor's own front-leg capture is not enough on the gateway-mounted
+    path. Swaps ``client.__class__`` to a cached, dynamically composed
+    subclass (never mutates ``base_cls`` itself, so every OTHER client of the
+    same type in the process is untouched) whose ``__aenter__`` calls the
+    real one, then runs :func:`classify_connection_era` against the
+    now-negotiated ``client.protocol_version`` and :func:`resolved_connect_mode`.
+
+    Must be applied to each freshly-constructed/cloned instance -- FastMCP's
+    ``Client.new()`` shallow-copies ``__dict__`` AND the class stays whatever
+    it was BEFORE the copy, so a clone is not automatically instrumented; call
+    this again on each clone (as ``tools/gateway.py::_proxy_for_spec`` does).
+    Returns ``client`` unchanged (mutated in place) for chaining.
+    """
+
+    client.__class__ = _instrumented_class(type(client))  # type: ignore[misc]
+    client.__dict__[_SERVER_ID_ATTR] = server_id
+    return client
+
+
 __all__ = [
     "MCPConnectionEra",
     "ProtocolEra",
+    "all_latest_mcp_connection_eras",
     "classify_connection_era",
+    "instrument_client_era",
+    "latest_mcp_connection_era",
     "recorded_mcp_connection_downgrades",
     "resolved_connect_mode",
 ]
