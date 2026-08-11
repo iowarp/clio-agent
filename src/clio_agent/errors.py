@@ -49,6 +49,11 @@ MCP_TASK_SESSION_DELETED = "mcp_task_session_deleted"
 #: caller gets this reason plus the taskId and backend identity so the orphan can be
 #: reconciled by hand (SEP-2663 has no tasks/list to rediscover it).
 MCP_TASK_RECORD_NOT_DURABLE = "mcp_task_record_not_durable"
+#: #1201: an ``mcp.yaml`` declaration file exists but could not be read/parsed
+#: (OS error or malformed YAML). Previously swallowed into ``{}`` -- silently
+#: treating "malformed" the same as "no servers declared". A MISSING file is
+#: still normal and returns ``{}`` without this reason.
+MCP_YAML_DECLARATION_UNREADABLE = "mcp_yaml_declaration_unreadable"
 
 
 class ClioError(Exception):
