@@ -63,7 +63,7 @@ from clio_agent.gact.app import build_app
 # 165 -> 168 (#1127 P2.10): +3 run-projection routes owned by
 # routes/agent_tasks.py: GET /v1/runs plus POST detach and dismiss actions.
 # 168 -> 170 (83f18a00, #1185/#1179): +2 routes owned by routes/relay.py and
-# routes/sessions.py — GET /v1/relay/status, GET /v1/sessions/{sid}/trace.
+# routes/trace.py — GET /v1/relay/status, GET /v1/sessions/{sid}/trace.
 # 170 -> 172 (ad71fe87, #1192): +2 blueprint file-browsing routes owned by
 # routes/blueprints.py — GET /v1/agent-blueprints/{blueprint_id}/files
 # (capped flat recursive listing) and GET
