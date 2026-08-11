@@ -152,9 +152,9 @@ def _proxy_for_spec(
         if mode is not None:
             fresh.mode = mode
             fresh._transport_options = replace(fresh._transport_options, backend_mode=mode)
-        # Applied to THIS clone, never base_backend (.new() shallow-copies
-        # __dict__, so an override captured on base_backend would incorrectly
-        # keep re-entering base_backend when called through a clone instead).
+        # Applied to THIS clone: base_backend is never entered directly (only
+        # its .new() clones are, per-request), so this is where the one REAL
+        # backend connect this factory ever produces actually gets classified.
         return instrument_client_era(fresh, server_id=spec.name)
 
     return FastMCPProxy(client_factory=_client_factory)

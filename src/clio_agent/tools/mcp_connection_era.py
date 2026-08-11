@@ -294,11 +294,16 @@ def instrument_client_era(client: _ClientT, *, server_id: str) -> _ClientT:
     real one, then runs :func:`classify_connection_era` against the
     now-negotiated ``client.protocol_version`` and :func:`resolved_connect_mode`.
 
-    Must be applied to each freshly-constructed/cloned instance -- FastMCP's
-    ``Client.new()`` shallow-copies ``__dict__`` AND the class stays whatever
-    it was BEFORE the copy, so a clone is not automatically instrumented; call
-    this again on each clone (as ``tools/gateway.py::_proxy_for_spec`` does).
-    Returns ``client`` unchanged (mutated in place) for chaining.
+    Call it on whichever instance is actually entered. FastMCP's
+    ``Client.new()`` clone (``copy.copy``) DOES carry an already-swapped
+    class and the ``server_id`` attribute forward if the ORIGINAL was
+    instrumented first -- but ``tools/gateway.py::_proxy_for_spec`` never
+    instruments its long-lived ``base_backend`` (only its per-request
+    ``.new()`` clones are ever entered), so it calls this on each fresh clone
+    directly instead. Idempotent either way: re-instrumenting an
+    already-instrumented instance just re-composes the same cached subclass
+    and overwrites ``server_id`` with the same value. Returns ``client``
+    unchanged (mutated in place) for chaining.
     """
 
     client.__class__ = _instrumented_class(type(client))  # type: ignore[misc]
