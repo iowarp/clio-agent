@@ -437,7 +437,7 @@ tools.file_policy.max_file_size_bytes: "1073741824"
 # CLIO_MCP_CALL_TIMEOUT_S  (float)  <- src/clio_agent/tools/execution.py
 tools.mcp.call_timeout_s: 30.0
 
-# CLIO_MCP_CONNECT_MODE  (str)  <- src/clio_agent/tools/mcp_runtime.py
+# CLIO_MCP_CONNECT_MODE  (str)  <- src/clio_agent/tools/mcp_connection_era.py
 tools.mcp.connect_mode: "auto"
 
 # CLIO_MCP_ELICITATION_URL_TRUSTED_ORIGINS  (list)  <- src/clio_agent/gact/elicitation_bridge.py
