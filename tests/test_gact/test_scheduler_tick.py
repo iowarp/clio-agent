@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -48,8 +49,19 @@ def _make(tmp_path: Path, agent) -> tuple:
     return app, client, sid
 
 
-def test_fired_schedule_is_registered_and_cancellable(tmp_path: Path) -> None:
-    """A due schedule stages a turn exactly like a user POST would."""
+def test_fired_schedule_is_registered_and_cancellable(
+    tmp_path: Path, host_agent_executor: Any
+) -> None:
+    """A due schedule stages a turn exactly like a user POST would.
+
+    Needs ``host_agent_executor``: 287dcf1e made a bare session execute the
+    code-shipped builtin react ``main`` on the SAME tool-executor-gated react
+    runtime seam as blueprint agents, so the fired schedule only reaches the
+    ``build_app(agent=...)`` host fake (``_SlowAgent`` here) via that seam.
+    Without it the turn errors with ``custom_agent_tool_executor_unavailable``
+    synchronously instead of staying in flight for ``sleep_s``, so it never
+    gets caught by the ``in_flight_turns`` poll.
+    """
 
     app, client, sid = _make(tmp_path, _SlowAgent(sleep_s=1.0))
     app.state.schedules.add(session_id=sid, cron="* * * * *", question="scheduled q")
