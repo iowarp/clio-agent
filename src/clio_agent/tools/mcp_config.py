@@ -32,6 +32,7 @@ import re
 import shlex
 import shutil
 import sys
+import threading
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -62,6 +63,7 @@ __all__ = [
     "transport_from_spec",
     "redact_mcp_spec",
     "MCPTransportError",
+    "unreadable_mcp_yaml_snapshot",
 ]
 
 # clio-agent's built-in universal defaults (always present, not declarations).
@@ -466,6 +468,23 @@ def _read_mcp_yaml(path: Path) -> dict[str, Any]:
     return {str(k): v for k, v in servers.items()} if isinstance(servers, Mapping) else {}
 
 
+#: #1201: paths that failed to read/parse during the LAST load_mcp_servers()
+#: call -- a snapshot (reset+repopulated each call), not an append-forever
+#: ring: doctor wants "is this a problem RIGHT NOW", not history. logger.
+#: warning alone (the #1201 first-pass fix) is invisible to
+#: runtime/mcp_launcher.py's doctor sub-check; this is the queryable surface
+#: it reads instead (see probe_mcp_yaml_declarations).
+_UNREADABLE_MCP_YAML: list[dict[str, str]] = []
+_UNREADABLE_MCP_YAML_LOCK = threading.Lock()
+
+
+def unreadable_mcp_yaml_snapshot() -> list[dict[str, str]]:
+    """Return ``{"path": ..., "error": ...}`` rows from the last :func:`load_mcp_servers`."""
+
+    with _UNREADABLE_MCP_YAML_LOCK:
+        return list(_UNREADABLE_MCP_YAML)
+
+
 def load_mcp_servers(
     *,
     home: Path | None = None,
@@ -484,6 +503,8 @@ def load_mcp_servers(
     cwd = cwd or Path.cwd()
     lookup = env if env is not None else os.environ
     merged: dict[str, MCPServerSpec] = {}
+    with _UNREADABLE_MCP_YAML_LOCK:
+        _UNREADABLE_MCP_YAML.clear()
 
     # lowest precedence first
     for pack_id, servers in dict(pack_servers).items():
@@ -502,7 +523,8 @@ def _merge_mcp_yaml(
     merged: dict[str, MCPServerSpec], path: Path, *, source: str, env: Mapping[str, str] | None
 ) -> None:
     """Merge one ``mcp.yaml`` file's servers into ``merged``; a malformed file
-    logs a typed warning and is skipped, never raised (#1201)."""
+    logs a typed warning, records it (queryable via
+    :func:`unreadable_mcp_yaml_snapshot`), and is skipped -- never raised (#1201)."""
     try:
         declared = _read_mcp_yaml(path)
     except MCPConfigError as exc:
@@ -512,6 +534,8 @@ def _merge_mcp_yaml(
             path,
             exc,
         )
+        with _UNREADABLE_MCP_YAML_LOCK:
+            _UNREADABLE_MCP_YAML.append({"path": str(path), "error": str(exc)})
         return
     for name, value in declared.items():
         merged[name] = spec_from_declaration(name, value, source=source, env=env)
