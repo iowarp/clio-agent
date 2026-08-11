@@ -106,7 +106,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/agents/toolset_inventory.py (no-accretion ground rule); only the
     # per-call-site provenance registration (which sub-list a tool came from is
     # only known here) stayed in this file.
-    "src/clio_agent/gact/agents/builders.py": 1923,
+    # #1201 (adversarial review, PR #1202): +16 to surface a recorded MCP
+    # connection-era downgrade into the session's semantic-event trace at
+    # _active_base_agent_tool_executor (the natural per-session executor-
+    # resolution reader site) -- the actual event-building logic lives in the
+    # owner module gact/mcp_connection_observability.py; only the small
+    # _emit_mcp_downgrade_events call-site wrapper + its two call sites land here.
+    "src/clio_agent/gact/agents/builders.py": 1939,
     # #948 S4/S5/S6 growth already carried this file past the flat 800 cap (to 842)
     # before it was ever added to this baseline — a pre-existing gap this change
     # did not introduce (it was silently exempt from the ratchet, not under it).
@@ -272,7 +278,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchets back with the mcp_app_* / #714 route decomposition.
     "src/clio_agent/gact/routes/blueprints.py": 1010,
     "src/clio_agent/gact/routes/catalog.py": 938,  # +4: /goal command dispatch wiring (#1080; logic in gact/goal.py)
-    "src/clio_agent/gact/routes/mcp.py": 979,  # -14: handshake row shaping moved to routes/mcp_rows.py (#1111)
+    # #1201 (adversarial review, PR #1202): +6 for two direct-connect era-
+    # classification call sites (call_external_mcp_tool + _external_mcp_inventory's
+    # prompt/list branches) -- the classification logic itself lives in the owner
+    # module tools/mcp_connection_era.py; only the server_id= threading + one
+    # instrument_client_era() wrap for the bare-Client list branch land here.
+    "src/clio_agent/gact/routes/mcp.py": 985,  # -14: handshake row shaping moved to routes/mcp_rows.py (#1111)
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
     # develop with the check job red). Recording current counts makes the debt
@@ -284,7 +295,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # tools/mcp_results.py owner module).
     # P0.1c (#1104): sandbox/CSP construction moved to mcp_app_sandbox.py.
     # P0.1d (#1105): 784 -> 770 after folding _wire_value into tools/mcp_runtime.py.
-    "src/clio_agent/gact/mcp_apps.py": 770,
+    # #1201 (adversarial review, PR #1202): +7 to surface a recorded MCP
+    # connection-era downgrade into the session's semantic-event trace at
+    # _bound_executor (the natural per-session executor-resolution reader
+    # site for the MCP-Apps bridge); the event-building logic lives in the
+    # owner module gact/mcp_connection_observability.py.
+    "src/clio_agent/gact/mcp_apps.py": 777,
     # #895: +6 for threading the provider-generic thinking_level onto the LM bind
     # (LMProviderConfig arg + app.state.lm_config + the GET's thinking_level /
     # thinking_effective fields). The mapping logic itself lives in the owner
@@ -447,7 +463,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # #975 (B1 sandbox): +2 to register the `sandbox` doctor row in collect() (the import
     # + the probe_sandbox() call); the probe logic lives in the owner module
     # runtime/sandbox.py. Ratchets down when the probe methods are extracted.
-    "src/clio_agent/runtime/status.py": 1240,
+    # #1201 (adversarial review, PR #1202): +4 to register the mcp_yaml doctor
+    # sub-check (import + the probe_mcp_yaml_declarations() call); the probe
+    # logic lives in the owner module runtime/mcp_launcher.py.
+    "src/clio_agent/runtime/status.py": 1244,
     # #932: +62 for preloaded tool definitions (start() without the list_tools
     # fan-out) and namespace-direct call routing with lazy per-namespace
     # clients — the executor IS the owner module for this.
@@ -488,7 +507,24 @@ RATCHET_BASELINE: dict[str, int] = {
     # carries the upstream MCP tool's declared title onto Part.tool_title. The
     # substantive logic (sanitize + stamp) lives in the owner module; this file
     # only wires the boundary call.
-    "src/clio_agent/tools/execution.py": 1171,
+    # #1201 (adversarial review, PR #1202): +6 for a server_id threading-through
+    # parameter on create_async_tool_executor/create_sync_tool_executor/
+    # SyncMCPToolExecutor.__init__ -- the classification/instrumentation logic
+    # lives entirely in the owner module tools/mcp_connection_era.py; only the
+    # parameter + its pass-through to AsyncMCPToolExecutor land here. +4 more
+    # for a namespaces() delegate (the gact-side semantic-event readers need
+    # to enumerate an executor's declared namespaces; the accessor itself
+    # lives on AsyncMCPToolExecutor in mcp_executor.py, this is the thin
+    # delegate).
+    "src/clio_agent/tools/execution.py": 1181,
+    # #1201 (adversarial review, PR #1202): not previously baselined (under the
+    # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
+    # call list + lock, mirroring the existing per-server MCPServerSpec.
+    # validation_errors idiom already in this file) so the malformed-file
+    # warning is queryable by the new doctor sub-check
+    # (runtime/mcp_launcher.py::probe_mcp_yaml_declarations), not just a log
+    # line. Ratchets back below 800 if this snapshot moves to its own module.
+    "src/clio_agent/tools/mcp_config.py": 821,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.
