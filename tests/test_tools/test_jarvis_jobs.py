@@ -26,6 +26,7 @@ from clio_agent.tools.jarvis_jobs import (
     _execution_projection,
     _raise_remote_call_failure,
     _structured_payload,
+    _terminal_payload,
     resolve_jarvis_door_tool_name,
 )
 from clio_agent.tools.mcp_task_records import TaskKey
@@ -601,6 +602,142 @@ async def test_bounded_dispatch_reports_input_required_without_waiting_for_timeo
 
     assert raised.value.reason == "jarvis_dispatch_input_required_unsupported"
     assert relay.polls == 1
+
+
+class _DeadStreamRelay:
+    """A relay whose ``poll`` always dies -- relay#213's stale pooled stream."""
+
+    def __init__(self) -> None:
+        self.polls = 0
+
+    async def poll(self, _identity: RelayTaskIdentity) -> ClientGetTaskResult:
+        self.polls += 1
+        raise RelayTransportContractError(
+            "relay task poll died on a stale pooled connection",
+            reason="relay_stream_closed",
+            details={},
+        )
+
+
+@pytest.mark.asyncio
+async def test_drive_to_terminal_consumes_an_already_terminal_submit_without_polling() -> None:
+    """FAILING-FIRST (relay#213 unreportability class): a ``wait_for_terminal``
+    submit's own SEP-2663 create response can already report a terminal state
+    -- relay runs the dispatch to completion server-side before minting the
+    claim, so ``status`` is already known before any follow-up round trip.
+    Reissuing a ``tasks/get`` to relearn that state is the redundant hop that
+    dies on relay's stale pooled connection, converting an already-successful
+    (or already-failed) execution into an opaque client-side transport error.
+    When the submitted identity already carries a resolved terminal result,
+    ``_drive_to_terminal`` must consume it directly and never call ``poll()``
+    at all."""
+
+    relay = _DeadStreamRelay()
+    surface = JarvisJobs(lambda: None, poll_sleep=asyncio.sleep)  # type: ignore[arg-type]
+    terminal = ClientGetTaskResult(
+        taskId="jarvis-already-done",
+        status="completed",
+        createdAt="2026-08-10T23:00:00Z",
+        lastUpdatedAt="2026-08-10T23:00:01Z",
+        pollIntervalMs=RELAY_POLL_INTERVAL_MS,
+        resultType="complete",
+        result={
+            "pipeline_id": "cu-eam-elastic-v2",
+            "execution_id": "jarvis_already_done",
+            "state": "completed",
+            "terminal": True,
+        },
+        error=None,
+    )
+    identity = RelayTaskIdentity(
+        key=TaskKey("fake-relay", "session-alice", "jarvis-already-done"),
+        job_id="jarvis-already-done",
+        mcp_name="jarvis-already-done",
+        initial_result=terminal,
+    )
+
+    final = await surface._drive_to_terminal(relay, identity)  # type: ignore[arg-type]
+
+    assert final is terminal
+    assert relay.polls == 0
+
+
+@pytest.mark.asyncio
+async def test_drive_to_terminal_consumes_an_already_failed_submit_without_polling() -> None:
+    """Sibling of the completed case: a create-time ``failed`` status is ALSO
+    consumed directly -- a failure needs no additional content to report
+    accurately, so this is exactly the #183 unreportability class the fix
+    closes (a typed failure reason must reach the caller, not a transport
+    crash on the redundant poll that would only relearn "failed")."""
+
+    relay = _DeadStreamRelay()
+    surface = JarvisJobs(lambda: None, poll_sleep=asyncio.sleep)  # type: ignore[arg-type]
+    terminal = ClientGetTaskResult(
+        taskId="jarvis-already-failed",
+        status="failed",
+        createdAt="2026-08-10T23:00:00Z",
+        lastUpdatedAt="2026-08-10T23:00:01Z",
+        pollIntervalMs=RELAY_POLL_INTERVAL_MS,
+        statusMessage="Relay job is failed",
+        resultType="complete",
+        result=None,
+        error={"message": "Relay job is failed"},
+    )
+    identity = RelayTaskIdentity(
+        key=TaskKey("fake-relay", "session-alice", "jarvis-already-failed"),
+        job_id="jarvis-already-failed",
+        mcp_name="jarvis-already-failed",
+        initial_result=terminal,
+    )
+
+    final = await surface._drive_to_terminal(relay, identity)  # type: ignore[arg-type]
+
+    assert final is terminal
+    assert relay.polls == 0
+    with pytest.raises(JarvisJobError) as raised:
+        _terminal_payload("jarvis_describe", final)
+    assert raised.value.reason == "jarvis_dispatch_failed"
+    assert raised.value.details["relay_error"] == {"message": "Relay job is failed"}
+
+
+@pytest.mark.asyncio
+async def test_drive_to_terminal_still_polls_a_genuinely_non_terminal_submit() -> None:
+    """Sibling: a submit with no create-time terminal status (the ordinary,
+    unchanged case -- no ``wait_for_terminal``, or one that was still
+    ``working`` when its own wait budget elapsed) keeps polling exactly as
+    before, until the fake relay itself reports a terminal state."""
+
+    class WorkingThenDoneRelay:
+        def __init__(self) -> None:
+            self.polls = 0
+
+        async def poll(self, identity: RelayTaskIdentity) -> ClientGetTaskResult:
+            self.polls += 1
+            status: Literal["working", "completed"] = (
+                "completed" if self.polls >= 2 else "working"
+            )
+            return ClientGetTaskResult(
+                taskId=identity.task_id,
+                status=status,
+                createdAt="2026-08-10T23:00:00Z",
+                lastUpdatedAt="2026-08-10T23:00:01Z",
+                pollIntervalMs=RELAY_POLL_INTERVAL_MS,
+                resultType="complete",
+                result={"pipeline_id": "p"} if status == "completed" else None,
+                error=None,
+            )
+
+    relay = WorkingThenDoneRelay()
+    surface = JarvisJobs(lambda: None, poll_sleep=_no_sleep)  # type: ignore[arg-type]
+    identity = RelayTaskIdentity.from_key(
+        TaskKey("fake-relay", "session-alice", "jarvis-still-working")
+    )
+    assert identity.initial_result is None
+
+    final = await surface._drive_to_terminal(relay, identity)  # type: ignore[arg-type]
+
+    assert final.status == "completed"
+    assert relay.polls == 2
 
 
 @pytest.mark.asyncio

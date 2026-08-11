@@ -144,12 +144,16 @@ class RelayRemoteMcpHandle:
 
 @dataclass(frozen=True)
 class RelayTaskIdentity:
-    """One relay task's durable key and redundant wire invariants."""
+    """One relay task's durable key and redundant wire invariants.
+
+    ``initial_result``: a submit's already-terminal outcome, or ``None``.
+    """
 
     key: TaskKey
     job_id: str
     mcp_name: str
     poll_interval_ms: int = RELAY_POLL_INTERVAL_MS
+    initial_result: ClientGetTaskResult | None = None
 
     @property
     def task_id(self) -> str:
@@ -162,6 +166,35 @@ class RelayTaskIdentity:
         """Rebuild the invariant fields from a persisted #1115 composite key."""
 
         return cls(key=key, job_id=key.task_id, mcp_name=key.task_id)
+
+
+def _terminal_result_from_create(
+    create_result: ClientCreateTaskResult,
+) -> ClientGetTaskResult | None:
+    """Project an already-terminal SEP-2663 create response into get-task shape.
+
+    A ``wait_for_terminal`` submit's create response can already report a
+    terminal ``status``; no wire ``result``/``error`` exists on create, so
+    only status + message are synthesized. ``None`` if genuinely non-terminal.
+    """
+
+    status = create_result.status
+    if status not in TERMINAL_TASK_STATES:
+        return None
+    msg = create_result.status_message or f"relay task ended in state {status!r}"
+    error = None if status == "completed" else {"message": msg}
+    return ClientGetTaskResult(
+        taskId=create_result.task_id,
+        status=status,
+        createdAt=create_result.created_at,
+        lastUpdatedAt=create_result.last_updated_at,
+        ttlMs=create_result.ttl_ms,
+        statusMessage=create_result.status_message,
+        pollIntervalMs=create_result.poll_interval_ms,
+        resultType="complete",
+        result=None,
+        error=error,
+    )
 
 
 class RelayTransportClient:
@@ -312,7 +345,12 @@ class RelayTransportClient:
             tool_name=tool_name,
             store=self._record_store(),
         )
-        return RelayTaskIdentity.from_key(key)
+        return RelayTaskIdentity(
+            key=key,
+            job_id=key.task_id,
+            mcp_name=key.task_id,
+            initial_result=_terminal_result_from_create(create_result),
+        )
 
     async def discover_remote_mcp(self) -> RelayRemoteMcpCatalog:
         """Read and validate the relay-owned catalog of virtual ``remote_*`` tools."""

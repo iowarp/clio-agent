@@ -19,6 +19,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError as FastMCPToolError
 from fastmcp.utilities.tasks import TaskConfig
 from fastmcp_tasks import TasksExtension
+from fastmcp_tasks.client_models import ClientCreateTaskResult
 
 from clio_agent.tools.mcp_task_records import (
     InMemoryTaskRecordStore,
@@ -35,6 +36,7 @@ from clio_agent.tools.relay_transport import (
     RelayTaskJobMismatchError,
     RelayTransportClient,
     RelayTransportContractError,
+    _terminal_result_from_create,
 )
 
 
@@ -575,3 +577,114 @@ async def test_cancel_merges_the_post_ack_record_instead_of_replaying_stale_stat
     assert retained.status == "working"
     assert retained.lease_owner == "driver-1"
     assert retained.cancel_requested is True
+
+
+def _create_result(
+    *,
+    status: str,
+    status_message: str | None = None,
+) -> ClientCreateTaskResult:
+    """Build the exact wire shape relay's ``intercept_tool_call`` returns.
+
+    Unlike the generic fastmcp_tasks reference server (which always claims
+    ``working`` before a task has run at all), clio-relay materializes the
+    SEP-2663 task claim only AFTER a ``wait_for_terminal`` dispatch already
+    ran to completion (``clio_relay.fastmcp_server`` ``intercept_tool_call``:
+    ``status=... if task.state in TERMINAL_STATES else "working"``), so
+    ``status`` on THIS response can legitimately already be terminal.
+    ``CreateTaskResult`` never carries a ``result``/``error`` field on the
+    wire -- only status and a human status message.
+    """
+
+    return ClientCreateTaskResult(
+        taskId="jarvis-job-1",
+        status=status,
+        createdAt="2026-08-10T23:00:00Z",
+        lastUpdatedAt="2026-08-10T23:00:01Z",
+        pollIntervalMs=RELAY_POLL_INTERVAL_MS,
+        statusMessage=status_message,
+        resultType="task",
+    )
+
+
+def test_terminal_result_from_create_is_none_for_a_genuinely_working_claim() -> None:
+    """The ordinary case (no wait_for_terminal, or a task truly still running)
+    must keep going through the existing poll path -- unchanged."""
+
+    assert _terminal_result_from_create(_create_result(status="working")) is None
+    assert _terminal_result_from_create(_create_result(status="input_required")) is None
+
+
+def test_terminal_result_from_create_projects_a_completed_claim_without_content() -> None:
+    """FAILING-FIRST: relay's create response can already report ``completed``
+    for a ``wait_for_terminal`` submission -- ``CreateTaskResult`` has no
+    ``result`` field on the wire, so the projection carries ``result=None``
+    and ``error=None`` rather than fabricating content that was never sent."""
+
+    create_result = _create_result(status="completed", status_message="Relay job is succeeded")
+
+    projected = _terminal_result_from_create(create_result)
+
+    assert projected is not None
+    assert projected.task_id == "jarvis-job-1"
+    assert projected.status == "completed"
+    assert projected.result is None
+    assert projected.error is None
+    assert projected.status_message == "Relay job is succeeded"
+    assert projected.poll_interval_ms == RELAY_POLL_INTERVAL_MS
+
+
+def test_terminal_result_from_create_projects_a_failed_claim_with_a_typed_error() -> None:
+    """FAILING-FIRST (relay#183/#213 unreportability class): a create-time
+    ``failed`` status carries its ``status_message`` forward as the error
+    detail, so the caller gets a typed, reportable reason instead of no
+    error information at all."""
+
+    create_result = _create_result(status="failed", status_message="Relay job is failed")
+
+    projected = _terminal_result_from_create(create_result)
+
+    assert projected is not None
+    assert projected.status == "failed"
+    assert projected.result is None
+    assert projected.error == {"message": "Relay job is failed"}
+
+
+def test_terminal_result_from_create_falls_back_to_a_synthesized_error_message() -> None:
+    """A terminal non-completed status with no ``status_message`` at all still
+    produces a non-empty, honest error -- never a silently empty one."""
+
+    create_result = _create_result(status="cancelled", status_message=None)
+
+    projected = _terminal_result_from_create(create_result)
+
+    assert projected is not None
+    assert projected.error == {"message": "relay task ended in state 'cancelled'"}
+
+
+async def test_submit_surfaces_an_already_terminal_create_response_via_initial_result(
+    relay_backend: _Backend,
+) -> None:
+    """The wire-level submit() path: when the fake relay's own create claim
+    already reports terminal (mirrored here via monkeypatching the parsed
+    create result, since the generic fastmcp_tasks reference server this
+    fixture wraps always claims ``working``), the returned identity carries
+    ``initial_result`` so a caller never needs a follow-up poll to learn a
+    state ``submit`` already reported."""
+
+    async with _client(relay_backend) as relay:
+        client = relay._require_mcp_client()
+        real_call_tool = client.session.call_tool
+
+        async def terminal_call_tool(*args: Any, **kwargs: Any) -> Any:
+            raw = await real_call_tool(*args, **kwargs)
+            if isinstance(raw, ClientCreateTaskResult):
+                return raw.model_copy(update={"status": "completed"})
+            return raw
+
+        client.session.call_tool = terminal_call_tool  # type: ignore[method-assign]
+        identity = await relay.submit("relay_run", {"delay": 0})
+
+    assert identity.initial_result is not None
+    assert identity.initial_result.status == "completed"
+    assert identity.initial_result.result is None

@@ -673,6 +673,10 @@ class JarvisJobs:
     ) -> ClientGetTaskResult:
         """Poll a bounded dispatch without replacing the process event-loop clock."""
 
+        if identity.initial_result is not None:
+            # Already terminal at submit time; skip the poll relay#213 kills.
+            return identity.initial_result
+
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._dispatch_timeout_seconds
         while True:
