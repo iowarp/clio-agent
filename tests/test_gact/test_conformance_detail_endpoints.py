@@ -51,7 +51,20 @@ def test_message_detail_returns_stored_message(tmp_path: Path) -> None:
     assert body["role"] == "assistant"
 
 
-def test_agent_detail_returns_default_registry_agent(tmp_path: Path) -> None:
+def test_agent_detail_returns_builtin_main_agent(tmp_path: Path) -> None:
+    """A bare session with no activated Agent Blueprint resolves the
+    code-shipped react ``main`` (``catalog._builtin_main_agent``), not an
+    installed-but-never-activated default-registry snapshot.
+
+    36202e1c deleted the implicit-selection seam that used to silently load
+    whatever blueprint was pinned as ``DEFAULT_AGENT_BLUEPRINT_ID`` and
+    relabel its rows "builtin"/"expert_pack" with a
+    ``metadata.source_blueprint`` stamp (owner ruling 2026-08-05, commit
+    aa906022: a session never resolves a discoverable blueprint it did not
+    activate). See the twin in
+    test_agent_blueprints.py::test_builtin_agents_never_implicitly_load_an_installed_default_registry_snapshot.
+    """
+
     client = _client(tmp_path)
 
     resp = client.get("/v1/agents/main")
@@ -59,8 +72,9 @@ def test_agent_detail_returns_default_registry_agent(tmp_path: Path) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["id"] == "main"
-    assert body["source"] == "expert_pack"
-    assert body["metadata"]["source_blueprint"] == "default_registry"
+    assert body["source"] == "builtin"
+    assert body["metadata"]["definition_kind"] == "builtin_main"
+    assert "source_blueprint" not in body["metadata"]
     assert body["title"]
 
 
