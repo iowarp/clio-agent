@@ -42,22 +42,6 @@ _STRUCTURED_RESULT_KEYS = ("structured_result", "structuredContent", "structured
 # handed to the agent verbatim.
 _RELAY_JOB_ENVELOPE_SIBLING_KEYS = ("job", "relay_queue", "job_id")
 _REMOTE_MESSAGE_LIMIT = 4_000
-# Tools that dispatch through _terminal_payload with no downstream identity
-# check of their own: an envelope that resolves to nothing (D15: mcp_result
-# present but no reachable structured-result key) must raise loud here
-# rather than hand relay's own bookkeeping back as if it were the tool's
-# result. jarvis_get_execution is deliberately excluded -- its own
-# _execution_projection already turns an unresolved envelope into a typed
-# jarvis_execution_identity_mismatch, and that reason is more specific than
-# a generic unwrap failure for that one caller.
-_NO_DOWNSTREAM_IDENTITY_CHECK_TOOLS = frozenset(
-    {
-        "jarvis_create_pipeline",
-        "jarvis_add_step",
-        "jarvis_edit_step",
-        "jarvis_describe",
-    }
-)
 
 
 def _is_relay_job_envelope(candidate: Mapping[str, Any]) -> bool:
@@ -185,8 +169,10 @@ def _structured_from_envelope(envelope: Mapping[str, Any]) -> dict[str, Any] | N
 
     Returns ``None`` when the envelope's ``mcp_result`` is absent or does not
     itself carry a structured-result key -- the caller must not fall back to
-    returning the envelope in that case, so the existing identity-mismatch
-    error still fires downstream instead of a malformed payload being masked.
+    returning the envelope in that case, so :func:`structured_payload` raises
+    its own typed ``jarvis_result_unwrap_failed`` instead of a malformed
+    payload being masked or handed to a downstream check that reports the
+    wrong thing (F2/N2/N3).
     """
 
     inner = envelope.get("mcp_result")
@@ -222,17 +208,20 @@ def structured_payload(
 
     If that hop comes up empty (D15: a relay envelope was positively
     identified -- ``mcp_result`` plus a job-identifying sibling -- but
-    nothing inside it names the tool's structured result), the fallback
-    depends on the caller. ``tool_name`` in
-    :data:`_NO_DOWNSTREAM_IDENTITY_CHECK_TOOLS` has nothing else to catch a
-    bad unwrap, so this raises a typed ``jarvis_result_unwrap_failed``
-    instead of handing relay's own bookkeeping back as if it were the
-    tool's result (F2 -- the backstop that makes the next unrecognized
-    shape fail loudly instead of lying, the same mechanism that let C1's
-    mis-shaped eager ``completed_result`` reach the agent silently).
-    Every other caller (chiefly ``jarvis_get_execution``) keeps the original
-    contract: this still returns the untouched input, so its own downstream
-    identity check fires with the correct, more specific reason.
+    nothing inside it names the tool's structured result), this raises a
+    typed ``jarvis_result_unwrap_failed`` for EVERY caller -- unconditionally,
+    never gated by ``tool_name`` (F2/N2/N3). An earlier version carved
+    ``jarvis_get_execution`` (and, unreachably, ``jarvis_run``) out of this
+    raise on the theory that ``_execution_projection``'s own
+    ``jarvis_execution_identity_mismatch`` was "more specific" for that
+    caller. It was ruled unsound and removed: that downstream check reports
+    a mismatch that never happened (``observed_*: null`` -- nothing was
+    returned, nothing was compared) and is the exact bug
+    :func:`raise_remote_call_failure`'s docstring already describes fixing
+    for the sibling failure case. A caller wanting a more specific reason
+    for this exact input must earn it with a test that compares the two
+    reasons on the same envelope, not reuse one that never reaches this
+    branch.
 
     A shape with no relay envelope signal at all (no ``mcp_result``
     anywhere) is never touched by this rule -- it is returned unchanged
@@ -257,7 +246,7 @@ def structured_payload(
                     return nested
                 continue
             return dict(structured)
-    if envelope_detected and tool_name in _NO_DOWNSTREAM_IDENTITY_CHECK_TOOLS:
+    if envelope_detected:
         raise JarvisJobError(
             f"{tool_name} reached a relay job envelope with no reachable "
             "structured result",

@@ -796,6 +796,53 @@ async def test_oversize_and_unknown_resume_keep_relay_error_types(
     assert unknown_task.value.reason == "relay_task_record_missing"
 
 
+@pytest.mark.asyncio
+async def test_resume_run_raises_typed_unwrap_failure_for_an_unresolvable_envelope(
+    fake_route: _FakeJarvisRoute,
+) -> None:
+    """N3: ``jarvis_run`` IS reachable through ``resume_run``'s
+    ``_terminal_payload("jarvis_run", ...)`` call (``jarvis_jobs.py:588``).
+    A per-tool allowlist gating the F2 raise omitted ``jarvis_run`` entirely,
+    so this exact path fell all the way through ``structured_payload`` and
+    returned relay's own bookkeeping to the caller verbatim instead of
+    failing loud. The fix makes the raise caller-independent
+    (``envelope_detected`` alone), so this reachable path must now raise
+    the same typed ``jarvis_result_unwrap_failed`` every other curated tool
+    does."""
+
+    surface = _surface(fake_route)
+    await _deploy(surface, LAMMPS_RECIPE)
+    handle = await surface.run(
+        {
+            "cluster": "ares",
+            "pipeline_id": LAMMPS_RECIPE.pipeline_id,
+            "execution_id": "lammps-execution",
+            "spack_specs": ["lammps@20260704"],
+        }
+    )
+
+    # Overwrite the fake dispatch's own result with an unresolvable relay
+    # job envelope (D15's shape: mcp_result present, no reachable
+    # structured-result key inside it) for the SAME dispatch resume_run
+    # re-fetches.
+    fake_route.dispatches[handle.task_id].result = _tasks_get_structured_content_wrapper(
+        {
+            "mcp_result": {"operation": "tools/call", "tool": "jarvis_run"},
+            "job": {"job_id": "job_test", "state": "succeeded"},
+            "relay_queue": {"state": "succeeded"},
+            "terminal": True,
+            "last_error": None,
+        }
+    )
+
+    with pytest.raises(JarvisJobError) as raised:
+        await surface.resume_run(handle.identity)
+
+    assert raised.value.reason == "jarvis_result_unwrap_failed"
+    assert raised.value.details["tool"] == "jarvis_run"
+    assert raised.value.details["task_id"] == handle.task_id
+
+
 # --------------------------------------------------------------------------- #
 # Door tool name resolution (P5 correct-shape door): the door this surface was
 # built against exposed compact aliases (jarvis_create_pipeline, ...). The
@@ -1246,12 +1293,21 @@ def test_structured_payload_direct_payload_regression() -> None:
     assert payload["execution_handle"]["scheduler_native_id"] == "9002"
 
 
-def test_structured_payload_both_shapes_miss_keeps_typed_identity_error() -> None:
-    """A malformed envelope with no reachable structured_result anywhere must
-    not be silently returned as if it carried the identity -- no double-try
-    that masks a malformed payload. The caller's typed
-    ``jarvis_execution_identity_mismatch`` error must still fire.
-    """
+def test_structured_payload_get_execution_unresolvable_envelope_raises_unwrap_failed() -> None:
+    """N2: a relay envelope that is positively detected (``mcp_result`` plus a
+    job-identifying sibling) but resolves to nothing must raise the typed
+    ``jarvis_result_unwrap_failed`` for ``jarvis_get_execution`` too, not a
+    special-cased passthrough into ``_execution_projection``.
+
+    An earlier version carved ``jarvis_get_execution`` out of this raise on
+    the theory that the downstream ``jarvis_execution_identity_mismatch`` was
+    "more specific." It was ruled unsound: that check reports a mismatch that
+    never happened (``observed_*`` come back ``null`` because nothing was
+    ever returned to compare, not because JARVIS reported different ids) --
+    exactly the bug ``raise_remote_call_failure``'s own docstring already
+    describes fixing for the sibling failure case. This is the regression
+    test for that ruling: ``_execution_projection`` must never even run on
+    this input."""
 
     malformed_envelope = {
         # Bears the envelope shape (mcp_result + job/relay_queue siblings)
@@ -1264,36 +1320,55 @@ def test_structured_payload_both_shapes_miss_keeps_typed_identity_error() -> Non
     }
     wire = _tasks_get_structured_content_wrapper(malformed_envelope)
 
-    payload = _structured_payload(wire)
-    # Neither shape resolved an identity, so the untouched top-level input is
-    # returned rather than a guessed/synthesized structured result.
-    assert payload == wire
-    assert payload.get("pipeline_id") is None
+    with pytest.raises(JarvisJobError) as raised:
+        _structured_payload(wire, tool_name="jarvis_get_execution", task_id="job_test")
+
+    assert raised.value.reason == "jarvis_result_unwrap_failed"
+    assert raised.value.details["tool"] == "jarvis_get_execution"
+    assert raised.value.details["task_id"] == "job_test"
+
+
+def test_execution_projection_reports_a_genuine_identity_mismatch() -> None:
+    """``_execution_projection``'s own job, isolated from the unwrap failure
+    above: when the envelope DOES resolve to a structured result, but that
+    result names a different pipeline/execution than what was requested,
+    ``jarvis_execution_identity_mismatch`` still fires -- with the REAL
+    observed identities, not ``null``. This is what the carve-out's removal
+    (N2) does not take away."""
+
+    envelope = _relay_job_envelope(
+        pipeline_id="cu-eam-elastic-v2",
+        execution_id="jarvis_7999c467cfb94ac4826b73c78f38a709",
+        scheduler_native_id="22827",
+    )
+    wire = _tasks_get_structured_content_wrapper(envelope)
 
     with pytest.raises(JarvisJobError) as raised:
         _execution_projection(
-            payload,
-            {"pipeline_id": "cu-eam-elastic-v2", "execution_id": "jarvis_exec"},
+            _structured_payload(wire, tool_name="jarvis_get_execution", task_id="job_test"),
+            {"pipeline_id": "cu-eam-elastic-v99", "execution_id": "jarvis_exec"},
         )
     assert raised.value.reason == "jarvis_execution_identity_mismatch"
-    assert raised.value.details["observed_pipeline_id"] is None
-    assert raised.value.details["observed_execution_id"] is None
+    assert raised.value.details["observed_pipeline_id"] == "cu-eam-elastic-v2"
+    assert raised.value.details["observed_execution_id"] == (
+        "jarvis_7999c467cfb94ac4826b73c78f38a709"
+    )
+    assert raised.value.details["expected_pipeline_id"] == "cu-eam-elastic-v99"
 
 
-@pytest.mark.parametrize(
-    "tool_name",
-    ["jarvis_create_pipeline", "jarvis_add_step", "jarvis_edit_step", "jarvis_describe"],
-)
-def test_structured_payload_raises_typed_unwrap_failure_with_no_downstream_check(
+@pytest.mark.parametrize("tool_name", JARVIS_TOOL_NAMES)
+def test_structured_payload_raises_typed_unwrap_failure_for_every_curated_tool(
     tool_name: str,
 ) -> None:
-    """F2: for the four tools with no downstream identity check of their
-    own, an envelope that resolves to nothing (D15's shape: ``mcp_result``
-    present, but nothing inside it names the tool's structured result) must
-    raise a typed ``jarvis_result_unwrap_failed`` instead of handing relay's
-    own bookkeeping back to the agent as if it were the tool's result --
-    this is the mechanism that let C1's mis-shaped eager ``completed_result``
-    reach the agent silently, and it must now fail loud instead."""
+    """F2/N2/N3: an envelope that resolves to nothing (D15's shape:
+    ``mcp_result`` present, but nothing inside it names the tool's
+    structured result) must raise a typed ``jarvis_result_unwrap_failed``
+    instead of handing relay's own bookkeeping back to the agent as if it
+    were the tool's result -- this is the mechanism that let C1's
+    mis-shaped eager ``completed_result`` reach the agent silently, and it
+    must now fail loud instead, for EVERY curated tool. No tool is carved
+    out: a per-tool allowlist already omitted ``jarvis_get_execution`` and
+    ``jarvis_run`` (N2/N3), so the condition is caller-independent."""
 
     malformed_envelope = {
         "mcp_result": {"operation": "tools/call", "tool": tool_name},
@@ -1311,28 +1386,6 @@ def test_structured_payload_raises_typed_unwrap_failure_with_no_downstream_check
     assert raised.value.details["tool"] == tool_name
     assert raised.value.details["task_id"] == "job_test"
     assert set(raised.value.details["observed_keys"]) == {"content", "structuredContent", "isError", "resultType"}
-
-
-def test_structured_payload_unresolved_envelope_still_passes_through_for_get_execution() -> None:
-    """Sibling of the F2 test above: ``jarvis_get_execution`` is deliberately
-    excluded from the strict raise -- its own downstream identity check
-    already turns this exact shape into a typed, more specific
-    ``jarvis_execution_identity_mismatch`` (see
-    ``test_structured_payload_both_shapes_miss_keeps_typed_identity_error``
-    above), so ``structured_payload`` must keep the original untouched
-    -passthrough contract for it, not raise a second, less specific error."""
-
-    malformed_envelope = {
-        "mcp_result": {"operation": "tools/call", "tool": "jarvis_get_execution"},
-        "job": {"job_id": "job_test", "state": "succeeded"},
-        "relay_queue": {"state": "succeeded"},
-        "terminal": True,
-        "last_error": None,
-    }
-    wire = _tasks_get_structured_content_wrapper(malformed_envelope)
-
-    payload = _structured_payload(wire, tool_name="jarvis_get_execution", task_id="job_test")
-    assert payload == wire
 
 
 def _failed_remote_call_envelope(
@@ -1467,12 +1520,15 @@ def test_successful_remote_call_is_never_flagged_as_failed() -> None:
         assert payload["pipeline_id"] == "smoke-hostname-p1"
 
 
-def test_malformed_envelope_without_failure_evidence_keeps_identity_error() -> None:
+def test_malformed_envelope_without_failure_evidence_keeps_unwrap_error() -> None:
     """No failure evidence must not become a fabricated failure.
 
     The #1171 both-shapes-miss case has no ``protocol_error``, no non-zero
-    ``returncode`` and no ``protocol_result``: it is a malformed payload, not a
-    remote rejection, so the typed identity error still owns it.
+    ``returncode`` and no ``protocol_result``: it is a malformed payload, not
+    a remote rejection (``raise_remote_call_failure`` must not fire), so the
+    typed unwrap error still owns it (N2: never
+    ``jarvis_execution_identity_mismatch`` -- that reports a mismatch that
+    never happened on this exact shape).
     """
 
     malformed = {
@@ -1486,11 +1542,8 @@ def test_malformed_envelope_without_failure_evidence_keeps_identity_error() -> N
     _raise_remote_call_failure("jarvis_get_execution", "job_test", wire)
 
     with pytest.raises(JarvisJobError) as raised:
-        _execution_projection(
-            _structured_payload(wire),
-            {"pipeline_id": "p", "execution_id": "e"},
-        )
-    assert raised.value.reason == "jarvis_execution_identity_mismatch"
+        _structured_payload(wire, tool_name="jarvis_get_execution", task_id="job_test")
+    assert raised.value.reason == "jarvis_result_unwrap_failed"
 
 
 def test_artifacts_filter_schema_is_closed_and_content_free() -> None:
