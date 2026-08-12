@@ -58,27 +58,44 @@ def _agent_run(task: AgentTask) -> dict[str, Any]:
 
 
 def _relay_run(record: TaskRecord) -> dict[str, Any]:
-    """Project one durable relay/MCP task record not mirrored by an AgentTask."""
+    """Project one durable MCP/relay task record not mirrored by an AgentTask.
 
-    cluster = str(record.backend.get("cluster") or record.key.server_id)
+    #1205 review (4th round) — honesty: ``placement``/``source`` used to be a
+    blanket ``"relay:<...>"``/``"relay_job"`` claim for EVERY non-agent-task
+    record, including a plain ``jarvis_run`` call against the generic #1115
+    ``ClioTasksClientExtension`` leaf, whose backend locator
+    (``mcp_task_extension.py::_locator_for``) carries NO ``cluster`` key at
+    all — that record isn't a relay job. Only a record whose backend locator
+    actually carries relay's own ``cluster`` key
+    (``relay_invoker_runtime.py``'s ``RelayExpertInvoker`` path,
+    ``relay_submit_remote_agent``) is genuinely relay-placed; everything else
+    gets an honest ``mcp:<server_id>`` / ``"mcp_task"`` instead of a false
+    relay claim. Server-authored display semantics must be true — the UI
+    renders them verbatim. ``updated_at`` is now wired through from the real,
+    stamped field (``TaskRecord.updated_at``, #1205 2nd/3rd round) instead of
+    a hardcoded empty string.
+    """
+
+    cluster = record.backend.get("cluster")
+    is_relay = isinstance(cluster, str) and bool(cluster)
     live_state = _RELAY_LIVE_STATES.get(record.status, record.status)
     return {
         "handle_id": record.task_id,
         "task_id": record.task_id,
-        "run_label": record.tool or f"relay run {record.task_id}",
+        "run_label": record.tool or f"task {record.task_id}",
         "live_state": live_state,
         "status": record.status,
-        "host": cluster,
-        "placement": f"relay:{cluster}",
+        "host": cluster if is_relay else record.key.server_id,
+        "placement": f"relay:{cluster}" if is_relay else f"mcp:{record.key.server_id}",
         "parent_session_id": record.session_id or "",
         "child_session_id": "",
         "created_at": record.created_at,
-        "updated_at": "",
+        "updated_at": record.updated_at,
         "detached": record.lease_owner is None,
-        "source": "relay_job",
+        "source": "relay_job" if is_relay else "mcp_task",
         "ticker": {
             "state": live_state,
-            "updated_at": "",
+            "updated_at": record.updated_at,
             "path": "",
         },
     }
@@ -111,7 +128,19 @@ def project_runs(app: "FastAPI") -> list[dict[str, Any]]:
 
 
 def detach_run(app: "FastAPI", handle_id: str) -> dict[str, Any] | None:
-    """Detach a run without cancelling it, using only its existing authoritative store."""
+    """Detach a run without cancelling it, using only its existing authoritative store.
+
+    #1205 review (4th round): widened the SAME way ``dismiss_run``/``project_runs``
+    were — ANY non-agent-task ``TaskRecord``, not only the relay-agent-mirroring
+    ``relay_submit_remote_agent`` records this originally covered. Without this,
+    ``project_runs`` lists a ``jarvis_run`` row (the prior round's widening) that
+    this route 404s on — a row the listing shows but cannot act on, which is its
+    own dishonesty. UNLIKE ``dismiss_run``, this carries NO terminal-state guard:
+    detach is explicitly "without cancelling" (matches the ``AgentTask`` branch
+    above, which detaches a still-RUNNING task just fine) — a live task can be
+    detached too. Composite-key precision (mirrors ``dismiss_run``): resolves to
+    AT MOST ONE matching record.
+    """
 
     task = app.state.agent_task_registry.get(handle_id)
     if task is not None:
@@ -119,12 +148,17 @@ def detach_run(app: "FastAPI", handle_id: str) -> dict[str, Any] | None:
             task = replace(task, detached=True)
             persist_agent_task(app, task)
         return _agent_run(task)
-    for record in resolve_store(None).list():
-        if record.task_id == handle_id and record.tool == "relay_submit_remote_agent":
-            # A relay record with no active lease is already detached from a driver;
-            # detaching never drops or cancels its reconnect handle.
-            return {**_relay_run(record), "detached": True}
-    return None
+    match = next(
+        (record for record in resolve_store(None).list() if record.task_id == handle_id),
+        None,
+    )
+    if match is None:
+        return None
+    # A relay/MCP record with no active lease is already detached from a driver;
+    # detaching never drops or cancels its reconnect handle. TaskRecord carries no
+    # persistent "detached" field, so — same as before this widening — this stays
+    # a display-only affordance in the response, never written to the store.
+    return {**_relay_run(match), "detached": True}
 
 
 def dismiss_run(app: "FastAPI", handle_id: str) -> bool:

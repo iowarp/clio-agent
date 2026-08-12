@@ -622,3 +622,124 @@ async def test_dismiss_removes_a_settled_mcp_task_from_both_async_processes_and_
         assert all(r["id"] != "jarvis-reachable" for r in processes_after)
         runs_after = client.get("/v1/runs").json()["runs"]
         assert all(r["handle_id"] != "jarvis-reachable" for r in runs_after)
+
+
+# --------------------------------------------------------------------------- #
+# #1205 review, 4th round (merge-ready micro-fixes): detach lockstep with      #
+# the prior round's project_runs/dismiss_run widening, and _relay_run's        #
+# honesty about what a record actually is.                                     #
+# --------------------------------------------------------------------------- #
+
+
+def test_detach_widened_to_match_any_non_agent_task_record(tmp_path: Path) -> None:
+    """Item 2: ``project_runs`` lists ANY non-agent-task ``TaskRecord`` (prior
+    round's widening) — ``detach_run`` must resolve the SAME rows, or a row the
+    listing shows 404s the moment someone acts on it. UNLIKE ``dismiss_run``,
+    detach carries NO terminal-state guard — detach is explicitly "without
+    cancelling", so a live task detaches fine too (matches the ``AgentTask``
+    branch, which already detaches a still-RUNNING task).
+    """
+
+    from clio_agent.gact.run_registry import detach_run  # noqa: PLC0415 - test-local
+
+    app = _build(tmp_path)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        key = TaskKey(server_id="mcp-digest-1", session_id=sid, task_id="jarvis-live")
+        task_record_store().put(TaskRecord(key=key, tool="jarvis_run", status="working"))
+
+        result = detach_run(app, "jarvis-live")
+
+    assert result is not None
+    assert result["detached"] is True
+    assert result["task_id"] == "jarvis-live"
+    # No terminal-state gate: the record itself is untouched (still "working").
+    record = task_record_store().get(key)
+    assert record is not None
+    assert record.status == "working"
+
+
+async def test_detach_route_no_longer_404s_a_jarvis_row(tmp_path: Path) -> None:
+    """Route-level: ``POST /v1/runs/{id}/detach`` on a jarvis-tool row must not
+    404 now that ``project_runs`` lists it — a listed-but-un-actionable row is
+    its own dishonesty.
+    """
+
+    app = _build(tmp_path)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        key = TaskKey(server_id="mcp-digest-1", session_id=sid, task_id="jarvis-detach-route")
+        task_record_store().put(TaskRecord(key=key, tool="jarvis_run", status="working"))
+
+        runs = client.get("/v1/runs").json()["runs"]
+        assert any(r["handle_id"] == "jarvis-detach-route" for r in runs)
+
+        response = client.post("/v1/runs/jarvis-detach-route/detach")
+
+    assert response.status_code == 200
+    assert response.json()["detached"] is True
+
+
+def test_relay_run_projection_is_honest_about_non_relay_records(tmp_path: Path) -> None:
+    """Item 3: a ``jarvis_run`` ``TaskRecord`` whose backend locator carries NO
+    relay ``cluster`` key (the real #1115 leaf shape,
+    ``mcp_task_extension.py::_locator_for`` — ``{"transport": "http", "url": ...}``
+    for a plain MCP backend) must NOT be labelled ``placement="relay:..."`` /
+    ``source="relay_job"`` — that is a false claim the UI renders verbatim.
+    ``updated_at`` must be the REAL stamped field, not a hardcoded empty string.
+    """
+
+    from clio_agent.gact.run_registry import project_runs  # noqa: PLC0415 - test-local
+
+    app = _build(tmp_path)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        key = TaskKey(server_id="mcp-digest-honest", session_id=sid, task_id="jarvis-honest")
+        task_record_store().put(
+            TaskRecord(
+                key=key,
+                tool="jarvis_run",
+                status="working",
+                backend={"transport": "http", "url": "http://example.invalid/mcp"},
+            )
+        )
+
+        rows = {row["handle_id"]: row for row in project_runs(app)}
+
+    row = rows["jarvis-honest"]
+    assert row["source"] == "mcp_task"
+    assert row["placement"] == "mcp:mcp-digest-honest"
+    assert row["host"] == "mcp-digest-honest"
+    assert row["updated_at"], "updated_at must be the real stamped field, not hardcoded empty"
+    assert row["ticker"]["updated_at"] == row["updated_at"]
+
+
+def test_relay_run_projection_still_labels_genuine_relay_jobs(tmp_path: Path) -> None:
+    """The flip side of the honesty fix: a record whose backend DOES carry
+    relay's own ``cluster`` key (``relay_invoker_runtime.py``'s
+    ``RelayExpertInvoker`` path, ``relay_submit_remote_agent``) still gets the
+    ``relay:<cluster>`` / ``relay_job`` label — the fix must not turn genuine
+    relay jobs into false negatives either.
+    """
+
+    from clio_agent.gact.run_registry import project_runs  # noqa: PLC0415 - test-local
+
+    app = _build(tmp_path)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        key = TaskKey(server_id="relay-ares", session_id=sid, task_id="relay-genuine")
+        task_record_store().put(
+            TaskRecord(
+                key=key,
+                tool="relay_submit_remote_agent",
+                status="working",
+                backend={"cluster": "ares", "transport": "relay"},
+            )
+        )
+
+        rows = {row["handle_id"]: row for row in project_runs(app)}
+
+    row = rows["relay-genuine"]
+    assert row["source"] == "relay_job"
+    assert row["placement"] == "relay:ares"
+    assert row["host"] == "ares"
