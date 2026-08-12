@@ -73,6 +73,8 @@ JARVIS_EXECUTION_OUTPUT_SCHEMA: dict[str, Any] = {
         "execution_id": {"type": "string"},
         "state": {"type": "string"},
         "terminal": {"type": "boolean"},
+        "error": {"type": ["string", "null"]},
+        "return_code": {"type": ["integer", "null"]},
         "progress": {},
         "artifacts": {},
         "services": {},
@@ -85,6 +87,8 @@ JARVIS_EXECUTION_OUTPUT_SCHEMA: dict[str, Any] = {
         "execution_id",
         "state",
         "terminal",
+        "error",
+        "return_code",
         "progress",
         "artifacts",
         "services",
@@ -772,12 +776,28 @@ def _execution_projection(
     if not isinstance(terminal, bool):
         terminal = state in {"completed", "failed", "canceled"}
 
+    # ``execution_record.error``/``return_code`` are exactly the fields a
+    # failed execution needs read back: JARVIS's own registered contract
+    # (``jarvis.execution.record.v1``) always carries them, and the relay
+    # wire already delivers them -- this projection used to drop both on the
+    # floor, which is precisely the case (a FAILED execution) where they
+    # matter most. No fallback text is invented when either is absent; a
+    # clean run's ``error`` is genuinely ``None``.
+    error = typed_record.get("error")
+    if not isinstance(error, str) or not error:
+        error = None
+    return_code = typed_record.get("return_code")
+    if isinstance(return_code, bool) or not isinstance(return_code, int):
+        return_code = None
+
     return {
         "schema_version": "clio-agent.jarvis-execution.v1",
         "pipeline_id": pipeline_id,
         "execution_id": execution_id,
         "state": state,
         "terminal": terminal,
+        "error": error,
+        "return_code": return_code,
         "progress": progress,
         "artifacts": payload.get("artifact_page", payload.get("artifacts")),
         "services": payload.get("service_runtimes", payload.get("services")),

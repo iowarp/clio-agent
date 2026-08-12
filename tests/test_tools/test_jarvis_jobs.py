@@ -1261,6 +1261,72 @@ def test_execution_projection_resolves_identity_through_relay_job_envelope() -> 
     assert projected["scheduler_provider"] == "slurm"
 
 
+def test_execution_projection_surfaces_error_and_return_code_for_a_failed_execution() -> None:
+    """FAILING-FIRST (gating fix, live 2026-08-12 copper demo attempt 3):
+
+    ``jarvis_get_execution`` against a REAL failed execution
+    (``jarvis_c658476089200e8ee78951f11054b737``, ground-truth verified
+    against the relay's own durable job record) returned this exact
+    ``execution_record`` shape, ``error`` text and all. The relay wire was
+    never the problem -- the curated projection below silently dropped
+    ``execution_record.error``/``return_code`` on the floor, so the compute
+    expert saw only ``state: "failed"`` with no reason, tried three different
+    tools trying to find the LAMMPS error text, and could not. A failed run
+    is exactly the case where this data matters most; it must not be
+    discarded."""
+
+    envelope = _relay_job_envelope(
+        pipeline_id="cu-elastic-constants-001",
+        execution_id="jarvis_c658476089200e8ee78951f11054b737",
+        scheduler_native_id="",
+    )
+    envelope["mcp_result"]["structured_result"]["execution_record"] = {
+        "state": "failed",
+        "terminal": True,
+        "return_code": 1,
+        "error": (
+            "Pipeline startup failed at package 'lammps-cu-elastic': "
+            "LAMMPS execution failed: {'localhost': 1}"
+        ),
+    }
+    wire = _tasks_get_structured_content_wrapper(envelope)
+    requested = {
+        "pipeline_id": "cu-elastic-constants-001",
+        "execution_id": "jarvis_c658476089200e8ee78951f11054b737",
+    }
+
+    projected = _execution_projection(_structured_payload(wire), requested)
+
+    assert projected["state"] == "failed"
+    assert projected["return_code"] == 1
+    assert projected["error"] == (
+        "Pipeline startup failed at package 'lammps-cu-elastic': "
+        "LAMMPS execution failed: {'localhost': 1}"
+    )
+
+
+def test_execution_projection_defaults_error_and_return_code_to_none_when_absent() -> None:
+    """Regression: a clean/running execution record carries neither field --
+    the projection must report ``None`` for both, never crash on the missing
+    keys and never fabricate a value."""
+
+    envelope = _relay_job_envelope(
+        pipeline_id="cu-eam-elastic-v2",
+        execution_id="jarvis_7999c467cfb94ac4826b73c78f38a709",
+        scheduler_native_id="22827",
+    )
+    wire = _tasks_get_structured_content_wrapper(envelope)
+    requested = {
+        "pipeline_id": "cu-eam-elastic-v2",
+        "execution_id": "jarvis_7999c467cfb94ac4826b73c78f38a709",
+    }
+
+    projected = _execution_projection(_structured_payload(wire), requested)
+
+    assert projected["error"] is None
+    assert projected["return_code"] is None
+
+
 def test_structured_payload_direct_payload_regression() -> None:
     """Direct (already-unwrapped) payloads must keep working unchanged.
 
