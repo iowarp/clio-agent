@@ -32,8 +32,32 @@ class JarvisJobError(RelayTransportContractError):
 
 
 _STRUCTURED_RESULT_KEYS = ("structured_result", "structuredContent", "structured_content")
-_RELAY_JOB_ENVELOPE_SIBLING_KEYS = ("job", "relay_queue")
+# "job_id" (F2/R1): relay's create-time receipt (the eager `completed_result`
+# a terminal-at-birth dispatch promotes -- #1195/C1) is flat, carrying
+# `job_id` as a top-level sibling of `mcp_result` rather than the nested
+# `job`/`relay_queue` the lazy wait document uses. Both are relay's own
+# bookkeeping, never the tool's result; recognizing either shape as an
+# envelope is what makes both resolve through the same one-hop-deeper
+# unwrap into `mcp_result.structured_result` instead of one of them being
+# handed to the agent verbatim.
+_RELAY_JOB_ENVELOPE_SIBLING_KEYS = ("job", "relay_queue", "job_id")
 _REMOTE_MESSAGE_LIMIT = 4_000
+# Tools that dispatch through _terminal_payload with no downstream identity
+# check of their own: an envelope that resolves to nothing (D15: mcp_result
+# present but no reachable structured-result key) must raise loud here
+# rather than hand relay's own bookkeeping back as if it were the tool's
+# result. jarvis_get_execution is deliberately excluded -- its own
+# _execution_projection already turns an unresolved envelope into a typed
+# jarvis_execution_identity_mismatch, and that reason is more specific than
+# a generic unwrap failure for that one caller.
+_NO_DOWNSTREAM_IDENTITY_CHECK_TOOLS = frozenset(
+    {
+        "jarvis_create_pipeline",
+        "jarvis_add_step",
+        "jarvis_edit_step",
+        "jarvis_describe",
+    }
+)
 
 
 def _is_relay_job_envelope(candidate: Mapping[str, Any]) -> bool:
@@ -175,7 +199,12 @@ def _structured_from_envelope(envelope: Mapping[str, Any]) -> dict[str, Any] | N
     return None
 
 
-def structured_payload(result: Mapping[str, Any]) -> dict[str, Any]:
+def structured_payload(
+    result: Mapping[str, Any],
+    *,
+    tool_name: str = "",
+    task_id: str = "",
+) -> dict[str, Any]:
     """Unwrap relay terminal evidence to the JARVIS tool's structured result.
 
     Two shapes reach here. A **direct** payload already carries the tool's
@@ -189,26 +218,56 @@ def structured_payload(result: Mapping[str, Any]) -> dict[str, Any]:
     result (observed live: ``jarvis_get_execution`` reading
     ``pipeline_id: None`` off the envelope and failing its identity check).
     An envelope match is detected by shape (:func:`_is_relay_job_envelope`)
-    and unwrapped one further hop into its own ``mcp_result``. If that hop
-    also comes up empty, this still returns the untouched input rather than
-    guessing at a shape -- the caller's typed identity-mismatch error stands.
+    and unwrapped one further hop into its own ``mcp_result``.
+
+    If that hop comes up empty (D15: a relay envelope was positively
+    identified -- ``mcp_result`` plus a job-identifying sibling -- but
+    nothing inside it names the tool's structured result), the fallback
+    depends on the caller. ``tool_name`` in
+    :data:`_NO_DOWNSTREAM_IDENTITY_CHECK_TOOLS` has nothing else to catch a
+    bad unwrap, so this raises a typed ``jarvis_result_unwrap_failed``
+    instead of handing relay's own bookkeeping back as if it were the
+    tool's result (F2 -- the backstop that makes the next unrecognized
+    shape fail loudly instead of lying, the same mechanism that let C1's
+    mis-shaped eager ``completed_result`` reach the agent silently).
+    Every other caller (chiefly ``jarvis_get_execution``) keeps the original
+    contract: this still returns the untouched input, so its own downstream
+    identity check fires with the correct, more specific reason.
+
+    A shape with no relay envelope signal at all (no ``mcp_result``
+    anywhere) is never touched by this rule -- it is returned unchanged
+    either way, since there is nothing here to say it is not already the
+    tool's own final, already-resolved payload.
     """
 
     candidates: list[Mapping[str, Any]] = [result]
     mcp_result = result.get("mcp_result")
     if isinstance(mcp_result, Mapping):
         candidates.insert(0, mcp_result)
+    envelope_detected = False
     for candidate in candidates:
         for key in _STRUCTURED_RESULT_KEYS:
             structured = candidate.get(key)
             if not isinstance(structured, Mapping):
                 continue
             if _is_relay_job_envelope(structured):
+                envelope_detected = True
                 nested = _structured_from_envelope(structured)
                 if nested is not None:
                     return nested
                 continue
             return dict(structured)
+    if envelope_detected and tool_name in _NO_DOWNSTREAM_IDENTITY_CHECK_TOOLS:
+        raise JarvisJobError(
+            f"{tool_name} reached a relay job envelope with no reachable "
+            "structured result",
+            reason="jarvis_result_unwrap_failed",
+            details={
+                "tool": tool_name or None,
+                "task_id": task_id or None,
+                "observed_keys": sorted(result.keys()),
+            },
+        )
     return dict(result)
 
 

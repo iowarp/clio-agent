@@ -725,7 +725,7 @@ def _terminal_payload(tool_name: str, final: ClientGetTaskResult) -> dict[str, A
         )
     _raise_inline_delivery_failure(final.task_id, final.result)
     _raise_remote_call_failure(tool_name, final.task_id, final.result)
-    return _structured_payload(final.result)
+    return _structured_payload(final.result, tool_name=tool_name, task_id=final.task_id)
 
 
 def _execution_projection(

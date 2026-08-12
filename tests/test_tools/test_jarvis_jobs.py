@@ -641,6 +641,46 @@ async def test_drive_to_terminal_fetches_the_result_exactly_once_for_a_terminal_
     (that would be the ordinary still-working loop, exercised separately
     below) -- and the real, populated result must come back."""
 
+    # D2/finding-8: this must be the REAL wire shape a terminal-at-birth
+    # create response resolves to -- clio-relay's own create-time job
+    # receipt (flat, ``job_id``/``state`` at the top level, no ``job``/
+    # ``relay_queue`` siblings), wrapped the way a resumed/replayed
+    # ``tasks/get`` reply carries it (under ``structuredContent``), modeled
+    # on a live captured record. A bare direct payload (e.g.
+    # ``{"pipeline_id": ..., "state": "completed"}``) is a shape this wire
+    # can never produce on this path and would pass even if someone
+    # reintroduced the old receipt-shaped/flat parsing this batch deletes --
+    # this fixture must FAIL in that case, because ``_terminal_payload``
+    # only resolves it by walking through ``_is_relay_job_envelope`` /
+    # ``mcp_result.structured_result``, never by reading top-level fields
+    # directly.
+    describe_envelope: dict[str, Any] = {
+        "cluster": "ares",
+        "job_id": "jarvis-already-done",
+        "state": "succeeded",
+        "kind": "mcp_call",
+        "terminal": True,
+        "remote": True,
+        "route_revision": "route-rev-test",
+        "observation": {"outcome": "terminal", "timeout_seconds": 0.01},
+        "last_error": None,
+        "mcp_result_artifact": {
+            "artifact_id": "artifact_test_result",
+            "kind": "mcp_result",
+            "size_bytes": 128,
+        },
+        "mcp_result": {
+            "operation": "tools/call",
+            "tool": "jarvis_describe",
+            "returncode": 0,
+            "timed_out": False,
+            "protocol_error": None,
+            "protocol_result": {"isError": False, "content": []},
+            "structured_result": {
+                "result": {"package": {"name": "lammps", "version": "20260704"}}
+            },
+        },
+    }
     terminal = ClientGetTaskResult(
         taskId="jarvis-already-done",
         status="completed",
@@ -648,12 +688,7 @@ async def test_drive_to_terminal_fetches_the_result_exactly_once_for_a_terminal_
         lastUpdatedAt="2026-08-10T23:00:01Z",
         pollIntervalMs=RELAY_POLL_INTERVAL_MS,
         resultType="complete",
-        result={
-            "pipeline_id": "cu-eam-elastic-v2",
-            "execution_id": "jarvis_already_done",
-            "state": "completed",
-            "terminal": True,
-        },
+        result=_tasks_get_structured_content_wrapper(describe_envelope),
         error=None,
     )
     relay = _TerminalOnFirstPollRelay(terminal)
@@ -666,7 +701,11 @@ async def test_drive_to_terminal_fetches_the_result_exactly_once_for_a_terminal_
 
     assert final is terminal
     assert relay.polls == 1
-    assert _terminal_payload("jarvis_describe", final)["pipeline_id"] == "cu-eam-elastic-v2"
+    payload = _terminal_payload("jarvis_describe", final)
+    assert payload["result"]["package"]["name"] == "lammps"
+    # The raw envelope's own relay bookkeeping must never leak through.
+    assert "job_id" not in payload
+    assert "mcp_result" not in payload
 
 
 @pytest.mark.asyncio
@@ -1239,6 +1278,61 @@ def test_structured_payload_both_shapes_miss_keeps_typed_identity_error() -> Non
     assert raised.value.reason == "jarvis_execution_identity_mismatch"
     assert raised.value.details["observed_pipeline_id"] is None
     assert raised.value.details["observed_execution_id"] is None
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["jarvis_create_pipeline", "jarvis_add_step", "jarvis_edit_step", "jarvis_describe"],
+)
+def test_structured_payload_raises_typed_unwrap_failure_with_no_downstream_check(
+    tool_name: str,
+) -> None:
+    """F2: for the four tools with no downstream identity check of their
+    own, an envelope that resolves to nothing (D15's shape: ``mcp_result``
+    present, but nothing inside it names the tool's structured result) must
+    raise a typed ``jarvis_result_unwrap_failed`` instead of handing relay's
+    own bookkeeping back to the agent as if it were the tool's result --
+    this is the mechanism that let C1's mis-shaped eager ``completed_result``
+    reach the agent silently, and it must now fail loud instead."""
+
+    malformed_envelope = {
+        "mcp_result": {"operation": "tools/call", "tool": tool_name},
+        "job": {"job_id": "job_test", "state": "succeeded"},
+        "relay_queue": {"state": "succeeded"},
+        "terminal": True,
+        "last_error": None,
+    }
+    wire = _tasks_get_structured_content_wrapper(malformed_envelope)
+
+    with pytest.raises(JarvisJobError) as raised:
+        _structured_payload(wire, tool_name=tool_name, task_id="job_test")
+
+    assert raised.value.reason == "jarvis_result_unwrap_failed"
+    assert raised.value.details["tool"] == tool_name
+    assert raised.value.details["task_id"] == "job_test"
+    assert set(raised.value.details["observed_keys"]) == {"content", "structuredContent", "isError", "resultType"}
+
+
+def test_structured_payload_unresolved_envelope_still_passes_through_for_get_execution() -> None:
+    """Sibling of the F2 test above: ``jarvis_get_execution`` is deliberately
+    excluded from the strict raise -- its own downstream identity check
+    already turns this exact shape into a typed, more specific
+    ``jarvis_execution_identity_mismatch`` (see
+    ``test_structured_payload_both_shapes_miss_keeps_typed_identity_error``
+    above), so ``structured_payload`` must keep the original untouched
+    -passthrough contract for it, not raise a second, less specific error."""
+
+    malformed_envelope = {
+        "mcp_result": {"operation": "tools/call", "tool": "jarvis_get_execution"},
+        "job": {"job_id": "job_test", "state": "succeeded"},
+        "relay_queue": {"state": "succeeded"},
+        "terminal": True,
+        "last_error": None,
+    }
+    wire = _tasks_get_structured_content_wrapper(malformed_envelope)
+
+    payload = _structured_payload(wire, tool_name="jarvis_get_execution", task_id="job_test")
+    assert payload == wire
 
 
 def _failed_remote_call_envelope(
