@@ -521,10 +521,22 @@ async def cancel_task(
     Nothing here cancels a coroutine, so no ``notifications/cancelled`` frame is
     emitted for the task. The record for the FULL composite key is dropped once the
     ack lands — never every row that happens to share the task id.
+
+    #1205 review D1: this is the LAST CLIO-side representation of the task before
+    it stops being tracked (the ack is the commitment point — nothing here polls
+    for the server's own later ``tasks/get`` confirmation), so the record's status
+    is stamped ``cancelled`` via ``put`` before the drop. Without this the record
+    at drop-time still carried whatever pre-cancel status (``working`` /
+    ``input_required``) it last had, so even a drop that publishes SOMETHING would
+    publish the WRONG typed event instead of ``mcp_task.cancelled``.
     """
 
     ack = await send_task_cancel(session, key.task_id)
-    resolve_store(store).drop(key)
+    resolved = resolve_store(store)
+    existing = resolved.get(key)
+    if existing is not None:
+        resolved.put(replace(existing, status="cancelled"))
+    resolved.drop(key)
     return ack
 
 

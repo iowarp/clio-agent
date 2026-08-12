@@ -441,14 +441,20 @@ class RelayTransportClient:
         if current.task_id != task.task_id:
             raise RelayTaskJobMismatchError(task.task_id, current.task_id)
         validate_result(task.task_id, current)
+        # ``poll`` is a single observation, not a task driver, so it does not take
+        # the long-lived TaskLease. Merge onto the post-RPC row to retain a
+        # concurrent wait/resume driver's lease and input ledger.
+        latest = store.get(task.key) or record
+        # #1205 review D1: persist the observed status BEFORE dropping a terminal
+        # task. The old code dropped straight off `current.status in
+        # TERMINAL_TASK_STATES` without ever writing it through `put` — the
+        # record's stored status stayed whatever it was on the LAST put (almost
+        # always non-terminal), so a store.drop() that publishes the record's
+        # current state (as it now does) would have published the WRONG status
+        # instead of the real mcp_task.completed/failed/cancelled transition.
+        store.put(replace(latest, status=current.status))
         if current.status in TERMINAL_TASK_STATES:
             store.drop(task.key)
-        else:
-            # ``poll`` is a single observation, not a task driver, so it does not
-            # take the long-lived TaskLease. Merge onto the post-RPC row to retain
-            # a concurrent wait/resume driver's lease and input ledger.
-            latest = store.get(task.key) or record
-            store.put(replace(latest, status=current.status))
         return current
 
     async def wait(

@@ -118,19 +118,23 @@ class SessionMetadataTaskStore:
         funnel, so it is the one place that can honestly claim "just written") and
         notifies the installed change listener (#1205's SSE bridge), regardless of
         which of the three outcomes below the write took.
+
+        #1205 review D2: the three hold-path branches notify with ``_hold``'s
+        RETURN VALUE (the held record, ``holding_reason`` set), never the pre-hold
+        ``stamped`` record — publishing ``stamped`` verbatim would silently strip
+        the one field that makes a holding-path degrade non-silent to a live SSE
+        subscriber.
         """
 
         stamped = replace(record, updated_at=_utcnow_iso())
         session_id = stamped.key.session_id
         if not session_id:
-            self._hold(stamped, "no CLIO session resolved")
-            self._notify(stamped)
+            self._notify(self._hold(stamped, "no CLIO session resolved"))
             return
         with self._lock:
             session = self._sessions.get(session_id)
             if session is None:
-                self._hold(stamped, "session row absent")
-                self._notify(stamped)
+                self._notify(self._hold(stamped, "session row absent"))
                 return
             rows = dict(self._rows_of(session))
             rows[stamped.key.row_key] = stamped.to_wire()
@@ -141,8 +145,7 @@ class SessionMetadataTaskStore:
                 # The session was deleted between the existence check and the write.
                 # The Optional return is the ONLY signal the registry gives; ignoring
                 # it would silently drop a live remote task's only local handle.
-                self._hold(stamped, "session deleted mid-write")
-                self._notify(stamped)
+                self._notify(self._hold(stamped, "session deleted mid-write"))
                 return
             self._held.drop(stamped.key)
         self._notify(stamped)
@@ -171,8 +174,28 @@ class SessionMetadataTaskStore:
         return records
 
     def drop(self, key: TaskKey) -> None:
-        """Forget exactly one task — never every row sharing its ``task_id``."""
+        """Forget exactly one task — never every row sharing its ``task_id``.
 
+        #1205 review D1 (BLOCKING): a terminal task is almost always REMOVED
+        via ``drop`` (the driver persists the terminal status, then drops the
+        now-settled row) rather than left sitting in the store — so ``drop``
+        is the ONE place a terminal ``mcp_task.completed`` / ``.failed`` /
+        ``.cancelled`` event is guaranteed to fire. Reads the record's current
+        state and publishes it BEFORE the row is removed from either the
+        holding path or the session row, so a live SSE subscriber never sees
+        the row simply vanish with no explanation. A caller that already
+        persisted the same terminal status via ``put`` immediately before
+        calling this gets one extra, harmless, idempotent copy of the SAME
+        event (this codebase's SSE consumers apply the full record verbatim,
+        see ``McpTaskPeekView`` — never a delta), which is the accepted
+        trade-off against a caller that drops WITHOUT ever persisting the
+        terminal status first (e.g. an ack-only cancel) getting no event at
+        all under the old code.
+        """
+
+        record = self.get(key)
+        if record is not None:
+            self._notify(record)
         self._held.drop(key)
         if not key.session_id:
             return
@@ -258,10 +281,17 @@ class SessionMetadataTaskStore:
         if listener is not None:
             listener(record)
 
-    def _hold(self, record: TaskRecord, detail: str) -> None:
-        """Move one record to the holding path with a typed reason."""
+    def _hold(self, record: TaskRecord, detail: str) -> TaskRecord:
+        """Move one record to the holding path with a typed reason.
 
-        self._held.put(replace(record, holding_reason=MCP_TASK_RECORD_HELD_LOCALLY))
+        Returns the HELD record (``holding_reason`` set) — #1205 review D2: a
+        caller must publish THIS returned record, never the pre-hold one it
+        passed in, or the published payload silently drops the one field that
+        makes the degrade non-silent to a live SSE subscriber.
+        """
+
+        held = replace(record, holding_reason=MCP_TASK_RECORD_HELD_LOCALLY)
+        self._held.put(held)
         logger.warning(
             "mcp task %s held process-locally reason=%s (%s); it stays resumable here "
             "but will not survive a restart",
@@ -269,6 +299,7 @@ class SessionMetadataTaskStore:
             MCP_TASK_RECORD_HELD_LOCALLY,
             detail,
         )
+        return held
 
     @staticmethod
     def _rows_of(session: Any) -> dict[str, Any]:
