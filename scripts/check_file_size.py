@@ -188,7 +188,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # KeyError('litellm'), turning every message POST into a 503. The ratchet was
     # not bumped in that commit; recorded here as pre-existing CI-blocking debt
     # this change closes (P5 adversarial review [A]).
-    "src/clio_agent/gact/app.py": 2544,  # relay wiring moved to gact/relay_wiring.py
+    # #1205: +11 for the async-processes route registration (import + register call)
+    # and the MCP-task event-publisher boot install (import + install call); both
+    # bodies live in their own owner modules, routes/async_processes.py and
+    # mcp_task_events.py.
+    "src/clio_agent/gact/app.py": 2555,  # relay wiring moved to gact/relay_wiring.py
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg

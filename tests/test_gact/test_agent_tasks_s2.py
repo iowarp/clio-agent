@@ -314,6 +314,25 @@ def test_runs_api_projects_local_and_relay_handles_with_live_state(tmp_path: Pat
             assert detached.json()["detached"] is True
             assert app.state.agent_task_registry.get(local.task_id).status == STATUS_RUNNING
 
+            # #1205 review (3rd round), item 1: dismiss now REFUSES a non-terminal
+            # task — dropping a still-WORKING relay handle would delete the only
+            # durable local pointer to a live remote task. Prove that refusal...
+            still_working = client.post("/v1/runs/task_relay_only/dismiss")
+            assert still_working.status_code == 404
+            remaining_while_working = {
+                row["handle_id"] for row in client.get("/v1/runs").json()["runs"]
+            }
+            assert remaining_while_working == {local.task_id, "task_relay_only"}
+
+            # ...then settle it (the real driver's own status write) and dismiss
+            # for real — this is the retained-until-dismissed path #1205's 2nd
+            # round introduced.
+            from dataclasses import replace  # noqa: PLC0415 - test-local
+
+            settled = relay_store.get(TaskKey("relay-ares", parent, "task_relay_only"))
+            assert settled is not None
+            relay_store.put(replace(settled, status="completed"))
+
             dismissed = client.post("/v1/runs/task_relay_only/dismiss")
             assert dismissed.status_code == 200
             assert dismissed.json() == {"dismissed": True, "handle_id": "task_relay_only"}

@@ -64,9 +64,11 @@ __all__ = [
     "resolve_store",
     "resolve_task_session_id",
     "set_task_canceller",
+    "set_task_change_listener",
     "set_task_record_store",
     "set_task_session_resolver",
     "task_canceller",
+    "task_change_listener",
     "task_record_store",
     "task_record_store_is_durable",
 ]
@@ -159,6 +161,11 @@ class TaskRecord:
     backend: dict[str, Any] = field(default_factory=dict)
     status: str = "working"
     created_at: str = ""
+    # Stamped by :class:`~clio_agent.gact.mcp_task_store.SessionMetadataTaskStore`
+    # on every ``put`` (the single write path), mirroring ``AgentTask.updated_at`` —
+    # the "created/updated" pair the session-scoped async-processes projection (#1205)
+    # needs. Empty until the first durable write; never invented client-side.
+    updated_at: str = ""
     input_answers: tuple[TaskInputAnswer, ...] = ()
     lease_owner: str | None = None
     lease_expires_at: float | None = None
@@ -186,6 +193,7 @@ class TaskRecord:
             "backend": dict(self.backend),
             "status": self.status,
             "created_at": self.created_at,
+            "updated_at": self.updated_at,
             "input_answers": [answer.to_wire() for answer in self.input_answers],
             "lease_owner": self.lease_owner,
             "lease_expires_at": self.lease_expires_at,
@@ -206,6 +214,7 @@ class TaskRecord:
             backend=dict(payload.get("backend") or {}),
             status=str(payload.get("status") or "working"),
             created_at=str(payload.get("created_at") or ""),
+            updated_at=str(payload.get("updated_at") or ""),
             input_answers=tuple(
                 TaskInputAnswer.from_wire(row) for row in answers if isinstance(row, Mapping)
             ),
@@ -607,3 +616,31 @@ def task_canceller() -> Any:
 
     with _HOOK_LOCK:
         return _TASK_CANCELLER
+
+
+_TASK_CHANGE_LISTENER: Any = None
+
+
+def set_task_change_listener(listener: Any) -> None:
+    """Install the ``TaskRecord -> None`` change hook (gact SSE wiring, #1205).
+
+    Called by :class:`~clio_agent.gact.mcp_task_store.SessionMetadataTaskStore`
+    after every successful ``put`` (its single write path), so the live-view layer
+    (``gact/mcp_task_events.py``) learns of a task mutation by callback instead of
+    polling for one. Absent (the default, and in every process with no durable gact
+    session registry), a mutation is simply not published — there is no separate
+    silent-fallback reason here because there is no live SSE surface to have failed;
+    the store's own durability degrade (``mcp_task_record_held_locally`` etc.) is
+    reported independently.
+    """
+
+    global _TASK_CHANGE_LISTENER
+    with _HOOK_LOCK:
+        _TASK_CHANGE_LISTENER = listener
+
+
+def task_change_listener() -> Any:
+    """The installed change listener, or ``None``."""
+
+    with _HOOK_LOCK:
+        return _TASK_CHANGE_LISTENER

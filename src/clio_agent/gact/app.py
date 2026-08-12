@@ -482,6 +482,9 @@ from clio_agent.gact.routes.agents import (  # noqa: E402
     register_agents_routes,
 )
 from clio_agent.gact.routes.artifacts import register_artifacts_routes  # noqa: E402
+from clio_agent.gact.routes.async_processes import (  # noqa: E402
+    register_async_process_routes,
+)
 from clio_agent.gact.routes.blueprints import (  # noqa: E402
     register_blueprints_routes,
 )
@@ -731,6 +734,7 @@ def _clear_session_model_refs(app: "FastAPI") -> None:
 from clio_agent.gact.agent_tasks import (  # noqa: E402
     install_agent_task_registry,
 )
+from clio_agent.gact.mcp_task_events import install_mcp_task_event_publisher  # noqa: E402
 from clio_agent.gact.turn import (  # noqa: E402,F401
     _run_turn_in_background,
     _start_background_user_turn,
@@ -1352,6 +1356,9 @@ def build_app(
     # #948 S2 (#950): in-memory AgentTask projection over the session store, rebuilt
     # from agent-task sessions; feeds events, the task API, and S3+ spawns.
     install_agent_task_registry(app)
+    # #1205: bridge every durable MCP TaskRecord write (#1115) to this app's event
+    # bus, so the async-processes tray refreshes live instead of polling.
+    install_mcp_task_event_publisher(app)
     # #948 S3 (#951): dedicated child-forward pool, sized to the concurrency cap,
     # prevents a waiting parent from starving its children.
     install_agent_task_executor(app)
@@ -2184,6 +2191,10 @@ def build_app(
     # The AgentTask projection read + cancel routes, over
     # ``app.state.agent_task_registry`` (rebuilt at boot from agent-task sessions).
     register_agent_task_routes(app, deps)
+    # ---- /v1/sessions/{sid}/async-processes (#1205) ----
+    # Session-scoped union of spawned AgentTask rows and durable MCP TaskRecord
+    # rows, kind-discriminated, for the tray's single fetch.
+    register_async_process_routes(app, deps)
 
     # ---- /v1/artifacts + /v1/{sessions,workspaces}/{id}/artifacts (#966 S2/#968) ----
     # Artifact registry read surface + user-pin channel, owned by routes/artifacts.py.

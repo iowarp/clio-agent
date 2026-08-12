@@ -402,7 +402,11 @@ async def test_timeline_streams_while_running_and_artifact_fetch_returns_bytes(
     assert event["event_type"] == "progress"
     assert content == b"relay-artifact"
     assert cancelled.status == "cancelled"
-    assert task_record_store().get(task.key) is None
+    # #1205 review D1 (2nd round): RETAINED with its terminal status, not
+    # dropped — removal is an explicit later dismiss, never automatic at settle.
+    settled = task_record_store().get(task.key)
+    assert settled is not None
+    assert settled.status == "cancelled"
 
 
 async def test_oversize_inline_delivery_raises_typed_contract_error(
@@ -530,7 +534,11 @@ async def test_reconnect_uses_persisted_record_after_originating_client_drops(
         final = await rebuilt.resume(task.key, timeout_seconds=15)
 
     assert final.status == "completed"
-    assert task_record_store().get(task.key) is None
+    # #1205 review D1 (2nd round): RETAINED with its terminal status, not
+    # dropped — removal is an explicit later dismiss, never automatic at settle.
+    settled = task_record_store().get(task.key)
+    assert settled is not None
+    assert settled.status == "completed"
 
 
 async def test_cancel_merges_the_post_ack_record_instead_of_replaying_stale_state(
