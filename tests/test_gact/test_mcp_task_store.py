@@ -32,6 +32,7 @@ from clio_agent.tools.mcp_task_records import (
     TaskKey,
     TaskRecord,
     set_task_canceller,
+    set_task_change_listener,
     set_task_record_store,
     task_record_store,
     task_record_store_is_durable,
@@ -43,11 +44,12 @@ SERVER_B = "server-b"
 
 @pytest.fixture(autouse=True)
 def _isolate_process_hooks() -> Any:
-    """Never leak this module's store/canceller installation into other tests."""
+    """Never leak this module's store/canceller/listener installation into other tests."""
 
     yield
     set_task_record_store(None)
     set_task_canceller(None)
+    set_task_change_listener(None)
 
 
 def _key(task_id: str, session_id: str | None, *, server: str = SERVER_A) -> TaskKey:
@@ -84,6 +86,25 @@ def test_record_lands_in_session_metadata_on_disk(tmp_path: Path) -> None:
     assert "sessions.json" in written
     assert not any("task" in name for name in written)
     assert sessions.get(sid) is not None
+
+
+def test_put_stamps_updated_at_on_every_write(tmp_path: Path) -> None:
+    """#1205: the ONE write path is the ONE place honest to stamp "just written" —
+    proven on the real on-disk bytes, not just the returned object."""
+
+    sessions, store, sid = _store_with_session(tmp_path)
+    key = _key("task-updated-at", sid)
+
+    store.put(TaskRecord(key=key, tool="slow", status="working"))
+    first = store.get(key)
+    assert first is not None
+    assert first.updated_at, "updated_at must be stamped on the first write"
+
+    store.put(TaskRecord(key=key, tool="slow", status="completed"))
+    on_disk = json.loads((tmp_path / "sessions.json").read_text(encoding="utf-8"))
+    row = on_disk[sid]["metadata"][SESSION_TASKS_METADATA_KEY][key.row_key]
+    assert row["updated_at"], "updated_at must be stamped on disk, not just in memory"
+    assert row["status"] == "completed"
 
 
 def test_record_survives_losing_the_process(tmp_path: Path) -> None:

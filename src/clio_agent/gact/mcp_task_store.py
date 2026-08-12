@@ -54,6 +54,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import replace
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.errors import MCP_TASK_RECORD_HELD_LOCALLY, MCP_TASK_SESSION_DELETED
@@ -64,6 +65,7 @@ from clio_agent.tools.mcp_task_records import (
     set_task_record_store,
     set_task_session_resolver,
     task_canceller,
+    task_change_listener,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -80,6 +82,12 @@ __all__ = [
 
 #: The ``Session.metadata`` key the task rows live under.
 SESSION_TASKS_METADATA_KEY = "mcp_tasks"
+
+
+def _utcnow_iso() -> str:
+    """ISO-8601 UTC timestamp, matching ``gact/events.py``'s own helper."""
+
+    return datetime.now(timezone.utc).isoformat()
 
 
 class SessionMetadataTaskStore:
@@ -106,20 +114,26 @@ class SessionMetadataTaskStore:
 
         A missing session, or an ``update`` that reports the row is gone (the delete
         vs. put race), degrades to the holding path with a typed reason instead of
-        losing the record.
+        losing the record. Every call stamps ``updated_at`` (this is the ONE write
+        funnel, so it is the one place that can honestly claim "just written") and
+        notifies the installed change listener (#1205's SSE bridge), regardless of
+        which of the three outcomes below the write took.
         """
 
-        session_id = record.key.session_id
+        stamped = replace(record, updated_at=_utcnow_iso())
+        session_id = stamped.key.session_id
         if not session_id:
-            self._hold(record, "no CLIO session resolved")
+            self._hold(stamped, "no CLIO session resolved")
+            self._notify(stamped)
             return
         with self._lock:
             session = self._sessions.get(session_id)
             if session is None:
-                self._hold(record, "session row absent")
+                self._hold(stamped, "session row absent")
+                self._notify(stamped)
                 return
             rows = dict(self._rows_of(session))
-            rows[record.key.row_key] = record.to_wire()
+            rows[stamped.key.row_key] = stamped.to_wire()
             updated = self._sessions.update(
                 session_id, metadata_patch={SESSION_TASKS_METADATA_KEY: rows}
             )
@@ -127,9 +141,11 @@ class SessionMetadataTaskStore:
                 # The session was deleted between the existence check and the write.
                 # The Optional return is the ONLY signal the registry gives; ignoring
                 # it would silently drop a live remote task's only local handle.
-                self._hold(record, "session deleted mid-write")
+                self._hold(stamped, "session deleted mid-write")
+                self._notify(stamped)
                 return
-            self._held.drop(record.key)
+            self._held.drop(stamped.key)
+        self._notify(stamped)
 
     def get(self, key: TaskKey) -> TaskRecord | None:
         """Return the record for the FULL composite key, if any."""
@@ -225,6 +241,22 @@ class SessionMetadataTaskStore:
             return False
 
     # ---- internals ---------------------------------------------------------
+
+    @staticmethod
+    def _notify(record: TaskRecord) -> None:
+        """Call the installed change listener (#1205 SSE wiring), if any.
+
+        Runs after every ``put`` outcome — durable write, or a degrade to the
+        holding path — so a subscriber learns of a status change, a lease change,
+        or an input-answer capture the same way it learns of a durable write, with
+        no separate polling path. No listener installed (no durable gact session
+        registry booted, e.g. a bare unit test) is a quiet no-op: there is no live
+        SSE surface to have silently failed.
+        """
+
+        listener = task_change_listener()
+        if listener is not None:
+            listener(record)
 
     def _hold(self, record: TaskRecord, detail: str) -> None:
         """Move one record to the holding path with a typed reason."""

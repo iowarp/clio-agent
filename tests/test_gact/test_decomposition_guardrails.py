@@ -70,7 +70,11 @@ from clio_agent.gact.app import build_app
 # /v1/agent-blueprints/{blueprint_id}/files/read (traversal-hardened raw
 # read), registered ahead of the greedy {id:path} matcher. The commit
 # shipped the routes but left this fingerprint stale; recorded now.
-EXPECTED_ROUTE_METHOD_PAIRS = 172
+# 172 -> 173 (#1205): +1 GET /v1/sessions/{sid}/async-processes, owned by the new
+# routes/async_processes.py — the session-scoped agent+mcp-task union projection
+# the async-processes tray reads (live refresh rides the existing per-session SSE
+# channel, no new route for that half).
+EXPECTED_ROUTE_METHOD_PAIRS = 173
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

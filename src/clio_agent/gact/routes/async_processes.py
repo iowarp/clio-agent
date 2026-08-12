@@ -1,0 +1,116 @@
+"""Session-scoped async-processes projection: agents + MCP tasks together (#1205).
+
+``GET /v1/sessions/{sid}/agent-tasks`` (``routes/agent_tasks.py``) only ever
+projected spawned-child ``AgentTask`` rows. Durable non-agent MCP/relay task
+records (#1115's ``TaskRecord``, e.g. a ``jarvis_run`` call) are persisted on the
+SAME session's ``metadata["mcp_tasks"]`` (``gact/mcp_task_store.py``) but no route
+scoped to a session ever read them, and the tray has no way to tell the two kinds
+apart. This module adds ONE new sibling route returning both projections unioned,
+each row carrying a ``kind`` discriminator (``"agent"`` | ``"mcp-task"``) so the UI
+can render an agent row as a center-focus push and an mcp-task row as a read-only
+right-column peek without a second fetch.
+
+No new store: this is a pure read-side union over ``AgentTaskRegistry.for_parent``
+and the installed ``TaskRecordStore``, exactly like ``run_registry.py``'s
+``project_runs`` unions the same two stores for the (unrelated, global) run-history
+surface. Live refresh is the existing per-session SSE channel — ``mcp_task_events.py``
+publishes onto it on every durable write; no second SSE route.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict
+from typing import TYPE_CHECKING, Any
+
+from fastapi import FastAPI, HTTPException
+
+from clio_agent.gact.agent_tasks import AgentTask, display_run_name
+from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
+from clio_agent.tools.mcp_task_records import TaskRecord, resolve_store
+
+if TYPE_CHECKING:
+    from clio_agent.gact.routes.deps import GactDeps
+
+__all__ = ["project_session_async_processes", "register_async_process_routes"]
+
+# Mirrors run_registry.py's ``_RELAY_LIVE_STATES`` intentionally rather than
+# importing it: that mapping is private to the (unrelated) global run-history
+# projection and the two are free to diverge without a shared-constant coupling.
+_MCP_TASK_LIVE_STATES: dict[str, str] = {
+    "working": "running",
+    "input_required": "input_required",
+    "completed": "completed",
+    "failed": "failed",
+    "cancelled": "cancelled",
+}
+
+
+def _not_found(kind: str, ident: str) -> HTTPException:
+    return HTTPException(
+        status_code=404,
+        detail=ErrorEnvelope(
+            error=ErrorInfo(
+                error="not_found",
+                message=f"{kind} not found: {ident}",
+                details={f"{kind}_id": ident},
+                recoverable=False,
+            )
+        ).model_dump(exclude_none=True),
+    )
+
+
+def _agent_process(task: AgentTask) -> dict[str, Any]:
+    """Project one spawned-child ``AgentTask`` as a ``kind="agent"`` row."""
+
+    expert_id = str(task.agent_ref.get("expert_id") or "agent")
+    return {
+        "kind": "agent",
+        "id": task.task_id,
+        "title": display_run_name(expert_id, task.run_index, task.run_label),
+        **asdict(task),
+    }
+
+
+def _mcp_task_process(record: TaskRecord) -> dict[str, Any]:
+    """Project one durable ``TaskRecord`` as a ``kind="mcp-task"`` row."""
+
+    return {
+        "kind": "mcp-task",
+        "id": record.task_id,
+        "title": record.tool or f"mcp task {record.task_id}",
+        "live_state": _MCP_TASK_LIVE_STATES.get(record.status, record.status),
+        **record.to_wire(),
+    }
+
+
+def project_session_async_processes(app: "FastAPI", session_id: str) -> list[dict[str, Any]]:
+    """List every async process (spawned agent OR durable MCP task) for one session.
+
+    Newest-created first, matching ``run_registry.project_runs``'s ordering
+    convention. ``TaskRecord`` rows whose ``task_id`` already has an ``AgentTask``
+    counterpart (a ``relay_submit_remote_agent`` spawn) are excluded — they are the
+    SAME task, already returned once as ``kind="agent"``; this is the identical
+    dedupe idiom ``project_runs`` uses.
+    """
+
+    agent_tasks = app.state.agent_task_registry.for_parent(session_id)
+    agent_task_ids = {task.task_id for task in agent_tasks}
+    rows = [_agent_process(task) for task in agent_tasks]
+    rows.extend(
+        _mcp_task_process(record)
+        for record in resolve_store(None).list()
+        if record.session_id == session_id and record.task_id not in agent_task_ids
+    )
+    return sorted(rows, key=lambda row: str(row.get("created_at") or ""), reverse=True)
+
+
+def register_async_process_routes(app: FastAPI, deps: "GactDeps") -> None:
+    """Register the session-scoped async-processes read route on ``app``."""
+
+    del deps  # symmetry with the other register_*_routes; state is on app.state
+
+    @app.get("/v1/sessions/{sid}/async-processes")
+    async def list_session_async_processes(sid: str) -> dict[str, Any]:
+        if app.state.sessions.get(sid) is None:
+            raise _not_found("session", sid)
+        return {"processes": project_session_async_processes(app, sid)}
