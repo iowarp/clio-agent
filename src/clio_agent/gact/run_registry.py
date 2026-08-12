@@ -12,7 +12,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.agent_tasks import AgentTask, persist_agent_task
-from clio_agent.tools.mcp_task_records import TaskRecord, resolve_store
+from clio_agent.tools.mcp_task_records import TERMINAL_TASK_STATES, TaskRecord, resolve_store
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -88,7 +88,15 @@ def project_runs(app: "FastAPI") -> list[dict[str, Any]]:
     """List local and relay runs uniformly, newest-created first.
 
     AgentTask ids are retained even when dismissed so a mirrored relay handle does
-    not reappear through the second projection source.
+    not reappear through the second projection source. #1205 review item 3: widened
+    the SAME way ``dismiss_run`` was widened — ANY non-agent-task ``TaskRecord``
+    (``jarvis_run`` etc.), not only the relay-agent-mirroring
+    ``relay_submit_remote_agent`` records this originally covered — so a RETAINED
+    settled mcp-task (#1205 2nd round: kept until an explicit dismiss, never
+    auto-dropped at settle) is actually reachable through the SAME listing its
+    dismiss control (``POST /v1/runs/{handle_id}/dismiss``) targets. Without this
+    half, retention is an unbounded, unclearable accumulation in ``sessions.json``:
+    a settled record nobody can ever see or dismiss through this surface.
     """
 
     tasks = app.state.agent_task_registry.snapshot()
@@ -97,7 +105,7 @@ def project_runs(app: "FastAPI") -> list[dict[str, Any]]:
     rows.extend(
         _relay_run(record)
         for record in resolve_store(None).list()
-        if record.task_id not in agent_ids and record.tool == "relay_submit_remote_agent"
+        if record.task_id not in agent_ids
     )
     return sorted(rows, key=lambda row: str(row.get("created_at") or ""), reverse=True)
 
@@ -132,6 +140,25 @@ def dismiss_run(app: "FastAPI", handle_id: str) -> bool:
     only the relay-agent-mirroring ``relay_submit_remote_agent`` records this
     originally covered — the session-scoped async-processes tray (#1205)
     surfaces every non-agent-task record (``jarvis_run`` etc.), not just that one.
+
+    Two invariants #1205 review (3rd round) holds this to:
+
+    * **Terminality guard (BLOCKING).** A live (non-terminal) ``TaskRecord`` is
+      NEVER dropped here — dropping it would delete the only durable local handle
+      to a still-running remote task (the exact crash-recovery guarantee
+      ``mcp_task_store.py``'s own module contract exists to protect; the old
+      tool-name filter only incidentally shielded this by accident, not by
+      design). A dismiss request against a non-terminal task is refused
+      (``False``), same shape as "no match" — it never partially acts.
+    * **Composite-key precision (BLOCKING).** ``handle_id`` is a bare task id, but
+      the durable identity is the COMPOSITE ``(server_id, session_id, task_id)``
+      — two different backends can legitimately mint the same task id
+      (``mcp_task_records.py``'s own module contract; ``cancel_task``'s docstring
+      states the identical invariant and ``test_cancel_stamps_only_the_named_identity``
+      guards it there). This resolves to at most ONE matching record and drops
+      only THAT record's own composite key — never a blanket sweep of every
+      record merely sharing the bare id, which would delete an unrelated
+      backend's live task as collateral damage.
     """
 
     task = app.state.agent_task_registry.get(handle_id)
@@ -140,7 +167,8 @@ def dismiss_run(app: "FastAPI", handle_id: str) -> bool:
             persist_agent_task(app, replace(task, dismissed=True))
         return True
     store = resolve_store(None)
-    matches = [record for record in store.list() if record.task_id == handle_id]
-    for record in matches:
-        store.drop(record.key)
-    return bool(matches)
+    match = next((record for record in store.list() if record.task_id == handle_id), None)
+    if match is None or match.status not in TERMINAL_TASK_STATES:
+        return False
+    store.drop(match.key)
+    return True

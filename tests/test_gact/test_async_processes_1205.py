@@ -504,3 +504,121 @@ async def test_hold_preserves_a_more_specific_existing_reason(tmp_path: Path) ->
         "a more specific existing reason must survive a second hold, not be "
         "downgraded to the generic mcp_task_record_held_locally"
     )
+
+
+# --------------------------------------------------------------------------- #
+# #1205 review, 3rd round: dismiss must be safe (terminality-guarded,          #
+# composite-key-precise) AND reachable, or retention is unbounded,             #
+# unclearable accumulation in sessions.json.                                   #
+# --------------------------------------------------------------------------- #
+
+
+def test_dismiss_refuses_a_non_terminal_mcp_task(tmp_path: Path) -> None:
+    """BLOCKING, item 1: ``POST /v1/runs/{task_id}/dismiss`` on a WORKING task
+    must never drop it — that would delete the only durable local handle to a
+    still-running remote task, violating ``mcp_task_store.py``'s own
+    crash-recovery module contract. The old tool-name filter only incidentally
+    protected this by accident, not by design; a dismiss request against a
+    non-terminal task is refused (``False``, same shape as "no match"), and the
+    record is left completely intact.
+    """
+
+    from clio_agent.gact.run_registry import dismiss_run  # noqa: PLC0415 - test-local
+
+    app = _build(tmp_path)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        key = TaskKey(server_id="relay-ares", session_id=sid, task_id="jarvis-working")
+        task_record_store().put(TaskRecord(key=key, tool="jarvis_run", status="working"))
+
+        result = dismiss_run(app, "jarvis-working")
+
+    assert result is False
+    record = task_record_store().get(key)
+    assert record is not None
+    assert record.status == "working"
+
+
+def test_dismiss_touches_only_the_matched_composite_key(tmp_path: Path) -> None:
+    """BLOCKING, item 2: ``row_key`` is ``f"{server_id}|{task_id}"`` precisely
+    because two backends can legitimately mint the same task id
+    (``mcp_task_records.py``'s own module contract; ``cancel_task``'s docstring
+    states the identical invariant, guarded by
+    ``test_cancel_stamps_only_the_named_identity``). Dismissing one server's
+    settled task must never sweep an unrelated backend's same-task_id record as
+    collateral damage — exactly ONE composite key is dropped, and the survivor
+    is untouched (not merely "still terminal": byte-identical to its pre-dismiss
+    snapshot).
+    """
+
+    from clio_agent.gact.run_registry import dismiss_run  # noqa: PLC0415 - test-local
+
+    app = _build(tmp_path)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        key_a = TaskKey(server_id="relay-ares", session_id=sid, task_id="shared-id")
+        key_b = TaskKey(server_id="relay-metis", session_id=sid, task_id="shared-id")
+        task_record_store().put(TaskRecord(key=key_a, tool="jarvis_run", status="completed"))
+        task_record_store().put(TaskRecord(key=key_b, tool="jarvis_run", status="completed"))
+
+        before_a = task_record_store().get(key_a)
+        before_b = task_record_store().get(key_b)
+        assert before_a is not None
+        assert before_b is not None
+
+        result = dismiss_run(app, "shared-id")
+
+        after_a = task_record_store().get(key_a)
+        after_b = task_record_store().get(key_b)
+
+    assert result is True
+    assert (after_a is None) != (after_b is None), (
+        "exactly one of the two colliding composite keys must be gone, never both"
+    )
+    if after_a is not None:
+        assert after_a == before_a, "the surviving record must be byte-identical, never re-written"
+    else:
+        assert after_b == before_b, "the surviving record must be byte-identical, never re-written"
+
+
+async def test_dismiss_removes_a_settled_mcp_task_from_both_async_processes_and_runs(
+    tmp_path: Path,
+) -> None:
+    """BLOCKING, item 3: retention (#1205 2nd round) without a REACHABLE dismiss
+    is unbounded, unclearable accumulation in ``sessions.json`` (``SessionStore.update``
+    rewrites the whole row on every mutation). Proves the full path end to end: a
+    task settles through the real driver (``cancel_task``), the settled row is
+    visible on BOTH ``GET /v1/sessions/{sid}/async-processes`` (the tray) AND
+    ``GET /v1/runs`` (``project_runs``, widened the same way ``dismiss_run`` was
+    — the surface that OWNS the dismiss control must actually list what it can
+    dismiss), the tray's own dismiss path (``POST /v1/runs/{id}/dismiss``) removes
+    it, and it is then gone from BOTH listings.
+    """
+
+    from clio_agent.tools.mcp_tasks import cancel_task  # noqa: PLC0415 - test-local
+
+    app = _build(tmp_path)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        key = TaskKey(server_id="relay-ares", session_id=sid, task_id="jarvis-reachable")
+        task_record_store().put(TaskRecord(key=key, tool="jarvis_run", status="working"))
+
+        await cancel_task(_AckOnlyCancelSession(), key)
+
+        processes = client.get(f"/v1/sessions/{sid}/async-processes").json()["processes"]
+        assert any(r["id"] == "jarvis-reachable" for r in processes), (
+            "a settled mcp-task must be visible in the session-scoped tray"
+        )
+        runs = client.get("/v1/runs").json()["runs"]
+        assert any(r["handle_id"] == "jarvis-reachable" for r in runs), (
+            "project_runs must be widened the same way dismiss_run was — the "
+            "listing that owns the dismiss control must actually serve this row"
+        )
+
+        dismiss = client.post("/v1/runs/jarvis-reachable/dismiss")
+        assert dismiss.status_code == 200
+
+        processes_after = client.get(f"/v1/sessions/{sid}/async-processes").json()["processes"]
+        assert all(r["id"] != "jarvis-reachable" for r in processes_after)
+        runs_after = client.get("/v1/runs").json()["runs"]
+        assert all(r["handle_id"] != "jarvis-reachable" for r in runs_after)
