@@ -1618,7 +1618,9 @@ def test_artifacts_filter_schema_is_closed_and_content_free() -> None:
     ``artifacts`` was declared as an opaque object, so nothing told a caller
     which filters exist and an invented ``include_content`` only failed after a
     live remote dispatch. The declared filter now mirrors the relay-advertised
-    contract exactly and is closed, and no key promises content.
+    contract exactly and is closed. The only content affordance is the typed
+    ``content_max_bytes`` bounded tail read (clio-kit-jarvis-user-v3.7) — the
+    invented free-form ``include_content`` stays rejected.
     """
 
     artifacts = _INPUT_SCHEMAS["jarvis_get_execution"]["properties"]["artifacts"]
@@ -1632,8 +1634,11 @@ def test_artifacts_filter_schema_is_closed_and_content_free() -> None:
         "state",
         "page_size",
         "cursor",
+        "content_max_bytes",
     }
     assert "include_content" not in filter_schema["properties"]
+    content_option = filter_schema["properties"]["content_max_bytes"]["anyOf"][0]
+    assert content_option == {"type": "integer", "minimum": 1, "maximum": 65536}
     assert filter_schema["properties"]["page_size"]["maximum"] == 100
     assert set(filter_schema["properties"]["state"]["anyOf"][0]["enum"]) == {
         "producing",

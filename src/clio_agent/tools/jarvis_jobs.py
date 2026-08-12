@@ -179,7 +179,9 @@ _ARTIFACT_PAGE_FILTER: dict[str, Any] = {
     "type": "object",
     "description": (
         "Optional filters for one bounded page of execution artifact records "
-        "(identity, role, state, location). This page never carries artifact content."
+        "(identity, role, state, location). The page is content-free unless "
+        "content_max_bytes is set, which adds a bounded tail read for role=log "
+        "artifacts."
     ),
     "properties": {
         "artifact_id": {
@@ -224,6 +226,17 @@ _ARTIFACT_PAGE_FILTER: dict[str, Any] = {
             "anyOf": [{"type": "string", "maxLength": 1024}, {"type": "null"}],
             "default": None,
             "description": "Opaque next-page cursor.",
+        },
+        "content_max_bytes": {
+            "anyOf": [{"type": "integer", "minimum": 1, "maximum": 65536}, {"type": "null"}],
+            "default": None,
+            "description": (
+                "When set, return a bounded tail read (this many bytes, from the "
+                "end of the file) of every role=log artifact in this page; other "
+                "artifacts carry a typed content_error instead. Omit to keep the "
+                "manifest content-free. Requires the cluster's jarvis contract "
+                ">= clio-kit-jarvis-user-v3.7."
+            ),
         },
     },
     "additionalProperties": False,
