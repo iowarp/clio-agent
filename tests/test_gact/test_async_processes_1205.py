@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from clio_agent.errors import MCP_TASK_RECORD_HELD_LOCALLY
+from clio_agent.errors import MCP_TASK_RECORD_HELD_LOCALLY, MCP_TASK_SESSION_DELETED
 from clio_agent.gact.agent_tasks import STATUS_RUNNING, seed_agent_task
 from clio_agent.gact.app import build_app
 from clio_agent.gact.routes.async_processes import project_session_async_processes
@@ -217,12 +217,13 @@ def test_put_for_an_unattributed_record_publishes_nothing(tmp_path: Path) -> Non
 def test_drop_publishes_the_terminal_event_before_the_record_leaves_the_store(
     tmp_path: Path, status: str, expected_event_type: str
 ) -> None:
-    """D1 (BLOCKING): a settled task is almost always REMOVED via ``drop`` (the
-    real drivers persist the terminal status via ``put`` then drop the now-
-    settled row, mirroring ``_poll_until_terminal`` in tools/mcp_tasks.py) —
-    before the fix, ``drop`` published NOTHING, so a live SSE subscriber never
-    learned the task settled; the row just vanished from the next GET with no
-    explanation. This drives the SAME sequence a real driver does and asserts
+    """D1 (BLOCKING, 1st round): ``drop`` is the EXPLICIT dismiss action (#1205
+    review, 2nd round: real drivers no longer drop a task at settle — see the
+    retention tests below — a task is only ever dropped by an explicit later
+    dismiss, ``run_registry.dismiss_run``). Before the 1st-round fix, ``drop``
+    published NOTHING, so a live SSE subscriber never learned a dismissed task
+    was gone; the row just vanished from the next GET with no explanation.
+    This drives the same put-then-drop sequence a dismiss produces and asserts
     drop's own publish arrives, carrying the record's full final state, before
     the row is gone from the store.
     """
@@ -290,11 +291,17 @@ class _AckOnlyCancelSession:
 
 
 async def test_cancel_task_publishes_mcp_task_cancelled(tmp_path: Path) -> None:
-    """D1 (BLOCKING), the explicitly-named "including cancel" case: ``tasks/cancel``
-    is ack-only with NO later ``tasks/get`` to ever observe a terminal status —
-    before the fix, ``cancel_task`` dropped the record WITHOUT ever stamping
-    ``status="cancelled"`` first, so even a drop() that publishes something would
-    have republished the STALE pre-cancel status instead of the real transition.
+    """D1 (BLOCKING, 1st round), the explicitly-named "including cancel" case:
+    ``tasks/cancel`` is ack-only with NO later ``tasks/get`` to ever observe a
+    terminal status — ``cancel_task`` stamps ``status="cancelled"`` itself so
+    the published event carries the real transition, not a stale pre-cancel
+    status.
+
+    #1205 review D1 (2nd round): ``cancel_task`` no longer drops the record —
+    RETAINED with its terminal status, so exactly ONE ``mcp_task.cancelled``
+    fires here (the earlier round's second, drop-triggered copy is gone along
+    with the drop itself; drop is now an explicit, separate dismiss action,
+    covered above and in the route-level retention tests below).
     """
 
     from clio_agent.tools.mcp_tasks import cancel_task  # noqa: PLC0415 - test-local
@@ -310,20 +317,122 @@ async def test_cancel_task_publishes_mcp_task_cancelled(tmp_path: Path) -> None:
         await cancel_task(session, key)
 
         assert session.methods == ["tasks/cancel"]
-        assert store.get(key) is None, "cancel still drops the record"
+        settled = store.get(key)
+        assert settled is not None, "cancel retains the record"
+        assert settled.status == "cancelled"
 
         events = app.state.bus.session_events_since(sid, cursor=1)
         mcp_events = [e for e in events if e.type.startswith("mcp_task.")]
 
-    # working -> mcp_task.updated, cancel's own status stamp -> mcp_task.cancelled
-    # (put), then drop's republish of the same cancelled state.
-    assert [e.type for e in mcp_events] == [
-        "mcp_task.updated",
-        "mcp_task.cancelled",
-        "mcp_task.cancelled",
-    ]
+    # working -> mcp_task.updated, cancel's own status stamp -> mcp_task.cancelled.
+    # No drop, so no second copy.
+    assert [e.type for e in mcp_events] == ["mcp_task.updated", "mcp_task.cancelled"]
     assert mcp_events[-1].payload["status"] == "cancelled"
     assert mcp_events[-1].payload["key"]["task_id"] == "jarvis-cancel-1"
+
+
+# --------------------------------------------------------------------------- #
+# #1205 review, 2nd round D1 (BLOCKING): retention -- the route must keep      #
+# showing a settled mcp-task row until an explicit dismiss. Bus-only          #
+# assertions don't prove this; every test below asserts on the ROUTE's own    #
+# response.                                                                   #
+# --------------------------------------------------------------------------- #
+
+
+async def test_route_retains_a_cancelled_task_until_dismissed(tmp_path: Path) -> None:
+    """Drives a task to settle through the REAL driver path (``cancel_task``,
+    the same function the relay/jarvis cancel tool calls), then asserts on
+    what ``GET /v1/sessions/{sid}/async-processes`` actually returns: the
+    settled row present with its terminal status (the tray's "recently
+    finished" section needs this to render at all), then gone once the
+    existing dismiss control (``POST /v1/runs/{handle_id}/dismiss``,
+    ``run_registry.dismiss_run``) removes it.
+    """
+
+    from clio_agent.tools.mcp_tasks import cancel_task  # noqa: PLC0415 - test-local
+
+    app = _build(tmp_path)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        key = TaskKey(server_id="relay-ares", session_id=sid, task_id="jarvis-cancel-route")
+        task_record_store().put(TaskRecord(key=key, tool="jarvis_run", status="working"))
+
+        await cancel_task(_AckOnlyCancelSession(), key)
+
+        response = client.get(f"/v1/sessions/{sid}/async-processes")
+        processes = response.json()["processes"]
+        row = next((r for r in processes if r["id"] == "jarvis-cancel-route"), None)
+        assert row is not None, "a settled mcp-task must still be in the tray, not vanished"
+        assert row["kind"] == "mcp-task"
+        assert row["status"] == "cancelled"
+
+        dismiss = client.post("/v1/runs/jarvis-cancel-route/dismiss")
+        assert dismiss.status_code == 200
+
+        after_dismiss = client.get(f"/v1/sessions/{sid}/async-processes").json()["processes"]
+        assert all(r["id"] != "jarvis-cancel-route" for r in after_dismiss)
+
+
+async def test_route_retains_a_completed_task_until_dismissed_via_the_real_poll_driver(
+    tmp_path: Path,
+) -> None:
+    """Same retention contract, driven through the REAL poll-to-terminal loop
+    (``resume_task`` / ``_poll_until_terminal`` in tools/mcp_tasks.py) rather
+    than a hand-rolled ``put`` — the actual code path a reconnect or a fresh
+    ``wait`` uses to drive a task to completion.
+    """
+
+    from mcp.types import Result as McpResult
+
+    from clio_agent.tools.mcp_tasks import resume_task  # noqa: PLC0415 - test-local
+
+    class _TerminalPollSession:
+        """Answers ONE ``tasks/get`` with a completed task, nothing else."""
+
+        methods: list[str]
+
+        def __init__(self) -> None:
+            self.methods = []
+
+        async def send_request(
+            self,
+            request: Any,
+            result_type: Any,
+            request_read_timeout_seconds: float | None = None,
+        ) -> Any:
+            self.methods.append(request.method)
+            if request.method == "tasks/get":
+                return result_type.model_validate(
+                    {
+                        "taskId": "jarvis-completed-route",
+                        "status": "completed",
+                        "createdAt": "2026-08-12T00:00:00+00:00",
+                        "lastUpdatedAt": "2026-08-12T00:00:00+00:00",
+                        "resultType": "complete",
+                        "result": {"content": []},
+                    }
+                )
+            return McpResult()
+
+    app = _build(tmp_path)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        key = TaskKey(server_id="relay-ares", session_id=sid, task_id="jarvis-completed-route")
+        task_record_store().put(TaskRecord(key=key, tool="jarvis_run", status="working"))
+
+        final = await resume_task(_TerminalPollSession(), key)
+        assert final.status == "completed"
+
+        processes = client.get(f"/v1/sessions/{sid}/async-processes").json()["processes"]
+        row = next((r for r in processes if r["id"] == "jarvis-completed-route"), None)
+        assert row is not None, "a settled mcp-task must still be in the tray, not vanished"
+        assert row["status"] == "completed"
+
+        dismiss = client.post("/v1/runs/jarvis-completed-route/dismiss")
+        assert dismiss.status_code == 200
+
+        after_dismiss = client.get(f"/v1/sessions/{sid}/async-processes").json()["processes"]
+        assert all(r["id"] != "jarvis-completed-route" for r in after_dismiss)
 
 
 def test_hold_path_publish_carries_holding_reason(tmp_path: Path) -> None:
@@ -353,3 +462,45 @@ def test_hold_path_publish_carries_holding_reason(tmp_path: Path) -> None:
     assert len(mcp_events) == 1
     assert mcp_events[0].payload["holding_reason"] == MCP_TASK_RECORD_HELD_LOCALLY
     assert mcp_events[0].payload["holding_reason"] == stored.holding_reason
+
+
+async def test_hold_preserves_a_more_specific_existing_reason(tmp_path: Path) -> None:
+    """BLOCKING, new-in-rework: ``_hold`` was unconditionally overwriting an
+    existing ``holding_reason`` with the generic ``MCP_TASK_RECORD_HELD_LOCALLY``
+    — the reviewer-named case: a task already held with
+    ``MCP_TASK_SESSION_DELETED`` (its session was deleted out from under it,
+    via ``on_session_deleted``) that then gets ``cancel_task`` called on it.
+    ``cancel_task``'s own ``put`` lands back on the SAME hold path (the session
+    is still gone), and must not lose the more specific diagnosis to the
+    generic one just because it passed through ``_hold`` a second time.
+    """
+
+    from clio_agent.tools.mcp_tasks import cancel_task  # noqa: PLC0415 - test-local
+
+    app = _build(tmp_path)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "doomed"}).json()["id"]
+        key = TaskKey(server_id="relay-ares", session_id=sid, task_id="jarvis-orphaned")
+        task_record_store().put(TaskRecord(key=key, tool="jarvis_run", status="working"))
+
+        # Delete the session out from under the live task: on_session_deleted
+        # migrates it to the holding path stamped MCP_TASK_SESSION_DELETED.
+        delete_response = client.delete(f"/v1/sessions/{sid}")
+        assert delete_response.status_code == 204
+
+        held = task_record_store().get(key)
+        assert held is not None
+        assert held.holding_reason == MCP_TASK_SESSION_DELETED
+
+        # Cancel the now-orphaned task. Its key still names the deleted
+        # session, so cancel_task's put() re-enters the SAME "session row
+        # absent" hold path — the specific reason must survive that.
+        await cancel_task(_AckOnlyCancelSession(), key)
+
+    after_cancel = task_record_store().get(key)
+    assert after_cancel is not None
+    assert after_cancel.status == "cancelled"
+    assert after_cancel.holding_reason == MCP_TASK_SESSION_DELETED, (
+        "a more specific existing reason must survive a second hold, not be "
+        "downgraded to the generic mcp_task_record_held_locally"
+    )

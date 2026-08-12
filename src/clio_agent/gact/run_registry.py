@@ -120,7 +120,19 @@ def detach_run(app: "FastAPI", handle_id: str) -> dict[str, Any] | None:
 
 
 def dismiss_run(app: "FastAPI", handle_id: str) -> bool:
-    """Hide one run while leaving execution untouched; drop relay-only settled handles."""
+    """Hide one run while leaving execution untouched.
+
+    An ``AgentTask``-backed run is hidden via its ``dismissed`` field — never
+    dropped, so ``for_parent``/``project_runs`` keep returning the row (a
+    dismissed run is hidden by the CLIENT's own filter, not erased server-side).
+    A durable MCP/relay ``TaskRecord`` has no such field: #1205's retention
+    design (2nd round) keeps a settled record in the store with its terminal
+    status until this explicit action, so dismissing one is the ONE way to make
+    it stop appearing — this call drops it for real. Matches ANY tool now, not
+    only the relay-agent-mirroring ``relay_submit_remote_agent`` records this
+    originally covered — the session-scoped async-processes tray (#1205)
+    surfaces every non-agent-task record (``jarvis_run`` etc.), not just that one.
+    """
 
     task = app.state.agent_task_registry.get(handle_id)
     if task is not None:
@@ -128,11 +140,7 @@ def dismiss_run(app: "FastAPI", handle_id: str) -> bool:
             persist_agent_task(app, replace(task, dismissed=True))
         return True
     store = resolve_store(None)
-    matches = [
-        record
-        for record in store.list()
-        if record.task_id == handle_id and record.tool == "relay_submit_remote_agent"
-    ]
+    matches = [record for record in store.list() if record.task_id == handle_id]
     for record in matches:
         store.drop(record.key)
     return bool(matches)

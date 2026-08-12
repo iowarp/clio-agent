@@ -238,7 +238,11 @@ async def test_conformance_reconnect_by_task_id_after_dropping_the_client(
     assert final.status == "completed"
     assert final.result is not None
     assert final.result["content"][0]["text"] == "slow-done"
-    assert task_record_store().get(key) is None
+    # #1205 review D1 (2nd round): RETAINED with its terminal status, not
+    # dropped — removal is an explicit later dismiss, never automatic at settle.
+    settled = task_record_store().get(key)
+    assert settled is not None
+    assert settled.status == "completed"
 
 
 async def test_conformance_mcp_name_header_on_every_task_rpc(backend: Any) -> None:

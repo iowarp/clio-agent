@@ -402,4 +402,9 @@ async def test_reconnect_through_the_durable_home_after_a_restart(tmp_path: Path
 
     assert final.status == "completed"
     assert session.methods == ["tasks/get"]
-    assert task_record_store().get(key) is None
+    # #1205 review D1 (2nd round): RETAINED with its terminal status, not
+    # dropped — a settled record stays visible (e.g. to a session-scoped
+    # async-processes read) until an explicit later dismiss.
+    settled = task_record_store().get(key)
+    assert settled is not None
+    assert settled.status == "completed"

@@ -445,7 +445,11 @@ async def _poll_until_terminal(
         current = await send_task_get(session, key.task_id, budget)
         _record_status(store, ledger, key, current.status)
         if current.status in TERMINAL_TASK_STATES:
-            store.drop(key)
+            # #1205 review D1 (2nd round): RETAIN the settled record (matches
+            # AgentTask's dismissed-field semantics, never vanish it here) —
+            # _record_status just above already persisted the terminal status.
+            # Removal is an explicit later dismiss, not an automatic drop at
+            # settle (a UI still needs to show the finished row afterward).
             return current
         if current.status == "input_required":
             newly_elicited = await _answer_round(
@@ -519,16 +523,20 @@ async def cancel_task(
       settles to ``cancelled`` on a later ``tasks/get``.
 
     Nothing here cancels a coroutine, so no ``notifications/cancelled`` frame is
-    emitted for the task. The record for the FULL composite key is dropped once the
-    ack lands — never every row that happens to share the task id.
+    emitted for the task. The record for the FULL composite key is RETAINED —
+    #1205 review D1 (2nd round): a settled task's record stays in the store with
+    its terminal status, matching ``AgentTask``'s own ``dismissed``-field
+    semantics (``for_parent`` keeps a dismissed row; it is never dropped) rather
+    than vanishing at settle. Removal is an explicit, later user action (dismiss,
+    ``run_registry.dismiss_run``), never an automatic side effect of settling —
+    a live UI still needs to SHOW the finished/cancelled row (the tray's
+    "recently finished" section) after it settles, not just the moment it did.
 
-    #1205 review D1: this is the LAST CLIO-side representation of the task before
-    it stops being tracked (the ack is the commitment point — nothing here polls
-    for the server's own later ``tasks/get`` confirmation), so the record's status
-    is stamped ``cancelled`` via ``put`` before the drop. Without this the record
-    at drop-time still carried whatever pre-cancel status (``working`` /
-    ``input_required``) it last had, so even a drop that publishes SOMETHING would
-    publish the WRONG typed event instead of ``mcp_task.cancelled``.
+    #1205 review D1 (1st round): this is the LAST CLIO-side representation of the
+    task before nothing further polls it (the ack is the commitment point —
+    nothing here polls for the server's own later ``tasks/get`` confirmation), so
+    the record's status is stamped ``cancelled`` via ``put`` here rather than left
+    at whatever pre-cancel status (``working`` / ``input_required``) it last had.
     """
 
     ack = await send_task_cancel(session, key.task_id)
@@ -536,7 +544,6 @@ async def cancel_task(
     existing = resolved.get(key)
     if existing is not None:
         resolved.put(replace(existing, status="cancelled"))
-    resolved.drop(key)
     return ack
 
 

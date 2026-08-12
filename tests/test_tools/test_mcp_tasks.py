@@ -43,6 +43,7 @@ from clio_agent.tools.mcp_task_records import (
     TaskKey,
     TaskLease,
     TaskRecord,
+    open_task_records,
     set_task_record_store,
 )
 from clio_agent.tools.mcp_tasks import (
@@ -241,8 +242,15 @@ async def test_reconnect_by_task_id_resumes_polling_to_completion() -> None:
 
     assert final.status == "completed"
     assert session.methods() == ["tasks/get", "tasks/get"]
-    # Settled tasks are dropped: a later sweep must not try to resume them.
-    assert store.get(key) is None
+    # #1205 review D1 (2nd round): settled tasks are RETAINED with their
+    # terminal status (matches AgentTask's dismissed-field semantics; removal
+    # is an explicit later dismiss, never automatic at settle) — a later
+    # reconnect sweep still skips them via open_task_records()'s own
+    # `status not in TERMINAL_TASK_STATES` filter, not via deletion.
+    settled = store.get(key)
+    assert settled is not None
+    assert settled.status == "completed"
+    assert key not in {r.key for r in open_task_records(store)}
 
 
 async def test_resume_without_a_persisted_record_is_a_typed_error() -> None:
@@ -352,8 +360,14 @@ async def test_create_task_result_is_driven_to_the_real_result() -> None:
 
         assert result.content[0].text == "42"
         assert result.is_error in (False, None)
-        # The id was persisted under the extension's backend identity, then dropped.
-        assert store.list() == []
+        # #1205 review D1 (2nd round): the id was persisted under the extension's
+        # backend identity, then RETAINED with its terminal status — not dropped
+        # (matches AgentTask's dismissed-field semantics; removal is an explicit
+        # later dismiss, never automatic at settle).
+        records = store.list()
+        assert len(records) == 1
+        assert records[0].task_id == "task-9"
+        assert records[0].status == "completed"
     finally:
         set_task_record_store(None)
 
@@ -943,22 +957,33 @@ async def test_cancel_is_ack_only_and_emits_no_cancelled_notification() -> None:
 
     assert session.methods() == ["tasks/cancel"]
     assert session.notifications == []
-    assert store.get(key) is None
+    # #1205 review D1 (2nd round): RETAINED with its final status, not dropped —
+    # matches AgentTask's dismissed-field semantics; removal is an explicit
+    # later dismiss (run_registry.dismiss_run), never automatic at settle.
+    cancelled = store.get(key)
+    assert cancelled is not None
+    assert cancelled.status == "cancelled"
 
 
-async def test_cancel_drops_only_the_named_identity() -> None:
-    """Cancelling one backend's task leaves another backend's same-id task alive."""
+async def test_cancel_stamps_only_the_named_identity() -> None:
+    """Cancelling one backend's task marks only IT cancelled, leaving another
+    backend's same-id task's status untouched (composite-key scoping, #1205
+    review 2nd round — was "...drops only..." before cancel stopped dropping)."""
 
     store = _fresh_store()
     a = _key("shared-id", server=SERVER_A)
     b = _key("shared-id", server=SERVER_B)
-    store.put(TaskRecord(key=a))
-    store.put(TaskRecord(key=b))
+    store.put(TaskRecord(key=a, status="working"))
+    store.put(TaskRecord(key=b, status="working"))
 
     await cancel_task(ScriptedSession([]), a, store=store)
 
-    assert store.get(a) is None
-    assert store.get(b) is not None
+    stamped = store.get(a)
+    assert stamped is not None
+    assert stamped.status == "cancelled"
+    untouched = store.get(b)
+    assert untouched is not None
+    assert untouched.status == "working"
 
 
 def test_removed_task_methods_are_never_called() -> None:

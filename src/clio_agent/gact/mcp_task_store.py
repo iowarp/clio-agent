@@ -288,15 +288,25 @@ class SessionMetadataTaskStore:
         caller must publish THIS returned record, never the pre-hold one it
         passed in, or the published payload silently drops the one field that
         makes the degrade non-silent to a live SSE subscriber.
+
+        PRESERVES an existing, more specific ``holding_reason`` (#1205 review,
+        2nd round) rather than clobbering it with the generic
+        ``MCP_TASK_RECORD_HELD_LOCALLY``: a record already held for a specific
+        cause — e.g. ``MCP_TASK_SESSION_DELETED`` from :meth:`on_session_deleted`
+        — that gets ``put`` again (e.g. :func:`~clio_agent.tools.mcp_tasks.cancel_task`
+        stamping a final status onto an already-orphaned record) must not lose
+        that more specific diagnosis to the generic one just because it landed
+        on this same fallback path a second time.
         """
 
-        held = replace(record, holding_reason=MCP_TASK_RECORD_HELD_LOCALLY)
+        reason = record.holding_reason or MCP_TASK_RECORD_HELD_LOCALLY
+        held = replace(record, holding_reason=reason)
         self._held.put(held)
         logger.warning(
             "mcp task %s held process-locally reason=%s (%s); it stays resumable here "
             "but will not survive a restart",
             record.key.task_id,
-            MCP_TASK_RECORD_HELD_LOCALLY,
+            reason,
             detail,
         )
         return held

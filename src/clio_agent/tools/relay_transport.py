@@ -39,7 +39,6 @@ from clio_agent.tools.mcp_task_extension import (
     persist_created_task,
 )
 from clio_agent.tools.mcp_task_records import (
-    TERMINAL_TASK_STATES,
     TaskInputLedger,
     TaskKey,
     TaskRecordStore,
@@ -445,16 +444,16 @@ class RelayTransportClient:
         # the long-lived TaskLease. Merge onto the post-RPC row to retain a
         # concurrent wait/resume driver's lease and input ledger.
         latest = store.get(task.key) or record
-        # #1205 review D1: persist the observed status BEFORE dropping a terminal
-        # task. The old code dropped straight off `current.status in
-        # TERMINAL_TASK_STATES` without ever writing it through `put` — the
-        # record's stored status stayed whatever it was on the LAST put (almost
-        # always non-terminal), so a store.drop() that publishes the record's
-        # current state (as it now does) would have published the WRONG status
-        # instead of the real mcp_task.completed/failed/cancelled transition.
+        # #1205 review D1 (1st round): persist the observed status via `put` —
+        # the old code dropped a terminal task straight off `current.status in
+        # TERMINAL_TASK_STATES` without ever writing it through `put`, so the
+        # record's stored status stayed whatever it was on the last put (almost
+        # always non-terminal).
+        # #1205 review D1 (2nd round): and no longer DROP it on terminal either —
+        # RETAIN the settled record (matches AgentTask's dismissed-field
+        # semantics; removal is an explicit later dismiss via
+        # run_registry.dismiss_run, never an automatic side effect of settling).
         store.put(replace(latest, status=current.status))
-        if current.status in TERMINAL_TASK_STATES:
-            store.drop(task.key)
         return current
 
     async def wait(
