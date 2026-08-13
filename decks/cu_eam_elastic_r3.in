@@ -1,0 +1,90 @@
+# ============================================================
+# Elastic constants (C11, C12, C44) of Cu (FCC) via EAM potential
+# Method: zero-temperature finite-strain, central difference,
+#         strain magnitude up = 1e-6, atomic positions relaxed
+#         (box fixed) at each strained state via CG minimization.
+# Material: Cu, FCC, a0 = 3.6150 Ang
+# Potential: Cu_u3.eam (funcfl single-element EAM), pair_style eam
+# Deck version: r3 (self-authored; supersedes unverifiable r2 bundle)
+# ============================================================
+
+units           metal
+atom_style      atomic
+boundary        p p p
+atom_modify     map array
+
+# ---------------- geometry ----------------
+lattice         fcc 3.6150
+region          simbox block 0 4 0 4 0 4 units lattice
+create_box      1 simbox
+create_atoms    1 box
+mass            1 63.55
+
+# ---------------- potential ----------------
+pair_style      eam
+pair_coeff      1 1 /mnt/common/jcernudagarcia/spack/opt/spack/linux-ubuntu22.04-skylake_avx512/gcc-11.4.0/lammps-20240829.1-p5gjmq4rseitqanua7mdd2zdnag4v3u2/share/lammps/potentials/Cu_u3.eam
+
+neighbor        1.0 bin
+neigh_modify    delay 0 every 1 check yes
+
+# ---------------- minimization control ----------------
+variable        etol equal 1.0e-12
+variable        ftol equal 1.0e-12
+variable        maxiter equal 10000
+variable        maxeval equal 100000
+min_style       cg
+
+thermo_style    custom step pe pxx pyy pzz pxy pxz pyz
+thermo          50
+
+# ---------------- reference relaxation (fixed box) ----------------
+print           "PHASE reference_relax"
+minimize        ${etol} ${ftol} ${maxiter} ${maxeval}
+
+variable        up equal 1.0e-6
+variable        cfac equal 1.0e-4
+variable        lx0 equal lx
+variable        ly0 equal ly
+variable        lz0 equal lz
+
+# =========== strain e1 = +eps_xx ===========
+print           "PHASE strain_xx_plus"
+change_box      all x delta 0 $(v_up*v_lx0) remap units box
+minimize        ${etol} ${ftol} ${maxiter} ${maxeval}
+variable        pxx_xp equal pxx
+variable        pyy_xp equal pyy
+variable        pzz_xp equal pzz
+change_box      all x delta 0 $(-v_up*v_lx0) remap units box
+
+# =========== strain e1 = -eps_xx ===========
+print           "PHASE strain_xx_minus"
+change_box      all x delta 0 $(-v_up*v_lx0) remap units box
+minimize        ${etol} ${ftol} ${maxiter} ${maxeval}
+variable        pxx_xm equal pxx
+variable        pyy_xm equal pyy
+variable        pzz_xm equal pzz
+change_box      all x delta 0 $(v_up*v_lx0) remap units box
+
+# =========== strain e4 = +gamma_yz (shear) ===========
+print           "PHASE strain_yz_plus"
+change_box      all yz delta $(v_up*v_lz0) remap units box
+minimize        ${etol} ${ftol} ${maxiter} ${maxeval}
+variable        pyz_sp equal pyz
+change_box      all yz delta $(-v_up*v_lz0) remap units box
+
+# =========== strain e4 = -gamma_yz (shear) ===========
+print           "PHASE strain_yz_minus"
+change_box      all yz delta $(-v_up*v_lz0) remap units box
+minimize        ${etol} ${ftol} ${maxiter} ${maxeval}
+variable        pyz_sm equal pyz
+change_box      all yz delta $(v_up*v_lz0) remap units box
+
+# ---------------- elastic constants (GPa) ----------------
+variable        C11 equal -(v_pxx_xp-v_pxx_xm)/(2.0*v_up)*v_cfac
+variable        C12 equal -(v_pyy_xp-v_pyy_xm)/(2.0*v_up)*v_cfac
+variable        C44 equal -(v_pyz_sp-v_pyz_sm)/(2.0*v_up)*v_cfac
+
+print           "ELASTIC_RESULT C11 = ${C11} GPa"
+print           "ELASTIC_RESULT C12 = ${C12} GPa"
+print           "ELASTIC_RESULT C44 = ${C44} GPa"
+print           "ELASTIC_DONE"

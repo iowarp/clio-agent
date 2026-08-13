@@ -12,10 +12,15 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from clio_agent.gact.document_fields import (
+    DocumentCapabilityFields,
+    DocumentPartFields,
+)
 
 
-class CapabilityFlags(BaseModel):
+class CapabilityFlags(DocumentCapabilityFields):
     """SPEC §3.3 + v0.2 additions.
 
     We only claim capabilities we actually implement. Advertising a
@@ -88,7 +93,7 @@ class CapabilityFlags(BaseModel):
     x_clio_task_record_store: dict[str, Any] = Field(default_factory=dict)
 
 
-class Part(BaseModel):
+class Part(DocumentPartFields):
     """SPEC §4.5. The discriminator is ``type``; fields are
     ``omitempty`` JSON-wise so unused ones don't serialise.
 

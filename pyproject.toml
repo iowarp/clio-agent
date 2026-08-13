@@ -87,6 +87,14 @@ dependencies = [
     # — the Windows cron sore point. Both are small, pure-Python, no native deps.
     "tzdata>=2024.1",
     "tzlocal>=5.2",
+    # Document artifact production. These are the format-native libraries used
+    # by the built-in document skills; LibreOffice/Tectonic remain explicit
+    # external render/recalculation prerequisites.
+    "python-docx>=1.1.2,<2",
+    "openpyxl>=3.1.5,<4",
+    "python-pptx>=1.0.2,<2",
+    "odfpy>=1.4.1,<2",
+    "pypdf>=5.1.0,<7",
 ]
 
 [project.optional-dependencies]

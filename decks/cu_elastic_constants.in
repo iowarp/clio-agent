@@ -1,0 +1,87 @@
+# ============================================================
+# Elastic constants (C11, C12, C44) of FCC copper via LAMMPS EAM
+# Method: finite normal/shear strain, central-difference stress response
+# Units: metal (pressure in bar; converted to GPa by cfac=1e-4)
+# ============================================================
+units metal
+atom_style atomic
+boundary p p p
+
+variable a0    equal 3.615      # Cu FCC lattice constant (Angstrom)
+variable nrep  equal 5          # unit cells per edge
+variable delta equal 1.0e-6     # dimensionless strain magnitude
+variable cfac  equal 1.0e-4     # bar -> GPa
+
+lattice fcc ${a0}
+region simbox block 0 ${nrep} 0 ${nrep} 0 ${nrep} units lattice
+create_box 1 simbox
+create_atoms 1 box
+mass 1 63.546
+
+pair_style eam
+pair_coeff 1 1 Cu_u3.eam
+
+neighbor 1.0 bin
+neigh_modify delay 0 every 1 check yes
+
+thermo_style custom step pe pxx pyy pzz pyz pxz pxy lx ly lz
+thermo 0
+
+# ---- relax reference structure ----
+fix relaxbox all box/relax iso 0.0
+min_style cg
+minimize 1.0e-12 1.0e-12 10000 100000
+unfix relaxbox
+minimize 1.0e-12 1.0e-12 10000 100000
+
+variable tmp equal lz
+variable lz0 equal ${tmp}
+
+# ================= xx normal strain, +delta =================
+change_box all x scale $(1.0+v_delta) remap units box
+minimize 1.0e-12 1.0e-12 10000 100000
+variable tmp equal pxx
+variable pxx_xp equal ${tmp}
+variable tmp equal pyy
+variable pyy_xp equal ${tmp}
+variable tmp equal pzz
+variable pzz_xp equal ${tmp}
+change_box all x scale $(1.0/(1.0+v_delta)) remap units box
+minimize 1.0e-12 1.0e-12 10000 100000
+
+# ================= xx normal strain, -delta =================
+change_box all x scale $(1.0-v_delta) remap units box
+minimize 1.0e-12 1.0e-12 10000 100000
+variable tmp equal pxx
+variable pxx_xm equal ${tmp}
+variable tmp equal pyy
+variable pyy_xm equal ${tmp}
+variable tmp equal pzz
+variable pzz_xm equal ${tmp}
+change_box all x scale $(1.0/(1.0-v_delta)) remap units box
+minimize 1.0e-12 1.0e-12 10000 100000
+
+# ================= yz shear strain, +delta =================
+change_box all yz delta $(v_delta*v_lz0) remap units box
+minimize 1.0e-12 1.0e-12 10000 100000
+variable tmp equal pyz
+variable pyz_yp equal ${tmp}
+change_box all yz delta $(-v_delta*v_lz0) remap units box
+minimize 1.0e-12 1.0e-12 10000 100000
+
+# ================= yz shear strain, -delta =================
+change_box all yz delta $(-v_delta*v_lz0) remap units box
+minimize 1.0e-12 1.0e-12 10000 100000
+variable tmp equal pyz
+variable pyz_ym equal ${tmp}
+change_box all yz delta $(v_delta*v_lz0) remap units box
+minimize 1.0e-12 1.0e-12 10000 100000
+
+# ================= elastic constants (GPa) =================
+variable C11 equal -(v_pxx_xp-v_pxx_xm)/(2.0*v_delta)*v_cfac
+variable C12 equal -(v_pyy_xp-v_pyy_xm)/(2.0*v_delta)*v_cfac
+variable C44 equal -(v_pyz_yp-v_pyz_ym)/(2.0*v_delta)*v_cfac
+
+print "ELASTIC_CONSTANT C11_GPa = ${C11}"
+print "ELASTIC_CONSTANT C12_GPa = ${C12}"
+print "ELASTIC_CONSTANT C44_GPa = ${C44}"

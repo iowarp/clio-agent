@@ -31,7 +31,12 @@ from clio_agent.sdk.errors import ClioConnectionError, error_from_response
 from clio_agent.sdk.events import EventStream
 from clio_agent.sdk.types import (
     Agent,
+    ArtifactReview,
     Capabilities,
+    DocumentAnchor,
+    DocumentEditorSession,
+    DocumentManifest,
+    DocumentWorkingCopy,
     Health,
     LMProvider,
     Message,
@@ -97,6 +102,7 @@ class ClioClient:
         self.messages = MessagesAPI(self)
         self.workspaces = WorkspacesAPI(self)
         self.permissions = PermissionsAPI(self)
+        self.documents = DocumentsAPI(self)
 
     # -- lifecycle ---------------------------------------------------- #
 
@@ -528,6 +534,145 @@ class WorkspacesAPI:
         (409 ``permission_error``, SPEC §6.1)."""
 
         self._client._request("DELETE", f"/v1/workspaces/{workspace_id}")
+
+
+class DocumentsAPI:
+    """Document artifact manifests, reviews, renditions, and working copies."""
+
+    def __init__(self, client: ClioClient) -> None:
+        self._client = client
+
+    def manifest(self, artifact_id: str) -> DocumentManifest:
+        """Resolve format-aware viewer routing for one immutable version."""
+
+        response = self._client._request("GET", f"/v1/artifacts/{artifact_id}/document")
+        return DocumentManifest.model_validate(response.json())
+
+    def content(self, artifact_id: str) -> bytes:
+        """Fetch hash-verified document bytes."""
+
+        response = self._client._request("GET", f"/v1/artifacts/{artifact_id}/document/content")
+        return response.content
+
+    def reviews(self, artifact_id: str) -> list[ArtifactReview]:
+        """List durable reviews across the artifact's version chain."""
+
+        response = self._client._request("GET", f"/v1/artifacts/{artifact_id}/reviews")
+        return [ArtifactReview.model_validate(row) for row in response.json().get("reviews", [])]
+
+    def review(
+        self,
+        session_id: str,
+        *,
+        artifact_id: str,
+        expected_version: int,
+        expected_sha256: str,
+        anchor: DocumentAnchor,
+        text: str,
+        idempotency_key: str,
+        allow_historical: bool = False,
+    ) -> ArtifactReview:
+        """Create and immediately dispatch one anchored review instruction."""
+
+        response = self._client._request(
+            "POST",
+            f"/v1/sessions/{session_id}/artifact-reviews",
+            json={
+                "artifact_id": artifact_id,
+                "expected_version": expected_version,
+                "expected_sha256": expected_sha256,
+                "anchor": anchor.model_dump(mode="json"),
+                "text": text,
+                "idempotency_key": idempotency_key,
+                "allow_historical": allow_historical,
+            },
+        )
+        return ArtifactReview.model_validate(response.json())
+
+    def render_pdf(self, artifact_id: str, *, session_id: str) -> DocumentManifest:
+        """Create a derived PDF rendition."""
+
+        response = self._client._request(
+            "POST",
+            f"/v1/artifacts/{artifact_id}/renditions",
+            json={"format": "pdf"},
+            params={"session_id": session_id},
+        )
+        return DocumentManifest.model_validate(response.json()["artifact"])
+
+    def create_working_copy(
+        self,
+        artifact_id: str,
+        *,
+        session_id: str,
+        provider: str = "native",
+        writable: bool = True,
+        auto_checkpoint: bool = True,
+    ) -> DocumentWorkingCopy:
+        """Materialize an exact version under a confined mutable lease."""
+
+        response = self._client._request(
+            "POST",
+            f"/v1/artifacts/{artifact_id}/working-copies",
+            json={
+                "session_id": session_id,
+                "provider": provider,
+                "writable": writable,
+                "auto_checkpoint": auto_checkpoint,
+            },
+        )
+        return DocumentWorkingCopy.model_validate(response.json())
+
+    def get_working_copy(self, working_copy_id: str) -> DocumentWorkingCopy:
+        """Resolve a working copy."""
+
+        response = self._client._request("GET", f"/v1/document-working-copies/{working_copy_id}")
+        return DocumentWorkingCopy.model_validate(response.json())
+
+    def close_working_copy(self, working_copy_id: str) -> DocumentWorkingCopy:
+        """Close a writable lease without deleting its file."""
+
+        response = self._client._request("DELETE", f"/v1/document-working-copies/{working_copy_id}")
+        return DocumentWorkingCopy.model_validate(response.json())
+
+    def resolve_conflict(
+        self,
+        working_copy_id: str,
+        *,
+        resolution: Literal["keep-current", "use-working-copy"],
+        expected_head_artifact_id: str,
+    ) -> DocumentWorkingCopy:
+        """Apply an explicit stale-save conflict decision."""
+
+        response = self._client._request(
+            "POST",
+            f"/v1/document-working-copies/{working_copy_id}/conflict",
+            json={
+                "resolution": resolution,
+                "expected_head_artifact_id": expected_head_artifact_id,
+            },
+        )
+        return DocumentWorkingCopy.model_validate(response.json())
+
+    def editor_health(self) -> dict[str, Any]:
+        """Probe configured ONLYOFFICE and Collabora endpoints."""
+
+        return self._client._request("GET", "/v1/document-editors/health").json()
+
+    def create_editor_session(
+        self,
+        working_copy_id: str,
+        *,
+        provider: Literal["onlyoffice", "collabora"],
+    ) -> DocumentEditorSession:
+        """Create a short-lived embedded editor launch."""
+
+        response = self._client._request(
+            "POST",
+            f"/v1/document-working-copies/{working_copy_id}/editor-sessions",
+            json={"provider": provider},
+        )
+        return DocumentEditorSession.model_validate(response.json())
 
 
 class PermissionsAPI:

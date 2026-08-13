@@ -1,0 +1,91 @@
+{
+  "schema": "clio.document-artifacts.acceptance.v1",
+  "recorded_at": "2026-07-28T02:59:34Z",
+  "status": "partial-environment-acceptance",
+  "live_codex": {
+    "provider": "codex",
+    "model": "gpt-5.5",
+    "workspace_id": "ws_74c17ee953de",
+    "session_id": "sess_5ace316e621c",
+    "session_final_status": "idle",
+    "review_id": "docreview_659438f36d524f9584fd7e37d327d281",
+    "review_message_id": "msg_user_082051d4eafa",
+    "anchor": {
+      "profile": "text-quote",
+      "exact": "every source supports the conclusion",
+      "source_path": "evidence-brief.md"
+    },
+    "review_text": "Replace this with a scan-limited claim and keep the evidence boundary explicit.",
+    "initial_artifact": {
+      "artifact_id": "artifact_2e1f76423c9144f6a6f33c28a58b993d",
+      "version": 1,
+      "sha256": "f31cbaa89a1716ecf96178a21ff8af79bc16bbfd0937a3b8bed28ac6f6742efc",
+      "size_bytes": 254
+    },
+    "result_artifact": {
+      "artifact_id": "artifact_6f209265c04d42c6a51ad8bc4fd5485d",
+      "version": 2,
+      "sha256": "eac58a2a7af000b6bf86427d38d1c19d14ac96e6f84fa57387708ecb753621d4",
+      "size_bytes": 313,
+      "mechanism": "model",
+      "prior_version": 1,
+      "prior_sha256": "f31cbaa89a1716ecf96178a21ff8af79bc16bbfd0937a3b8bed28ac6f6742efc"
+    },
+    "observed_behavior": [
+      "The API persisted and dispatched an artifact_review part bound to the exact artifact ID, version, and SHA-256.",
+      "Codex read the canonical Markdown through the real fs_read_file tool.",
+      "Codex changed the selected claim and preserved the remaining document.",
+      "The artifact observer registered immutable version 2 with model provenance and a resource_link in the final transcript."
+    ],
+    "evidence": [
+      "evidence/live-codex-transcript.json",
+      "evidence/live-codex-result.md"
+    ]
+  },
+  "live_pdf_rendition": {
+    "workspace_id": "ws_6aeba5787292",
+    "session_id": "sess_44779c201d40",
+    "source_artifact_id": "artifact_e76b5b06ef024a7989594f5eb034fa07",
+    "source_sha256": "eac58a2a7af000b6bf86427d38d1c19d14ac96e6f84fa57387708ecb753621d4",
+    "pdf_artifact_id": "artifact_74d821c4a8cd47dda9962f7e6d86da4d",
+    "pdf_sha256": "25fec3695da995b1f5561a865f6223a87313199af681c5dd1a0114d425eb8853",
+    "pdf_size_bytes": 37323,
+    "converter": "pandoc+typst",
+    "http_status": 200,
+    "content_type": "application/pdf",
+    "pdf_properties": {
+      "pages": 1,
+      "page_size": "letter",
+      "pdf_version": "1.7",
+      "javascript": false,
+      "encrypted": false
+    },
+    "visual_review": "passed: text is legible with clear hierarchy, normal spacing, no clipping, overlap, missing glyphs, or broken layout",
+    "evidence": [
+      "evidence/live-markdown-rendition.pdf",
+      "evidence/live-markdown-rendition-page-1.png"
+    ]
+  },
+  "automated": {
+    "document_backend": "12 focused tests passed; 380 artifact/inbox/event integration tests passed, with the 2 conditional clio-relay checks also passing against the real sibling checkout",
+    "python_static_analysis": "ruff clean and pyright 0 errors on the document implementation",
+    "gact_core_live": "95 passed, 0 skipped against http://127.0.0.1:18100",
+    "gact_web": "1004 passed",
+    "gact_desktop": "10 passed",
+    "gact_lint": "passed",
+    "gact_typecheck": "passed",
+    "gact_build": "passed",
+    "gact_rust": "cargo check and the native-open confinement unit test passed with one pre-existing unused-import warning",
+    "marketplace": "ruff clean, format clean, 2 package-guard tests passed"
+  },
+  "environment_limitations": [
+    "The connected in-app browser runtime reported no available browser, so manual in-app browser acceptance could not run.",
+    "Automated Chromium acceptance passed and produced two videos plus three visually reviewed intermediate screenshots in the gact-tui acceptance bundle.",
+    "Docker Desktop CLI is installed but its Linux engine is not running, so live ONLYOFFICE and Collabora container acceptance could not run.",
+    "LibreOffice and Tectonic are not installed. Markdown-to-PDF was live-accepted through Pandoc and Typst; Office/OpenDocument and direct LaTeX rendition paths were not live-accepted on this host.",
+    "The complete clio-agent Ruff baseline is not green: 20 existing lint errors remain in benchmark manual-solution files and 157 existing files fail the repository-wide format check. All changed Python files pass Ruff lint and format checks.",
+    "The complete clio-agent Pyright baseline reports 1360 existing errors across unrelated packages and tests. The changed document implementation and its focused test file pass with 0 errors.",
+    "The complete desktop cargo fmt check reports existing formatting drift in untouched Rust files. The changed command file passes rustfmt; cargo check and its new confinement test pass.",
+    "The complete clio-agent pytest suite is not green on this Windows host: the first isolated failure is the pre-existing clio-core offload spill integration test, which cannot initialize its private CTE pool; an unrestricted run later terminates in the ARC stress teardown native runtime."
+  ]
+}

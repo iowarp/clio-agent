@@ -182,11 +182,16 @@ These deliberately bypass the config store (a shared file must not be able to re
 | --- | --- | --- |
 | `ALCF_INFERENCE_TOKEN` | secret | `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/providers/credentials.py` |
 | `CLIO_ARGONNE_TOKEN` | secret | `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/providers/credentials.py` |
+| `CLIO_COLLABORA_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_CRED_<PROVIDER>_<ACCOUNT>` | secret | `src/clio_agent/providers/credentials.py` |
+| `CLIO_DOCUMENT_TYPST_FONT` | unmigrated | `src/clio_agent/gact/documents/renditions.py` |
 | `CLIO_ENV_FILE` | bootstrap | `src/clio_agent/config.py` |
+| `CLIO_GACT_PUBLIC_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/runtime/disk_gc.py` |
 | `CLIO_LM_API_KEY` | secret | `src/clio_agent/config.py`, `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/runtime/status.py` |
 | `CLIO_RELAY_API_TOKEN` | secret | `src/clio_agent/tools/relay_factory.py`, `src/clio_agent/tools/relay_transport.py` |
+| `CLIO_ONLYOFFICE_JWT_SECRET` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
+| `CLIO_ONLYOFFICE_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_USER_DIR` | bootstrap | `src/clio_agent/paths.py` |
 

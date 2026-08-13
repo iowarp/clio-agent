@@ -74,7 +74,10 @@ from clio_agent.gact.app import build_app
 # routes/async_processes.py — the session-scoped agent+mcp-task union projection
 # the async-processes tray reads (live refresh rides the existing per-session SSE
 # channel, no new route for that half).
-EXPECTED_ROUTE_METHOD_PAIRS = 173
+# 173 -> 190 (feat/document-artifacts merge): +17 document manifest/content, rendition, immutable review,
+# working-copy, native-comment, and optional embedded-editor routes owned by
+# routes/documents.py and composed through routes/artifact_workspace.py.
+EXPECTED_ROUTE_METHOD_PAIRS = 190
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
