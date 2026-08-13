@@ -103,6 +103,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
     ``gact.app``. The rollback + ask-user/retry helper closures are concern-private.
     """
 
+    from clio_agent.gact.spotter_watcher import sync_watcher_for_mode  # noqa: PLC0415
+
     def _session_not_found(sid: str) -> HTTPException:
         return HTTPException(
             status_code=404,
@@ -147,6 +149,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         # B5 #979.2 (⚑): session-create INHERITS existing territory — no grant made, so it
         # emits NO boundary event (a fabricated grantor=user would violate ⚑ + precede
         # turn.started; workspace-create / PATCH root_path / explicit grants record it).
+        sync_watcher_for_mode(app, sess)
         return Session(**sess.to_wire())
 
     @app.patch("/v1/sessions/{sid}", response_model=Session)
@@ -158,6 +161,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         modal (``chat`` mode was deleted in P1.1 #1063).
         """
 
+        prior_approval_mode = str(getattr(app.state.sessions.get(sid), "approval_mode", "") or "")
         sess = app.state.sessions.update(
             sid,
             title=req.title,
@@ -182,6 +186,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
+        sync_watcher_for_mode(app, sess, prior_approval_mode=prior_approval_mode)
         # Publish so live SSE subscribers see mode flips immediately.
         app.state.bus.publish(
             Event(

@@ -299,7 +299,7 @@ class SessionStore:
         sid = _SESSION_ID_PREFIX + uuid.uuid4().hex[:12]
         now = _utcnow_iso()
         valid_routing_modes = {"auto", "chat", "experts", "reasoning_only"}
-        valid_approval_modes = {"ask", "auto-edits", "bypass", "ai-review"}
+        valid_approval_modes = {"ask", "auto-edits", "bypass", "ai-review", "spotter-ai"}
         sess = Session(
             id=sid,
             workspace_id=workspace_id,
@@ -446,6 +446,7 @@ class SessionStore:
                 "auto-edits",
                 "bypass",
                 "ai-review",
+                "spotter-ai",
             }:
                 sess.approval_mode = approval_mode
             if model is not None:

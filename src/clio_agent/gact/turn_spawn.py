@@ -116,6 +116,12 @@ class TaskSpec:
     session_scope_metadata: Optional[dict[str, Any]] = None
     # P2.10 (#1127): resolved execution placement carried across the invoker seam.
     placement: str = "local"
+    # Spotter-ai (#1034 follow-on): a caller-chosen display label for the minted
+    # :class:`AgentTask`, overriding the default ``"<expert_id> #<run_index+1>"``
+    # (e.g. the spotter watcher spawns with ``"SPOTTER AI"`` so it reads as a
+    # named surveillance task in the tray, not an ensemble run). Empty keeps the
+    # existing default-label behavior verbatim.
+    run_label: str = ""
 
 
 class SpawnError(Exception):
@@ -343,7 +349,7 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         spawn_group_id=spec.spawn_group_id,
         group_size=spec.group_size,
         handle_id="task_" + child.id.split("_")[-1],
-        run_label=f"{spec.child_expert_id} #{run_index + 1}",
+        run_label=spec.run_label or f"{spec.child_expert_id} #{run_index + 1}",
         live_state=STATUS_QUEUED,
         host=(spec.placement.split(":", 1)[1] if spec.placement.startswith("relay:") else "local"),
         placement=spec.placement,
