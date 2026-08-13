@@ -63,7 +63,14 @@ def build_sdk_options(
     kwargs: dict[str, Any] = {
         "tools": [],
         "model": model,
-        "max_turns": 1,
+        # ``max_turns`` counts assistant turns per SDK SESSION, not per query. A
+        # #901 delta run intentionally sends many queries under ONE session_id, so
+        # 1 kills the run's second delta query with error_max_turns (surfaced by
+        # AGENT-COPPER14 turn 2 once scope-keyed connections made delta engage
+        # reliably). With ``tools=[]`` the SDK cannot agent-loop within a query, so
+        # this is a runaway backstop, not a behavior guard — bound it well above
+        # any real react loop instead of at the delta-breaking minimum.
+        "max_turns": 500,
         "allowed_tools": [],
         "permission_mode": "bypassPermissions",
         "setting_sources": [],
