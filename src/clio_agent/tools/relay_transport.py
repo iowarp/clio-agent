@@ -111,6 +111,26 @@ __all__ = [
 ]
 
 
+def _session_scoped_idempotency_key(key: str) -> str:
+    """Namespace a caller-minted idempotency key by the active gact session.
+
+    The relay's idempotency ledger is global and durable: two different agent
+    SESSIONS naturally mint the same human-obvious key for the same operation
+    (``describe-search-lammps-...``), and the differing owner identity in the
+    payload turns the replay into a hard 409 the model cannot foresee or avoid.
+    Prefixing with the gact session id keeps within-session retry dedupe intact
+    while making cross-session collisions impossible by construction. Callers
+    outside a gact session (harness, CLI, tests) keep their raw key.
+    """
+    try:
+        from clio_agent.gact.context import active_session_id  # noqa: PLC0415
+
+        session_id = active_session_id() or ""
+    except Exception:  # noqa: BLE001 - session context is optional for this transport
+        session_id = ""
+    return f"{session_id}-{key}" if session_id else key
+
+
 @dataclass(frozen=True)
 class RelayRemoteMcpCatalog:
     """One relay-advertised catalog revision and its virtual ``remote_*`` tools."""
@@ -279,6 +299,10 @@ class RelayTransportClient:
                     },
                 )
             payload["idempotency_key"] = idempotency_key
+        if payload.get("idempotency_key") is not None:
+            payload["idempotency_key"] = _session_scoped_idempotency_key(
+                str(payload["idempotency_key"])
+            )
 
         self._tool_input_schemas = await validate_submit_arguments(
             client, self._tool_input_schemas, tool_name, payload

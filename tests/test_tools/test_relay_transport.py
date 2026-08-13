@@ -737,3 +737,36 @@ async def test_observe_submitted_job_never_blocks_and_returns_none_for_unknown_j
 
     assert observed is not None
     assert observed.status == "working"
+
+
+# --------------------------------------------------------------------------- #
+# Session-scoped idempotency keys (AGENT-COPPER14): the relay ledger is global #
+# and durable, so two agent sessions minting the same obvious key for the same #
+# operation 409 on the differing owner payload -- a collision the model cannot #
+# foresee. The transport namespaces every submitted key by the active gact     #
+# session; session-less callers (harness/CLI) keep their raw key.              #
+# --------------------------------------------------------------------------- #
+def test_idempotency_key_is_scoped_by_active_gact_session(monkeypatch) -> None:
+    """Inside a gact session the submitted key gains the session prefix.
+
+    **Sabotage:** submit the raw model-minted key -> two sessions replay the
+    same key with different owner payloads -> relay 409 -> red.
+    """
+    from clio_agent.gact import context as gact_context
+    from clio_agent.tools.relay_transport import _session_scoped_idempotency_key
+
+    token = gact_context.set_session_id("sess_pin123")
+    try:
+        assert (
+            _session_scoped_idempotency_key("describe-lammps-001")
+            == "sess_pin123-describe-lammps-001"
+        )
+    finally:
+        gact_context.reset(token)
+
+
+def test_idempotency_key_unchanged_without_session_context() -> None:
+    """Session-less callers submit their key verbatim (harness/CLI parity)."""
+    from clio_agent.tools.relay_transport import _session_scoped_idempotency_key
+
+    assert _session_scoped_idempotency_key("l2real-run-42") == "l2real-run-42"
