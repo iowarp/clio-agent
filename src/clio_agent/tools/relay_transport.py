@@ -39,6 +39,7 @@ from clio_agent.tools.mcp_task_extension import (
     persist_created_task,
 )
 from clio_agent.tools.mcp_task_records import (
+    TERMINAL_TASK_STATES,
     TaskInputLedger,
     TaskKey,
     TaskRecordStore,
@@ -502,6 +503,13 @@ class RelayTransportClient:
         SEP-2663) is the handle's resolution path instead. Returns ``None``
         when this client's store holds no record for the job — the caller then
         forwards to relay's native follow tool untouched.
+
+        #1205 retention keeps a settled record instead of dropping it at
+        terminal, so a RETRY (the skill-sanctioned recovery from a transient
+        transport error) can now find a record already terminal -- impossible
+        pre-retention, when the row would already be gone. Resolve from that
+        STATUS via one bounded :meth:`poll`, never by re-entering :meth:`wait`'s
+        full lease-driven drive to relearn a known status.
         """
 
         wanted = str(job_id or "").strip()
@@ -513,10 +521,36 @@ class RelayTransportClient:
         )
         if record is None:
             return None
-        return await self.wait(
-            RelayTaskIdentity.from_key(record.key),
-            timeout_seconds=timeout_seconds,
+        identity = RelayTaskIdentity.from_key(record.key)
+        if record.status in TERMINAL_TASK_STATES:
+            return await self.poll(identity)
+        return await self.wait(identity, timeout_seconds=timeout_seconds)
+
+    async def observe_submitted_job(self, job_id: str) -> ClientGetTaskResult | None:
+        """Resolve a serve-projected job handle via ONE observation, never a wait.
+
+        The non-blocking sibling of :meth:`wait_for_submitted_job`: a single
+        :meth:`poll` against the durable #1115 record regardless of its
+        current status -- ``relay_observe`` is a peek, never a drive-to-
+        terminal. Returns ``None`` when this store holds no record for the
+        job, so the caller falls through to relay's native follow tool exactly
+        as ``relay_wait`` already does. Without this, ``relay_observe`` always
+        forwarded to relay's own tool, which cannot route a locally-owned
+        SEP-2663 handle (no ``route_revision``) and answers with one of its
+        own untyped shapes (``job not found``, a ``route_revision`` schema
+        error, ...) instead of the job's real state.
+        """
+
+        wanted = str(job_id or "").strip()
+        if not wanted:
+            return None
+        record = next(
+            (row for row in self._record_store().list() if row.task_id == wanted),
+            None,
         )
+        if record is None:
+            return None
+        return await self.poll(RelayTaskIdentity.from_key(record.key))
 
     async def cancel(self, task: RelayTaskIdentity) -> Any:
         """Acknowledge cooperative cancellation while retaining reconnect state.

@@ -329,9 +329,7 @@ async def test_cluster_hint_stamps_relay_follow_tool_only(fake_relay: _FakeRelay
     composed once at construction -- and never touches the remote_* alias
     descriptions, which stay relay-owned and byte-untouched."""
 
-    federation = await RemoteMcpFederation.discover(
-        lambda: fake_relay, cluster_hint="ares-p5run2"
-    )
+    federation = await RemoteMcpFederation.discover(lambda: fake_relay, cluster_hint="ares-p5run2")
     gateway = build_gateway({}, remote_mcp_federation=federation)
 
     async with Client(gateway) as client:
@@ -533,6 +531,91 @@ async def test_relay_wait_forwards_foreign_handles_untouched() -> None:
     assert waited.data["result"] == "bounded-result"
 
 
+class _ObserveResolvingRelayClient(_FakeRelayClient):
+    """Fake relay whose transport owns a persisted record for one job, exercised
+    through ``relay_observe``'s ONE-SHOT resolution path rather than
+    ``relay_wait``'s drive-to-terminal.
+
+    ``call_relay_tool`` reproduces relay's own untyped ``relay_observe``
+    failure for a locally-owned SEP-2663 handle it cannot route (#1195-class:
+    "job not found" / a ``route_revision`` schema error) -- the exact
+    inconsistency this fix's local resolution is meant to bypass for a job
+    this process's own #1115 record already knows about.
+    """
+
+    def __init__(self, known_job_id: str) -> None:
+        super().__init__()
+        self.known_job_id = known_job_id
+        self.observed_calls: list[str] = []
+
+    async def observe_submitted_job(self, job_id: str) -> "_ResolvedTask | None":
+        self.observed_calls.append(job_id)
+        if job_id != self.known_job_id:
+            return None
+        return _ResolvedTask(status="working", result=None)
+
+    async def call_relay_tool(self, name: str, arguments: Mapping[str, Any]) -> CallToolResult:
+        assert name == "relay_observe"
+        job_id = str(arguments["job_id"])
+        return CallToolResult(
+            content=[TextContent(type="text", text=f"job not found: {job_id}")],
+            structuredContent={"error": f"job not found: {job_id}"},
+            isError=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_relay_observe_resolves_serve_owned_handle_via_task_record() -> None:
+    """relay_observe now gets the SAME local-record resolution relay_wait has
+    (previously it always forwarded to relay's native follow tool, which
+    cannot route a locally-owned handle and answers with one of its own
+    untyped shapes -- #1195-class 'job not found' / route_revision errors).
+    A known job_id resolves through the durable #1115 record via ONE
+    observation, never reaching relay's native tool at all.
+    """
+
+    relay = _ObserveResolvingRelayClient(known_job_id="job-1129")
+    relay.catalog = RelayRemoteMcpCatalog(
+        revision=relay.catalog.revision,
+        tools=relay.catalog.tools,
+        follow_tools={"relay_observe": _relay_observe_tool(), "relay_wait": _relay_wait_tool()},
+    )
+    federation = await RemoteMcpFederation.discover(lambda: relay)
+    gateway = build_gateway({}, remote_mcp_federation=federation)
+
+    async with Client(gateway) as client:
+        observed = await client.call_tool("relay_observe", {"job_id": "job-1129"})
+
+    assert relay.observed_calls == ["job-1129"]
+    assert observed.data["job"]["job_id"] == "job-1129"
+    assert observed.data["job"]["state"] == "working"
+    assert observed.data["job"]["terminal"] is False
+    assert observed.data["resolved_via"] == "serve_task_record"
+
+
+@pytest.mark.asyncio
+async def test_relay_observe_forwards_foreign_handles_untouched() -> None:
+    """A job_id with no persisted record falls through to relay's native
+    relay_observe, byte-identical to the pre-resolver behavior -- matching
+    relay_wait's own forwarding contract for a handle this store never
+    durably recorded."""
+
+    relay = _ObserveResolvingRelayClient(known_job_id="job-1129")
+    relay.catalog = RelayRemoteMcpCatalog(
+        revision=relay.catalog.revision,
+        tools=relay.catalog.tools,
+        follow_tools={"relay_observe": _relay_observe_tool(), "relay_wait": _relay_wait_tool()},
+    )
+    federation = await RemoteMcpFederation.discover(lambda: relay)
+    gateway = build_gateway({}, remote_mcp_federation=federation)
+
+    async with Client(gateway) as client:
+        with pytest.raises(ToolError, match="job not found: job-other"):
+            await client.call_tool("relay_observe", {"job_id": "job-other"})
+
+    assert relay.observed_calls == ["job-other"]
+
+
 def _relay_observe_tool() -> Tool:
     """relay_observe exactly as the live p5run2 relay advertises it (#1195).
 
@@ -592,9 +675,7 @@ async def test_cluster_hint_never_stamps_a_route_handle_follow_tool(
         follow_tools={"relay_observe": observe, "relay_wait": _relay_wait_tool()},
     )
 
-    federation = await RemoteMcpFederation.discover(
-        lambda: fake_relay, cluster_hint="ares-p5run2"
-    )
+    federation = await RemoteMcpFederation.discover(lambda: fake_relay, cluster_hint="ares-p5run2")
     gateway = build_gateway({}, remote_mcp_federation=federation)
 
     async with Client(gateway) as client:

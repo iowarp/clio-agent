@@ -629,3 +629,111 @@ async def test_submit_returns_a_plain_identity_even_when_create_reports_terminal
     assert fetched.result is not None
     assert fetched.result["isError"] is False
     assert fetched.result["structuredContent"] == {"outcome": "done", "idempotency_key": None}
+
+
+async def test_wait_for_submitted_job_resolves_terminal_retained_record_via_poll_not_wait(
+    relay_backend: _Backend,
+) -> None:
+    """FAILING-FIRST (#1205 retention regression): a RETRY of relay_wait on a
+    job whose local record already settled must resolve from that record's
+    own STATUS, never by re-entering wait()'s full lease-driven multi-round
+    drive.
+
+    Before #1205 (b99fce97), _poll_until_terminal dropped a task's #1115
+    record the instant it observed a terminal status, so this exact shape
+    (wait_for_submitted_job finding a record that is ALREADY terminal) could
+    never arise: a retry would find nothing locally and fall through to
+    relay's own native follow tool. #1205 retains the settled record instead
+    (matches AgentTask's dismissed-field semantics; removal is only an
+    explicit run_registry.dismiss_run) -- the relay-compute skill explicitly
+    tells an agent to retry relay_wait once on a transient transport error,
+    so this retry shape is not hypothetical.
+
+    wait_for_submitted_job must therefore branch on record.status: already
+    terminal resolves via ONE bounded poll(); anything else still drives
+    through wait(). Pre-fix, this test fails because the retry always calls
+    wait() regardless of the retained record's status.
+    """
+
+    async with _client(relay_backend) as relay:
+        task = await relay.submit("relay_run", {"delay": 0.05})
+        first = await relay.wait(task, timeout_seconds=15)
+        assert first.status == "completed"
+        settled = task_record_store().get(task.key)
+        assert settled is not None and settled.status == "completed"
+
+        calls: list[str] = []
+        real_poll = relay.poll
+        real_wait = relay.wait
+
+        async def spy_poll(identity: RelayTaskIdentity) -> Any:
+            calls.append("poll")
+            return await real_poll(identity)
+
+        async def spy_wait(identity: RelayTaskIdentity, *, timeout_seconds: Any = None) -> Any:
+            calls.append("wait")
+            return await real_wait(identity, timeout_seconds=timeout_seconds)
+
+        relay.poll = spy_poll  # type: ignore[method-assign]
+        relay.wait = spy_wait  # type: ignore[method-assign]
+
+        resolved = await relay.wait_for_submitted_job(task.job_id, timeout_seconds=15)
+
+    assert resolved is not None
+    assert resolved.status == "completed"
+    assert calls == ["poll"], (
+        "a retry against an ALREADY-TERMINAL retained record must resolve via a "
+        f"single poll(), never wait()'s lease-driven multi-round drive; got {calls!r}"
+    )
+
+
+async def test_wait_for_submitted_job_still_drives_a_genuinely_open_record_via_wait(
+    relay_backend: _Backend,
+) -> None:
+    """Sibling of the terminal-retry fix: a record that is NOT yet terminal
+    (the ordinary, unchanged case) still drives through the full wait()."""
+
+    async with _client(relay_backend) as relay:
+        task = await relay.submit("relay_run", {"delay": 1.0})
+        working = task_record_store().get(task.key)
+        assert working is not None and working.status != "completed"
+
+        calls: list[str] = []
+        real_poll = relay.poll
+        real_wait = relay.wait
+
+        async def spy_poll(identity: RelayTaskIdentity) -> Any:
+            calls.append("poll")
+            return await real_poll(identity)
+
+        async def spy_wait(identity: RelayTaskIdentity, *, timeout_seconds: Any = None) -> Any:
+            calls.append("wait")
+            return await real_wait(identity, timeout_seconds=timeout_seconds)
+
+        relay.poll = spy_poll  # type: ignore[method-assign]
+        relay.wait = spy_wait  # type: ignore[method-assign]
+
+        resolved = await relay.wait_for_submitted_job(task.job_id, timeout_seconds=15)
+
+    assert resolved is not None
+    assert resolved.status == "completed"
+    assert calls == ["wait"]
+
+
+async def test_observe_submitted_job_never_blocks_and_returns_none_for_unknown_job(
+    relay_backend: _Backend,
+) -> None:
+    """observe_submitted_job is relay_observe's non-blocking sibling: it takes
+    exactly one poll() regardless of status, and declines (returns None,
+    never raises) a job_id this store never recorded -- the caller then
+    forwards to relay's native follow tool untouched, matching
+    wait_for_submitted_job's own decline contract."""
+
+    async with _client(relay_backend) as relay:
+        assert await relay.observe_submitted_job("job-never-submitted") is None
+
+        task = await relay.submit("relay_run", {"delay": 1.0})
+        observed = await relay.observe_submitted_job(task.job_id)
+
+    assert observed is not None
+    assert observed.status == "working"

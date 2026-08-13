@@ -78,6 +78,10 @@ class RemoteMcpRelayClient(Protocol):
         """Resolve a projected handle via its durable task record, or ``None``."""
         ...
 
+    async def observe_submitted_job(self, job_id: str) -> Any | None:
+        """Resolve a projected handle via ONE observation of its durable record."""
+        ...
+
     async def list_job_artifacts(self, job_id: str) -> list[dict[str, Any]]:
         """List one relay job's indexed artifact records, sizes included.
 
@@ -148,10 +152,16 @@ _TASK_TO_JOB_STATE = {
 
 
 def _task_result_as_job_wire(job_id: str, resolved: Any) -> dict[str, Any]:
-    """Project a terminal task outcome into relay_wait's job-record shape.
+    """Project a durable task record's observed outcome into the job-record shape.
 
     ``resolved_via`` marks the divergence from relay's native path explicitly
     (no silent alternate route); state names map onto relay's job vocabulary.
+    ``terminal`` is read off ``resolved.status`` rather than assumed true --
+    this projection now also carries ``relay_observe``'s ONE-SHOT peek
+    (:meth:`~clio_agent.tools.relay_transport.RelayTransportClient.observe_submitted_job`),
+    whose status can legitimately still be in flight (``queued`` / ``working`` /
+    ``input_required``); only ``relay_wait``'s drive-to-terminal path is
+    guaranteed terminal here.
 
     ``resolved.result`` is the durable #1115 record's own inlined task result,
     which can carry the relay door's standard MCP dual emission one hop
@@ -169,7 +179,7 @@ def _task_result_as_job_wire(job_id: str, resolved: Any) -> dict[str, Any]:
         "job": {
             "job_id": job_id,
             "state": state,
-            "terminal": True,
+            "terminal": status in _TASK_TO_JOB_STATE,
         },
         "resolved_via": "serve_task_record",
     }
@@ -275,20 +285,34 @@ class _ProjectedRelayFollowTool(Tool):
     async def run(self, arguments: dict[str, Any]) -> ToolResult:
         """Resolve serve-owned handles via their task records; else forward.
 
-        A ``relay_wait`` on a job this process submitted resolves through the
-        durable #1115 record (``task_id == job_id``): projected receipts carry
-        no ``route_revision``, so relay's native follow path cannot route them
-        to a remote cluster. Handles from anywhere else forward to relay
+        Both ``relay_wait`` and ``relay_observe`` on a job this process
+        submitted resolve through the durable #1115 record (``task_id ==
+        job_id``): projected receipts carry no ``route_revision``, so relay's
+        native follow path cannot route them to a remote cluster -- calling it
+        for such a handle answers with one of relay's own untyped shapes
+        (``job not found``, a ``route_revision`` schema error, ...) instead of
+        the job's actual state. ``relay_wait`` drives the record to terminal
+        (:meth:`~.relay_transport.RelayTransportClient.wait_for_submitted_job`);
+        ``relay_observe`` takes ONE bounded peek at it
+        (:meth:`~.relay_transport.RelayTransportClient.observe_submitted_job`)
+        and never blocks. Handles from anywhere else forward to relay
         untouched, typed failures included.
         """
 
+        resolver_name = {
+            "relay_wait": "wait_for_submitted_job",
+            "relay_observe": "observe_submitted_job",
+        }.get(self._relay_name)
         async with self._client_factory() as relay:
-            if self._relay_name == "relay_wait":
+            if resolver_name is not None:
                 job_id = str((arguments or {}).get("job_id") or "").strip()
-                resolver = getattr(relay, "wait_for_submitted_job", None)
+                resolver = getattr(relay, resolver_name, None)
                 if job_id and callable(resolver):
-                    timeout = (arguments or {}).get("timeout_seconds")
-                    resolved = await resolver(job_id, timeout_seconds=timeout)
+                    if self._relay_name == "relay_wait":
+                        timeout = (arguments or {}).get("timeout_seconds")
+                        resolved = await resolver(job_id, timeout_seconds=timeout)
+                    else:
+                        resolved = await resolver(job_id)
                     if resolved is not None:
                         return ToolResult(
                             structured_content=_task_result_as_job_wire(job_id, resolved)
