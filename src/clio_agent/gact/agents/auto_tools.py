@@ -15,6 +15,10 @@ domain-tool budget (RULE 5), the same way ``load_skill`` and the child-delegatio
   deterministic-gate met?). There is deliberately NO ``set_goal`` / ``goal_clear`` tool: a
   goal is armed only by the user (/goal) or a declared skill-effect, never by the model
   (a self-armed halt is the self-grading anti-pattern, ⚑ RULE 1).
+* ``raise_alert_card`` (spotter-ai follow-on) — a GENERIC way for any spawned child agent
+  to raise a notification/action card into its PARENT session's transcript. Auto-attached
+  (not spotter-specific) so a spawned child never has to remember to declare it just to
+  notify its parent; spotter-ai's watcher is simply the first caller.
 
 Collecting them behind one seam keeps ``builders.py`` from re-listing the set (and re-importing
 each builder) at its two attach sites, so a fourth auto-tool lands here, not by growing the
@@ -25,6 +29,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from clio_agent.gact.action_cards import build_raise_alert_card_tool
 from clio_agent.gact.artifacts.proposals import build_create_artifact_tool
 from clio_agent.gact.autonomous_loop import build_loop_wakeup_tool
 from clio_agent.gact.cron_tools import build_cron_tools
@@ -47,4 +52,5 @@ def build_auto_react_tools(agent_def: Any) -> list[Any]:
         *build_cron_tools(),
         build_loop_wakeup_tool(),
         build_goal_status_tool(),
+        build_raise_alert_card_tool(agent_def),
     ]
