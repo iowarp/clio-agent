@@ -34,6 +34,8 @@ from fastapi.testclient import TestClient
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.action_cards import (
     ALERT_CARD_NO_PARENT_ERROR,
+    ALERT_CARD_PARENT_TRANSCRIPT_FROZEN,
+    ALERT_CARD_TASK_ROW_MISSING_ERROR,
     action_card_part,
     build_raise_alert_card_tool,
     emit_action_card_part,
@@ -132,16 +134,28 @@ def test_emit_with_no_active_turn_creates_visible_message_part(tmp_path: Path) -
 # --------------------------------------------------------------------------- #
 
 
-def _register_fake_child_task(app, *, parent_sid: str, expert_id: str = "spotter_watcher") -> AgentTask:
+def _register_fake_child_task(
+    app, *, parent_sid: str, expert_id: str = "spotter_watcher", blueprint_id: str = ""
+) -> AgentTask:
     """Mint a real child session + register a real AgentTask, without driving a
     turn (this test targets ``raise_alert_card``'s own logic, not the spawn
-    substrate — that is covered end-to-end in test_spotter_watcher.py)."""
+    substrate — that is covered end-to-end in test_spotter_watcher.py).
+
+    ``blueprint_id``, when given, mirrors ``turn_spawn.spawn_child_turn``'s
+    real behavior: it stamps the child's OWN ``active_agent_blueprint_id``
+    metadata (via ``session_scope_metadata``), the exact field
+    ``raise_alert_card`` reads for the card's branded ``source``.
+    """
 
     child = app.state.sessions.create(
         workspace_id="ws_default",
         parent_session_id=parent_sid,
         agent={"id": expert_id, "mode": "subagent"},
     )
+    if blueprint_id:
+        app.state.sessions.update(
+            child.id, metadata_patch={"active_agent_blueprint_id": blueprint_id}
+        )
     task = AgentTask(
         task_id="task_" + child.id.split("_")[-1],
         parent_session_id=parent_sid,
@@ -175,7 +189,7 @@ def test_raise_alert_card_from_child_emits_into_parent_with_discuss_handle(
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
         parent_sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
-        task = _register_fake_child_task(app, parent_sid=parent_sid)
+        task = _register_fake_child_task(app, parent_sid=parent_sid, blueprint_id="spotter-ai")
 
         tool = build_raise_alert_card_tool(AgentDef(id="spotter_watcher", title="Spotter Watcher"))
         result = _call_tool_as(
@@ -198,7 +212,10 @@ def test_raise_alert_card_from_child_emits_into_parent_with_discuss_handle(
         cards = [p for m in messages for p in m["parts"] if p["type"] == "action_card"]
         assert len(cards) == 1
         card = cards[0]
-        assert card["source"] == "spotter_watcher"
+        # source is the calling session's BRANDED blueprint identity ("spotter-ai"),
+        # never the bare expert id -- the card header must read as the product, not
+        # an internal expert name. agent_id stays the expert-attribution field.
+        assert card["source"] == "spotter-ai"
         assert card["agent_id"] == "spotter_watcher"
         assert card["severity"] == "critical"
         assert card["title"] == "Anomalous run"
@@ -223,6 +240,80 @@ def test_raise_alert_card_from_child_emits_into_parent_with_discuss_handle(
         assert not any(p["type"] == "action_card" for m in child_messages for p in m["parts"])
 
 
+def test_raise_alert_card_source_falls_back_to_expert_id_without_blueprint(
+    tmp_path: Path,
+) -> None:
+    """A calling session with no activated blueprint (a bare/loose expert) falls
+    back to the expert id for ``source`` -- never an empty branded identity."""
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        parent_sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        task = _register_fake_child_task(app, parent_sid=parent_sid)  # no blueprint_id
+
+        tool = build_raise_alert_card_tool(AgentDef(id="spotter_watcher", title="Spotter Watcher"))
+        _call_tool_as(app, task.child_session_id, tool, title="t", body="b")
+
+        messages = client.get(f"/v1/sessions/{parent_sid}/messages").json()["messages"]
+        cards = [p for m in messages for p in m["parts"] if p["type"] == "action_card"]
+        assert cards[0]["source"] == "spotter_watcher"
+
+
+def test_raise_alert_card_accepts_bare_string_stub_actions(tmp_path: Path) -> None:
+    """A model passing bare strings (``["address", "remove"]``) must not crash
+    the tool -- coerced into disabled stub buttons with an honest fixed reason."""
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        parent_sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        task = _register_fake_child_task(app, parent_sid=parent_sid)
+
+        tool = build_raise_alert_card_tool(AgentDef(id="spotter_watcher", title="Spotter Watcher"))
+        result = _call_tool_as(
+            app,
+            task.child_session_id,
+            tool,
+            title="t",
+            body="b",
+            stub_actions=["address", "remove"],
+        )
+        assert result["emitted"] is True
+
+        messages = client.get(f"/v1/sessions/{parent_sid}/messages").json()["messages"]
+        cards = [p for m in messages for p in m["parts"] if p["type"] == "action_card"]
+        actions = cards[0]["actions"]
+        assert actions[1] == {
+            "id": "address",
+            "label": "Address",
+            "enabled": False,
+            "behavior": {"kind": "stub", "reason": "not yet implemented"},
+        }
+        assert actions[2] == {
+            "id": "remove",
+            "label": "Remove",
+            "enabled": False,
+            "behavior": {"kind": "stub", "reason": "not yet implemented"},
+        }
+
+
+def test_raise_alert_card_reports_skipped_unsupported_stub_actions(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        parent_sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        task = _register_fake_child_task(app, parent_sid=parent_sid)
+
+        tool = build_raise_alert_card_tool(AgentDef(id="spotter_watcher", title="Spotter Watcher"))
+        result = _call_tool_as(
+            app, task.child_session_id, tool, title="t", body="b", stub_actions=[123, None]
+        )
+
+        assert result["emitted"] is True
+        assert result["skipped_stub_actions"] == [
+            {"value": "123", "reason": "unsupported_stub_action_type"},
+            {"value": "None", "reason": "unsupported_stub_action_type"},
+        ]
+
+
 def test_raise_alert_card_without_parent_returns_typed_error(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
@@ -235,6 +326,91 @@ def test_raise_alert_card_without_parent_returns_typed_error(tmp_path: Path) -> 
         # Never emitted anywhere, silently or otherwise.
         messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
         assert not any(p["type"] == "action_card" for m in messages for p in m["parts"])
+
+
+def test_raise_alert_card_with_parent_but_no_task_row_returns_distinct_typed_error(
+    tmp_path: Path,
+) -> None:
+    """A session that DOES have a parent_session_id (it was spawned) but whose
+    AgentTask row is missing (a race, or a pre-projection session) is a
+    DIFFERENT reality from having no parent at all -- distinct typed reason."""
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        parent_sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        child = app.state.sessions.create(workspace_id="ws_default", parent_session_id=parent_sid)
+        # Deliberately no AgentTask registered for `child`.
+
+        tool = build_raise_alert_card_tool(AgentDef(id="spotter_watcher", title="Spotter Watcher"))
+        result = _call_tool_as(app, child.id, tool, title="x", body="y")
+
+        assert result["error"] == ALERT_CARD_TASK_ROW_MISSING_ERROR
+
+
+# --------------------------------------------------------------------------- #
+# 3b. emit_action_card_part against a REAL live-turn ledger: lands when open,
+#     reports the typed drop when frozen (never a silent swallow).
+# --------------------------------------------------------------------------- #
+
+
+def _open_turn_ledger(app: Any, sid: str, turn_id: str = "turn_live") -> Any:
+    from clio_agent.gact.transcript import EventBusTranscriptPublisher
+
+    return app.state.turn_transcripts.open_turn(
+        sid, turn_id, EventBusTranscriptPublisher(app.state.bus, sid)
+    )
+
+
+def test_emit_while_parent_turn_is_live_lands_through_the_real_ledger(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        _open_turn_ledger(app, sid)
+
+        part = action_card_part(source="spotter-ai", severity="info", title="Live", body="b")
+        assert emit_action_card_part(app, sid, part) is True
+
+        messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        cards = [p for m in messages for p in m["parts"] if p["type"] == "action_card"]
+        assert len(cards) == 1
+        assert cards[0]["title"] == "Live"
+
+
+def test_emit_against_a_frozen_ledger_reports_typed_drop_not_silent(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        transcript = _open_turn_ledger(app, sid)
+        transcript.abandon()  # freeze without publishing -- the settle-race shape
+
+        part = action_card_part(source="spotter-ai", severity="info", title="Dropped", body="b")
+        assert emit_action_card_part(app, sid, part) is False
+
+        # Never silently landed anywhere.
+        messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        assert not any(p["type"] == "action_card" for m in messages for p in m["parts"])
+
+
+def test_raise_alert_card_against_a_frozen_parent_ledger_reports_typed_drop(
+    tmp_path: Path,
+) -> None:
+    """End to end through the tool: a frozen PARENT ledger never lies with an
+    unconditional ``emitted: true`` (finding: this used to be unconditional)."""
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        parent_sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        task = _register_fake_child_task(app, parent_sid=parent_sid)
+        _open_turn_ledger(app, parent_sid).abandon()
+
+        tool = build_raise_alert_card_tool(AgentDef(id="spotter_watcher", title="Spotter Watcher"))
+        result = _call_tool_as(app, task.child_session_id, tool, title="t", body="b")
+
+        assert result == {
+            "emitted": False,
+            "reason": ALERT_CARD_PARENT_TRANSCRIPT_FROZEN,
+            "session_id": parent_sid,
+        }
 
 
 # --------------------------------------------------------------------------- #

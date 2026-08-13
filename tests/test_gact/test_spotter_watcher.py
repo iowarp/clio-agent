@@ -35,12 +35,14 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from clio_agent.gact.agent_tasks import STATUS_CANCELLED, STATUS_RUNNING
+from clio_agent.gact.agent_tasks import STATUS_CANCELLED, STATUS_FAILED, STATUS_RUNNING, AgentTask
 from clio_agent.gact.app import build_app
+from clio_agent.gact.session_store import _append_session_message
 from clio_agent.gact.spotter_watcher import (
     WATCHER_RUN_LABEL,
     ensure_spotter_watcher,
 )
+from clio_agent.gact.types import ErrorInfo, Message
 
 # A spawned child's react expert resolves through the blueprint runtime; route
 # it to the test's host fake instead of a real (LM-bound) DSPy compile (#948 S4b).
@@ -155,7 +157,16 @@ def test_default_approval_mode_arms_nothing(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_second_patch_to_spotter_ai_does_not_double_spawn(tmp_path: Path, caplog) -> None:
+def test_second_identical_patch_to_spotter_ai_is_a_route_level_no_op(
+    tmp_path: Path, caplog
+) -> None:
+    """Adversarial-review fix: arming fires ONLY on a genuine TRANSITION into
+    spotter-ai (``sync_watcher_for_mode``), never on a repeat PATCH that leaves
+    the mode unchanged -- else a watcher whose OWN turn already settled would
+    get silently re-armed by an unrelated later PATCH (title/pin/model), a
+    fresh watcher re-detecting the SAME anomaly and double-firing the alert.
+    The route must not even CALL ensure_spotter_watcher a second time here."""
+
     app, root_path, _agent = _build_app_with_watcher(tmp_path)
     with TestClient(app) as client:
         wid = _make_workspace(client, root_path)
@@ -166,6 +177,9 @@ def test_second_patch_to_spotter_ai_does_not_double_spawn(tmp_path: Path, caplog
         first_tasks = app.state.agent_task_registry.for_parent(sid)
         assert len(first_tasks) == 1
 
+        # caplog accumulates for the WHOLE test, not just the `with` block below --
+        # clear so only r2's own logging is under test.
+        caplog.clear()
         with caplog.at_level("INFO", logger="clio_agent.gact.spotter_watcher"):
             r2 = client.patch(f"/v1/sessions/{sid}", json={"approval_mode": "spotter-ai"})
         assert r2.status_code == 200
@@ -173,9 +187,38 @@ def test_second_patch_to_spotter_ai_does_not_double_spawn(tmp_path: Path, caplog
         tasks = app.state.agent_task_registry.for_parent(sid)
         assert len(tasks) == 1, tasks
         assert tasks[0].task_id == first_tasks[0].task_id
-        # Still running (the slow agent hasn't settled) at both checkpoints — the
-        # idempotency check genuinely found a NON-TERMINAL task, not a lucky race.
+        # Still running (the slow agent hasn't settled) at both checkpoints.
         assert tasks[0].status == STATUS_RUNNING
+        # No arm/skip log AT ALL for the repeat PATCH -- the route never even
+        # reached ensure_spotter_watcher (mode unchanged: spotter-ai -> spotter-ai).
+        assert not any("spotter_watcher" in r.message for r in caplog.records), [
+            r.message for r in caplog.records
+        ]
+
+
+def test_ensure_spotter_watcher_called_directly_twice_is_still_idempotent(
+    tmp_path: Path, caplog
+) -> None:
+    """The lower-level idempotency check itself stays intact independent of the
+    route-level transition gate above -- exercised directly by e.g. the
+    fleet-retry watchdog's own re-arm path and any other future caller."""
+
+    app, root_path, _agent = _build_app_with_watcher(tmp_path)
+    with TestClient(app) as client:
+        wid = _make_workspace(client, root_path)
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "t", "workspace_id": wid, "approval_mode": "spotter-ai"},
+        ).json()["id"]
+        session = app.state.sessions.get(sid)
+        first_tasks = app.state.agent_task_registry.for_parent(sid)
+        assert len(first_tasks) == 1
+
+        with caplog.at_level("INFO", logger="clio_agent.gact.spotter_watcher"):
+            result = ensure_spotter_watcher(app, session)
+
+        assert result is not None and result.task_id == first_tasks[0].task_id
+        assert len(app.state.agent_task_registry.for_parent(sid)) == 1
         assert any(
             "spotter_watcher_skip" in r.message and "already_running" in r.message
             for r in caplog.records
@@ -285,6 +328,12 @@ def test_arm_failure_on_patch_also_logs_typed_and_route_still_succeeds(
 def test_ensure_spotter_watcher_builds_expected_taskspec(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The fake spawn below returns an AgentTask id never actually registered, so
+    # the post-arm fleet-retry watchdog's settle-wait would otherwise burn the
+    # full default 30s on a background thread; keep it fast (harmless either way
+    # since the watchdog is a daemon thread, but no reason to leave it hanging).
+    monkeypatch.setenv("CLIO_SPOTTER_FLEET_RETRY_SETTLE_TIMEOUT_S", "0.05")
+
     app = build_app(sessions_path=tmp_path / "s.json")
     captured: dict[str, Any] = {}
 
@@ -315,3 +364,203 @@ def test_ensure_spotter_watcher_is_a_no_op_off_spotter_mode(tmp_path: Path) -> N
     session = app.state.sessions.create(workspace_id="ws_default", approval_mode="ask")
     assert ensure_spotter_watcher(app, session) is None
     assert app.state.agent_task_registry.for_parent(session.id) == []
+
+
+# --------------------------------------------------------------------------- #
+# 6. cold-workspace-fleet race: bounded typed retry (live-integration finding)
+# --------------------------------------------------------------------------- #
+
+
+def _cold_fleet_error_message(child_sid: str, attempt: int) -> Message:
+    """A child's final assistant message shaped exactly like a REAL
+    ``_UnsupportedSessionAgent`` failure (turn.py's ``not_implemented`` mapping) —
+    the SPECIFIC reason lives at ``error_info.details.reason``, never on the
+    coarse ``AgentTask.error_reason`` (always ``"agent_error"``)."""
+
+    now = "2026-01-01T00:00:00+00:00"
+    return Message(
+        id=f"msg_final_{attempt}",
+        session_id=child_sid,
+        turn_id=f"turn_{attempt}",
+        role="assistant",
+        created_at=now,
+        updated_at=now,
+        error_info=ErrorInfo(
+            error="not_implemented",
+            message="Session agent cannot be executed yet.",
+            details={"reason": "custom_agent_tool_executor_unavailable"},
+        ),
+    )
+
+
+def test_cold_fleet_retry_eventually_yields_one_running_watcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """Live-integration finding: arming on a workspace whose fleet has never
+    come up fails the watcher's first (few) turn(s) typed
+    (``custom_agent_tool_executor_unavailable`` / ``custom_agent_tools_unavailable``).
+    The bounded retry watchdog must dismiss each failed attempt (never
+    lingering in the async tray) and keep re-spawning until the fleet comes up
+    -- monkeypatching the low-level spawn primitive to simulate cold-then-ready
+    stands in for the readiness probe the coordinator's brief describes, since
+    the REAL signal only ever surfaces on the spawned child's own settled turn."""
+
+    monkeypatch.setenv("CLIO_SPOTTER_FLEET_RETRY_BACKOFF_S", "0.05")
+    monkeypatch.setenv("CLIO_SPOTTER_FLEET_RETRY_SETTLE_TIMEOUT_S", "2.0")
+    monkeypatch.setenv("CLIO_SPOTTER_FLEET_RETRY_MAX_ATTEMPTS", "4")
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    calls = {"n": 0}
+    cold_task_ids: list[str] = []
+
+    def _fake_spawn_watcher(app_arg: Any, session: Any) -> AgentTask:
+        calls["n"] += 1
+        attempt = calls["n"]
+        now = "2026-01-01T00:00:00+00:00"
+        child = app_arg.state.sessions.create(
+            workspace_id=session.workspace_id,
+            parent_session_id=session.id,
+            agent={"id": "spotter_watcher", "mode": "subagent"},
+        )
+        if attempt < 3:
+            # Cold: the fleet was not ready -- fails EXACTLY the typed reason
+            # the watchdog is supposed to recognize and retry.
+            _append_session_message(app_arg, child.id, _cold_fleet_error_message(child.id, attempt))
+            task = AgentTask(
+                task_id=f"task_cold_{attempt}",
+                parent_session_id=session.id,
+                child_session_id=child.id,
+                agent_ref={"expert_id": "spotter_watcher", "requesting_expert_id": "main"},
+                run_label="SPOTTER AI",
+                status=STATUS_FAILED,
+                live_state=STATUS_FAILED,
+                error_reason="agent_error",
+                created_at=now,
+                updated_at=now,
+            )
+            cold_task_ids.append(task.task_id)
+        else:
+            # Ready: the fleet came up -- a normal running watcher.
+            task = AgentTask(
+                task_id="task_ready",
+                parent_session_id=session.id,
+                child_session_id=child.id,
+                agent_ref={"expert_id": "spotter_watcher", "requesting_expert_id": "main"},
+                run_label="SPOTTER AI",
+                status=STATUS_RUNNING,
+                live_state=STATUS_RUNNING,
+                created_at=now,
+                updated_at=now,
+            )
+        app_arg.state.agent_task_registry.register(task)
+        return task
+
+    monkeypatch.setattr("clio_agent.gact.spotter_watcher._spawn_watcher", _fake_spawn_watcher)
+
+    app_ = app
+    with TestClient(app_) as client:
+        with caplog.at_level("WARNING", logger="clio_agent.gact.spotter_watcher"):
+            sid = client.post(
+                "/v1/sessions", json={"title": "t", "approval_mode": "spotter-ai"}
+            ).json()["id"]
+
+            # The watchdog runs on a background thread; wait (bounded) for the
+            # retry campaign to land on the ready attempt.
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                live = [
+                    t
+                    for t in app_.state.agent_task_registry.for_parent(sid)
+                    if not t.is_terminal
+                ]
+                if live:
+                    break
+                time.sleep(0.05)
+
+        live_tasks = [t for t in app_.state.agent_task_registry.for_parent(sid) if not t.is_terminal]
+        assert len(live_tasks) == 1, live_tasks
+        assert live_tasks[0].task_id == "task_ready"
+        assert live_tasks[0].status == STATUS_RUNNING
+        assert calls["n"] == 3
+
+        # Every superseded cold attempt was dismissed -- never lingers in the tray.
+        from clio_agent.gact.run_registry import project_runs  # noqa: PLC0415
+
+        tray_ids = {row["task_id"] for row in project_runs(app_)}
+        for cold_id in cold_task_ids:
+            assert cold_id not in tray_ids, tray_ids
+        assert "task_ready" in tray_ids
+
+        assert any(
+            "spotter_watcher_arm_retry" in r.message and "reason=fleet_cold" in r.message
+            for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+
+def test_cold_fleet_retry_gives_up_typed_after_max_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """A workspace whose fleet NEVER comes up ready exhausts the bounded retry
+    budget and gives up with the typed ``fleet_never_ready`` reason -- never an
+    infinite retry loop, and no live task left behind."""
+
+    monkeypatch.setenv("CLIO_SPOTTER_FLEET_RETRY_BACKOFF_S", "0.05")
+    monkeypatch.setenv("CLIO_SPOTTER_FLEET_RETRY_SETTLE_TIMEOUT_S", "2.0")
+    monkeypatch.setenv("CLIO_SPOTTER_FLEET_RETRY_MAX_ATTEMPTS", "3")
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    calls = {"n": 0}
+
+    def _always_cold(app_arg: Any, session: Any) -> AgentTask:
+        calls["n"] += 1
+        attempt = calls["n"]
+        now = "2026-01-01T00:00:00+00:00"
+        child = app_arg.state.sessions.create(
+            workspace_id=session.workspace_id,
+            parent_session_id=session.id,
+            agent={"id": "spotter_watcher", "mode": "subagent"},
+        )
+        _append_session_message(app_arg, child.id, _cold_fleet_error_message(child.id, attempt))
+        task = AgentTask(
+            task_id=f"task_cold_{attempt}",
+            parent_session_id=session.id,
+            child_session_id=child.id,
+            agent_ref={"expert_id": "spotter_watcher", "requesting_expert_id": "main"},
+            run_label="SPOTTER AI",
+            status=STATUS_FAILED,
+            live_state=STATUS_FAILED,
+            error_reason="agent_error",
+            created_at=now,
+            updated_at=now,
+        )
+        app_arg.state.agent_task_registry.register(task)
+        return task
+
+    monkeypatch.setattr("clio_agent.gact.spotter_watcher._spawn_watcher", _always_cold)
+
+    app_ = app
+    with TestClient(app_) as client:
+        with caplog.at_level("WARNING", logger="clio_agent.gact.spotter_watcher"):
+            sid = client.post(
+                "/v1/sessions", json={"title": "t", "approval_mode": "spotter-ai"}
+            ).json()["id"]
+
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline and calls["n"] < 3:
+                time.sleep(0.05)
+            time.sleep(0.2)  # let the final give-up log land
+
+        assert calls["n"] == 3
+        assert [t for t in app_.state.agent_task_registry.for_parent(sid) if not t.is_terminal] == []
+        assert any(
+            "spotter_watcher_arm_failed" in r.message and "reason=fleet_never_ready" in r.message
+            for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+        # Every failed attempt (including the last, given-up-on one) is dismissed --
+        # the tray shows zero rows for this campaign, never a pile of failures.
+        from clio_agent.gact.run_registry import project_runs  # noqa: PLC0415
+
+        tray_ids = {row["task_id"] for row in project_runs(app_)}
+        for n in range(1, calls["n"] + 1):
+            assert f"task_cold_{n}" not in tray_ids, tray_ids
