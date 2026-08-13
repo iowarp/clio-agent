@@ -44,7 +44,7 @@ pytestmark = pytest.mark.usefixtures("host_agent_executor")
 # genuinely-unclassifiable non-read call (writes live behind the OS fence, not a catalog tag).
 _FS_WRITE = "fs_apply_edit_write"
 _UNCLASSIFIED = "shell.exec"
-_ALL_MODES = ("ask", "auto-edits", "bypass", "ai-review")
+_ALL_MODES = ("ask", "auto-edits", "bypass", "ai-review", "spotter-ai")
 
 
 def _wait_for_row(app, *, timeout: float = 2.5) -> dict:
@@ -132,6 +132,18 @@ def test_default_decision_auto_edits_allows_only_writes() -> None:
 def test_default_decision_ask_and_ai_review_prompt() -> None:
     assert default_decision("ask", "tool", _FS_WRITE, {}) == "ask"
     assert default_decision("ai-review", "tool", _FS_WRITE, {}) == "ask"
+
+
+def test_default_decision_spotter_ai_behaves_exactly_like_ask() -> None:
+    """spotter-ai ARMS a watcher child (gact/spotter_watcher.py) but grants no
+    auto-approval axis of its own — pinned EXPLICITLY in default_decision, not by
+    fall-through accident (see the branch's docstring/comment)."""
+
+    for name, args in ((_FS_WRITE, {"filepath": "x", "content": "y"}), (_UNCLASSIFIED, {})):
+        assert default_decision("spotter-ai", "tool", name, args) == default_decision(
+            "ask", "tool", name, args
+        )
+    assert default_decision("spotter-ai", "tool", _FS_WRITE, {}) == "ask"
 
 
 # --------------------------------------------------------------------------- #
