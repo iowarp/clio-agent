@@ -82,6 +82,7 @@ __all__ = [
     "session_reuse_enabled",
     "transient_transport_error_message",
     "transient_transport_error_types",
+    "stream_scope_for",
     "transport_failure_payload",
     "_streaming_chunk",
     # blocking-path pool (re-exported from claude_code_sdk_pool for the seams)
@@ -431,15 +432,33 @@ class ClaudeStreamClientPool:
     """
 
     def __init__(self) -> None:
-        self._entries: dict[tuple[str, str | None, str | None], _StreamClientEntry] = {}
+        self._entries: dict[tuple[str, str | None, str | None, str], _StreamClientEntry] = {}
         self._guard = threading.Lock()
         self._construct_count = 0
 
     def entry_for(
-        self, *, model: str, cwd: str | None, thinking: dict[str, Any] | None
+        self,
+        *,
+        model: str,
+        cwd: str | None,
+        thinking: dict[str, Any] | None,
+        scope: str | None = None,
     ) -> _StreamClientEntry:
-        """Return (creating if needed) the pooled entry for the transport params."""
-        key = (model, cwd, thinking_key(thinking))
+        """Return (creating if needed) the pooled entry for the transport params.
+
+        ``scope`` is the per-forward stateful scope token and MUST be passed for
+        every ENGAGED (delta-capable) send: a delta rides the conversation state of
+        the connection it is sent on, so two concurrent expert loops multiplexing
+        delta runs over ONE connection cross their conversations — the AGENT-COPPER12
+        defect, where a child expert's delta send under its own ``session_id``
+        returned the PARENT's continuation (the SDK connection, not the per-call
+        ``session_id``, is the real conversation boundary for resumed sends).
+        Scope-keyed entries give each stateful loop its own connection; the loop's
+        many iterations still amortize the one connect (#891). Non-engaged sends
+        (full prompt under a fresh ``session_id``) stay on the shared base entry —
+        the per-call boundary IS proven for those.
+        """
+        key = (model, cwd, thinking_key(thinking), scope or "")
         with self._guard:
             entry = self._entries.get(key)
             if entry is None:
@@ -448,6 +467,30 @@ class ClaudeStreamClientPool:
                 )
                 self._entries[key] = entry
             return entry
+
+    def release(self, scope: str) -> None:
+        """Close and drop every entry keyed to ``scope`` (stateful_scope teardown).
+
+        Called by :func:`clio_agent.providers.stateful_common.stateful_scope` on
+        loop end via ``register_scope_registry`` — a loop's connection never
+        outlives the loop (#900). Best-effort: a teardown failure is logged by the
+        entry, never raised into the forward's ``finally``.
+        """
+        if not scope:
+            return
+        with self._guard:
+            keys = [key for key in self._entries if key[3] == scope]
+            entries = [self._entries.pop(key) for key in keys]
+        for entry in entries:
+            with contextlib.suppress(Exception):
+                entry.close_blocking()
+
+    def mark_reset(self, scope: str, reason: str) -> None:
+        """Scope-registry protocol no-op: a prefix reset keeps the connection.
+
+        An ARC-op reset means the NEXT send is a full send under a fresh
+        ``session_id`` — safe on the same connection; only scope END closes it.
+        """
 
     def bump_construct(self) -> None:
         """Increment the connect counter (called once per real client connect)."""
@@ -481,8 +524,30 @@ class ClaudeStreamClientPool:
             self._construct_count = 0
 
 
+def stream_scope_for(send: Any) -> str | None:
+    """The pool-entry scope for one send: its stateful scope IFF the send is engaged.
+
+    An engaged send is delta-capable, so it must ride its own scope-keyed
+    connection (see :meth:`ClaudeStreamClientPool.entry_for`); a non-engaged send
+    (full prompt, fresh ``session_id``) shares the base entry.
+    """
+    if send is None or not getattr(send, "engaged", False):
+        return None
+    token = getattr(send, "scope_token", None)
+    return str(token) if token is not None else None
+
+
 _STREAM_CLIENT_POOL = ClaudeStreamClientPool()
 atexit.register(_STREAM_CLIENT_POOL.close_blocking)
+
+# Scope-end teardown seam: the pool implements the scope-registry protocol
+# (``release`` / ``mark_reset``), so a react forward's scope exit closes the
+# forward's own stateful connection (see ``entry_for``'s scope keying).
+from clio_agent.providers.stateful_common import (
+    register_scope_registry as _register_scope,  # noqa: E402
+)
+
+_register_scope(_STREAM_CLIENT_POOL)  # type: ignore[arg-type]  # duck-typed scope-registry protocol
 
 
 def _reset_sessions_for_tests() -> None:

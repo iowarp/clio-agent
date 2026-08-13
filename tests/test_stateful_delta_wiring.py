@@ -282,3 +282,85 @@ def test_tier1_shaped_forward_deltas_on_call_two(monkeypatch: pytest.MonkeyPatch
         assert plan2.prefix_len == 2
         assert plan2.messages == _m("b")  # only the appended tail is sent
     cst.codex_stateful_registry().reset_for_tests()
+
+
+# --------------------------------------------------------------------------- #
+# T4 — scope-keyed stream connections (the AGENT-COPPER12 cross-conversation   #
+# defect): concurrent expert loops must never multiplex ENGAGED (delta-capable)#
+# sends over one pooled SDK connection — the connection, not the per-call      #
+# session_id, is the real conversation boundary for resumed sends.             #
+# --------------------------------------------------------------------------- #
+def test_stream_pool_isolates_engaged_scopes() -> None:
+    """Distinct stateful scopes get distinct pooled connections; base is shared.
+
+    **Sabotage:** drop ``scope`` from the pool key -> both scopes share one entry
+    -> a child expert's delta rides the parent's conversation -> red.
+    """
+    from clio_agent.providers.claude_code_sessions import ClaudeStreamClientPool
+
+    pool = ClaudeStreamClientPool()
+    try:
+        base_one = pool.entry_for(model="m", cwd=None, thinking=None)
+        base_two = pool.entry_for(model="m", cwd=None, thinking=None, scope=None)
+        scope_a = pool.entry_for(model="m", cwd=None, thinking=None, scope="loop-a")
+        scope_a2 = pool.entry_for(model="m", cwd=None, thinking=None, scope="loop-a")
+        scope_b = pool.entry_for(model="m", cwd=None, thinking=None, scope="loop-b")
+        assert base_one is base_two  # non-engaged sends share the base connection
+        assert scope_a is scope_a2  # one connection per loop, reused across its calls
+        assert scope_a is not base_one
+        assert scope_b is not scope_a
+    finally:
+        pool.close_blocking()
+
+
+def test_stream_pool_releases_scope_entries_on_scope_exit() -> None:
+    """``stateful_scope`` exit closes the loop's own connection; base survives.
+
+    The registered-pool seam: the process singleton implements the scope-registry
+    protocol, so the react forward's scope teardown drops the forward's stateful
+    connection (#900 -- a loop's session never outlives the loop).
+    **Sabotage:** unregister the pool (or no-op ``release``) -> the entry persists
+    across loops -> red.
+    """
+    from clio_agent.providers.claude_code_sessions import _STREAM_CLIENT_POOL
+
+    with stateful_scope("loop-rel"):
+        held = _STREAM_CLIENT_POOL.entry_for(model="m", cwd=None, thinking=None, scope="loop-rel")
+        again = _STREAM_CLIENT_POOL.entry_for(model="m", cwd=None, thinking=None, scope="loop-rel")
+        assert held is again
+    fresh = _STREAM_CLIENT_POOL.entry_for(model="m", cwd=None, thinking=None, scope="loop-rel")
+    assert fresh is not held  # the scope's connection was closed+dropped on exit
+    _STREAM_CLIENT_POOL.release("loop-rel")
+
+
+def test_stream_scope_derivation_follows_engagement() -> None:
+    """Engaged sends carry their scope to the pool; full/fresh sends stay base.
+
+    **Sabotage:** route every send to the base entry (ignore ``engaged``) -> red.
+    """
+    from clio_agent.providers.claude_code_sessions import stream_scope_for
+    from clio_agent.providers.claude_code_stateful import StatefulSend
+
+    engaged = StatefulSend(
+        payload="p",
+        session_id="s",
+        mode="delta",
+        reason=None,
+        delta_chars=1,
+        engaged=True,
+        session_key=("sc", "m", None, None),
+        scope_token="sc",
+        call_id="c",
+    )
+    inert = StatefulSend(
+        payload="p",
+        session_id="s2",
+        mode="full",
+        reason=None,
+        delta_chars=1,
+        engaged=False,
+        call_id="c2",
+    )
+    assert stream_scope_for(engaged) == "sc"
+    assert stream_scope_for(inert) is None
+    assert stream_scope_for(None) is None

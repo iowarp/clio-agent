@@ -45,6 +45,7 @@ from clio_agent.providers.claude_code_sessions import (
     _SdkSessionPool,
     _streaming_chunk,
     session_reuse_enabled,
+    stream_scope_for,
     transient_transport_error_message,
     transient_transport_error_types,
 )
@@ -214,8 +215,14 @@ async def _astream_sdk(
     if session_reuse_enabled():
         # Pooled connection (connect reused, hosted on the entry's own loop-thread so
         # it survives the per-call asyncio.run() loops). The entry's query lock
-        # serialises the query→receive cycle.
-        entry = _STREAM_CLIENT_POOL.entry_for(model=model, cwd=cwd, thinking=thinking)
+        # serialises the query→receive cycle. An ENGAGED (delta-capable) send rides
+        # its own scope-keyed connection — the connection, not the per-call
+        # ``session_id``, is the real conversation boundary for resumed sends, so
+        # concurrent expert loops must never multiplex delta runs on one client
+        # (AGENT-COPPER12: a child's delta returned the parent's continuation).
+        entry = _STREAM_CLIENT_POOL.entry_for(
+            model=model, cwd=cwd, thinking=thinking, scope=stream_scope_for(send)
+        )
         source = entry.stream(
             payload=payload,
             session_id=session_id,
