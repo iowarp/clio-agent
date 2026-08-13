@@ -7,12 +7,9 @@ ack-only cancellation through #1115's named task requests and process-local leas
 Timeline events and artifact bytes use relay's authenticated HTTP door; SSE is an
 observation channel and never becomes a second task-state driver.
 
-Relay accepts an ``idempotency_key`` tool argument, so callers can supply a stable
-client token when retry de-duplication is intentional.  Omitting it preserves relay's
-documented fresh-run behavior and the exact #1115 residual: a crash after relay
-admission but before the returned task id is durably recorded cannot be rediscovered
-because SEP-2663 has no ``tasks/list``.  The shared durability seam keeps that window
-minimal and fails loudly with ``mcp_task_record_not_durable`` if the write itself fails.
+Relay accepts an ``idempotency_key`` tool argument (session-scoped here; see
+``relay_contract.session_scoped_idempotency_key``). The shared durability seam keeps
+the #1115 crash window minimal and fails loudly with ``mcp_task_record_not_durable``.
 """
 
 from __future__ import annotations
@@ -65,6 +62,7 @@ from clio_agent.tools.relay_contract import (
     RelayTransportContractError,
     decode_sse_payload,
     raise_inline_submission,
+    session_scoped_idempotency_key,
     validate_result,
     validate_submit_arguments,
 )
@@ -109,26 +107,6 @@ __all__ = [
     "relay_transport_from_env",
     "resolve_relay_transport_config",
 ]
-
-
-def _session_scoped_idempotency_key(key: str) -> str:
-    """Namespace a caller-minted idempotency key by the active gact session.
-
-    The relay's idempotency ledger is global and durable: two different agent
-    SESSIONS naturally mint the same human-obvious key for the same operation
-    (``describe-search-lammps-...``), and the differing owner identity in the
-    payload turns the replay into a hard 409 the model cannot foresee or avoid.
-    Prefixing with the gact session id keeps within-session retry dedupe intact
-    while making cross-session collisions impossible by construction. Callers
-    outside a gact session (harness, CLI, tests) keep their raw key.
-    """
-    try:
-        from clio_agent.gact.context import active_session_id  # noqa: PLC0415
-
-        session_id = active_session_id() or ""
-    except Exception:  # noqa: BLE001 - session context is optional for this transport
-        session_id = ""
-    return f"{session_id}-{key}" if session_id else key
 
 
 @dataclass(frozen=True)
@@ -202,12 +180,8 @@ class RelayTransportClient:
         owner_session_generation_id: str | None = None,
         session_id: str | None = None,
         store: TaskRecordStore | None = None,
-        # A single relay RPC (``tools/call`` create, ``tasks/get`` poll) travels
-        # over a real SSH tunnel to a remote host and observed live round trips
-        # of 30-100+s are routine, not exceptional — a 30s default starved both
-        # the create call in ``JarvisJobs._bounded`` and this client's own
-        # ``poll()``/``tasks/get`` loop before the operation had a real chance to
-        # finish. 120s keeps individual RPCs bounded while matching reality.
+        # Relay RPCs ride a real SSH tunnel; 30-100+s round trips are routine,
+        # so 120s bounds an RPC without starving live creates/polls.
         request_timeout_seconds: float = 120.0,
     ) -> None:
         token = api_token if api_token is not None else os.getenv(RELAY_API_TOKEN_ENV)
@@ -300,7 +274,7 @@ class RelayTransportClient:
                 )
             payload["idempotency_key"] = idempotency_key
         if payload.get("idempotency_key") is not None:
-            payload["idempotency_key"] = _session_scoped_idempotency_key(
+            payload["idempotency_key"] = session_scoped_idempotency_key(
                 str(payload["idempotency_key"])
             )
 

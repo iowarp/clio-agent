@@ -753,7 +753,9 @@ def test_idempotency_key_is_scoped_by_active_gact_session(monkeypatch) -> None:
     same key with different owner payloads -> relay 409 -> red.
     """
     from clio_agent.gact import context as gact_context
-    from clio_agent.tools.relay_transport import _session_scoped_idempotency_key
+    from clio_agent.tools.relay_contract import (
+        session_scoped_idempotency_key as _session_scoped_idempotency_key,
+    )
 
     token = gact_context.set_session_id("sess_pin123")
     try:
@@ -767,6 +769,8 @@ def test_idempotency_key_is_scoped_by_active_gact_session(monkeypatch) -> None:
 
 def test_idempotency_key_unchanged_without_session_context() -> None:
     """Session-less callers submit their key verbatim (harness/CLI parity)."""
-    from clio_agent.tools.relay_transport import _session_scoped_idempotency_key
+    from clio_agent.tools.relay_contract import (
+        session_scoped_idempotency_key as _session_scoped_idempotency_key,
+    )
 
     assert _session_scoped_idempotency_key("l2real-run-42") == "l2real-run-42"

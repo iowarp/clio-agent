@@ -23,11 +23,19 @@ from clio_agent.tools.jarvis_jobs import (
     JarvisJobError,
     JarvisJobs,
     JarvisRunHandle,
-    _execution_projection,
-    _raise_remote_call_failure,
-    _structured_payload,
-    _terminal_payload,
     resolve_jarvis_door_tool_name,
+)
+from clio_agent.tools.jarvis_result_contract import (
+    execution_projection as _execution_projection,
+)
+from clio_agent.tools.jarvis_result_contract import (
+    raise_remote_call_failure as _raise_remote_call_failure,
+)
+from clio_agent.tools.jarvis_result_contract import (
+    structured_payload as _structured_payload,
+)
+from clio_agent.tools.jarvis_result_contract import (
+    terminal_payload as _terminal_payload,
 )
 from clio_agent.tools.mcp_task_records import TaskKey
 from clio_agent.tools.relay_transport import (

@@ -25,9 +25,14 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from clio_agent import conf
 from clio_agent.gact.agent_blueprints import (
+    _BLUEPRINT_ROOT_NAME,
+    _DEFAULT_BOOTSTRAP_ENV,
     DEFAULT_AGENT_BLUEPRINT_ID,
+    DEFAULT_REGISTRY_COMMIT,
     DEFAULT_REGISTRY_REF,
+    _install_root,
     default_registry_install_source,
     default_registry_url,
     install_agent_blueprint,
@@ -36,6 +41,250 @@ from clio_agent.gact.agent_blueprints import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def ensure_default_registry_bootstrap(
+    *,
+    home: Path | None = None,
+    cwd: Path | None = None,
+) -> str:
+    """Ensure the WHOLE default registry set is installed (all of marketplace main).
+
+    The registry is the shipped standard library, not a catalog to shop from
+    (owner ruling 2026-08-13): first-run installs every valid pack in the
+    registry, and when the registry source is a local checkout (the dev
+    submodule) each boot cheaply installs any pack the registry has gained
+    since. The #948 S4b staleness evaluation of the default blueprint is
+    unchanged. Returns an empty string on success or when bootstrap is
+    disabled, otherwise a human-readable diagnostic that discovery surfaces as
+    a disabled blueprint row instead of silently falling back.
+    """
+
+    import os as _os  # noqa: PLC0415 - keep the moved body byte-stable
+
+    if conf.resolve(
+        "agents.disable_default_registry_bootstrap",
+        env=_DEFAULT_BOOTSTRAP_ENV,
+        default=False,
+        cast=conf.as_bool,
+    ):
+        return ""
+    home = home or Path.home()
+    cwd = cwd or Path(_os.getcwd())
+    pinned = DEFAULT_REGISTRY_COMMIT.strip()
+    source = default_registry_install_source()
+    root = _install_root(home=home, cwd=cwd, scope="global") / DEFAULT_AGENT_BLUEPRINT_ID
+    sync_diagnostic = sync_local_registry_packs(source=source, home=home, cwd=cwd, pinned=pinned)
+    if (root / _BLUEPRINT_ROOT_NAME).exists():
+        # #948 S4b upgrade path: an installed-but-invalid default blueprint (a
+        # pre-migration chain_of_thought/predict root disabled by validation) is
+        # a dead end that never self-heals.
+        return (
+            evaluate_installed_default_registry(home=home, cwd=cwd, root=root, pinned=pinned)
+            or sync_diagnostic
+        )
+    try:
+        result = install_agent_blueprint(
+            source=source,
+            scope="global",
+            cwd=cwd,
+            home=home,
+            ref=DEFAULT_REGISTRY_REF,
+            blueprint_id="",
+            pinned_commit=pinned,
+            skip_invalid=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        target = pinned or DEFAULT_REGISTRY_REF
+        return f"unable to install default registry {default_registry_url()}@{target}: {exc}"
+    if not (root / _BLUEPRINT_ROOT_NAME).exists():
+        skipped = {
+            str(row.get("id")): "; ".join(row.get("validation_errors") or [])
+            for row in result.get("skipped") or []
+            if isinstance(row, dict)
+        }
+        detail = skipped.get(DEFAULT_AGENT_BLUEPRINT_ID) or "not present in the registry"
+        return (
+            f"default registry install from {default_registry_url()} did not produce "
+            f"{DEFAULT_AGENT_BLUEPRINT_ID}: {detail}"
+        )
+    return sync_diagnostic
+
+
+def update_installed_agent_blueprint(
+    *,
+    blueprint_id: str,
+    scope: str,
+    cwd: Path,
+    home: Path | None = None,
+) -> dict:
+    """Re-install one blueprint from its recorded install source (lifecycle op)."""
+
+    root = _install_root(home=home or Path.home(), cwd=cwd, scope=scope) / blueprint_id
+    metadata = read_install_metadata(root)
+    source = str(metadata.get("source") or "").strip()
+    if not source:
+        raise ValueError(f"agent blueprint {blueprint_id!r} has no install source metadata")
+    return install_agent_blueprint(
+        source=source,
+        scope=scope,  # type: ignore[arg-type]
+        cwd=cwd,
+        home=home,
+        ref=str(metadata.get("ref") or ""),
+        blueprint_id=blueprint_id,
+    )
+
+
+def uninstall_agent_blueprint(
+    *,
+    blueprint_id: str,
+    scope: str,
+    cwd: Path,
+    home: Path | None = None,
+) -> dict:
+    """Remove one installed blueprint; a global uninstall is tombstoned as durable.
+
+    The tombstone is what keeps :func:`sync_local_registry_packs` from
+    resurrecting the pack on the next boot (review 2026-08-13 blocker — a
+    delete that silently undoes itself on the next discovery call).
+    """
+
+    import shutil as _shutil  # noqa: PLC0415
+
+    home = home or Path.home()
+    root = _install_root(home=home, cwd=cwd, scope=scope) / blueprint_id
+    if not root.exists():
+        raise FileNotFoundError(f"installed agent blueprint not found: {blueprint_id}")
+    _shutil.rmtree(root)
+    if scope == "global":
+        tombstones = read_uninstalled_tombstones(home=home, cwd=cwd)
+        tombstones.add(blueprint_id)
+        write_uninstalled_tombstones(tombstones, home=home, cwd=cwd)
+    return {"uninstalled": {"id": blueprint_id, "scope": scope, "root": str(root)}}
+
+
+def uninstalled_tombstones_path(*, home: Path, cwd: Path) -> Path:
+    """The per-user ledger of blueprint ids the USER uninstalled (sync must skip)."""
+
+    return _install_root(home=home, cwd=cwd, scope="global") / ".uninstalled.json"
+
+
+def read_uninstalled_tombstones(*, home: Path, cwd: Path) -> set[str]:
+    """Blueprint ids the user uninstalled — the registry sync never resurrects these."""
+
+    import json as _json  # noqa: PLC0415
+
+    path = uninstalled_tombstones_path(home=home, cwd=cwd)
+    try:
+        payload = _json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return set()
+    except Exception:  # noqa: BLE001 - a corrupt ledger must not break discovery
+        logger.warning("uninstall tombstone ledger unreadable path=%s", path)
+        return set()
+    ids = payload.get("uninstalled") if isinstance(payload, dict) else payload
+    if not isinstance(ids, list):
+        return set()
+    return {str(item) for item in ids if str(item).strip()}
+
+
+def write_uninstalled_tombstones(ids: set[str], *, home: Path, cwd: Path) -> None:
+    """Persist the uninstall ledger (created on first uninstall, pruned on install)."""
+
+    import json as _json  # noqa: PLC0415
+
+    path = uninstalled_tombstones_path(home=home, cwd=cwd)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_json.dumps({"uninstalled": sorted(ids)}, indent=2), encoding="utf-8")
+
+# The per-boot registry sync is boot semantics, not per-request semantics: the
+# result cannot change within one process (the submodule does not move under a
+# running serve), and discovery calls it on every request. Gate it to once per
+# process; tests reset via :func:`reset_registry_sync_for_tests`.
+_SYNC_COMPLETED_FOR: set[tuple[str, str]] = set()
+
+
+def reset_registry_sync_for_tests() -> None:
+    """Clear the once-per-process sync gate (test isolation)."""
+
+    _SYNC_COMPLETED_FOR.clear()
+
+
+def sync_local_registry_packs(*, source: str, home: Path, cwd: Path, pinned: str) -> str:
+    """Install registry packs missing from the global root (local-path sources only).
+
+    A local registry checkout (the dev submodule) makes enumeration free, so a
+    pack added to the registry after the original bootstrap (the
+    ``earthscope-flat`` case: added to main 2026-08-05, box enumerated 07-01)
+    installs on the next boot instead of never. Remote (git URL) sources skip
+    this — their set is reconciled on first-run and manual installs, never via
+    a per-boot network fetch. Guarantees:
+
+    * only MISSING ids install — an installed pack is never reinstalled here
+      (no clobbering of local edits, no downgrades from a stale submodule);
+    * a pack the USER uninstalled (the tombstone ledger) is never resurrected;
+    * the whole body is failure-isolated: any error is a logged, returned
+      diagnostic, never an exception into discovery (every blueprint route sits
+      downstream of this call);
+    * runs once per process per (source, install root) — boot semantics.
+    """
+
+    from clio_agent.gact.agent_blueprints import (  # noqa: PLC0415 - cycle-free at call time
+        _install_candidates,
+        parse_agent_blueprint_root,
+    )
+
+    try:
+        source_path = Path(source).expanduser()
+        if not source_path.exists() or not source_path.is_dir():
+            return ""
+        install_root = _install_root(home=home, cwd=cwd, scope="global")
+        gate_key = (str(source_path), str(install_root))
+        if gate_key in _SYNC_COMPLETED_FOR:
+            return ""
+        tombstones = read_uninstalled_tombstones(home=home, cwd=cwd)
+        failures: list[str] = []
+        for candidate in _install_candidates(source_path):
+            parsed = parse_agent_blueprint_root(candidate, scope="install")
+            if not parsed.enabled:
+                continue
+            if parsed.id in tombstones:
+                logger.info(
+                    "registry_pack_skipped reason=user_uninstalled id=%s", parsed.id
+                )
+                continue
+            if (install_root / parsed.id / _BLUEPRINT_ROOT_NAME).exists():
+                continue
+            try:
+                install_agent_blueprint(
+                    source=source,
+                    scope="global",
+                    cwd=cwd,
+                    home=home,
+                    ref=DEFAULT_REGISTRY_REF,
+                    blueprint_id=parsed.id,
+                    pinned_commit=pinned,
+                )
+                logger.info(
+                    "registry_pack_installed reason=missing_from_install_root id=%s source=%s",
+                    parsed.id,
+                    source,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "registry_pack_install_failed id=%s source=%s error=%r",
+                    parsed.id,
+                    source,
+                    exc,
+                )
+                failures.append(f"{parsed.id}: {exc}")
+        _SYNC_COMPLETED_FOR.add(gate_key)
+        if failures:
+            return "unable to install registry pack(s): " + "; ".join(failures)
+        return ""
+    except Exception as exc:  # noqa: BLE001 - discovery must never die on registry sync
+        logger.warning("registry_sync_failed source=%s error=%r", source, exc)
+        return f"registry sync failed: {exc}"
 
 
 def evaluate_installed_default_registry(

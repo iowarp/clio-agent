@@ -296,6 +296,12 @@ def allow_pytest_tmp_path(tmp_path, monkeypatch):
 
     xdg_root = tmp_path / "xdg"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_root))
+    # CLIO_USER_DIR is the only override platformdirs honors on EVERY OS —
+    # XDG alone is a no-op on Windows, which let route-level writes (the
+    # blueprint-sources registry) land in the real %LOCALAPPDATA% (~100 dead
+    # pytest fixture rows found 2026-08-13). Point it at the same tree the XDG
+    # layout resolves to so both resolution paths agree.
+    monkeypatch.setenv("CLIO_USER_DIR", str(xdg_root / "clio-agent"))
 
     # Union tmp_path with any dev-shell CLIO_ALLOWED_ROOTS, then build the FILE
     # value from it and DELETE the stale env var so the file is authoritative.

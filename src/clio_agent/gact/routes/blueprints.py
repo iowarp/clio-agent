@@ -43,8 +43,7 @@ Handlers reach ``app.state`` directly and never import :mod:`clio_agent.gact.app
 
 from __future__ import annotations
 
-import hashlib
-import json
+import logging
 import os
 import subprocess
 import tempfile
@@ -62,6 +61,15 @@ from clio_agent.gact.agent_blueprint_files import (
     list_blueprint_files,
     resolve_agent_blueprint_root,
     resolve_blueprint_file_path,
+)
+from clio_agent.gact.agent_blueprint_sources import (
+    load_agent_blueprint_sources as _load_agent_blueprint_sources,
+)
+from clio_agent.gact.agent_blueprint_sources import (
+    save_agent_blueprint_sources as _save_agent_blueprint_sources,
+)
+from clio_agent.gact.agent_blueprint_sources import (
+    source_registry_id as _source_registry_id,
 )
 from clio_agent.gact.agent_blueprints import (
     DEFAULT_AGENT_BLUEPRINT_ID,
@@ -85,50 +93,10 @@ from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
 from clio_agent.gact.permission_gate import _normalize_mcp_tool_annotations
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
-
-
-def _agent_blueprint_sources_path() -> Path:
-    """Return the on-disk path of the blueprint-source registry JSON."""
-
-    from clio_agent import paths  # noqa: PLC0415
-
-    return paths.user_config_dir() / "agent-blueprint-sources.json"
-
-
-def _source_registry_id(source: str, ref: str = "") -> str:
-    """Derive a stable ``src_*`` id from a source URL/path and optional ref."""
-
-    digest = hashlib.sha256(f"{source}\n{ref}".encode("utf-8")).hexdigest()[:12]
-    return f"src_{digest}"
-
-
-def _load_agent_blueprint_sources() -> list[dict[str, Any]]:
-    """Load the persisted blueprint-source rows (empty list if absent/corrupt)."""
-
-    path = _agent_blueprint_sources_path()
-    if not path.exists():
-        return []
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 - unreadable/invalid sources file yields no rows
-        return []
-    rows = payload.get("sources") if isinstance(payload, dict) else payload
-    if not isinstance(rows, list):
-        return []
-    return [dict(row) for row in rows if isinstance(row, dict)]
-
-
-def _save_agent_blueprint_sources(rows: list[dict[str, Any]]) -> None:
-    """Persist the blueprint-source rows to the user config dir."""
-
-    path = _agent_blueprint_sources_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"sources": rows}, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
 
 
 def _agent_blueprint_candidates(root: Path) -> list[dict[str, Any]]:

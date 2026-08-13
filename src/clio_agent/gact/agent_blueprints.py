@@ -165,6 +165,10 @@ def discover_agent_blueprints(
 ) -> list[AgentBlueprintDefinition]:
     home = home or Path.home()
     cwd = cwd or Path(os.getcwd())
+    from clio_agent.gact.agent_blueprint_refresh import (  # noqa: PLC0415 - cycle-free lazily
+        ensure_default_registry_bootstrap,
+    )
+
     bootstrap_diagnostic = ensure_default_registry_bootstrap(home=home, cwd=cwd)
     blueprints: list[AgentBlueprintDefinition] = []
     for root, scope in agent_blueprint_roots(home, cwd):
@@ -180,6 +184,15 @@ def discover_agent_blueprints(
         )
         for candidate in candidates:
             blueprints.append(parse_agent_blueprint_root(candidate, scope=scope))
+    # ONE row per id: scopes scan global→workspace, and the MOST SPECIFIC copy
+    # wins (a project-local ``.clio`` pack overrides the installed one — the dev
+    # override). Without this a pack present in both scopes lists twice and
+    # ``load_agent_blueprints`` loads both copies' experts (#13, review
+    # 2026-08-13 — the doubled "EarthScope (Flat / Haiku)" row).
+    by_id: dict[str, AgentBlueprintDefinition] = {}
+    for row in blueprints:
+        by_id[row.id] = row
+    blueprints = list(by_id.values())
     if bootstrap_diagnostic and not any(row.id == DEFAULT_AGENT_BLUEPRINT_ID for row in blueprints):
         install_root = (
             _install_root(home=home, cwd=cwd, scope="global") / DEFAULT_AGENT_BLUEPRINT_ID
@@ -206,53 +219,24 @@ def discover_agent_blueprints(
     return blueprints
 
 
-def ensure_default_registry_bootstrap(
-    *,
-    home: Path | None = None,
-    cwd: Path | None = None,
-) -> str:
-    """Install the pinned default registry snapshot if the default agent is absent.
+def __getattr__(name: str):  # noqa: ANN202 - PEP 562 lazy re-export
+    """Lazy re-exports for registry-maintenance names that moved to their owner
+    module (:mod:`clio_agent.gact.agent_blueprint_refresh`, #775 no-accretion).
+    Lazy so this module never top-imports the refresh module (which top-imports
+    this one)."""
 
-    Returns an empty string on success or when bootstrap is disabled, otherwise
-    a human-readable diagnostic. Discovery surfaces the diagnostic as a disabled
-    blueprint row instead of silently falling back to bundled domain experts.
-    """
+    if name in {
+        "ensure_default_registry_bootstrap",
+        "uninstalled_tombstones_path",
+        "read_uninstalled_tombstones",
+        "write_uninstalled_tombstones",
+        "uninstall_agent_blueprint",
+        "update_installed_agent_blueprint",
+    }:
+        from clio_agent.gact import agent_blueprint_refresh  # noqa: PLC0415
 
-    if conf.resolve(
-        "agents.disable_default_registry_bootstrap",
-        env=_DEFAULT_BOOTSTRAP_ENV,
-        default=False,
-        cast=conf.as_bool,
-    ):
-        return ""
-    home = home or Path.home()
-    cwd = cwd or Path(os.getcwd())
-    pinned = DEFAULT_REGISTRY_COMMIT.strip()
-    root = _install_root(home=home, cwd=cwd, scope="global") / DEFAULT_AGENT_BLUEPRINT_ID
-    if (root / _BLUEPRINT_ROOT_NAME).exists():
-        # #948 S4b upgrade path: an installed-but-invalid default blueprint (a
-        # pre-migration chain_of_thought/predict root disabled by validation) is a
-        # dead end that never self-heals. The evaluate/refresh decision lives in
-        # its owner module (no accretion here).
-        from clio_agent.gact.agent_blueprint_refresh import (  # noqa: PLC0415
-            evaluate_installed_default_registry,
-        )
-
-        return evaluate_installed_default_registry(home=home, cwd=cwd, root=root, pinned=pinned)
-    try:
-        install_agent_blueprint(
-            source=default_registry_install_source(),
-            scope="global",
-            cwd=cwd,
-            home=home,
-            ref=DEFAULT_REGISTRY_REF,
-            blueprint_id=DEFAULT_AGENT_BLUEPRINT_ID,
-            pinned_commit=pinned,
-        )
-    except Exception as exc:  # noqa: BLE001
-        target = pinned or DEFAULT_REGISTRY_REF
-        return f"unable to install default registry {default_registry_url()}@{target}: {exc}"
-    return ""
+        return getattr(agent_blueprint_refresh, name)
+    raise AttributeError(name)
 
 
 def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefinition:
@@ -755,7 +739,16 @@ def install_agent_blueprint(
     ref: str = "",
     blueprint_id: str = "",
     pinned_commit: str = "",
+    skip_invalid: bool = False,
 ) -> dict[str, Any]:
+    """Install blueprint pack(s) from ``source`` (all packs when ``blueprint_id`` is empty).
+
+    ``skip_invalid`` governs a multi-pack install: ``False`` (explicit installs)
+    keeps the strict contract — any invalid pack fails the whole call; ``True``
+    (the registry bootstrap) skips invalid packs with a logged, returned
+    ``skipped`` row each, so one broken marketplace entry can never veto the
+    rest of the set.
+    """
     home = home or Path.home()
     install_root = _install_root(home=home, cwd=cwd, scope=scope)
     install_root.mkdir(parents=True, exist_ok=True)
@@ -854,9 +847,22 @@ def install_agent_blueprint(
         if not candidates:
             raise ValueError("source contains no Agent Blueprint folders with AGENT.md")
         installed: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
         for candidate in candidates:
             parsed = parse_agent_blueprint_root(candidate, scope=scope)
             if not parsed.enabled:
+                if skip_invalid:
+                    logger.warning(
+                        "blueprint_install_skipped reason=validation_errors id=%s "
+                        "source=%s errors=%s",
+                        parsed.id,
+                        source,
+                        "; ".join(parsed.validation_errors),
+                    )
+                    skipped.append(
+                        {"id": parsed.id, "validation_errors": list(parsed.validation_errors)}
+                    )
+                    continue
                 raise ValueError("; ".join(parsed.validation_errors))
             dest = install_root / parsed.id
             if dest.exists():
@@ -876,43 +882,19 @@ def install_agent_blueprint(
             installed.append(
                 {**parse_agent_blueprint_root(dest, scope=scope).to_wire(), "install": metadata}
             )
-        return {"installed": installed}
+        if scope == "global" and installed:
+            # An explicit install overrides a prior uninstall: clear tombstones
+            # so the registry sync resumes maintaining these ids.
+            from clio_agent.gact.agent_blueprint_refresh import (  # noqa: PLC0415
+                read_uninstalled_tombstones,
+                write_uninstalled_tombstones,
+            )
 
-
-def update_installed_agent_blueprint(
-    *,
-    blueprint_id: str,
-    scope: Literal["global", "workspace"],
-    cwd: Path,
-    home: Path | None = None,
-) -> dict[str, Any]:
-    root = _install_root(home=home or Path.home(), cwd=cwd, scope=scope) / blueprint_id
-    metadata = read_install_metadata(root)
-    source = str(metadata.get("source") or "").strip()
-    if not source:
-        raise ValueError(f"agent blueprint {blueprint_id!r} has no install source metadata")
-    return install_agent_blueprint(
-        source=source,
-        scope=scope,
-        cwd=cwd,
-        home=home,
-        ref=str(metadata.get("ref") or ""),
-        blueprint_id=blueprint_id,
-    )
-
-
-def uninstall_agent_blueprint(
-    *,
-    blueprint_id: str,
-    scope: Literal["global", "workspace"],
-    cwd: Path,
-    home: Path | None = None,
-) -> dict[str, Any]:
-    root = _install_root(home=home or Path.home(), cwd=cwd, scope=scope) / blueprint_id
-    if not root.exists():
-        raise FileNotFoundError(f"installed agent blueprint not found: {blueprint_id}")
-    shutil.rmtree(root)
-    return {"uninstalled": {"id": blueprint_id, "scope": scope, "root": str(root)}}
+            tombstones = read_uninstalled_tombstones(home=home, cwd=cwd)
+            reinstalled = {str(row.get("id")) for row in installed} & tombstones
+            if reinstalled:
+                write_uninstalled_tombstones(tombstones - reinstalled, home=home, cwd=cwd)
+        return {"installed": installed, "skipped": skipped}
 
 
 def read_install_metadata(root: Path) -> dict[str, str]:

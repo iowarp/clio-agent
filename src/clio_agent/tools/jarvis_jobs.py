@@ -18,13 +18,10 @@ from clio_agent.tools.jarvis_result_contract import (
     JarvisJobError,
 )
 from clio_agent.tools.jarvis_result_contract import (
-    raise_inline_delivery_failure as _raise_inline_delivery_failure,
+    execution_projection as _execution_projection,
 )
 from clio_agent.tools.jarvis_result_contract import (
-    raise_remote_call_failure as _raise_remote_call_failure,
-)
-from clio_agent.tools.jarvis_result_contract import (
-    structured_payload as _structured_payload,
+    terminal_payload as _terminal_payload,
 )
 from clio_agent.tools.mcp_task_records import TERMINAL_TASK_STATES, TaskKey
 from clio_agent.tools.relay_transport import (
@@ -718,116 +715,3 @@ class JarvisJobs:
                 )
             interval = float(current.poll_interval_ms or 1_000) / 1_000
             await self._poll_sleep(min(interval, remaining))
-
-
-def _terminal_payload(tool_name: str, final: ClientGetTaskResult) -> dict[str, Any]:
-    """Validate one terminal relay result and return its authoritative payload."""
-
-    if final.status != "completed":
-        raise JarvisJobError(
-            f"{tool_name} relay dispatch ended in state {final.status!r}",
-            reason="jarvis_dispatch_failed",
-            details={
-                "tool": tool_name,
-                "task_id": final.task_id,
-                "state": final.status,
-                "relay_error": dict(final.error or {}),
-            },
-        )
-    if final.result is None:
-        raise JarvisJobError(
-            f"{tool_name} relay dispatch completed without a result",
-            reason="jarvis_dispatch_result_missing",
-            details={"tool": tool_name, "task_id": final.task_id},
-        )
-    _raise_inline_delivery_failure(final.task_id, final.result)
-    _raise_remote_call_failure(tool_name, final.task_id, final.result)
-    return _structured_payload(final.result, tool_name=tool_name, task_id=final.task_id)
-
-
-def _execution_projection(
-    payload: Mapping[str, Any],
-    requested: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Project the registered execution query onto one stable application view."""
-
-    handle = payload.get("execution_handle")
-    record = payload.get("execution_record")
-    progress = payload.get("progress")
-    typed_handle = handle if isinstance(handle, Mapping) else {}
-    typed_record = record if isinstance(record, Mapping) else {}
-    typed_progress = progress if isinstance(progress, Mapping) else None
-
-    pipeline_id = _first_text(payload, typed_handle, typed_record, field="pipeline_id")
-    execution_id = _first_text(payload, typed_handle, typed_record, field="execution_id")
-    expected_pipeline = requested.get("pipeline_id")
-    expected_execution = requested.get("execution_id")
-    if pipeline_id != expected_pipeline or execution_id != expected_execution:
-        raise JarvisJobError(
-            "jarvis_get_execution returned a different execution identity",
-            reason="jarvis_execution_identity_mismatch",
-            details={
-                "expected_pipeline_id": expected_pipeline,
-                "observed_pipeline_id": pipeline_id,
-                "expected_execution_id": expected_execution,
-                "observed_execution_id": execution_id,
-            },
-        )
-    state = _first_text(typed_record, payload, typed_progress or {}, field="state")
-    if state is None and typed_progress is not None:
-        candidate = typed_progress.get("execution_state")
-        state = candidate if isinstance(candidate, str) and candidate else None
-    if state is None:
-        raise JarvisJobError(
-            "jarvis_get_execution omitted its lifecycle state",
-            reason="jarvis_execution_state_missing",
-            details={"pipeline_id": pipeline_id, "execution_id": execution_id},
-        )
-    terminal = typed_record.get("terminal")
-    if not isinstance(terminal, bool) and typed_progress is not None:
-        terminal = typed_progress.get("terminal")
-    if not isinstance(terminal, bool):
-        terminal = state in {"completed", "failed", "canceled"}
-
-    # ``execution_record.error``/``return_code`` are exactly the fields a
-    # failed execution needs read back: JARVIS's own registered contract
-    # (``jarvis.execution.record.v1``) always carries them, and the relay
-    # wire already delivers them -- this projection used to drop both on the
-    # floor, which is precisely the case (a FAILED execution) where they
-    # matter most. No fallback text is invented when either is absent; a
-    # clean run's ``error`` is genuinely ``None``.
-    error = typed_record.get("error")
-    if not isinstance(error, str) or not error:
-        error = None
-    return_code = typed_record.get("return_code")
-    if isinstance(return_code, bool) or not isinstance(return_code, int):
-        return_code = None
-
-    return {
-        "schema_version": "clio-agent.jarvis-execution.v1",
-        "pipeline_id": pipeline_id,
-        "execution_id": execution_id,
-        "state": state,
-        "terminal": terminal,
-        "error": error,
-        "return_code": return_code,
-        "progress": progress,
-        "artifacts": payload.get("artifact_page", payload.get("artifacts")),
-        "services": payload.get("service_runtimes", payload.get("services")),
-        "scheduler_native_id": _first_text(
-            typed_handle, typed_record, payload, field="scheduler_native_id"
-        ),
-        "scheduler_provider": _first_text(
-            typed_handle, typed_record, payload, field="scheduler_provider"
-        ),
-    }
-
-
-def _first_text(*sources: Mapping[str, Any], field: str) -> str | None:
-    """Return the first non-empty string field from ordered contract sources."""
-
-    for source in sources:
-        value = source.get(field)
-        if isinstance(value, str) and value:
-            return value
-    return None

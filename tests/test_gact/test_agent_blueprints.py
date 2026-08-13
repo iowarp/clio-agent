@@ -444,12 +444,17 @@ def _prepare_default_store(
     """
 
     store = tmp_path / "store"
-    monkeypatch.delenv("CLIO_USER_DIR", raising=False)
+    # CLIO_USER_DIR is the ONLY cross-OS isolation: platformdirs ignores
+    # XDG_CONFIG_HOME on Windows, so an XDG-only override silently pointed the
+    # per-user store (and the blueprint-sources registry) at the REAL
+    # %LOCALAPPDATA% — every test run leaked a pytest-tmpdir source row into
+    # the production registry (~100 dead genomics rows found 2026-08-13).
+    config_dir = store / "clio-agent"
+    monkeypatch.setenv("CLIO_USER_DIR", str(config_dir))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(store))
     # #948 S4b: the refresh path must actually run, so re-enable the bootstrap
     # (conftest disables it globally for unit isolation).
     monkeypatch.delenv("CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP", raising=False)
-    config_dir = store / "clio-agent"
     if registry_url:
         # Config-over-env (the config-over-env principle): drive the registry URL
         # through the config FILE, not CLIO_BLUEPRINT_REGISTRY_URL.
@@ -545,9 +550,24 @@ def test_valid_default_install_is_not_refreshed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """(c) A valid react install triggers no refresh (no churn)."""
+    """(c) A valid react install triggers no refresh (no churn).
 
-    install_root, home = _prepare_default_store(tmp_path, monkeypatch)
+    Hermetic registry: an explicit LOCAL registry override carrying only the
+    already-installed default pack — without it the source resolves to the real
+    dev submodule and the per-boot sync legitimately installs the other
+    marketplace packs, which this test's no-churn spy must not conflate with a
+    refresh (review 2026-08-13 finding #10).
+    """
+
+    local_registry = tmp_path / "registry-local"
+    default_pack = local_registry / DEFAULT_AGENT_BLUEPRINT_ID
+    _write_blueprint_tree(
+        default_pack, main_md=_REACT_MAIN_MD, child_md=_REACT_CHILD_MD, commit="valid-head"
+    )
+    default_pack.joinpath(".clio-install.md").unlink()
+    install_root, home = _prepare_default_store(
+        tmp_path, monkeypatch, registry_url=local_registry.as_posix()
+    )
     _write_blueprint_tree(
         install_root, main_md=_REACT_MAIN_MD, child_md=_REACT_CHILD_MD, commit="valid-head"
     )
@@ -3386,3 +3406,230 @@ def test_agent_blueprint_files_session_scoped_path_activation_resolves(
         # (404 here, since "genomics" was never installed either).
         mismatched = client.get("/v1/agent-blueprints/genomics/files", params={"session_id": sid})
         assert mismatched.status_code == 404, mismatched.text
+
+
+# --------------------------------------------------------------------------- #
+# Install-ALL registry semantics (owner ruling 2026-08-13): the marketplace is #
+# the shipped standard library — every valid pack on main installs, first-run  #
+# and as the registry gains packs; one broken pack never vetoes the set.       #
+# --------------------------------------------------------------------------- #
+_EXTRA_PACK_MD = """---
+id: extra-pack
+title: Extra Pack
+version: 0.1.0
+description: A second registry pack that must install by default.
+---
+
+A minimal single-agent pack.
+"""
+
+_BROKEN_PACK_MD = """---
+title: No Id Pack
+version: 0.1.0
+---
+
+Missing the required id field.
+"""
+
+
+def _make_multi_pack_registry_repo(path: Path) -> str:
+    """A git registry (branch main) with the default pack + a second pack as subdirs."""
+
+    default_dir = path / DEFAULT_AGENT_BLUEPRINT_ID
+    _write_blueprint_tree(
+        default_dir, main_md=_REACT_MAIN_MD, child_md=_REACT_CHILD_MD, commit="multi-head"
+    )
+    default_dir.joinpath(".clio-install.md").unlink()
+    extra_dir = path / "extra-pack"
+    extra_dir.mkdir(parents=True, exist_ok=True)
+    extra_dir.joinpath("AGENT.md").write_text(_EXTRA_PACK_MD, encoding="utf-8")
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "clio-test",
+        "GIT_AUTHOR_EMAIL": "clio-test@example.com",
+        "GIT_COMMITTER_NAME": "clio-test",
+        "GIT_COMMITTER_EMAIL": "clio-test@example.com",
+    }
+    subprocess.run(["git", "init", "-b", "main", str(path)], check=True, env=env, capture_output=True)
+    subprocess.run(["git", "-C", str(path), "add", "."], check=True, env=env, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(path), "commit", "-m", "multi-pack registry"],
+        check=True,
+        env=env,
+        capture_output=True,
+    )
+    return path.as_uri()
+
+
+def test_first_run_bootstrap_installs_every_registry_pack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """First-run bootstrap installs ALL registry packs, not only the default id.
+
+    **Sabotage:** pass ``blueprint_id=DEFAULT_AGENT_BLUEPRINT_ID`` in the
+    bootstrap install again -> extra-pack never installs -> red.
+    """
+
+    registry_url = _make_multi_pack_registry_repo(tmp_path / "registry")
+    install_root, home = _prepare_default_store(tmp_path, monkeypatch, registry_url=registry_url)
+    diagnostic = ensure_default_registry_bootstrap(home=home, cwd=tmp_path / "cwd")
+    assert diagnostic == ""
+    assert install_root.joinpath("AGENT.md").exists()
+    assert install_root.parent.joinpath("extra-pack", "AGENT.md").exists()
+
+
+def test_bootstrap_installs_pack_added_to_local_registry_after_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A local-path registry that gains a pack installs it on the next bootstrap.
+
+    The ``earthscope-flat`` case: the pack landed on marketplace main a month
+    after the box's one-shot enumeration and was never installed.
+    **Sabotage:** drop the local sync from the bootstrap -> the default is
+    present so only the S4b evaluate runs -> the new pack never installs -> red.
+    """
+
+    registry_dir = tmp_path / "local-registry"
+    default_dir = registry_dir / DEFAULT_AGENT_BLUEPRINT_ID
+    _write_blueprint_tree(
+        default_dir, main_md=_REACT_MAIN_MD, child_md=_REACT_CHILD_MD, commit="local-head"
+    )
+    default_dir.joinpath(".clio-install.md").unlink()
+    install_root, home = _prepare_default_store(
+        tmp_path, monkeypatch, registry_url=registry_dir.as_posix()
+    )
+    assert ensure_default_registry_bootstrap(home=home, cwd=tmp_path / "cwd") == ""
+    assert install_root.joinpath("AGENT.md").exists()
+    late_dir = registry_dir / "late-pack"
+    late_dir.mkdir(parents=True)
+    late_dir.joinpath("AGENT.md").write_text(
+        _EXTRA_PACK_MD.replace("extra-pack", "late-pack"), encoding="utf-8"
+    )
+    # The sync is once-per-process (boot semantics); a new pack lands on the
+    # NEXT boot — simulated by the test-only gate reset.
+    from clio_agent.gact.agent_blueprint_refresh import reset_registry_sync_for_tests
+
+    reset_registry_sync_for_tests()
+    assert ensure_default_registry_bootstrap(home=home, cwd=tmp_path / "cwd") == ""
+    assert install_root.parent.joinpath("late-pack", "AGENT.md").exists()
+
+
+def test_uninstalled_pack_is_not_resurrected_by_the_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user uninstall is durable: the sync skips tombstoned ids until an
+    explicit reinstall clears the tombstone.
+
+    **Sabotage:** drop the tombstone check from the sync -> the pack reappears
+    on the next boot -> red (the review 2026-08-13 blocker).
+    """
+
+    from clio_agent.gact.agent_blueprint_refresh import reset_registry_sync_for_tests
+    from clio_agent.gact.agent_blueprints import (
+        install_agent_blueprint,
+        uninstall_agent_blueprint,
+    )
+
+    registry_dir = tmp_path / "local-registry"
+    default_dir = registry_dir / DEFAULT_AGENT_BLUEPRINT_ID
+    _write_blueprint_tree(
+        default_dir, main_md=_REACT_MAIN_MD, child_md=_REACT_CHILD_MD, commit="ts-head"
+    )
+    default_dir.joinpath(".clio-install.md").unlink()
+    extra_dir = registry_dir / "extra-pack"
+    extra_dir.mkdir(parents=True)
+    extra_dir.joinpath("AGENT.md").write_text(_EXTRA_PACK_MD, encoding="utf-8")
+    install_root, home = _prepare_default_store(
+        tmp_path, monkeypatch, registry_url=registry_dir.as_posix()
+    )
+    cwd = tmp_path / "cwd"
+    assert ensure_default_registry_bootstrap(home=home, cwd=cwd) == ""
+    extra_install = install_root.parent / "extra-pack"
+    assert extra_install.joinpath("AGENT.md").exists()
+
+    uninstall_agent_blueprint(blueprint_id="extra-pack", scope="global", cwd=cwd, home=home)
+    reset_registry_sync_for_tests()
+    assert ensure_default_registry_bootstrap(home=home, cwd=cwd) == ""
+    assert not extra_install.exists(), "sync must not resurrect a user-uninstalled pack"
+
+    install_agent_blueprint(
+        source=registry_dir.as_posix(),
+        scope="global",
+        cwd=cwd,
+        home=home,
+        blueprint_id="extra-pack",
+    )
+    assert extra_install.joinpath("AGENT.md").exists()
+    reset_registry_sync_for_tests()
+    assert ensure_default_registry_bootstrap(home=home, cwd=cwd) == ""
+    assert extra_install.joinpath("AGENT.md").exists(), "explicit reinstall clears the tombstone"
+
+
+def test_install_all_skips_invalid_pack_only_when_asked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``skip_invalid`` skips a broken pack and installs the rest; strict raises.
+
+    **Sabotage:** raise on invalid regardless of ``skip_invalid`` -> red; or
+    silently skip in strict mode -> the strict assertion goes red.
+    """
+
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint
+
+    source_dir = tmp_path / "mixed-registry"
+    good = source_dir / "extra-pack"
+    good.mkdir(parents=True)
+    good.joinpath("AGENT.md").write_text(_EXTRA_PACK_MD, encoding="utf-8")
+    broken = source_dir / "broken-pack"
+    broken.mkdir(parents=True)
+    broken.joinpath("AGENT.md").write_text(_BROKEN_PACK_MD, encoding="utf-8")
+
+    result = install_agent_blueprint(
+        source=str(source_dir),
+        scope="global",
+        cwd=tmp_path / "cwd",
+        home=tmp_path / "home",
+        skip_invalid=True,
+    )
+    assert [row["id"] for row in result["installed"]] == ["extra-pack"]
+    assert [row["id"] for row in result["skipped"]] == ["broken-pack"]
+
+    with pytest.raises(ValueError):
+        install_agent_blueprint(
+            source=str(source_dir),
+            scope="global",
+            cwd=tmp_path / "cwd2",
+            home=tmp_path / "home2",
+        )
+
+
+def test_dead_local_path_sources_are_pruned_on_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Loading the sources registry drops rows whose local path no longer exists.
+
+    Heals the pytest-tmpdir pollution class (~100 dead genomics rows) and keeps
+    URL rows untouched. **Sabotage:** return rows unpruned -> red.
+    """
+
+    from clio_agent.gact.routes.blueprints import _load_agent_blueprint_sources
+
+    user_dir = tmp_path / "user"
+    user_dir.mkdir()
+    monkeypatch.setenv("CLIO_USER_DIR", str(user_dir))
+    dead = tmp_path / "gone-fixture-dir"
+    rows = {
+        "sources": [
+            {"id": "src_dead", "source": str(dead), "ref": ""},
+            {"id": "src_url", "source": "https://github.com/iowarp/clio-agent-marketplace.git", "ref": "main"},
+        ]
+    }
+    user_dir.joinpath("agent-blueprint-sources.json").write_text(
+        json.dumps(rows), encoding="utf-8"
+    )
+    loaded = _load_agent_blueprint_sources()
+    assert [row["id"] for row in loaded] == ["src_url"]
+    rewritten = json.loads(
+        user_dir.joinpath("agent-blueprint-sources.json").read_text(encoding="utf-8")
+    )
+    assert [row["id"] for row in rewritten["sources"]] == ["src_url"]
