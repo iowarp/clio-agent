@@ -468,14 +468,18 @@ def make_mcp_client(
         # SDK's hardcoded default. Exhaustion surfaces the typed degrade in mcp_executor.
         "input_required_max_rounds": input_required_max_rounds(),
     }
-    # #1186: era negotiation is timing-sensitive — a server whose first response
-    # outlives the per-RPC setup window (cold uv env, matplotlib import, launcher
-    # cache-lock contention) burns BOTH the server/discover probe and its one
-    # corrective re-probe, and the connect dies with -32022 even though client and
-    # server share 2026-07-28. Deployments whose fleet is uniformly modern can pin
-    # the version here: the pinned mode adopts directly (no probe, no initialize),
-    # removing the race class entirely. "auto" (the default) keeps SDK negotiation
-    # for mixed/unknown fleets.
+    # #1186 closed at the root (owner ruling 2026-08-13): era selection comes only
+    # from the server's TYPED answers, never from timing. The hardened auto policy
+    # (clio_agent.tools.mcp_probe_hardening) retries a timed-out server/discover
+    # probe instead of reinterpreting the timeout as legacy evidence; every typed
+    # branch (-32022 mutual/disjoint, method-not-found denylist) is unchanged.
+    # A pinned connect_mode remains available as operator intent, not as a race
+    # workaround.
+    from clio_agent.tools.mcp_probe_hardening import (  # noqa: PLC0415
+        install_probe_hardening,
+    )
+
+    install_probe_hardening()
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
 
     connect_mode = conf.resolve(
