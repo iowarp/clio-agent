@@ -159,8 +159,8 @@ class Session:
     mode: str = "edit"
     edit_mode: str = "diff"
     # iowarp/clio-agent #1034 — approval axis, ORTHOGONAL to ``mode``. One of
-    # {ask, auto-edits, bypass, ai-review}; default "ask" preserves today's
-    # interactive-prompt behaviour. Literal validation lives on the wire model
+    # {ask, auto-edits, bypass, ai-review, spotter-ai}; default "ask" preserves
+    # today's interactive-prompt behaviour. Literal validation lives on the wire model
     # (types.Session); the dataclass stores the raw string so a defaulted field
     # round-trips old persisted rows (asdict/Session(**payload)) with no
     # migration.
