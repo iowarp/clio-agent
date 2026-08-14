@@ -475,7 +475,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # -12: the thinking-channel emission seams (provider-thinking forward + the
     # provider_thinking_redacted typed reason) moved to their owner module,
     # providers/claude_code_thinking_split.py.
-    "src/clio_agent/providers/claude_code_litellm.py": 835,
+    # #1184 / #1211 review A3 (835 -> 861): +26 to classify a definitive
+    # model-rejection (api_error_status==404) on the streaming ResultMessage path
+    # and raise the shared typed litellm.BadRequestError (raise_model_rejected in
+    # _cli_provider.py) instead of a bare ClaudeCodeExecError -- so the account's
+    # rejection reaches the trace/transcript honestly instead of a misleading
+    # LMTransportError, and is never retried as transient.
+    "src/clio_agent/providers/claude_code_litellm.py": 861,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
     # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
     # #947 DEBT (recorded 2026-07-18, #948 S4): residual over the pre-#947 count

@@ -70,11 +70,16 @@ class _SdkSession:
         await client.connect()
         return client
 
-    async def _aquery(self, prompt: str) -> tuple[str, dict[str, Any]]:
+    async def _aquery(self, prompt: str, *, model: str) -> tuple[str, dict[str, Any]]:
         from claude_agent_sdk import (  # noqa: PLC0415
             AssistantMessage,
             ResultMessage,
             TextBlock,
+        )
+
+        from clio_agent.providers._cli_provider import raise_model_rejected  # noqa: PLC0415
+        from clio_agent.providers.claude_code_litellm import (  # noqa: PLC0415
+            CLAUDE_CODE_REJECTION_STATUS,
         )
 
         await self._client.query(prompt, session_id=uuid.uuid4().hex)
@@ -87,6 +92,24 @@ class _SdkSession:
                 u = getattr(msg, "usage", None)
                 if isinstance(u, dict):
                     usage = u
+                if getattr(msg, "is_error", False):
+                    status = getattr(msg, "api_error_status", None)
+                    if status == CLAUDE_CODE_REJECTION_STATUS:
+                        # #1184 / #1211 review A3/D3: the blocking path silently
+                        # degraded a definitive model rejection to a generic
+                        # "empty content" error, discarding the status AND the
+                        # CLI's own explanatory text. Raise the typed,
+                        # non-retryable rejection here so `complete()`'s
+                        # empty-content fallback is never reached for this case.
+                        raise_model_rejected(
+                            message=(
+                                f"claude_code rejected model {model!r} "
+                                f"(api_error_status={status}): "
+                                f"{getattr(msg, 'result', '') or 'model not available'}"
+                            ),
+                            model=f"claude_code/{model}",
+                            llm_provider="claude_code",
+                        )
         return "".join(parts).strip(), usage
 
     def _reset_client(self) -> None:
@@ -129,7 +152,7 @@ class _SdkSession:
                 self._client = self._submit(self._aconnect(model, cwd, thinking), timeout=60.0)
                 self._model, self._cwd, self._thinking_key = model, cwd, tkey
             try:
-                text, usage = self._submit(self._aquery(prompt), timeout=timeout)
+                text, usage = self._submit(self._aquery(prompt, model=model), timeout=timeout)
             except TimeoutError as exc:
                 # A timed-out call leaves the connection mid-cycle; drop it so the
                 # next call reconnects cleanly.

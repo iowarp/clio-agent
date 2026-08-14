@@ -435,6 +435,110 @@ class TestAppServerTransport:
                 optional_params={"codex_transport": "app_server"},
             )
 
+    def test_app_server_model_rejection_raises_typed_not_codex_error(self):
+        """iowarp/clio-agent#1184, #1211 review A3 (failing-first at the mocked
+        bridge boundary): a definitive model-rejection from the app-server must
+        surface as ``litellm.BadRequestError`` (carrying the account's own
+        rejection text), NOT the generic ``CodexExecError`` -- which litellm
+        would otherwise wrap into a misleading ``APIConnectionError``/DSPy
+        ``LMTransportError`` and the retry layer would retry as transient."""
+        import litellm
+
+        from clio_agent.providers.codex_app_server import CodexAppServerError
+
+        handler = CodexLLM()
+        rejection_text = (
+            "The 'gpt-5.5-codex' model is not supported when using Codex with "
+            "a ChatGPT account."
+        )
+
+        def _boom(*_a, **_k):
+            raise CodexAppServerError(rejection_text)
+            yield  # pragma: no cover - generator marker
+
+        with patch("clio_agent.providers.codex_stream._app_server_events", side_effect=_boom):
+            with pytest.raises(litellm.BadRequestError) as excinfo:
+                handler.completion(
+                    model="codex/gpt-5.5-codex",
+                    messages=[{"role": "user", "content": "hi"}],
+                    api_base="",
+                    custom_prompt_dict={},
+                    model_response=None,  # type: ignore[arg-type]
+                    print_verbose=lambda *_: None,
+                    encoding=None,
+                    api_key=None,
+                    logging_obj=None,
+                    optional_params={"codex_transport": "app_server"},
+                )
+        # The account's own rejection text survives verbatim into str(exc) --
+        # what the transcript's generic error tail interpolates.
+        assert rejection_text in str(excinfo.value)
+        assert not isinstance(excinfo.value, CodexExecError)
+
+        # And it must NEVER be classified as transient (would retry forever).
+        from clio_agent.lm.io_logging import _is_transient_provider_error
+
+        assert _is_transient_provider_error(excinfo.value) is False
+
+    async def test_astreaming_app_server_model_rejection_raises_typed(self):
+        """Same failing-first pin as completion(), on the streaming path."""
+        import litellm
+
+        from clio_agent.providers.codex_app_server import CodexAppServerError
+
+        handler = CodexLLM()
+        rejection_text = "The 'bogus-model' model is not supported when using Codex."
+
+        def _boom(*_a, **_k):
+            raise CodexAppServerError(rejection_text)
+            yield  # pragma: no cover - generator marker
+
+        with patch("clio_agent.providers.codex_stream._app_server_events", side_effect=_boom):
+            with pytest.raises(litellm.BadRequestError) as excinfo:
+                async for _ in handler.astreaming(
+                    model="codex/bogus-model",
+                    messages=[{"role": "user", "content": "hi"}],
+                    api_base="",
+                    custom_prompt_dict={},
+                    model_response=None,  # type: ignore[arg-type]
+                    print_verbose=lambda *_: None,
+                    encoding=None,
+                    api_key=None,
+                    logging_obj=None,
+                    optional_params={"codex_transport": "app_server"},
+                ):
+                    pass
+        assert rejection_text in str(excinfo.value)
+
+    def test_app_server_generic_failure_is_still_codex_error_not_misclassified(self):
+        """SABOTAGE-sensitive: a GENUINE transport failure (no model-rejection
+        text) must still map to CodexExecError, not be swept into the
+        rejection path by an over-broad classifier."""
+        from clio_agent.providers.codex_app_server import CodexAppServerError
+
+        handler = CodexLLM()
+
+        def _boom(*_a, **_k):
+            raise CodexAppServerError("codex app-server stdout closed")
+            yield  # pragma: no cover - generator marker
+
+        with (
+            patch("clio_agent.providers.codex_stream._app_server_events", side_effect=_boom),
+            pytest.raises(CodexExecError, match="app-server"),
+        ):
+            handler.completion(
+                model="codex/cdx-gpt-5.5",
+                messages=[{"role": "user", "content": "hi"}],
+                api_base="",
+                custom_prompt_dict={},
+                model_response=None,  # type: ignore[arg-type]
+                print_verbose=lambda *_: None,
+                encoding=None,
+                api_key=None,
+                logging_obj=None,
+                optional_params={"codex_transport": "app_server"},
+            )
+
     def test_build_model_response_zero_usage_when_absent(self):
         resp = _build_model_response(text="x", model="gpt-5.5")
         assert resp.usage.total_tokens == 0
