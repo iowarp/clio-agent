@@ -321,7 +321,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # overlay-first GET serving to the CLI provider kinds only (HTTP-backed
     # providers keep their live handshake path unconditionally). Logic stays thin;
     # the discovery/overlay mechanics live entirely in providers/model_discovery/.
-    "src/clio_agent/gact/routes/providers.py": 1337,
+    # #1211 owner ruling 2026-08-14 (1337 -> 1343): +6 documenting
+    # _default_model_for's claude_code cost-policy exception (the served
+    # default deviates from "follows the CLI's own live default" for that one
+    # provider) -- the policy ITSELF lives in providers/model_discovery/overlay.py's
+    # record_refresh; this docstring update is the only change here.
+    "src/clio_agent/gact/routes/providers.py": 1343,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the

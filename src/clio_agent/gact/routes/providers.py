@@ -175,7 +175,13 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         review D2), the frozen static ``suggested_model`` otherwise. Once a
         refresh has run, this follows the CLI's/account's OWN live default
         (e.g. codex's ``gpt-5.6-sol``) instead of a snapshot that may already be
-        rejected (#1184)."""
+        rejected (#1184) -- EXCEPT claude_code, whose overlay-served default is
+        a deliberate cost policy ("sonnet", never the CLI's own premium bare
+        default) applied once, at the overlay-write boundary
+        (:func:`clio_agent.providers.model_discovery.overlay.record_refresh`,
+        owner ruling 2026-08-14); this function is unaware of the distinction
+        and stays correct either way because it only ever reads the overlay's
+        already-policy-applied ``default_model`` back."""
         from clio_agent.providers import model_discovery  # noqa: PLC0415
 
         overlay_default = model_discovery.overlay_default_model(preset.id, preset.provider)
