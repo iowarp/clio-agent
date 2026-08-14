@@ -141,8 +141,11 @@ def default_decision(
     * ``allow`` — ``bypass`` (any non-read call) or ``auto-edits`` for an fs WRITE (a call whose
       static catalog entry carries the ``write`` tag);
     * ``ask``   — ``ask`` (default), ``auto-edits`` for a non-write (e.g. ``shell_bash``, whose
-      writes live behind the OS fence, not a catalog ``write`` tag), or ``ai-review`` (the caller
-      stamps the typed ``ai_review_reviewer_pending`` reason on the pending row).
+      writes live behind the OS fence, not a catalog ``write`` tag), ``ai-review`` (the caller
+      stamps the typed ``ai_review_reviewer_pending`` reason on the pending row), or
+      ``spotter-ai`` (deliberately identical to ``ask`` — spotter-ai only ARMS a watcher
+      child that observes the session; it grants no auto-approval axis of its own, so a
+      non-read call still prompts the interactive gate exactly as the default mode would).
 
     ``kind``/``args`` are accepted for a stable signature (a future kind may inspect them) but the
     two current signals (mode + the catalog ``write`` tag) do not consult them.
@@ -156,7 +159,14 @@ def default_decision(
         if entry is not None and "write" in entry.tags:
             return "allow"
         return "ask"
-    # ask (default) and ai-review both route to the existing interactive prompt.
+    if approval_mode in ("ask", "ai-review", "spotter-ai"):
+        # ask (default), ai-review, and spotter-ai all route to the existing interactive
+        # prompt. spotter-ai is pinned here EXPLICITLY (not via fall-through) so its
+        # "behaves exactly like ask" semantics are a deliberate contract, not an accident
+        # of an unmatched-mode default.
+        return "ask"
+    # Unknown/future mode: never manufacture a denial (see docstring) — fall through to
+    # the same interactive prompt as the default.
     return "ask"
 
 

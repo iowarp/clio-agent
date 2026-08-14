@@ -15,7 +15,7 @@ from clio_agent.tools.execution import create_sync_tool_executor
 from clio_agent.tools.gateway import build_gateway, list_tool_definitions, namespace_proxies
 from clio_agent.tools.mcp_config import MCPServerSpec
 
-STUB = '''
+STUB = """
 import json, os, sys
 from fastmcp import FastMCP
 
@@ -28,7 +28,7 @@ def echo(text: str) -> str:
 with open(sys.argv[1], "a", encoding="utf-8") as fh:
     fh.write(f"start {os.getpid()}\\n")
 server.run()
-'''
+"""
 
 
 @pytest.fixture(autouse=True)
@@ -114,9 +114,16 @@ def test_connect_failure_fires_spawn_failed(tmp_path, monkeypatch) -> None:
         namespace_servers=namespace_proxies(gateway),
     )
     try:
-        from fastmcp.exceptions import ToolError
+        from mcp.shared.exceptions import MCPError
 
-        with pytest.raises(ToolError):
+        # tools/gateway.py::_proxy_for_spec now builds its FastMCPProxy with
+        # provider_error_strategy="raise" (live namespace-dispatch fix): a
+        # genuine backend connect failure ("Connection closed" -- the process
+        # exited immediately) must reach the caller as the real MCPError, not
+        # get swallowed by fastmcp's AggregateProvider default ("warn") into
+        # a fabricated NotFoundError -> ToolError("Unknown tool: 'echo'") that
+        # is indistinguishable from the model hallucinating a tool name.
+        with pytest.raises(MCPError):
             executor.call_tool("broken_echo", {"text": "x"})
         assert failed == ["broken"]
         assert connected == []

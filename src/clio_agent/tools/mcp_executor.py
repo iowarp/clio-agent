@@ -357,11 +357,7 @@ class AsyncMCPToolExecutor:
         async with self._call_lock:
             prior_uncertain = self._prior_uncertain_mutating_timeout(name, args)
             if prior_uncertain is not None:
-                raise UncertainMutatingToolOutcomeError(
-                    name,
-                    prior_uncertain,
-                    retry_blocked=True,
-                )
+                raise UncertainMutatingToolOutcomeError(name, prior_uncertain, retry_blocked=True)
             budget = self._timeout_budget_for_call(name, args)
             timeout = budget.seconds
             client, on_server_name, namespace = await self._route(name)

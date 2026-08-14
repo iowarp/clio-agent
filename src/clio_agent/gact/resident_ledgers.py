@@ -676,6 +676,13 @@ def _record_resident_audit(app: "FastAPI", payload: dict[str, Any]) -> None:
     the ledger-retention subsystem writes to, created here if retention init has not
     run yet). Routine ``rehydrate`` rows are trace-only — see :data:`_TRACE_ONLY_REASONS`
     — so cache traffic cannot flush the bounded ring's real eviction history.
+
+    Also stamps the session's cumulative EventBus subscriber-queue-full drop count
+    (#1214), reading the SAME ``app.state.bus`` :func:`_session_is_active` already
+    consults for ``subscriber_count``. Piggybacking here — rather than a new route —
+    makes "this session was evicted from resident memory while also dropping SSE
+    events" visible in the existing ``ledger_evictions`` diagnostics ring; omitted
+    when zero so a healthy session's rows stay unchanged.
     """
 
     trace.event(
@@ -687,6 +694,11 @@ def _record_resident_audit(app: "FastAPI", payload: dict[str, Any]) -> None:
     )
     if payload.get("reason") in _TRACE_ONLY_REASONS:
         return
+    sid = str(payload.get("session_id") or "")
+    bus = getattr(app.state, "bus", None) if sid else None
+    dropped = bus.dropped_total(sid) if bus is not None else 0
+    if dropped:
+        payload = {**payload, "bus_dropped_total": dropped}
     store = getattr(app.state, "ledger_evictions", None)
     if store is None:
         store = deque(maxlen=512)

@@ -331,7 +331,25 @@ RATCHET_BASELINE: dict[str, int] = {
     # (typed rejection lives in gact/messaging.py; only the thin call site lands here).
     # #1080: +3 stop_session_goal cancel-both wiring (logic in gact/goal.py). Merged
     # baseline = actual post-merge count (both additions present).
-    "src/clio_agent/gact/routes/sessions.py": 1572,
+    # spotter-ai (#1034 follow-on): +5 for the create/patch watcher arm/disarm hook
+    # (a shared lazy import + a bare prior-mode fetch + two thin delegator calls; all
+    # branching/spawn/cancel logic lives in the owner module gact/spotter_watcher.py).
+    # #1215 S5: +10 (1577 -> 1587) for the session.create bring-up-timing seam
+    # (an import + a one-line comment + start_phase/end_phase call sites
+    # bracketing the create); the delta is larger than the 6-line hand-edit
+    # because running the required `ruff format` on the touched file also fixed
+    # pre-existing formatting drift already present at the base commit (verified:
+    # the base commit's file already failed `ruff format --check`) -- no
+    # additional logic, only canonical line-wrapping of untouched code. All
+    # timer/registry logic lives in the owner module gact/runtime/bringup_timing.py.
+    "src/clio_agent/gact/routes/sessions.py": 1587,
+    # #1215 S5: crossed the 800 new-file cap (793 -> 809) for enrich_turn_context —
+    # a thin timed combinator wrapping the TWO existing enrichment calls
+    # (_enrich_with_context_files + _enrich_with_requested_memory_search) in ONE
+    # "enrichment" bring-up phase, so the call site in turn.py stays a single
+    # (actually net-negative-line) call instead of needing its own timing calls.
+    # No logic moves; the two real functions are unchanged.
+    "src/clio_agent/gact/enrichment.py": 809,
     # #933: +8 for the turn-scoped workspace-fleet lease in _tool_session_context.
     # #933 review hardening: typed workspace_lease_unavailable degrade when a
     # rooted turn has no leasable agent (+9).
@@ -366,7 +384,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # the tool_result Part construction. The actual bounding/elision/lookup
     # logic lives in the owner module (tools/mcp_results.py::content_blocks_
     # for_wire); this is the theoretical floor for wiring a new Part field.
-    "src/clio_agent/gact/tool_observer.py": 1076,
+    # spotter-ai push-wake (owner design, no timers): +3 for the
+    # wake_on_parent_activity call site right after the tool.call.completed
+    # publish (a lazy import + one call). All gating/coalesce/wake logic lives
+    # in the owner module gact/spotter_watcher.py.
+    "src/clio_agent/gact/tool_observer.py": 1079,
     # Collector-collapse work already on this branch grew the file to 1303 (>the
     # recorded 986 baseline) before this entry was updated — pre-existing, not
     # introduced here. P5 (wire semantics): +34 for the waited_tasks union-merge
@@ -406,7 +428,22 @@ RATCHET_BASELINE: dict[str, int] = {
     # P1.6d #1068: -1 (839 -> 838) — the plan/todo/replan enrichment injects share one comment and a
     # verbose #6/#767 streaming comment was condensed; the inject_replan_suggestion call site (+4) is
     # more than offset. The stall-monitor + suggestion logic lives in the owner module replanning.py.
-    "src/clio_agent/gact/turn.py": 838,
+    # #1215 S5: +5 (838 -> 843) net for the turn.accept_gap bring-up phase (an
+    # import + a one-line comment + start_phase/end_phase call sites), OFFSET by
+    # collapsing the two separate _enrich_with_context_files/
+    # _enrich_with_requested_memory_search calls into ONE enrich_turn_context call
+    # (owner module gact/enrichment.py now times both as a single phase). No
+    # enrichment logic moved here; only the call-site shape changed.
+    # #1215 S5 follow-on: +4 (843 -> 847) for the finish_bringup() call site right
+    # after forward_turn() returns (settles bring-up as far as instrumented on the
+    # success path) -- import already added above, so just the comment + call.
+    # #1215 S5 ruff-format pass: +8 (847 -> 855). Running the required `ruff
+    # format` on the touched file also fixed pre-existing formatting drift
+    # (verified: the base commit already failed `ruff format --check` on several
+    # over-100-char lines this change never touched, e.g. the two
+    # _context_file_turn_provenance calls) -- no additional logic, only
+    # canonical line-wrapping.
+    "src/clio_agent/gact/turn.py": 855,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the
@@ -427,7 +464,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # P2.3 (#1071): +14 — PostToolBatch fires once per turn over the turn's tool
     # round (thin fire_post_tool_batch call site; the payload build + dispatch live
     # in the owner module gact/hooks/intercept.py).
-    "src/clio_agent/gact/turn_finalize.py": 975,  # +36 (A4 #1057): the loop-goal compose glue is extracted into the named, tested `compose_goal_loop_stop_at_finalize` seam (A4 review: the inline glue was silently deletable — the extracted function is driven by the finalize seam test); the glue owns the goal->loop import so goal.py stays a leaf (no cycle)
+    # spotter-ai push-wake (owner design, no timers): +3 for the
+    # on_turn_finalized call site right after the session.status_changed
+    # publish, alongside the existing dispatch_*_at_finalize hooks it mirrors
+    # (a lazy import + one call). Logic lives in gact/spotter_watcher.py.
+    "src/clio_agent/gact/turn_finalize.py": 978,  # +36 (A4 #1057): the loop-goal compose glue is extracted into the named, tested `compose_goal_loop_stop_at_finalize` seam (A4 review: the inline glue was silently deletable — the extracted function is driven by the finalize seam test); the glue owns the goal->loop import so goal.py stays a leaf (no cycle)
     # P5 (owner ask 2026-08-06): +7 for the child/subagent artifact-rollup call
     # site (comment + function-local import + one-line invocation, matching the
     # P4.1/P4.2/P1.6d dispatch idiom already used lower in this file); the

@@ -266,6 +266,22 @@ class Part(DocumentPartFields):
     auto: bool = False
     compacted_message_ids: list[str] = Field(default_factory=list)
 
+    # action_card part (frozen wire contract, SPOTTER MVP): a generic in-transcript
+    # notification/action card. ``source`` is the emitter identity (free string,
+    # e.g. ``"spotter-ai"``); ``severity`` is an open string (MVP: info/warning/
+    # critical); ``title``/``body`` are the headline/detail text. Card lifecycle
+    # reuses the existing shared ``status`` field above (MVP always ``"active"``,
+    # future ``"resolved"``) rather than a second field carrying the same concept.
+    # ``actions`` is a list of ``{id, label, enabled, behavior}`` objects — ``behavior``
+    # is an OPEN discriminated union on ``kind`` (``focus_session`` / ``stub`` today,
+    # ``resolve_permission`` designed-for); clients render an unknown ``kind`` as a
+    # disabled button rather than crash (SPEC §8.3 open-union rule).
+    source: str = ""
+    severity: str = ""
+    title: str = ""
+    body: str = ""
+    actions: list[dict[str, Any]] = Field(default_factory=list)
+
     def to_wire(self) -> dict[str, Any]:
         """Project this part to its wire dict via ``exclude_defaults`` (omitempty:
         a part populates only its own ``type``'s fields; the rest sit at

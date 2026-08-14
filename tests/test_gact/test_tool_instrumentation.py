@@ -500,7 +500,8 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
     """Drive the real react-runtime observed-call path for every tool
     auto-attached to a dynamic react expert (``auto_tools.build_auto_react_tools``:
     create_artifact, plan_exit, write_todos, the cron triad, loop_wakeup,
-    goal_status) plus a plain curated native "row" tool, and assert each
+    goal_status, raise_alert_card) plus a plain curated native "row" tool, and
+    assert each
     EXECUTED call lands at least one ``tool_call`` part on the live transcript
     — whether the call itself succeeds or raises (the tool_call part is
     appended at the "started" phase, before the underlying function even
@@ -543,6 +544,10 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
             "cron_delete": {"schedule_id": "does-not-exist"},
             "loop_wakeup": {"stop": True},
             "goal_status": {},
+            # No parent AgentTask in this harness -> returns the typed
+            # alert_card_no_parent error rather than raising; the tool_call part
+            # still lands unconditionally (that is exactly the invariant here).
+            "raise_alert_card": {"title": "t", "body": "b"},
         }
         assert set(calls) == set(auto_tools), (
             "auto_tools.build_auto_react_tools grew/shrank — update this sabotage test's "

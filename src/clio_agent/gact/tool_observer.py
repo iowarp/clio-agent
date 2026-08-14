@@ -889,6 +889,9 @@ def _make_tool_observer(app: "FastAPI"):
                     payload=payload,
                 )
             )
+            from clio_agent.gact.spotter_watcher import wake_on_parent_activity  # noqa: PLC0415
+
+            wake_on_parent_activity(app, sid, tool_name=name, ok=ok, result=structured_content)
             # Seam #966 S1+S5 (#971): mint generated versions + record the coarse
             # TransformRecord (success AND failure — a failed write is provenance).
             if not completed_after_cancel:

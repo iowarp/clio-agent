@@ -157,7 +157,6 @@ def install_probe_hardening() -> None:
     fastmcp_client.negotiate_auto = hardened_negotiate_auto
     _INSTALLED = True
     logger.info(
-        "mcp_probe_hardening_installed reason=timeout_is_not_an_era_verdict "
-        "retries=%d",
+        "mcp_probe_hardening_installed reason=timeout_is_not_an_era_verdict retries=%d",
         _resolve_timeout_retries(),
     )

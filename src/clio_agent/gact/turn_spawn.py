@@ -116,6 +116,20 @@ class TaskSpec:
     session_scope_metadata: Optional[dict[str, Any]] = None
     # P2.10 (#1127): resolved execution placement carried across the invoker seam.
     placement: str = "local"
+    # Spotter-ai (#1034 follow-on): a caller-chosen display label for the minted
+    # :class:`AgentTask`, overriding the default ``"<expert_id> #<run_index+1>"``
+    # (e.g. the spotter watcher spawns with ``"SPOTTER AI"`` so it reads as a
+    # named surveillance task in the tray, not an ensemble run). Empty keeps the
+    # existing default-label behavior verbatim.
+    run_label: str = ""
+    # Spotter-ai standing-watcher follow-on: when False, mint the child session +
+    # AgentTask record WITHOUT starting a first turn -- the record transitions
+    # straight to RUNNING (never QUEUED-at-cap, never ``_launch``ed) so it stands
+    # as a live, non-terminal row a later independent wake can drive turns on
+    # (see ``gact/spotter_watcher.py``). ``task_text``/``workflow_state``/
+    # ``seed_context`` are unused on this path (no turn ever reads them). Default
+    # ``True`` preserves the existing "mint AND start a turn" behavior verbatim.
+    start_turn: bool = True
 
 
 class SpawnError(Exception):
@@ -343,7 +357,7 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         spawn_group_id=spec.spawn_group_id,
         group_size=spec.group_size,
         handle_id="task_" + child.id.split("_")[-1],
-        run_label=f"{spec.child_expert_id} #{run_index + 1}",
+        run_label=spec.run_label or f"{spec.child_expert_id} #{run_index + 1}",
         live_state=STATUS_QUEUED,
         host=(spec.placement.split(":", 1)[1] if spec.placement.startswith("relay:") else "local"),
         placement=spec.placement,
@@ -390,6 +404,15 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         },
     )
     publish_agent_task_event(app, task, AGENT_TASK_EVENTS[STATUS_QUEUED])
+    if not spec.start_turn:
+        # Standing task: never queued-at-cap, never _launch()ed -- transitions
+        # straight to its RUNNING/"waiting" standing state. A later, independent
+        # wake (gact/spotter_watcher.py) drives real turns on this same child
+        # session without ever re-entering spawn_child_turn.
+        running = reg.transition(task.task_id, STATUS_RUNNING, updated_at=_now())
+        persist_agent_task(app, running)
+        publish_agent_task_event(app, running, AGENT_TASK_EVENTS[STATUS_RUNNING])
+        return running
     if at_cap:
         # FIFO admission happens when a running task frees a slot (completion hook).
         # Return the queued record; the model decides whether to wait.
