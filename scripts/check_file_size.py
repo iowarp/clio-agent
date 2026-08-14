@@ -192,7 +192,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # and the MCP-task event-publisher boot install (import + install call); both
     # bodies live in their own owner modules, routes/async_processes.py and
     # mcp_task_events.py.
-    "src/clio_agent/gact/app.py": 2555,  # relay wiring moved to gact/relay_wiring.py
+    # #1211: +1 for the POST /v1/providers/models/refresh route registration (import
+    # + one register call); the body lives entirely in its own owner modules,
+    # routes/provider_models_refresh.py and providers/model_discovery.py.
+    "src/clio_agent/gact/app.py": 2556,  # relay wiring moved to gact/relay_wiring.py
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -309,7 +312,21 @@ RATCHET_BASELINE: dict[str, int] = {
     # (LMProviderConfig arg + app.state.lm_config + the GET's thinking_level /
     # thinking_effective fields). The mapping logic itself lives in the owner
     # module providers/thinking.py, not here.
-    "src/clio_agent/gact/routes/providers.py": 1317,
+    # #1211 (ratchet DOWN, 1317 -> 1313): the GET /v1/providers/{id}/models handler
+    # was refactored to overlay-first serving (providers/model_discovery.py owns the
+    # overlay + api-key-resolution logic, deduped out of two inline copies here).
+    # #1211 review D2/D5 (adversarial review, 1313 -> 1337): +24 for the
+    # _default_model_for helper (the overlay-aware default_model consulted by both
+    # the /v1/providers list row and the omitted-model bind path) and scoping
+    # overlay-first GET serving to the CLI provider kinds only (HTTP-backed
+    # providers keep their live handshake path unconditionally). Logic stays thin;
+    # the discovery/overlay mechanics live entirely in providers/model_discovery/.
+    # #1211 owner ruling 2026-08-14 (1337 -> 1343): +6 documenting
+    # _default_model_for's claude_code cost-policy exception (the served
+    # default deviates from "follows the CLI's own live default" for that one
+    # provider) -- the policy ITSELF lives in providers/model_discovery/overlay.py's
+    # record_refresh; this docstring update is the only change here.
+    "src/clio_agent/gact/routes/providers.py": 1343,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the
@@ -493,7 +510,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # -12: the thinking-channel emission seams (provider-thinking forward + the
     # provider_thinking_redacted typed reason) moved to their owner module,
     # providers/claude_code_thinking_split.py.
-    "src/clio_agent/providers/claude_code_litellm.py": 835,
+    # #1184 / #1211 review A3 (835 -> 861): +26 to classify a definitive
+    # model-rejection (api_error_status==404) on the streaming ResultMessage path
+    # and raise the shared typed litellm.BadRequestError (raise_model_rejected in
+    # _cli_provider.py) instead of a bare ClaudeCodeExecError -- so the account's
+    # rejection reaches the trace/transcript honestly instead of a misleading
+    # LMTransportError, and is never retried as transient.
+    "src/clio_agent/providers/claude_code_litellm.py": 861,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
     # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
     # #947 DEBT (recorded 2026-07-18, #948 S4): residual over the pre-#947 count

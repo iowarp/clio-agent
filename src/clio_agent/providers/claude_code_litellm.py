@@ -26,6 +26,7 @@ from typing import Any
 
 from clio_agent.providers._cli_provider import (
     messages_to_prompt,
+    raise_model_rejected,
     register_custom_provider,
 )
 from clio_agent.providers.claude_code_audit import (
@@ -74,6 +75,14 @@ CLAUDE_BINARY_NAME = "claude"
 # The Claude Agent SDK transport (persistent pooled CLI session) is the only
 # transport since v0.8.0; "exec" (one `claude -p` per call) was deleted.
 DEFAULT_TRANSPORT = "sdk"
+
+#: A ``ResultMessage.api_error_status`` of 404 is the ONLY definitive
+#: model-rejection signal claude_code exposes (#1184, #1211 review A3/D3) --
+#: matches the discovery-side probe classifier in
+#: ``providers.model_discovery.claude_code._CLAUDE_REJECTION_STATUS``. Any
+#: other ``is_error`` status (429/5xx/None) stays on the existing generic
+#: error path -- transient noise must never be misclassified as a rejection.
+CLAUDE_CODE_REJECTION_STATUS = 404
 
 
 class ClaudeCodeCLIUnavailableError(RuntimeError):
@@ -435,9 +444,26 @@ async def _astream_sdk(
                 if not final_text and getattr(msg, "result", None):
                     final_text = str(msg.result or "").strip()
                 if getattr(msg, "is_error", False):
+                    status = getattr(msg, "api_error_status", None)
+                    if status == CLAUDE_CODE_REJECTION_STATUS:
+                        # #1184 / #1211 review A3: a definitive rejection (verified
+                        # live: api_error_status 404 + a "issue with the selected
+                        # model" result text) -- never retried as transient, and the
+                        # CLI's own explanatory text rides into the transcript
+                        # (see raise_model_rejected's docstring), not just the
+                        # bare status integer the old raise kept.
+                        raise_model_rejected(
+                            message=(
+                                f"claude_code rejected model {model!r} "
+                                f"(api_error_status={status}): "
+                                f"{getattr(msg, 'result', '') or 'model not available'}"
+                            ),
+                            model=f"claude_code/{model}",
+                            llm_provider="claude_code",
+                        )
                     raise ClaudeCodeExecError(
                         f"claude agent sdk returned an error for model={model}: "
-                        f"{getattr(msg, 'api_error_status', None) or getattr(msg, 'subtype', None)}"
+                        f"{status or getattr(msg, 'subtype', None)}"
                     )
 
     # Both message sources are timeout-bounded internally (the pooled entry enforces

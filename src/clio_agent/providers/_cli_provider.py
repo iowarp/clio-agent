@@ -15,6 +15,18 @@ lifecycle now lands once:
 * :func:`register_custom_provider` — the once-per-process LiteLLM registration
   guard, returning ``(ensure_registered, reset_for_tests)`` closures that own
   their own state (no shared module globals).
+* :func:`raise_model_rejected` — the typed classification for a DEFINITIVE
+  model-rejection signal (#1184, #1211 review A3): both providers' response
+  shapes tell them, unambiguously, "the account does not serve this model"
+  (codex app-server error text; claude_code's ``api_error_status == 404``).
+  Raising ``litellm.BadRequestError`` instead of a bare ``RuntimeError``
+  subclass keeps litellm's exception mapper from wrapping it into a generic
+  ``APIConnectionError`` (which DSPy then reports as the misleading
+  ``LMTransportError``, and which the retry layer's transient-marker substring
+  match then retries 3x for an error that will NEVER succeed). ``BadRequestError``
+  passes litellm's mapper untouched and DSPy reports it as ``LMInvalidRequestError``
+  — an honest classification, no gact-layer changes needed since the transcript's
+  generic tail already interpolates ``str(exc)`` verbatim.
 
 Both callers pass their own provider-specific ``CustomLLM`` unsupported-multimodal
 exception type and a transport label so the raised error and the module keep
@@ -25,7 +37,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from typing import Any
+from typing import Any, NoReturn
 
 #: Roles a serialized transcript row may carry; anything else is coerced to
 #: ``user`` so an unknown role can't smuggle elevated instructions.
@@ -172,3 +184,24 @@ def register_custom_provider(
         state["handler"] = None
 
     return ensure_registered, reset_for_tests
+
+
+def raise_model_rejected(
+    *, message: str, model: str, llm_provider: str, cause: BaseException | None = None
+) -> NoReturn:
+    """Raise the typed, non-retryable exception for a DEFINITIVE model rejection.
+
+    ``model`` is the litellm-facing id (e.g. ``"codex/gpt-5.5-codex"`` or
+    ``"claude_code/bogus"``); ``llm_provider`` is the bare kind (``"codex"`` /
+    ``"claude_code"``). Callers pass the provider's own rejection TEXT in
+    ``message`` (codex's app-server error string; claude_code's ``result``
+    field) — it survives verbatim into ``str(exc)``, which the transcript's
+    generic error tail already interpolates, so the rejection reason reaches
+    the user with zero gact-layer changes. ``cause`` chains the original
+    provider exception (``raise ... from cause``) when the caller is inside an
+    ``except`` block — since this function does its own ``raise`` internally,
+    a caller cannot write ``raise_model_rejected(...) from exc`` directly.
+    """
+    import litellm  # noqa: PLC0415 - imported lazily for fast import path
+
+    raise litellm.BadRequestError(message=message, model=model, llm_provider=llm_provider) from cause

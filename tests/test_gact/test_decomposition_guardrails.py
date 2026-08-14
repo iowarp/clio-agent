@@ -77,7 +77,10 @@ from clio_agent.gact.app import build_app
 # 173 -> 190 (feat/document-artifacts merge): +17 document manifest/content, rendition, immutable review,
 # working-copy, native-comment, and optional embedded-editor routes owned by
 # routes/documents.py and composed through routes/artifact_workspace.py.
-EXPECTED_ROUTE_METHOD_PAIRS = 190
+# 190 -> 191 (#1211): +1 POST /v1/providers/models/refresh, owned by the new
+# routes/provider_models_refresh.py (registered alongside routes/providers.py,
+# not inline in app.py).
+EXPECTED_ROUTE_METHOD_PAIRS = 191
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
