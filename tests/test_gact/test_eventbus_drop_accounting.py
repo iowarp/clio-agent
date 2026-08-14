@@ -122,9 +122,7 @@ async def test_queue_full_logs_one_warning_per_burst_not_per_event(
                 bus.publish(Event(type="message.part.delta", session_id="s3", payload={"i": i}))
         # capacity=1: publish #1 fills it, publishes #2-6 (5 events) overflow.
         assert bus.dropped_total("s3") == 5
-        warnings = [
-            r for r in caplog.records if r.getMessage().startswith("eventbus_queue_full")
-        ]
+        warnings = [r for r in caplog.records if r.getMessage().startswith("eventbus_queue_full")]
         # Sabotage: log a warning on every QueueFull instead of once-per-burst
         # -> len(warnings) == 5 -> this assertion red.
         assert len(warnings) == 1

@@ -251,11 +251,7 @@ class EventBus:
 
         if not event.transient:
             self._record_history(event)
-        subscriber_sessions = (
-            list(self._subs)
-            if event.session_id == ""
-            else [event.session_id]
-        )
+        subscriber_sessions = list(self._subs) if event.session_id == "" else [event.session_id]
         for subscriber_session in subscriber_sessions:
             for q in self._subs.get(subscriber_session, []):
                 try:

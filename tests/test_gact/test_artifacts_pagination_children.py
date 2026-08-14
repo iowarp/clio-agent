@@ -43,9 +43,7 @@ def _mint_one(app, sid: str, workspace_id: str, tmp_path: Path, name: str, call_
     assert minted, f"fixture mint should register {name}"
 
 
-def test_include_children_pagination_reconstructs_full_set_no_dupes_no_gaps(
-    tmp_path, monkeypatch
-):
+def test_include_children_pagination_reconstructs_full_set_no_dupes_no_gaps(tmp_path, monkeypatch):
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
     with TestClient(build_app(sessions_path=tmp_path / "s.json")) as client:
         app = client.app
@@ -53,9 +51,7 @@ def test_include_children_pagination_reconstructs_full_set_no_dupes_no_gaps(
 
         # A real child session, wired via the agent-task registry (same pattern as
         # the GAP B include_children tests in test_artifacts_s5.py).
-        child = app.state.sessions.create(
-            workspace_id=wid, title="child", parent_session_id=parent
-        )
+        child = app.state.sessions.create(workspace_id=wid, title="child", parent_session_id=parent)
         app.state.agent_task_registry.register(
             AgentTask(
                 task_id="t_pagination",
@@ -130,9 +126,7 @@ def test_include_children_pagination_limit_below_default_still_covers_full_set(
     with TestClient(build_app(sessions_path=tmp_path / "s.json")) as client:
         app = client.app
         wid, parent = _workspace_session(client, tmp_path)
-        child = app.state.sessions.create(
-            workspace_id=wid, title="child", parent_session_id=parent
-        )
+        child = app.state.sessions.create(workspace_id=wid, title="child", parent_session_id=parent)
         app.state.agent_task_registry.register(
             AgentTask(
                 task_id="t_pagination_small",

@@ -170,16 +170,12 @@ class BringupTimer:
         silently absorbed into whatever session/timer comes next."""
 
         if self._finished:
-            logger.warning(
-                "bringup_timer late_start session_id=%s phase=%s", self.session_id, name
-            )
+            logger.warning("bringup_timer late_start session_id=%s phase=%s", self.session_id, name)
             stream_audit(
                 "bringup.late_op", session_id=self.session_id, op="start_phase", phase=name
             )
             return
-        self._stack.append(
-            _OpenSpan(name=name, start=time.monotonic(), depth=len(self._stack))
-        )
+        self._stack.append(_OpenSpan(name=name, start=time.monotonic(), depth=len(self._stack)))
 
     def end_phase(self, name: str) -> None:
         """Close the named phase, emitting its ``bringup.phase`` audit row.
