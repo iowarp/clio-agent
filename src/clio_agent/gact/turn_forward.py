@@ -52,6 +52,7 @@ from clio_agent.gact.catalog import _builtin_main_agent
 from clio_agent.gact.evidence import _dynamic_agent_runtime_provenance
 from clio_agent.gact.messaging import _prediction_summary
 from clio_agent.gact.providers.auth import _refresh_argonne_lm_token
+from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.globals import (
     _BlueprintRootDisabled,
     _emit_semantic_event,
@@ -97,12 +98,20 @@ def _forward_executor(state: "TurnState") -> Any:
 async def forward_turn(state: "TurnState") -> Any:
     """Run one complete forward/delegation turn under its workspace lease."""
 
-    # Tool wrappers bind a concrete workspace executor while modules are built.
-    # Pin that fleet across initial construction, every delegated child, parent
-    # resumes, and the gaps between them; otherwise the idle reaper can close a
-    # still-referenced executor during a long multi-expert turn.
-    with _tool_session_context(state.sid):
-        return await _forward_turn_leased(state)
+    # #1215 S5: workspace.lease is the OUTER bring-up phase for this whole call
+    # (the lease is held for its entire body) -- blueprint.resolve NESTS inside
+    # it in _forward_turn_leased below, by necessity: the two are not
+    # sequential in real execution (blueprint resolution happens WHILE the
+    # lease is held), so treating them as independent depth-0 phases would
+    # double-count wall time (see the module docstring's SEAM WIRING note in
+    # bringup_timing.py). Nesting is correct here, not a flattening shortcut.
+    with bringup_timing.timer_for_session(state.app, state.sid).phase("workspace.lease"):
+        # Tool wrappers bind a concrete workspace executor while modules are built.
+        # Pin that fleet across initial construction, every delegated child, parent
+        # resumes, and the gaps between them; otherwise the idle reaper can close a
+        # still-referenced executor during a long multi-expert turn.
+        with _tool_session_context(state.sid):
+            return await _forward_turn_leased(state)
 
 
 async def _forward_turn_leased(state: "TurnState") -> Any:
@@ -135,6 +144,10 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
     # _cancellation_checker, exactly like the former closure.
     cancel_cb = partial(cancel_requested, state)
 
+    # #1215 S5: NESTED under workspace.lease (see forward_turn) -- resolves the
+    # active agent + builds its DSPy module; end_phase call sits right after the
+    # module build below, before the actual LLM request dispatch begins.
+    bringup_timing.timer_for_session(state.app, state.sid).start_phase("blueprint.resolve")
     session_agent_id = _session_agent_id(state.sess)
     state.active_agent_id = state.turn_agent_id or session_agent_id
     active_blueprint_root_id = _runtime_active_agent_blueprint_root_id(state.app, state.sid)
@@ -267,6 +280,9 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
             )
         finally:
             _ctx.reset(session_token)
+        # #1215 S5: blueprint resolution + module build are done; the LLM
+        # request dispatch below is NOT part of blueprint.resolve.
+        bringup_timing.timer_for_session(state.app, state.sid).end_phase("blueprint.resolve")
         llm_actor = {
             "agent_id": dynamic_agent.id,
             "agent_title": dynamic_agent.title,
