@@ -369,6 +369,18 @@ PROVIDERS: tuple[Provider, ...] = (
         auth_method="none",
         is_kind_default=True,
         supports_live_catalog=False,
+        # NB: "fable" (the CLI's own current default alias -- verified live
+        # 2026-08-14: a bare `claude -p` call with no --model resolves to
+        # claude-fable-5) is deliberately NOT added here. A novel id in this
+        # static catalog is fed through the handshake's context-window
+        # cascade (models.dev -> marketplace -> static) on every unmocked
+        # claude_code bind; an id models.dev has never indexed costs a real
+        # 6s network-timeout round-trip per bind (offline/firewalled hosts
+        # pay it every time) -- confirmed live via test_lm_provider.py
+        # timing out. The #1211 overlay (POST /v1/providers/models/refresh)
+        # is the correct place for "fable": it surfaces newly-live aliases
+        # WITHOUT baking an unresolved id into the zero-network static
+        # fallback catalog.
         model_catalog=(
             ModelEntry(
                 "haiku",

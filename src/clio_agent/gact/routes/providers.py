@@ -358,28 +358,22 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/providers/{provider_id}/models")
     async def list_provider_models(provider_id: str, api_base: str = "") -> dict[str, Any]:
-        """Per-provider model catalog via the unified async handshake.
+        """Per-provider model catalog: refresh overlay first, then live handshake / static.
 
-        Resolves the preset (by id, then by bare kind) and runs the per-provider
-        handshake (passive auth — browsing never triggers interactive OAuth),
-        returning its ``to_models_wire`` shape with the discovered context windows
-        and capability flags. Cached for the handshake TTL so spamming the picker
-        doesn't hammer the upstream.
-
-        A live provider that fails reports ``source="unavailable"`` with the reason
-        rather than stale static choices; CLI providers (codex/claude_code) expose
-        an editable static candidate catalog; unknown provider ids return a 404.
+        Resolves the preset (by id, then by bare kind). When ``POST
+        /v1/providers/models/refresh`` (#1211) has successfully discovered models
+        for this provider, that overlay is served verbatim — the UI picks up
+        newly-rotated CLI models (codex/claude_code) with zero rebuild. A
+        malformed on-disk overlay is a typed 500, never a silent ``{}`` (the
+        #1202 lesson). Absent an overlay entry, falls through to the unified
+        async handshake (passive auth — browsing never triggers interactive
+        OAuth): a live provider that fails reports ``source="unavailable"`` with
+        the reason rather than stale static choices; CLI providers
+        (codex/claude_code) expose their editable static candidate catalog when
+        neither the overlay nor the handshake yields anything; unknown provider
+        ids return a 404.
         """
-
-        # Resolve the preset (by id, then by bare kind) and run the *unified*
-        # handshake — provider-agnostic; the per-provider handshake class owns
-        # the protocol details. Passive auth: browsing the picker must never
-        # trigger an interactive OAuth flow.
-        import os as _os  # noqa: PLC0415
-
-        from clio_agent.providers.catalog import (  # noqa: PLC0415
-            as_cloud_api_key_env as _cloud_env,
-        )
+        from clio_agent.providers import model_discovery  # noqa: PLC0415
         from clio_agent.providers.handshake import (  # noqa: PLC0415
             HandshakeContext,
             run_handshake,
@@ -405,20 +399,30 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 )
             return {"models": models, "source": "static_catalog"}
 
+        try:
+            overlay = model_discovery.overlay_models_wire(preset.id, preset.provider)
+        except model_discovery.OverlayMalformedError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="overlay_malformed", message=str(exc), recoverable=True
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+        if overlay is not None:
+            return overlay
+
         if preset.provider in {"codex", "claude_code"}:
             static = _PROVIDER_MODELS.get(preset.id) or _PROVIDER_MODELS.get(preset.provider)
             if static:
                 return {"models": static, "source": "static_catalog"}
 
-        env_name = _cloud_env().get(preset.provider, "")
-        api_key = (
-            _os.environ.get(env_name, "") if env_name else _os.environ.get("CLIO_LM_API_KEY", "")
-        )
         ctx = HandshakeContext(
             provider_id=preset.id,
             provider_kind=preset.provider,
             api_base=(api_base or preset.api_base or ""),
-            api_key=api_key,
+            api_key=model_discovery.resolve_cloud_api_key(preset.provider),
             auth_mode="passive",
             allow_external_sources=True,
         )
@@ -446,11 +450,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         Cached for the handshake TTL; ``refresh=true`` forces a re-probe. Argonne
         resolves its own stored token (passive, never interactive).
         """
-        import os as _os  # noqa: PLC0415
-
-        from clio_agent.providers.catalog import (  # noqa: PLC0415
-            as_cloud_api_key_env as _cloud_env,
-        )
+        from clio_agent.providers import model_discovery  # noqa: PLC0415
         from clio_agent.providers.handshake import (  # noqa: PLC0415
             HandshakeContext,
             run_handshake,
@@ -470,15 +470,11 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        env_name = _cloud_env().get(preset.provider, "")
-        api_key = (
-            _os.environ.get(env_name, "") if env_name else _os.environ.get("CLIO_LM_API_KEY", "")
-        )
         ctx = HandshakeContext(
             provider_id=preset.id,
             provider_kind=preset.provider,
             api_base=(api_base or preset.api_base or ""),
-            api_key=api_key,
+            api_key=model_discovery.resolve_cloud_api_key(preset.provider),
             auth_mode="passive",
             allow_external_sources=True,
         )

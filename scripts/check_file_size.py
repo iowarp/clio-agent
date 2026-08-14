@@ -192,7 +192,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # and the MCP-task event-publisher boot install (import + install call); both
     # bodies live in their own owner modules, routes/async_processes.py and
     # mcp_task_events.py.
-    "src/clio_agent/gact/app.py": 2555,  # relay wiring moved to gact/relay_wiring.py
+    # #1211: +1 for the POST /v1/providers/models/refresh route registration (import
+    # + one register call); the body lives entirely in its own owner modules,
+    # routes/provider_models_refresh.py and providers/model_discovery.py.
+    "src/clio_agent/gact/app.py": 2556,  # relay wiring moved to gact/relay_wiring.py
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -309,7 +312,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # (LMProviderConfig arg + app.state.lm_config + the GET's thinking_level /
     # thinking_effective fields). The mapping logic itself lives in the owner
     # module providers/thinking.py, not here.
-    "src/clio_agent/gact/routes/providers.py": 1317,
+    # #1211 (ratchet DOWN, 1317 -> 1313): the GET /v1/providers/{id}/models handler
+    # was refactored to overlay-first serving (providers/model_discovery.py owns the
+    # overlay + api-key-resolution logic, deduped out of two inline copies here).
+    "src/clio_agent/gact/routes/providers.py": 1313,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the

@@ -519,9 +519,10 @@ from clio_agent.gact.routes.permissions import (  # noqa: E402
 from clio_agent.gact.routes.prompts import (  # noqa: E402
     register_prompts_routes,
 )
-from clio_agent.gact.routes.providers import (  # noqa: E402
-    register_providers_routes,
+from clio_agent.gact.routes.provider_models_refresh import (
+    register_provider_models_refresh_routes,  # noqa: E402
 )
+from clio_agent.gact.routes.providers import register_providers_routes  # noqa: E402
 from clio_agent.gact.routes.relay import register_relay_routes  # noqa: E402
 from clio_agent.gact.routes.schedules import (  # noqa: E402
     register_schedules_routes,
@@ -2302,6 +2303,7 @@ def build_app(
     # failure); it reaches the agent-rebuild hooks (install-tool-runtime-hooks /
     # clear-session-model-refs) through ``deps``.
     register_providers_routes(app, deps)
+    register_provider_models_refresh_routes(app, deps)  # POST .../models/refresh (#1211)
 
     # ---- /v1/catalog/tools + /v1/tools + /v1/tools/{tool_id} ----------
     # The built-in tool catalog and the unified live catalog (bundled gateway +
