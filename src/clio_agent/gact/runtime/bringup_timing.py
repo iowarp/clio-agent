@@ -60,18 +60,61 @@ system timer tick), which read a real 40ms phase as 31ms and a real 10ms
 phase as 0.0ms in review probes. ``perf_counter()`` is still monotonic
 (safe for elapsed-time subtraction) but backed by the highest-resolution
 counter the platform exposes.
+
+SEAM WIRING (S5) — ``BringupTimerRegistry`` + :func:`timer_for_session` /
+:func:`finish_bringup` are the per-session STORAGE half, so seam call sites
+across ``routes/sessions.py`` / ``turn.py`` / ``enrichment.py`` /
+``turn_forward.py`` stay ONE line each (RULE 4: no new store — this is a
+small, LRU-capped, thread-safe registry on ``app.state.bringup_timers``,
+ephemeral first-turn state, never a persisted projection). A plain
+``threading.Lock`` guards it because bring-up spans an HTTP handler
+(session.create), the turn's own background task (turn.accept_gap /
+enrichment / workspace.lease / blueprint.resolve), and — were fleet.mount
+wired (see below) — an executor thread; a lock is simpler and more
+obviously correct than merging per-thread partial timers.
+
+PHASE LAYOUT is flat where the real code is genuinely sequential
+(``session.create`` -> ``turn.accept_gap`` -> ``enrichment``), but
+``blueprint.resolve`` NESTS inside ``workspace.lease`` (depth 1) rather than
+sitting flat beside it: ``forward_turn`` holds the workspace lease
+(``_tool_session_context``) for its ENTIRE body, which structurally CONTAINS
+blueprint resolution — an early review pass tried instrumenting these as two
+independent depth-0 phases and produced a self-contradictory summary
+(is_fully_attributed() held only via the D3 clamp while the raw phase list
+summed to 221% of total_ms — the exact double-count the #891 contract exists
+to prevent). Nesting is the CORRECT fix, not a workaround: only the depth-0
+sum (``workspace.lease``) feeds ``attributed_ms``, and ``blueprint.resolve``
+still appears in ``BringupSummary.phases`` for diagnosis.
+
+``fleet.mount`` (the ``SyncMCPToolExecutor`` first-build cost,
+``tools/execution.py``'s ``create_sync_tool_executor`` reached via
+``ClioAgent._active_tool_executor`` in ``agent.py``) is deliberately NOT
+wired in this slice — a genuine architecture blocker, not an oversight:
+that executor cache is keyed by WORKSPACE ROOT, not session id (a shared
+workspace's fleet is built once, by whichever session's first tool call
+gets there first), and ``agent.py`` / ``tools/execution.py`` must stay
+gact-agnostic (``tools.execution`` imports no ``gact``, per
+``gact/runtime/app_state.py``'s layering note) — reading the active
+session id there would violate that boundary, and threading a session_id
+parameter through the constructor is a hot-path signature change shared by
+the CLI and GACT. Wiring it needs its own design pass; #1215 stays open.
 """
 
 from __future__ import annotations
 
 import contextlib
 import logging
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.runtime.stream_audit import stream_audit
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +228,12 @@ class BringupTimer:
         self._closed: list[PhaseRecord] = []
         self._finished = False
         self._final_summary: Optional[BringupSummary] = None
+
+    @property
+    def is_finished(self) -> bool:
+        """True once :meth:`finish` has settled this timer."""
+
+        return self._finished
 
     def start_phase(self, name: str) -> None:
         """Open a named phase (nests under any currently-open phase).
@@ -365,4 +414,130 @@ class BringupTimer:
         return summary
 
 
-__all__ = ["BringupTimer", "BringupSummary", "PhaseRecord"]
+class _NullBringupTimer:
+    """No-op stand-in for a session whose bring-up has already settled.
+
+    Once :meth:`BringupTimerRegistry.finish` runs for a session (its first
+    turn is done), every LATER call to :func:`timer_for_session` for that
+    same session_id returns this singleton instead of ``None`` -- so every
+    seam call site can call ``start_phase``/``end_phase``/``phase`` UNCONDITIONALLY,
+    with no ``if timer is not None`` guard, and stay a genuine one-liner. This
+    is expected on every turn after the first, not an error.
+    """
+
+    def start_phase(self, name: str) -> None:
+        return None
+
+    def end_phase(self, name: str) -> None:
+        return None
+
+    @contextlib.contextmanager
+    def phase(self, name: str) -> Iterator[None]:
+        yield
+
+
+_NULL_TIMER = _NullBringupTimer()
+
+
+class BringupTimerRegistry:
+    """Bounded, thread-safe per-session :class:`BringupTimer` store (#1215 S5).
+
+    Lives on ``app.state.bringup_timers`` — small, ephemeral, first-turn-only
+    state (RULE 4: not a new persisted store; gone once a session's bring-up
+    settles or the LRU cap evicts it). A plain :class:`threading.Lock` guards
+    it: session.create runs on the event loop, turn.accept_gap/enrichment/
+    workspace.lease/blueprint.resolve run on the turn's background task, and
+    a future fleet.mount wiring would fire from an executor thread — a lock
+    is simpler and more obviously correct than merging per-thread partials.
+    """
+
+    def __init__(self, *, max_entries: int = 256) -> None:
+        self._lock = threading.Lock()
+        self._timers: "OrderedDict[str, BringupTimer]" = OrderedDict()
+        # Sessions whose bring-up has already settled (finish() ran) — a
+        # LATER get() for these returns the null timer, never a fresh one
+        # (bring-up is a FIRST-TURN-ONLY concept; turn 2+ must not silently
+        # start measuring a whole new "bring-up" for an already-warm session).
+        self._settled: set[str] = set()
+        self._max_entries = max_entries
+
+    def get_or_create(self, session_id: str) -> "BringupTimer | _NullBringupTimer":
+        with self._lock:
+            if session_id in self._settled:
+                return _NULL_TIMER
+            timer = self._timers.get(session_id)
+            if timer is None:
+                timer = BringupTimer(session_id=session_id)
+                self._timers[session_id] = timer
+                self._evict_over_cap_locked()
+            else:
+                self._timers.move_to_end(session_id)
+            return timer
+
+    def finish(self, session_id: str) -> Optional[BringupSummary]:
+        """Settle + evict ``session_id``'s timer, returning its summary.
+
+        ``None`` when bring-up was never started for this session (a normal
+        no-op: the session predates this instrumentation, or its bring-up
+        already settled and was evicted by an earlier ``finish()`` call --
+        idempotent, safe to call from more than one seam). A never-started
+        session is NOT marked settled here -- only a genuinely-timed session
+        graduates to the null-timer path, so a stray/defensive finish() call
+        can never pre-emptively block that session's real first-turn timer.
+        """
+
+        with self._lock:
+            timer = self._timers.pop(session_id, None)
+            if timer is not None:
+                self._settled.add(session_id)
+        if timer is None:
+            return None
+        return timer.finish()
+
+    def _evict_over_cap_locked(self) -> None:
+        while len(self._timers) > self._max_entries:
+            evicted_sid, evicted_timer = self._timers.popitem(last=False)
+            self._settled.add(evicted_sid)
+            if not evicted_timer.is_finished:
+                # An LRU-capped registry evicting a still-open timer is a real
+                # anomaly (bring-up should settle in seconds) -- settle it so
+                # its partial data is not silently lost rather than dropping
+                # it unfinished.
+                logger.warning(
+                    "bringup_timer_registry lru_evicted_unfinished session_id=%s", evicted_sid
+                )
+                evicted_timer.finish()
+
+
+def timer_for_session(app: "FastAPI", session_id: str) -> "BringupTimer | _NullBringupTimer":
+    """Thin, ONE-LINE seam entry point: get-or-create ``session_id``'s live
+    bring-up timer (or the no-op null timer for a session past its first
+    turn). The only import a seam call site needs."""
+
+    return _registry(app).get_or_create(session_id)
+
+
+def finish_bringup(app: "FastAPI", session_id: str) -> Optional[BringupSummary]:
+    """Settle + evict ``session_id``'s bring-up timer (idempotent no-op if
+    never started or already settled)."""
+
+    return _registry(app).finish(session_id)
+
+
+def _registry(app: "FastAPI") -> BringupTimerRegistry:
+    existing = getattr(app.state, "bringup_timers", None)
+    if isinstance(existing, BringupTimerRegistry):
+        return existing
+    registry = BringupTimerRegistry()
+    app.state.bringup_timers = registry
+    return registry
+
+
+__all__ = [
+    "BringupTimer",
+    "BringupSummary",
+    "BringupTimerRegistry",
+    "PhaseRecord",
+    "timer_for_session",
+    "finish_bringup",
+]

@@ -55,6 +55,7 @@ from clio_agent.gact.permission_gate import (
     _record_resolved_permission,
 )
 from clio_agent.gact.providers.config import _active_lm_model_ref
+from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.constants import _CTX_MAX_BYTES
 from clio_agent.gact.runtime.globals import (
     _ContextFileAccessError,
@@ -595,6 +596,21 @@ def _enrich_with_requested_memory_search(
         + "\n\n## User question\n\n"
         + user_text
     ), metadata
+
+
+def enrich_turn_context(
+    app: "FastAPI", sid: str, user_text: str, user_msg: "Message"
+) -> tuple[str, dict[str, Any]]:
+    """#1215 S5: both enrichment mechanisms as ONE timed "enrichment" phase.
+
+    Pure timed combinator -- delegates unchanged to the two real functions
+    above (no logic moves); the turn loop's single call site replaces its
+    former two separate calls with this one.
+    """
+
+    with bringup_timing.timer_for_session(app, sid).phase("enrichment"):
+        text = _enrich_with_context_files(app, sid, user_text)
+        return _enrich_with_requested_memory_search(app, sid, text, user_msg)
 
 
 # Clio-owned marker for the server-composed observe-later notification block
