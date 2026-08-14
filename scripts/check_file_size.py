@@ -369,7 +369,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # the tool_result Part construction. The actual bounding/elision/lookup
     # logic lives in the owner module (tools/mcp_results.py::content_blocks_
     # for_wire); this is the theoretical floor for wiring a new Part field.
-    "src/clio_agent/gact/tool_observer.py": 1076,
+    # spotter-ai push-wake (owner design, no timers): +3 for the
+    # wake_on_parent_activity call site right after the tool.call.completed
+    # publish (a lazy import + one call). All gating/coalesce/wake logic lives
+    # in the owner module gact/spotter_watcher.py.
+    "src/clio_agent/gact/tool_observer.py": 1079,
     # Collector-collapse work already on this branch grew the file to 1303 (>the
     # recorded 986 baseline) before this entry was updated — pre-existing, not
     # introduced here. P5 (wire semantics): +34 for the waited_tasks union-merge
@@ -430,7 +434,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # P2.3 (#1071): +14 — PostToolBatch fires once per turn over the turn's tool
     # round (thin fire_post_tool_batch call site; the payload build + dispatch live
     # in the owner module gact/hooks/intercept.py).
-    "src/clio_agent/gact/turn_finalize.py": 975,  # +36 (A4 #1057): the loop-goal compose glue is extracted into the named, tested `compose_goal_loop_stop_at_finalize` seam (A4 review: the inline glue was silently deletable — the extracted function is driven by the finalize seam test); the glue owns the goal->loop import so goal.py stays a leaf (no cycle)
+    # spotter-ai push-wake (owner design, no timers): +3 for the
+    # on_turn_finalized call site right after the session.status_changed
+    # publish, alongside the existing dispatch_*_at_finalize hooks it mirrors
+    # (a lazy import + one call). Logic lives in gact/spotter_watcher.py.
+    "src/clio_agent/gact/turn_finalize.py": 978,  # +36 (A4 #1057): the loop-goal compose glue is extracted into the named, tested `compose_goal_loop_stop_at_finalize` seam (A4 review: the inline glue was silently deletable — the extracted function is driven by the finalize seam test); the glue owns the goal->loop import so goal.py stays a leaf (no cycle)
     # P5 (owner ask 2026-08-06): +7 for the child/subagent artifact-rollup call
     # site (comment + function-local import + one-line invocation, matching the
     # P4.1/P4.2/P1.6d dispatch idiom already used lower in this file); the

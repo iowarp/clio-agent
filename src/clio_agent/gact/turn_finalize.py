@@ -712,6 +712,9 @@ def finalize_turn(
             },
         )
     )
+    from clio_agent.gact.spotter_watcher import on_turn_finalized  # noqa: PLC0415
+
+    on_turn_finalized(state.app, state.sid)
     # P2.3 PostToolBatch: fire ONCE per turn, after the turn's whole tool batch resolved and before
     # Stop/next step — only when the turn ran ≥1 tool. ``state.tools_called`` is the honest clio-owned
     # batch boundary (the DSPy ReAct loop owns per-model-step rounds; a finer seam moves this there).
