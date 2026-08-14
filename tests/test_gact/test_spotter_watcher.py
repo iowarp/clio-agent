@@ -35,7 +35,11 @@ from fastapi.testclient import TestClient
 from clio_agent.gact.agent_tasks import STATUS_CANCELLED, STATUS_RUNNING
 from clio_agent.gact.app import build_app
 from clio_agent.gact.spotter_watcher import (
+    _WAKE_COALESCED_TEXT,
+    _WAKE_TURN_FINAL_TEXT,
     WATCHER_RUN_LABEL,
+    _tool_outcome_fact,
+    _wake_text,
     ensure_spotter_watcher,
     on_turn_finalized,
     wake_on_parent_activity,
@@ -376,11 +380,18 @@ def test_parent_tool_completion_wakes_exactly_one_check_turn(tmp_path: Path) -> 
         task = app.state.agent_task_registry.for_parent(sid)[0]
         assert task.live_state == "waiting"
 
-        # Simulate the tool_observer.py seam: real parent tool-call activity.
-        wake_on_parent_activity(app, sid)
+        # Simulate the tool_observer.py seam: real parent tool-call activity,
+        # with the facts tool_observer.py now threads through (#1218 e).
+        wake_on_parent_activity(
+            app,
+            sid,
+            tool_name="phenotype_measure_cohort",
+            ok=True,
+            result={"runs": ["r1", "r2", "r3", "r4", "r5"]},
+        )
 
         assert _wait_for(lambda: len(agent.calls) == 1)
-        assert "Session activity" in agent.calls[0]
+        assert "phenotype_measure_cohort completed (5 runs reported)" in agent.calls[0]
         assert "provenance" in agent.calls[0]
 
         # Exactly one check turn: no duplicate/second forward call.
@@ -406,7 +417,7 @@ def test_coalescing_under_burst_of_tool_completions(tmp_path: Path) -> None:
         child_sid = task.child_session_id
 
         # First activity: starts the (blocked-in-flight) check turn.
-        wake_on_parent_activity(app, sid)
+        wake_on_parent_activity(app, sid, tool_name="phenotype_measure_cohort")
         assert _wait_for(lambda: len(agent.calls) == 1)
         assert _wait_for(lambda: app.state.turn_runner.busy(child_sid))
 
@@ -415,13 +426,19 @@ def test_coalescing_under_burst_of_tool_completions(tmp_path: Path) -> None:
         inbox = inbox_for(app, child_sid)
         assert not inbox.peek_nonempty()  # nothing buffered yet
 
-        # A burst of MORE activity while the check turn is in flight.
-        for _ in range(20):
-            wake_on_parent_activity(app, sid)
+        # A burst of MORE activity (distinct tools) while the check turn is
+        # in flight -- #1218 e: the buffered wake must not keep naming only
+        # the FIRST tool of the burst; it collapses to the honest multi form.
+        for i in range(20):
+            wake_on_parent_activity(app, sid, tool_name=f"phenotype_tool_{i}")
 
         # AT MOST ONE buffered wake, never 20.
         assert inbox.peek_nonempty()
-        assert len(inbox.drain()) == 1
+        buffered = inbox.drain()
+        assert len(buffered) == 1
+        assert "multiple tool calls completed" in buffered[0].text
+        # Never names just one of the 20 distinct tools from the burst.
+        assert "phenotype_tool_" not in buffered[0].text
 
         block.set()  # release the in-flight check turn
         assert _wait_for(lambda: not app.state.turn_runner.busy(child_sid))
@@ -517,3 +534,144 @@ def test_watcher_activity_never_self_wakes(tmp_path: Path) -> None:
         time.sleep(0.2)
         assert agent.calls == []
         assert app.state.agent_task_registry.get(task.task_id).live_state == "waiting"
+
+
+# --------------------------------------------------------------------------- #
+# 7. #1218 (e): the wake message carries FACTS, not a generic nudge.
+#    tool-completed / coalesced / turn-final each get their own honest form;
+#    never a directive ("check...", "act per your instructions...") -- the
+#    watcher's OWN prompt owns its reasoning about what to do next.
+# --------------------------------------------------------------------------- #
+
+# Directive-shaped fragments the OLD fixed wake used to carry (⚑#3
+# anti-pattern: clio core dictating the watcher's next move instead of
+# grounding it in facts). None of the new payload shapes may contain these.
+_FORBIDDEN_DIRECTIVE_FRAGMENTS = ("check the provenance", "act per your instructions", "you should")
+
+
+def test_tool_outcome_fact_reports_a_list_valued_entrys_length() -> None:
+    """A structural fact -- the first list-valued key's length, named after
+    its OWN key -- never an authored guess."""
+
+    assert (
+        _tool_outcome_fact({"campaign": None, "runs_checked": 10, "verdicts": [1, 2, 3]})
+        == "3 verdicts reported"
+    )
+    assert _tool_outcome_fact({"runs": ["a", "b", "c", "d", "e"]}) == "5 runs reported"
+
+
+def test_tool_outcome_fact_is_empty_when_nothing_list_shaped() -> None:
+    """Never fabricate a count: a scalar-only mapping, a non-mapping, and
+    ``None`` all yield '' -- the caller then omits the parenthetical entirely
+    rather than inventing a number."""
+
+    assert _tool_outcome_fact({"ok": True, "count": 5}) == ""
+    assert _tool_outcome_fact("a plain string result") == ""
+    assert _tool_outcome_fact(None) == ""
+    assert _tool_outcome_fact([1, 2, 3]) == ""  # a bare list is not a Mapping
+
+
+def test_wake_text_tool_completed_carries_the_tool_name_and_fact() -> None:
+    text = _wake_text(
+        tool_name="phenotype_measure_cohort", tool_ok=True, tool_result={"runs": [1, 2, 3, 4, 5]}
+    )
+    assert text == (
+        "Watched session activity: phenotype_measure_cohort completed "
+        "(5 runs reported). The provenance store may have new entries."
+    )
+
+
+def test_wake_text_tool_completed_with_no_derivable_fact_omits_the_parenthetical() -> None:
+    text = _wake_text(tool_name="spotter_lift_quarantine", tool_ok=True, tool_result={"ok": True})
+    assert text == (
+        "Watched session activity: spotter_lift_quarantine completed. "
+        "The provenance store may have new entries."
+    )
+    assert "(" not in text
+
+
+def test_wake_text_tool_failed_states_the_failure_as_the_fact() -> None:
+    text = _wake_text(tool_name="phenotype_measure_cohort", tool_ok=False, tool_result=None)
+    assert text == (
+        "Watched session activity: phenotype_measure_cohort failed. "
+        "The provenance store may have new entries."
+    )
+
+
+def test_wake_text_turn_final_form_is_the_module_constant() -> None:
+    """No ``tool_name`` -- the turn-final form (#1218 e's own worked example)."""
+
+    assert _wake_text() == _WAKE_TURN_FINAL_TEXT
+    assert _WAKE_TURN_FINAL_TEXT == (
+        "Watched session activity: the session's turn completed. "
+        "The provenance store may have new entries."
+    )
+
+
+def test_coalesced_wake_text_names_no_single_tool() -> None:
+    assert _WAKE_COALESCED_TEXT == (
+        "Watched session activity: multiple tool calls completed. "
+        "The provenance store may have new entries."
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _wake_text(tool_name="phenotype_measure_cohort", tool_ok=True, tool_result={"r": [1]}),
+        _wake_text(tool_name="phenotype_measure_cohort", tool_ok=False),
+        _wake_text(),
+        _WAKE_COALESCED_TEXT,
+    ],
+    ids=["tool_completed", "tool_failed", "turn_final", "coalesced"],
+)
+def test_no_wake_form_carries_a_directive(text: str) -> None:
+    """FACTS ONLY (#1218 e): every wake shape must be free of directive
+    language -- the watcher's OWN prompt owns what to do about the facts, not
+    this payload."""
+
+    lowered = text.lower()
+    assert not any(fragment in lowered for fragment in _FORBIDDEN_DIRECTIVE_FRAGMENTS), text
+
+
+@pytest.mark.usefixtures("host_agent_executor")
+def test_turn_final_wake_via_on_turn_finalized_carries_its_own_form(tmp_path: Path) -> None:
+    """The ``turn.completed`` half of the push (:func:`on_turn_finalized`'s
+    own-session branch) carries the turn-final form, not the tool-completed
+    or coalesced ones -- it names no tool because none triggered it."""
+
+    agent = _CapturingAgent()
+    app, root_path = _build_app_with_watcher_blueprint(tmp_path, agent)
+    with TestClient(app) as client:
+        wid = _make_workspace(client, root_path)
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "t", "workspace_id": wid, "approval_mode": "spotter-ai"},
+        ).json()["id"]
+
+        # Simulate the turn_finalize.py seam: the PARENT's own turn just ended.
+        on_turn_finalized(app, sid)
+
+        assert _wait_for(lambda: len(agent.calls) == 1)
+        assert agent.calls[0] == _WAKE_TURN_FINAL_TEXT
+        assert "the session's turn completed" in agent.calls[0]
+
+
+@pytest.mark.usefixtures("host_agent_executor")
+def test_failed_tool_completion_wakes_with_the_failed_form(tmp_path: Path) -> None:
+    agent = _CapturingAgent()
+    app, root_path = _build_app_with_watcher_blueprint(tmp_path, agent)
+    with TestClient(app) as client:
+        wid = _make_workspace(client, root_path)
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "t", "workspace_id": wid, "approval_mode": "spotter-ai"},
+        ).json()["id"]
+
+        wake_on_parent_activity(app, sid, tool_name="phenotype_measure_cohort", ok=False)
+
+        assert _wait_for(lambda: len(agent.calls) == 1)
+        assert agent.calls[0] == (
+            "Watched session activity: phenotype_measure_cohort failed. "
+            "The provenance store may have new entries."
+        )

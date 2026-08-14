@@ -61,8 +61,9 @@ reason=...`` / ``spotter_wake_started`` / ``spotter_wake_enqueued`` /
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact.agent_tasks import STATUS_RUNNING
 from clio_agent.runtime import trace
@@ -94,14 +95,67 @@ _WATCHER_REQUESTING_EXPERT_ID = "main"
 #: buffered wake (see ``loop_inbox.LoopInbox.put_coalesced_user_message``).
 _WAKE_COALESCE_KEY = "spotter_wake"
 
-#: The push-wake payload. Deliberately generic/factual (not a precise per-event
-#: count — the text is a NUDGE that grounds the watcher in what happened, not
-#: authoritative data; the watcher's own tools are the source of truth for
-#: what actually changed).
-_WAKE_TEXT = (
-    "Session activity: new tool call(s) completed on the session you are watching. "
-    "Check the provenance store for new runs and act per your instructions."
+#: Turn-final wake payload (#1218 e): the parent session's OWN turn just ended
+#: (the ``turn.completed`` half of the push, vs. a specific tool completing).
+#: FACTS ONLY — no directive ("check the store...", "act per your
+#: instructions..."); the watcher's OWN prompt owns what to do about it.
+_WAKE_TURN_FINAL_TEXT = (
+    "Watched session activity: the session's turn completed. "
+    "The provenance store may have new entries."
 )
+
+#: Coalesced-burst wake payload (#1218 e): several parent activities collapsed
+#: onto the ONE buffered wake behind an already-running check turn (never more
+#: than one queued — see :func:`_push_wake`). A deliberately generic summary
+#: since no single tool/outcome is representative of the whole burst.
+_WAKE_COALESCED_TEXT = (
+    "Watched session activity: multiple tool calls completed. "
+    "The provenance store may have new entries."
+)
+
+
+def _tool_outcome_fact(structured_result: Any) -> str:
+    """A short, STRUCTURAL fact drawn from a completed tool's own typed result
+    (#1218 e) — never an authored/inferred summary. When the result is a
+    mapping, the first list-valued entry's length is reported using that
+    entry's OWN key as the noun (e.g. ``{"verdicts": [...]*5}`` -> ``"5
+    verdicts reported"``), so the fact is always traceable to real wire data.
+    Returns ``""`` when the result carries no list-shaped evidence (a tool
+    that returns scalars/None yields no fabricated count — never a guess).
+    """
+
+    if not isinstance(structured_result, Mapping):
+        return ""
+    for key, value in structured_result.items():
+        if isinstance(value, (list, tuple)):
+            noun = str(key).replace("_", " ").strip() or "items"
+            return f"{len(value)} {noun} reported"
+    return ""
+
+
+def _wake_text(*, tool_name: str = "", tool_ok: bool = True, tool_result: Any = None) -> str:
+    """Compose the fact-carrying wake payload for ONE (non-coalesced) push
+    (#1218 e). ``tool_name`` empty means the PARENT's own turn just finished
+    (:func:`on_turn_finalized`'s branch) — otherwise it names the tool that
+    just completed on the protected parent session, plus (when derivable) a
+    structural fact about what it reported. FACTS ONLY: no directive verbs —
+    the watcher's own prompt (not this payload) owns its reasoning about what
+    to do next.
+    """
+
+    if not tool_name:
+        return _WAKE_TURN_FINAL_TEXT
+    if not tool_ok:
+        return (
+            f"Watched session activity: {tool_name} failed. "
+            "The provenance store may have new entries."
+        )
+    fact = _tool_outcome_fact(tool_result)
+    suffix = f" ({fact})" if fact else ""
+    return (
+        f"Watched session activity: {tool_name} completed{suffix}. "
+        "The provenance store may have new entries."
+    )
 
 
 def _watcher_blueprint_id() -> str:
@@ -390,7 +444,14 @@ def disarm_spotter_watcher(
 # --------------------------------------------------------------------------- #
 
 
-def wake_on_parent_activity(app: "FastAPI", parent_session_id: str) -> None:
+def wake_on_parent_activity(
+    app: "FastAPI",
+    parent_session_id: str,
+    *,
+    tool_name: str = "",
+    ok: bool = True,
+    result: Any = None,
+) -> None:
     """Push-wake hook: PARENT session activity wakes its armed watcher.
 
     Owner design: "mode is standing intent; data should be PUSHED into it."
@@ -402,6 +463,22 @@ def wake_on_parent_activity(app: "FastAPI", parent_session_id: str) -> None:
     A cheap no-op unless ``parent_session_id`` is genuinely in spotter-ai mode
     with a LIVE (armed) watcher — the common case for every OTHER session's
     tool calls in the whole system.
+
+    Args:
+        app: The GACT app.
+        parent_session_id: The protected (spotter-ai) session whose activity
+            is pushing this wake.
+        tool_name: The tool that just completed on ``parent_session_id`` — the
+            ``tool.call.completed`` caller's fact (#1218 e). Empty (the
+            default) means this is a ``turn.completed`` push instead
+            (:func:`on_turn_finalized`'s own-branch call), which carries no
+            single tool to name.
+        ok: Whether ``tool_name`` completed successfully. Ignored when
+            ``tool_name`` is empty.
+        result: The tool's own typed result (its ``structuredContent`` when
+            available) — read STRUCTURALLY for a short fact (see
+            :func:`_tool_outcome_fact`), never re-narrated. Ignored when
+            ``tool_name`` is empty.
     """
 
     session = app.state.sessions.get(parent_session_id)
@@ -410,10 +487,13 @@ def wake_on_parent_activity(app: "FastAPI", parent_session_id: str) -> None:
     task = next(iter(_live_watcher_tasks(app, parent_session_id)), None)
     if task is None:
         return
-    _push_wake(app, parent_session_id, task)
+    wake_text = _wake_text(tool_name=tool_name, tool_ok=ok, tool_result=result)
+    _push_wake(app, parent_session_id, task, wake_text)
 
 
-def _start_check_turn_on_app_loop(app: "FastAPI", child_sid: str, child_session: "Session") -> None:
+def _start_check_turn_on_app_loop(
+    app: "FastAPI", child_sid: str, child_session: "Session", wake_text: str
+) -> None:
     """Start the watcher's check turn, marshaled onto the app's event loop
     regardless of the calling thread (mirrors
     :func:`clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe`'s exact
@@ -428,7 +508,7 @@ def _start_check_turn_on_app_loop(app: "FastAPI", child_sid: str, child_session:
     from clio_agent.gact.turn import _start_background_user_turn  # noqa: PLC0415
 
     def _run() -> None:
-        _start_background_user_turn(app, child_sid, child_session, _WAKE_TEXT, prev_status="idle")
+        _start_background_user_turn(app, child_sid, child_session, wake_text, prev_status="idle")
 
     loop = getattr(app.state, "mcp_app_loop", None)
     if loop is None:
@@ -448,11 +528,20 @@ def _start_check_turn_on_app_loop(app: "FastAPI", child_sid: str, child_session:
     asyncio.run_coroutine_threadsafe(_call(), loop).result(timeout=30)
 
 
-def _push_wake(app: "FastAPI", parent_session_id: str, task: "AgentTask") -> None:
+def _push_wake(app: "FastAPI", parent_session_id: str, task: "AgentTask", wake_text: str) -> None:
     """Push one wake into the watcher's session: start a check turn if idle,
     coalesce onto an already-pending one if busy — never more than one
     buffered wake behind a running check turn (a 20-tool-call parent turn
-    must produce at most ONE queued wake, not 20)."""
+    must produce at most ONE queued wake, not 20).
+
+    A burst that coalesces does not just drop the newer facts on the floor
+    (#1218 e): the SECOND-and-later push in a busy window overwrites the
+    buffered wake with the generic multi-activity summary
+    (:data:`_WAKE_COALESCED_TEXT`) via the coalesce key's replace semantics
+    (:meth:`clio_agent.gact.loop_inbox.LoopInbox.put_coalesced_user_message`)
+    — still exactly one buffered wake, now honestly describing "several
+    things happened" instead of stale single-event text.
+    """
 
     child_sid = task.child_session_id
     runner = getattr(app.state, "turn_runner", None)
@@ -460,11 +549,15 @@ def _push_wake(app: "FastAPI", parent_session_id: str, task: "AgentTask") -> Non
         return
 
     if runner.busy(child_sid):
-        from clio_agent.gact.loop_inbox import inbox_for  # noqa: PLC0415
+        from clio_agent.gact.loop_inbox import (  # noqa: PLC0415
+            enqueue_user_steer,
+            inbox_for,
+        )
 
-        if inbox_for(app, child_sid).peek_nonempty():
-            # Something is already buffered for the watcher (most likely an
-            # earlier coalesced wake from this SAME burst) -- do not pile on.
+        coalescing = inbox_for(app, child_sid).peek_nonempty()
+        text = _WAKE_COALESCED_TEXT if coalescing else wake_text
+        enqueue_user_steer(app, child_sid, text, {"coalesce_key": _WAKE_COALESCE_KEY})
+        if coalescing:
             logger.info(
                 "spotter_wake_coalesced reason=already_pending session=%s watcher=%s",
                 parent_session_id,
@@ -476,31 +569,27 @@ def _push_wake(app: "FastAPI", parent_session_id: str, task: "AgentTask") -> Non
                 parent_session_id,
                 child_sid,
             )
-            return
-
-        from clio_agent.gact.loop_inbox import enqueue_user_steer  # noqa: PLC0415
-
-        enqueue_user_steer(app, child_sid, _WAKE_TEXT, {"coalesce_key": _WAKE_COALESCE_KEY})
-        logger.info(
-            "spotter_wake_enqueued session=%s watcher=%s task=%s",
-            parent_session_id,
-            child_sid,
-            task.task_id,
-        )
-        trace.event(
-            "SPOTTER",
-            "spotter_wake_enqueued session=%s watcher=%s task=%s",
-            parent_session_id,
-            child_sid,
-            task.task_id,
-        )
+        else:
+            logger.info(
+                "spotter_wake_enqueued session=%s watcher=%s task=%s",
+                parent_session_id,
+                child_sid,
+                task.task_id,
+            )
+            trace.event(
+                "SPOTTER",
+                "spotter_wake_enqueued session=%s watcher=%s task=%s",
+                parent_session_id,
+                child_sid,
+                task.task_id,
+            )
         return
 
     child_session = app.state.sessions.get(child_sid)
     if child_session is None:
         return
 
-    _start_check_turn_on_app_loop(app, child_sid, child_session)
+    _start_check_turn_on_app_loop(app, child_sid, child_session, wake_text)
     _set_live_state(app, task.task_id, "running")
     logger.info(
         "spotter_wake_started session=%s watcher=%s task=%s",
