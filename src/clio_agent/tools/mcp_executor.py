@@ -27,6 +27,7 @@ from clio_agent.tools.mcp_connection_era import (
     resolved_connect_mode,
 )
 from clio_agent.tools.mcp_errors import typed_mcp_call_error, typed_mcp_protocol_error
+from clio_agent.tools.mcp_probe_hardening import call_with_namespace_first_call_retry
 from clio_agent.tools.mcp_runtime import make_mcp_client
 
 logger = logging.getLogger(__name__)
@@ -357,11 +358,7 @@ class AsyncMCPToolExecutor:
         async with self._call_lock:
             prior_uncertain = self._prior_uncertain_mutating_timeout(name, args)
             if prior_uncertain is not None:
-                raise UncertainMutatingToolOutcomeError(
-                    name,
-                    prior_uncertain,
-                    retry_blocked=True,
-                )
+                raise UncertainMutatingToolOutcomeError(name, prior_uncertain, retry_blocked=True)
             budget = self._timeout_budget_for_call(name, args)
             timeout = budget.seconds
             client, on_server_name, namespace = await self._route(name)
@@ -370,10 +367,12 @@ class AsyncMCPToolExecutor:
             # is the spawn-diet learn/drop-plan signal.
             first_call = namespace is not None and namespace not in self._connected_namespaces
             try:
-                result = await asyncio.wait_for(
-                    client.call_tool(on_server_name, dict(args)),
-                    timeout=timeout,
-                )
+                result = await call_with_namespace_first_call_retry(
+                    lambda: asyncio.wait_for(client.call_tool(on_server_name, dict(args)), timeout),
+                    namespace=namespace,
+                    first_call=first_call,
+                    tool=name,
+                )  # bounded retry on the namespace's first request (mcp_probe_hardening.py)
             except TimeoutError as exc:
                 # Conservative: a first-call timeout may be tool latency, not
                 # spawn health — the dropped plan self-heals (declared respawn

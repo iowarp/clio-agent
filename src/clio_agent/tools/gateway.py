@@ -157,7 +157,31 @@ def _proxy_for_spec(
         # backend connect this factory ever produces actually gets classified.
         return instrument_client_era(fresh, server_id=spec.name)
 
-    return FastMCPProxy(client_factory=_client_factory)
+    # provider_error_strategy="raise" (root-cause fix, live namespace-dispatch
+    # defect): FastMCPProxy IS a fastmcp AggregateProvider with exactly ONE
+    # child provider (its own ProxyProvider around this one backend) -- there
+    # is never a second provider to gracefully skip past. FastMCP's own
+    # default, "warn", makes AggregateProvider._get_highest_version_result
+    # (aggregate.py) catch ANY non-NotFoundError exception from that single
+    # provider's get_tool()/list_tools() -- a genuine backend connect/protocol
+    # failure included -- log it, and return None for the tool. FastMCP's
+    # server.py then reads that None as "no such tool" and raises
+    # NotFoundError("Unknown tool: <bare-name>"), which reaches the model
+    # indistinguishable from a hallucinated tool name.
+    #
+    # Reproduced live: a legacy-only stdio backend (fastmcp 3.4.7, e.g. an
+    # agent-blueprint's directly-invoked exe) occasionally answers a
+    # mirrored-modern connect attempt (fastmcp's own
+    # `_mirror_front_era_mode()`, immediately above) with "Received request
+    # before initialization was complete" during era negotiation. That is a
+    # real, diagnosable connectivity/protocol event -- not evidence the tool
+    # is absent -- so it must reach OUR typed-error boundary
+    # (tools/mcp_errors.py, applied by every direct call path per #1114)
+    # instead of being silently downgraded to "not found" inside fastmcp's
+    # aggregate layer. "raise" changes nothing for an ACTUAL missing tool:
+    # aggregate.py explicitly special-cases NotFoundError to keep degrading
+    # quietly regardless of this setting.
+    return FastMCPProxy(client_factory=_client_factory, provider_error_strategy="raise")
 
 
 def _proxy_factory_accepts_cwd(factory: Callable[..., FastMCP]) -> bool:
