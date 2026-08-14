@@ -37,6 +37,8 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
+from clio_agent.runtime.stream_audit import stream_audit
+
 logger = logging.getLogger(__name__)
 
 
@@ -148,6 +150,15 @@ class EventBus:
         # queue. Bound by the first subscribe(); foreign-thread publishes
         # are bridged onto it via call_soon_threadsafe (#758).
         self._loop: asyncio.AbstractEventLoop | None = None
+        # session_id -> cumulative subscriber-queue-full drop count (#1214: no
+        # silent ``except asyncio.QueueFull: pass``). Read via ``dropped_total``.
+        self._dropped_total: dict[str, int] = defaultdict(int)
+        # session_id -> whether the current stretch of drops is already
+        # "announced" via logger.warning — reset on the next successful
+        # delivery so a stuck consumer produces one warning per BURST, not
+        # one per dropped event, while the audit trail (below) still records
+        # every drop.
+        self._drop_burst_active: dict[str, bool] = defaultdict(bool)
 
     def publish(self, event: Event) -> None:
         """Fan-out to every subscriber of event.session_id + record
@@ -155,10 +166,21 @@ class EventBus:
 
         Drops events into live queues when a subscriber's queue is
         full rather than blocking the publisher — slow consumers
-        shouldn't stall the agent's turn loop. The dropped events
-        show up as a ``server.disposed``-equivalent gap in the
-        client's stream; clients catch up via ``GET /v1/sessions/
-        {sid}/messages`` on reconnect.
+        shouldn't stall the agent's turn loop. This is silent ON THE
+        WIRE: no gap-marker SSE event is emitted to the client (an
+        earlier version of this docstring claimed a ``server.disposed``-
+        equivalent gap event fired here; no such event was ever emitted
+        — iowarp/clio-agent#1214), so an attached client reading its
+        live stream simply never sees the dropped event. The replay
+        history is UNAFFECTED by a live-queue drop (``_record_history``
+        below runs before fan-out), so a client that reconnects with
+        ``Last-Event-ID`` — or calls ``GET /v1/sessions/{sid}/messages``
+        — still recovers a dropped event as long as it has not aged out
+        of the bounded ``history_per_session`` replay window. Every drop
+        IS accounted for: a per-session counter (:meth:`dropped_total`),
+        one ``logger.warning`` per burst, and a ``bus.queue_full``
+        stream-audit row (#1214) — never a bare ``except
+        asyncio.QueueFull: pass``.
 
         Safe to call from any thread: publishes arriving off the
         owning loop are bridged via ``loop.call_soon_threadsafe``
@@ -239,7 +261,59 @@ class EventBus:
                 try:
                     q.put_nowait(event)
                 except asyncio.QueueFull:
-                    pass
+                    self._record_drop(subscriber_session, event.type)
+                else:
+                    self._drop_burst_active[subscriber_session] = False
+
+    def _record_drop(self, session_id: str, event_type: str) -> None:
+        """Typed accounting for one subscriber-queue-full drop (#1214).
+
+        Replaces a bare ``except asyncio.QueueFull: pass``: every drop
+        increments :attr:`_dropped_total` for ``session_id`` and emits a
+        ``bus.queue_full`` stream-audit row (gated behind
+        ``CLIO_STREAM_AUDIT_LOG``, zero cost when off) so the full drop
+        history is queryable after the fact — the ``stream_fallback``
+        typed-reason convention (RULE: no silent fallback). A
+        ``logger.warning`` fires only on the FIRST drop of a burst (the
+        transition from "delivering cleanly" to "dropping"), reset by the
+        next successful delivery for the session (see ``_deliver``), so a
+        stalled consumer produces one log line per stretch of drops, not
+        one per dropped event. Tracked per SESSION rather than per
+        subscriber queue: with more than one live subscriber for the same
+        session, a delivery success on one queue resets the burst flag
+        even while another queue for that session keeps dropping — an
+        accepted approximation (the common case is one SSE client per
+        session); the audit row and the cumulative counter remain exact
+        either way.
+        """
+
+        total = self._dropped_total[session_id] + 1
+        self._dropped_total[session_id] = total
+        if not self._drop_burst_active[session_id]:
+            self._drop_burst_active[session_id] = True
+            logger.warning(
+                "eventbus_queue_full session_id=%s event_type=%s dropped_total=%d",
+                session_id,
+                event_type,
+                total,
+            )
+        stream_audit(
+            "bus.queue_full",
+            session_id=session_id,
+            event_type=event_type,
+            dropped_total=total,
+        )
+
+    def dropped_total(self, session_id: str) -> int:
+        """Cumulative subscriber-queue-full drops for ``session_id``.
+
+        ``0`` when nothing has ever been dropped. Backed by the same
+        counter :meth:`_record_drop` increments and the ``bus.queue_full``
+        stream-audit rows report — read by tests/diagnostics, not the wire
+        (#1214: this is the observability half; a wire-visible gap marker
+        is a separate, spec-first follow-up)."""
+
+        return self._dropped_total.get(session_id, 0)
 
     def last_publish_monotonic(self, session_id: str) -> float:
         """Return the ``time.monotonic`` of the most recent publish for a session.
