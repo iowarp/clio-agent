@@ -1084,7 +1084,7 @@ class TurnTranscript:
                 if candidate is part:
                     del self._parts[index]
                     break
-            logger.info(
+            (logger.warning if part.type == "thinking" else logger.info)(  # gact-tui#362
                 "turn_transcript dropped_empty_part session=%s turn=%s part=%s type=%s",
                 self.session_id,
                 self.turn_id,
