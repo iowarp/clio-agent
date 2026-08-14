@@ -592,21 +592,32 @@ async def test_astream_sdk_provider_error_drops_the_stateful_session(
     reason="live claude_code SDK stateful-delta probe: set CLIO_RUN_LIVE=1 "
     "(needs `claude` on PATH + `claude login`; 2 billed API calls)",
 )
-async def test_live_mid_loop_delta_send_does_not_400(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_live_mid_loop_delta_send_does_not_400(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
     """iowarp/clio-agent#1211 A4 (task #58, "the layer-3 SDK 400"): drive the
     claude_code SDK streaming path with a real mid-loop delta send (turn 2
     continues turn 1's session with only the appended messages) and confirm it
     does NOT 400. Verified live 2026-08-14 against claude-agent-sdk 0.2.128 +
-    CLI 2.1.228: both turns succeed (turn 1 "full"/first_call, turn 2 "delta"
-    reusing the same session_id, confirmed via the provider.stateful stream-
-    audit row) -- CLEARED. The fix that makes this work is
-    ``build_sdk_options``'s ``max_turns=0`` (unlimited assistant turns per SDK
-    session; a stale ``max_turns=1`` would reject exactly this second-call
-    shape with ``error_max_turns`` -- see that function's docstring, the
-    AGENT-COPPER14 finding), NOT cc44a593's unrelated POST /messages
-    empty-body retag (a different layer: gact's own route validation, not the
-    provider/SDK boundary).
+    CLI 2.1.228: both turns succeed -- CLEARED. The fix that makes this work
+    is ``build_sdk_options``'s ``max_turns=0`` (unlimited assistant turns per
+    SDK session; a stale ``max_turns=1`` would reject exactly this
+    second-call shape with ``error_max_turns`` -- see that function's
+    docstring, the AGENT-COPPER14 finding), NOT cc44a593's unrelated POST
+    /messages empty-body retag (a different layer: gact's own route
+    validation, not the provider/SDK boundary).
+
+    Pins the DELTA SHAPE itself (#1211 review B2), not just "no exception" --
+    reads the real ``provider.stateful`` stream-audit rows back and asserts
+    turn 1 was ``mode=="full"``/``reason=="first_call"`` and turn 2 was
+    ``mode=="delta"`` with ``prefix_messages==1`` under the SAME
+    ``session_id`` -- proof the delta code path was actually exercised, not
+    two independent full sends that merely happened not to 400.
     """
+    import json
+
+    audit_log = tmp_path / "stream_audit.jsonl"
+    monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit_log))
     monkeypatch.setattr(st, "stateful_delta_enabled", lambda: True)
     handler = claude_code_litellm.ClaudeCodeLLM()
     claude_code_litellm.ensure_registered()
@@ -641,3 +652,18 @@ async def test_live_mid_loop_delta_send_does_not_400(monkeypatch: pytest.MonkeyP
 
     assert text1.strip()
     assert text2.strip()
+
+    rows = [
+        json.loads(line)
+        for line in audit_log.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    stateful_rows = [r for r in rows if r.get("stage") == "provider.stateful"]
+    assert len(stateful_rows) == 2, f"expected exactly 2 provider.stateful rows, got {stateful_rows}"
+    row1, row2 = stateful_rows
+
+    assert row1["stateful_mode"] == "full"
+    assert row1["reason"] == "first_call"
+    assert row2["stateful_mode"] == "delta"
+    assert row2["prefix_messages"] == 1
+    assert row2["session_id"] == row1["session_id"]
