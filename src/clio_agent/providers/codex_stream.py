@@ -52,19 +52,38 @@ _CALL_COUNTER = 0
 
 #: Codex exposes no structured status code for a rejected model (unlike
 #: claude_code's ``api_error_status``) -- this is the only signal (#1184,
-#: #1211 review A3). Verified live: "The 'X' model is not supported when
-#: using Codex with a ChatGPT account." Deliberately requires "model" near the
-#: rejection phrase so a genuine transport/protocol failure whose text happens
-#: to mention "model" elsewhere is never misclassified as a rejection.
+#: #1211 review A3/B1). Anchored TIGHTLY to the ONE verified live phrase
+#: family: "The 'X' model is not supported when using Codex with a ChatGPT
+#: account." An EARLIER, broader pattern (``model.{0,80}(not supported|does
+#: not exist|is invalid|not available|unknown model)``) was a real bug: it
+#: also matched genuinely TRANSIENT shapes that happen to mention "model" --
+#: "model ... is not available due to high demand" (capacity), an echoed
+#: "model" key within 80 chars of an unrelated "is invalid", "... temporarily
+#: not available" + a 503 -- silently flipping those from retryable
+#: (CodexExecError) to non-retryable (BadRequestError). :func:`_is_codex_model_rejection`
+#: additionally requires the CONFIGURED model id to appear verbatim in the
+#: text (the CLI quotes it) so an unrelated message that happens to satisfy
+#: the phrase pattern for a DIFFERENT model can never misclassify.
 _CODEX_MODEL_REJECTION_PATTERN = re.compile(
-    r"model.{0,80}(not supported|does not exist|is invalid|not available|unknown model)",
+    r"is not supported when using codex with (a|an)\b[^.]{0,40}account",
     re.IGNORECASE,
 )
 
 
-def _is_codex_model_rejection(text: str) -> bool:
-    """Whether a codex app-server error TEXT indicates a rejected/unsupported model."""
-    return bool(_CODEX_MODEL_REJECTION_PATTERN.search(text or ""))
+def _is_codex_model_rejection(text: str, *, model: str) -> bool:
+    """Whether a codex app-server error TEXT is a DEFINITIVE rejection of ``model``.
+
+    Both conditions must hold: the verified live phrase family matches, AND
+    the configured model id appears verbatim in the text. A transient/capacity
+    message that merely mentions "model" elsewhere must never match (#1211
+    review B1) -- see the module-level pattern comment for the concrete
+    shapes this was verified against.
+    """
+    if not text or not model:
+        return False
+    if not _CODEX_MODEL_REJECTION_PATTERN.search(text):
+        return False
+    return model in text
 
 
 def _next_call_index() -> int:
@@ -181,7 +200,7 @@ def run_app_server(
         if send is not None:
             send.note_error()  # drop the poisoned thread → next call resets (provider_error)
         text = str(exc)
-        if _is_codex_model_rejection(text):
+        if _is_codex_model_rejection(text, model=model):
             # #1184 / #1211 review A3: a definitive rejection, never retried as
             # transient -- see raise_model_rejected's docstring.
             raise_model_rejected(
@@ -279,7 +298,7 @@ async def astream_app_server(
                         # Drop the poisoned thread → next call resets (provider_error).
                         send.note_error()
                     stream_text = str(payload)
-                    if _is_codex_model_rejection(stream_text):
+                    if _is_codex_model_rejection(stream_text, model=model):
                         # #1184 / #1211 review A3: a definitive rejection, never
                         # retried as transient -- see raise_model_rejected's docstring.
                         raise_model_rejected(

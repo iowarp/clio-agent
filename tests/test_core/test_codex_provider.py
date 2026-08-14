@@ -448,8 +448,7 @@ class TestAppServerTransport:
 
         handler = CodexLLM()
         rejection_text = (
-            "The 'gpt-5.5-codex' model is not supported when using Codex with "
-            "a ChatGPT account."
+            "The 'gpt-5.5-codex' model is not supported when using Codex with a ChatGPT account."
         )
 
         def _boom(*_a, **_k):
@@ -487,7 +486,9 @@ class TestAppServerTransport:
         from clio_agent.providers.codex_app_server import CodexAppServerError
 
         handler = CodexLLM()
-        rejection_text = "The 'bogus-model' model is not supported when using Codex."
+        rejection_text = (
+            "The 'bogus-model' model is not supported when using Codex with a ChatGPT account."
+        )
 
         def _boom(*_a, **_k):
             raise CodexAppServerError(rejection_text)
@@ -539,9 +540,105 @@ class TestAppServerTransport:
                 optional_params={"codex_transport": "app_server"},
             )
 
+    def test_app_server_high_demand_mentioning_model_stays_transient(self):
+        """#1211 review B1 SABOTAGE-sensitive: an EARLIER, broader rejection
+        pattern also matched transient/capacity shapes that happen to mention
+        the model (e.g. "high demand") -- silently suppressing the LM retry
+        layer's healing for an error that WOULD have succeeded on retry. This
+        message names the model AND says "not available", exactly the kind of
+        text the broad pattern misclassified; the narrowed classifier must
+        keep it on the generic CodexExecError path (a bare RuntimeError,
+        which litellm's mapper wraps into the RETRIED ``APIConnectionError``
+        -- see ``test_app_server_model_rejection_raises_typed_not_codex_error``
+        for the contrasting rejection case, which deliberately raises
+        ``litellm.BadRequestError`` and is proven NON-transient there)."""
+        import litellm
+
+        from clio_agent.providers.codex_app_server import CodexAppServerError
+
+        handler = CodexLLM()
+        transient_text = (
+            "The 'gpt-5.5-codex' model is not available due to high demand. Please try again later."
+        )
+
+        def _boom(*_a, **_k):
+            raise CodexAppServerError(transient_text)
+            yield  # pragma: no cover - generator marker
+
+        with patch("clio_agent.providers.codex_stream._app_server_events", side_effect=_boom):
+            with pytest.raises(CodexExecError, match="app-server") as excinfo:
+                handler.completion(
+                    model="codex/gpt-5.5-codex",
+                    messages=[{"role": "user", "content": "hi"}],
+                    api_base="",
+                    custom_prompt_dict={},
+                    model_response=None,  # type: ignore[arg-type]
+                    print_verbose=lambda *_: None,
+                    encoding=None,
+                    api_key=None,
+                    logging_obj=None,
+                    optional_params={"codex_transport": "app_server"},
+                )
+        # The load-bearing pin: NOT swept into the typed, non-retryable
+        # rejection path -- the classifier must not fire on this message.
+        assert not isinstance(excinfo.value, litellm.BadRequestError)
+
     def test_build_model_response_zero_usage_when_absent(self):
         resp = _build_model_response(text="x", model="gpt-5.5")
         assert resp.usage.total_tokens == 0
+
+
+class TestIsCodexModelRejection:
+    """Direct unit coverage of the #1211 review B1 classifier (narrowed from
+    the earlier, over-broad pattern)."""
+
+    def test_verified_live_phrase_with_matching_model_id(self):
+        from clio_agent.providers.codex_stream import _is_codex_model_rejection
+
+        assert _is_codex_model_rejection(
+            "The 'gpt-5.5-codex' model is not supported when using Codex with a ChatGPT account.",
+            model="gpt-5.5-codex",
+        )
+
+    def test_phrase_matches_but_model_id_does_not_is_not_a_rejection(self):
+        from clio_agent.providers.codex_stream import _is_codex_model_rejection
+
+        assert not _is_codex_model_rejection(
+            "The 'gpt-9-other' model is not supported when using Codex with a ChatGPT account.",
+            model="gpt-5.5-codex",
+        )
+
+    def test_high_demand_capacity_message_is_not_a_rejection(self):
+        from clio_agent.providers.codex_stream import _is_codex_model_rejection
+
+        assert not _is_codex_model_rejection(
+            "The 'gpt-5.5-codex' model is not available due to high demand. "
+            "Please try again later.",
+            model="gpt-5.5-codex",
+        )
+
+    def test_echoed_model_key_near_unrelated_is_invalid_is_not_a_rejection(self):
+        from clio_agent.providers.codex_stream import _is_codex_model_rejection
+
+        assert not _is_codex_model_rejection(
+            "codex_transport param: model routing invalid; codex app-server config is invalid",
+            model="gpt-5.5-codex",
+        )
+
+    def test_temporarily_not_available_503_is_not_a_rejection(self):
+        from clio_agent.providers.codex_stream import _is_codex_model_rejection
+
+        assert not _is_codex_model_rejection(
+            "Service temporarily not available (503)", model="gpt-5.5-codex"
+        )
+
+    def test_empty_text_or_model_is_not_a_rejection(self):
+        from clio_agent.providers.codex_stream import _is_codex_model_rejection
+
+        assert not _is_codex_model_rejection("", model="gpt-5.5-codex")
+        assert not _is_codex_model_rejection(
+            "is not supported when using codex with a chatgpt account", model=""
+        )
 
 
 class TestEnsureRegistered:
