@@ -47,7 +47,9 @@ def _stub_context_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_overlay_path_honors_clio_model_catalog_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_overlay_path_honors_clio_model_catalog_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     target = tmp_path / "custom_overlay.json"
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(target))
     assert model_discovery.overlay_path() == target
@@ -286,7 +288,9 @@ def test_record_refresh_failure_keeps_previous_models_never_clears(
     assert wire["unchanged"] == ["sonnet"]
 
     overlay = model_discovery.read_overlay()
-    assert overlay["claude_code"]["models"] == [{"id": "sonnet", "name": "Sonnet", "description": ""}]
+    assert overlay["claude_code"]["models"] == [
+        {"id": "sonnet", "name": "Sonnet", "description": ""}
+    ]
     assert overlay["claude_code"]["failed_reason"] == "claude CLI not found on PATH"
 
 
@@ -296,7 +300,10 @@ def test_record_refresh_failure_with_no_previous_entry_stays_empty(
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     wire = model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
-            provider="openrouter", discovered=[], source="live_handshake", failed_reason="no api key"
+            provider="openrouter",
+            discovered=[],
+            source="live_handshake",
+            failed_reason="no api key",
         )
     )
     assert wire["failed_reason"] == "no api key"
@@ -311,7 +318,9 @@ def test_record_refresh_never_silently_clobbers_a_malformed_overlay(
     overlay_file.write_text("{not valid json", encoding="utf-8")
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(overlay_file))
     result = model_discovery.ProviderDiscoveryResult(
-        provider="codex", discovered=[{"id": "x", "name": "x", "description": ""}], source="codex_app_server"
+        provider="codex",
+        discovered=[{"id": "x", "name": "x", "description": ""}],
+        source="codex_app_server",
     )
     with pytest.raises(model_discovery.OverlayMalformedError):
         model_discovery.record_refresh(result)
@@ -326,7 +335,9 @@ def test_record_refresh_refuses_claimed_success_with_empty_discovered(
     failed_reason but discovered=[] is an upstream bug -- refuse it rather than
     silently narrowing the overlay to nothing."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    bad = model_discovery.ProviderDiscoveryResult(provider="codex", discovered=[], source="codex_app_server")
+    bad = model_discovery.ProviderDiscoveryResult(
+        provider="codex", discovered=[], source="codex_app_server"
+    )
     with pytest.raises(ValueError, match="refusing to write an empty models list"):
         model_discovery.record_refresh(bad)
     # Nothing was written at all.
@@ -416,7 +427,9 @@ def test_resolve_cloud_api_key_unknown_kind_is_empty(monkeypatch: pytest.MonkeyP
 
 
 class _StubCodexProcess:
-    def __init__(self, rows: list[dict[str, Any]] | None = None, error: Exception | None = None) -> None:
+    def __init__(
+        self, rows: list[dict[str, Any]] | None = None, error: Exception | None = None
+    ) -> None:
         self._rows = rows or []
         self._error = error
         self.closed = False
@@ -436,11 +449,21 @@ def test_discover_codex_success_reports_default_and_source(monkeypatch: pytest.M
     monkeypatch.setattr(codex_litellm, "_resolve_codex_binary", lambda: "codex")
     stub = _StubCodexProcess(
         rows=[
-            {"id": "gpt-5.6-sol", "displayName": "GPT-5.6-Sol", "description": "d1", "isDefault": True},
-            {"id": "gpt-5.6-terra", "displayName": "GPT-5.6-Terra", "description": "d2", "isDefault": False},
+            {
+                "id": "gpt-5.6-sol",
+                "displayName": "GPT-5.6-Sol",
+                "description": "d1",
+                "isDefault": True,
+            },
+            {
+                "id": "gpt-5.6-terra",
+                "displayName": "GPT-5.6-Terra",
+                "description": "d2",
+                "isDefault": False,
+            },
         ]
     )
-    monkeypatch.setattr(codex_app_server._APP_SERVER_POOL, "process_for", lambda **_kw: stub)
+    monkeypatch.setattr(codex_app_server, "CodexAppServerProcess", lambda **_kw: stub)
 
     result = model_discovery.discover_codex()
     assert result.failed_reason is None
@@ -449,24 +472,49 @@ def test_discover_codex_success_reports_default_and_source(monkeypatch: pytest.M
     assert result.default_model == "gpt-5.6-sol"
 
 
-def test_discover_codex_closes_the_one_off_process_after_listing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """#1211 review R4: a one-off discovery process is never left warm in the pool."""
+def test_discover_codex_never_touches_the_shared_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#1211 review S1: discovery constructs a STANDALONE CodexAppServerProcess,
+    never through _APP_SERVER_POOL.process_for -- a shared pool key is an
+    aliasing hazard (closing it could tear down a live turn's process); a
+    standalone instance can never alias with anything the pool serves real
+    turns from. Proven by NOT stubbing process_for at all and asserting the
+    pool has zero entries both before and after."""
+    from clio_agent.providers import codex_app_server, codex_litellm
+
+    codex_app_server._APP_SERVER_POOL.reset_for_tests()
+    monkeypatch.setattr(codex_litellm, "_resolve_codex_binary", lambda: "codex")
+    stub = _StubCodexProcess(rows=[{"id": "gpt-5.6-sol", "displayName": "Sol", "isDefault": True}])
+    monkeypatch.setattr(codex_app_server, "CodexAppServerProcess", lambda **_kw: stub)
+
+    assert codex_app_server._APP_SERVER_POOL.spawn_count == 0
+    model_discovery.discover_codex()
+    # No pool residue: discovery never called process_for, so the shared pool
+    # spawned nothing and holds no entries for this call.
+    assert codex_app_server._APP_SERVER_POOL.spawn_count == 0
+
+
+def test_discover_codex_closes_the_one_off_process_after_listing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1211 review R4: a one-off discovery process is never left warm."""
     from clio_agent.providers import codex_app_server, codex_litellm
 
     monkeypatch.setattr(codex_litellm, "_resolve_codex_binary", lambda: "codex")
     stub = _StubCodexProcess(rows=[{"id": "gpt-5.6-sol", "displayName": "Sol", "isDefault": True}])
-    monkeypatch.setattr(codex_app_server._APP_SERVER_POOL, "process_for", lambda **_kw: stub)
+    monkeypatch.setattr(codex_app_server, "CodexAppServerProcess", lambda **_kw: stub)
 
     model_discovery.discover_codex()
     assert stub.closed is True
 
 
-def test_discover_codex_closes_the_process_even_on_rpc_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_discover_codex_closes_the_process_even_on_rpc_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from clio_agent.providers import codex_app_server, codex_litellm
 
     monkeypatch.setattr(codex_litellm, "_resolve_codex_binary", lambda: "codex")
     stub = _StubCodexProcess(error=CodexAppServerError("boom"))
-    monkeypatch.setattr(codex_app_server._APP_SERVER_POOL, "process_for", lambda **_kw: stub)
+    monkeypatch.setattr(codex_app_server, "CodexAppServerProcess", lambda **_kw: stub)
 
     model_discovery.discover_codex()
     assert stub.closed is True
@@ -490,7 +538,7 @@ def test_discover_codex_rpc_error_is_typed_reason(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(codex_litellm, "_resolve_codex_binary", lambda: "codex")
     stub = _StubCodexProcess(error=CodexAppServerError("app-server closed mid-request"))
-    monkeypatch.setattr(codex_app_server._APP_SERVER_POOL, "process_for", lambda **_kw: stub)
+    monkeypatch.setattr(codex_app_server, "CodexAppServerProcess", lambda **_kw: stub)
 
     result = model_discovery.discover_codex()
     assert result.discovered == []
@@ -502,7 +550,7 @@ def test_discover_codex_zero_models_is_typed_reason(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(codex_litellm, "_resolve_codex_binary", lambda: "codex")
     monkeypatch.setattr(
-        codex_app_server._APP_SERVER_POOL, "process_for", lambda **_kw: _StubCodexProcess(rows=[])
+        codex_app_server, "CodexAppServerProcess", lambda **_kw: _StubCodexProcess(rows=[])
     )
 
     result = model_discovery.discover_codex()
@@ -589,7 +637,9 @@ def test_discover_claude_code_every_alias_rejected_is_typed_failure(
     assert "fable" in result.failed_reason
 
 
-def test_discover_claude_code_cli_unavailable_is_typed_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_discover_claude_code_cli_unavailable_is_typed_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def _boom() -> str:
         raise model_discovery.ClaudeCodeCLIUnavailableError("claude not on PATH")
 
@@ -689,6 +739,58 @@ def test_discover_claude_code_alias_timeout_does_not_remove_it_keeps_prior_list(
     wire = model_discovery.record_refresh(result)
     assert wire["removed"] == []  # "opus" must NOT be reported removed
     assert set(wire["unchanged"]) == {"sonnet", "opus"}  # the prior list, untouched
+
+
+def test_discover_claude_code_bare_probe_timeout_aborts_provider_overlay_intact(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#1211 review D3 gap (claude_code.py:167-174): the BARE (no --model)
+    probe itself being inconclusive must ALSO abort the whole provider with a
+    typed failed_reason -- before any alias is even probed -- and the prior
+    overlay entry must be left completely intact (never narrowed), mirroring
+    the per-alias-timeout coverage above."""
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="claude_code",
+            discovered=[
+                {"id": "sonnet", "name": "Sonnet", "description": ""},
+                {"id": "opus", "name": "Opus", "description": ""},
+            ],
+            source=model_discovery.CLAUDE_CODE_SOURCE,
+            default_model="sonnet",
+        )
+    )
+
+    monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
+    import subprocess as real_subprocess
+
+    calls: list[str | None] = []
+
+    def _run(args: list[str], **kw: Any) -> Any:
+        alias = args[args.index("--model") + 1] if "--model" in args else None
+        calls.append(alias)
+        if alias is None:
+            raise real_subprocess.TimeoutExpired(cmd=args, timeout=kw.get("timeout", 5.0))
+        payload = {"is_error": False, "modelUsage": {f"claude-{alias}": {}}}
+        return SimpleNamespace(stdout=json.dumps(payload), stderr="", returncode=0)
+
+    monkeypatch.setattr(md_claude_code.subprocess, "run", _run)
+
+    result = model_discovery.discover_claude_code(timeout=5.0)
+    assert result.discovered == []
+    assert result.failed_reason is not None
+    assert "bare CLI-default probe inconclusive" in result.failed_reason
+    # The loop never even started probing aliases -- only the bare call ran.
+    assert calls == [None]
+
+    wire = model_discovery.record_refresh(result)
+    assert wire["removed"] == []
+    assert wire["added"] == []
+    assert set(wire["unchanged"]) == {"sonnet", "opus"}  # the prior list, fully intact
+    overlay = model_discovery.read_overlay()
+    assert {m["id"] for m in overlay["claude_code"]["models"]} == {"sonnet", "opus"}
+    assert overlay["claude_code"]["failed_reason"] == result.failed_reason
 
 
 def test_discover_claude_code_bare_probe_failure_falls_back_with_typed_reason(
@@ -821,7 +923,9 @@ async def test_refresh_all_one_provider_failing_others_still_refresh(
             default_model="gpt-5.6-sol",
         )
 
-    async def _fake_discover_http(preset: Any, *, api_key: str) -> model_discovery.ProviderDiscoveryResult:
+    async def _fake_discover_http(
+        preset: Any, *, api_key: str
+    ) -> model_discovery.ProviderDiscoveryResult:
         if preset.id == "openai":
             return model_discovery.ProviderDiscoveryResult(
                 provider="openai",
@@ -835,8 +939,12 @@ async def test_refresh_all_one_provider_failing_others_still_refresh(
             failed_reason="simulated network failure",
         )
 
-    monkeypatch.setattr("clio_agent.providers.model_discovery.refresh.discover_codex", _fake_discover_codex)
-    monkeypatch.setattr("clio_agent.providers.model_discovery.refresh.discover_http", _fake_discover_http)
+    monkeypatch.setattr(
+        "clio_agent.providers.model_discovery.refresh.discover_codex", _fake_discover_codex
+    )
+    monkeypatch.setattr(
+        "clio_agent.providers.model_discovery.refresh.discover_http", _fake_discover_http
+    )
 
     presets = [get_provider("codex"), get_provider("openai"), get_provider("anthropic")]
     results = await model_discovery.refresh_all(presets=presets)  # type: ignore[arg-type]
@@ -862,15 +970,20 @@ async def test_refresh_all_default_scan_filters_to_configured_providers(
     monkeypatch.delenv("CLIO_LM_API_KEY", raising=False)
     from clio_agent.providers import codex_litellm
 
-    def _boom() -> str:
+    def _codex_boom() -> str:
         raise codex_litellm.CodexCLIUnavailableError("no codex")
 
-    monkeypatch.setattr(codex_litellm, "_resolve_codex_binary", _boom)
-    monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", _boom)
+    def _claude_boom() -> str:
+        raise model_discovery.ClaudeCodeCLIUnavailableError("no claude")
+
+    monkeypatch.setattr(codex_litellm, "_resolve_codex_binary", _codex_boom)
+    monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", _claude_boom)
 
     seen: list[str] = []
 
-    async def _fake_discover_http(preset: Any, *, api_key: str) -> model_discovery.ProviderDiscoveryResult:
+    async def _fake_discover_http(
+        preset: Any, *, api_key: str
+    ) -> model_discovery.ProviderDiscoveryResult:
         seen.append(preset.id)
         return model_discovery.ProviderDiscoveryResult(
             provider=preset.id,
@@ -878,7 +991,9 @@ async def test_refresh_all_default_scan_filters_to_configured_providers(
             source=model_discovery.HTTP_SOURCE,
         )
 
-    monkeypatch.setattr("clio_agent.providers.model_discovery.refresh.discover_http", _fake_discover_http)
+    monkeypatch.setattr(
+        "clio_agent.providers.model_discovery.refresh.discover_http", _fake_discover_http
+    )
 
     await model_discovery.refresh_all()
 
@@ -900,7 +1015,9 @@ async def test_refresh_all_explicit_presets_bypass_the_configured_filter(
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("CLIO_LM_API_KEY", raising=False)
 
-    async def _fake_discover_http(preset: Any, *, api_key: str) -> model_discovery.ProviderDiscoveryResult:
+    async def _fake_discover_http(
+        preset: Any, *, api_key: str
+    ) -> model_discovery.ProviderDiscoveryResult:
         return model_discovery.ProviderDiscoveryResult(
             provider=preset.id,
             discovered=[],
@@ -908,7 +1025,9 @@ async def test_refresh_all_explicit_presets_bypass_the_configured_filter(
             failed_reason="no api key",
         )
 
-    monkeypatch.setattr("clio_agent.providers.model_discovery.refresh.discover_http", _fake_discover_http)
+    monkeypatch.setattr(
+        "clio_agent.providers.model_discovery.refresh.discover_http", _fake_discover_http
+    )
 
     results = await model_discovery.refresh_all(presets=[get_provider("openai")])  # type: ignore[list-item]
     assert [r["provider"] for r in results] == ["openai"]
@@ -919,7 +1038,9 @@ async def test_refresh_all_bounds_a_wedged_provider_to_the_per_provider_deadline
 ) -> None:
     """#1211 review R2/R3: a wedged provider is capped, never hangs the whole refresh."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    monkeypatch.setattr("clio_agent.providers.model_discovery.refresh.REFRESH_PER_PROVIDER_DEADLINE_S", 0.05)
+    monkeypatch.setattr(
+        "clio_agent.providers.model_discovery.refresh.REFRESH_PER_PROVIDER_DEADLINE_S", 0.05
+    )
 
     import asyncio as _asyncio
 
@@ -942,14 +1063,18 @@ async def test_refresh_all_one_providers_malformed_overlay_write_does_not_discar
     already-recorded results, and the affected row is itself typed."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
 
-    async def _fake_discover_http(preset: Any, *, api_key: str) -> model_discovery.ProviderDiscoveryResult:
+    async def _fake_discover_http(
+        preset: Any, *, api_key: str
+    ) -> model_discovery.ProviderDiscoveryResult:
         return model_discovery.ProviderDiscoveryResult(
             provider=preset.id,
             discovered=[{"id": "m", "name": "m", "description": ""}],
             source=model_discovery.HTTP_SOURCE,
         )
 
-    monkeypatch.setattr("clio_agent.providers.model_discovery.refresh.discover_http", _fake_discover_http)
+    monkeypatch.setattr(
+        "clio_agent.providers.model_discovery.refresh.discover_http", _fake_discover_http
+    )
 
     calls = {"n": 0}
     real_record_refresh = model_discovery.record_refresh
@@ -1020,10 +1145,24 @@ def test_build_refresh_provider_models_tool_shape() -> None:
 
 
 def test_refresh_provider_models_tool_calls_refresh_all(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _fake_refresh_all(presets: Any = None, *, only_configured: bool = True) -> list[dict[str, Any]]:
-        return [{"provider": "codex", "discovered": [], "source": "x", "default_model": "", "added": [], "removed": [], "unchanged": []}]
+    async def _fake_refresh_all(
+        presets: Any = None, *, only_configured: bool = True
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "provider": "codex",
+                "discovered": [],
+                "source": "x",
+                "default_model": "",
+                "added": [],
+                "removed": [],
+                "unchanged": [],
+            }
+        ]
 
-    monkeypatch.setattr("clio_agent.providers.model_discovery.refresh.refresh_all", _fake_refresh_all)
+    monkeypatch.setattr(
+        "clio_agent.providers.model_discovery.refresh.refresh_all", _fake_refresh_all
+    )
     tool = model_discovery.build_refresh_provider_models_tool()
     out = tool.func()
     assert out == {

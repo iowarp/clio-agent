@@ -19,14 +19,20 @@ def discover_codex(*, timeout: float = 20.0) -> ProviderDiscoveryResult:
     which is ``gpt-5.5-codex``/``gpt-5.1`` (#1184's stale, rejected pins).
     Synchronous+blocking (the app-server bridge's JSON-RPC call is a blocking
     socket read); callers on the async refresh path wrap this in
-    ``asyncio.to_thread``. Spawns a DEDICATED, ONE-OFF app-server process
-    (``model="", cwd=None`` — ``model/list`` needs no ``thread/start``) and closes
-    it immediately after listing (#1211 review R4) — this is a rare, explicit
-    refresh action, not a warm process meant to be reused across calls; leaving
-    it in the pool forever would silently accumulate one extra idle subprocess
-    per refresh-triggering process lifetime.
+    ``asyncio.to_thread``. Constructs a STANDALONE :class:`CodexAppServerProcess`
+    directly — NEVER through ``_APP_SERVER_POOL.process_for`` (#1211 review S1).
+    An earlier version keyed into the shared pool at ``(model="", cwd=None)``;
+    that key can never collide with a real turn's process today (turns always
+    key on a real model id), but going through the pool at all is the wrong
+    shape for a rare, explicit, always-immediately-closed action — a bare pool
+    key is an aliasing hazard by construction (a future caller that legitimately
+    used an empty model string would have its live process closed out from under
+    it by a concurrent discovery call). A standalone process can never alias
+    with anything the pool serves real turns from. Closed immediately after
+    listing (#1211 review R4) — this is a one-off, not a process meant to be
+    reused across calls.
     """
-    from clio_agent.providers.codex_app_server import _APP_SERVER_POOL, CodexAppServerError
+    from clio_agent.providers.codex_app_server import CodexAppServerError, CodexAppServerProcess
     from clio_agent.providers.codex_litellm import (  # noqa: PLC0415
         CodexCLIUnavailableError,
         _resolve_codex_binary,
@@ -38,7 +44,7 @@ def discover_codex(*, timeout: float = 20.0) -> ProviderDiscoveryResult:
         return ProviderDiscoveryResult(
             provider="codex", discovered=[], source=CODEX_SOURCE, failed_reason=str(exc)
         )
-    process = _APP_SERVER_POOL.process_for(binary=binary, model="", cwd=None)
+    process = CodexAppServerProcess(binary=binary, model="", cwd=None)
     try:
         rows = process.list_models(timeout=timeout)
     except CodexAppServerError as exc:
