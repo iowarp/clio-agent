@@ -39,6 +39,19 @@ CODEX_SOURCE = "codex_app_server"
 CLAUDE_CODE_SOURCE = "claude_code_alias_probe"
 HTTP_SOURCE = "live_handshake"
 
+#: Owner ruling 2026-08-14: claude_code's SERVED/BOUND default is a deliberate
+#: cost policy, not the CLI's own choice. A bare ``claude -p`` (no ``--model``)
+#: resolves to ``claude-fable-5`` -- the most expensive tier -- and clio must
+#: never silently default a user onto it. "sonnet" (documented alias, second
+#: from the top) is the policy default instead. This affects ONLY the
+#: unrequested/omitted-model case for claude_code; fable stays fully available
+#: for explicit selection, and codex is unaffected (keeps following its own
+#: account default). See :func:`record_refresh`, which is the single seam that
+#: applies this -- the overlay's ``default_model`` is always "what clio
+#: serves", and the CLI's own (still-recorded, honest) choice lives alongside
+#: it under ``cli_default``.
+CLAUDE_CODE_COST_DEFAULT_MODEL = "sonnet"
+
 
 class OverlayMalformedError(RuntimeError):
     """The on-disk model-catalog overlay exists but is not a valid JSON object.
@@ -159,6 +172,8 @@ def overlay_models_wire(provider_id: str, provider_kind: str) -> dict[str, Any] 
     }
     if entry.get("rejected"):
         wire["rejected"] = entry["rejected"]
+    if entry.get("cli_default"):
+        wire["cli_default"] = entry["cli_default"]
     return wire
 
 
@@ -190,7 +205,9 @@ def resolve_cloud_api_key(provider_kind: str) -> str:
     return key or os.environ.get("CLIO_LM_API_KEY", "")
 
 
-def attach_context_limits(discovered: list[dict[str, str]], provider_kind: str) -> list[dict[str, Any]]:
+def attach_context_limits(
+    discovered: list[dict[str, Any]], provider_kind: str
+) -> list[dict[str, Any]]:
     """Resolve + attach each discovered model's context/output limits (#1211 D4).
 
     Calls the SAME cascade the handshake's ``enrich_capabilities`` step would
@@ -272,6 +289,22 @@ def record_refresh(result: ProviderDiscoveryResult) -> dict[str, Any]:
                 entry["rejected"] = result.rejected  # #1211 N3: persisted, not just in the wire row
             else:
                 entry.pop("rejected", None)
+            # Owner ruling 2026-08-14 (cost-aware default): claude_code's SERVED
+            # default_model is the policy value, not the CLI's raw choice -- the
+            # CLI's own honest default rides along under cli_default (never
+            # dropped) for the /update-models delta report + observability. Only
+            # overrides when the policy model actually validated for this account
+            # (never points the default at something the account doesn't serve);
+            # codex and every other provider kind are untouched.
+            if result.provider == "claude_code":
+                entry["cli_default"] = result.default_model
+                if any(
+                    isinstance(m, dict) and m.get("id") == CLAUDE_CODE_COST_DEFAULT_MODEL
+                    for m in result.discovered
+                ):
+                    entry["default_model"] = CLAUDE_CODE_COST_DEFAULT_MODEL
+            else:
+                entry.pop("cli_default", None)
             new_ids = {str(m["id"]) for m in result.discovered if m.get("id")}
         db[result.provider] = entry
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -297,10 +330,16 @@ def record_refresh(result: ProviderDiscoveryResult) -> dict[str, Any]:
         wire["default_model_reason"] = entry["default_model_reason"]
     if entry.get("rejected"):
         wire["rejected"] = entry["rejected"]
+    # The CLI's own honest default (claude_code only -- #1211 cost-policy
+    # ruling 2026-08-14), distinct from the served ``default_model`` above so
+    # the /update-models delta can report both explicitly.
+    if entry.get("cli_default"):
+        wire["cli_default"] = entry["cli_default"]
     return wire
 
 
 __all__ = [
+    "CLAUDE_CODE_COST_DEFAULT_MODEL",
     "CLAUDE_CODE_SOURCE",
     "CODEX_SOURCE",
     "HTTP_SOURCE",

@@ -11,7 +11,6 @@ from typing import Any
 from clio_agent.providers.catalog import Provider, iter_providers
 from clio_agent.providers.model_discovery.claude_code import (
     ClaudeCodeCLIUnavailableError,
-    _resolve_claude_binary,
     discover_claude_code,
 )
 from clio_agent.providers.model_discovery.codex import discover_codex
@@ -58,6 +57,10 @@ def is_provider_configured(preset: Provider) -> bool:
         except CodexCLIUnavailableError:
             return False
     if preset.provider_kind == "claude_code":
+        from clio_agent.providers.model_discovery.claude_code import (  # noqa: PLC0415
+            _resolve_claude_binary,
+        )
+
         try:
             _resolve_claude_binary()
             return True

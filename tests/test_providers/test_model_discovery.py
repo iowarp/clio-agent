@@ -399,6 +399,94 @@ def test_record_refresh_persists_default_model_reason(
     assert overlay["claude_code"]["default_model_reason"] == "bare probe inconclusive; falling back"
 
 
+def test_record_refresh_claude_code_served_default_is_cost_policy_not_cli_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Owner ruling 2026-08-14 (failing-first): the CLI's own bare default can
+    resolve to the premium ``fable`` tier; the overlay's SERVED default_model
+    for claude_code must be the cost-policy value (``sonnet``) instead, with
+    the CLI's honest choice preserved alongside it as ``cli_default`` (never
+    dropped) -- both in the write (the persisted overlay) and the returned
+    wire row (the /update-models delta)."""
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    wire = model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="claude_code",
+            discovered=[
+                {"id": "fable", "name": "Fable", "description": ""},
+                {"id": "sonnet", "name": "Sonnet", "description": ""},
+            ],
+            source=model_discovery.CLAUDE_CODE_SOURCE,
+            default_model="fable",
+        )
+    )
+    assert wire["default_model"] == "sonnet"
+    assert wire["cli_default"] == "fable"
+    overlay = model_discovery.read_overlay()
+    assert overlay["claude_code"]["default_model"] == "sonnet"
+    assert overlay["claude_code"]["cli_default"] == "fable"
+    assert model_discovery.overlay_default_model("claude_code", "claude_code") == "sonnet"
+
+
+def test_record_refresh_claude_code_keeps_cli_default_when_it_already_is_sonnet(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When the CLI's own default already IS the cost-policy model, cli_default
+    and default_model agree -- no surprising divergence for the common case."""
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    wire = model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="claude_code",
+            discovered=[{"id": "sonnet", "name": "Sonnet", "description": ""}],
+            source=model_discovery.CLAUDE_CODE_SOURCE,
+            default_model="sonnet",
+        )
+    )
+    assert wire["default_model"] == "sonnet"
+    assert wire["cli_default"] == "sonnet"
+
+
+def test_record_refresh_claude_code_falls_back_when_sonnet_unavailable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The cost policy never points the default at a model the account doesn't
+    actually serve: if ``sonnet`` never validated for this account, the
+    overlay's served default_model stays the CLI's own (best-available)
+    choice rather than a broken override."""
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    wire = model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="claude_code",
+            discovered=[{"id": "opus", "name": "Opus", "description": ""}],
+            source=model_discovery.CLAUDE_CODE_SOURCE,
+            default_model="opus",
+        )
+    )
+    assert wire["default_model"] == "opus"
+    assert wire["cli_default"] == "opus"
+
+
+def test_record_refresh_codex_never_gains_a_cli_default_field(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The cost policy (and its cli_default bookkeeping) is claude_code-only --
+    codex keeps following its own account default verbatim, no cli_default
+    key at all (#1211 review, owner ruling 2026-08-14)."""
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    wire = model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="codex",
+            discovered=[{"id": "gpt-5.6-sol", "name": "Sol", "description": ""}],
+            source=model_discovery.CODEX_SOURCE,
+            default_model="gpt-5.6-sol",
+        )
+    )
+    assert wire["default_model"] == "gpt-5.6-sol"
+    assert "cli_default" not in wire
+    overlay = model_discovery.read_overlay()
+    assert "cli_default" not in overlay["codex"]
+
+
 # --------------------------------------------------------------------------- #
 # resolve_cloud_api_key
 # --------------------------------------------------------------------------- #

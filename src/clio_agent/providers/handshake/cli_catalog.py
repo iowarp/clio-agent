@@ -29,6 +29,22 @@ be stale — the real cost D4 identifies (verified live: a stale cache makes
 when it succeeds, and can time out when it doesn't; this is NOT specific to any
 one model id — a fully warm cache serves ANY id, novel or not, from a local dict
 lookup with no network call at all).
+
+**Residual (#1211 review S3, stated honestly).** D4's fix only applies once a
+model is OVERLAY-sourced — i.e. after at least one successful refresh. A
+fresh install (or a provider that has never had ``POST
+/v1/providers/models/refresh`` run against it) still falls through to the
+base :class:`NoOpHandshake` cascade on ITS first ambient handshake call, same
+as pre-#1211: the very first bind/doctor-probe/model-picker-open for that
+provider can still pay one un-amortized models.dev/litellm/local-DB lookup.
+This is NOT fixed by this handshake — only the STEADY STATE (every call
+after that first one, and every call once a refresh has run) is. Proactively
+triggering a refresh at first-connect was considered and rejected: it would
+turn a passive, ambient read path into an action that fires network calls
+(BILLED ones, for claude_code) the user never asked for — the #1211 design
+keeps refresh explicit and user-triggered (``/update-models``), so this
+cold-cascade cost is an accepted, bounded (one-time-per-provider-per-cache-
+staleness-window) trade-off, not an oversight.
 """
 
 from __future__ import annotations
@@ -110,13 +126,19 @@ class CliCatalogHandshake(NoOpHandshake):
         output_limit = raw.get("output_limit")
         return ModelProfile(
             id=str(raw.get("id", "")).strip(),
-            context_window=context_window if isinstance(context_window, int) and context_window > 0 else None,
-            output_limit=output_limit if isinstance(output_limit, int) and output_limit > 0 else None,
+            context_window=context_window
+            if isinstance(context_window, int) and context_window > 0
+            else None,
+            output_limit=output_limit
+            if isinstance(output_limit, int) and output_limit > 0
+            else None,
             context_source=str(raw.get("context_source") or "overlay"),
             raw=dict(raw),
         )
 
-    async def enrich_capabilities(self, profile: ModelProfile, ctx: HandshakeContext) -> ModelProfile:
+    async def enrich_capabilities(
+        self, profile: ModelProfile, ctx: HandshakeContext
+    ) -> ModelProfile:
         """Skip the context-source cascade entirely for an overlay-checked profile (D4).
 
         The base :meth:`ProviderHandshake.enrich_capabilities` re-runs

@@ -47,6 +47,7 @@ from clio_agent.providers.model_discovery.claude_code import (
 from clio_agent.providers.model_discovery.codex import discover_codex
 from clio_agent.providers.model_discovery.http import discover_http
 from clio_agent.providers.model_discovery.overlay import (
+    CLAUDE_CODE_COST_DEFAULT_MODEL,
     CLAUDE_CODE_SOURCE,
     CODEX_SOURCE,
     HTTP_SOURCE,
@@ -71,6 +72,7 @@ from clio_agent.providers.model_discovery.refresh import (
 
 __all__ = [
     "CLAUDE_CODE_ALIAS_CANDIDATES",
+    "CLAUDE_CODE_COST_DEFAULT_MODEL",
     "CLAUDE_CODE_PROBE_TIMEOUT_S",
     "CLAUDE_CODE_SOURCE",
     "CODEX_SOURCE",

@@ -19,11 +19,18 @@ domain-tool budget (RULE 5), the same way ``load_skill`` and the child-delegatio
   to raise a notification/action card into its PARENT session's transcript. Auto-attached
   (not spotter-specific) so a spawned child never has to remember to declare it just to
   notify its parent; spotter-ai's watcher is simply the first caller.
-* ``refresh_provider_models`` (#1211 review R6) — probe every configured LM provider for
-  its CURRENT model list (codex's live ``model/list``, claude_code's alias probe-
-  validation, every HTTP backend's live models endpoint) and report the delta. The
-  expert-pool-primary door for the ``/update-models`` skill: a real tool, not an
-  instruction to guess at the server's own loopback port with a shell ``curl``.
+
+``refresh_provider_models`` (#1211 review R6/S2) is DELIBERATELY NOT in the universal
+list above: probing claude_code is a REAL, BILLED API call per alias (up to 5 per
+refresh), so handing it to every spawned Tier-2/3 child by default would let an
+unrelated child rack up billed calls it never asked for. It is attached ONLY on
+tier-1 MAIN sessions (``agent_def.parent_id`` empty — see :func:`build_auto_react_tools`)
+— the same root check :func:`clio_agent.gact.agents.skill_runtime.effective_declared_skills`
+uses to auto-declare the ``/update-models`` skill itself, so the tool is present exactly
+where the skill's own metadata block is. The skill-effects system
+(:mod:`clio_agent.gact.agents.skill_effects`) has no "attach a tool on skill load"
+primitive today; if one is added later, migrating this attachment to it (skill-scoped
+rather than tier-scoped) is the natural next step.
 
 Collecting them behind one seam keeps ``builders.py`` from re-listing the set (and re-importing
 each builder) at its two attach sites, so a fourth auto-tool lands here, not by growing the
@@ -49,9 +56,12 @@ def build_auto_react_tools(agent_def: Any) -> list[Any]:
 
     Order is fixed so the react prompt's tool prefix stays byte-stable across builds — a
     provider prompt-cache and the transcript-tap dedup keys both key off a stable tool order.
+    ``refresh_provider_models`` is appended ONLY for a tier-1 MAIN session (no
+    ``parent_id`` — never a spawned Tier-2/3 child): see the module docstring for why a
+    billed action is scoped this way instead of joining the universal list above.
     """
 
-    return [
+    tools = [
         build_create_artifact_tool(agent_def),
         build_plan_exit_tool(agent_def),
         build_write_todos_tool(agent_def),
@@ -59,5 +69,7 @@ def build_auto_react_tools(agent_def: Any) -> list[Any]:
         build_loop_wakeup_tool(),
         build_goal_status_tool(),
         build_raise_alert_card_tool(agent_def),
-        build_refresh_provider_models_tool(),
     ]
+    if not (getattr(agent_def, "parent_id", "") or ""):
+        tools.append(build_refresh_provider_models_tool())
+    return tools
