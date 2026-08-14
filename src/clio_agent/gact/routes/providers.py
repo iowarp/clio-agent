@@ -170,6 +170,17 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         return ["none"], True
 
+    def _default_model_for(preset: "LMProviderPreset") -> str:
+        """The provider's suggested default model: overlay-discovered first (#1211
+        review D2), the frozen static ``suggested_model`` otherwise. Once a
+        refresh has run, this follows the CLI's/account's OWN live default
+        (e.g. codex's ``gpt-5.6-sol``) instead of a snapshot that may already be
+        rejected (#1184)."""
+        from clio_agent.providers import model_discovery  # noqa: PLC0415
+
+        overlay_default = model_discovery.overlay_default_model(preset.id, preset.provider)
+        return overlay_default or preset.suggested_model
+
     def _provider_to_wire(preset: "LMProviderPreset") -> dict[str, Any]:
         auth_methods, is_authed = _provider_auth_state(preset)
         return {
@@ -177,7 +188,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             "name": preset.label,
             "auth_methods": auth_methods,
             "is_authenticated": is_authed,
-            "default_model": preset.suggested_model,
+            "default_model": _default_model_for(preset),
             "api_base": preset.api_base,
             "env_keys": (["CLIO_LM_API_KEY"] if preset.requires_api_key else []),
             "description": preset.description,
@@ -358,20 +369,21 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/providers/{provider_id}/models")
     async def list_provider_models(provider_id: str, api_base: str = "") -> dict[str, Any]:
-        """Per-provider model catalog: refresh overlay first, then live handshake / static.
+        """Per-provider model catalog: CLI kinds are overlay-first; HTTP kinds always live.
 
-        Resolves the preset (by id, then by bare kind). When ``POST
-        /v1/providers/models/refresh`` (#1211) has successfully discovered models
-        for this provider, that overlay is served verbatim — the UI picks up
-        newly-rotated CLI models (codex/claude_code) with zero rebuild. A
-        malformed on-disk overlay is a typed 500, never a silent ``{}`` (the
-        #1202 lesson). Absent an overlay entry, falls through to the unified
-        async handshake (passive auth — browsing never triggers interactive
-        OAuth): a live provider that fails reports ``source="unavailable"`` with
-        the reason rather than stale static choices; CLI providers
-        (codex/claude_code) expose their editable static candidate catalog when
-        neither the overlay nor the handshake yields anything; unknown provider
-        ids return a 404.
+        Resolves the preset (by id, then by bare kind). For the CLI provider
+        kinds ONLY (codex/claude_code — #1211 review D5; they have no live
+        ``/models`` endpoint of their own, so there is nothing more current to
+        prefer over it) — when ``POST /v1/providers/models/refresh`` (#1211) has
+        successfully discovered models, that overlay is served verbatim, ahead
+        of the static candidate catalog. A malformed on-disk overlay is a typed
+        500 for those two kinds, never a silent ``{}`` (the #1202 lesson). HTTP-
+        backed providers NEVER serve their overlay entry here (even though
+        ``POST .../refresh`` does populate one, for the added/removed/unchanged
+        delta) — they always run the unified async handshake (passive auth —
+        browsing never triggers interactive OAuth): a live provider that fails
+        reports ``source="unavailable"`` with the reason rather than stale
+        choices. Unknown provider ids return a 404.
         """
         from clio_agent.providers import model_discovery  # noqa: PLC0415
         from clio_agent.providers.handshake import (  # noqa: PLC0415
@@ -399,21 +411,20 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 )
             return {"models": models, "source": "static_catalog"}
 
-        try:
-            overlay = model_discovery.overlay_models_wire(preset.id, preset.provider)
-        except model_discovery.OverlayMalformedError as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="overlay_malformed", message=str(exc), recoverable=True
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-        if overlay is not None:
-            return overlay
-
         if preset.provider in {"codex", "claude_code"}:
+            try:
+                overlay = model_discovery.overlay_models_wire(preset.id, preset.provider)
+            except model_discovery.OverlayMalformedError as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="overlay_malformed", message=str(exc), recoverable=True
+                        )
+                    ).model_dump(exclude_none=True),
+                ) from exc
+            if overlay is not None:
+                return overlay
             static = _PROVIDER_MODELS.get(preset.id) or _PROVIDER_MODELS.get(preset.provider)
             if static:
                 return {"models": static, "source": "static_catalog"}
@@ -489,19 +500,32 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
     # ---- /v1/providers/lm ------------------------
 
     def _normalize_lm_provider_request(req: LMProviderRequest) -> LMProviderRequest:
-        """Convert catalog preset ids to runtime provider kinds before wiring DSPy."""
+        """Convert catalog preset ids to runtime provider kinds before wiring DSPy,
+        and fill an omitted model from the (overlay-aware) preset default.
+
+        An omitted ``model`` resolves through ``_default_model_for`` — the
+        overlay's discovered default when a refresh has run, else the frozen
+        static ``suggested_model`` (#1211 review D2) — so an omitted-model bind
+        follows the CLI's/account's OWN live default (e.g. codex's rotated
+        ``gpt-5.6-sol``) rather than a snapshot id the account may already
+        reject (#1184). Applied UNCONDITIONALLY (not gated behind the
+        provider_kind conversion below): codex/claude_code's catalog id already
+        equals their runtime provider_kind, so the kind-conversion branch alone
+        would never touch ``model`` for them.
+        """
 
         preset = next((p for p in _LM_PRESETS if p.id == req.provider), None)
         if preset is None:
             return req
         provider_kind = _provider_runtime_kind(req.provider)
-        if provider_kind == req.provider:
+        default_model = req.model or _default_model_for(preset)
+        if provider_kind == req.provider and default_model == req.model:
             return req
         return req.model_copy(
             update={
                 "provider": provider_kind,
                 "api_base": req.api_base or preset.api_base,
-                "model": req.model or preset.suggested_model,
+                "model": default_model,
             }
         )
 

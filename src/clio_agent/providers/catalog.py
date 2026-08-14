@@ -369,19 +369,35 @@ PROVIDERS: tuple[Provider, ...] = (
         auth_method="none",
         is_kind_default=True,
         supports_live_catalog=False,
-        # NB: "fable" (the CLI's own current default alias -- verified live
+        # "fable" is the CLI's own current default alias (verified live
         # 2026-08-14: a bare `claude -p` call with no --model resolves to
-        # claude-fable-5) is deliberately NOT added here. A novel id in this
-        # static catalog is fed through the handshake's context-window
-        # cascade (models.dev -> marketplace -> static) on every unmocked
-        # claude_code bind; an id models.dev has never indexed costs a real
-        # 6s network-timeout round-trip per bind (offline/firewalled hosts
-        # pay it every time) -- confirmed live via test_lm_provider.py
-        # timing out. The #1211 overlay (POST /v1/providers/models/refresh)
-        # is the correct place for "fable": it surfaces newly-live aliases
-        # WITHOUT baking an unresolved id into the zero-network static
-        # fallback catalog.
+        # claude-fable-5) -- listed first so a fresh install (before any
+        # POST /v1/providers/models/refresh, #1211) already shows it.
+        #
+        # CORRECTION (#1211 review D4): an EARLIER version of this comment
+        # claimed adding "fable" here caused a real per-bind network-timeout
+        # cost because models.dev had never indexed it -- that mechanism is
+        # FALSE. Verified: providers.handshake.sources.models_dev fetches the
+        # WHOLE models.dev catalog ONCE and caches it to disk with a 24h TTL;
+        # a per-id lookup (`lookup_models_dev`) only re-attempts the network
+        # fetch when that ON-DISK CACHE is stale/absent -- true for ANY model
+        # id, novel or not, and true on every isolated test run (a fresh
+        # CLIO_USER_DIR per test never has a warm cache). The
+        # test_lm_provider.py timing failure that prompted the original
+        # (wrong) revert reproduces IDENTICALLY with "fable" absent -- it is
+        # pre-existing cache-staleness cost the CLI-provider cascade already
+        # paid for haiku/sonnet/opus, not something this entry adds. The REAL
+        # fix is structural: model_discovery.attach_context_limits resolves +
+        # persists each discovered model's context/output limit ONCE, at
+        # explicit refresh time, and CliCatalogHandshake reads it back
+        # pre-filled (skipping the cascade entirely on every later passive
+        # call) -- see providers/handshake/cli_catalog.py.
         model_catalog=(
+            ModelEntry(
+                "fable",
+                "Claude Fable (Claude Code alias)",
+                "Candidate Claude Code alias; not guaranteed by account entitlement.",
+            ),
             ModelEntry(
                 "haiku",
                 "Claude Haiku (Claude Code alias)",

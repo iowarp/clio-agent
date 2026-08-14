@@ -315,7 +315,102 @@ def test_provider_model_catalog_keeps_static_cli_candidates(tmp_path: Path) -> N
     assert codex["source"] == "static_catalog"
     assert {row["id"] for row in codex["models"]} >= {"gpt-5.5", "gpt-5.1"}
     assert claude["source"] == "static_catalog"
-    assert {row["id"] for row in claude["models"]} == {"sonnet", "opus", "haiku"}
+    # "fable" is the CLI's own current default alias (#1211 review D4) -- listed
+    # alongside the other documented aliases so a fresh install already shows it.
+    assert {row["id"] for row in claude["models"]} == {"fable", "sonnet", "opus", "haiku"}
+
+
+def test_provider_list_default_model_follows_overlay_once_refreshed(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """#1211 review D2 failing-first: the picker row's default_model follows the
+    overlay's discovered default (once a refresh has run), not the stale static
+    ``suggested_model`` the account may already reject (#1184)."""
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    from clio_agent.providers import model_discovery
+
+    model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="codex",
+            discovered=[{"id": "gpt-5.6-sol", "name": "Sol", "description": ""}],
+            source=model_discovery.CODEX_SOURCE,
+            default_model="gpt-5.6-sol",
+        )
+    )
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        rows = c.get("/v1/providers").json()["providers"]
+        detail = c.get("/v1/providers/codex").json()
+    codex_row = next(r for r in rows if r["id"] == "codex")
+    assert codex_row["default_model"] == "gpt-5.6-sol"
+    assert detail["default_model"] == "gpt-5.6-sol"
+
+
+def test_provider_list_default_model_falls_back_to_static_without_overlay(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        rows = c.get("/v1/providers").json()["providers"]
+    codex_row = next(r for r in rows if r["id"] == "codex")
+    assert codex_row["default_model"] == "gpt-5.5"  # the frozen static suggested_model
+
+
+def test_put_lm_provider_omitted_model_binds_the_overlay_default(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """#1211 review D2 failing-first: an omitted ``model`` on a PUT bind resolves
+    through the overlay's discovered default once a refresh has run, not the
+    stale static ``suggested_model`` (#1184's rejected pins)."""
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    from clio_agent.providers import model_discovery
+
+    model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="codex",
+            discovered=[{"id": "gpt-5.6-sol", "name": "Sol", "description": ""}],
+            source=model_discovery.CODEX_SOURCE,
+            default_model="gpt-5.6-sol",
+        )
+    )
+
+    captured: dict[str, Any] = {}
+
+    class _StubAgent(_RebindLMStub):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.arc = type(
+                "ARC",
+                (),
+                {
+                    "get_cache_stats": lambda self: {
+                        "hits": 0,
+                        "misses": 0,
+                        "hit_rate": 0.0,
+                        "capacity": 10,
+                    }
+                },
+            )()
+
+        def forward(self, *args: Any, **kwargs: Any) -> Any:
+            return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
+
+    def _stub_create_lm(cfg: Any) -> Any:
+        captured["cfg"] = cfg
+        return type("FakeLM", (), {"history": []})()
+
+    monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
+    monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/providers/lm",
+            json={"provider": "codex", "api_base": "codex://app-server", "model": ""},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["model"] == "gpt-5.6-sol"
+    assert captured["cfg"].model == "gpt-5.6-sol"
 
 
 def test_provider_model_catalog_unknown_provider_404(tmp_path: Path) -> None:

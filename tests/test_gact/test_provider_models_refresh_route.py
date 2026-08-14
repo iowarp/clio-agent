@@ -103,18 +103,27 @@ def test_get_models_overlay_serves_for_claude_code_too(
     assert body["models"] == [{"id": "fable", "name": "Claude Fable", "description": "d"}]
 
 
-def test_get_models_overlay_never_downgrades_a_configured_http_provider(
-    client: TestClient, tmp_path: Path
+def test_get_models_http_provider_overlay_is_never_served_ahead_of_live_handshake(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An overlay entry for an HTTP-backed provider (e.g. from a prior refresh)
-    is also served overlay-first, ahead of a fresh live handshake attempt."""
+    """#1211 review D5: overlay-first serving is scoped to the CLI kinds ONLY
+    (codex/claude_code). An HTTP-backed provider's overlay entry (populated by
+    a prior refresh, for the added/removed/unchanged delta) is NEVER served
+    ahead of a fresh live handshake attempt -- it always keeps its live path.
+    No API key is set, so the live handshake short-circuits fast (SKIPPED
+    connectivity, no network call) rather than serving the seeded overlay
+    content."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CLIO_LM_API_KEY", raising=False)
     _write_overlay(
         tmp_path,
         {"openai": {"models": [{"id": "gpt-5", "name": "gpt-5", "description": ""}], "source": "live_handshake"}},
     )
     body = client.get("/v1/providers/openai/models").json()
-    assert body["source"] == "live_handshake"
-    assert body["models"] == [{"id": "gpt-5", "name": "gpt-5", "description": ""}]
+    # SABOTAGE-sensitive: if overlay-first serving were mistakenly widened back
+    # to HTTP kinds, this would return the seeded "gpt-5" overlay row instead.
+    assert body["models"] == []
+    assert body["source"] == "unavailable"
 
 
 # --------------------------------------------------------------------------- #
@@ -156,3 +165,37 @@ def test_post_refresh_returns_the_discovery_results_verbatim(
     assert resp.status_code == 200
     assert resp.json() == {"results": fake_results}
     mock_refresh.assert_awaited_once()
+    # No body -> presets=None (the default, configured-providers-only scan).
+    assert mock_refresh.await_args.kwargs.get("presets") is None
+
+
+def test_post_refresh_with_no_body_passes_presets_none(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mock_refresh = AsyncMock(return_value=[])
+    monkeypatch.setattr("clio_agent.providers.model_discovery.refresh_all", mock_refresh)
+    resp = client.post("/v1/providers/models/refresh")
+    assert resp.status_code == 200
+    mock_refresh.assert_awaited_once_with(presets=None)
+
+
+def test_post_refresh_with_explicit_providers_body_narrows_the_scan(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1211 review R3: an explicit {"providers": [...]} body is honored."""
+    mock_refresh = AsyncMock(return_value=[])
+    monkeypatch.setattr("clio_agent.providers.model_discovery.refresh_all", mock_refresh)
+    resp = client.post("/v1/providers/models/refresh", json={"providers": ["codex", "openai"]})
+    assert resp.status_code == 200
+    mock_refresh.assert_awaited_once()
+    presets = mock_refresh.await_args.kwargs.get("presets")
+    assert presets is not None
+    assert {p.id for p in presets} == {"codex", "openai"}
+
+
+def test_post_refresh_with_unknown_provider_id_is_typed_404(client: TestClient) -> None:
+    resp = client.post("/v1/providers/models/refresh", json={"providers": ["not-a-real-provider"]})
+    assert resp.status_code == 404
+    body = resp.json()
+    assert body["error"]["error"] == "not_found"
+    assert "not-a-real-provider" in body["error"]["message"]

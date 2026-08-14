@@ -9,21 +9,14 @@ Invoking this skill refreshes clio's per-provider model catalogs against the REA
 current state of each account/backend, and reports exactly what changed. Follow
 the two steps below in order.
 
-## Step 1 — Call the refresh action
+## Step 1 — Call the refresh tool
 
-Call `POST /v1/providers/models/refresh` on this GACT server's own base URL (the
-same server you are running inside of — its loopback address, typically
-`http://127.0.0.1:8100` unless the deployment configured a different port; use
-whatever base URL you already know this server answers on if that default
-doesn't work). Use whichever tool you have that can make this call (a shell
-`curl`/`Invoke-WebRequest`, or an equivalent HTTP-capable tool) — an empty POST
-body is correct, no arguments are needed.
-
-This one call probes every configured provider: codex through its app-server's
-live `model/list`, claude_code by validating each documented CLI model alias with
-a trivial turn, and every HTTP-backed provider (OpenAI, Anthropic, OpenRouter,
-ALCF/Argonne, LM Studio, Ollama, local vLLM) through its existing live models
-endpoint. It returns JSON shaped like:
+Call the `refresh_provider_models` tool. It takes no arguments and probes every
+CONFIGURED provider: codex through its app-server's live `model/list`,
+claude_code by validating each documented CLI model alias with a trivial turn,
+and every HTTP-backed provider (OpenAI, Anthropic, OpenRouter, ALCF/Argonne,
+LM Studio, Ollama, local vLLM) with usable credentials through its existing
+live models endpoint. It returns JSON shaped like:
 
 ```json
 {
@@ -36,7 +29,8 @@ endpoint. It returns JSON shaped like:
       "added": ["..."],
       "removed": ["..."],
       "unchanged": ["..."],
-      "failed_reason": null
+      "failed_reason": null,
+      "rejected": [{"id": "...", "reason": "..."}]
     }
   ]
 }
@@ -45,6 +39,10 @@ endpoint. It returns JSON shaped like:
 A provider whose probe failed reports a non-null `failed_reason` — its
 `discovered` list is the PREVIOUS successful discovery (never silently
 cleared), and its `added`/`removed` will both be empty since nothing changed.
+`rejected` (only present when non-empty) lists candidates the account
+DEFINITIVELY does not serve (e.g. a claude_code alias that 404s) even though
+the provider's refresh otherwise succeeded — distinct from `failed_reason`,
+which means the WHOLE provider's refresh could not complete.
 
 ## Step 2 — Report the delta, verbatim
 
@@ -57,7 +55,8 @@ isn't present in the response:
 - Otherwise: report `added`, `removed`, and `unchanged` for that provider (as
   their literal id lists — an empty `added` and `removed` means nothing changed
   since the last refresh). If `default_model` is set, mention it as the
-  provider's current live default.
+  provider's current live default. If `rejected` is present and non-empty,
+  mention which candidates were rejected and why.
 
 Keep the report short and scannable (one line or a small table per provider) —
 this is a status readback, not an essay.
