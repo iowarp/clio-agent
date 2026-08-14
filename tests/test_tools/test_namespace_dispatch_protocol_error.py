@@ -1,15 +1,18 @@
 """Regression coverage for a live MCP tool-dispatch defect: a real backend
 connect/protocol failure was silently reported to the model as "Unknown
-tool" -- indistinguishable from a hallucinated tool name.
+tool" -- indistinguishable from a hallucinated tool name -- and, once that
+was fixed, the honestly-surfaced failure turned out to be a SECOND, deeper
+defect: namespace-direct backend connects never actually negotiate with a
+legacy-only backend at all.
 
-Live symptom (fully reproduced): calling ``spotter_list_runs`` /
+Live symptom (fully reproduced, twice): calling ``spotter_list_runs`` /
 ``workload_run_campaign`` against pack-mounted MCP servers (spotter-ai,
 phenotype -- legacy fastmcp 3.4.7 stdio backends invoked by a direct exe
 path) failed with ``fastmcp.exceptions.ToolError: Unknown tool: 'list_runs'``
 even though the backend genuinely has that tool (proven live via a standalone
 probe) and clio's own tool catalog correctly lists the prefixed name.
 
-Root cause, traced through the REAL dispatch path
+Root cause #1, traced through the REAL dispatch path
 (``AsyncMCPToolExecutor._route`` / ``_connect_namespace`` in
 ``tools/mcp_executor.py``, namespace-direct routing added by #932):
 
@@ -30,26 +33,45 @@ Root cause, traced through the REAL dispatch path
   observed symptom, for ANY reason the backend leg failed, not just a truly
   absent tool.
 
-Live evidence: fastmcp's own ``_mirror_front_era_mode()`` pins the backend
-connect to the front's (always-modern, in-process) negotiated era; a
-legacy-only backend occasionally answers that with "Received request before
-initialization was complete" during era renegotiation -- a real, diagnosable
-connectivity event, not evidence the tool is absent. This module reproduces
-the swallow DETERMINISTICALLY (no timing dependency) by making a real stdio
-backend's ``list_tools`` handler always raise, which is the same shape of
-failure fastmcp's aggregate layer mishandles regardless of what triggered it.
-
-Fix: ``_proxy_for_spec`` now builds its ``FastMCPProxy`` with
+Fix #1: ``_proxy_for_spec`` builds its ``FastMCPProxy`` with
 ``provider_error_strategy="raise"`` so a real single-provider backend failure
 propagates as itself instead of being downgraded to a fabricated "not found".
 This changes nothing for an ACTUALLY missing tool: ``aggregate.py`` special-
 cases ``NotFoundError`` to keep degrading quietly regardless of this setting
 (covered by ``test_missing_tool_still_reports_not_found`` below).
+
+Root cause #2 (owner ruling 2026-08-14, found once #1 stopped hiding it):
+once honest, the SAME live race turned out to be 100% DETERMINISTIC on a
+quiet box, not timing -- fastmcp's ``_mirror_front_era_mode()`` pins a
+namespace-direct backend connect to the front's era. Our front
+(``Client(proxy)`` in ``mcp_executor.py``) is ALWAYS modern (in-process,
+instant), so the mirror ALWAYS returns an exact modern version string for
+every declared backend. ``Client._negotiate()``'s pinned-exact-version branch
+FABRICATES a ``DiscoverResult`` locally
+(``session.adopt(_synthesize_discover(mode))``) and never contacts the peer
+at all -- a genuinely legacy-only backend (fastmcp 3.4.7 in an
+agent-blueprint's own venv) then never receives the ``initialize`` request
+its session-lifecycle state machine requires as its FIRST message
+(``mcp/server/session.py::_received_request``, the installed SDK's own
+gate), so it rejects every later request forever: "Received request before
+initialization was complete", surfaced client-side as
+``MCPError(-32602, 'Invalid request parameters')``.
+
+Fix #2: ``_proxy_for_spec``'s ``_client_factory`` no longer blindly applies
+the mirrored value. Mirroring "legacy" is kept (that branch DOES send a real
+``initialize`` handshake, needed so a legacy front's push-forwarding reaches
+a like-negotiated backend -- ``test_gateway_mirrors_front_era_to_backend``);
+a modern pin now runs real ``mode="auto"`` negotiation instead, landing on
+the identical practical outcome for a genuinely modern backend (same test,
+first case) while honestly negotiating legacy for one that is not.
+``test_namespace_direct_connect_negotiates_for_real_not_mirrored`` below pins
+this deterministically with a hand-rolled legacy-only stdio stub (no
+external venv dependency): pre-fix red (the exact live ``MCPError``), post-fix
+green.
 """
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -102,38 +124,58 @@ def real_tool() -> str:
 mcp.run()
 """
 
-# Fails its first two list_tools() requests with an MCPError-shaped raise
-# (simulating the #1186-class connect-time race), then succeeds -- the live
-# behavior: EVERY tool call spawns a brand new backend process
-# (tools/gateway.py::_proxy_for_spec's per-request client_factory), so a
-# retry cannot reuse in-memory state; the attempt count is persisted to a
-# file the fresh subprocess reads on each spawn.
-RECOVERS_STUB = """
-import sys
-from pathlib import Path
-from fastmcp import FastMCP
-from fastmcp.server.middleware import Middleware
+# A hand-rolled, MINIMAL raw line-delimited JSON-RPC stdio server -- no
+# fastmcp/mcp SDK import at all -- that mirrors EXACTLY the installed SDK's
+# (mcp==1.29.0, spotter-ai's own venv) server-side session-lifecycle gate
+# (mcp/server/session.py::_received_request): every request except
+# `initialize`/`notifications/initialized`/`ping` is rejected with
+# "Received request before initialization was complete" until a REAL
+# `initialize` request has actually been received. It never implements
+# `server/discover` (the modern probe), matching a genuinely legacy-only
+# backend -- clio-agent's own venv has no mcp==1.x to depend on, so this is
+# self-contained rather than requiring an external installed package.
+LEGACY_ONLY_STUB = r"""
+import sys, json
 
-counter_path = Path(sys.argv[1])
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
 
-mcp = FastMCP("recovers")
-
-@mcp.tool
-def list_runs() -> dict:
-    return {"runs": []}
-
-class FailUntilWarm(Middleware):
-    async def on_list_tools(self, context, call_next):
-        attempt = int(counter_path.read_text()) if counter_path.exists() else 0
-        counter_path.write_text(str(attempt + 1))
-        if attempt < 2:
-            raise RuntimeError(
-                f"simulated backend protocol race (attempt {attempt})"
-            )
-        return await call_next(context)
-
-mcp.add_middleware(FailUntilWarm())
-mcp.run()
+initialized = False
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        msg = json.loads(line)
+    except Exception:
+        continue
+    method = msg.get("method")
+    msg_id = msg.get("id")
+    if method == "initialize":
+        initialized = True
+        send({"jsonrpc": "2.0", "id": msg_id, "result": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "legacy-only-stub", "version": "0.0.1"},
+        }})
+    elif method == "notifications/initialized":
+        pass
+    elif method == "ping":
+        send({"jsonrpc": "2.0", "id": msg_id, "result": {}})
+    elif not initialized:
+        send({"jsonrpc": "2.0", "id": msg_id, "error": {
+            "code": -32602,
+            "message": "Received request before initialization was complete",
+        }})
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": msg_id, "result": {"tools": [
+            {"name": "ping_tool", "description": "", "inputSchema": {"type": "object", "properties": {}}}
+        ]}})
+    elif method == "tools/call":
+        send({"jsonrpc": "2.0", "id": msg_id, "result": {"content": [{"type": "text", "text": "pong"}]}})
+    else:
+        send({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": "Method not found"}})
 """
 
 
@@ -223,52 +265,41 @@ def test_missing_tool_still_reports_not_found(tmp_path: Path) -> None:
         _reap("ok_mcp_stub.py")
 
 
-def test_first_call_race_recovers_via_bounded_retry(tmp_path: Path) -> None:
-    """Live evidence (2026-08-14 restart on the fix branch): the SAME
-    #1186-class race still hit the real spotter/phenotype backends after the
-    provider_error_strategy fix -- honestly, as MCPError, but honesty alone
-    left ``spotter_wait_for_new_runs`` / ``workload_run_campaign`` still
-    failing 3/3 live attempts. AsyncMCPToolExecutor.call_tool_result now
-    retries a namespace's FIRST request across a bounded number of fresh
-    backend spawns when it fails with a raw MCPError (a session-layer
-    rejection -- the request never reached the tool, so no side effect can be
-    duplicated). This proves the retry actually RECOVERS the call once the
-    backend stops racing, not merely that the failure is reported honestly.
+def test_namespace_direct_connect_negotiates_for_real_not_mirrored(
+    tmp_path: Path,
+) -> None:
+    """Root cause #2: a namespace-direct connect must NEGOTIATE with the real
+    backend, never fabricate/assume its era by mirroring the (always-modern,
+    in-process) front. Pre-fix, gateway.py::_proxy_for_spec pinned the
+    backend Client's mode to the front's exact modern version string;
+    Client._negotiate()'s pinned branch never sends `initialize` at all
+    (session.adopt(_synthesize_discover(...)) fabricates the result locally),
+    so this genuinely legacy-only stub -- which requires a real `initialize`
+    before anything else, exactly like the installed SDK the live spotter-ai/
+    phenotype backends actually run -- rejected the tool call deterministically
+    with the exact live error shape. Post-fix, the backend connect runs real
+    "auto" negotiation instead and the call succeeds.
     """
 
-    script = tmp_path / "recovers_mcp_stub.py"
-    script.write_text(RECOVERS_STUB, encoding="utf-8")
-    counter_path = tmp_path / "attempts.txt"
+    script = tmp_path / "legacy_only_stub.py"
+    script.write_text(LEGACY_ONLY_STUB, encoding="utf-8")
     spec = MCPServerSpec(
-        name="recovers",
+        name="legacyonly",
         transport="stdio",
         command=sys.executable,
-        args=(str(script), str(counter_path)),
+        args=(str(script),),
     )
-    gateway = build_gateway({"recovers": spec})
-    # The boot-time listing pass (list_tool_definitions) does NOT retry -- it
-    # would burn one scripted failure and degrade this namespace to no tools,
-    # same as the live serve's own tool_listing_failed degrade. Fabricate the
-    # catalog entry (as the other tests in this module do) so routing reaches
-    # the namespace-direct proxy with the counter untouched, then let the call
-    # itself see the full fail-fail-succeed sequence deterministically.
+    gateway = build_gateway({"legacyonly": spec})  # real _proxy_for_spec -> real mirror decision
     preloaded = dict(list_tool_definitions(gateway))
-    preloaded["recovers_list_runs"] = preloaded["fs_read_file"]
-    counter_path.write_text("0")
+    assert "legacyonly_ping_tool" in preloaded
     executor = create_sync_tool_executor(
         gateway,
         preloaded_tools=preloaded,
         namespace_servers=namespace_proxies(gateway),
     )
     try:
-        result = executor.call_tool("recovers_list_runs", {})
-        assert json.loads(result) == {"runs": []}
-        # At least 3 real backend spawns (2 scripted failures + the recovering
-        # call) proves this succeeded THROUGH retries, not on the first try
-        # (fastmcp's own client may issue more than one list_tools() round
-        # trip per logical attempt -- this asserts the floor our retry
-        # contract guarantees, not fastmcp's internal call count).
-        assert int(counter_path.read_text()) >= 3
+        result = executor.call_tool("legacyonly_ping_tool", {})
+        assert "pong" in result
     finally:
         executor.close()
-        _reap("recovers_mcp_stub.py")
+        _reap("legacy_only_stub.py")

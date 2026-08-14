@@ -36,84 +36,11 @@ times, then re-raises the timeout — never ``initialize``.
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
-from typing import Any, TypeVar
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _INSTALLED = False
-
-_T = TypeVar("_T")
-
-
-def namespace_first_call_retries() -> int:
-    """Bounded retry budget for a namespace's FIRST real backend request.
-
-    Sibling policy to :func:`_resolve_timeout_retries` above -- see
-    :func:`call_with_namespace_first_call_retry`, its one caller
-    (``tools/mcp_executor.py::AsyncMCPToolExecutor.call_tool_result``).
-    Default 2 (three total attempts): config-tunable like every other bounded
-    retry in this package, never hardcoded.
-    """
-
-    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
-
-    return int(
-        conf.resolve(
-            "tools.mcp.namespace_first_call_retries",
-            env="CLIO_MCP_NAMESPACE_FIRST_CALL_RETRIES",
-            default=2,
-            cast=conf.as_int,
-        )
-    )
-
-
-async def call_with_namespace_first_call_retry(
-    call: Callable[[], Awaitable[_T]],
-    *,
-    namespace: str | None,
-    first_call: bool,
-    tool: str,
-) -> _T:
-    """Retry a namespace's FIRST real backend request, bounded, on MCPError only.
-
-    A freshly-spawned namespace backend's very first request can lose the
-    same #1186-class era-negotiation race this module exists to correct (the
-    in-process front always negotiates modern instantly; a legacy-only real
-    backend occasionally answers the mirrored-modern attempt with a raw
-    session-layer ``MCPError`` -- a rejection BEFORE the request ever reaches
-    the tool -- while it is still settling). That is the OFFICIAL negotiation
-    mechanism losing a timing race, not evidence about the tool, so a retry
-    can never duplicate a tool side effect. A completed call's OWN error
-    (fastmcp's ``ToolError``, from a real ``CallToolResult``) is a DIFFERENT
-    exception type and is never retried here -- nor is anything once the
-    namespace is proven connected (``first_call=False``).
-
-    Args:
-        call: Zero-arg awaitable performing ONE attempt (already
-            timeout-wrapped by the caller).
-        namespace: The routed namespace, or ``None`` for a composite-routed call.
-        first_call: Whether this is the namespace's first forwarded call.
-        tool: The model-facing tool name, for the retry log line only.
-    """
-
-    from mcp.shared.exceptions import MCPError  # noqa: PLC0415
-
-    retries_left = namespace_first_call_retries() if first_call and namespace else 0
-    while True:
-        try:
-            return await call()
-        except MCPError as exc:
-            if not (first_call and namespace and retries_left > 0):
-                raise
-            retries_left -= 1
-            logger.warning(
-                "mcp_namespace_first_call_retry namespace=%s tool=%s retries_left=%d reason=%s",
-                namespace,
-                tool,
-                retries_left,
-                exc,
-            )
 
 
 def _resolve_timeout_retries() -> int:

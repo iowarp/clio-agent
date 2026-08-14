@@ -149,38 +149,38 @@ def _proxy_for_spec(
     def _client_factory() -> Any:
         fresh = base_backend.new()
         mode = _mirror_front_era_mode()
-        if mode is not None:
+        # #1206 (owner ruling 2026-08-14): era selection comes ONLY from the
+        # OFFICIAL negotiation with THIS peer, never a mirrored assumption.
+        # Client._negotiate()'s pinned-exact-version branch -- always what a
+        # MODERN front's mirror returns here, since our front (Client(proxy)
+        # in mcp_executor.py) is always modern/in-process/instant --
+        # fabricates a DiscoverResult locally and never contacts the peer. A
+        # genuinely legacy-only backend (fastmcp 3.4.7 in an agent-blueprint's
+        # own venv, e.g. spotter-ai/phenotype) then never gets the
+        # `initialize` its session state machine requires first, so it
+        # rejects every later request forever -- deterministic, live-
+        # reproduced (#1206), not a timing race. Mirroring "legacy" is kept
+        # (that branch DOES send the real handshake, needed so a legacy
+        # front's push-forwarding reaches a like-negotiated backend --
+        # test_gateway_mirrors_front_era_to_backend); a modern pin runs real
+        # "auto" negotiation instead, landing on the identical outcome for a
+        # genuinely modern backend, honestly on legacy otherwise.
+        if mode == "legacy":
             fresh.mode = mode
             fresh._transport_options = replace(fresh._transport_options, backend_mode=mode)
+        elif mode is not None:
+            fresh.mode = "auto"
         # Applied to THIS clone: base_backend is never entered directly (only
         # its .new() clones are, per-request), so this is where the one REAL
         # backend connect this factory ever produces actually gets classified.
         return instrument_client_era(fresh, server_id=spec.name)
 
-    # provider_error_strategy="raise" (root-cause fix, live namespace-dispatch
-    # defect): FastMCPProxy IS a fastmcp AggregateProvider with exactly ONE
-    # child provider (its own ProxyProvider around this one backend) -- there
-    # is never a second provider to gracefully skip past. FastMCP's own
-    # default, "warn", makes AggregateProvider._get_highest_version_result
-    # (aggregate.py) catch ANY non-NotFoundError exception from that single
-    # provider's get_tool()/list_tools() -- a genuine backend connect/protocol
-    # failure included -- log it, and return None for the tool. FastMCP's
-    # server.py then reads that None as "no such tool" and raises
-    # NotFoundError("Unknown tool: <bare-name>"), which reaches the model
-    # indistinguishable from a hallucinated tool name.
-    #
-    # Reproduced live: a legacy-only stdio backend (fastmcp 3.4.7, e.g. an
-    # agent-blueprint's directly-invoked exe) occasionally answers a
-    # mirrored-modern connect attempt (fastmcp's own
-    # `_mirror_front_era_mode()`, immediately above) with "Received request
-    # before initialization was complete" during era negotiation. That is a
-    # real, diagnosable connectivity/protocol event -- not evidence the tool
-    # is absent -- so it must reach OUR typed-error boundary
-    # (tools/mcp_errors.py, applied by every direct call path per #1114)
-    # instead of being silently downgraded to "not found" inside fastmcp's
-    # aggregate layer. "raise" changes nothing for an ACTUAL missing tool:
-    # aggregate.py explicitly special-cases NotFoundError to keep degrading
-    # quietly regardless of this setting.
+    # provider_error_strategy="raise": FastMCPProxy IS an AggregateProvider
+    # wrapping exactly ONE child provider (its own ProxyProvider) -- never a
+    # second one to skip past. "warn" (fastmcp's default) would let
+    # aggregate.py swallow ANY non-NotFoundError from that one provider -- a
+    # real connect/protocol failure included -- into a fabricated "not
+    # found"; NotFoundError itself is unaffected either way.
     return FastMCPProxy(client_factory=_client_factory, provider_error_strategy="raise")
 
 
