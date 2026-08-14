@@ -5,7 +5,8 @@ the issue) — this is the "measurement IS the deliverable" pure-recorder half:
 the #891 attribution contract (``attributed_ms + unattributed_ms ==
 total_ms``), nested phases never double-counting, and an unclosed phase
 surfacing by name rather than being silently absorbed. A deterministic fake
-clock replaces ``time.monotonic`` so elapsed values are exact, not
+clock replaces ``time.perf_counter`` (review D2: the module's clock, house
+style -- NOT ``time.monotonic``) so elapsed values are exact, not
 timing-flake-prone.
 """
 
@@ -20,7 +21,7 @@ from clio_agent.gact.runtime.bringup_timing import BringupTimer
 
 
 class _FakeClock:
-    """A monotonically-advancing, fully deterministic stand-in for time.monotonic."""
+    """A monotonically-advancing, fully deterministic stand-in for time.perf_counter."""
 
     def __init__(self, start: float = 0.0) -> None:
         self._t = start
@@ -34,7 +35,7 @@ class _FakeClock:
 
 def _install_clock(monkeypatch: pytest.MonkeyPatch, start: float = 0.0) -> _FakeClock:
     clock = _FakeClock(start)
-    monkeypatch.setattr(bringup_timing.time, "monotonic", clock)
+    monkeypatch.setattr(bringup_timing.time, "perf_counter", clock)
     return clock
 
 
@@ -271,3 +272,123 @@ def test_summary_is_pure_and_repeatable(monkeypatch: pytest.MonkeyPatch) -> None
     timer.end_phase("a")
     final = timer.finish()
     assert final.unclosed_phase_names == ()
+
+
+# ---------------------------------------------------------------------------
+# Opus adversarial review fix-first findings (D2 clock, D3 clamp, R1, R3).
+# ---------------------------------------------------------------------------
+
+
+def test_summary_after_finish_returns_the_frozen_final_not_a_growing_total(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review R1: calling summary() after finish() used to recompute against
+    the CURRENT clock (total_ms kept growing with wall time even though the
+    timer was "done" -- a settled 0ms timer read back as 63ms on a later
+    call). It must now return the SAME frozen summary finish() produced."""
+
+    clock = _install_clock(monkeypatch)
+    timer = BringupTimer(session_id="s11")
+    timer.start_phase("a")
+    clock.advance(0.005)
+    timer.end_phase("a")
+
+    settled = timer.finish()
+    clock.advance(9999.0)  # a large amount of "later" wall-clock time passes
+
+    # Sabotage: make summary() always recompute via time.perf_counter() /
+    # self._t0 regardless of self._finished -> this returns a summary with
+    # total_ms inflated by the 9999s advance above -> red.
+    again = timer.summary()
+    assert again == settled
+    assert again.total_ms == pytest.approx(5.0, abs=1e-6)
+
+
+def test_attribution_violation_is_audited_and_surfaced_not_silently_clamped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review D3: the min(attributed_ms, total_ms) clamp that keeps the
+    contract holding must never run silently -- a nonzero overattributed_ms,
+    a logger.warning, and a bringup.attribution_violation stream_audit row
+    are all required when the raw depth-0 sum exceeds total_ms (a
+    phase-open/close bug, which the LIFO stack normally makes unreachable --
+    forced here via a synthetic phase record to prove the guard exists)."""
+
+    audits = _capture_audits(monkeypatch)
+    timer = BringupTimer(session_id="s12")
+    # Force the otherwise-unreachable over-attribution path: hand _build_summary
+    # a closed depth-0 phase whose own elapsed_ms exceeds the wall-clock total.
+    bogus_phase = bringup_timing.PhaseRecord(
+        name="bogus", depth=0, start_offset_ms=0.0, elapsed_ms=999_000.0
+    )
+    summary = timer._build_summary(timer._t0 + 0.001, [bogus_phase], [])
+
+    # Sabotage: keep the silent min() clamp with no signal -> is_fully_attributed()
+    # still holds (by construction) but overattributed_ms stays 0.0 and no audit
+    # row exists -> both assertions below catch that regression.
+    assert summary.is_fully_attributed()
+    assert summary.overattributed_ms == pytest.approx(999_000.0 - summary.total_ms, abs=1e-3)
+    assert summary.overattributed_ms > 0.0
+    assert summary.as_dict()["overattributed_ms"] == pytest.approx(
+        summary.overattributed_ms, abs=1e-3
+    )
+    violations = [f for stage, f in audits if stage == "bringup.attribution_violation"]
+    assert len(violations) == 1
+    assert violations[0]["session_id"] == "s12"
+    assert violations[0]["overattributed_ms"] > 0
+
+
+def test_attribution_violation_absent_on_the_healthy_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression pin: ordinary correctly-paired phases never trip D3's guard."""
+
+    audits = _capture_audits(monkeypatch)
+    clock = _install_clock(monkeypatch)
+    timer = BringupTimer(session_id="s13")
+    timer.start_phase("a")
+    clock.advance(0.010)
+    timer.end_phase("a")
+
+    summary = timer.finish()
+    assert summary.overattributed_ms == 0.0
+    assert [f for stage, f in audits if stage == "bringup.attribution_violation"] == []
+
+
+def test_phase_context_manager_closes_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = _install_clock(monkeypatch)
+    timer = BringupTimer(session_id="s14")
+
+    with timer.phase("workspace.lease"):
+        clock.advance(0.015)
+
+    summary = timer.finish()
+    assert summary.is_fully_attributed()
+    assert summary.unclosed_phase_names == ()
+    lease = next(p for p in summary.phases if p.name == "workspace.lease")
+    assert lease.elapsed_ms == pytest.approx(15.0, abs=1e-6)
+    assert lease.forced_close is False
+
+
+def test_phase_context_manager_closes_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review R3: the whole point is exception safety -- a raise inside the
+    `with` block must still close (and correctly time) the phase, and the
+    original exception must still propagate unchanged."""
+
+    clock = _install_clock(monkeypatch)
+    timer = BringupTimer(session_id="s15")
+
+    with pytest.raises(ValueError, match="boom"):
+        with timer.phase("blueprint.resolve"):
+            clock.advance(0.008)
+            raise ValueError("boom")
+
+    summary = timer.finish()
+    # Sabotage: drop the try/finally (bare start_phase/end_phase call, or no
+    # end_phase at all on the raise path) -> the phase is missing or reported
+    # under unclosed_phase_names as forced -> either way these assertions red.
+    assert summary.unclosed_phase_names == ()
+    resolved = next(p for p in summary.phases if p.name == "blueprint.resolve")
+    assert resolved.elapsed_ms == pytest.approx(8.0, abs=1e-6)
+    assert resolved.forced_close is False
+    assert summary.is_fully_attributed()

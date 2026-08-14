@@ -52,12 +52,22 @@ relies on, so there is no separate on/off switch to maintain here.
 ``lm.ttft`` is intentionally NOT instrumented by this module — it is read
 from existing ``stream_audit`` rows at analysis time (the LM lane is the
 providers boundary, out of scope here).
+
+CLOCK (review D2): every timestamp uses ``time.perf_counter()`` (house style,
+``gact/agents/builders.py``'s ``call_tool`` timing), not ``time.monotonic()``
+— on Windows ``time.monotonic()``'s effective resolution can be ~15.6ms (the
+system timer tick), which read a real 40ms phase as 31ms and a real 10ms
+phase as 0.0ms in review probes. ``perf_counter()`` is still monotonic
+(safe for elapsed-time subtraction) but backed by the highest-resolution
+counter the platform exposes.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -96,6 +106,17 @@ class BringupSummary:
     ``attributed_ms`` sums only depth-0 phase spans; ``unattributed_ms`` is
     ``total_ms - attributed_ms`` by construction, so
     :meth:`is_fully_attributed` holds for any summary this module produces.
+
+    ``overattributed_ms`` (review D3) is normally ``0.0``: it is the amount
+    by which the RAW depth-0 sum exceeded ``total_ms`` BEFORE the defensive
+    clamp in :meth:`BringupTimer._build_summary` silently capped
+    ``attributed_ms`` at ``total_ms``. That clamp alone was itself a silent
+    fallback — it kept :meth:`is_fully_attributed` returning True even while
+    swallowing seconds of over-attribution in a review probe. The clamp
+    still runs (the contract must always hold), but a nonzero
+    ``overattributed_ms`` here — surfaced in :meth:`as_dict` and via the
+    ``bringup.attribution_violation`` stream_audit row emitted alongside it
+    — is the loud signal that a phase-open/close bug elsewhere over-counted.
     """
 
     session_id: str
@@ -104,6 +125,7 @@ class BringupSummary:
     unattributed_ms: float
     phases: tuple[PhaseRecord, ...]
     unclosed_phase_names: tuple[str, ...]
+    overattributed_ms: float = 0.0
 
     def is_fully_attributed(self, *, epsilon_ms: float = _EPSILON_MS) -> bool:
         """True when ``attributed_ms + unattributed_ms == total_ms`` within ``epsilon_ms``."""
@@ -123,6 +145,7 @@ class BringupSummary:
             "attributed_pct": pct(self.attributed_ms),
             "unattributed_ms": round(self.unattributed_ms, 3),
             "unattributed_pct": pct(self.unattributed_ms),
+            "overattributed_ms": round(self.overattributed_ms, 3),
             "unclosed_phase_names": list(self.unclosed_phase_names),
             "phases": [
                 {
@@ -157,7 +180,7 @@ class BringupTimer:
 
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
-        self._t0 = time.monotonic()
+        self._t0 = time.perf_counter()
         self._stack: list[_OpenSpan] = []
         self._closed: list[PhaseRecord] = []
         self._finished = False
@@ -175,7 +198,7 @@ class BringupTimer:
                 "bringup.late_op", session_id=self.session_id, op="start_phase", phase=name
             )
             return
-        self._stack.append(_OpenSpan(name=name, start=time.monotonic(), depth=len(self._stack)))
+        self._stack.append(_OpenSpan(name=name, start=time.perf_counter(), depth=len(self._stack)))
 
     def end_phase(self, name: str) -> None:
         """Close the named phase, emitting its ``bringup.phase`` audit row.
@@ -201,13 +224,30 @@ class BringupTimer:
                 "bringup.phase_mismatch", session_id=self.session_id, phase=name, reason="not_open"
             )
             return
-        now = time.monotonic()
+        now = time.perf_counter()
         while self._stack:
             span = self._stack.pop()
             matched = span.name == name
             self._close_span(span, now, forced_close=not matched)
             if matched:
                 break
+
+    @contextlib.contextmanager
+    def phase(self, name: str) -> Iterator[None]:
+        """Exception-safe phase span (review R3): ``start_phase`` on enter,
+        ``end_phase`` on exit via try/finally — the recommended shape for
+        seam call sites (``with timer.phase("workspace.lease"): ...``) so a
+        raised exception mid-phase still closes and times it (the elapsed
+        wall time up to the raise is real and still gets attributed) instead
+        of leaking an unclosed phase that only :meth:`finish` would ever
+        notice. The exception itself always propagates unchanged.
+        """
+
+        self.start_phase(name)
+        try:
+            yield
+        finally:
+            self.end_phase(name)
 
     def _close_span(self, span: _OpenSpan, now: float, *, forced_close: bool) -> None:
         elapsed_ms = max(0.0, (now - span.start) * 1000.0)
@@ -229,15 +269,20 @@ class BringupTimer:
         )
 
     def summary(self, *, _now: Optional[float] = None) -> BringupSummary:
-        """A PURE point-in-time snapshot — never mutates recorder state.
-
-        A still-open phase contributes its elapsed-so-far to the snapshot
-        (using ``_now`` or the current clock) WITHOUT being removed from the
-        live stack, so calling this mid-flight is safe and repeatable. Use
-        :meth:`finish` to actually settle the recorder.
+        """A point-in-time snapshot that never mutates the live stack/closed
+        list — a still-open phase contributes its elapsed-so-far WITHOUT
+        being removed from the stack, so calling this mid-flight is safe and
+        repeatable. Once :meth:`finish` has settled the recorder, this
+        returns that SAME frozen summary (ignoring ``_now``) instead of
+        recomputing against the current clock — review R1: recomputing kept
+        ``total_ms`` growing with wall-clock time even after the timer was
+        "done" (a settled 0ms timer read back as 63ms on a later call).
         """
 
-        now = _now if _now is not None else time.monotonic()
+        if self._finished:
+            assert self._final_summary is not None  # set the first time finish() ran
+            return self._final_summary
+        now = _now if _now is not None else time.perf_counter()
         phases = list(self._closed)
         unclosed_names: list[str] = []
         for span in self._stack:
@@ -257,13 +302,32 @@ class BringupTimer:
         self, now: float, phases: list[PhaseRecord], unclosed_names: list[str]
     ) -> BringupSummary:
         total_ms = max(0.0, (now - self._t0) * 1000.0)
-        attributed_ms = sum(p.elapsed_ms for p in phases if p.depth == 0)
-        # Defensive clamp: the LIFO stack discipline makes attributed_ms > total_ms
-        # unreachable for correctly paired start/end calls, but a clamp (rather
-        # than a negative unattributed_ms) keeps the contract holding even if a
-        # future edit breaks that invariant, instead of reporting a nonsensical
-        # negative "unattributed" number.
-        attributed_ms = min(attributed_ms, total_ms)
+        raw_attributed_ms = sum(p.elapsed_ms for p in phases if p.depth == 0)
+        overattributed_ms = 0.0
+        if raw_attributed_ms > total_ms:
+            # Review D3: the clamp below is itself a silent fallback if it runs
+            # quietly -- a prior version capped attributed_ms at total_ms with no
+            # signal, so is_fully_attributed() kept returning True while seconds
+            # of over-attribution (a phase-open/close bug) vanished unnoticed.
+            # The clamp still has to run (the contract must always hold for
+            # every summary this module hands out), but now it is LOUD.
+            overattributed_ms = raw_attributed_ms - total_ms
+            logger.warning(
+                "bringup_timer attribution_violation session_id=%s overattributed_ms=%.3f "
+                "attributed_ms=%.3f total_ms=%.3f",
+                self.session_id,
+                overattributed_ms,
+                raw_attributed_ms,
+                total_ms,
+            )
+            stream_audit(
+                "bringup.attribution_violation",
+                session_id=self.session_id,
+                overattributed_ms=round(overattributed_ms, 3),
+                attributed_ms=round(raw_attributed_ms, 3),
+                total_ms=round(total_ms, 3),
+            )
+        attributed_ms = min(raw_attributed_ms, total_ms)
         unattributed_ms = total_ms - attributed_ms
         return BringupSummary(
             session_id=self.session_id,
@@ -272,6 +336,7 @@ class BringupTimer:
             unattributed_ms=unattributed_ms,
             phases=tuple(phases),
             unclosed_phase_names=tuple(unclosed_names),
+            overattributed_ms=overattributed_ms,
         )
 
     def finish(self) -> BringupSummary:
@@ -288,7 +353,7 @@ class BringupTimer:
             assert self._final_summary is not None  # set the first time finish() ran
             return self._final_summary
 
-        now = time.monotonic()
+        now = time.perf_counter()
         unclosed_names = [span.name for span in self._stack]
         while self._stack:
             span = self._stack.pop()

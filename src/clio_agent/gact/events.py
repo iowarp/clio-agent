@@ -46,6 +46,17 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _is_decade_boundary(n: int) -> bool:
+    """True for ``n`` in ``{1, 10, 100, 1000, ...}`` (string-based — no float
+    precision hazard). Used to throttle the ``bus.queue_full`` warning log
+    rate to a decade cadence (#1214 D1)."""
+
+    if n < 1:
+        return False
+    digits = str(n)
+    return digits[0] == "1" and set(digits[1:]) <= {"0"}
+
+
 _event_id_counter = itertools.count(1)
 
 
@@ -153,11 +164,12 @@ class EventBus:
         # session_id -> cumulative subscriber-queue-full drop count (#1214: no
         # silent ``except asyncio.QueueFull: pass``). Read via ``dropped_total``.
         self._dropped_total: dict[str, int] = defaultdict(int)
-        # session_id -> whether the current stretch of drops is already
-        # "announced" via logger.warning — reset on the next successful
-        # delivery so a stuck consumer produces one warning per BURST, not
-        # one per dropped event, while the audit trail (below) still records
-        # every drop.
+        # session_id -> whether the session is currently mid drop-streak.
+        # Set on every drop; cleared only when a FULL _deliver() cycle for
+        # the session drops nothing (every live subscriber queue for it
+        # accepted the event) -- gates the ONE recovery logger.info line in
+        # _note_delivery_recovered. The warning-log RATE itself is decade-
+        # boundary gated in _record_drop, independent of this flag (#1214 D1).
         self._drop_burst_active: dict[str, bool] = defaultdict(bool)
 
     def publish(self, event: Event) -> None:
@@ -171,15 +183,30 @@ class EventBus:
         earlier version of this docstring claimed a ``server.disposed``-
         equivalent gap event fired here; no such event was ever emitted
         — iowarp/clio-agent#1214), so an attached client reading its
-        live stream simply never sees the dropped event. The replay
-        history is UNAFFECTED by a live-queue drop (``_record_history``
-        below runs before fan-out), so a client that reconnects with
-        ``Last-Event-ID`` — or calls ``GET /v1/sessions/{sid}/messages``
-        — still recovers a dropped event as long as it has not aged out
-        of the bounded ``history_per_session`` replay window. Every drop
-        IS accounted for: a per-session counter (:meth:`dropped_total`),
-        one ``logger.warning`` per burst, and a ``bus.queue_full``
-        stream-audit row (#1214) — never a bare ``except
+        live stream simply never sees the dropped event.
+
+        ``Last-Event-ID`` resume does NOT reliably recover a drop either
+        (a second docstring inaccuracy this corrects — #1214 review): resume
+        replays ``history[id > last_event_id]`` — everything STRICTLY NEWER
+        than the client's own watermark. A client that stays connected and
+        keeps receiving LATER events after a drop never reconnects at all
+        (there is nothing to resume), and a client that DOES reconnect has
+        by then already advanced its watermark past the dropped id via
+        those later events — so the hole sits BELOW the watermark, exactly
+        where resume cannot look. Verified: delivered ``[2, 5]`` (3 and 4
+        dropped mid-stream), resume from ``last_event_id=5`` yields only
+        ``[6, ...]`` — 3 and 4 are gone for good via this path. The one
+        real recovery channel is ``GET /v1/sessions/{sid}/messages``, and
+        only for MESSAGE PARTS: the persisted transcript/message store
+        records parts independently of whether their SSE delivery
+        succeeded, so a full re-fetch shows them regardless. Anything NOT
+        projected into that message/parts model — ``tool.call.*``,
+        semantic/trace events — has NO recovery path at all once dropped.
+
+        Every drop IS accounted for: a per-session counter
+        (:meth:`dropped_total`), a decade-boundary-throttled
+        ``logger.warning`` (1, 10, 100, ... drops), and a ``bus.queue_full``
+        stream-audit row per drop (#1214) — never a bare ``except
         asyncio.QueueFull: pass``.
 
         Safe to call from any thread: publishes arriving off the
@@ -253,13 +280,15 @@ class EventBus:
             self._record_history(event)
         subscriber_sessions = list(self._subs) if event.session_id == "" else [event.session_id]
         for subscriber_session in subscriber_sessions:
+            dropped_this_delivery = False
             for q in self._subs.get(subscriber_session, []):
                 try:
                     q.put_nowait(event)
                 except asyncio.QueueFull:
                     self._record_drop(subscriber_session, event.type)
-                else:
-                    self._drop_burst_active[subscriber_session] = False
+                    dropped_this_delivery = True
+            if not dropped_this_delivery:
+                self._note_delivery_recovered(subscriber_session)
 
     def _record_drop(self, session_id: str, event_type: str) -> None:
         """Typed accounting for one subscriber-queue-full drop (#1214).
@@ -269,24 +298,29 @@ class EventBus:
         ``bus.queue_full`` stream-audit row (gated behind
         ``CLIO_STREAM_AUDIT_LOG``, zero cost when off) so the full drop
         history is queryable after the fact — the ``stream_fallback``
-        typed-reason convention (RULE: no silent fallback). A
-        ``logger.warning`` fires only on the FIRST drop of a burst (the
-        transition from "delivering cleanly" to "dropping"), reset by the
-        next successful delivery for the session (see ``_deliver``), so a
-        stalled consumer produces one log line per stretch of drops, not
-        one per dropped event. Tracked per SESSION rather than per
-        subscriber queue: with more than one live subscriber for the same
-        session, a delivery success on one queue resets the burst flag
-        even while another queue for that session keeps dropping — an
-        accepted approximation (the common case is one SSE client per
-        session); the audit row and the cumulative counter remain exact
-        either way.
+        typed-reason convention (RULE: no silent fallback).
+
+        ``logger.warning`` fires at DECADE boundaries of the cumulative
+        count (1, 10, 100, 1000, ...) rather than once per "burst". A
+        burst-boundary design was tried first and degenerated under real
+        interleaving: resetting the "announced" flag on every clean
+        delivery meant a slow-but-draining consumer (drop, catch up, drop,
+        catch up, ...) re-armed the warning almost every cycle (39 warnings
+        for 77 drops in review), and two subscribers on one session — one
+        stuck, one healthy — reset the flag on the healthy queue's success
+        even while the stuck queue kept failing (18 warnings for 18 drops).
+        Decade escalation is immune to interleaving noise (it only depends
+        on the monotonic cumulative total) while still yielding LESS log
+        volume as a burst grows, never more. Every drop still gets its own
+        audit row regardless of whether it crossed a decade boundary — the
+        counter and the audit trail stay exact either way; only the log
+        RATE is throttled.
         """
 
         total = self._dropped_total[session_id] + 1
         self._dropped_total[session_id] = total
-        if not self._drop_burst_active[session_id]:
-            self._drop_burst_active[session_id] = True
+        self._drop_burst_active[session_id] = True
+        if _is_decade_boundary(total):
             logger.warning(
                 "eventbus_queue_full session_id=%s event_type=%s dropped_total=%d",
                 session_id,
@@ -299,6 +333,26 @@ class EventBus:
             event_type=event_type,
             dropped_total=total,
         )
+
+    def _note_delivery_recovered(self, session_id: str) -> None:
+        """Log ONE ``INFO`` line the first time a session's drop streak ends.
+
+        Evaluated once per :meth:`_deliver` call (not per subscriber queue),
+        so a multi-subscriber session only "recovers" when EVERY live queue
+        for it accepted this delivery — a healthy queue's success no longer
+        masks a stuck sibling queue's ongoing drops (the exact bug the
+        per-queue reset in :meth:`_record_drop`'s prior design had). A no-op
+        when the session was not mid-streak, so this never logs on the
+        common all-clear path.
+        """
+
+        if self._drop_burst_active.get(session_id):
+            self._drop_burst_active[session_id] = False
+            logger.info(
+                "eventbus_queue_full_recovered session_id=%s dropped_total=%d",
+                session_id,
+                self._dropped_total.get(session_id, 0),
+            )
 
     def dropped_total(self, session_id: str) -> int:
         """Cumulative subscriber-queue-full drops for ``session_id``.

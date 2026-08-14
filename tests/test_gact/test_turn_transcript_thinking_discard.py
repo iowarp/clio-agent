@@ -94,9 +94,9 @@ def test_whitespace_only_text_drop_stays_info(caplog: Any) -> None:
 def test_whitespace_only_thinking_drop_audit_row_carries_part_type(
     monkeypatch: Any,
 ) -> None:
-    """The stream_audit row (unchanged by this fix) already carried part_type —
-    pinned here alongside the log-level assertion so a future edit cannot drop
-    one while touching the other."""
+    """The stream_audit row already carried part_type; ``chars`` (the
+    review's N2 finding) was added so a whitespace-only drop's size is
+    visible without cross-referencing the log line's raw text."""
 
     audits: list[tuple[str, dict[str, Any]]] = []
     monkeypatch.setattr(
@@ -113,6 +113,8 @@ def test_whitespace_only_thinking_drop_audit_row_carries_part_type(
     assert rows[0]["part_type"] == "thinking"
     assert rows[0]["session_id"] == "sess_thk"
     assert rows[0]["turn_id"] == "turn_thk"
+    # Sabotage: drop the chars= kwarg -> KeyError / red (N2).
+    assert rows[0]["chars"] == len("   ")
 
 
 # ---------------------------------------------------------------------------

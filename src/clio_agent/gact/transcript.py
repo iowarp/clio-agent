@@ -1077,9 +1077,8 @@ class TurnTranscript:
         # The buffer is the model's text byte-for-byte; the only transform is the
         # whitespace-only drop below (a part with no content emits nothing).
         if not buffered.strip():
-            # Whitespace-only: remove from the ledger and emit nothing.
-            # Identity-based removal — Part equality is by value and live
-            # ledgers can hold equal-valued parts.
+            # Whitespace-only: remove from the ledger, emit nothing. Identity-based
+            # removal -- Part equality is by value and live ledgers can hold dupes.
             for index, candidate in enumerate(self._parts):
                 if candidate is part:
                     del self._parts[index]
@@ -1097,6 +1096,7 @@ class TurnTranscript:
                 turn_id=self.turn_id,
                 part_id=part.id,
                 part_type=part.type,
+                chars=len(buffered),
             )
             return
         # Mutate in place: external alias views (app.state.live_assistant_parts)
