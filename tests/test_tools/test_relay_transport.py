@@ -286,7 +286,7 @@ async def test_agent_message_persists_then_sends_exact_tasks_update_payload() ->
         session_id="session-alice",
         task_id="task-agent-message",
     )
-    store.put(TaskRecord(key=key, tool="relay_submit_remote_agent", status="input_required"))
+    store.put(TaskRecord(key=key, tool="relay_submit_agent", status="input_required"))
     session = ScriptedSession([])
     relay = RelayTransportClient(
         mcp_url="http://relay.invalid/mcp",
@@ -322,7 +322,7 @@ async def test_agent_message_lost_ack_retries_identical_persisted_answer() -> No
 
     store = task_record_store()
     key = TaskKey("relay-message-test", "session-alice", "task-agent-retry")
-    store.put(TaskRecord(key=key, tool="relay_submit_remote_agent", status="input_required"))
+    store.put(TaskRecord(key=key, tool="relay_submit_agent", status="input_required"))
     relay = RelayTransportClient(
         mcp_url="http://relay.invalid/mcp",
         http_base_url="http://relay.invalid",

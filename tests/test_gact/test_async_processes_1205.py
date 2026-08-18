@@ -98,7 +98,7 @@ def test_route_unions_agent_and_mcp_task_rows_with_kind_discriminator(tmp_path: 
 
 
 def test_route_dedupes_a_relay_backed_agent_tasks_own_task_record(tmp_path: Path) -> None:
-    """A ``relay_submit_remote_agent`` spawn has BOTH an AgentTask row and a durable
+    """A ``relay_submit_agent`` spawn has BOTH an AgentTask row and a durable
     TaskRecord row for the SAME task id. The union must show it once, as kind="agent",
     never twice — the identical dedupe idiom ``run_registry.project_runs`` uses."""
 
@@ -117,7 +117,7 @@ def test_route_dedupes_a_relay_backed_agent_tasks_own_task_record(tmp_path: Path
             server_id="relay-ares", session_id=sid, task_id=agent_task.task_id
         )
         task_record_store().put(
-            TaskRecord(key=mirrored_key, tool="relay_submit_remote_agent", status="working")
+            TaskRecord(key=mirrored_key, tool="relay_submit_agent", status="working")
         )
 
         response = client.get(f"/v1/sessions/{sid}/async-processes")
@@ -717,7 +717,7 @@ def test_relay_run_projection_is_honest_about_non_relay_records(tmp_path: Path) 
 def test_relay_run_projection_still_labels_genuine_relay_jobs(tmp_path: Path) -> None:
     """The flip side of the honesty fix: a record whose backend DOES carry
     relay's own ``cluster`` key (``relay_invoker_runtime.py``'s
-    ``RelayExpertInvoker`` path, ``relay_submit_remote_agent``) still gets the
+    ``RelayExpertInvoker`` path, ``relay_submit_agent``) still gets the
     ``relay:<cluster>`` / ``relay_job`` label — the fix must not turn genuine
     relay jobs into false negatives either.
     """
@@ -731,7 +731,7 @@ def test_relay_run_projection_still_labels_genuine_relay_jobs(tmp_path: Path) ->
         task_record_store().put(
             TaskRecord(
                 key=key,
-                tool="relay_submit_remote_agent",
+                tool="relay_submit_agent",
                 status="working",
                 backend={"cluster": "ares", "transport": "relay"},
             )

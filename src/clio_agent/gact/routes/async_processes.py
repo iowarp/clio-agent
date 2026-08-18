@@ -88,7 +88,7 @@ def project_session_async_processes(app: "FastAPI", session_id: str) -> list[dic
 
     Newest-created first, matching ``run_registry.project_runs``'s ordering
     convention. ``TaskRecord`` rows whose ``task_id`` already has an ``AgentTask``
-    counterpart (a ``relay_submit_remote_agent`` spawn) are excluded — they are the
+    counterpart (a ``relay_submit_agent`` spawn) are excluded — they are the
     SAME task, already returned once as ``kind="agent"``; this is the identical
     dedupe idiom ``project_runs`` uses.
     """

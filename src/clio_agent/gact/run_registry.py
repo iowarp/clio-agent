@@ -68,7 +68,7 @@ def _relay_run(record: TaskRecord) -> dict[str, Any]:
     all — that record isn't a relay job. Only a record whose backend locator
     actually carries relay's own ``cluster`` key
     (``relay_invoker_runtime.py``'s ``RelayExpertInvoker`` path,
-    ``relay_submit_remote_agent``) is genuinely relay-placed; everything else
+    ``relay_submit_agent``) is genuinely relay-placed; everything else
     gets an honest ``mcp:<server_id>`` / ``"mcp_task"`` instead of a false
     relay claim. Server-authored display semantics must be true — the UI
     renders them verbatim. ``updated_at`` is now wired through from the real,
@@ -108,7 +108,7 @@ def project_runs(app: "FastAPI") -> list[dict[str, Any]]:
     not reappear through the second projection source. #1205 review item 3: widened
     the SAME way ``dismiss_run`` was widened — ANY non-agent-task ``TaskRecord``
     (``jarvis_run`` etc.), not only the relay-agent-mirroring
-    ``relay_submit_remote_agent`` records this originally covered — so a RETAINED
+    ``relay_submit_agent`` records this originally covered — so a RETAINED
     settled mcp-task (#1205 2nd round: kept until an explicit dismiss, never
     auto-dropped at settle) is actually reachable through the SAME listing its
     dismiss control (``POST /v1/runs/{handle_id}/dismiss``) targets. Without this
@@ -132,7 +132,7 @@ def detach_run(app: "FastAPI", handle_id: str) -> dict[str, Any] | None:
 
     #1205 review (4th round): widened the SAME way ``dismiss_run``/``project_runs``
     were — ANY non-agent-task ``TaskRecord``, not only the relay-agent-mirroring
-    ``relay_submit_remote_agent`` records this originally covered. Without this,
+    ``relay_submit_agent`` records this originally covered. Without this,
     ``project_runs`` lists a ``jarvis_run`` row (the prior round's widening) that
     this route 404s on — a row the listing shows but cannot act on, which is its
     own dishonesty. UNLIKE ``dismiss_run``, this carries NO terminal-state guard:
@@ -171,7 +171,7 @@ def dismiss_run(app: "FastAPI", handle_id: str) -> bool:
     design (2nd round) keeps a settled record in the store with its terminal
     status until this explicit action, so dismissing one is the ONE way to make
     it stop appearing — this call drops it for real. Matches ANY tool now, not
-    only the relay-agent-mirroring ``relay_submit_remote_agent`` records this
+    only the relay-agent-mirroring ``relay_submit_agent`` records this
     originally covered — the session-scoped async-processes tray (#1205)
     surfaces every non-agent-task record (``jarvis_run`` etc.), not just that one.
 

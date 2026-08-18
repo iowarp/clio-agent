@@ -34,6 +34,7 @@ from clio_agent.gact.agents.relay_invoker_runtime import (
     RelayInvokerRuntime,
     find_task_result_wire,
     relay_error_reason,
+    relay_job_failure_reason,
 )
 from clio_agent.gact.spawn_context import validate_task_spec
 from clio_agent.gact.task_fold import fold_agent_task_event
@@ -537,14 +538,24 @@ class RelayExpertInvoker:
         return self._app
 
     def remote_agent_task_spec(self, spec: TaskSpec) -> dict[str, Any]:
-        """Map one self-contained TaskSpec to the relay RemoteAgentTaskSpec wire."""
+        """Map one self-contained TaskSpec to the relay RemoteAgentTaskSpec wire.
+
+        #1222: the door's real ``relay_submit_agent`` ``inputSchema`` is
+        ``additionalProperties: false`` and carries no inline task-content argument
+        (confirmed live against ``127.0.0.1:18796/mcp`` and the installed
+        ``clio_relay`` package source) -- ``context`` is REJECTED at submission,
+        never reaching a relay job. ``prompt_path`` is a fixed, app-wide system
+        prompt (see ``relay_wiring.py::configure_relay_expert_invokers``), not a
+        per-task channel. The ONE exposed per-task channel is the bounded
+        post-admission follow-up round this opts into (``request_followup_message``);
+        ``invoke()`` answers it immediately below with ``spec``'s own task text.
+        """
 
         return {
             "prompt_path": self._prompt_path,
             "mcp_config_path": self._mcp_config_path,
             "model": self._model,
             "workdir": self._workdir,
-            "context": spec_to_wire(spec),
             "request_followup_message": True,
         }
 
@@ -557,6 +568,13 @@ class RelayExpertInvoker:
             spec.parent_session_id,
             self.remote_agent_task_spec(spec),
         )
+        if str(getattr(current, "status", "")) == "input_required":
+            # #1222: deliver the spawn's own task text over the one bounded
+            # post-admission round the submission opted into -- this relays what the
+            # parent already decided at spawn time, over the door's only exposed
+            # per-task channel; it does not decide anything new on the parent's behalf.
+            self._runtime.message(spec.parent_session_id, identity.key, spec.task_text)
+            current = self._runtime.poll(spec.parent_session_id, identity.key)
         observation, _projection = self._relay_projection(current)
         # Only local run-index allocation + registry mutation need serialization.
         # The relay submit/poll round trip above is independent per invocation and
@@ -785,6 +803,24 @@ class RelayExpertInvoker:
                     reason="relay_result_invalid",
                 )
             return result
+        # #1222: the real relay_submit_agent completion envelope is a raw JARVIS-CD
+        # job/artifact record, never the TaskResult boundary shape above -- check
+        # for the door's OWN failure signal before falling through to the strict
+        # boundary-shape error, so a genuinely failed remote job (e.g. a cluster
+        # missing its JARVIS-CD executable) surfaces honestly instead of an opaque
+        # shape-mismatch. ``error_reason`` stays the generic typed catch-all
+        # (AgentTaskRegistry.transition rejects any reason outside its closed
+        # ERROR_REASONS vocabulary -- no free-form strings on that field); the raw
+        # relay detail travels in ``result.answer_excerpt`` instead, same as any
+        # other tool-fail completion's message body.
+        relay_failure = relay_job_failure_reason(getattr(current, "result", None))
+        if relay_failure is not None:
+            return replace(
+                TaskResult.from_task(local),
+                status=STATUS_FAILED,
+                error_reason="agent_error",
+                result={"message_ref": "", "answer_excerpt": relay_failure, "workflow_state": {}},
+            )
         if target == STATUS_CANCELLED:
             return replace(TaskResult.from_task(local), status=STATUS_CANCELLED)
         if target == STATUS_FAILED:

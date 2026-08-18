@@ -293,7 +293,7 @@ def test_runs_api_projects_local_and_relay_handles_with_live_state(tmp_path: Pat
                         session_id=parent,
                         task_id="task_relay_only",
                     ),
-                    tool="relay_submit_remote_agent",
+                    tool="relay_submit_agent",
                     backend={"cluster": "ares", "transport": "relay"},
                     status="working",
                     created_at="2026-08-01T00:00:00+00:00",

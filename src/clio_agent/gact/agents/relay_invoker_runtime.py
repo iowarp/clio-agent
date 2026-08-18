@@ -15,7 +15,7 @@ import httpx
 from clio_agent.errors import ToolError
 
 logger = logging.getLogger(__name__)
-RELAY_REMOTE_AGENT_TOOL = "relay_submit_remote_agent"
+RELAY_REMOTE_AGENT_TOOL = "relay_submit_agent"
 
 
 class RelayInvokerRuntime:
@@ -335,6 +335,37 @@ def find_task_result_wire(value: Any) -> dict[str, Any] | None:
     raise InvokerError(
         "relay result nesting exceeds the adapter bound", reason="relay_result_invalid"
     )
+
+
+def relay_job_failure_reason(result: Any) -> str | None:
+    """Extract a failure reason from the door's real ``relay_submit_agent`` envelope.
+
+    #1222: the door's actual completion shape is a raw JARVIS-CD job/artifact
+    record (``structuredContent.job.state`` / ``job.last_error``) -- NOT the
+    ``TaskResult`` boundary shape :func:`find_task_result_wire` expects (that
+    shape was authored against the phantom ``relay_submit_remote_agent`` contract
+    and no real relay job ever produces it). This recognizes ONLY the real door's
+    own failure signal, so a genuinely failed remote job (e.g. a cluster missing
+    its JARVIS-CD executable) surfaces its typed error instead of an opaque
+    boundary-shape mismatch. An unrecognized shape -- including a real success,
+    whose envelope this adapter does not yet cover -- returns ``None`` and the
+    caller keeps raising loudly rather than fabricating a result.
+    """
+
+    if not isinstance(result, Mapping):
+        return None
+    structured = result.get("structuredContent")
+    if not isinstance(structured, Mapping):
+        return None
+    job = structured.get("job")
+    if not isinstance(job, Mapping):
+        return None
+    if job.get("state") not in ("failed", "canceled", "cancelled"):
+        return None
+    last_error = job.get("last_error")
+    if isinstance(last_error, str) and last_error:
+        return last_error
+    return f"relay job {job.get('state')}"
 
 
 def relay_error_reason(error: Any) -> str:

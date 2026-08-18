@@ -116,22 +116,29 @@ class _FakeRelayBackend:
         return _FakeRelayClient(self, owner_session_id)
 
     def create(self, owner_session_id: str, arguments: dict[str, Any]) -> RelayTaskIdentity:
-        """Admit one job and persist the exact reconnect key."""
+        """Admit one job and persist the exact reconnect key.
+
+        #1222: the real door has no inline ``context`` argument -- task content
+        travels through the ONE bounded post-admission follow-up round instead
+        (``request_followup_message``). A submission that opts into it starts
+        ``awaiting_input`` (mirrors the live door's observed ``input_required``
+        first poll); ``message()`` below resolves it with the real task text.
+        """
 
         with self._lock:
             self._next_id += 1
             task_id = f"task_relay_{self._next_id:04d}"
-            context = dict(arguments["context"])
             task = {
                 "task_id": task_id,
                 "owner_session_id": owner_session_id,
                 "arguments": dict(arguments),
-                "context": context,
+                "context": {},
                 "polls": 0,
                 "cancel_requested": False,
                 "terminal": threading.Event(),
                 "stream_closed": threading.Event(),
                 "state": "queued",
+                "awaiting_input": bool(arguments.get("request_followup_message")),
             }
             self.tasks[task_id] = task
             self.submissions.append(dict(arguments))
@@ -143,7 +150,7 @@ class _FakeRelayBackend:
         resolve_store(None).put(
             TaskRecord(
                 key=key,
-                tool="relay_submit_remote_agent",
+                tool="relay_submit_agent",
                 backend={"transport": "fake-relay"},
                 status="working",
                 created_at="2026-08-01T00:00:00+00:00",
@@ -158,6 +165,8 @@ class _FakeRelayBackend:
         task["polls"] += 1
         if task["cancel_requested"]:
             observation = "canceled"
+        elif task["awaiting_input"]:
+            observation = "input_required"
         elif terminal:
             observation = "succeeded"
         elif task["polls"] == 1:
@@ -178,6 +187,22 @@ class _FakeRelayBackend:
             )
         return _relay_current(observation)
 
+    def answer_input(self, task_id: str, text: str) -> None:
+        """Resolve exactly one parked admission round with the real task text.
+
+        Only the FIRST answer while ``awaiting_input`` is a task-content delivery
+        (mirrors the door's one bounded post-admission round); any later
+        ``message()`` call is mid-run steering and must not re-arm this or overwrite
+        the delivered task text.
+        """
+
+        with self._lock:
+            task = self.tasks[task_id]
+            if task["awaiting_input"]:
+                task["context"] = {"task_text": text}
+                task["awaiting_input"] = False
+                task["polls"] = 0
+
     @staticmethod
     def _key(task: dict[str, Any]) -> TaskKey:
         return TaskKey(
@@ -188,19 +213,20 @@ class _FakeRelayBackend:
 
     @staticmethod
     def task_result(task: dict[str, Any]) -> dict[str, Any]:
-        """Build the remote TaskResult boundary record."""
+        """Build the remote TaskResult boundary record.
 
-        spec = task["context"]
-        text = str(spec["task_text"])
+        #1222: ``agent_ref``/``depth`` are omitted -- the real relay job does not
+        know clio's internal expert/depth bookkeeping either (it only ever saw
+        ``prompt_path`` + the follow-up message text). ``_terminal_result``'s merge
+        falls back to the locally-seeded ``AgentTask`` values for those fields,
+        exactly like a real relay completion would.
+        """
+
+        text = str(task["context"].get("task_text", ""))
         return {
             "task_id": task["task_id"],
             "parent_session_id": task["owner_session_id"],
             "child_session_id": "",
-            "agent_ref": {
-                "expert_id": spec["child_expert_id"],
-                "requesting_expert_id": spec["requesting_expert_id"],
-            },
-            "depth": spec["depth"],
             "run_index": 0,
             "status": "completed",
             "queued_reason": "",
@@ -231,7 +257,7 @@ class _FakeRelayClient:
         return None
 
     async def submit(self, tool_name: str, arguments: dict[str, Any]) -> RelayTaskIdentity:
-        assert tool_name == "relay_submit_remote_agent"
+        assert tool_name == "relay_submit_agent"
         return self.backend.create(self.owner_session_id, arguments)
 
     async def poll(self, identity: RelayTaskIdentity) -> SimpleNamespace:
@@ -255,6 +281,7 @@ class _FakeRelayClient:
 
     async def message(self, identity: RelayTaskIdentity, text: str) -> None:
         self.backend.messages.append((identity.task_id, text))
+        self.backend.answer_input(identity.task_id, text)
 
     async def stream_events(
         self,
@@ -552,7 +579,9 @@ def test_s7_typed_error_parity_across_both_invokers(
 def test_taskspec_maps_to_remote_agent_task_spec_verbatim(
     tmp_path: Path,
 ) -> None:
-    """Remote execution fields are configured and context is the exact TaskSpec wire."""
+    """Remote execution fields are configured; no inline context (#1222 -- the door's
+    real relay_submit_agent schema rejects it; task text travels via the follow-up
+    round instead, answered by invoke())."""
 
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     backend = _FakeRelayBackend()
@@ -572,7 +601,6 @@ def test_taskspec_maps_to_remote_agent_task_spec_verbatim(
         "mcp_config_path": "/shared/clio/mcp.toml",
         "model": "anthropic/claude",
         "workdir": "/shared/work",
-        "context": spec_to_wire(spec),
         "request_followup_message": True,
     }
 
@@ -624,7 +652,14 @@ def test_relay_invoke_does_not_serialize_network_round_trips(
 def test_relay_message_answers_post_admission_input_on_retained_task(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The relay invoker carries a message over the retained durable identity."""
+    """The relay invoker carries a message over the retained durable identity.
+
+    #1222: ``invoke()`` itself already answers ONE parked admission round with the
+    spec's own task text (the door's only per-task channel), so the FIRST message
+    the fake backend observes is that initial delivery ("initial"); this test's own
+    explicit ``invoker.message(...)`` call is a SECOND, later, mid-run steering
+    round over the same retained identity.
+    """
 
     _declare(monkeypatch, "data_expert")
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
@@ -645,7 +680,10 @@ def test_relay_message_answers_post_admission_input_on_retained_task(
         assert result.status == "completed"
         assert backend.tasks[handle.task_id]["stream_closed"].wait(1.0)
 
-    assert backend.messages == [(handle.task_id, "Use the new boundary condition.")]
+    assert backend.messages == [
+        (handle.task_id, "initial"),
+        (handle.task_id, "Use the new boundary condition."),
+    ]
 
 
 @pytest.mark.parametrize("observation", sorted(RELAY_STATE_MAP))
