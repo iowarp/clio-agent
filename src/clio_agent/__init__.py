@@ -30,7 +30,7 @@ Example:
 
 import os
 
-__version__ = "0.9.0"
+__version__ = "0.10.0a1"
 __author__ = "IOWarp Team"
 
 __all__ = [

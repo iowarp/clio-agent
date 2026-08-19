@@ -71,7 +71,7 @@ prereleases. For a persistent backend-only installation, use `uv tool` (not the
 ephemeral `uvx` / `uv tool run` path):
 
 ```sh
-uv tool install --with dspy==3.3.0b1 clio-agent==0.9.0
+uv tool install --with dspy==3.3.0b1 clio-agent==0.10.0a1
 clio-agent serve
 ```
 
