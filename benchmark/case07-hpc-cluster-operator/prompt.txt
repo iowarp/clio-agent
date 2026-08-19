@@ -1,0 +1,5 @@
+I'd like to see how a small molecular dynamics system behaves. Run a short
+LAMMPS melt simulation on the cluster — a small Lennard-Jones melt is fine —
+and tell me the final thermodynamic state it reached (temperature, energy,
+pressure). If anything the run needs isn't available on the cluster yet, get
+it set up first.
