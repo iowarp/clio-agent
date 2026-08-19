@@ -27,7 +27,8 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from clio_agent.gact.agent_tasks import ERROR_REASONS, STATUS_COMPLETED, AgentTask
-from clio_agent.gact.agents.invoker import RelayExpertInvoker, TaskHandle, TaskSpec
+from clio_agent.gact.agents.invoker import TaskHandle, TaskSpec
+from clio_agent.gact.agents.relay_expert_invoker import RelayExpertInvoker
 from clio_agent.gact.agents.relay_invoker_runtime import (
     RELAY_REMOTE_AGENT_TOOL,
     relay_job_failure_reason,

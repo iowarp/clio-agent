@@ -43,7 +43,6 @@ from clio_agent.gact.agents.invoker import (
     ExpertInvoker,
     InProcessExpertInvoker,
     InvokerError,
-    RelayExpertInvoker,
     TaskEvent,
     TaskHandle,
     TaskResult,
@@ -51,6 +50,7 @@ from clio_agent.gact.agents.invoker import (
     spec_to_wire,
     task_event_type,
 )
+from clio_agent.gact.agents.relay_expert_invoker import RelayExpertInvoker
 from clio_agent.gact.app import build_app
 from clio_agent.gact.turn_spawn import (
     MAX_SPAWN_DEPTH,
@@ -746,16 +746,16 @@ def test_relay_live_task_events_use_committed_fold(
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     backend = _FakeRelayBackend()
     seen = threading.Event()
-    from clio_agent.gact.agents import invoker as invoker_module
+    from clio_agent.gact import task_fold as task_fold_module
 
-    original = invoker_module.fold_agent_task_event
+    original = task_fold_module.fold_agent_task_event
 
     def recording_fold(app_arg: Any, observation: Any, **kwargs: Any) -> Any:
         if isinstance(observation, TaskEvent):
             seen.set()
         return original(app_arg, observation, **kwargs)
 
-    monkeypatch.setattr(invoker_module, "fold_agent_task_event", recording_fold)
+    monkeypatch.setattr(task_fold_module, "fold_agent_task_event", recording_fold)
     with TestClient(app) as client:
         parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
         handle = _relay_invoker(app, backend).invoke(_spec(parent))

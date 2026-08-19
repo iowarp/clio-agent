@@ -7,7 +7,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.gact.agents.invoker import RelayExpertInvoker
+from clio_agent.gact.agents.relay_expert_invoker import RelayExpertInvoker
 from clio_agent.tools.execution import create_sync_tool_executor
 from clio_agent.tools.gateway import namespace_proxies
 
@@ -60,10 +60,15 @@ async def relay_tool_surfaces_for_app(app: FastAPI) -> Any:
 async def refresh_relay_tool_surfaces_if_stale(app: FastAPI) -> Any:
     """Re-discover the relay catalog once its TTL has elapsed (#1227 D2).
 
-    Cheap on the common path: no discovery has ever run yet, this performs
-    the FIRST discovery (delegating to :func:`relay_tool_surfaces_for_app`);
-    otherwise this is one ``time.monotonic()`` subtraction unless the TTL has
-    elapsed. When it has, the catalog is re-discovered and, critically, the
+    Refreshes an EXISTING catalog only. First discovery is an app-assembly /
+    agent-construction concern (:func:`relay_agent_kwargs` →
+    :func:`relay_tool_surfaces_for_app`); when no catalog has ever been
+    discovered this is a no-op, because a turn must never pay an ambient
+    first-discovery round trip (observed live: a stale repo ``.env`` loaded by
+    litellm's import-time dotenv configured a half-dead door mid-process, and
+    this seam's former first-discovery branch then blocked every child turn of
+    every later-built app ~15s — the s7 parity reds). On the common path this
+    is one ``time.monotonic()`` subtraction unless the TTL has elapsed. When it has, the catalog is re-discovered and, critically, the
     already-constructed singleton agent (``app.state.agent`` -- one host per
     process, reused turn to turn) has its relay-owned attributes updated IN
     PLACE: ``ClioAgent._build_gateway`` reads ``self._remote_mcp_federation`` /
@@ -78,7 +83,7 @@ async def refresh_relay_tool_surfaces_if_stale(app: FastAPI) -> Any:
 
     existing = getattr(app.state, "relay_tool_surfaces", None)
     if existing is None:
-        return await relay_tool_surfaces_for_app(app)
+        return None
 
     discovered_at = getattr(app.state, "relay_tool_surfaces_discovered_at", None)
     ttl = _relay_tool_surfaces_ttl_seconds()

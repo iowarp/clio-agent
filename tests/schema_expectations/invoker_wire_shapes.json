@@ -132,7 +132,9 @@
         "workspace_id",
         "session_mode",
         "session_scope_metadata",
-        "placement"
+        "placement",
+        "run_label",
+        "start_turn"
       ],
       "required_fields": [
         "child_expert_id",
@@ -156,7 +158,9 @@
         "workspace_id",
         "session_mode",
         "session_scope_metadata",
-        "placement"
+        "placement",
+        "run_label",
+        "start_turn"
       ]
     }
   },

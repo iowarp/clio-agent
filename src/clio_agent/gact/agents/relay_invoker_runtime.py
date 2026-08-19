@@ -239,9 +239,13 @@ class RelayEventPump:
             return
         if local.is_terminal or local.status == event.status:
             return
-        from clio_agent.gact.agents import invoker as invoker_module  # noqa: PLC0415
+        # Resolve through the OWNING module's namespace (not a from-import) so a
+        # test can patch task_fold.fold_agent_task_event and observe pump-fed
+        # events; pre-split this went through the invoker module's namespace,
+        # which stopped re-exporting fold when RelayExpertInvoker moved out.
+        from clio_agent.gact import task_fold as task_fold_module  # noqa: PLC0415
 
-        invoker_module.fold_agent_task_event(self._app, event)
+        task_fold_module.fold_agent_task_event(self._app, event)
 
     def _consume_timeline(self, handle: Any, raw: Mapping[str, Any]) -> None:
         """Forward one application event into the bounded live-view sink."""

@@ -33,7 +33,8 @@ from typing import Any, AsyncIterator
 import httpx
 import pytest
 
-from clio_agent.gact.agents.invoker import RelayExpertInvoker, TaskSpec
+from clio_agent.gact.agents.invoker import TaskSpec
+from clio_agent.gact.agents.relay_expert_invoker import RelayExpertInvoker
 from clio_agent.tools.mcp_task_records import InMemoryTaskRecordStore
 from clio_agent.tools.relay_factory import RelayTransportConfig, RelayTransportUnavailable
 from clio_agent.tools.relay_transport import (

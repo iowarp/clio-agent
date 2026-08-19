@@ -71,7 +71,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # disabled as "unknown tool reference" and took its whole root down by
     # hierarchy. The ratchet was not bumped in that commit; recorded here as
     # pre-existing CI-blocking debt this change closes (P5 adversarial review [A]).
-    "src/clio_agent/gact/agent_blueprints.py": 1078,
+    "src/clio_agent/gact/agent_blueprints.py": 1060,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -134,13 +134,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # owner module agents/task_summary.py (shared with observe_agent_tasks), so only
     # the two-import + one-call declaration site landed here.
     "src/clio_agent/gact/agents/spawn_runtime.py": 933,
-    # P5 (wire semantics): +3 for the fan-out group identity fields
-    # (spawn_group_id/group_size) on TaskHandle + TaskResult, projected from
-    # AgentTask in from_task() and threaded through RelayExpertInvoker.invoke —
-    # both dataclasses already carry ~15 parity fields each, so two more typed
-    # fields (kept to single-line trailing comments) is the honest cost of one
-    # more boundary-crossing fact, not a new logic cluster to decompose.
-    "src/clio_agent/gact/agents/invoker.py": 803,
+    # (invoker.py's entry retired 2026-08: RelayExpertInvoker moved to its own
+    # owner module agents/relay_expert_invoker.py, dropping invoker.py under the
+    # 800 default cap — the #1221/#1222 contract-alignment growth that broke the
+    # 803 baseline lives there now.)
     # #900: +14 for the lifespan child-reaper install + clean-shutdown teardown wiring
     # (both delegate to the owner module runtime/process_tree.py).
     # #918: +7 for the SkillNotDelegatableError exception handler (app.py owns
@@ -283,7 +280,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # resolution) lives in the new owner module gact/agent_blueprint_files.py; only
     # the two thin route handlers + their docstrings + the import block land here.
     # Ratchets back with the mcp_app_* / #714 route decomposition.
-    "src/clio_agent/gact/routes/blueprints.py": 1010,
+    "src/clio_agent/gact/routes/blueprints.py": 978,
     "src/clio_agent/gact/routes/catalog.py": 938,  # +4: /goal command dispatch wiring (#1080; logic in gact/goal.py)
     # #1201 (adversarial review, PR #1202): +6 for two direct-connect era-
     # classification call sites (call_external_mcp_tool + _external_mcp_inventory's

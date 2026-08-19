@@ -134,22 +134,30 @@ async def test_refresh_failure_keeps_the_previous_surfaces(
 
 
 @pytest.mark.asyncio
-async def test_first_discovery_stamps_the_ttl_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No prior discovery at all -> one first-time discovery, TTL clock started."""
+async def test_refresh_without_a_catalog_is_a_noop_never_a_first_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No prior discovery at all -> the per-turn seam does NOTHING.
+
+    First discovery is an app-assembly concern (``relay_agent_kwargs``); a turn
+    must never pay an ambient discovery round trip. Observed live: a stale repo
+    ``.env`` loaded by litellm's import-time dotenv configured a half-dead door
+    mid-process, and the seam's former first-discovery branch then blocked every
+    child turn of every later-built app ~15s (the s7 parity reds)."""
 
     app = _FakeApp()
     monkeypatch.setattr(relay_wiring.time, "monotonic", lambda: 500.0)
-    fresh = _surfaces("boot")
 
     async def _discover() -> Any:
-        return fresh
+        raise AssertionError("the per-turn seam must never run a first discovery")
 
     monkeypatch.setattr("clio_agent.tools.relay_transport.discover_relay_tool_surfaces", _discover)
 
     result = await relay_wiring.refresh_relay_tool_surfaces_if_stale(app)
 
-    assert result is fresh
-    assert app.state.relay_tool_surfaces_discovered_at == 500.0
+    assert result is None
+    assert getattr(app.state, "relay_tool_surfaces", None) is None
+    assert getattr(app.state, "relay_tool_surfaces_discovered_at", None) is None
 
 
 class _FakeGatewayAgent:
