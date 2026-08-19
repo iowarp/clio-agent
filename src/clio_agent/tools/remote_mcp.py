@@ -298,6 +298,7 @@ _FOLLOW_TOOL_TITLES = {
     "relay_wait": "Wait For Job",
     "relay_artifact_lineage": "Artifact Lineage",
     "relay_status": "Relay Status",
+    "relay_read_artifact": "Read Artifact",
 }
 
 

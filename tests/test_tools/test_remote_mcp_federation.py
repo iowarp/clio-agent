@@ -884,3 +884,54 @@ async def test_relay_status_and_artifact_lineage_are_projected(
     assert "relay_artifact_lineage" in listed
     assert listed["relay_status"].title == "Relay Status"
     assert listed["relay_artifact_lineage"].title == "Artifact Lineage"
+
+
+def _relay_read_artifact_tool() -> Tool:
+    """relay_read_artifact as the live ares door advertises it (develop @
+    86714c4, mcp_server.py:1299) -- the bounded artifact-content fetch."""
+
+    return Tool(
+        name="relay_read_artifact",
+        description="Fetch one registered artifact's bounded content by artifact_id.",
+        inputSchema={
+            "type": "object",
+            "properties": {"artifact_id": {"type": "string"}},
+            "required": ["artifact_id"],
+            "additionalProperties": False,
+        },
+        outputSchema={"type": "object"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_relay_read_artifact_is_projected(fake_relay: _FakeRelayClient) -> None:
+    """FAILING-FIRST for the 2026-08-19 ares L3 clause-(d) gap.
+
+    The door declares AND dispatches ``relay_read_artifact`` (the bounded
+    ``read_artifact_bytes`` fetch), but the name was absent from
+    ``REMOTE_MCP_FOLLOW_TOOLS``, so the agent's surface had NO tool that
+    returns artifact content -- the grounded L3 run located the real
+    ``log.lammps`` thermo artifact via lineage metadata and could not read
+    it (l3-run-20260819T064512.json: the agent correctly refused to
+    fabricate the physics). Same defect class as #1228 D3, one tool short.
+    """
+
+    fake_relay.catalog = RelayRemoteMcpCatalog(
+        revision=fake_relay.catalog.revision,
+        tools=fake_relay.catalog.tools,
+        follow_tools={
+            "relay_wait": _relay_wait_tool(),
+            "relay_read_artifact": _relay_read_artifact_tool(),
+        },
+    )
+
+    federation = await RemoteMcpFederation.discover(lambda: fake_relay)
+
+    assert "relay_read_artifact" in federation.catalog.follow_tools
+
+    gateway = build_gateway({}, remote_mcp_federation=federation)
+    async with Client(gateway) as client:
+        listed = {tool.name: tool for tool in await client.list_tools()}
+
+    assert "relay_read_artifact" in listed
+    assert listed["relay_read_artifact"].title == "Read Artifact"
