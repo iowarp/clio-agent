@@ -1,0 +1,3 @@
+Before we run anything new: did any of my earlier simulation runs leave
+results on the cluster? If there's anything there, summarize it; if not, just
+say so.
