@@ -89,9 +89,9 @@ _typed_mcp_protocol_error = typed_mcp_protocol_error
 
 @dataclass(frozen=True)
 class _ToolTimeoutBudget:
-    """One invocation's executor timeout and whether the tool explicitly declared it."""
+    """One call's timeout (``None`` == unbounded commitment, #1225) + provenance."""
 
-    seconds: float
+    seconds: float | None
     explicitly_declared: bool
 
 
@@ -186,6 +186,12 @@ def _explicit_tool_timeout_seconds(tool: Any, args: Mapping[str, Any]) -> float 
         if math.isfinite(seconds) and seconds > 0:
             candidates.append(seconds)
     return sum(candidates) if candidates else None
+
+
+def _is_wait_for_terminal_commitment(tool: Any, args: Mapping[str, Any]) -> bool:
+    """True iff the TOOL'S OWN schema declares wait_for_terminal AND it's set (#1225)."""
+    properties = _mapping_value(_tool_input_schema(tool).get("properties")) or {}
+    return "wait_for_terminal" in properties and args.get("wait_for_terminal") is True
 
 
 def _tool_timeout_is_retry_safe(tool: Any) -> bool:
@@ -377,6 +383,7 @@ class AsyncMCPToolExecutor:
                 # errors needs an initialize-level signal (future refinement).
                 if first_call and namespace is not None:
                     spawn_diet.spawn_failed(namespace)
+                assert timeout is not None, "unbounded wait never times out"
                 if not self._tool_timeout_is_retry_safe(name):
                     raise self.mark_uncertain_mutating_timeout(name, args, timeout) from exc
                 raise TimeoutError(f"MCP tool {name!r} timed out after {timeout:g}s") from exc
@@ -473,19 +480,17 @@ class AsyncMCPToolExecutor:
 
         return self._tool_timeouts.get(name, self._timeout)
 
-    def _timeout_budget_for_call(
-        self,
-        name: str,
-        args: Mapping[str, Any],
-    ) -> _ToolTimeoutBudget:
-        """Return a timeout that cannot expire before an explicit tool-call budget."""
-
+    def _timeout_budget_for_call(self, name: str, args: Mapping[str, Any]) -> _ToolTimeoutBudget:
+        """Timeout floor of >= any explicit budget; unbounded for a commitment (#1225)."""
         base = self._timeout_for_tool(name)
         configured_explicitly = name in self._tool_timeouts
-        declared = _explicit_tool_timeout_seconds(self._mcp_tools.get(name), args)
-        if declared is None:
-            return _ToolTimeoutBudget(base, explicitly_declared=configured_explicitly)
-        return _ToolTimeoutBudget(base + declared, explicitly_declared=True)
+        tool = self._mcp_tools.get(name)
+        declared = _explicit_tool_timeout_seconds(tool, args)
+        if declared is not None:
+            return _ToolTimeoutBudget(base + declared, explicitly_declared=True)
+        if _is_wait_for_terminal_commitment(tool, args):
+            return _ToolTimeoutBudget(None, explicitly_declared=True)
+        return _ToolTimeoutBudget(base, explicitly_declared=configured_explicitly)
 
     def _tool_timeout_is_retry_safe(self, name: str) -> bool:
         """Return whether protocol annotations permit retry after an unknown timeout."""

@@ -16,7 +16,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Optional, Protocol
+from typing import Any, Iterator, Optional, Protocol, cast
 
 import dspy
 
@@ -753,12 +753,12 @@ class SyncMCPToolExecutor:
         notify_tool_observer(tool_observer, name, effective_args, "started", None)
 
         budget = self._async_executor._timeout_budget_for_call(name, effective_args)
-        timeout = budget.seconds
+        timeout = budget.seconds  # None == unbounded wait_for_terminal commitment, #1225
         try:
             outcome = foreground_cancel._run_foreground_coroutine(
                 self._loop,
                 self._async_executor.call_tool_result(name, effective_args),
-                timeout=timeout + SYNC_TOOL_RESULT_GRACE_SECONDS,
+                timeout=(None if timeout is None else timeout + SYNC_TOOL_RESULT_GRACE_SECONDS),
                 action=f"MCP tool {name!r}",
                 cancellation_checker=cancellation_checker,
                 cancellation_error=lambda wire_settled: foreground_cancel._tool_cancellation_error(
@@ -772,9 +772,7 @@ class SyncMCPToolExecutor:
                 exc, TimeoutError
             ) and not self._async_executor._tool_timeout_is_retry_safe(name):
                 uncertain = self._async_executor.mark_uncertain_mutating_timeout(
-                    name,
-                    effective_args,
-                    timeout,
+                    name, effective_args, cast(float, timeout)
                 )
                 error_text = repr(uncertain)
                 notify_tool_observer(

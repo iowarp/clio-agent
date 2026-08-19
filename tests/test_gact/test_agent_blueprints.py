@@ -30,6 +30,7 @@ from clio_agent.gact.agent_blueprints import (
     load_agent_blueprints,
     validate_agent_blueprint_path,
 )
+from clio_agent.gact.agents import toolset_inventory
 from clio_agent.gact.app import (
     _active_base_agent_tool_executor,
     _blueprint_module_kind,
@@ -52,6 +53,7 @@ from clio_agent.gact.app import (
     _workflow_state_from_outputs,
     build_app,
 )
+from clio_agent.gact.runtime.globals import _UnsupportedSessionAgent
 from clio_agent.gact.types import AgentDef
 from tests.test_gact.conftest import complete_turn
 from tests.test_gact.earthscope_schema import EARTHSCOPE_WORKFLOW_STATE_SCHEMA
@@ -3185,6 +3187,84 @@ def test_dynamic_agent_tools_include_enabled_agent_blueprint_mcp_tool(tmp_path: 
     assert [tool.name for tool in tools] == ["earthscope_query"]
 
 
+def test_dynamic_agent_tools_degrades_one_unprojected_tool_instead_of_bricking(
+    tmp_path: Path,
+) -> None:
+    """FAILING-FIRST for #1228 D3 (second half).
+
+    ``relay_artifact_lineage`` / ``relay_status`` were advertised by the live
+    relay door but absent from the agent-projected surface -- so an agent ACL
+    naming EITHER alongside an otherwise-fine tool made the WHOLE agent
+    unexecutable (``_UnsupportedSessionAgent`` / ``custom_agent_tools_unavailable``,
+    a hard failure) instead of a typed per-tool absence. This test does not
+    depend on the projection fix (the first D3 half): it proves the general
+    ACL-degrade contract directly against ``_dynamic_agent_tools`` with a tool
+    executor that resolves only ONE of two requested tools.
+
+    Before the fix: this raised. After: the build returns the one tool that
+    DID resolve, and the missing one is recorded where it is queryable after
+    the fact (this module's structured reason catalog), never silently
+    dropped and never fatal to the tools that did resolve.
+    """
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+
+    class _Tool:
+        name = "hdf5_list_datasets"
+
+    class _Executor:
+        def to_dspy_tools(self) -> list[Any]:
+            return [_Tool()]
+
+    base_agent = SimpleNamespace(tool_executor=_Executor())
+    agent_def = AgentDef(
+        id="tool_reviewer",
+        source="expert_pack",
+        title="Tool Reviewer",
+        tools=["hdf5_list_datasets", "relay_status"],
+    )
+
+    with _gact_app_context(app):
+        tools = _dynamic_agent_tools(base_agent, agent_def, {})
+
+    assert [tool.name for tool in tools] == ["hdf5_list_datasets"]
+    reasons = toolset_inventory.toolset_inventory_reasons(app, "")
+    assert {
+        "reason": "custom_agent_tool_unavailable",
+        "agent_id": "tool_reviewer",
+        "detail": "relay_status",
+    } in reasons
+
+
+def test_dynamic_agent_tools_still_bricks_when_nothing_resolves(tmp_path: Path) -> None:
+    """Unchanged regression: an ACL where NOTHING resolves has no reduced
+    toolset to degrade to, so it still fails typed -- #1228 D3's degrade only
+    applies when at least one requested tool is usable."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+
+    class _Tool:
+        name = "hdf5_list_datasets"
+
+    class _Executor:
+        def to_dspy_tools(self) -> list[Any]:
+            return [_Tool()]
+
+    base_agent = SimpleNamespace(tool_executor=_Executor())
+    agent_def = AgentDef(
+        id="tool_reviewer",
+        source="expert_pack",
+        title="Tool Reviewer",
+        tools=["fs_read_file"],
+    )
+
+    with _gact_app_context(app), pytest.raises(_UnsupportedSessionAgent) as raised:
+        _dynamic_agent_tools(base_agent, agent_def, {})
+
+    assert raised.value.reason == "custom_agent_tools_unavailable"
+    assert raised.value.tools == ["fs_read_file"]
+
+
 def test_active_base_agent_tool_executor_prefers_per_workspace() -> None:
     """A bound workspace routes dynamic-agent tools to the per-workspace executor.
 
@@ -3450,7 +3530,9 @@ def _make_multi_pack_registry_repo(path: Path) -> str:
         "GIT_COMMITTER_NAME": "clio-test",
         "GIT_COMMITTER_EMAIL": "clio-test@example.com",
     }
-    subprocess.run(["git", "init", "-b", "main", str(path)], check=True, env=env, capture_output=True)
+    subprocess.run(
+        ["git", "init", "-b", "main", str(path)], check=True, env=env, capture_output=True
+    )
     subprocess.run(["git", "-C", str(path), "add", "."], check=True, env=env, capture_output=True)
     subprocess.run(
         ["git", "-C", str(path), "commit", "-m", "multi-pack registry"],
@@ -3621,12 +3703,14 @@ def test_dead_local_path_sources_are_pruned_on_load(
     rows = {
         "sources": [
             {"id": "src_dead", "source": str(dead), "ref": ""},
-            {"id": "src_url", "source": "https://github.com/iowarp/clio-agent-marketplace.git", "ref": "main"},
+            {
+                "id": "src_url",
+                "source": "https://github.com/iowarp/clio-agent-marketplace.git",
+                "ref": "main",
+            },
         ]
     }
-    user_dir.joinpath("agent-blueprint-sources.json").write_text(
-        json.dumps(rows), encoding="utf-8"
-    )
+    user_dir.joinpath("agent-blueprint-sources.json").write_text(json.dumps(rows), encoding="utf-8")
     loaded = _load_agent_blueprint_sources()
     assert [row["id"] for row in loaded] == ["src_url"]
     rewritten = json.loads(

@@ -584,7 +584,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # to enumerate an executor's declared namespaces; the accessor itself
     # lives on AsyncMCPToolExecutor in mcp_executor.py, this is the thin
     # delegate).
-    "src/clio_agent/tools/execution.py": 1181,
+    "src/clio_agent/tools/execution.py": 1179,
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.

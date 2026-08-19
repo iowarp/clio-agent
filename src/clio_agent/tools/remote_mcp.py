@@ -30,6 +30,11 @@ REMOTE_MCP_JOB_HANDLE_OUTPUT_SCHEMA: dict[str, Any] = {
         "kind": {"type": "string", "const": "mcp_call"},
         "terminal": {"type": "boolean"},
         "catalog_revision": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        # Populated only when a wait_for_terminal=True call resolved to a
+        # terminal outcome (#1225 D1) -- absent, never null, on the plain
+        # queued handle so the pre-existing wire shape stays byte-identical.
+        "result": {},
+        "error": {},
     },
     "required": ["job_id", "state", "kind", "terminal", "catalog_revision"],
     "additionalProperties": False,
@@ -101,6 +106,32 @@ class RemoteMcpRelayClient(Protocol):
 RemoteMcpClientFactory = Callable[[], AbstractAsyncContextManager[RemoteMcpRelayClient]]
 
 
+def _resolved_remote_mcp_wire(handle: RelayRemoteMcpHandle, resolved: Any) -> dict[str, Any]:
+    """Fold a resolved #1115 task record onto a queued handle's wire shape.
+
+    ``resolved`` is a ``ClientGetTaskResult`` (or the same-shaped stand-in
+    :meth:`RelayTransportClient.wait_for_submitted_job` returns); its status
+    maps through the SAME ``_TASK_TO_JOB_STATE`` table :func:`_task_result_as_job_wire`
+    uses below, so a ``remote_*`` alias and the relay_wait/relay_observe follow
+    tools agree on what "succeeded"/"failed"/"canceled" mean. A non-terminal
+    status leaves ``terminal`` false and ``state`` at relay's reported name --
+    never fabricated as settled. ``result``/``error`` are plain wire keys, not
+    ``RelayRemoteMcpHandle`` fields (kept dataclass-free of them; #1225).
+    """
+
+    status = str(getattr(resolved, "status", "") or "")
+    wire = handle.to_wire()
+    wire["state"] = _TASK_TO_JOB_STATE.get(status, status or handle.state)
+    wire["terminal"] = status in _TASK_TO_JOB_STATE
+    result = getattr(resolved, "result", None)
+    if result is not None:
+        wire["result"] = consume_dual_emission_twin(result)
+    error = getattr(resolved, "error", None)
+    if error is not None:
+        wire["error"] = error
+    return wire
+
+
 class _ProjectedRemoteMcpTool(Tool):
     """One relay-owned definition exposed below the gateway's ``remote`` mount."""
 
@@ -133,15 +164,30 @@ class _ProjectedRemoteMcpTool(Tool):
         self._catalog_revision = catalog_revision
 
     async def run(self, arguments: dict[str, Any]) -> ToolResult:
-        """Submit the remote alias and return only its durable relay handle."""
+        """Submit the remote alias and, if requested, resolve it to terminal.
+
+        ``wait_for_terminal`` is a DOOR-recognized argument, forwarded here
+        via the alias's deepcopied ``inputSchema``. Before #1225 D1 it was
+        sent to the door but then ignored on the way back -- the result was
+        always the same hardcoded queued handle, forcing a separate
+        ``relay_wait`` call and roughly doubling agent tool calls. One
+        bounded follow-up through the durable #1115 record
+        (``RelayTransportClient.wait_for_submitted_job``, reused not
+        reimplemented -- the SAME machinery ``relay_wait`` itself uses)
+        closes that gap.
+        """
 
         async with self._client_factory() as relay:
             handle = await relay.submit_remote_mcp(
-                self._alias,
-                arguments,
-                catalog_revision=self._catalog_revision,
+                self._alias, arguments, catalog_revision=self._catalog_revision
             )
-        return ToolResult(structured_content=handle.to_wire())
+            if not arguments.get("wait_for_terminal"):
+                return ToolResult(structured_content=handle.to_wire())
+            resolved = await relay.wait_for_submitted_job(
+                handle.job_id, timeout_seconds=arguments.get("wait_timeout_seconds")
+            )
+        wire = handle.to_wire() if resolved is None else _resolved_remote_mcp_wire(handle, resolved)
+        return ToolResult(structured_content=wire)
 
 
 _TASK_TO_JOB_STATE = {
@@ -250,6 +296,8 @@ def _with_cluster_hint(
 _FOLLOW_TOOL_TITLES = {
     "relay_observe": "Observe Job",
     "relay_wait": "Wait For Job",
+    "relay_artifact_lineage": "Artifact Lineage",
+    "relay_status": "Relay Status",
 }
 
 

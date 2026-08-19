@@ -607,13 +607,14 @@ def _dynamic_agent_tools(
     if app is not None:
         available_tools.update(_enabled_external_mcp_dspy_tools(app, requested_tools, sources))
     missing_tools = [name for name in requested_tools if name not in available_tools]
-    if missing_tools:
+    resolved_tools = [name for name in requested_tools if name in available_tools]
+    if missing_tools and not resolved_tools:  # nothing to degrade to -- brick TYPED (#1228 D3)
         raise _UnsupportedSessionAgent(
-            agent_def.id,
-            reason="custom_agent_tools_unavailable",
-            tools=missing_tools,
+            agent_def.id, reason="custom_agent_tools_unavailable", tools=missing_tools
         )
-    return [_recording_blueprint_tool(available_tools[name]) for name in requested_tools]
+    if missing_tools:  # >=1 resolved -- degrade typed-and-loud per tool (#1228 D3)
+        toolset_inventory.record_tools_unavailable_degraded(app, agent_def.id, missing_tools)
+    return [_recording_blueprint_tool(available_tools[name]) for name in resolved_tools]
 
 
 def _recorded_load_skill_tool(agent_def: "AgentDef", skill_rt: Any) -> Any:
@@ -987,21 +988,16 @@ def _emit_invalid_tool_selection_event(
 def _tool_user_agent_max_iters(agent_def: "AgentDef", *, declared_children: int = 0) -> int:
     """The react loop's iteration budget for this expert.
 
-    #948 S4: an orchestrator's react loop IS the delegation flow now — each child
-    costs a spawn call plus a wait call, and the model legitimately re-spawns a
-    failed child. The old flat default of 5 (tuned for the deleted inline-tool
-    world) starved every orchestrator into a forced extract with no evidence,
-    which correctly failed typed (observed live). The default therefore scales
-    with the declared children; a blueprint's explicit ``max_iters`` param always
-    wins.
+    #1226 D1b: UNLIMITED (``0``) default -- not the old #948 S4 scaling cap
+    that starved a long orchestrator (L3 died at a turn budget mid-task). A
+    cap is now only an explicit blueprint opt-in (``max_iters``).
     """
-
     from clio_agent.gact.app import _user_agent_int_param  # noqa: PLC0415
 
-    default = 5 if declared_children <= 0 else min(24, 6 + 4 * declared_children)
-    max_iters = _user_agent_int_param(agent_def, "max_iters", default)
-    if max_iters <= 0:
-        raise ValueError("user agent parameter 'max_iters' must be positive")
+    del declared_children
+    max_iters = _user_agent_int_param(agent_def, "max_iters", 0)
+    if max_iters < 0:
+        raise ValueError("user agent parameter 'max_iters' must be zero (unlimited) or positive")
     return max_iters
 
 
@@ -1295,7 +1291,9 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     build_spawn_runtime_tools,
                 )
 
-                _declared_tools = _dynamic_agent_tools(base_agent, agent_def, (_sources := cast(dict[str, str], {})))
+                _declared_tools = _dynamic_agent_tools(
+                    base_agent, agent_def, (_sources := cast(dict[str, str], {}))
+                )
                 _spawn_tools = build_spawn_runtime_tools(base_agent, agent_def)
                 toolset_inventory.register_tool_sources(_sources, _spawn_tools, "spawn-runtime")
                 tools = [
@@ -1775,7 +1773,9 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             self._cred_resolver = CredentialResolver()
             self.config = self._resolved_spec.materialize(self._cred_resolver)
             self._provider_config = self.config
-            self.tools = _dynamic_agent_tools(base_agent, agent_def, (_sources := cast(dict[str, str], {})))
+            self.tools = _dynamic_agent_tools(
+                base_agent, agent_def, (_sources := cast(dict[str, str], {}))
+            )
             skill_rt = _skill_runtime.skill_runtime_for_agent(
                 _ctx.active_app(), agent_def, session_id=_ctx.active_session_id()
             )

@@ -46,11 +46,22 @@ def _run_foreground_coroutine(
     loop: asyncio.AbstractEventLoop,
     coro: Any,
     *,
-    timeout: float,
+    timeout: float | None,
     action: str,
     cancellation_checker: Callable[[], bool] | None = None,
     cancellation_error: Callable[[bool], CancellationError] | None = None,
 ) -> Any:
+    """Run ``coro`` on ``loop`` from this (foreground) thread, cooperatively
+    cancellable while it runs.
+
+    ``timeout=None`` means NO deadline (#1225 D1-REVISED): a
+    ``wait_for_terminal`` commitment must never be truncated by an arbitrary
+    internal TTL -- the only bounds left are the door's own task semantics and
+    an explicit caller-supplied budget. An unbounded call still polls at
+    ``_CANCELLATION_POLL_SECONDS`` when a ``cancellation_checker`` is
+    supplied, so it remains cooperatively cancellable; it is simply never
+    abandoned on its own.
+    """
     settled = threading.Event()
 
     async def tracked() -> Any:
@@ -60,14 +71,17 @@ def _run_foreground_coroutine(
             settled.set()
 
     future = asyncio.run_coroutine_threadsafe(tracked(), loop)
-    deadline = time.monotonic() + timeout
+    deadline = None if timeout is None else time.monotonic() + timeout
     while True:
-        remaining = max(0.0, deadline - time.monotonic())
-        wait_seconds = (
-            min(remaining, _CANCELLATION_POLL_SECONDS)
-            if cancellation_checker is not None
-            else remaining
-        )
+        remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        if cancellation_checker is not None:
+            wait_seconds = (
+                _CANCELLATION_POLL_SECONDS
+                if remaining is None
+                else min(remaining, _CANCELLATION_POLL_SECONDS)
+            )
+        else:
+            wait_seconds = remaining
         try:
             return future.result(timeout=wait_seconds)
         except concurrent.futures.TimeoutError as exc:
@@ -93,7 +107,7 @@ def _run_foreground_coroutine(
                             "executor_work_may_continue": not wire_settled,
                         },
                     ) from None
-            if time.monotonic() < deadline:
+            if deadline is None or time.monotonic() < deadline:
                 continue
             future.cancel()
             raise TimeoutError(f"{action} timed out after {timeout:g}s") from exc

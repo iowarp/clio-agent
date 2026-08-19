@@ -512,6 +512,127 @@ async def test_relay_wait_resolves_serve_owned_handle_via_task_record() -> None:
     assert waited.data["result"] == {"content": "task-door-result"}
 
 
+def _remote_tool_with_wait_support(
+    revision: str = CATALOG_REVISION,
+    name: str = "remote_science_inspect",
+) -> Tool:
+    """Same alias ``_remote_tool`` projects, but with the door's real
+    wait_for_terminal input properties (captured live:
+    ``RELAY_SUBMIT_AGENT_SCHEMA_PROPERTIES_FIXTURE``,
+    ``tests/test_gact/test_relay_invoker_runtime_contract.py``) -- the wire
+    shape #1225 D1 actually has to cope with."""
+
+    relay_receipt_schema = {
+        **REMOTE_MCP_JOB_HANDLE_OUTPUT_SCHEMA,
+        "properties": {
+            **REMOTE_MCP_JOB_HANDLE_OUTPUT_SCHEMA["properties"],
+            "cluster": {"type": "string"},
+            "route_revision": {"type": "string"},
+        },
+        "required": [
+            *REMOTE_MCP_JOB_HANDLE_OUTPUT_SCHEMA["required"],
+            "cluster",
+            "route_revision",
+        ],
+    }
+    return Tool(
+        name=name,
+        description="Inspect a registered cluster dataset.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "cluster": {"type": "string", "enum": ["ares"]},
+                "request": {"type": "object"},
+                "wait_for_terminal": {"type": "boolean", "default": False},
+                "wait_timeout_seconds": {"type": "number"},
+            },
+            "required": ["cluster", "request"],
+            "additionalProperties": False,
+        },
+        outputSchema=relay_receipt_schema,
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+        _meta={"clio-relay/catalog-revision": revision},
+    )
+
+
+@pytest.mark.asyncio
+async def test_wait_for_terminal_resolves_without_a_separate_relay_wait_call() -> None:
+    """FAILING-FIRST for #1225 D1.
+
+    Live L3 evidence: the agent passed ``wait_for_terminal: True`` on a relay
+    tool call; the call still came back as a queued handle, forcing a
+    separate ``relay_wait`` round trip for every such call and roughly
+    doubling tool calls until the agent burned its turn budget. Before the
+    fix, ``_ProjectedRemoteMcpTool.run`` forwarded ``wait_for_terminal`` into
+    the submission payload and then unconditionally returned the same
+    hardcoded ``state="queued"/terminal=False`` handle, discarding whatever
+    the door actually did with it. After the fix, a wait_for_terminal=True
+    call resolves through ONE follow-up call to
+    ``wait_for_submitted_job`` -- the SAME durable-record machinery
+    ``relay_wait`` itself uses -- and no separate ``relay_wait`` call is
+    needed at all.
+    """
+
+    relay = _RecordResolvingRelayClient(known_job_id="job-1129")
+    relay.catalog = RelayRemoteMcpCatalog(
+        revision=relay.catalog.revision,
+        tools={"remote_science_inspect": _remote_tool_with_wait_support()},
+        follow_tools=relay.catalog.follow_tools,
+    )
+    federation = await RemoteMcpFederation.discover(lambda: relay)
+    gateway = build_gateway({}, remote_mcp_federation=federation)
+
+    async with Client(gateway) as client:
+        result = await client.call_tool(
+            "remote_science_inspect",
+            {
+                "cluster": "ares",
+                "request": {"path": "/data/run"},
+                "wait_for_terminal": True,
+            },
+        )
+
+    # The resolution went through wait_for_submitted_job exactly once -- no
+    # separate relay_wait tool call was made anywhere in this test.
+    assert relay.resolved_calls == [("job-1129", None)]
+    assert result.data.job_id == "job-1129"
+    assert result.data.terminal is True
+    assert result.data.state == "succeeded"
+    assert result.data.result == {"content": "task-door-result"}
+
+
+@pytest.mark.asyncio
+async def test_wait_for_terminal_false_keeps_the_plain_queued_handle() -> None:
+    """No regression: omitting wait_for_terminal keeps the pre-existing,
+    byte-identical queued handle shape -- no result/error keys appended."""
+
+    relay = _RecordResolvingRelayClient(known_job_id="job-1129")
+    relay.catalog = RelayRemoteMcpCatalog(
+        revision=relay.catalog.revision,
+        tools={"remote_science_inspect": _remote_tool_with_wait_support()},
+        follow_tools=relay.catalog.follow_tools,
+    )
+    federation = await RemoteMcpFederation.discover(lambda: relay)
+    gateway = build_gateway({}, remote_mcp_federation=federation)
+
+    async with Client(gateway) as client:
+        result = await client.call_tool(
+            "remote_science_inspect",
+            {"cluster": "ares", "request": {"path": "/data/run"}},
+        )
+
+    assert relay.resolved_calls == []
+    assert result.data.job_id == "job-1129"
+    assert result.data.terminal is False
+    assert result.data.state == "queued"
+    assert "result" not in result.structured_content
+    assert "error" not in result.structured_content
+
+
 @pytest.mark.asyncio
 async def test_relay_wait_forwards_foreign_handles_untouched() -> None:
     """A job_id with no persisted record falls through to relay's native
@@ -688,3 +809,78 @@ async def test_cluster_hint_never_stamps_a_route_handle_follow_tool(
     assert listed["relay_wait"].description == (
         "This deployment's registered cluster is 'ares-p5run2'."
     )
+
+
+def _relay_status_tool() -> Tool:
+    """relay_status exactly as the live p5run2 relay door advertises it
+    (captured tools/list name, RELAY_DOOR_TOOLS_LIST_FIXTURE in
+    tests/test_gact/test_relay_invoker_runtime_contract.py)."""
+
+    return Tool(
+        name="relay_status",
+        description="Report relay cluster and queue health.",
+        inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
+        outputSchema={"type": "object"},
+    )
+
+
+def _relay_artifact_lineage_tool() -> Tool:
+    """relay_artifact_lineage exactly as the live p5run2 relay door advertises
+    it (same captured fixture) -- case07-S3 needs this for artifact
+    provenance."""
+
+    return Tool(
+        name="relay_artifact_lineage",
+        description="Return the provenance chain for one artifact.",
+        inputSchema={
+            "type": "object",
+            "properties": {"artifact_id": {"type": "string"}},
+            "required": ["artifact_id"],
+            "additionalProperties": False,
+        },
+        outputSchema={"type": "object"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_relay_status_and_artifact_lineage_are_projected(
+    fake_relay: _FakeRelayClient,
+) -> None:
+    """FAILING-FIRST for #1228 D3.
+
+    The live door's real tools/list catalog (captured, #1221 investigation --
+    ``RELAY_DOOR_TOOLS_LIST_FIXTURE`` in
+    ``tests/test_gact/test_relay_invoker_runtime_contract.py``) advertises
+    both ``relay_artifact_lineage`` and ``relay_status``. Before the fix,
+    neither name was a member of ``REMOTE_MCP_FOLLOW_TOOLS``, so
+    ``discover_remote_mcp`` silently dropped both on the floor -- not a
+    projected ``remote_*`` alias (wrong prefix) and not a recognized follow
+    tool, just skipped without a trace. An agent ACL naming either then
+    bricked the WHOLE session (``custom_agent_tools_unavailable`` /
+    ``not_implemented``) instead of getting a working, read-only tool --
+    lineage matters for case07-S3 artifact provenance.
+    """
+
+    fake_relay.catalog = RelayRemoteMcpCatalog(
+        revision=fake_relay.catalog.revision,
+        tools=fake_relay.catalog.tools,
+        follow_tools={
+            "relay_wait": _relay_wait_tool(),
+            "relay_status": _relay_status_tool(),
+            "relay_artifact_lineage": _relay_artifact_lineage_tool(),
+        },
+    )
+
+    federation = await RemoteMcpFederation.discover(lambda: fake_relay)
+
+    assert "relay_status" in federation.catalog.follow_tools
+    assert "relay_artifact_lineage" in federation.catalog.follow_tools
+
+    gateway = build_gateway({}, remote_mcp_federation=federation)
+    async with Client(gateway) as client:
+        listed = {tool.name: tool for tool in await client.list_tools()}
+
+    assert "relay_status" in listed
+    assert "relay_artifact_lineage" in listed
+    assert listed["relay_status"].title == "Relay Status"
+    assert listed["relay_artifact_lineage"].title == "Artifact Lineage"

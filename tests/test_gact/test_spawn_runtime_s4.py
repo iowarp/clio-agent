@@ -1275,24 +1275,47 @@ def test_parent_resumed_event_re_pins_parent_after_terminal(monkeypatch) -> None
     assert ev["payload"]["resumed_from"] == "data_expert"
 
 
-def test_orchestrator_max_iters_scales_with_declared_children() -> None:
-    """#948 S4: the react iteration default pays spawn+wait per child — the old
-    flat 5 starved every orchestrator into a forced no-evidence extract (live)."""
+def test_orchestrator_max_iters_is_unlimited_by_default() -> None:
+    """#1226 D1b (supersedes the #948 S4 scaling formula): 0/unlimited is the
+    default react iteration budget, not a deterministic turn count of any
+    shape. #948 S4's "scale with declared children" formula was itself a
+    deterministic cap wearing a smarter-looking curve -- it starved a
+    long-running orchestrator the exact way the old flat 5 did (live: the
+    L3 run died at a turn budget mid-task instead of finishing or giving up
+    by its own judgment). ``declared_children`` no longer changes the
+    default at all -- see ``feedback_no_deterministic_turn_caps``. A cap
+    survives ONLY as an explicit, blueprint-declared opt-in runaway
+    backstop, honored verbatim in both directions."""
 
     from types import SimpleNamespace
 
     from clio_agent.gact.agents.builders import _tool_user_agent_max_iters
 
     leaf = SimpleNamespace(parameters={})
-    assert _tool_user_agent_max_iters(leaf) == 5
-    assert _tool_user_agent_max_iters(leaf, declared_children=0) == 5
+    assert _tool_user_agent_max_iters(leaf) == 0
+    assert _tool_user_agent_max_iters(leaf, declared_children=0) == 0
     four_children = SimpleNamespace(parameters={})
-    assert _tool_user_agent_max_iters(four_children, declared_children=4) == 22
+    assert _tool_user_agent_max_iters(four_children, declared_children=4) == 0
     many = SimpleNamespace(parameters={})
-    assert _tool_user_agent_max_iters(many, declared_children=10) == 24  # capped
-    # An explicit blueprint param always wins, both directions.
+    assert _tool_user_agent_max_iters(many, declared_children=10) == 0
+    # An explicit blueprint param always wins, both directions -- the ONLY
+    # sanctioned way a cap exists at all.
     pinned = SimpleNamespace(parameters={"max_iters": 7})
     assert _tool_user_agent_max_iters(pinned, declared_children=4) == 7
+    pinned_unlimited = SimpleNamespace(parameters={"max_iters": 0})
+    assert _tool_user_agent_max_iters(pinned_unlimited, declared_children=4) == 0
+
+
+def test_orchestrator_max_iters_rejects_negative() -> None:
+    """A negative max_iters is a genuine misconfiguration, not "unlimited" --
+    only 0 carries that meaning."""
+
+    from types import SimpleNamespace
+
+    from clio_agent.gact.agents.builders import _tool_user_agent_max_iters
+
+    with pytest.raises(ValueError, match="zero .unlimited. or positive"):
+        _tool_user_agent_max_iters(SimpleNamespace(parameters={"max_iters": -1}))
 
 
 # ---------------------------------------------------------------------------

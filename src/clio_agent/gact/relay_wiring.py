@@ -4,14 +4,42 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.agents.invoker import RelayExpertInvoker
+from clio_agent.tools.execution import create_sync_tool_executor
+from clio_agent.tools.gateway import namespace_proxies
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
 logger = logging.getLogger(__name__)
+
+#: #1227 D2 default: how long a discovered relay catalog is trusted before the
+#: next turn re-discovers it. The old behavior discovered ONCE at boot and
+#: cached forever (``app.state.relay_tool_surfaces`` set once, never
+#: invalidated), so a tool that appeared on the door later (e.g. the jarvis
+#: surface landing after a dev-mode relay update) stayed invisible until a
+#: full process restart -- and the failure surfaced as
+#: ``custom_agent_tools_unavailable`` / ``not_implemented``, a MISLEADING
+#: reason (the truth was catalog staleness, not tool unavailability).
+RELAY_TOOL_SURFACES_DEFAULT_TTL_SECONDS = 300
+
+
+def _relay_tool_surfaces_ttl_seconds() -> float:
+    """Resolve the catalog re-discovery TTL, config -> env -> default."""
+
+    from clio_agent import conf  # noqa: PLC0415 - keep this module import-light
+
+    return float(
+        conf.resolve(
+            "relay.tool_surfaces_ttl_seconds",
+            env="CLIO_RELAY_TOOL_SURFACES_TTL_SECONDS",
+            default=RELAY_TOOL_SURFACES_DEFAULT_TTL_SECONDS,
+            cast=conf.as_int,
+        )
+    )
 
 
 async def relay_tool_surfaces_for_app(app: FastAPI) -> Any:
@@ -25,7 +53,87 @@ async def relay_tool_surfaces_for_app(app: FastAPI) -> Any:
     surfaces = await discover_relay_tool_surfaces()
     app.state.relay_tool_surfaces = surfaces
     app.state.relay_tool_status = dict(surfaces.status)
+    app.state.relay_tool_surfaces_discovered_at = time.monotonic()
     return surfaces
+
+
+async def refresh_relay_tool_surfaces_if_stale(app: FastAPI) -> Any:
+    """Re-discover the relay catalog once its TTL has elapsed (#1227 D2).
+
+    Cheap on the common path: no discovery has ever run yet, this performs
+    the FIRST discovery (delegating to :func:`relay_tool_surfaces_for_app`);
+    otherwise this is one ``time.monotonic()`` subtraction unless the TTL has
+    elapsed. When it has, the catalog is re-discovered and, critically, the
+    already-constructed singleton agent (``app.state.agent`` -- one host per
+    process, reused turn to turn) has its relay-owned attributes updated IN
+    PLACE: ``ClioAgent._build_gateway`` reads ``self._remote_mcp_federation`` /
+    ``self._jarvis_jobs`` / ``self._relay_status`` fresh on every gateway
+    build (per turn, per workspace), so this takes effect on the NEXT turn
+    with no restart. Never raises: a failed re-discovery degrades to the
+    typed ``relay_catalog_discovery_failed`` reason
+    :func:`~clio_agent.tools.relay_factory.discover_relay_tool_surfaces`
+    already produces, leaving the previous (still-cached) surfaces in place
+    rather than tearing down a working catalog over one transient probe.
+    """
+
+    existing = getattr(app.state, "relay_tool_surfaces", None)
+    if existing is None:
+        return await relay_tool_surfaces_for_app(app)
+
+    discovered_at = getattr(app.state, "relay_tool_surfaces_discovered_at", None)
+    ttl = _relay_tool_surfaces_ttl_seconds()
+    if isinstance(discovered_at, (int, float)) and (time.monotonic() - discovered_at) < ttl:
+        return existing
+
+    from clio_agent.tools.relay_transport import discover_relay_tool_surfaces  # noqa: PLC0415
+
+    try:
+        surfaces = await discover_relay_tool_surfaces()
+    except Exception as exc:  # noqa: BLE001 - degrade to the still-cached surfaces
+        logger.warning(
+            "relay catalog refresh failed, keeping the previously discovered "
+            "surfaces reason=relay_catalog_refresh_failed error=%r",
+            exc,
+        )
+        # Push the TTL clock forward anyway so a persistently unreachable
+        # relay does not retry on every single turn.
+        app.state.relay_tool_surfaces_discovered_at = time.monotonic()
+        return existing
+
+    app.state.relay_tool_surfaces = surfaces
+    app.state.relay_tool_status = dict(surfaces.status)
+    app.state.relay_tool_surfaces_discovered_at = time.monotonic()
+
+    agent = getattr(app.state, "agent", None)
+    if agent is not None:
+        _refresh_agent_relay_tool_surfaces(agent, surfaces)
+    return surfaces
+
+
+def _refresh_agent_relay_tool_surfaces(agent: Any, surfaces: Any) -> None:
+    """Rebuild the singleton agent's default gateway from a fresh catalog.
+
+    agent.py stays a pure runtime HOST with no relay-refresh method of its
+    own (RULE: no accretion onto that file) -- this owner-module function
+    does the rebuild directly. Built fully off to the side; ``tool_executor``
+    is reassigned LAST (one atomic ``STORE_ATTR``), so a concurrent turn
+    reading it sees either the fully-old or fully-new executor, never a torn
+    mix. Per-workspace executors are not touched: each already reads
+    ``agent._remote_mcp_federation`` fresh on its next reaper-evicted rebuild.
+    """
+
+    agent._remote_mcp_federation = surfaces.remote_mcp_federation  # noqa: SLF001
+    agent._jarvis_jobs = surfaces.jarvis_jobs  # noqa: SLF001
+    agent._relay_status = dict(surfaces.status)  # noqa: SLF001
+    gateway = agent._build_tool_gateway(set_catalog=True)  # noqa: SLF001
+    executor = create_sync_tool_executor(
+        gateway,
+        preloaded_tools=agent._tool_definitions,  # noqa: SLF001
+        namespace_servers=namespace_proxies(gateway),
+        server_id="gateway:default",
+    )
+    agent._tool_gateway = gateway  # noqa: SLF001
+    agent.tool_executor = executor
 
 
 async def relay_agent_kwargs(app: FastAPI) -> dict[str, Any]:

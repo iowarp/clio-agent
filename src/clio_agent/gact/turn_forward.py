@@ -214,6 +214,14 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
     from clio_agent.agent import cancellation_checker as _cancellation_checker  # noqa: PLC0415
 
     _refresh_argonne_lm_token(state.app.state.agent)
+    # #1227 D2: re-discover the relay catalog once its TTL has elapsed instead
+    # of trusting the boot-time snapshot forever -- a no-op read on every turn
+    # until the TTL fires, so this is not a per-turn relay round trip.
+    from clio_agent.gact.relay_wiring import (  # noqa: PLC0415
+        refresh_relay_tool_surfaces_if_stale,
+    )
+
+    await refresh_relay_tool_surfaces_if_stale(state.app)
 
     if (
         run_builtin_main

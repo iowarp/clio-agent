@@ -147,6 +147,47 @@ def toolset_inventory_reasons(app: Any, sid: str) -> list[dict[str, Any]]:
     return list(_reason_catalog(app).get(sid, []))
 
 
+def record_tool_unavailable(app: Any, sid: str, agent_id: str, tool_name: str) -> None:
+    """Record ONE ACL-requested tool this build could not project (#1228 D3).
+
+    Called only when the agent still resolves >=1 OTHER requested tool, so
+    the build is not bricked over a single catalog-side gap. Loud, not
+    silent: reaches this module's reason catalog (patterned on
+    ``gact/streaming.py``'s ``_stream_fallback_reasons``) and the trace.
+    """
+
+    _record_reason(app, sid, agent_id, "custom_agent_tool_unavailable", tool_name)
+    trace.event(
+        "TOOLSET-INVENTORY",
+        "custom_agent_tool_unavailable agent_id=%s tool=%s -- degraded, not bricked",
+        agent_id,
+        tool_name,
+    )
+
+
+def record_tools_unavailable_degraded(app: Any | None, agent_id: str, missing: list[str]) -> None:
+    """Record EACH of ``missing`` as a typed, loud per-tool absence (#1228 D3).
+
+    The owner-module half of ``builders._dynamic_agent_tools``'s degrade
+    path: called once at least one OTHER requested tool resolved. An
+    app-less build (out-of-band caller, no session) has no reason catalog to
+    write into, so it logs to the trace directly instead of silently
+    dropping the omission.
+    """
+
+    if app is not None:
+        sid = _ctx.active_session_id() or ""
+        for name in missing:
+            record_tool_unavailable(app, sid, agent_id, name)
+        return
+    trace.event(
+        "TOOLSET-INVENTORY",
+        "custom_agent_tool_unavailable agent_id=%s tools=%s reason=no_app",
+        agent_id,
+        ",".join(missing),
+    )
+
+
 def emit_agent_toolset_recorded(
     agent_def: "AgentDef", tools: list[Any], sources: dict[str, str]
 ) -> None:
@@ -235,6 +276,8 @@ __all__ = [
     "declared_tool_source",
     "emit_agent_toolset_recorded",
     "mounted_namespace_set",
+    "record_tool_unavailable",
+    "record_tools_unavailable_degraded",
     "register_tool_source",
     "register_tool_sources",
     "toolset_inventory_reasons",
