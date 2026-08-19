@@ -80,8 +80,15 @@ SESSION_GENERATION_ID_HEADER = "X-Clio-Relay-Session-Generation-Id"
 REMOTE_MCP_ALIAS_PREFIX = "remote_"
 REMOTE_MCP_CATALOG_META_KEY = "clio-relay/catalog-revision"
 REMOTE_MCP_HANDLE_FIELDS = frozenset({"job_id", "state", "kind", "terminal"})
-REMOTE_MCP_FOLLOW_TOOLS = frozenset(  # #1228 D3; relay_read_artifact: L3 clause-(d) gap
-    {"relay_observe", "relay_wait", "relay_artifact_lineage", "relay_status", "relay_read_artifact"}
+REMOTE_MCP_FOLLOW_TOOLS = frozenset(  # #1228 D3; read/list artifacts: L3 clause-(d) gap
+    {
+        "relay_observe",
+        "relay_wait",
+        "relay_artifact_lineage",
+        "relay_status",
+        "relay_read_artifact",
+        "relay_list_artifacts",
+    }
 )
 RELAY_API_TOKEN_ENV = "CLIO_RELAY_API_TOKEN"
 

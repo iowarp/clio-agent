@@ -935,3 +935,48 @@ async def test_relay_read_artifact_is_projected(fake_relay: _FakeRelayClient) ->
 
     assert "relay_read_artifact" in listed
     assert listed["relay_read_artifact"].title == "Read Artifact"
+
+
+def _relay_list_artifacts_tool() -> Tool:
+    """relay_list_artifacts as the door advertises it -- one stable page of a
+    job's registered artifacts (the produced-outputs DISCOVERY half; the
+    2026-08-19 L3 retry proved lineage's job direction lists consumed inputs
+    only, so without this tool the relay-minted execution_output ids are
+    unreachable from any job_id)."""
+
+    return Tool(
+        name="relay_list_artifacts",
+        description="List one stable page of a job's registered artifacts.",
+        inputSchema={
+            "type": "object",
+            "properties": {"job_id": {"type": "string"}},
+            "required": ["job_id"],
+            "additionalProperties": False,
+        },
+        outputSchema={"type": "object"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_relay_list_artifacts_is_projected(fake_relay: _FakeRelayClient) -> None:
+    """FAILING-FIRST: the discovery half of the produced-content path."""
+
+    fake_relay.catalog = RelayRemoteMcpCatalog(
+        revision=fake_relay.catalog.revision,
+        tools=fake_relay.catalog.tools,
+        follow_tools={
+            "relay_wait": _relay_wait_tool(),
+            "relay_list_artifacts": _relay_list_artifacts_tool(),
+        },
+    )
+
+    federation = await RemoteMcpFederation.discover(lambda: fake_relay)
+
+    assert "relay_list_artifacts" in federation.catalog.follow_tools
+
+    gateway = build_gateway({}, remote_mcp_federation=federation)
+    async with Client(gateway) as client:
+        listed = {tool.name: tool for tool in await client.list_tools()}
+
+    assert "relay_list_artifacts" in listed
+    assert listed["relay_list_artifacts"].title == "List Artifacts"

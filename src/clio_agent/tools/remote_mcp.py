@@ -299,6 +299,7 @@ _FOLLOW_TOOL_TITLES = {
     "relay_artifact_lineage": "Artifact Lineage",
     "relay_status": "Relay Status",
     "relay_read_artifact": "Read Artifact",
+    "relay_list_artifacts": "List Artifacts",
 }
 
 
