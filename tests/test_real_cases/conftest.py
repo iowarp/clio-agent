@@ -25,10 +25,12 @@ Run one San Diego positive cell on qwopus, for example::
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -126,16 +128,47 @@ def _kill_port(port: int) -> None:
 def _reap_process_group(process: "subprocess.Popen[bytes]", *, timeout: float = 10.0) -> None:
     """Terminate the server AND every process it spawned (its MCP stdio children).
 
-    The server is launched with ``start_new_session=True`` so it leads its own
-    process group; signalling the whole group (``killpg`` on the negative PID)
-    reaps the uvx/MCP subprocess children too, instead of orphaning them to init.
-    Plain ``process.terminate()`` signalled only the top PID and leaked the MCP
-    children across cells — the recurring gact/MCP process pile-up. SIGTERM first
-    (graceful), then SIGKILL if it doesn't exit; falls back to a per-process
-    signal if the group is already gone.
+    POSIX: the server is launched with ``start_new_session=True`` so it leads
+    its own process group; signalling the whole group (``killpg`` on the
+    negative PID) reaps the uvx/MCP subprocess children too, instead of
+    orphaning them to init. Plain ``process.terminate()`` signalled only the
+    top PID and leaked the MCP children across cells — the recurring
+    gact/MCP process pile-up. SIGTERM first (graceful), then SIGKILL if it
+    doesn't exit; falls back to a per-process signal if the group is already
+    gone. This branch is unchanged by the Windows fix below.
+
+    Windows: ``os.getpgid``/``os.killpg`` do not exist on this platform at
+    all — calling them here unconditionally (the pre-fix code) raised
+    ``AttributeError`` at every live real-case test's teardown, which is
+    fatal to the whole pytest run rather than a per-test failure. There is
+    also no process-group id to signal there: ``start_new_session=True`` (the
+    spawn kwarg above) is a silently accepted no-op on Windows — confirmed
+    empirically, it neither errors nor creates any group — so there was
+    never a group to begin with. Instead this delegates to
+    :func:`clio_agent.serve._terminate_tree` — the same owner-module
+    mechanism the real ``clio`` server CLI uses to reap its own MCP/SDK child
+    tree on Windows: a psutil walk of the live process's descendants
+    (``process.children(recursive=True)``, which needs no process group —
+    it follows the real OS parent/child relationship), each
+    ``terminate()``-ed, a bounded wait, then ``kill()`` for stragglers still
+    alive. ``trusted=True`` because this fixture holds the live ``Popen`` for
+    its whole lifetime — there is no PID-reuse ambiguity to guard against
+    (unlike the pidfile-driven ``stop_server`` path that function also
+    serves).
     """
     if process.poll() is not None:
         return
+
+    if sys.platform.startswith("win"):
+        from clio_agent.serve import (
+            _terminate_tree,  # noqa: PLC0415 - avoid import cost when unused
+        )
+
+        _terminate_tree(process.pid, record_create_time=None, trusted=True)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=timeout)
+        return
+
     try:
         pgid = os.getpgid(process.pid)
     except ProcessLookupError:
@@ -224,6 +257,10 @@ def gact_server(request: pytest.FixtureRequest) -> Generator[GactServer, None, N
         # MCP stdio child it spawns (uvx geo/pandas/plot/ndp). Without this, teardown
         # signalled only the top PID and orphaned the MCP children to init — the
         # cross-cell process leak that piled up gact + MCP servers on the box.
+        # POSIX-only in effect: silently a no-op on Windows (confirmed — neither
+        # errors nor creates a group there), so the Windows reap in
+        # _reap_process_group instead walks the live descendant tree via psutil,
+        # which needs no process group. See that function's docstring.
         start_new_session=True,
     )
 
