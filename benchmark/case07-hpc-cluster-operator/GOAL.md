@@ -134,7 +134,11 @@ the grinder with a one-line verdict recorded.
 
 ## Status
 
-- r0: case authored (prompts, scenarios, GOAL). Prerequisites in flight:
+- r0: case authored (prompts, scenarios, GOAL). S2 is BLOCKED-BY
+  clio-kit#376: the jarvis MCP lost the interceptor target-binding
+  special case (add_step cannot express what Darshan wraps); fix =
+  clio-kit handler + contract v3.7.1 (first patch-level contract).
+  Grind S1/S3/S4 first; S2 enters rotation when #376 lands. Prerequisites in flight:
   the marketplace cluster-operator pack (builder agent) and the ares matrix
   legs (steps 1-5 of the mission). Harness skeleton next; first live run
   after the pack lands.
