@@ -298,6 +298,23 @@ class AsyncMCPToolExecutor:
         """Declared server namespaces this executor routes to (#1201 gact readers)."""
         return tuple(self._namespace_servers)
 
+    def merge_namespace_tools(self, namespace: str, tools: Mapping[str, Any]) -> None:
+        """Merge a namespace's freshly-mounted tool definitions into the LIVE
+        tool table (#1237).
+
+        The #932 freeze (``_mcp_tools`` set once from ``preloaded_tools`` at
+        :meth:`start` and never re-listed) becomes append-only-mergeable: an
+        on-demand mount (``tools.mcp_discovery.ensure_namespace``, called
+        from ``gact/agents/builders.py``'s expert-tool resolve) reaches
+        ``get_tool_definitions()``/``to_dspy_tools()`` for THIS SAME executor
+        instance immediately, rather than only a future rebuild seeing it.
+        ``namespace`` is accepted for future per-namespace bookkeeping
+        (unused today -- the merge is a flat dict update).
+        """
+
+        del namespace
+        self._mcp_tools.update(tools)
+
     async def __aenter__(self) -> "AsyncMCPToolExecutor":
         """Start the executor in an async context manager."""
         return await self.start()

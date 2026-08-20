@@ -579,6 +579,79 @@ def _emit_mcp_downgrade_events(executor: Any) -> None:
     emit_downgrade_events_for_executor(app, _ctx.active_session_id(), executor)
 
 
+def _mount_failure_reason(exc: BaseException) -> str:
+    """Typed reason for an on-demand mount attempt's failure (#1237), reusing
+    the SAME classification the discovery pass uses so the reason a tool is
+    unavailable is byte-identical whether it degraded at discovery or at an
+    on-demand call-time mount."""
+
+    from clio_agent.tools.mcp_discovery import _classify_degrade_reason  # noqa: PLC0415
+
+    return _classify_degrade_reason(exc)
+
+
+def _resolve_declared_tools_with_on_demand_mount(
+    tool_executor: Any, requested_tools: list[str]
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Build this resolve's available-tool map, mounting ON DEMAND any
+    requested tool whose DECLARED namespace was never listed yet (#1237).
+
+    A namespace is DECLARED when it appears on the executor's
+    ``_clio_namespace_specs`` map (stamped by ``ClioAgent._active_tool_executor``
+    at gateway-build time -- #1237 Gap 1 means this is routinely non-empty on
+    a cold workspace/blueprint, since activation mounts nothing eagerly).
+    Mounting goes through ``tools.mcp_discovery.ensure_namespace``: single-
+    flight (concurrent resolves for the SAME namespace join one attempt) and
+    liveness-driven (never a bounded retry ladder). A failed attempt is
+    reported in the returned ``mount_failures`` map (namespace -> typed
+    reason) for THIS resolve only -- it is never remembered, so the very
+    next resolve/call re-attempts.
+    """
+
+    from clio_agent.tools.mcp_discovery import ensure_namespace  # noqa: PLC0415
+
+    available_tools = {
+        name: tool
+        for tool in tool_executor.to_dspy_tools()
+        for name in [str(getattr(tool, "name", "") or "")]
+        if name
+    }
+    declared_specs: Mapping[str, Any] = getattr(tool_executor, "_clio_namespace_specs", None) or {}
+    mount_failures: dict[str, str] = {}
+    needed_namespaces: set[str] = set()
+    for name in requested_tools:
+        if name in available_tools:
+            continue
+        namespace, sep, bare = name.partition("_")
+        if sep and bare and namespace in declared_specs:
+            needed_namespaces.add(namespace)
+    merged_any = False
+    for namespace in sorted(needed_namespaces):
+        try:
+            mounted_tools = ensure_namespace(namespace, declared_specs[namespace])
+        except Exception as exc:  # noqa: BLE001 - typed + named, never cached (next call retries)
+            mount_failures[namespace] = _mount_failure_reason(exc)
+            logger.warning(
+                "on_demand_mount_failed namespace=%s reason=%s error=%s",
+                namespace,
+                mount_failures[namespace],
+                exc,
+            )
+            continue
+        merger = getattr(tool_executor, "merge_namespace_tools", None)
+        if callable(merger):
+            merger(namespace, mounted_tools)
+            merged_any = True
+    if merged_any:
+        available_tools = {
+            name: tool
+            for tool in tool_executor.to_dspy_tools()
+            for name in [str(getattr(tool, "name", "") or "")]
+            if name
+        }
+    return available_tools, mount_failures
+
+
 def _dynamic_agent_tools(
     base_agent: Any, agent_def: "AgentDef", sources: dict[str, str]
 ) -> list[Any]:
@@ -586,6 +659,7 @@ def _dynamic_agent_tools(
 
     requested_tools = [str(t).strip() for t in agent_def.tools if str(t).strip()]
     tool_executor = _active_base_agent_tool_executor(base_agent)
+    mount_failures: dict[str, str] = {}
     if tool_executor is None or not hasattr(tool_executor, "to_dspy_tools"):
         if requested_tools:
             raise _UnsupportedSessionAgent(
@@ -595,13 +669,11 @@ def _dynamic_agent_tools(
             )
         available_tools: dict[str, Any] = {}
     else:
+        available_tools, mount_failures = _resolve_declared_tools_with_on_demand_mount(
+            tool_executor, requested_tools
+        )
         mounted = toolset_inventory.mounted_namespace_set(tool_executor)
-        available_tools = {}
-        for tool in list(tool_executor.to_dspy_tools()):
-            name = str(getattr(tool, "name", "") or "")
-            if not name:
-                continue
-            available_tools[name] = tool
+        for name in available_tools:
             # prefix is real provenance only if mounted (finding [D]); else "gateway".
             prefix, sep, bare = name.partition("_")
             source = prefix if (sep and bare and prefix in mounted) else "gateway"
@@ -614,19 +686,25 @@ def _dynamic_agent_tools(
     if missing_tools and not resolved_tools:  # nothing to degrade to -- brick TYPED (#1228 D3)
         logger.warning(
             "custom_agent_tools_unavailable diagnostics agent=%s available=%s "
-            "executor=%s federation=%s",
+            "executor=%s federation=%s mount_failures=%s",
             agent_def.id,
             sorted(available_tools)[:30],
             type(tool_executor).__name__ if tool_executor is not None else None,
             "present"
             if getattr(base_agent, "_remote_mcp_federation", None) is not None
             else "ABSENT",
+            mount_failures,
         )
         raise _UnsupportedSessionAgent(
-            agent_def.id, reason="custom_agent_tools_unavailable", tools=missing_tools
+            agent_def.id,
+            reason="custom_agent_tools_unavailable",
+            tools=missing_tools,
+            mount_failures=mount_failures,
         )
     if missing_tools:  # >=1 resolved -- degrade typed-and-loud per tool (#1228 D3)
-        toolset_inventory.record_tools_unavailable_degraded(app, agent_def.id, missing_tools)
+        toolset_inventory.record_tools_unavailable_degraded(
+            app, agent_def.id, missing_tools, mount_failures=mount_failures
+        )
     return [_recording_blueprint_tool(available_tools[name]) for name in resolved_tools]
 
 
