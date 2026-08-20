@@ -159,7 +159,7 @@ def test_agent_getter_rebuilds_reaped_executor(monkeypatch) -> None:
     agent = _bare_agent()
     built: list[str] = []
 
-    def fake_build(*, cwd=None, set_catalog=False):
+    def fake_build(*, cwd=None, set_catalog=False, blueprint_id=""):
         assert cwd is not None
         built.append(cwd)
         return f"gateway:{cwd}"

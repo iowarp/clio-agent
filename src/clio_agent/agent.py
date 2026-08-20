@@ -26,7 +26,7 @@ import re
 import threading
 import time
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from typing import Any, Callable, Dict, Iterator, List
 
 import dspy
@@ -58,16 +58,19 @@ from clio_agent.tools.catalog import (
 )
 from clio_agent.tools.execution import (
     create_sync_tool_executor,
+    get_active_tool_blueprint_id,
     get_active_tool_workspace_root,
 )
 from clio_agent.tools.gateway import (
     build_gateway,
     build_tool_catalog,
-    list_tool_definitions,
+    list_builtin_tool_definitions,
     namespace_proxies,
+    namespace_specs,
 )
 from clio_agent.tools.jarvis_jobs import JarvisJobs
 from clio_agent.tools.mcp_config import load_mcp_servers
+from clio_agent.tools.mcp_discovery import NamespaceDiscoveryHealer, discover_declared_tools_bounded
 from clio_agent.tools.reaper import WorkspaceExecutorReaper
 from clio_agent.tools.remote_mcp import RemoteMcpFederation
 
@@ -256,6 +259,12 @@ class ClioAgent(dspy.Module):
         # a lazily built executor over a gateway built with that cwd, so each
         # workspace spawns its stdio MCPs at most once. No active workspace falls
         # back to this default executor (current behavior).
+        #
+        # #1232 pt 2: guards self._tool_definitions across the background
+        # discovery/heal merges _start_mcp_namespace_discovery starts below —
+        # boot no longer waits for any declared namespace before returning.
+        self._tool_definitions_lock = threading.Lock()
+        self._mcp_namespace_healer: NamespaceDiscoveryHealer | None = None
         self._tool_gateway = self._build_tool_gateway(set_catalog=True)
         self.tool_executor = create_sync_tool_executor(
             self._tool_gateway,
@@ -287,39 +296,55 @@ class ClioAgent(dspy.Module):
         self._planner_lm = create_planner_lm(provider_config)
         self._dspy_adapter = create_chat_adapter(provider_config)
 
-    def _discover_pack_servers(self) -> dict[str, dict[str, Any]]:
-        """Return declared ``mcp_servers`` per discovered blueprint id.
+    def _discover_pack_servers(self, blueprint_id: str = "") -> dict[str, dict[str, Any]]:
+        """Return declared ``mcp_servers`` for ONE ACTIVATED blueprint (#1232 pt 1).
 
-        Reads each blueprint's ``AGENT.md`` frontmatter ``mcp_servers`` map so
-        the active pack's declared MCP servers become available tools. Discovery
-        failures degrade to "no pack servers" (pure reasoning / built-ins only).
+        Reads a SINGLE blueprint's ``AGENT.md`` frontmatter ``mcp_servers`` map —
+        the blueprint currently activated for the calling session/workspace (see
+        ``tools.execution.tool_blueprint_context``, bound per turn by
+        ``gact.runtime.globals._tool_session_context``). ``blueprint_id`` empty
+        (the boot-time default gateway, or a session with no blueprint activated)
+        returns ``{}`` — an INSTALLED-but-inactive blueprint's declared servers
+        never mount. Before this, EVERY installed blueprint's declared servers —
+        including heavy, unrelated scientific-pack servers — mounted into the
+        boot-time default gateway regardless of activation, gating boot on
+        namespaces a session might never touch. Discovery failures degrade to
+        "no pack servers" (pure reasoning / built-ins only).
         """
 
+        if not blueprint_id:
+            return {}
         from clio_agent.gact.agent_blueprints import (  # noqa: PLC0415
             discover_agent_blueprints,
         )
 
-        pack_servers: dict[str, dict[str, Any]] = {}
         try:
             blueprints = discover_agent_blueprints()
         except Exception as exc:  # noqa: BLE001 - discovery is best-effort
             if self.verbose:
                 print(f"[ClioAgent] blueprint discovery failed: {exc}")
-            return pack_servers
+            return {}
         for blueprint in blueprints:
+            if blueprint.id != blueprint_id:
+                continue
             servers = blueprint.metadata.get("mcp_servers")
             if isinstance(servers, Mapping) and servers:
-                pack_servers[blueprint.id] = {str(k): v for k, v in servers.items()}
-        return pack_servers
+                return {blueprint.id: {str(k): v for k, v in servers.items()}}
+            return {}
+        return {}
 
-    def _build_tool_gateway(self, *, cwd: str | None = None, set_catalog: bool = False) -> Any:
+    def _build_tool_gateway(
+        self, *, cwd: str | None = None, set_catalog: bool = False, blueprint_id: str = ""
+    ) -> Any:
         """Build the tool gateway from built-ins + declared MCP servers.
 
-        Merges declared MCP servers across pack ``AGENT.md`` frontmatter and
-        user/workspace ``mcp.yaml`` (``load_mcp_servers``), proxy-mounts them next
-        to the in-process built-ins (``build_gateway``), then installs the derived
-        tool catalog (``build_tool_catalog``) so ownership/visibility for declared
-        tools comes from connected namespaces + each expert's ``tools:`` list.
+        Merges declared MCP servers across ONE activated blueprint's ``AGENT.md``
+        frontmatter (``blueprint_id`` — #1232 pt 1: never every installed
+        blueprint) and user/workspace ``mcp.yaml`` (``load_mcp_servers``),
+        proxy-mounts them next to the in-process built-ins (``build_gateway``),
+        then installs the derived tool catalog (``build_tool_catalog``) so
+        ownership/visibility for declared tools comes from connected namespaces +
+        each expert's ``tools:`` list.
 
         Args:
             cwd: Working directory for stdio MCP subprocesses (per active
@@ -329,9 +354,12 @@ class ClioAgent(dspy.Module):
                 catalog from this gateway. The catalog/tool-set is identical
                 across workspaces, so only the default gateway sets it; per-
                 workspace gateways reuse the already-installed catalog.
+            blueprint_id: The ONE Agent Blueprint whose declared ``mcp_servers``
+                should mount, or ``""`` for none (the boot-time default gateway
+                always passes ``""`` — see ``__init__``).
         """
 
-        pack_servers = self._discover_pack_servers()
+        pack_servers = self._discover_pack_servers(blueprint_id)
         specs = load_mcp_servers(pack_servers=pack_servers)
         # #1113: wire the receive-loop elicitation handler onto every declared-server
         # backend so a mid-tool-call elicitation reaches the HITL surface. The hook is
@@ -357,12 +385,11 @@ class ClioAgent(dspy.Module):
             return tool_gateway
         experts = self._discover_pack_experts()
         try:
-            # ONE transient listing pass (#932/#702): the fleet spawns once,
-            # lists, and is reaped; the definitions feed BOTH the catalog and
-            # every executor's preloaded_tools so no executor ever re-lists
-            # (executor start stops fanning the fleet; servers spawn lazily
-            # per namespace on first call).
-            self._tool_definitions = list_tool_definitions(tool_gateway)
+            # #1232 pt 2: builtins list synchronously (in-process, no I/O, always
+            # fast) so "agent ready" has a real catalog immediately; declared
+            # namespaces discover CONCURRENTLY in the background below — never
+            # gating readiness on any of them (see _start_mcp_namespace_discovery).
+            self._tool_definitions = list_builtin_tool_definitions()
             catalog = build_tool_catalog(
                 tool_gateway, experts=experts, tools=list(self._tool_definitions.values())
             )
@@ -384,7 +411,79 @@ class ClioAgent(dspy.Module):
                 print(f"[ClioAgent] tool catalog derivation failed: {exc}")
             self._tool_definitions = None
             set_active_catalog(None)
+        self._start_mcp_namespace_discovery(tool_gateway, experts)
         return tool_gateway
+
+    def _start_mcp_namespace_discovery(self, tool_gateway: Any, experts: list[Any]) -> None:
+        """Discover declared-namespace tools + start the healer — never blocks (#1232 pt 2).
+
+        Runs the ONE bounded-concurrent discovery pass on a background daemon
+        thread, merges answered namespaces' tools into ``self._tool_definitions``
+        + rebuilds/installs the catalog, and hands every namespace that missed
+        its deadline to a :class:`NamespaceDiscoveryHealer` that keeps
+        re-probing it. Called for every DEFAULT-gateway build (boot, and each
+        periodic relay-catalog refresh in ``gact/relay_wiring.py`` — never for
+        a per-workspace gateway, which discovers synchronously inline instead;
+        see ``_active_tool_executor``). A stale healer from a PRIOR default-
+        gateway build is stopped first — otherwise a refresh every
+        ``relay.tool_surfaces_ttl_seconds`` would leak one daemon thread per
+        refresh, forever re-probing namespaces against an abandoned gateway.
+        """
+
+        stale_healer = getattr(self, "_mcp_namespace_healer", None)
+        if stale_healer is not None:
+            stale_healer.request_stop()
+
+        specs = namespace_specs(tool_gateway)
+        healer = NamespaceDiscoveryHealer(
+            spec_provider=lambda: namespace_specs(tool_gateway),
+            on_healed=lambda namespace, tools: self._merge_discovered_tools(
+                tool_gateway, experts, namespace, tools
+            ),
+        )
+        healer.start()
+        self._mcp_namespace_healer = healer
+
+        def _initial_pass() -> None:
+            outcome = discover_declared_tools_bounded(specs)
+            if outcome.tools:
+                self._merge_discovered_tools(tool_gateway, experts, None, outcome.tools)
+            for namespace, reason in outcome.degraded.items():
+                healer.mark_degraded(namespace, reason)
+
+        threading.Thread(
+            target=_initial_pass, name="clio-mcp-discovery-initial", daemon=True
+        ).start()
+
+    def _merge_discovered_tools(
+        self, tool_gateway: Any, experts: list[Any], namespace: str | None, tools: dict[str, Any]
+    ) -> None:
+        """Merge newly-discovered tools into the live catalog (#1232 pt 2 heal path).
+
+        Called from the initial background discovery pass AND from every
+        healer re-probe success; both paths converge here so the catalog
+        rebuild logic (and its degrade handling) exists exactly once.
+        """
+
+        with self._tool_definitions_lock:
+            merged = dict(self._tool_definitions or {})
+            merged.update(tools)
+            self._tool_definitions = merged
+            snapshot = dict(merged)
+        try:
+            catalog = build_tool_catalog(
+                tool_gateway, experts=experts, tools=list(snapshot.values())
+            )
+            set_active_catalog(catalog)
+        except Exception as exc:  # noqa: BLE001 - typed, never silent
+            from clio_agent.runtime import trace  # noqa: PLC0415
+
+            trace.event(
+                "TOOLS",
+                "mcp_namespace_discovery_catalog_rebuild_failed namespace=%s reason=%s",
+                namespace or "<initial>",
+                exc,
+            )
 
     def _active_tool_executor(self) -> Any:
         """Resolve the tool executor for the active session workspace.
@@ -395,24 +494,105 @@ class ClioAgent(dspy.Module):
         stdio MCP subprocesses are spawned with ``cwd=<workspace root>`` (http MCPs
         stay shared). The executor is cached per root, so each workspace spawns its
         stdio MCPs at most once (lazy, on first tool use for that workspace).
+
+        The gateway also reads the active session's EXPLICITLY-activated Agent
+        Blueprint id (#1232 pt 1, ``tools.execution.get_active_tool_blueprint_id``)
+        and mounts ONLY that blueprint's declared ``mcp_servers`` — never every
+        installed blueprint's. A resident executor built for a different (or no)
+        blueprint than the one now active for this root is evicted and rebuilt so
+        activation/deactivation actually changes what is mounted; this is a
+        one-blueprint-at-a-time-per-root simplification — two sessions sharing one
+        workspace root with DIFFERENT active blueprints will thrash rebuilds on
+        every call, which is out of scope for #1232 (no evidence it occurs today:
+        a workspace is provisioned per session).
         """
 
         root = get_active_tool_workspace_root().strip()
         if not root:
             return self.tool_executor
+        blueprint_id = get_active_tool_blueprint_id().strip()
         lock, executors, _leases = self._workspace_state()
         with lock:
             executor = executors.get(root)
-            if executor is None or getattr(executor, "closed", False):
-                # First use for this root, or the #933 reaper reclaimed the
-                # fleet — rebuild lazily (spawns nothing until a tool call).
-                gateway = self._build_tool_gateway(cwd=root)
+            stale = executor is not None and getattr(executor, "closed", False)
+            mounted_blueprint_id = (
+                getattr(executor, "_clio_mounted_blueprint_id", "") if executor is not None else ""
+            )
+            blueprint_switched = (
+                executor is not None and not stale and mounted_blueprint_id != blueprint_id
+            )
+            if executor is None or stale or blueprint_switched:
+                if blueprint_switched:
+                    # #1232 pt 1: the workspace's active blueprint changed (or
+                    # just activated/deactivated) since this resident fleet was
+                    # built — evict so the rebuild mounts exactly the NOW-active
+                    # blueprint's declared servers, never a stale/foreign set.
+                    try:
+                        executor.close()
+                    except Exception as exc:  # noqa: BLE001 - typed, never fatal
+                        from clio_agent.runtime import trace  # noqa: PLC0415
+
+                        trace.event(
+                            "TOOLS",
+                            "workspace_fleet_blueprint_switch_close_failed root=%s reason=%s",
+                            root,
+                            exc,
+                        )
+                    from clio_agent.runtime import trace  # noqa: PLC0415
+
+                    trace.event(
+                        "TOOLS",
+                        "workspace_fleet_blueprint_switch root=%s from=%s to=%s",
+                        root,
+                        mounted_blueprint_id or "<none>",
+                        blueprint_id or "<none>",
+                    )
+                # First use for this root, the #933 reaper reclaimed the fleet, or
+                # the active blueprint changed — rebuild lazily (spawns nothing
+                # until a tool call).
+                gateway = self._build_tool_gateway(cwd=root, blueprint_id=blueprint_id)
+                preloaded = self._tool_definitions
+                if blueprint_id:
+                    # #1232 pt 1: preloaded_tools is a SCHEMA cache keyed by
+                    # tool name (AsyncMCPToolExecutor.start freezes it as
+                    # ``_mcp_tools`` and NEVER re-lists — #932) — the agent-level
+                    # ``self._tool_definitions`` only ever learns built-ins/
+                    # user/workspace schemas now (blueprint servers no longer
+                    # mount at boot), so an activated blueprint's OWN declared
+                    # tools would be silently absent from to_dspy_tools() without
+                    # this. Bounded + concurrent (#1232 pt 2 machinery reused) and
+                    # scoped to just THIS gateway's mounts (built-ins excluded —
+                    # already known), so it is cheap and never blocks boot: it
+                    # runs lazily, once, on this workspace+blueprint's first use.
+                    blueprint_pass = discover_declared_tools_bounded(namespace_specs(gateway))
+                    preloaded = {**(preloaded or {}), **blueprint_pass.tools}
+                    for namespace, reason in blueprint_pass.degraded.items():
+                        from clio_agent.runtime import trace  # noqa: PLC0415
+
+                        trace.event(
+                            "TOOLS",
+                            "mcp_namespace_discovery_degraded namespace=%s reason=%s "
+                            "root=%s blueprint_id=%s",
+                            namespace,
+                            reason,
+                            root,
+                            blueprint_id,
+                        )
                 executor = create_sync_tool_executor(
                     gateway,
-                    preloaded_tools=self._tool_definitions,
+                    preloaded_tools=preloaded,
                     namespace_servers=namespace_proxies(gateway),
                     server_id=f"gateway:{root}",
                 )
+                # Best-effort cache-consistency bookkeeping, not core behavior:
+                # a real SyncMCPToolExecutor always supports attribute
+                # assignment; only a bare-primitive test double (a handful of
+                # tests deliberately stub create_sync_tool_executor with a
+                # plain string sentinel) would not. A blueprint switch on such
+                # a stub simply always rebuilds (mounted_blueprint_id reads
+                # back "" via getattr's default either way).
+                with suppress(AttributeError, TypeError):
+                    executor._clio_mounted_blueprint_id = blueprint_id  # noqa: SLF001
                 executors[root] = executor
             return executor
 
@@ -775,6 +955,11 @@ class ClioAgent(dspy.Module):
         reaper = getattr(self, "_workspace_reaper", None)
         if reaper is not None:
             reaper.stop()
+        # #1232 pt 2: stop the background namespace-discovery healer thread
+        # symmetrically with the workspace-fleet reaper above.
+        healer = getattr(self, "_mcp_namespace_healer", None)
+        if healer is not None:
+            healer.stop()
 
         if self.verbose:
             print("[ClioAgent] Shutting down...")

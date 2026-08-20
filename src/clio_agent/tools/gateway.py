@@ -407,6 +407,24 @@ def _mounted_namespaces(gw: FastMCP) -> set[str]:
     return {_namespace_of(tool.name) for tool in tools}
 
 
+def list_builtin_tool_definitions() -> dict[str, Any]:
+    """List the in-process built-in servers' (fs/shell) tools — fast, no I/O.
+
+    #1232 pt 2: the boot path (``ClioAgent.__init__``) calls this synchronously
+    to seed SOME tool definitions immediately — built-ins never spawn a
+    subprocess or block — before backgrounding the slower declared-namespace
+    pass (``tools.mcp_discovery.discover_declared_tools_bounded``), so "agent
+    ready" never waits on any declared MCP server.
+    """
+
+    tools: dict[str, Any] = {}
+    for namespace, server in (("fs", fs_server), ("shell", shell_server)):
+        for tool in _list_tools_sync(server):
+            prefixed = f"{namespace}_{tool.name}"
+            tools[prefixed] = tool.model_copy(update={"name": prefixed})
+    return tools
+
+
 def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
     """One transient SEQUENTIAL listing pass: ``{tool_name: MCPTool}``.
 
@@ -426,7 +444,17 @@ def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
     warning — the same semantics the composite's swallowed-mount aggregation
     had, now with OUR reason attached. Feed the result to BOTH
     ``build_tool_catalog(tools=...)`` and the executors' ``preloaded_tools``
-    so boot pays exactly one pass and executors never re-list (#932).
+    so a full refresh pays exactly one pass and executors never re-list (#932).
+
+    #1232 pt 2: the BOOT path no longer calls this directly (its unbounded,
+    fully-serial cost — no per-namespace timeout, one dead namespace's retry
+    budget fully before the next starts — is exactly what let three dead
+    namespaces turn into minutes of boot). Boot uses
+    ``list_builtin_tool_definitions`` + ``tools.mcp_discovery.
+    discover_declared_tools_bounded`` instead; THIS function remains the
+    complete/synchronous pass for non-boot callers (a full catalog refresh
+    route, ``list_gateway_tools``) that want every namespace resolved before
+    returning and can tolerate the wait.
     """
 
     from clio_agent.tools import listing_cache  # noqa: PLC0415
