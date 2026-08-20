@@ -12,6 +12,7 @@ from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import parse_qs
 
 import pytest
 import uvicorn
@@ -25,7 +26,9 @@ from clio_agent.tools.mcp_task_records import (
     InMemoryTaskRecordStore,
     TaskKey,
     TaskRecord,
+    set_task_change_listener,
     set_task_record_store,
+    task_change_listener,
     task_record_store,
 )
 from clio_agent.tools.relay_transport import (
@@ -45,6 +48,15 @@ class _RelayCapture:
     def __init__(self) -> None:
         self.requests: list[tuple[str, dict[str, str]]] = []
         self.submitted_tokens: list[str | None] = []
+        # #1231 Part 2: the fake ``GET /jobs/{job_id}/logs/stdout`` console door.
+        # ``console_log_lines[job_id]`` is a queue of lines the job "writes"
+        # -- one is revealed (appended to ``console_logs[job_id]``) on each
+        # distinct HTTP call, simulating a job producing new output between
+        # #1115 poll rounds. ``console_log_fail_job_ids`` scripts a permanently
+        # 500ing log door for the failure-resilience test.
+        self.console_logs: dict[str, str] = {}
+        self.console_log_lines: dict[str, list[str]] = {}
+        self.console_log_fail_job_ids: set[str] = set()
 
 
 def _fake_relay(capture: _RelayCapture) -> FastMCP:
@@ -144,6 +156,25 @@ class _FakeRelayApp:
                 + "\n\n"
             ).encode()
             await self._respond(send, 200, body, b"text/event-stream")
+            return
+        if path.startswith("/jobs/") and path.endswith("/logs/stdout"):
+            job_id = path.split("/")[2]
+            query = parse_qs(scope.get("query_string", b"").decode())
+            if job_id in self._capture.console_log_fail_job_ids:
+                await self._respond(send, 500, b"log door unavailable", b"text/plain")
+                return
+            offset = int(query.get("offset", ["0"])[0])
+            limit = int(query.get("limit", ["65536"])[0])
+            pending = self._capture.console_log_lines.get(job_id, [])
+            written = self._capture.console_logs.get(job_id, "")
+            if pending:
+                written += pending.pop(0)
+                self._capture.console_logs[job_id] = written
+            encoded = written.encode("utf-8")
+            chunk = encoded[offset : offset + limit]
+            next_offset = offset + len(chunk)
+            body = json.dumps({"data": chunk.decode("utf-8"), "next_offset": next_offset}).encode()
+            await self._respond(send, 200, body, b"application/json")
             return
         if path.startswith("/artifacts/") and path.endswith("/content"):
             artifact_id = path.split("/")[-2]
@@ -264,7 +295,7 @@ def test_production_factory_resolves_both_doors_and_reports_unconfigured(
     assert isinstance(configured, RelayTransportClient)
     assert configured._mcp_url == "http://127.0.0.1:18783/mcp"
     assert configured._http_base_url == "http://127.0.0.1:8765"
-    assert configured._session_id == "session-alice"
+    assert configured._explicit_session_id == "session-alice"
 
 
 async def _first(stream: AsyncIterator[dict[str, Any]]) -> dict[str, Any]:
@@ -774,3 +805,156 @@ def test_idempotency_key_unchanged_without_session_context() -> None:
     )
 
     assert _session_scoped_idempotency_key("l2real-run-42") == "l2real-run-42"
+
+
+# --------------------------------------------------------------------------- #
+# #1231 Part 1: TaskKey.session_id binds to the ACTIVE gact session, never    #
+# the relay owner-session id -- no CLIO session store can resolve an owner   #
+# id, which is exactly why every ares L3 run logged                         #
+# mcp_task_record_held_locally (session row absent).                        #
+# --------------------------------------------------------------------------- #
+async def test_submit_binds_task_key_to_active_gact_session(
+    relay_backend: _Backend,
+) -> None:
+    """The production client is a boot-time singleton reused across turns
+    (discover_relay_tool_surfaces's ``factory`` closure) -- resolution must
+    happen at submit time, from whatever session is active THEN, not at
+    construction.
+
+    **Sabotage:** key the TaskKey on the constructor's owner-session
+    fallback instead of the live gact session -> the durable record binds to
+    an id gact can never resolve -> red.
+    """
+    from clio_agent.gact import context as gact_context
+
+    token = gact_context.set_session_id("sess_live_ares")
+    try:
+        async with _client(relay_backend) as relay:
+            identity = await relay.submit("relay_run", {"delay": 0.0})
+    finally:
+        gact_context.reset(token)
+
+    assert identity.key.session_id == "sess_live_ares"
+
+
+async def test_submit_session_id_falls_back_to_owner_outside_gact_session(
+    relay_backend: _Backend,
+) -> None:
+    """Outside a gact session (harness/CLI), the owner-session fallback used
+    at ``_client()`` construction (``owner_session_id="session-alice"``) is
+    unchanged."""
+
+    async with _client(relay_backend) as relay:
+        identity = await relay.submit("relay_run", {"delay": 0.0})
+
+    assert identity.key.session_id == "session-alice"
+
+
+async def test_submit_explicit_session_id_wins_over_active_gact_session(
+    relay_backend: _Backend,
+) -> None:
+    """A caller-supplied constructor ``session_id`` (harness/CLI callers that
+    already know their session) always wins over an active gact session."""
+
+    from clio_agent.gact import context as gact_context
+
+    token = gact_context.set_session_id("sess_other")
+    try:
+        async with RelayTransportClient(
+            mcp_url=relay_backend.mcp_url,
+            http_base_url=relay_backend.base_url,
+            api_token="relay-secret",
+            session_id="sess_explicit",
+        ) as relay:
+            identity = await relay.submit("relay_run", {"delay": 0.0})
+    finally:
+        gact_context.reset(token)
+
+    assert identity.key.session_id == "sess_explicit"
+
+
+# --------------------------------------------------------------------------- #
+# #1231 Part 2: relay's bounded console tail folds into the durable record on #
+# every poll of wait() -- end to end, through the real #1115 poll loop and    #
+# the fake relay's HTTP log door (not just the isolated relay_console unit    #
+# tests in test_relay_console.py).                                           #
+# --------------------------------------------------------------------------- #
+class _ListenerWiredStore(InMemoryTaskRecordStore):
+    """Mirrors ``SessionMetadataTaskStore.put``'s change-listener contract
+    (``gact/mcp_task_store.py``) just enough to prove the console fold's
+    ``store.put`` calls reach a registered listener -- the SAME mechanism
+    ``gact/mcp_task_events.py`` installs to publish ``mcp_task.updated``."""
+
+    def put(self, record: TaskRecord) -> None:
+        super().put(record)
+        listener = task_change_listener()
+        if listener is not None:
+            listener(record)
+
+
+async def test_wait_folds_growing_console_tail_and_notifies_the_change_listener(
+    relay_backend: _Backend,
+) -> None:
+    """FAILING-FIRST for #1231 Part 2: driving a real task through wait() must
+    fold relay's bounded console tail into the durable record on each poll --
+    not just once at the end -- and each fold must reach a registered
+    ``task_change_listener`` (the exact mechanism ``mcp_task_events.py`` uses
+    to publish ``mcp_task.updated`` to the owning session's SSE channel)."""
+
+    store = _ListenerWiredStore()
+    notified: list[TaskRecord] = []
+    set_task_change_listener(notified.append)
+    try:
+        async with RelayTransportClient(
+            mcp_url=relay_backend.mcp_url,
+            http_base_url=relay_backend.base_url,
+            api_token="relay-secret",
+            owner_session_id="session-alice",
+            owner_session_generation_id="generation-1",
+            store=store,
+        ) as relay:
+            task = await relay.submit("relay_run", {"delay": 2.2})
+            relay_backend.capture.console_log_lines[task.job_id] = [
+                "starting simulation\n",
+                "step 1 complete\n",
+                "step 2 complete\n",
+                "step 3 complete\n",
+            ]
+            final = await relay.wait(task, timeout_seconds=15)
+    finally:
+        set_task_change_listener(None)
+
+    assert final.status == "completed"
+    console_updates = [
+        record for record in notified if "console" in record.backend and record.key == task.key
+    ]
+    assert len(console_updates) >= 2, "expected the tail to grow across more than one poll"
+    tails = [update.backend["console"]["tail"] for update in console_updates]
+    offsets = [update.backend["console"]["offset"] for update in console_updates]
+    # Monotonic growth: each observed tail is a superset (never a regression).
+    assert offsets == sorted(offsets)
+    assert len(tails[-1]) >= len(tails[0])
+    assert tails[0] in tails[-1]
+    assert tails[-1].startswith("starting simulation\n")
+    settled = store.get(task.key)
+    assert settled is not None
+    assert settled.backend["console"]["truncated"] is False
+
+
+async def test_wait_completes_normally_when_the_console_log_door_fails(
+    relay_backend: _Backend,
+) -> None:
+    """FAILING-FIRST resilience proof: relay's log endpoint 500ing on every
+    call (unreachable, not yet deployed) must never break the wait -- the
+    task still drives cleanly to its real terminal state, with no console
+    tail folded in (there was nothing to fold)."""
+
+    async with _client(relay_backend) as relay:
+        task = await relay.submit("relay_run", {"delay": 0.05})
+        relay_backend.capture.console_log_fail_job_ids.add(task.job_id)
+        final = await relay.wait(task, timeout_seconds=15)
+
+    assert final.status == "completed"
+    settled = task_record_store().get(task.key)
+    assert settled is not None
+    assert "console" not in settled.backend

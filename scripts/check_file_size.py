@@ -590,6 +590,21 @@ RATCHET_BASELINE: dict[str, int] = {
     # (runtime/mcp_launcher.py::probe_mcp_yaml_declarations), not just a log
     # line. Ratchets back below 800 if this snapshot moves to its own module.
     "src/clio_agent/tools/mcp_config.py": 821,
+    # #1231 Part 1/2 (consumer half of the live-console feature): not previously
+    # baselined -- this file was ALREADY 7 lines over the 800 cap before this
+    # change (unbaselined pre-existing debt), i.e. 807 -> 820. Part 1 (+6 net):
+    # resolve TaskKey.session_id from the ACTIVE gact session at submit time
+    # instead of freezing it to the relay owner-session id at __init__ (the
+    # ``mcp_task_record_held_locally`` root cause) -- the resolution logic
+    # itself lives in the owner module tools/relay_contract.py
+    # (resolve_relay_task_session_id); only the two-field constructor storage +
+    # the one-call submit-time resolve land here. Part 2 (+7 net): wire the
+    # console-tail on_poll hook into ``wait()`` -- the pull/fold/config logic
+    # lives entirely in the NEW owner module tools/relay_console.py
+    # (make_console_on_poll); only the import + one keyword argument + a
+    # docstring note land here. Ratchets back below 800 with the #714/#767
+    # decomposition.
+    "src/clio_agent/tools/relay_transport.py": 820,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.
