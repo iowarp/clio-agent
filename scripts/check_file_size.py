@@ -678,8 +678,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # lives entirely in the NEW owner module tools/relay_console.py
     # (make_console_on_poll); only the import + one keyword argument + a
     # docstring note land here. Ratchets back below 800 with the #714/#767
-    # decomposition.
-    "src/clio_agent/tools/relay_transport.py": 820,
+    # decomposition. +7 (820->827): the #1231 run-13 fix folds one console
+    # increment on every explicit resolution in ``poll()`` (terminal-at-lookup
+    # records and relay_observe peeks were console-less forever) -- the fold
+    # logic itself stays in relay_console.py; only the hook call lands here.
+    "src/clio_agent/tools/relay_transport.py": 827,
     # #1232 pt 2: not previously baselined (under the 800 cap). +28 for
     # list_builtin_tool_definitions -- the boot path needs a FAST,
     # synchronous, no-I/O tool-definitions seed (built-ins only) so
