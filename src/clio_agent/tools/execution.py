@@ -947,6 +947,17 @@ class SyncMCPToolExecutor:
         """Convert MCP tools to DSPy Tool objects."""
         return _make_dspy_tools(self._async_executor.get_tool_definitions(), self.call_tool)
 
+    def merge_namespace_tools(self, namespace: str, tools: Mapping[str, Any]) -> None:
+        """Merge an on-demand mount's tool definitions into the live table (#1237).
+
+        Delegates to :meth:`AsyncMCPToolExecutor.merge_namespace_tools`; a
+        plain dict update on the shared ``_mcp_tools`` mapping, safe to call
+        from any thread (the caller, ``builders.py``'s sync expert-tool
+        resolve, does not run on this executor's own event-loop thread).
+        """
+
+        self._async_executor.merge_namespace_tools(namespace, tools)
+
     def close(self) -> None:
         """Shut down the executor, closing the client and event loop."""
         with self._close_lock:

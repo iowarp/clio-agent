@@ -680,9 +680,21 @@ async def _run_turn_in_background(
             "Session selected an agent that is registered but not executable "
             "by CLIO's current runtime."
         )
+        # #1237: name the SERVER + typed reason when the unavailability is a
+        # declared tool's server failing an on-demand mount attempt (never a
+        # standing fact -- the next turn re-attempts), rather than leaving the
+        # cause visible only in a cache listing.
+        mount_failures = getattr(exc, "mount_failures", None) or {}
+        message = f"Session agent {exc.agent_id!r} cannot be executed yet."
+        if mount_failures:
+            named = "; ".join(
+                f"{namespace} unavailable: server mount failed reason={reason}"
+                for namespace, reason in sorted(mount_failures.items())
+            )
+            message = f"{message} {named}."
         state.error_info = ErrorInfo(
             error="not_implemented",
-            message=(f"Session agent {exc.agent_id!r} cannot be executed yet."),
+            message=message,
             details={
                 "agent_id": exc.agent_id,
                 "reason": exc.reason,
@@ -690,6 +702,7 @@ async def _run_turn_in_background(
                     agent_id for agent_id in _EXECUTABLE_SESSION_AGENT_IDS if agent_id
                 ),
                 "unsupported_tools": exc.tools,
+                "mount_failures": mount_failures,
                 "recovery_actions": [
                     "choose_builtin_agent",
                     "remove_custom_agent_tools",
