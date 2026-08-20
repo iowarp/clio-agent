@@ -30,6 +30,7 @@ Opt out — emergencies only, documented — with ``CLIO_TEST_SKIP_CLIENT_AUDIT=
 
 from __future__ import annotations
 
+import time as _time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -51,6 +52,11 @@ class LeakedChild:
     pid: int
     name: str
     origin: str
+    #: Best-effort forensics captured at finalize while the process is still
+    #: alive (cmdline/ppid/age) — "<unknown>"-origin leaks come from background
+    #: threads the per-test diff cannot attribute, so this is the only handle
+    #: CI gives us on the culprit (#1240).
+    detail: str = ""
 
 
 @dataclass(frozen=True)
@@ -77,7 +83,7 @@ class AuditResult:
         for child in self.child_leaks:
             lines.append(
                 f"  child process leak: pid={child.pid} name={child.name!r} still alive "
-                f"at session end (introduced by {child.origin})"
+                f"at session end (introduced by {child.origin}){child.detail}"
             )
         lines.append(
             f"  set {SKIP_ENV}=1 to bypass this audit in an emergency (and file the leak)."
@@ -149,6 +155,28 @@ def _psutil():  # type: ignore[no-untyped-def]
         return psutil
     except ImportError:
         return None
+
+
+def _leak_forensics(pid: int) -> str:
+    """Best-effort cmdline/parent/age of a still-alive leaked child (#1240).
+
+    Called at finalize, while the leak is provably alive, so the failure
+    message can NAME the culprit that per-test diffing could not attribute
+    (background-thread spawns land between snapshots). Never raises.
+    """
+    psutil = _psutil()
+    if psutil is None:
+        return ""
+    try:
+        proc = psutil.Process(pid)
+        with proc.oneshot():
+            cmdline = " ".join(proc.cmdline())[:300]
+            parent = proc.parent()
+            parent_text = f"{parent.pid}:{parent.name()}" if parent is not None else "<gone>"
+            age_s = max(0.0, _time.time() - proc.create_time())
+        return f" cmdline={cmdline!r} parent={parent_text} age={age_s:.0f}s"
+    except Exception:  # noqa: BLE001 - forensics are best-effort, never sink the audit
+        return ""
 
 
 def child_snapshot(root_pid: int, *, exclude_subtree: Optional[int] = None) -> dict[int, str]:
@@ -278,7 +306,12 @@ class ProcessHygieneAudit:
             if pid in self._baseline_children:
                 continue
             child_leaks.append(
-                LeakedChild(pid=pid, name=name, origin=self._child_origin.get(pid, "<unknown>"))
+                LeakedChild(
+                    pid=pid,
+                    name=name,
+                    origin=self._child_origin.get(pid, "<unknown>"),
+                    detail=_leak_forensics(pid),
+                )
             )
         return AuditResult(client_leaks=tuple(client_leaks), child_leaks=tuple(child_leaks))
 
