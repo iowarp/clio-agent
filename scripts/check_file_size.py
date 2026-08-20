@@ -95,10 +95,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # yet listed" from "genuinely unknown". Also stamps _clio_namespace_specs
     # on the inner AsyncMCPToolExecutor (not just the sync wrapper), so
     # mcp_executor.py's _connect_namespace can gate its dispatch-time
-    # launcher-cache-lock acquisition on the declared spec. Net NEGATIVE on
-    # this branch (the deleted pass outweighs the additions); ceiling kept at
-    # the v0.9.1 value.
-    "src/clio_agent/agent.py": 989,
+    # launcher-cache-lock acquisition on the declared spec. +23 over the
+    # v0.9.1 ceiling on this branch (989 -> 1012): the cache-only read + the
+    # two spec-map stamps outweigh the deleted eager pass here, because this
+    # branch never carried the #1236 federation-epoch additions that develop's
+    # equivalent bumps sat on top of.
+    "src/clio_agent/agent.py": 1012,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
