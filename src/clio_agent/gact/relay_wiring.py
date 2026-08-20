@@ -91,7 +91,16 @@ async def refresh_relay_tool_surfaces_if_stale(app: FastAPI) -> Any:
 
         if isinstance(resolve_relay_transport_config(), RelayTransportUnavailable):
             return None
-        return await relay_tool_surfaces_for_app(app)
+        surfaces = await relay_tool_surfaces_for_app(app)
+        # Push onto the LIVE agent exactly like the TTL path below: under the
+        # #1232 lazy boot the agent was constructed without relay kwargs, so
+        # filling app.state alone leaves its gateway toolless and every
+        # custom-agent ACL bricks (L3 run 6: identical
+        # custom_agent_tools_unavailable AFTER first discovery succeeded).
+        agent = getattr(app.state, "agent", None)
+        if agent is not None and surfaces is not None:
+            _refresh_agent_relay_tool_surfaces(agent, surfaces)
+        return surfaces
 
     discovered_at = getattr(app.state, "relay_tool_surfaces_discovered_at", None)
     ttl = _relay_tool_surfaces_ttl_seconds()
