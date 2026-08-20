@@ -33,6 +33,9 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact._params import _gact_turn_timeout_s
 from clio_agent.gact.runtime.globals import _TurnTimedOut
+from clio_agent.runtime.commitment_activity import (
+    commitment_wait_in_flight as _commitment_wait_in_flight,
+)
 from clio_agent.runtime.lm_activity import lm_call_in_flight as _lm_call_in_flight
 
 if TYPE_CHECKING:
@@ -64,7 +67,9 @@ def make_turn_cancel_event(state: "TurnState") -> None:
     # Poll the progress heartbeat on a short cadence so abort latency after the
     # turn truly wedges stays small without busy-waiting. Cap by the window so a
     # tiny configured timeout still polls at least as often.
-    state._watchdog_poll_s = min(2.0, state.turn_progress_timeout_s) if state.turn_progress_timeout_s > 0 else 2.0
+    state._watchdog_poll_s = (
+        min(2.0, state.turn_progress_timeout_s) if state.turn_progress_timeout_s > 0 else 2.0
+    )
 
 
 def cancel_requested(state: "TurnState") -> bool:
@@ -118,6 +123,14 @@ async def await_turn_work(state: "TurnState", awaitable: Any) -> Any:
             # so a busy neighbor session's in-flight call can no longer keep a
             # genuinely wedged session alive (iowarp/clio-agent#761 defect 2).
             if _lm_call_in_flight(state.sid):
+                last_progress = time.monotonic()
+            # #1230: a declared wait_for_terminal commitment (#1225, unbounded
+            # at the MCP-call layer) is an HONEST wait, not a stall -- treating
+            # it as progress pauses the turn ceiling for exactly as long as the
+            # commitment is open, so it remains a runaway backstop for turns
+            # burning wall-clock OUTSIDE a commitment, never a bound on one.
+            # Same per-session scoping as the LM-activity check above.
+            if _commitment_wait_in_flight(state.sid):
                 last_progress = time.monotonic()
             if time.monotonic() - last_progress >= state.turn_progress_timeout_s:
                 state.turn_cancel_event.set()

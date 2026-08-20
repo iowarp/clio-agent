@@ -236,6 +236,135 @@ def test_reaper_protocol_on_real_sync_executor() -> None:
             executor.close()
 
 
+# --- #1230 part 1: resolve-to-busy gap -------------------------------------
+
+
+def test_resolved_root_survives_a_reap_tick_before_the_call_marks_busy() -> None:
+    """A root already idle past TTL at the moment it is RESOLVED (about to be
+    used) must not be reaped in the window before the caller's dispatch marks
+    the executor busy — resolving for imminent use IS "recent activity"."""
+
+    stale = FakeExecutor(idle_s=10_000)  # canned: already way past any TTL
+    registry = {"/ws/hot": stale}
+    reaper = _reaper(registry, ttl=5.0)
+
+    reaper.note_resolved("/ws/hot")
+    # A reap tick lands in the resolve-to-busy gap: must be a no-op.
+    assert reaper.reap_once() == []
+    assert not stale.closed and "/ws/hot" in registry
+
+
+def test_resolve_protection_is_a_window_not_a_permanent_exemption(monkeypatch) -> None:
+    """Once the TTL elapses past the resolve with no call ever starting (busy
+    never went True), normal idle-TTL reaping resumes — this is a bounded
+    grace window, not a standing exemption."""
+
+    import clio_agent.tools.reaper as reaper_mod
+
+    box = {"now": 1_000.0}
+    monkeypatch.setattr(reaper_mod.time, "monotonic", lambda: box["now"])
+
+    stale = FakeExecutor(idle_s=10_000)
+    registry = {"/ws/hot": stale}
+    reaper = _reaper(registry, ttl=5.0)
+
+    reaper.note_resolved("/ws/hot")
+    assert reaper.reap_once() == []  # inside the window
+
+    box["now"] += 5.1  # window elapsed, and it never got busy
+    assert reaper.reap_once() == ["/ws/hot"]
+    assert stale.closed
+
+
+def test_resolve_protection_excludes_from_lru_cap_too() -> None:
+    """The resolve-activity guard must also gate the LRU-cap eviction path, not
+    just idle-TTL — a just-resolved root must not be picked as the stalest
+    candidate either."""
+
+    hot = FakeExecutor(idle_s=999)  # stalest by idle_for(), but just resolved
+    other = FakeExecutor(idle_s=1)
+    registry = {"/ws/hot": hot, "/ws/other": other}
+    reaper = _reaper(registry, ttl=10_000.0, cap=1)
+
+    reaper.note_resolved("/ws/hot")
+    reaped = reaper.reap_once()
+    assert reaped == ["/ws/other"], "the resolved root must be skipped as an LRU candidate"
+    assert set(registry) == {"/ws/hot"}
+
+
+def test_reaped_root_drops_its_resolve_marker(monkeypatch) -> None:
+    """A torn-down root's resolve marker must not silently protect a LATER,
+    unrelated resident that reuses the same workspace root string."""
+
+    import clio_agent.tools.reaper as reaper_mod
+
+    box = {"now": 1_000.0}
+    monkeypatch.setattr(reaper_mod.time, "monotonic", lambda: box["now"])
+
+    first = FakeExecutor(idle_s=10_000)
+    registry: dict[str, Any] = {"/ws/reuse": first}
+    reaper = _reaper(registry, ttl=1.0)
+    reaper.note_resolved("/ws/reuse")
+    box["now"] += 1.1
+    assert reaper.reap_once() == ["/ws/reuse"]
+    assert "/ws/reuse" not in reaper._resolved_at
+
+    # A brand-new resident at the same root, never resolved: normal idle rules
+    # apply immediately (no leftover protection from the reaped predecessor).
+    second = FakeExecutor(idle_s=10_000)
+    registry["/ws/reuse"] = second
+    assert reaper.reap_once() == ["/ws/reuse"]
+    assert second.closed
+
+
+def test_active_tool_executor_notifies_the_real_reaper_on_resolve(monkeypatch) -> None:
+    """Wiring pin: ``ClioAgent._active_tool_executor`` must call
+    ``note_resolved`` on the agent's actual reaper (not just theoretically
+    support it) every time it resolves a workspace root — first use AND
+    cache-hit alike, since a cache-hit is exactly the case that can be
+    idle-past-TTL at resolve time."""
+
+    from clio_agent.tools.execution import tool_workspace_context
+    from tests.test_gact.test_workspace_tool_executor import (
+        _bare_agent,  # type: ignore[attr-defined]
+    )
+
+    agent = _bare_agent()
+    resident = FakeExecutor(idle_s=10_000)
+    agent._workspace_tool_executors["/ws/hot"] = resident
+
+    lock, executors, leases = agent._workspace_state()
+    reaper = _reaper(executors, leases=leases, ttl=5.0)
+    agent._workspace_reaper = reaper
+
+    with tool_workspace_context("/ws/hot"):
+        got = agent._active_tool_executor()
+    assert got is resident
+
+    # The resolve above must already have protected this root.
+    assert reaper.reap_once() == []
+    assert not resident.closed
+
+
+def test_active_tool_executor_without_a_reaper_attribute_does_not_raise() -> None:
+    """Bare/partially-constructed agents (test stubs, per ``_workspace_state``'s
+    own docstring) have no ``_workspace_reaper`` — the resolve hook must be a
+    no-op guard, never an AttributeError."""
+
+    from clio_agent.tools.execution import tool_workspace_context
+    from tests.test_gact.test_workspace_tool_executor import (
+        _bare_agent,  # type: ignore[attr-defined]
+    )
+
+    agent = _bare_agent()
+    resident = object()
+    agent._workspace_tool_executors["/ws/bare"] = resident
+    assert not hasattr(agent, "_workspace_reaper")
+
+    with tool_workspace_context("/ws/bare"):
+        assert agent._active_tool_executor() is resident
+
+
 def test_turn_lease_wiring_pins_root_during_context(monkeypatch, tmp_path) -> None:
     """gact's _tool_session_context leases the workspace root for the turn."""
 

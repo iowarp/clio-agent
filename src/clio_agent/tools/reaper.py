@@ -4,11 +4,22 @@ Each distinct workspace root materializes a resident MCP fleet (executor +
 lazily-spawned stdio servers). Before this module they lived until process
 shutdown — a day of desktop use accumulated fleets toward OOM (#929). The
 reaper closes a workspace executor once it has been IDLE for the TTL, and
-enforces an LRU cap on how many stay resident, with two hard guarantees:
+enforces an LRU cap on how many stay resident, with three hard guarantees:
 
 - **Drain-aware**: an executor with a call in flight is never closed; the
   in-flight count and idle clock live on the executor itself
   (``SyncMCPToolExecutor.busy`` / ``idle_for``).
+- **Resolve-aware** (#1230): ``ClioAgent._active_tool_executor`` resolves an
+  executor and returns it to the caller BEFORE the caller ever marks it busy
+  (DSPy tool dispatch calls ``call_tool`` after the resolve returns, outside
+  the shared registry lock) — the gap between "resolved for an imminent call"
+  and "the call actually starts" is otherwise unprotected: an executor already
+  idle past TTL at the moment a NEW call resolves it can be popped-and-closed
+  by a reap tick landing in that gap, so the caller's very next line raises on
+  a closed executor (the live defect: two ``idle_ttl`` reaps during one
+  ~220s jarvis dispatch). :meth:`WorkspaceExecutorReaper.note_resolved` closes
+  it: resolving a root for use counts as activity for one TTL window, exactly
+  like an in-flight call or a live-turn lease.
 - **Typed, never silent**: every reap emits a structured trace reason
   (``workspace_fleet_reaped reason=idle_ttl|lru_cap``) to the process
   log/trace plane. A reaped fleet is not a degradation — the next tool call
@@ -22,6 +33,7 @@ just-closed executor.
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any, Callable
 
 from clio_agent import conf
@@ -100,6 +112,11 @@ class WorkspaceExecutorReaper:
         # each one at the next safe boundary — NOT a second scheduler, the same
         # idle/lease-gated loop the reaper already runs. Guarded by ``self._lock``.
         self._pending_restarts: set[str] = set()
+        # #1230: monotonic timestamp of the last time a root was RESOLVED for an
+        # imminent call (``note_resolved``) — the resolve-to-busy gap guard.
+        # Bounded by the registry: a root is dropped here the instant it is
+        # reaped/evicted (below), so this can never grow past resident roots.
+        self._resolved_at: dict[str, float] = {}
         # The net-channel stop step (#1033): closes a workspace's per-child
         # chokepoint listeners when its fleet is torn down (reap OR restart), so
         # the previously-unwired ``close_child_channel`` seam stops leaking.
@@ -133,6 +150,7 @@ class WorkspaceExecutorReaper:
         """One reap pass; returns the roots reaped (test seam)."""
 
         to_close: list[tuple[str, Any, str]] = []
+        now = time.monotonic()
         try:
             with self._lock:
                 # #1033 deferred restarts FIRST: a root whose grant landed while
@@ -168,6 +186,7 @@ class WorkspaceExecutorReaper:
                         expired = (
                             not executor.busy
                             and self._leases.get(root, 0) == 0
+                            and not self._recently_resolved(root, now)
                             and executor.idle_for() >= self._ttl_s
                         )
                     except Exception as exc:  # noqa: BLE001 - typed skip, never abort
@@ -185,7 +204,11 @@ class WorkspaceExecutorReaper:
                     candidates: list[tuple[str, Any, float]] = []
                     for root, ex in self._registry.items():
                         try:
-                            if not ex.busy and self._leases.get(root, 0) == 0:
+                            if (
+                                not ex.busy
+                                and self._leases.get(root, 0) == 0
+                                and not self._recently_resolved(root, now)
+                            ):
                                 candidates.append((root, ex, ex.idle_for()))
                         except Exception as exc:  # noqa: BLE001 - typed skip, never abort
                             trace.event(
@@ -203,6 +226,9 @@ class WorkspaceExecutorReaper:
             # part-way — a popped-but-unclosed executor is an invisible fleet.
             reaped: list[str] = []
             for root, executor, reason in to_close:
+                # #1230: a torn-down root's resolve-activity marker goes with it —
+                # never left to protect a FUTURE (unrelated) resident at this root.
+                self._resolved_at.pop(root, None)
                 try:
                     executor.close()
                 except Exception as exc:  # noqa: BLE001 - close error is typed below
@@ -245,6 +271,25 @@ class WorkspaceExecutorReaper:
                 exc,
             )
             return 0
+
+    def note_resolved(self, root: str) -> None:
+        """Mark ``root`` as just resolved for an imminent call (#1230).
+
+        MUST be called while the caller already holds the shared registry lock
+        (``ClioAgent._active_tool_executor``'s ``with lock:`` block) — this does
+        NOT re-acquire it (``self._lock`` is that same lock; it is not
+        reentrant). Closes the resolve-to-busy gap: a resolve returns the
+        executor to the caller before the caller's tool dispatch marks it busy,
+        so a reap tick landing in that window would otherwise see an executor
+        already idle past TTL, unleased, and not-yet-busy, and reap it out from
+        under the call about to use it.
+        """
+        self._resolved_at[root] = time.monotonic()
+
+    def _recently_resolved(self, root: str, now: float) -> bool:
+        """True while ``root`` is still inside its post-resolve protection window."""
+        resolved_at = self._resolved_at.get(root)
+        return resolved_at is not None and (now - resolved_at) < self._ttl_s
 
     def request_restart(self, workspace_root: str) -> str:
         """Request a drain-aware restart of ``workspace_root``'s resident fleet (#1033).
