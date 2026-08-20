@@ -203,3 +203,97 @@ class TestNamespaceDiscoveryHealer:
         # The thread still exits promptly even though the caller did not wait.
         healer._thread.join(timeout=5.0)
         assert not healer._thread.is_alive()
+
+
+class TestEnsureNamespace:
+    """#1237: the call-time on-demand-mount rendezvous point."""
+
+    def teardown_method(self) -> None:
+        # Never let one test's in-flight registry entries leak into the next.
+        mcp_discovery._ensure_inflight.clear()
+
+    def test_success_returns_tools(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            mcp_discovery,
+            "_list_one_namespace",
+            lambda ns, s: {f"{ns}_tool": _FakeTool(f"{ns}_tool")},
+        )
+        result = mcp_discovery.ensure_namespace("geo", _spec("geo"))
+        assert "geo_tool" in result
+        assert mcp_discovery._ensure_inflight == {}
+
+    def test_concurrent_callers_share_one_mount_attempt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """SABOTAGE: two concurrent on-demand mounts for the SAME namespace must
+        share ONE attempt, never race a second cold spawn."""
+
+        call_count = 0
+        release = threading.Event()
+
+        def _slow_list(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:
+            nonlocal call_count
+            call_count += 1
+            release.wait(timeout=5.0)
+            return {f"{namespace}_tool": _FakeTool(f"{namespace}_tool")}
+
+        monkeypatch.setattr(mcp_discovery, "_list_one_namespace", _slow_list)
+
+        results: list[dict[str, Any]] = []
+
+        def _caller() -> None:
+            results.append(mcp_discovery.ensure_namespace("geo", _spec("geo")))
+
+        callers = [threading.Thread(target=_caller, daemon=True) for _ in range(5)]
+        for c in callers:
+            c.start()
+        deadline = time.time() + 2.0
+        while "geo" not in mcp_discovery._ensure_inflight and time.time() < deadline:
+            time.sleep(0.01)
+        assert "geo" in mcp_discovery._ensure_inflight, "no in-flight entry registered"
+        release.set()
+        for c in callers:
+            c.join(timeout=5.0)
+
+        assert call_count == 1, f"expected exactly ONE mount attempt, got {call_count}"
+        assert len(results) == 5
+        assert all("geo_tool" in r for r in results)
+
+    def test_failed_attempt_is_never_a_cached_terminal_state(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """SABOTAGE: a failed on-demand mount must NOT poison future calls -- the
+        next ensure_namespace call for the same namespace must re-attempt, never
+        raise a remembered/stale failure."""
+
+        attempts: list[int] = []
+
+        def _fails_once_then_succeeds(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise ConnectionRefusedError("first attempt: transient")
+            return {f"{namespace}_tool": _FakeTool(f"{namespace}_tool")}
+
+        monkeypatch.setattr(mcp_discovery, "_list_one_namespace", _fails_once_then_succeeds)
+
+        with pytest.raises(ConnectionRefusedError):
+            mcp_discovery.ensure_namespace("geo", _spec("geo"))
+        assert mcp_discovery._ensure_inflight == {}, "a failed attempt must not stay registered"
+
+        result = mcp_discovery.ensure_namespace("geo", _spec("geo"))
+        assert "geo_tool" in result
+        assert len(attempts) == 2, "the second call must re-attempt, not reuse a cached failure"
+
+    def test_ensure_namespace_async_shares_the_sync_registry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        monkeypatch.setattr(
+            mcp_discovery,
+            "_list_one_namespace",
+            lambda ns, s: {f"{ns}_tool": _FakeTool(f"{ns}_tool")},
+        )
+        result = asyncio.run(mcp_discovery.ensure_namespace_async("pandas", _spec("pandas")))
+        assert "pandas_tool" in result
+        assert mcp_discovery._ensure_inflight == {}
