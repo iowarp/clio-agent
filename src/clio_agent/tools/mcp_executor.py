@@ -21,6 +21,10 @@ from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
 
 from clio_agent.tools import spawn_diet
+from clio_agent.tools.launcher_cache_lock import (
+    aacquire_launcher_cache_lock,
+    uses_shared_launcher_cache,
+)
 from clio_agent.tools.mcp_connection_era import (
     MCPConnectionEra,
     classify_connection_era,
@@ -298,6 +302,23 @@ class AsyncMCPToolExecutor:
         """Declared server namespaces this executor routes to (#1201 gact readers)."""
         return tuple(self._namespace_servers)
 
+    def merge_namespace_tools(self, namespace: str, tools: Mapping[str, Any]) -> None:
+        """Merge a namespace's freshly-mounted tool definitions into the LIVE
+        tool table (#1237).
+
+        The #932 freeze (``_mcp_tools`` set once from ``preloaded_tools`` at
+        :meth:`start` and never re-listed) becomes append-only-mergeable: an
+        on-demand mount (``tools.mcp_discovery.ensure_namespace``, called
+        from ``gact/agents/builders.py``'s expert-tool resolve) reaches
+        ``get_tool_definitions()``/``to_dspy_tools()`` for THIS SAME executor
+        instance immediately, rather than only a future rebuild seeing it.
+        ``namespace`` is accepted for future per-namespace bookkeeping
+        (unused today -- the merge is a flat dict update).
+        """
+
+        del namespace
+        self._mcp_tools.update(tools)
+
     async def __aenter__(self) -> "AsyncMCPToolExecutor":
         """Start the executor in an async context manager."""
         return await self.start()
@@ -435,10 +456,28 @@ class AsyncMCPToolExecutor:
             return await asyncio.wait_for(client.read_resource(uri), timeout=self._timeout)
 
     async def _connect_namespace(self, namespace: str, proxy: Any) -> Any:
-        """Connect + cache a namespace-direct client, stamping its era (#1201)."""
+        """Connect + cache a namespace-direct client, stamping its era (#1201).
 
+        #1237: this is the ACTUAL dispatch-time cold spawn for a tool CALL
+        (as opposed to the discovery/listing pass, which does its own
+        separate throwaway connect -- ``tools/gateway.py::_list_declared_tools``
+        never reuses this long-lived proxy connection). A stdio spawn onto
+        the SHARED dedicated uv cache races the exact #1186/#1232-pt-3
+        contention the discovery path already guards against, so it gets the
+        SAME liveness-driven lock here -- gated by ``_clio_namespace_specs``
+        (stamped externally by ``ClioAgent`` at gateway-build time; absent
+        for the default/boot executor and for any namespace not backed by a
+        cold-cacheable stdio spec, both of which skip the lock entirely).
+        """
+
+        specs: Mapping[str, Any] = getattr(self, "_clio_namespace_specs", None) or {}
+        spec = specs.get(namespace)
         ctx = self._client_factory(proxy)
-        client = await ctx.__aenter__()
+        if spec is not None and uses_shared_launcher_cache(spec):
+            async with aacquire_launcher_cache_lock(namespace):
+                client = await ctx.__aenter__()
+        else:
+            client = await ctx.__aenter__()
         self._namespace_ctxs[namespace] = ctx
         self._namespace_clients[namespace] = client
         self._namespace_connection_eras[namespace] = classify_connection_era(

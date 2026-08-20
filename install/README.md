@@ -58,7 +58,7 @@ If you only need the long-running `clio-agent` backend, install it as a persiste
 tool rather than using the ephemeral `uvx` / `uv tool run` environment:
 
 ```sh
-uv tool install --with dspy==3.3.0b1 clio-agent==0.9.1
+uv tool install --with dspy==3.3.0b1 clio-agent==0.9.1.1
 clio-agent serve
 ```
 

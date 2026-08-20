@@ -9,6 +9,13 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    strategy:
+      # fail-fast off: a 3.13 discovery must not cancel the 3.12 leg the
+      # release gate reads (utah-cluster class: hosts we deploy to already
+      # run 3.13, so both interpreters are release-relevant).
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -16,7 +23,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
-      - run: uv sync --extra dev --extra optimizers
+      - run: uv sync --python ${{ matrix.python-version }} --extra dev --extra optimizers
       - run: uv run ruff check src/ tests/ scripts/create_demo_data.py scripts/validate_marketplace_blueprints.py scripts/mcp_mem_attribution.py
       # Anti-re-accretion guardrails (iowarp/clio-agent#714, #774). BLOCKING:
       # now that the #767 gact decomposition has landed, these enforce per-file

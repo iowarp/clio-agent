@@ -854,11 +854,17 @@ class _UnsupportedSessionAgent(RuntimeError):
         *,
         reason: str = "unknown_or_non_executable_agent",
         tools: list[str] | None = None,
+        mount_failures: dict[str, str] | None = None,
     ) -> None:
         super().__init__(agent_id)
         self.agent_id = agent_id
         self.reason = reason
         self.tools = tools or []
+        # #1237: namespace -> typed mount-failure reason for whichever of
+        # ``tools`` failed an on-demand mount THIS resolve (never a standing
+        # fact -- the next resolve re-attempts). Names the server + reason at
+        # the point the expert's tool unavailability is surfaced.
+        self.mount_failures = dict(mount_failures or {})
 
 
 class _NoResolvableAgent(RuntimeError):

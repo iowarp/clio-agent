@@ -85,7 +85,29 @@ RATCHET_BASELINE: dict[str, int] = {
     # marks the executor busy cannot pop it out from under an about-to-start
     # call. The reaper's TTL pin itself lives in the owner module
     # tools/reaper.py; only the guarded one-call notify lands here.
-    "src/clio_agent/agent.py": 989,
+    # +19 (#1236): federation-epoch eviction of resident workspace executors —
+    # an executor minted while the federation was ABSENT must not outlive a
+    # successful refresh (the run-15/17 custom_agent_tools_unavailable-with-
+    # federation=present brick). Same eviction shape as blueprint_switched;
+    # the epoch bump itself lives in gact/relay_wiring.py.
+    # +18 (#1237 hotfix): blueprint activation's synchronous
+    # discover_declared_tools_bounded() full-fleet pass at first resolve is
+    # DELETED (owner ruling 2026-08-20: activation mounts nothing eagerly) —
+    # replaced with a zero-I/O listing_cache read per declared namespace and
+    # a stamped declared-namespace -> spec map (_clio_namespace_specs) that
+    # the on-demand-mount seam (tools/mcp_discovery.ensure_namespace, called
+    # from builders.py / mcp_executor.py) consults to tell "declared but not
+    # yet listed" from "genuinely unknown". This call site is the sole owner
+    # of "which blueprint/gateway, when to rebuild" (ClioAgent's own
+    # workspace-executor registry); the on-demand mount machinery itself
+    # lives in the owner module tools/mcp_discovery.py.
+    # +5 (#1237 hotfix follow-on): stamp _clio_namespace_specs on the inner
+    # AsyncMCPToolExecutor too (not just the sync wrapper), so
+    # mcp_executor.py's _connect_namespace can gate its dispatch-time
+    # launcher-cache-lock acquisition on the declared spec. (+5 more: that
+    # stamp goes through getattr — the SyncToolExecutor protocol doesn't
+    # declare _async_executor and test doubles lack it; mypy CI catch.)
+    "src/clio_agent/agent.py": 1036,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -155,7 +177,17 @@ RATCHET_BASELINE: dict[str, int] = {
     # _emit_mcp_downgrade_events call-site wrapper + its two call sites land here.
     # +13 (b8eff254): the typed custom_agent_tools_unavailable diagnostics
     # block (fires only on the brick path; the L3 run-4..9 hunt).
-    "src/clio_agent/gact/agents/builders.py": 1952,
+    # +78 (#1237 hotfix): on-demand mounting at the expert-tool resolve seam
+    # (owner ruling 2026-08-20: a declared tool's server mounts ON DEMAND,
+    # not eagerly at activation) -- _resolve_declared_tools_with_on_demand_mount
+    # and _mount_failure_reason are the decision logic for WHICH namespaces
+    # need mounting and how their per-tool source/mount-failure reason is
+    # named for _dynamic_agent_tools' existing brick/degrade branches. The
+    # single-flight/liveness-driven mount PRIMITIVE itself lives in the owner
+    # module tools/mcp_discovery.py (ensure_namespace); only the expert-
+    # resolve-specific decision (which namespace, how to merge into THIS
+    # executor, how to name the failure) belongs here.
+    "src/clio_agent/gact/agents/builders.py": 2030,
     # #948 S4/S5/S6 growth already carried this file past the flat 800 cap (to 842)
     # before it was ever added to this baseline — a pre-existing gap this change
     # did not introduce (it was silently exempt from the ratchet, not under it).
@@ -428,7 +460,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # in the owner module tools/execution.py; only the per-turn resolve +
     # bind call site lands here (mirrors the existing tool_workspace_context
     # wiring immediately above it).
-    "src/clio_agent/gact/runtime/globals.py": 978,
+    # +6 (#1237 hotfix): _UnsupportedSessionAgent carries an optional
+    # mount_failures map (namespace -> typed reason) so the exception itself
+    # can name a declared tool's server + reason -- turn.py's except handler
+    # is the only reader; the mount decision lives in gact/agents/builders.py.
+    "src/clio_agent/gact/runtime/globals.py": 984,
     "src/clio_agent/gact/streaming.py": 995,
     # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
     # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
@@ -515,7 +551,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # over-100-char lines this change never touched, e.g. the two
     # _context_file_turn_provenance calls) -- no additional logic, only
     # canonical line-wrapping.
-    "src/clio_agent/gact/turn.py": 855,
+    # +13 (#1237 hotfix): the _UnsupportedSessionAgent except handler names
+    # the server + typed reason in the user-facing message/details when the
+    # unavailability came from a failed on-demand mount attempt; the
+    # mount_failures map itself is built in gact/agents/builders.py.
+    "src/clio_agent/gact/turn.py": 868,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the
@@ -650,7 +690,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # (the tracker + the no-op-unless-unbounded context manager) lives entirely
     # in the new owner module runtime/commitment_activity.py; only the import +
     # the one `with` line land here.
-    "src/clio_agent/tools/execution.py": 1219,
+    # +11 (#1237 hotfix): SyncMCPToolExecutor.merge_namespace_tools -- the
+    # thin sync delegate to AsyncMCPToolExecutor.merge_namespace_tools
+    # (mcp_executor.py), the actual live-tool-table merge target for an
+    # on-demand mount (gact/agents/builders.py).
+    "src/clio_agent/tools/execution.py": 1230,
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.
@@ -664,7 +708,20 @@ RATCHET_BASELINE: dict[str, int] = {
     # above the flat operator-tuned global) — the derivation itself lives in
     # the new owner module tools/mcp_timeout_budget.py; only the import + the
     # property-extraction/compare lines land here.
-    "src/clio_agent/tools/mcp_executor.py": 808,
+    # +17 (#1237 hotfix): merge_namespace_tools -- the #932 _mcp_tools freeze
+    # becomes append-only-mergeable so an on-demand mount (#1237, triggered
+    # from gact/agents/builders.py) reaches to_dspy_tools() for THIS SAME
+    # live executor instance instead of only a future rebuild.
+    # +22 (#1237 hotfix follow-on): _connect_namespace -- the ACTUAL
+    # dispatch-time cold spawn for a real tool call (a separate connection
+    # from the discovery pass's own throwaway one) now goes through the SAME
+    # liveness-driven launcher-cache lock discovery already used, gated by
+    # the declared-spec map stamped by ClioAgent. Root-caused a real
+    # thread/release mismatch bug in the async lock along the way (fixed in
+    # the owner module tools/launcher_cache_lock.py: FileLock's default
+    # thread_local=True silently orphans the OS lock when acquire/release
+    # run on different threads, as they do here via asyncio.to_thread).
+    "src/clio_agent/tools/mcp_executor.py": 847,
     "src/clio_agent/tools/mcp_config.py": 821,
     # #1231 Part 1/2 (consumer half of the live-console feature): not previously
     # baselined -- this file was ALREADY 7 lines over the 800 cap before this

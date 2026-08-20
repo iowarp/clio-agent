@@ -529,6 +529,22 @@ class ClioAgent(dspy.Module):
             blueprint_switched = (
                 executor is not None and not stale and mounted_blueprint_id != blueprint_id
             )
+            # #1236: a resident executor minted while the relay federation was
+            # ABSENT (or under an older catalog) must not outlive a successful
+            # refresh — the run-15/17 brick: the per-turn refresh rebuilt the
+            # DEFAULT executor while the workspace's resident one kept serving
+            # a toolless (or partial) snapshot, so the ACL bricked with
+            # federation=present. Same eviction shape as blueprint_switched.
+            current_epoch = getattr(self, "_relay_federation_epoch", 0)
+            executor_epoch = (
+                getattr(executor, "_clio_federation_epoch", current_epoch)
+                if executor is not None
+                else current_epoch
+            )
+            federation_switched = (
+                executor is not None and not stale and executor_epoch != current_epoch
+            )
+            blueprint_switched = blueprint_switched or federation_switched
             if executor is None or stale or blueprint_switched:
                 if blueprint_switched:
                     # #1232 pt 1: the workspace's active blueprint changed (or
@@ -562,32 +578,45 @@ class ClioAgent(dspy.Module):
                 # until a tool call).
                 gateway = self._build_tool_gateway(cwd=root, blueprint_id=blueprint_id)
                 preloaded = self._tool_definitions
+                declared_specs: dict[str, Any] = {}
                 if blueprint_id:
-                    # #1232 pt 1: preloaded_tools is a SCHEMA cache keyed by
-                    # tool name (AsyncMCPToolExecutor.start freezes it as
-                    # ``_mcp_tools`` and NEVER re-lists — #932) — the agent-level
-                    # ``self._tool_definitions`` only ever learns built-ins/
-                    # user/workspace schemas now (blueprint servers no longer
-                    # mount at boot), so an activated blueprint's OWN declared
-                    # tools would be silently absent from to_dspy_tools() without
-                    # this. Bounded + concurrent (#1232 pt 2 machinery reused) and
-                    # scoped to just THIS gateway's mounts (built-ins excluded —
-                    # already known), so it is cheap and never blocks boot: it
-                    # runs lazily, once, on this workspace+blueprint's first use.
-                    blueprint_pass = discover_declared_tools_bounded(namespace_specs(gateway))
-                    preloaded = {**(preloaded or {}), **blueprint_pass.tools}
-                    for namespace, reason in blueprint_pass.degraded.items():
-                        from clio_agent.runtime import trace  # noqa: PLC0415
+                    # #1237 owner ruling (2026-08-20): blueprint activation
+                    # mounts NOTHING eagerly. The OLD synchronous
+                    # discover_declared_tools_bounded() full-fleet pass here
+                    # blocked this workspace's FIRST resolve on EVERY declared
+                    # server cold-spawning — that only moved "load everything
+                    # at install" to "load everything at first use", not fix
+                    # it. Only a zero-I/O CACHE READ happens now: a namespace
+                    # listed recently (listing_cache, 24h TTL) is visible
+                    # immediately; a genuinely cold one is simply absent from
+                    # ``preloaded`` until a real need arrives, at which point
+                    # both builders.py's _dynamic_agent_tools (expert-tool
+                    # resolve) and mcp_executor.py's _route (dispatch-time
+                    # race) call tools.mcp_discovery.ensure_namespace — a
+                    # single-flight, liveness-driven on-demand mount that
+                    # merges its result into THIS SAME executor's live tool
+                    # table (AsyncMCPToolExecutor.merge_namespace_tools)
+                    # rather than ever rebuilding/evicting the fleet for it.
+                    declared_specs = dict(namespace_specs(gateway))
+                    from clio_agent.tools import listing_cache  # noqa: PLC0415
 
-                        trace.event(
-                            "TOOLS",
-                            "mcp_namespace_discovery_degraded namespace=%s reason=%s "
-                            "root=%s blueprint_id=%s",
-                            namespace,
-                            reason,
-                            root,
-                            blueprint_id,
+                    cached_tools: dict[str, Any] = {}
+                    for namespace, spec in declared_specs.items():
+                        if spec.transport != "stdio" or not spec.command:
+                            continue
+                        listed = listing_cache.load_listing(
+                            namespace, spec.command, tuple(spec.args), spec.env
                         )
+                        if listed:
+                            cached_tools.update(
+                                {
+                                    f"{namespace}_{tool.name}": tool.model_copy(
+                                        update={"name": f"{namespace}_{tool.name}"}
+                                    )
+                                    for tool in listed
+                                }
+                            )
+                    preloaded = {**(preloaded or {}), **cached_tools}
                 executor = create_sync_tool_executor(
                     gateway,
                     preloaded_tools=preloaded,
@@ -603,6 +632,24 @@ class ClioAgent(dspy.Module):
                 # back "" via getattr's default either way).
                 with suppress(AttributeError, TypeError):
                     setattr(executor, "_clio_mounted_blueprint_id", blueprint_id)  # noqa: B010
+                    # #1236: stamp the federation epoch this executor was built
+                    # under, so a later successful refresh evicts it (above).
+                    setattr(executor, "_clio_federation_epoch", current_epoch)  # noqa: B010
+                    # #1237: the DECLARED namespace -> spec map for this
+                    # blueprint (empty with none active), so an on-demand
+                    # mount (builders.py / mcp_executor.py._route) can tell
+                    # "declared but not yet listed" from "genuinely unknown".
+                    # Stamped on BOTH the sync wrapper (builders.py reads it
+                    # there) and its inner async executor (mcp_executor.py's
+                    # _connect_namespace reads it there, for the dispatch-
+                    # time launcher-cache-lock gate).
+                    setattr(executor, "_clio_namespace_specs", declared_specs)  # noqa: B010
+                    # getattr: the SyncToolExecutor protocol doesn't declare the
+                    # concrete wrapper's _async_executor slot (and test doubles
+                    # genuinely lack it).
+                    inner_executor = getattr(executor, "_async_executor", None)
+                    if inner_executor is not None:
+                        setattr(inner_executor, "_clio_namespace_specs", declared_specs)  # noqa: B010
                 executors[root] = executor
             # #1230: resolving-for-use counts as activity so a reap tick landing
             # in the gap before the caller's dispatch marks this executor busy
@@ -965,18 +1012,18 @@ class ClioAgent(dspy.Module):
         return self.arc.get_conversation_history(session_id, limit=limit)
 
     def shutdown(self) -> None:
-        """Close the persistent MCP tool executors so their stdio children are reaped (#900)."""
+        """Close persistent MCP tool executors, stop the namespace-discovery
+        healer, and force-close in-flight listing attempts (#900, #1240)."""
         from clio_agent.runtime.process_tree import close_tool_executors
+        from clio_agent.tools import listing_attempts
 
         reaper = getattr(self, "_workspace_reaper", None)
         if reaper is not None:
             reaper.stop()
-        # #1232 pt 2: stop the background namespace-discovery healer thread
-        # symmetrically with the workspace-fleet reaper above.
         healer = getattr(self, "_mcp_namespace_healer", None)
         if healer is not None:
             healer.stop()
-
+        listing_attempts.force_close_all()
         if self.verbose:
             print("[ClioAgent] Shutting down...")
         # Snapshot + clear under the shared registry lock: a reaper thread that

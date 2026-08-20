@@ -79,11 +79,27 @@ MCP_NAMESPACE_DISCOVERY_UNREACHABLE = "mcp_namespace_discovery_unreachable"
 #: #1232 pt 2: a previously-degraded namespace (either reason above) answered
 #: on a background re-probe; its tools are now merged into the live catalog.
 MCP_NAMESPACE_DISCOVERY_HEALED = "mcp_namespace_discovery_healed"
-#: #1232 pt 3: a stdio MCP launcher (uv/uvx) could not acquire the dedicated
-#: launcher cache lock within the bounded wait -- fails FAST and typed instead
-#: of hanging the connect forever (the #1186 cache-lock-contention family).
-#: Feeds the same background re-probe as a discovery degrade.
+#: #1232 pt 3 / #1237 hotfix: a stdio MCP launcher (uv/uvx) waited for the
+#: dedicated launcher cache lock past its GENEROUS runaway backstop (default
+#: 10 minutes). #1237 owner ruling: this is never the normal path -- a lock
+#: held by a live process is waited out no matter how long the holder's
+#: legitimate work (a cold uv env build on a slow/NFS filesystem) takes; only
+#: a livelocked or unidentifiable holder ever reaches this bound. Feeds the
+#: same background re-probe as a discovery degrade.
 LAUNCHER_CACHE_LOCK_TIMEOUT = "launcher_cache_lock_timeout"
+#: #1237 hotfix: a launcher-cache lock's recorded holder PID was confirmed
+#: dead (the process that took the lock is gone), so the lock was an
+#: abandoned/stale artifact rather than real contention. It was broken
+#: (removed) so acquisition could proceed immediately -- never silently, and
+#: never left to block a live waiter for its full runaway backstop.
+LAUNCHER_CACHE_LOCK_STALE_BROKEN = "launcher_cache_lock_stale_broken"
+#: #1237 hotfix: a declared MCP namespace's server never mounted for a
+#: workspace's resident tool fleet (any degrade reason above). Recorded on
+#: the executor so a declared tool that resolves to this namespace can name
+#: the SERVER and the typed reason in its unavailability error, instead of
+#: silently vanishing from the model's tool list with no explanation
+#: (gact/agents/toolset_inventory.py::record_tool_unavailable).
+MCP_NAMESPACE_MOUNT_FAILED = "mcp_namespace_mount_failed"
 #: #1232 pt 4: the boot process-census killed a PROVABLY-orphaned clio-launched
 #: child process (dead parent PID + clio launcher identity) instead of only
 #: reporting it. The shared clio-core CTE daemon is excluded by construction

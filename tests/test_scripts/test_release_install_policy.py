@@ -12,7 +12,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.1"
+EXPECTED_VERSION = "0.9.1.1"
 EXPECTED_DSPY = "dspy==3.3.0b1"
 EXPECTED_LITELLM = "litellm==1.91.3"
 

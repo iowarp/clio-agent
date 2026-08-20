@@ -177,6 +177,14 @@ def _refresh_agent_relay_tool_surfaces(agent: Any, surfaces: Any) -> None:
     agent._tool_definitions.update(  # noqa: SLF001
         list_relay_tool_definitions(surfaces.remote_mcp_federation)
     )
+    # #1236: bump the federation epoch so RESIDENT per-workspace executors
+    # (minted under the previous — possibly ABSENT — federation) evict on
+    # their next resolve instead of serving a stale tool snapshot forever
+    # (the run-15 "Unknown tool" / run-17 federation=present-but-builtins
+    # brick: only the default executor was rebuilt here).
+    agent._relay_federation_epoch = (  # noqa: SLF001
+        getattr(agent, "_relay_federation_epoch", 0) + 1
+    )
     gateway = agent._build_tool_gateway(set_catalog=True)  # noqa: SLF001
     executor = create_sync_tool_executor(
         gateway,

@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from clio_agent.tools.mcp_runtime import MCPClientCapabilities, MCPClientHandlers
     from clio_agent.tools.remote_mcp import RemoteMcpFederation
 
+from clio_agent.tools import listing_attempts
 from clio_agent.tools.catalog import (
     TOOL_CATALOG,
     ToolCatalogEntry,
@@ -634,30 +635,29 @@ def _list_tools_sync(gw: FastMCP) -> list[Any]:
     return _run_coro_sync(_list)
 
 
-def _list_declared_tools(spec: MCPServerSpec) -> list[Any]:
+def _list_declared_tools(
+    spec: MCPServerSpec, *, timeout_s: float | None = None, attempt_key: object | None = None
+) -> list[Any]:
     """List one declared server's BARE tools via a LISTING-OWNED transport.
 
-    Exclusive ownership (finding 1): the listing builds its OWN transport from the
-    spec and tears it down in a ``finally`` on the same short-lived loop, so it
-    never connects the shared proxy transport the long-lived executor reuses.
-    Two properties follow directly:
+    Exclusive ownership (finding 1): builds its OWN transport from the spec and
+    tears it down in a ``finally`` on the same short-lived loop -- a catalog
+    refresh can never disconnect an in-flight executor call (disjoint transports/
+    subprocesses), and fastmcp-4's loop-pinned kept-alive session never outlives
+    this loop's close.
 
-    * A catalog refresh can never disconnect an in-flight executor call — the two
-      run on disjoint transport instances and disjoint subprocesses.
-    * No cross-loop poisoning: fastmcp-4 pins a kept-alive ``ClientSession`` to
-      the loop that opened it, but a listing-owned transport is fully torn down
-      before its loop closes, so nothing loop-bound survives.
+    ``timeout_s``/``attempt_key`` (#1240, see ``tools.listing_attempts``) bound
+    every RPC and let an abandoning caller force-close this attempt, respectively.
     """
 
     async def _list() -> list[Any]:
-        client = Client(transport_for(spec))
+        client = Client(transport_for(spec), timeout=timeout_s, init_timeout=timeout_s)
+        listing_attempts.register(attempt_key, asyncio.get_running_loop(), client)
         try:
             async with client:
                 return await client.list_tools()
         finally:
-            # Listing-owned: force the transport down on THIS loop instead of
-            # leaning on stdio ``keep_alive`` (fastmcp-4 default), which would
-            # otherwise strand a loop-bound session and leave the subprocess up.
+            listing_attempts.unregister(attempt_key)
             disconnect = getattr(client.transport, "disconnect", None)
             if disconnect is not None:
                 with suppress(Exception):

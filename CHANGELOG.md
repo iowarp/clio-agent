@@ -6,6 +6,14 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.1.1] - 2026-08-20
+
+Emergency hotfix for a real-user capability loss on 0.9.1.
+
+### Fixed
+
+- **Blueprint MCP servers could be permanently lost to one transient failure at activation.** The async blueprint mounting introduced in 0.9.1 cached a PARTIAL server fleet as final: a declared server that lost the launcher-cache lock race or exceeded the setup window on a slow filesystem (reported on an NFS-backed home with concurrent cold spawns - geo and pandas never mounted while plot and ndp did) stayed missing for the workspace's entire lifetime, and the resulting expert failures never named the unmounted server. Now: lock and setup waits are liveness-driven (they wait while the holder/process is genuinely alive, with only generous typed runaway backstops - no per-box timeout tuning required); a workspace whose mounted set does not match the blueprint's declared set is never a cached end-state (missing servers are re-attempted and the fleet converges); and a declared tool that is unavailable because its server failed to mount fails WITH the server name and the typed mount-failure reason.
+
 ## [0.9.1] — 2026-08-19
 
 > **Note:** `0.10.0a1` was tagged from this same content on 2026-08-19 and
