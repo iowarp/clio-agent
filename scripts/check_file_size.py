@@ -85,6 +85,15 @@ RATCHET_BASELINE: dict[str, int] = {
     # marks the executor busy cannot pop it out from under an about-to-start
     # call. The reaper's TTL pin itself lives in the owner module
     # tools/reaper.py; only the guarded one-call notify lands here.
+    # #1237 hotfix (0.9.1.1 cherry-pick): blueprint activation's synchronous
+    # discover_declared_tools_bounded() full-fleet pass at first resolve is
+    # DELETED (owner ruling 2026-08-20: activation mounts nothing eagerly) —
+    # replaced with a zero-I/O listing_cache read per declared namespace and
+    # a stamped declared-namespace -> spec map (_clio_namespace_specs) that
+    # the on-demand-mount seam (tools/mcp_discovery.ensure_namespace, called
+    # from builders.py / mcp_executor.py) consults to tell "declared but not
+    # yet listed" from "genuinely unknown". Net NEGATIVE on this branch (the
+    # deleted pass outweighs the additions); ceiling kept at the v0.9.1 value.
     "src/clio_agent/agent.py": 989,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1116,
