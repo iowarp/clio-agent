@@ -65,10 +65,12 @@ __all__ = [
     "resolve_task_session_id",
     "set_task_canceller",
     "set_task_change_listener",
+    "set_task_console_listener",
     "set_task_record_store",
     "set_task_session_resolver",
     "task_canceller",
     "task_change_listener",
+    "task_console_listener",
     "task_record_store",
     "task_record_store_is_durable",
 ]
@@ -160,6 +162,22 @@ class TaskRecord:
     tool: str = ""
     backend: dict[str, Any] = field(default_factory=dict)
     status: str = "working"
+    # #1236 (clio-relay#265's client half, owner ruling 2026-08-20): ``status`` above
+    # is the RAW SEP-2663 wire status verbatim -- kept for back-compat, never
+    # destroyed. SEP-2663 semantics count DELIVERING a result as "completed" even
+    # when the delivered ``CallToolResult`` itself carries ``isError: true`` (the
+    # application failed; the dispatch merely succeeded in reporting that). A run
+    # card reading raw ``status`` alone launders a real failure into a bare
+    # "completed" -- the owner's "completed is a terrible status indicator" ruling.
+    # ``effective_status`` is the PROTOCOL-TRUTH-DERIVED status a display should
+    # treat as primary (see :func:`clio_agent.tools.mcp_tasks.derive_effective_status`):
+    # identical to ``status`` for every state except a completed-with-isError
+    # delivery, which downgrades to ``"failed"`` with ``effective_status_reason``
+    # carrying the extracted error text. Empty string means "not yet derived"
+    # (a record from before this field existed, or one no poll has touched yet) --
+    # every reader falls back to ``status`` in that case, never crashes on it.
+    effective_status: str = ""
+    effective_status_reason: str | None = None
     created_at: str = ""
     # Stamped by :class:`~clio_agent.gact.mcp_task_store.SessionMetadataTaskStore`
     # on every ``put`` (the single write path), mirroring ``AgentTask.updated_at`` —
@@ -184,6 +202,19 @@ class TaskRecord:
 
         return self.key.session_id
 
+    @property
+    def display_status(self) -> str:
+        """The honest, protocol-truth-derived status a display should read (#1236).
+
+        ``status`` stays the raw SEP-2663 wire value (never destroyed); this is
+        ``effective_status`` when one has been derived, falling back to ``status``
+        for a record no poll has touched yet (or one persisted before this field
+        existed). Every consumer that decides what a run card / SSE event TYPE
+        shows should read this, not ``status`` directly.
+        """
+
+        return self.effective_status or self.status
+
     def to_wire(self) -> dict[str, Any]:
         """JSON-serialisable projection (the shape persisted in session metadata)."""
 
@@ -192,6 +223,8 @@ class TaskRecord:
             "tool": self.tool,
             "backend": dict(self.backend),
             "status": self.status,
+            "effective_status": self.effective_status,
+            "effective_status_reason": self.effective_status_reason,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "input_answers": [answer.to_wire() for answer in self.input_answers],
@@ -213,6 +246,8 @@ class TaskRecord:
             tool=str(payload.get("tool") or ""),
             backend=dict(payload.get("backend") or {}),
             status=str(payload.get("status") or "working"),
+            effective_status=str(payload.get("effective_status") or ""),
+            effective_status_reason=payload.get("effective_status_reason") or None,
             created_at=str(payload.get("created_at") or ""),
             updated_at=str(payload.get("updated_at") or ""),
             input_answers=tuple(
@@ -644,3 +679,40 @@ def task_change_listener() -> Any:
 
     with _HOOK_LOCK:
         return _TASK_CHANGE_LISTENER
+
+
+_TASK_CONSOLE_LISTENER: Any = None
+
+
+def set_task_console_listener(listener: Any) -> None:
+    """Install the ``(TaskKey, channel, delta, offset, truncated) -> None`` hook
+    fired when a backend's ``on_poll`` observer folds NEW console bytes into a
+    record (#1236, gact SSE wiring).
+
+    Deliberately SEPARATE from :func:`set_task_change_listener`: that hook only
+    ever receives the resulting :class:`TaskRecord`, with no way to tell "the
+    whole rolling tail grew a bit" apart from any other mutation (a status
+    transition, a lease change) — publishing the FULL accumulated tail on every
+    one of those would bloat the live stream and risk crowding other events out
+    of the bounded per-session history/queue. This hook instead carries just the
+    NEW bytes (a delta), so the live-view layer (``gact/mcp_task_events.py``) can
+    publish a lean, dedicated event; the record itself remains the source of
+    truth for the full tail (unbounded reads always see it via a reload).
+
+    ``channel`` names which stream the delta came from (``"console"`` today;
+    a future ``"stderr"`` once clio-relay tails it too — never hardcoded to one
+    value here). Absent (the default) is a quiet no-op: there is no live SSE
+    surface to have silently failed when no durable gact session registry is
+    booted (e.g. a bare unit test), mirroring :func:`set_task_change_listener`.
+    """
+
+    global _TASK_CONSOLE_LISTENER
+    with _HOOK_LOCK:
+        _TASK_CONSOLE_LISTENER = listener
+
+
+def task_console_listener() -> Any:
+    """The installed console-delta listener, or ``None``."""
+
+    with _HOOK_LOCK:
+        return _TASK_CONSOLE_LISTENER
