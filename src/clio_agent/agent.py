@@ -1012,18 +1012,18 @@ class ClioAgent(dspy.Module):
         return self.arc.get_conversation_history(session_id, limit=limit)
 
     def shutdown(self) -> None:
-        """Close the persistent MCP tool executors so their stdio children are reaped (#900)."""
+        """Close persistent MCP tool executors, stop the namespace-discovery
+        healer, and force-close in-flight listing attempts (#900, #1240)."""
         from clio_agent.runtime.process_tree import close_tool_executors
+        from clio_agent.tools import listing_attempts
 
         reaper = getattr(self, "_workspace_reaper", None)
         if reaper is not None:
             reaper.stop()
-        # #1232 pt 2: stop the background namespace-discovery healer thread
-        # symmetrically with the workspace-fleet reaper above.
         healer = getattr(self, "_mcp_namespace_healer", None)
         if healer is not None:
             healer.stop()
-
+        listing_attempts.force_close_all()
         if self.verbose:
             print("[ClioAgent] Shutting down...")
         # Snapshot + clear under the shared registry lock: a reaper thread that

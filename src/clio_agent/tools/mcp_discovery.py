@@ -124,7 +124,9 @@ def _namespace_attempt_timeout_s(namespace: str) -> float:
     )
 
 
-def _list_one_namespace(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:
+def _list_one_namespace(
+    namespace: str, spec: MCPServerSpec, attempt_key: object | None = None
+) -> dict[str, Any]:
     """List one declared namespace's tools (cache-first), prefixed like the catalog wants.
 
     Runs on its OWN thread-pool worker thread (see
@@ -140,6 +142,19 @@ def _list_one_namespace(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:
     step against sibling COLD spawns from this same concurrent pass, never
     the whole connect — and raises typed on a wedged lock instead of
     stalling this namespace (and, pre-#1232-pt-2, every namespace after it).
+
+    #1240 (the child-process-leak fix): ``_namespace_attempt_timeout_s`` —
+    already the generous runaway backstop for how long a CALLER waits on this
+    attempt — is now ALSO forwarded as the connect/list bound itself
+    (``_list_declared_tools``'s ``timeout_s``). Before this, the attempt's
+    OWN connect+list call had no bound at all (the SDK's per-request timeout
+    defaults to ``None`` end to end, and ``mcp_probe_hardening`` only bounds
+    the era-negotiation probe, not ``list_tools``/legacy ``initialize``), so
+    an abandoned caller left this call running — and its spawned stdio child
+    alive — indefinitely. ``attempt_key``, when given, additionally lets an
+    abandoning caller force-close this specific attempt's transport via
+    ``listing_attempts.force_close_listing_attempt`` instead of just waiting
+    out the (now merely a backstop) timeout.
     """
 
     from clio_agent.tools import listing_cache  # noqa: PLC0415
@@ -155,12 +170,15 @@ def _list_one_namespace(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:
     if cacheable:
         listed = listing_cache.load_listing(namespace, spec.command, tuple(spec.args), spec.env)
     if listed is None:
+        timeout_s = _namespace_attempt_timeout_s(namespace)
         with probe_server_context(namespace):
             if uses_shared_launcher_cache(spec):
                 with acquire_launcher_cache_lock(namespace):
-                    listed = _list_declared_tools(spec)
+                    listed = _list_declared_tools(
+                        spec, timeout_s=timeout_s, attempt_key=attempt_key
+                    )
             else:
-                listed = _list_declared_tools(spec)
+                listed = _list_declared_tools(spec, timeout_s=timeout_s, attempt_key=attempt_key)
         if cacheable:
             listing_cache.store_listing(namespace, spec.command, tuple(spec.args), listed, spec.env)
     return {
@@ -186,11 +204,20 @@ def discover_declared_tools_bounded(
     Never raises and never blocks past the SLOWEST namespace's own deadline —
     a dead namespace's cost never compounds onto a sibling's (#1232 pt 2). A
     namespace whose future is still running when its deadline passes is
-    dropped from the wait (typed-degraded) but its underlying thread is not
-    forcibly killed (Python threads are not cancellable); it either finishes
-    naturally in the background and its result is discarded, or the process
-    that owns ``specs`` picks it up again via :class:`NamespaceDiscoveryHealer`.
+    dropped from the wait (typed-degraded) and its underlying attempt is
+    force-closed (#1240): its OWN connect+list call is itself bounded now
+    (``_list_one_namespace`` forwards the same deadline to ``_list_declared_tools``
+    as a real per-request timeout), so this is belt-and-suspenders — closing
+    the transport the MOMENT the pass gives up, rather than waiting out
+    whatever is left of that inner bound, and freeing the spawned child (and
+    the launcher-cache lock, if held) immediately. The worker THREAD itself
+    still is not forcibly killed (Python threads are not cancellable); once
+    its now-bounded call raises, it exits on its own and its result is
+    discarded, or the process that owns ``specs`` picks the namespace up again
+    via :class:`NamespaceDiscoveryHealer`.
     """
+
+    from clio_agent.tools.listing_attempts import force_close_listing_attempt  # noqa: PLC0415
 
     result = DiscoveryPass()
     if not specs:
@@ -202,8 +229,13 @@ def discover_declared_tools_bounded(
     )
     try:
         now = time.monotonic()
+        # attempt_key is a fresh sentinel per namespace, NEVER the namespace
+        # name itself: a healer re-probe of the SAME namespace can be in
+        # flight concurrently with the stale initial-pass attempt it is
+        # replacing, and each must be individually force-closeable.
+        attempt_keys: dict[str, object] = {namespace: object() for namespace in specs}
         pending: dict[concurrent.futures.Future, str] = {
-            pool.submit(_list_one_namespace, namespace, spec): namespace
+            pool.submit(_list_one_namespace, namespace, spec, attempt_keys[namespace]): namespace
             for namespace, spec in specs.items()
         }
         deadlines = {
@@ -241,10 +273,13 @@ def discover_declared_tools_bounded(
                         MCP_NAMESPACE_DISCOVERY_TIMEOUT,
                         _namespace_attempt_timeout_s(namespace),
                     )
+                    force_close_listing_attempt(attempt_keys[namespace])
         return result
     finally:
         # wait=False: an abandoned (timed-out) namespace's thread is left to
-        # finish/die on its own rather than blocking pass teardown on it.
+        # finish/die on its own (now bounded either by the force-close above
+        # or, failing that, by its own connect/list timeout) rather than
+        # blocking pass teardown on it.
         pool.shutdown(wait=False)
 
 
@@ -357,7 +392,10 @@ class NamespaceDiscoveryHealer:
                     self._degraded.pop(namespace, None)
                 continue
             try:
-                tools = _list_one_namespace(namespace, spec)
+                # #1240: registered under a fresh per-tick key so a shutdown
+                # mid-reprobe can force-close it (listing_attempts.force_close_all)
+                # instead of leaving it to its own bound.
+                tools = _list_one_namespace(namespace, spec, object())
             except Exception as exc:  # noqa: BLE001 - stays degraded, retried next tick
                 reason = _classify_degrade_reason(exc)
                 with self._lock:
