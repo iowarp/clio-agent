@@ -70,6 +70,76 @@ async def test_refresh_is_a_noop_within_the_ttl(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.asyncio
+async def test_degraded_catalog_retries_on_the_short_failure_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FAILING-FIRST for the run-15 brick: a stored catalog with NO federation
+    (the door was down at first discovery) must NOT ride the 300s success TTL
+    -- pre-fix, every turn for the whole window returned the dead catalog and
+    bricked custom_agent_tools_unavailable even after the door came back."""
+
+    app = _FakeApp()
+    app.state.relay_tool_surfaces = RelayToolSurfaces(
+        remote_mcp_federation=None,
+        jarvis_jobs=None,
+        status={"configured": True, "reason": "relay_catalog_discovery_failed"},
+    )
+    app.state.relay_tool_surfaces_discovered_at = 1000.0
+    agent = _SpyAgent()
+    app.state.agent = agent
+
+    # 25s later: inside the 300s success TTL, past the 20s failure TTL.
+    monkeypatch.setattr(relay_wiring.time, "monotonic", lambda: 1025.0)
+    monkeypatch.setattr(relay_wiring, "_relay_tool_surfaces_ttl_seconds", lambda: 300.0)
+    monkeypatch.setattr(
+        relay_wiring,
+        "_refresh_agent_relay_tool_surfaces",
+        lambda a, s: a.refresh_calls.append(s),
+    )
+    healed = _surfaces("healed")
+
+    async def _discover() -> Any:
+        return healed
+
+    monkeypatch.setattr("clio_agent.tools.relay_transport.discover_relay_tool_surfaces", _discover)
+
+    result = await relay_wiring.refresh_relay_tool_surfaces_if_stale(app)
+
+    assert result is healed, "a degraded catalog must re-discover on the short clock"
+    assert agent.refresh_calls == [healed]
+
+
+@pytest.mark.asyncio
+async def test_degraded_catalog_still_waits_out_the_short_failure_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failure TTL is short, not zero: within it, no per-turn hammering of
+    a down door -- the dead catalog is returned without a probe."""
+
+    app = _FakeApp()
+    app.state.relay_tool_surfaces = RelayToolSurfaces(
+        remote_mcp_federation=None,
+        jarvis_jobs=None,
+        status={"configured": True, "reason": "relay_catalog_discovery_failed"},
+    )
+    app.state.relay_tool_surfaces_discovered_at = 1000.0
+
+    monkeypatch.setattr(relay_wiring.time, "monotonic", lambda: 1010.0)  # inside 20s
+    monkeypatch.setattr(relay_wiring, "_relay_tool_surfaces_ttl_seconds", lambda: 300.0)
+
+    async def _fail_discover() -> Any:
+        raise AssertionError("must not probe within the failure TTL")
+
+    monkeypatch.setattr(
+        "clio_agent.tools.relay_transport.discover_relay_tool_surfaces", _fail_discover
+    )
+
+    result = await relay_wiring.refresh_relay_tool_surfaces_if_stale(app)
+
+    assert result is app.state.relay_tool_surfaces
+
+
+@pytest.mark.asyncio
 async def test_refresh_re_discovers_after_ttl_and_pushes_onto_the_live_agent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 #: reason (the truth was catalog staleness, not tool unavailability).
 RELAY_TOOL_SURFACES_DEFAULT_TTL_SECONDS = 300
 
+#: Retry clock for a DEGRADED stored catalog (no federation — the door was
+#: down or answered without its remote catalog). Deliberately short: the next
+#: turn after the door recovers should heal, and a down door costs at most one
+#: bounded probe per window — never a per-turn hammer, never a 300s brick.
+_RELAY_DISCOVERY_FAILURE_TTL_SECONDS = 20.0
+
 
 def _relay_tool_surfaces_ttl_seconds() -> float:
     """Resolve the catalog re-discovery TTL, config -> env -> default."""
@@ -109,6 +115,14 @@ async def refresh_relay_tool_surfaces_if_stale(app: FastAPI) -> Any:
 
     discovered_at = getattr(app.state, "relay_tool_surfaces_discovered_at", None)
     ttl = _relay_tool_surfaces_ttl_seconds()
+    # Cache doctrine (L3 run-15 brick): a FAILED discovery must never ride the
+    # success TTL. A stored catalog with no federation (the door was down or
+    # answered degraded) is retryable on a SHORT clock, so the first turn
+    # after the door comes up heals instead of bricking every turn for the
+    # whole TTL window. A WORKING catalog keeps the long TTL — one transient
+    # probe failure never tears it down (the except branch below).
+    if getattr(existing, "remote_mcp_federation", None) is None:
+        ttl = min(ttl, _RELAY_DISCOVERY_FAILURE_TTL_SECONDS)
     if isinstance(discovered_at, (int, float)) and (time.monotonic() - discovered_at) < ttl:
         return existing
 
