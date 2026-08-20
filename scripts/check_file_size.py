@@ -101,7 +101,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # of "which blueprint/gateway, when to rebuild" (ClioAgent's own
     # workspace-executor registry); the on-demand mount machinery itself
     # lives in the owner module tools/mcp_discovery.py.
-    "src/clio_agent/agent.py": 1026,
+    # +5 (#1237 hotfix follow-on): stamp _clio_namespace_specs on the inner
+    # AsyncMCPToolExecutor too (not just the sync wrapper), so
+    # mcp_executor.py's _connect_namespace can gate its dispatch-time
+    # launcher-cache-lock acquisition on the declared spec.
+    "src/clio_agent/agent.py": 1031,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -706,7 +710,16 @@ RATCHET_BASELINE: dict[str, int] = {
     # becomes append-only-mergeable so an on-demand mount (#1237, triggered
     # from gact/agents/builders.py) reaches to_dspy_tools() for THIS SAME
     # live executor instance instead of only a future rebuild.
-    "src/clio_agent/tools/mcp_executor.py": 825,
+    # +22 (#1237 hotfix follow-on): _connect_namespace -- the ACTUAL
+    # dispatch-time cold spawn for a real tool call (a separate connection
+    # from the discovery pass's own throwaway one) now goes through the SAME
+    # liveness-driven launcher-cache lock discovery already used, gated by
+    # the declared-spec map stamped by ClioAgent. Root-caused a real
+    # thread/release mismatch bug in the async lock along the way (fixed in
+    # the owner module tools/launcher_cache_lock.py: FileLock's default
+    # thread_local=True silently orphans the OS lock when acquire/release
+    # run on different threads, as they do here via asyncio.to_thread).
+    "src/clio_agent/tools/mcp_executor.py": 847,
     "src/clio_agent/tools/mcp_config.py": 821,
     # #1231 Part 1/2 (consumer half of the live-console feature): not previously
     # baselined -- this file was ALREADY 7 lines over the 800 cap before this
