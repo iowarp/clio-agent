@@ -143,7 +143,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # resolution reader site) -- the actual event-building logic lives in the
     # owner module gact/mcp_connection_observability.py; only the small
     # _emit_mcp_downgrade_events call-site wrapper + its two call sites land here.
-    "src/clio_agent/gact/agents/builders.py": 1939,
+    # +13 (b8eff254): the typed custom_agent_tools_unavailable diagnostics
+    # block (fires only on the brick path; the L3 run-4..9 hunt).
+    "src/clio_agent/gact/agents/builders.py": 1952,
     # #948 S4/S5/S6 growth already carried this file past the flat 800 cap (to 842)
     # before it was ever added to this baseline — a pre-existing gap this change
     # did not introduce (it was silently exempt from the ratchet, not under it).
