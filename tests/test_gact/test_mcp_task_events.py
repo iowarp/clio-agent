@@ -240,7 +240,13 @@ async def test_a_real_console_fold_publishes_both_the_snapshot_and_the_lean_delt
     ``build_app``) publishes BOTH the existing full-record ``mcp_task.updated``
     snapshot (unchanged, #1205) AND the new lean ``mcp_task.console`` delta
     event on the SAME session channel -- the missing SSE fan-out this issue
-    closes."""
+    closes.
+
+    Three ``mcp_task.updated`` snapshots are expected, not two: the initial
+    ``store.put`` below fires its own (status="working", no console yet)
+    BEFORE either ``on_poll`` round runs, then each of the two rounds' own
+    ``store.put`` (inside the fold) fires one more. Each round's console
+    growth ALSO fires the new lean delta event -- two of those."""
 
     import httpx
 
@@ -296,7 +302,11 @@ async def test_a_real_console_fold_publishes_both_the_snapshot_and_the_lean_delt
     snapshot_events = [e for e in events if e.type == "mcp_task.updated"]
     console_events = [e for e in events if e.type == "mcp_task.console"]
 
-    assert len(snapshot_events) == 2, "the existing full-record fan-out still fires"
+    assert len(snapshot_events) == 3, "the existing full-record fan-out still fires"
+    assert snapshot_events[0].payload["status"] == "working"
+    assert "console" not in snapshot_events[0].payload["backend"], (
+        "the initial put's own snapshot precedes any console fold"
+    )
     assert snapshot_events[-1].payload["backend"]["console"]["tail"] == "first line\nsecond line\n"
 
     assert len(console_events) == 2, "the NEW lean delta event now also fires"
