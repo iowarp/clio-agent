@@ -23,6 +23,7 @@ from fastmcp.utilities.tasks import TaskConfig
 from fastmcp_tasks import TasksExtension
 from fastmcp_tasks.client_models import ClientCreateTaskResult
 
+from clio_agent.tools.mcp_task_extension import backend_identity
 from clio_agent.tools.mcp_task_records import (
     TERMINAL_TASK_STATES,
     InMemoryTaskRecordStore,
@@ -42,6 +43,7 @@ from clio_agent.tools.relay_transport import (
     RelayTransportClient,
     RelayTransportContractError,
 )
+from clio_agent.tools.task_observers import resolve_task_observer, unregister_task_observer_factory
 
 
 class _RelayCapture:
@@ -1016,3 +1018,27 @@ async def test_wait_completes_normally_when_the_console_log_door_fails(
     settled = task_record_store().get(task.key)
     assert settled is not None
     assert "console" not in settled.backend
+
+
+async def test_transport_construction_registers_and_close_unregisters_the_console_observer(
+    relay_backend: _Backend,
+) -> None:
+    """#1231 (the missing CLIENT half): opening this client registers a console
+    observer factory under its OWN ``backend_identity()`` server_id, so a task
+    that resolves through the TRANSPARENT #1115 extension path (never through
+    this client's own submit()/poll()/wait(), which already fold the console
+    tail by hand) also gets one. Closing unregisters -- nothing answers for that
+    server_id once the client that registered it is gone."""
+
+    relay = _client(relay_backend)
+    async with relay:
+        identity = backend_identity(relay._mcp_client.transport)  # noqa: SLF001
+        probe_key = TaskKey(server_id=identity.server_id, session_id=None, task_id="probe-task")
+        hook = resolve_task_observer(probe_key)
+        assert hook is not None, "an open RelayTransportClient must register a console observer"
+
+    after_close = resolve_task_observer(probe_key)
+    assert after_close is None, "closing must unregister -- no orphaned factory answers later"
+    # Cleanup safety net in case the assertion above ever fires mid-refactor: never
+    # leak a registration into another test's process-wide registry.
+    unregister_task_observer_factory(identity.server_id)
