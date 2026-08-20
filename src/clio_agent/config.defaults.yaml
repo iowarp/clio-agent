@@ -467,6 +467,9 @@ tools.file_policy.max_file_size_bytes: "1073741824"
 # CLIO_MCP_CALL_TIMEOUT_S  (float)  <- src/clio_agent/tools/execution.py
 tools.mcp.call_timeout_s: 30.0
 
+# CLIO_MCP_COLD_SPAWN_RUNAWAY_S  (float)  <- src/clio_agent/tools/mcp_discovery.py
+tools.mcp.cold_spawn_runaway_s: 600.0
+
 # CLIO_MCP_CONNECT_MODE  (str)  <- src/clio_agent/tools/mcp_connection_era.py
 tools.mcp.connect_mode: "auto"
 
@@ -483,7 +486,7 @@ tools.mcp.discovery_heal_interval_s: 20.0
 # tools.mcp.input_required_max_rounds:  # computed at runtime: DEFAULT_INPUT_REQUIRED_MAX_ROUNDS
 
 # CLIO_MCP_LAUNCHER_CACHE_LOCK_TIMEOUT_S  (float)  <- src/clio_agent/tools/launcher_cache_lock.py
-tools.mcp.launcher_cache_lock_timeout_s: 15.0
+tools.mcp.launcher_cache_lock_timeout_s: 600.0
 
 # CLIO_MCP_LISTING_TTL_H  (float)  <- src/clio_agent/tools/listing_cache.py
 tools.mcp.listing_ttl_h: 24.0
