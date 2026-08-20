@@ -39,7 +39,9 @@ def _patch_namespace_timeout(monkeypatch: pytest.MonkeyPatch, timeout_s: float) 
 
 
 def test_fast_namespace_lists_successfully(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _fake_list(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:
+    def _fake_list(
+        namespace: str, spec: MCPServerSpec, attempt_key: object = None
+    ) -> dict[str, Any]:
         return {f"{namespace}_tool": _FakeTool(f"{namespace}_tool")}
 
     monkeypatch.setattr(mcp_discovery, "_list_one_namespace", _fake_list)
@@ -51,7 +53,9 @@ def test_fast_namespace_lists_successfully(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_dead_namespace_degrades_typed_without_raising(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _fake_list(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:
+    def _fake_list(
+        namespace: str, spec: MCPServerSpec, attempt_key: object = None
+    ) -> dict[str, Any]:
         raise ConnectionRefusedError("dead namespace")
 
     monkeypatch.setattr(mcp_discovery, "_list_one_namespace", _fake_list)
@@ -65,7 +69,9 @@ def test_dead_namespace_degrades_typed_without_raising(monkeypatch: pytest.Monke
 def test_one_slow_namespace_never_blocks_a_fast_sibling(monkeypatch: pytest.MonkeyPatch) -> None:
     """SABOTAGE: revert to serial-with-no-timeout and this test times out the suite."""
 
-    def _fake_list(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:
+    def _fake_list(
+        namespace: str, spec: MCPServerSpec, attempt_key: object = None
+    ) -> dict[str, Any]:
         if namespace == "slow":
             time.sleep(10)  # never completes within the test's bound
         return {f"{namespace}_tool": _FakeTool(f"{namespace}_tool")}
@@ -91,7 +97,9 @@ def test_three_dead_namespaces_cost_the_max_not_the_sum(monkeypatch: pytest.Monk
     ~0.3s total (concurrent), not ~0.9s (serial) -- the exact "three dead
     namespaces -> minutes of boot" shape, scaled down for a fast unit test."""
 
-    def _fake_list(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:
+    def _fake_list(
+        namespace: str, spec: MCPServerSpec, attempt_key: object = None
+    ) -> dict[str, Any]:
         time.sleep(0.3)
         raise ConnectionRefusedError("dead")
 
@@ -114,6 +122,86 @@ def test_empty_specs_returns_immediately() -> None:
     assert result.tools == {} and result.degraded == {}
 
 
+# --------------------------------------------------------------------------- #
+# #1240: the connect/list call itself must be bounded (not just how long a   #
+# caller waits on it) and an abandoned attempt must be force-closed on the   #
+# spot -- the fix for the CI-observed leaked stdio child.                     #
+# --------------------------------------------------------------------------- #
+
+
+def test_list_one_namespace_forwards_the_attempt_timeout_and_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FAILING-FIRST for #1240: before this fix, ``_list_declared_tools`` was
+    always called bare (no ``timeout_s``, no ``attempt_key``) — the SDK's
+    per-request timeout defaults to ``None`` end to end, and
+    ``mcp_probe_hardening`` only bounds the era-negotiation probe, not
+    ``list_tools``/legacy ``initialize`` — so a namespace whose server
+    accepted the connection but never answered ``list_tools`` hung its
+    discovery-pool worker (and its spawned stdio child) forever. Pins the
+    wiring: the SAME generous runaway deadline that already bounds how long a
+    caller WAITS on this attempt now ALSO bounds the attempt's own
+    connect/list call, and the attempt is registered under its ``attempt_key``
+    so an abandoning caller can force-close it."""
+
+    captured: dict[str, Any] = {}
+
+    def _fake_list_declared_tools(
+        spec: MCPServerSpec, *, timeout_s: float | None = None, attempt_key: object | None = None
+    ) -> list[Any]:
+        captured["timeout_s"] = timeout_s
+        captured["attempt_key"] = attempt_key
+        return []
+
+    monkeypatch.setattr("clio_agent.tools.gateway._list_declared_tools", _fake_list_declared_tools)
+    monkeypatch.setattr(
+        "clio_agent.tools.launcher_cache_lock.uses_shared_launcher_cache", lambda spec: False
+    )
+    _patch_namespace_timeout(monkeypatch, 42.0)
+
+    token = object()
+    mcp_discovery._list_one_namespace("geo", _spec("geo"), token)
+
+    assert captured["timeout_s"] == 42.0, "the attempt's own connect/list call must be bounded"
+    assert captured["attempt_key"] is token, "the attempt must register under its OWN key"
+
+
+def test_abandoning_a_namespace_force_closes_its_listing_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1240: the MOMENT the pass gives up on a namespace, it force-closes
+    THAT specific attempt's transport (freeing its spawned child and any held
+    launcher-cache lock immediately) rather than leaving it to whatever is
+    left of its own bound. A sibling that is still legitimately in flight (or
+    already finished) is never touched."""
+
+    def _fake_list(
+        namespace: str, spec: MCPServerSpec, attempt_key: object = None
+    ) -> dict[str, Any]:
+        if namespace == "slow":
+            time.sleep(10)  # never completes within the test's bound
+        return {f"{namespace}_tool": _FakeTool(f"{namespace}_tool")}
+
+    monkeypatch.setattr(mcp_discovery, "_list_one_namespace", _fake_list)
+    _patch_namespace_timeout(monkeypatch, 0.3)
+
+    closed: list[object] = []
+    monkeypatch.setattr(
+        "clio_agent.tools.listing_attempts.force_close_listing_attempt",
+        lambda key, **_kw: closed.append(key) or True,
+    )
+
+    result = mcp_discovery.discover_declared_tools_bounded(
+        {"slow": _spec("slow"), "fast": _spec("fast")}, concurrency=8
+    )
+
+    assert result.degraded.get("slow") == MCP_NAMESPACE_DISCOVERY_TIMEOUT
+    assert "fast_tool" in result.tools
+    assert len(closed) == 1, (
+        f"expected exactly one force-close (the abandoned namespace), got {closed}"
+    )
+
+
 class TestNamespaceDiscoveryHealer:
     def test_mark_degraded_is_visible_in_pending(self) -> None:
         healer = mcp_discovery.NamespaceDiscoveryHealer(
@@ -126,7 +214,9 @@ class TestNamespaceDiscoveryHealer:
         spec = _spec("dead")
         healed_calls: list[tuple[str, dict[str, Any]]] = []
 
-        def _fake_list(namespace: str, s: MCPServerSpec) -> dict[str, Any]:
+        def _fake_list(
+            namespace: str, s: MCPServerSpec, attempt_key: object = None
+        ) -> dict[str, Any]:
             return {f"{namespace}_tool": _FakeTool(f"{namespace}_tool")}
 
         monkeypatch.setattr(mcp_discovery, "_list_one_namespace", _fake_list)
@@ -146,7 +236,9 @@ class TestNamespaceDiscoveryHealer:
     def test_probe_once_keeps_a_still_dead_namespace_pending(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def _still_dead(namespace: str, s: MCPServerSpec) -> dict[str, Any]:
+        def _still_dead(
+            namespace: str, s: MCPServerSpec, attempt_key: object = None
+        ) -> dict[str, Any]:
             raise ConnectionRefusedError("still dead")
 
         monkeypatch.setattr(mcp_discovery, "_list_one_namespace", _still_dead)
