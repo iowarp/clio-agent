@@ -620,7 +620,12 @@ class ClioAgent(dspy.Module):
                     # blueprint (empty with none active), so an on-demand
                     # mount (builders.py / mcp_executor.py._route) can tell
                     # "declared but not yet listed" from "genuinely unknown".
+                    # Stamped on BOTH the sync wrapper (builders.py reads it
+                    # there) and its inner async executor (mcp_executor.py's
+                    # _connect_namespace reads it there, for the dispatch-
+                    # time launcher-cache-lock gate).
                     setattr(executor, "_clio_namespace_specs", declared_specs)  # noqa: B010
+                    setattr(executor._async_executor, "_clio_namespace_specs", declared_specs)  # noqa: B010
                 executors[root] = executor
             # #1230: resolving-for-use counts as activity so a reap tick landing
             # in the gap before the caller's dispatch marks this executor busy

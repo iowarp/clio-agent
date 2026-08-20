@@ -37,11 +37,12 @@ This module now waits on REALITY signals instead of a clock:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager, suppress
 from pathlib import Path
 
 from filelock import FileLock, Timeout
@@ -280,8 +281,90 @@ def acquire_launcher_cache_lock(
             lock.release()
 
 
+@asynccontextmanager
+async def aacquire_launcher_cache_lock(
+    server_id: str, *, timeout_s: float | None = None
+) -> AsyncIterator[None]:
+    """Async twin of :func:`acquire_launcher_cache_lock` (#1237).
+
+    For an async dispatch-time cold spawn (``mcp_executor.py``'s
+    ``_connect_namespace``, the executor's on-demand connect for an ACTUAL
+    tool call, as opposed to the discovery/listing pass) -- the identical
+    liveness-driven wait, but polling via ``await asyncio.sleep`` and
+    running the (fast, non-blocking-in-practice since ``timeout=0``, but
+    still real file I/O) ``FileLock.acquire`` off the event loop via
+    :func:`asyncio.to_thread` so a long wait here never stalls this
+    executor's event loop (other executors/sessions are unaffected either
+    way -- each has its own loop).
+
+    ``thread_local=False`` is LOAD-BEARING: ``acquire`` runs on a worker
+    thread (via ``to_thread``) but ``release`` runs directly on the event
+    loop thread in the ``finally`` below -- filelock's default
+    ``thread_local=True`` tracks acquisition per-thread, so a release from a
+    DIFFERENT thread than the one that acquired silently fails to free the
+    underlying OS lock (found live: the orphaned lock then wedges every
+    future waiter, who can never identify a holder PID once the owner
+    record is cleared, until the generous runaway backstop fires). Each
+    call constructs a FRESH ``FileLock`` instance (never shared/reentrant
+    across calls), so process-wide (non-thread-local) tracking is correct
+    here regardless.
+    """
+
+    bound = timeout_s if timeout_s is not None else launcher_cache_lock_timeout_s()
+    lock_path = _lock_path()
+    owner_path = _owner_path(lock_path)
+    lock = FileLock(str(lock_path), timeout=0, thread_local=False)
+    deadline = time.monotonic() + bound
+    logged_wait = False
+    while True:
+        try:
+            await asyncio.to_thread(lock.acquire, timeout=0)
+            break
+        except Timeout:
+            pass
+        holder_pid = _read_owner_pid(owner_path)
+        if holder_pid is not None and not _pid_alive(holder_pid):
+            _break_stale_lock(lock_path, owner_path, server_id, holder_pid)
+            continue
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "launcher_cache_lock_runaway reason=%s server=%s timeout_s=%.1f holder_pid=%s",
+                LAUNCHER_CACHE_LOCK_TIMEOUT,
+                server_id,
+                bound,
+                holder_pid,
+            )
+            from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
+
+            stream_audit(
+                "launcher_cache_lock_timeout",
+                reason=LAUNCHER_CACHE_LOCK_TIMEOUT,
+                server_id=server_id,
+                timeout_s=bound,
+                holder_pid=holder_pid,
+            )
+            raise LauncherCacheLockTimeoutError(server_id, bound)
+        if not logged_wait:
+            logger.info(
+                "launcher_cache_lock_waiting server=%s holder_pid=%s -- holder is alive, "
+                "waiting (never racing a deadline; #1237)",
+                server_id,
+                holder_pid,
+            )
+            logged_wait = True
+        await asyncio.sleep(_POLL_INTERVAL_S)
+    try:
+        _write_owner_pid(owner_path, os.getpid())
+        yield
+    finally:
+        _clear_owner_pid(owner_path)
+        with suppress(Exception):
+            lock.release()
+
+
 __all__ = [
     "LauncherCacheLockTimeoutError",
+    "aacquire_launcher_cache_lock",
     "acquire_launcher_cache_lock",
     "launcher_cache_lock_timeout_s",
     "uses_shared_launcher_cache",
