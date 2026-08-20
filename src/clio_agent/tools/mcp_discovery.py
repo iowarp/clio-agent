@@ -25,6 +25,7 @@ either — ``ClioAgent.__init__`` starts it and returns.
 
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
 import logging
 import threading
@@ -57,6 +58,9 @@ def _classify_degrade_reason(exc: BaseException) -> str:
 _DEFAULT_CONCURRENCY = 8
 _DEFAULT_HEAL_TICK_S = 20.0
 _POLL_INTERVAL_S = 0.1
+#: #1237 hotfix: generous runaway backstop for one namespace's discovery
+#: attempt, NOT a normal-path bound -- see _namespace_attempt_timeout_s.
+_DEFAULT_COLD_SPAWN_RUNAWAY_S = 600.0
 
 
 def discovery_concurrency() -> int:
@@ -90,29 +94,34 @@ def discovery_heal_interval_s() -> float:
 
 
 def _namespace_attempt_timeout_s(namespace: str) -> float:
-    """Per-attempt deadline for ONE namespace's discovery listing.
+    """Generous runaway backstop for ONE namespace's discovery attempt (#1237).
 
-    ``tools.mcp.setup_timeout_s`` times a single negotiate/list round-trip;
-    ``mcp_probe_hardening.resolve_timeout_retries`` (per-server override,
-    #1232 pt 4) says how many times ``negotiate_auto`` retries a bare
-    REQUEST_TIMEOUT INSIDE that attempt. The outer deadline here must cover
-    the full retried budget, or a legitimately-retrying namespace would be
-    degraded before its own configured retries exhaust.
+    Owner ruling (2026-08-20): this is NOT a normal-path cutoff, and is not
+    meant to be the DECIDER for a slow-but-alive spawn/handshake either --
+    see ``mcp_probe_hardening`` (the per-exchange, bounded-attempt-count
+    machinery for the negotiate/initialize round trip) and
+    ``launcher_cache_lock`` (holder-liveness for the shared-cache lock) for
+    the real per-phase instruments. This flat value is the LAST-RESORT
+    catcher for a phase this module cannot otherwise attribute (a hung
+    stdio child process mid-handshake with no typed signal from the SDK) --
+    a REAL failure (missing executable, immediate crash, connection
+    refused, a genuine handshake error) raises from ``_list_one_namespace``
+    promptly via those per-phase instruments and is never subject to this
+    bound. ``namespace`` is accepted for a future per-server override but is
+    unused by the flat default today.
     """
 
+    del namespace
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
-    from clio_agent.tools.mcp_probe_hardening import resolve_timeout_retries  # noqa: PLC0415
 
-    setup_timeout_s = float(
+    return float(
         conf.resolve(
-            "tools.mcp.setup_timeout_s",
-            env="CLIO_MCP_SETUP_TIMEOUT_S",
-            default=10.0,
+            "tools.mcp.cold_spawn_runaway_s",
+            env="CLIO_MCP_COLD_SPAWN_RUNAWAY_S",
+            default=_DEFAULT_COLD_SPAWN_RUNAWAY_S,
             cast=conf.as_float,
         )
     )
-    retries = resolve_timeout_retries(namespace)
-    return setup_timeout_s * (retries + 1)
 
 
 def _list_one_namespace(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:
@@ -381,10 +390,85 @@ class NamespaceDiscoveryHealer:
         return healed
 
 
+# #1237 hotfix: single-flight, on-demand mount registry -- the call-time
+# rendezvous point owner ruling 2026-08-20 requires ("declared tools are
+# visible from the declaration; a call to an unmounted server's tool MOUNTS
+# ON DEMAND, joining an in-flight mount rather than racing a second one").
+# Guarded process-wide (not per-executor): two DIFFERENT sessions'/workspaces'
+# executors racing the SAME namespace (e.g. the shared default gateway's
+# "geo" and a per-workspace gateway's OWN "geo" spec) still share ONE mount
+# attempt and one launcher-cache-lock wait.
+_ensure_lock = threading.Lock()
+_ensure_inflight: dict[str, "concurrent.futures.Future[dict[str, Any]]"] = {}
+
+
+def ensure_namespace(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:
+    """Single-flight, on-demand mount of ONE declared namespace (#1237).
+
+    The call-time rendezvous point for "declared but not yet mounted": the
+    FIRST caller for ``namespace`` runs ``_list_one_namespace`` (the same
+    cache-first, liveness-driven cold-spawn attempt boot discovery uses);
+    every OTHER concurrent caller for the SAME namespace JOINS that one
+    attempt (via a shared :class:`concurrent.futures.Future`) instead of
+    racing a second spawn.
+
+    A failed attempt is NEVER a cached terminal state: the in-flight entry is
+    popped BEFORE any waiter observes the exception, so the very next call to
+    ``ensure_namespace`` starts a completely fresh attempt (owner ruling
+    2026-08-20: "even a genuinely terminal cause is re-attempted on the next
+    call" -- no standing "this server is broken" fact is ever recorded here).
+    Waiting inside the one owning attempt is liveness-driven (the launcher-
+    cache lock's holder-liveness wait, the per-exchange bounded-attempt
+    machinery in ``mcp_probe_hardening``, and only as a last resort the
+    generous runaway backstop) -- never a bounded retry ladder.
+
+    Raises whatever ``_list_one_namespace`` raises (a real, typed failure —
+    e.g. a missing launcher executable) so the caller (builders.py's expert-
+    tool resolve, or mcp_executor.py's dispatch-time race) can name the
+    server + reason for THIS one attempt.
+    """
+
+    with _ensure_lock:
+        future = _ensure_inflight.get(namespace)
+        if future is None:
+            future = concurrent.futures.Future()
+            _ensure_inflight[namespace] = future
+            owns = True
+        else:
+            owns = False
+    if not owns:
+        return future.result()
+    try:
+        result = _list_one_namespace(namespace, spec)
+    except Exception as exc:  # noqa: BLE001 - propagate to every joiner, never cache the failure
+        with _ensure_lock:
+            _ensure_inflight.pop(namespace, None)
+        future.set_exception(exc)
+        raise
+    with _ensure_lock:
+        _ensure_inflight.pop(namespace, None)
+    future.set_result(result)
+    return result
+
+
+async def ensure_namespace_async(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:
+    """Async twin of :func:`ensure_namespace` for the executor's dispatch path (#1237).
+
+    Runs the (blocking, potentially long-liveness-waiting) sync join on a
+    worker thread so it never stalls the caller's event loop, while sharing
+    the SAME process-wide in-flight registry as a sync caller (builders.py's
+    expert-tool resolve) racing the identical namespace.
+    """
+
+    return await asyncio.to_thread(ensure_namespace, namespace, spec)
+
+
 __all__ = [
     "DiscoveryPass",
     "NamespaceDiscoveryHealer",
     "discover_declared_tools_bounded",
     "discovery_concurrency",
     "discovery_heal_interval_s",
+    "ensure_namespace",
+    "ensure_namespace_async",
 ]
