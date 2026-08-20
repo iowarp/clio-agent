@@ -664,7 +664,20 @@ RATCHET_BASELINE: dict[str, int] = {
     # increment on every explicit resolution in ``poll()`` (terminal-at-lookup
     # records and relay_observe peeks were console-less forever) -- the fold
     # logic itself stays in relay_console.py; only the hook call lands here.
-    "src/clio_agent/tools/relay_transport.py": 827,
+    # +26 (827->853): the missing CLIENT half of #1231 -- register/unregister this
+    # instance's console observer factory (tools/task_observers.py) against its own
+    # backend_identity() server_id at __aenter__/__aexit__, so a relay-backed task
+    # that resolves through the TRANSPARENT #1115 extension path (never through this
+    # client's own submit()/poll()/wait()) also folds its console tail. The registry
+    # + the guarded resolve-and-catch live in the new owner module
+    # tools/task_observers.py; only the register/unregister call sites + the
+    # _observer_server_id bookkeeping field land here.
+    # +3 (853->856): ``backend_identity(getattr(mcp_client, "transport", mcp_client))``
+    # -- a real ``fastmcp.Client`` always has ``.transport`` (matches submit()'s own
+    # derivation exactly), but test_mcp_execution_era_visibility.py's minimal
+    # era-classification fake client does not, and crashed __aenter__ before this
+    # fallback (a pre-existing, unrelated test this change must not break).
+    "src/clio_agent/tools/relay_transport.py": 856,
     # #1232 pt 2: not previously baselined (under the 800 cap). +28 for
     # list_builtin_tool_definitions -- the boot path needs a FAST,
     # synchronous, no-I/O tool-definitions seed (built-ins only) so

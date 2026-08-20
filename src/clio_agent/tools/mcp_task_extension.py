@@ -46,6 +46,7 @@ from clio_agent.tools.mcp_tasks import (
     session_elicitation_callback,
     utcnow_iso,
 )
+from clio_agent.tools.task_observers import resolve_task_observer
 
 logger = logging.getLogger(__name__)
 
@@ -222,12 +223,20 @@ class ClioTasksClientExtension(TasksClientExtension):
         # FIRST thing after the server minted the task: make the id durable. The
         # window before this line is the residual documented in the module docstring.
         await self._make_durable(ctx, key, create_result, store)
+        # #1231: the transparent auto-claim path drives EVERY task-returning call
+        # through here, so a per-backend observer (e.g. relay's console-tail fold,
+        # registered by relay_transport.py against this task's server_id) must be
+        # resolved on this path too -- the explicit relay_wait/poll path already
+        # passes its hook by hand; this was the missing half. Generic on purpose:
+        # this module knows nothing about relay or any other backend, only that
+        # tools/task_observers.py may have one registered for this server_id.
         final = await drive_task_to_terminal(
             ctx.session,
             key,
             session_elicitation_callback(ctx.session),
             timeout_seconds=ctx.read_timeout_seconds,
             store=store,
+            on_poll=resolve_task_observer(key),
         )
         if final.status == "completed":
             return _inlined_call_tool_result(final.result)

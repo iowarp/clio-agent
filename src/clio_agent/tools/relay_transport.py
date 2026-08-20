@@ -76,6 +76,10 @@ from clio_agent.tools.relay_factory import (
     relay_transport_from_env,
     resolve_relay_transport_config,
 )
+from clio_agent.tools.task_observers import (
+    register_task_observer_factory,
+    unregister_task_observer_factory,
+)
 
 OWNER_SESSION_ID_HEADER = "X-Clio-Relay-Owner-Session-Id"
 SESSION_GENERATION_ID_HEADER = "X-Clio-Relay-Session-Generation-Id"
@@ -222,6 +226,10 @@ class RelayTransportClient:
         self._mcp_client: Any | None = None
         self._http_client: httpx.AsyncClient | None = None
         self._tool_input_schemas: dict[str, Mapping[str, Any]] | None = None
+        # #1231: the server_id this instance registered a console observer factory
+        # under, so __aexit__ unregisters the SAME id -- set only once __aenter__
+        # actually registers one, never guessed from ``self._mcp_client`` alone.
+        self._observer_server_id: str | None = None
 
     async def __aenter__(self) -> "RelayTransportClient":
         """Open both authenticated doors."""
@@ -243,6 +251,24 @@ class RelayTransportClient:
             headers=dict(self._headers),
             timeout=self._timeout,
         )
+        # #1231: this is the ONE construction site for the client whose auto-claimed
+        # tasks travel the transparent #1115 extension path (mcp_task_extension.py's
+        # _resolve_task) -- submit()/poll()/wait() drive their OWN tasks manually and
+        # already fold the console tail by hand, but any OTHER call on this same
+        # mcp_client that gets auto-claimed (e.g. call_relay_tool's follow tools, or a
+        # future relay#266 job-spanning task) reaches _resolve_task with no hook
+        # unless one is registered here. Same backend_identity() derivation submit()
+        # already uses (falling back to the client itself when ``.transport`` is
+        # absent -- a real ``fastmcp.Client`` always has one; only a minimal test
+        # double, e.g. test_mcp_execution_era_visibility.py's era-classification
+        # fake, does not), so the server_id this registers under is EXACTLY the one
+        # a task minted through this client is keyed by.
+        identity = backend_identity(getattr(mcp_client, "transport", mcp_client))
+        register_task_observer_factory(
+            identity.server_id,
+            lambda key: make_console_on_poll(self, key.task_id),
+        )
+        self._observer_server_id = identity.server_id
         return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
@@ -252,6 +278,9 @@ class RelayTransportClient:
         mcp_client = self._mcp_client
         self._http_client = None
         self._mcp_client = None
+        if self._observer_server_id is not None:
+            unregister_task_observer_factory(self._observer_server_id)
+            self._observer_server_id = None
         if http_client is not None:
             await http_client.aclose()
         if mcp_client is not None:
