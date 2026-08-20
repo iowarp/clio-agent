@@ -604,6 +604,12 @@ class ClioAgent(dspy.Module):
                 with suppress(AttributeError, TypeError):
                     setattr(executor, "_clio_mounted_blueprint_id", blueprint_id)  # noqa: B010
                 executors[root] = executor
+            # #1230: resolving-for-use counts as activity so a reap tick landing
+            # in the gap before the caller's dispatch marks this executor busy
+            # cannot pop it out from under an about-to-start call.
+            reaper = getattr(self, "_workspace_reaper", None)
+            if reaper is not None:
+                reaper.note_resolved(root)
             return executor
 
     @contextmanager

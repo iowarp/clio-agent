@@ -22,6 +22,7 @@ import dspy
 
 from clio_agent import conf
 from clio_agent.errors import ClioError
+from clio_agent.runtime import commitment_activity
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools import foreground_cancellation as foreground_cancel
 from clio_agent.tools.file_policy import FileAccessPolicy
@@ -788,18 +789,22 @@ class SyncMCPToolExecutor:
         budget = self._async_executor._timeout_budget_for_call(name, effective_args)
         timeout = budget.seconds  # None == unbounded wait_for_terminal commitment, #1225
         try:
-            outcome = foreground_cancel._run_foreground_coroutine(
-                self._loop,
-                self._async_executor.call_tool_result(name, effective_args),
-                timeout=(None if timeout is None else timeout + SYNC_TOOL_RESULT_GRACE_SECONDS),
-                action=f"MCP tool {name!r}",
-                cancellation_checker=cancellation_checker,
-                cancellation_error=lambda wire_settled: foreground_cancel._tool_cancellation_error(
-                    name,
-                    "tool_call_in_flight",
-                    wire_settled=wire_settled,
-                ),
-            )
+            # #1230: an unbounded commitment wait must not count against the
+            # turn's no-progress ceiling — commitment_activity is the signal
+            # gact/turn_watchdog.py reads; a no-op unless timeout is None.
+            with commitment_activity.track(timeout is None):
+                outcome = foreground_cancel._run_foreground_coroutine(
+                    self._loop,
+                    self._async_executor.call_tool_result(name, effective_args),
+                    timeout=(None if timeout is None else timeout + SYNC_TOOL_RESULT_GRACE_SECONDS),
+                    action=f"MCP tool {name!r}",
+                    cancellation_checker=cancellation_checker,
+                    cancellation_error=lambda wire_settled: foreground_cancel._tool_cancellation_error(
+                        name,
+                        "tool_call_in_flight",
+                        wire_settled=wire_settled,
+                    ),
+                )
         except Exception as exc:
             if isinstance(
                 exc, TimeoutError
