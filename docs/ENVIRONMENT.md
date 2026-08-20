@@ -47,8 +47,10 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_BLUEPRINT_REGISTRY_URL` | `gact.blueprint_registry.url` | str | `https://github.com/iowarp/clio-agent-marketplace.git` | `src/clio_agent/gact/agent_blueprints.py` |
 | `CLIO_CAPTURE_REASONING` | `runtime.capture_reasoning` | bool | `true` | `src/clio_agent/gact/usage.py` |
 | `CLIO_CHILD_FORWARD_DEADLINE_S` | `agents.child_forward_deadline_s` | float | `DEFAULT_ELICITATION_TIMEOUT_S` _(computed)_ | `src/clio_agent/gact/child_forward.py` |
+| `CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES` | `providers.claude_code.max_concurrent_processes` | float | `1.0` | `src/clio_agent/providers/claude_code_stream_bounds.py` |
 | `CLIO_CLAUDE_CODE_SESSION_REUSE` | `providers.claude_code.session_reuse` | bool | `true` | `src/clio_agent/providers/claude_code_sessions.py` |
 | `CLIO_CLAUDE_CODE_STATEFUL_CAPACITY` | `providers.claude_code.stateful_capacity` | float | `128.0` | `src/clio_agent/providers/claude_code_stateful.py` |
+| `CLIO_CLAUDE_CODE_STREAM_IDLE_TTL_S` | `providers.claude_code.stream_idle_ttl_s` | float | `15.0` | `src/clio_agent/providers/claude_code_stream_bounds.py` |
 | `CLIO_CLAUDE_CODE_TRANSPORT` | `lm.claude_code_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_CODEX_STATEFUL_CAPACITY` | `providers.codex.stateful_capacity` | float | `128.0` | `src/clio_agent/providers/codex_stateful.py` |
 | `CLIO_CODEX_TRANSPORT` | `lm.codex_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
