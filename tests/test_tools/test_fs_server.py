@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -74,6 +75,42 @@ def test_apply_edit_write_allows_new_file_under_write_policy(
     assert result["ok"] is True
     assert result["path"] == str(target.resolve())
     assert target.read_text(encoding="utf-8") == "hello\n"
+
+
+def test_written_bytes_are_verbatim_never_platform_newline_translated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An authored newline reaches disk as ``\\n``, on every platform.
+
+    Live regression (p5run2): a compute expert authored a POSIX shell script
+    with ``\\n`` separators, the relay staged the file's BYTES to a Linux
+    cluster, and the job failed with ``hostname\\r: not found`` -- ``write_text``
+    had translated every ``\\n`` into ``\\r\\n`` under Windows' default
+    ``newline=None``. The marker line still printed (a trailing CR is
+    invisible), so the corruption was silent.
+
+    This asserts BYTES on purpose. ``Path.read_text`` applies universal-newline
+    translation on the way back in, so a ``read_text() == "...\\n"`` assertion
+    passes against the very bug it is meant to catch -- which is why the
+    existing writer coverage never saw this.
+    """
+
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    target = tmp_path / "authored.sh"
+    body = "#!/bin/sh\nhostname\necho MARKER\n"
+
+    result = write_text_with_policy(str(target), body)
+
+    assert target.read_bytes() == body.encode("utf-8")
+    assert b"\r" not in target.read_bytes()
+    # The reported hash must describe the bytes a consumer re-hashes.
+    assert result["sha256"] == hashlib.sha256(body.encode("utf-8")).hexdigest()
+    assert result["size_bytes"] == len(body.encode("utf-8"))
+
+    # An author who genuinely wants CRLF still gets exactly that, unchanged.
+    crlf = "line\r\n"
+    write_text_with_policy(str(target), crlf)
+    assert target.read_bytes() == crlf.encode("utf-8")
 
 
 def test_apply_edit_write_uses_shared_policy_writer(

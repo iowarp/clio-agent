@@ -25,10 +25,18 @@ from clio_agent.gact.agent_tasks import (
     AgentTask,
     AgentTaskError,
     AgentTaskRegistry,
+    display_run_name,
     persist_agent_task,
+    resolve_waited_task_rows,
     seed_agent_task,
 )
 from clio_agent.gact.app import build_app
+from clio_agent.tools.mcp_task_records import (
+    InMemoryTaskRecordStore,
+    TaskKey,
+    TaskRecord,
+    set_task_record_store,
+)
 
 
 class _Agent:
@@ -63,6 +71,7 @@ def test_metadata_round_trip() -> None:
         metadata = meta
 
     assert AgentTask.from_session(_Sess()) == task
+
     # A non-agent-task session projects to None.
     class _Plain:
         metadata = {"session_type": "chat"}
@@ -142,7 +151,10 @@ def test_boot_fold_skips_malformed_block_without_crashing() -> None:
 
     class _Bad:
         id = "sess_bad"
-        metadata = {"session_type": "agent_task", "agent_task": {"task_id": "x"}}  # missing required
+        metadata = {
+            "session_type": "agent_task",
+            "agent_task": {"task_id": "x"},
+        }  # missing required
 
     good = _task(task_id="task_ok")
 
@@ -253,6 +265,194 @@ def test_projection_rebuilt_from_sessions_json_across_restart(tmp_path: Path) ->
         got = c2.get(f"/v1/agent-tasks/{task_id}")
         assert got.status_code == 200, "task projection not rebuilt from sessions.json"
         assert got.json()["agent_ref"] == {"expert_id": "hpc"}
-        assert [t["task_id"] for t in c2.get(f"/v1/sessions/{parent}/agent-tasks").json()["tasks"]] == [
-            task_id
-        ]
+        assert [
+            t["task_id"] for t in c2.get(f"/v1/sessions/{parent}/agent-tasks").json()["tasks"]
+        ] == [task_id]
+
+
+def test_runs_api_projects_local_and_relay_handles_with_live_state(tmp_path: Path) -> None:
+    """#1127: the runs registry is a union view over the two existing stores."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    relay_store = InMemoryTaskRecordStore()
+    set_task_record_store(relay_store, durable=False)
+    try:
+        with TestClient(app) as client:
+            parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+            local = seed_agent_task(
+                app,
+                parent_session_id=parent,
+                agent_ref={"expert_id": "data_expert"},
+                status=STATUS_RUNNING,
+                placement="local",
+            )
+            relay_store.put(
+                TaskRecord(
+                    key=TaskKey(
+                        server_id="relay-ares",
+                        session_id=parent,
+                        task_id="task_relay_only",
+                    ),
+                    tool="relay_submit_agent",
+                    backend={"cluster": "ares", "transport": "relay"},
+                    status="working",
+                    created_at="2026-08-01T00:00:00+00:00",
+                )
+            )
+
+            response = client.get("/v1/runs")
+            assert response.status_code == 200
+            rows = {row["handle_id"]: row for row in response.json()["runs"]}
+            assert set(rows) == {local.task_id, "task_relay_only"}
+            assert rows[local.task_id]["placement"] == "local"
+            assert rows[local.task_id]["live_state"] == "running"
+            assert rows["task_relay_only"]["placement"] == "relay:ares"
+            assert rows["task_relay_only"]["live_state"] == "running"
+
+            detached = client.post(f"/v1/runs/{local.task_id}/detach")
+            assert detached.status_code == 200
+            assert detached.json()["detached"] is True
+            assert app.state.agent_task_registry.get(local.task_id).status == STATUS_RUNNING
+
+            # #1205 review (3rd round), item 1: dismiss now REFUSES a non-terminal
+            # task — dropping a still-WORKING relay handle would delete the only
+            # durable local pointer to a live remote task. Prove that refusal...
+            still_working = client.post("/v1/runs/task_relay_only/dismiss")
+            assert still_working.status_code == 404
+            remaining_while_working = {
+                row["handle_id"] for row in client.get("/v1/runs").json()["runs"]
+            }
+            assert remaining_while_working == {local.task_id, "task_relay_only"}
+
+            # ...then settle it (the real driver's own status write) and dismiss
+            # for real — this is the retained-until-dismissed path #1205's 2nd
+            # round introduced.
+            from dataclasses import replace  # noqa: PLC0415 - test-local
+
+            settled = relay_store.get(TaskKey("relay-ares", parent, "task_relay_only"))
+            assert settled is not None
+            relay_store.put(replace(settled, status="completed"))
+
+            dismissed = client.post("/v1/runs/task_relay_only/dismiss")
+            assert dismissed.status_code == 200
+            assert dismissed.json() == {"dismissed": True, "handle_id": "task_relay_only"}
+            remaining = {row["handle_id"] for row in client.get("/v1/runs").json()["runs"]}
+            assert remaining == {local.task_id}
+    finally:
+        set_task_record_store(None)
+
+
+# --------------------------------------------------------------------------- #
+# P5 wire semantics: fan-out group identity + wait_agent_tasks display rows.  #
+# --------------------------------------------------------------------------- #
+
+
+def test_display_run_name_prefers_run_label_else_agent_and_run_index() -> None:
+    """The ONE server-side display-name rule: run_label wins when set; a bare
+    agent_id/run_index falls back to "{agent_id} #{run_index + 1}"."""
+
+    assert display_run_name("data_expert", 0, "") == "data_expert #1"
+    assert display_run_name("data_expert", 2, "") == "data_expert #3"
+    # A custom run_label ALWAYS wins, even over a plausible-looking default.
+    assert display_run_name("data_expert", 0, "geo scan") == "geo scan"
+
+
+def test_agent_task_spawn_group_fields_default_absent_and_survive_metadata_round_trip(
+    tmp_path: Path,
+) -> None:
+    """A plain (non-fan-out) task defaults spawn_group_id/group_size to their
+    empty/0 sentinel. A fan-out task's group identity survives the
+    to_metadata()/from_session() persisted round trip (#737-forward-compat:
+    an OLD persisted record with no such keys tolerates the missing fields via
+    the same defaults, never raising)."""
+
+    bare = _task()
+    assert bare.spawn_group_id == ""
+    assert bare.group_size == 0
+
+    grouped = _task(spawn_group_id="fanout_abc123", group_size=3)
+    assert grouped.spawn_group_id == "fanout_abc123"
+    assert grouped.group_size == 3
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        parent = app.state.sessions.create(workspace_id="ws_default", title="p")
+        task = seed_agent_task(
+            app,
+            parent_session_id=parent.id,
+            agent_ref={"expert_id": "data_expert"},
+            spawn_group_id="fanout_xyz789",
+            group_size=2,
+        )
+        assert task.spawn_group_id == "fanout_xyz789"
+        assert task.group_size == 2
+        child = app.state.sessions.get(task.child_session_id)
+        # Simulate an OLD persisted record predating these fields (strip them from
+        # the durable metadata) — from_session must tolerate the gap via defaults.
+        stripped_block = dict(child.metadata["agent_task"])
+        stripped_block.pop("spawn_group_id", None)
+        stripped_block.pop("group_size", None)
+        child.metadata["agent_task"] = stripped_block
+        reloaded = AgentTask.from_session(child)
+        assert reloaded is not None
+        assert reloaded.spawn_group_id == ""
+        assert reloaded.group_size == 0
+
+
+def test_resolve_waited_task_rows_resolves_known_and_falls_back_for_unknown(
+    tmp_path: Path,
+) -> None:
+    """Each requested id resolves to a display row FROM THE REGISTRY (static
+    spawn-time facts) — never dropped for an unknown id, which still yields a
+    row with empty resolved fields and ``name`` falling back to the raw id."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        parent = app.state.sessions.create(workspace_id="ws_default", title="p")
+        labeled = seed_agent_task(
+            app,
+            parent_session_id=parent.id,
+            agent_ref={"expert_id": "geospatial"},
+            run_label="LA dense scan",
+        )
+        # seed_agent_task/spawn_child_turn always bake a computed default into
+        # run_label at creation time, so an EMPTY run_label (the fallback branch
+        # display_run_name exercises) only occurs on a bare record — register one
+        # directly into the registry, as the wait/ensemble tests already do.
+        unlabeled = _task(
+            task_id="task_unlabeled",
+            child_session_id="child_unlabeled",
+            agent_ref={"expert_id": "ndp"},
+            run_index=1,
+        )
+        app.state.agent_task_registry.register(unlabeled)
+
+        rows = resolve_waited_task_rows(
+            app, [labeled.task_id, unlabeled.task_id, "task_never_spawned"]
+        )
+
+    assert rows[0] == {
+        "task_id": labeled.task_id,
+        "agent_id": "geospatial",
+        "run_index": 0,
+        "run_label": "LA dense scan",
+        "child_session_id": labeled.child_session_id,
+        "name": "LA dense scan",
+    }
+    assert rows[1] == {
+        "task_id": unlabeled.task_id,
+        "agent_id": "ndp",
+        "run_index": 1,
+        "run_label": "",
+        "child_session_id": unlabeled.child_session_id,
+        "name": "ndp #2",
+    }
+    # Unknown id: never silently dropped from the array.
+    assert rows[2] == {
+        "task_id": "task_never_spawned",
+        "agent_id": "",
+        "run_index": 0,
+        "run_label": "",
+        "child_session_id": "",
+        "name": "task_never_spawned",
+    }

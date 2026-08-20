@@ -44,6 +44,7 @@ Accretion rule: all new transcript logic lives HERE; ``turn.py`` only shrinks.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -73,6 +74,96 @@ def _transcript_text_field(field_name: str) -> str:
     """Map DSPy contract fields to public transcript text fields."""
 
     return "answer" if field_name == "answer" else "thought"
+
+
+def _canonical_tool_args(args: Mapping[str, Any] | None) -> str:
+    """Canonical JSON identity of a tool call's args, or ``""`` when unencodable.
+
+    Sorted keys make two calls with the same argument dict compare equal
+    regardless of insertion order; an unencodable dict yields the empty
+    sentinel, which every caller treats as "no identity — never collapse".
+
+    Generic helper — kept for any future caller that wants whole-args
+    identity. The collector re-poll collapse does NOT use this (see
+    :func:`_canonical_collector_key`): a collector's full args dict includes
+    ``timeout_s``, which the model legitimately varies per re-poll.
+    """
+
+    try:
+        return json.dumps(dict(args or {}), sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return ""
+
+
+# Sentinel task-set identity for a collector call that polls EVERYTHING
+# (``check_agent_tasks`` with ``task_ids`` omitted/``None``) — distinct from
+# any real task id so it can never collide with a literal one-task poll.
+_COLLECTOR_ALL_TASKS_KEY = "__all__"
+
+
+def _canonical_collector_key(tool_name: str, args: Mapping[str, Any] | None) -> str:
+    """Semantic re-poll identity for a collector call: tool name + task set.
+
+    ``wait_agent_tasks`` / ``check_agent_tasks`` re-polls are the SAME
+    logical activity — waiting on the same tasks — even when the per-poll
+    ``timeout_s`` budget differs; a real turn re-polls the same task set with
+    a DIFFERENT budget each time (round-6 live evidence: 60s then 90s), so
+    canonicalizing the FULL args dict (as :func:`_canonical_tool_args` does)
+    never collapses the exact case this feature exists for. The identity is
+    therefore just the tool name plus the sorted ``task_ids`` (order-
+    insensitive — a re-poll may list the remaining tasks in a different
+    order); a missing/``None`` ``task_ids`` (``check_agent_tasks``'s "poll
+    everything" call) canonicalizes to :data:`_COLLECTOR_ALL_TASKS_KEY`
+    consistently, never to the empty-list identity of "polling zero tasks".
+    """
+
+    task_ids = (args or {}).get("task_ids")
+    ids_key: Any = (
+        _COLLECTOR_ALL_TASKS_KEY if task_ids is None else sorted(str(tid) for tid in task_ids)
+    )
+    try:
+        return json.dumps([str(tool_name or ""), ids_key], sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return ""
+
+
+def _collector_timeout_budget(args: Mapping[str, Any] | None) -> Optional[float]:
+    """The requested ``timeout_s`` budget on a collector call's args, if any.
+
+    ``check_agent_tasks`` carries no budget (it never blocks); ``None`` means
+    "nothing to record", not "budget zero" — callers must not coerce it.
+    """
+
+    value = (args or {}).get("timeout_s")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _union_waited_tasks(prior: Any, new: Any) -> list[dict[str, Any]]:
+    """Union two ``waited_tasks`` display-row lists by ``task_id`` (P5 wire
+    semantics). A collapsed collector re-poll's canonical identity requires
+    the SAME sorted ``task_ids`` on both attempts (:func:`_canonical_collector_key`),
+    so in practice the two lists already describe the same task set — this
+    guards the merge defensively (never a narrower result than either side)
+    and lets the NEWEST attempt's row win per id when the two disagree, the
+    same "newest attempt owns the facts" rule the rest of the collapse
+    follows. Non-mapping / non-list inputs are treated as empty, never raise.
+    """
+
+    by_id: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for row in (*(prior or []), *(new or [])):
+        if not isinstance(row, Mapping):
+            continue
+        task_id = str(row.get("task_id") or "")
+        if task_id not in by_id:
+            order.append(task_id)
+        by_id[task_id] = dict(row)  # last write (from ``new``) wins per id
+    return [by_id[task_id] for task_id in order]
 
 
 class TranscriptFrozenError(RuntimeError):
@@ -327,6 +418,252 @@ class TurnTranscript:
             )
             return part
 
+    def upsert_delegation_part(self, part: Part, *, stream_source: str = "live") -> Optional[Part]:
+        """One delegation = ONE ``expert_handoff`` part (clean-wire rule).
+
+        A terminal handoff whose ``handle_id`` matches an earlier handoff part
+        this turn UPDATES that part in place — keeping its id/sequence and the
+        started metadata (the brief) under the terminal fields — and publishes
+        ``message.part.updated``. Without a match it appends normally, so a
+        terminal that arrives without its start (resumed turns) is never lost.
+        """
+
+        handle_id = str(part.handle_id or "")
+        if not handle_id:
+            return self.append_part(part, stream_source=stream_source)
+        with self._lock:
+            if self._frozen:
+                self._audit_late_op("upsert_delegation_part", part_id=part.id, part_type=part.type)
+                return None
+            existing = next(
+                (
+                    row
+                    for row in self._parts
+                    if row.type == "expert_handoff" and str(row.handle_id or "") == handle_id
+                ),
+                None,
+            )
+            if existing is None:
+                pass  # fall through to a plain append below, outside the lock
+            else:
+                merged_metadata = {**existing.metadata, **part.metadata}
+                part.id = existing.id
+                part.sequence = existing.sequence
+                part.metadata = merged_metadata
+                index = self._parts.index(existing)
+                self._parts[index] = part
+                msg_id = self.ensure_message()
+                self._publisher.publish(
+                    "message.part.updated",
+                    {
+                        "turn_id": self.turn_id,
+                        "message_id": msg_id,
+                        "stream_source": str(part.metadata.get("stream_source") or stream_source),
+                        "part": part.to_wire(),
+                    },
+                )
+                return part
+        return self.append_part(part, stream_source=stream_source)
+
+    def upsert_repeated_collector_call(
+        self, part: Part, *, stream_source: str = "live"
+    ) -> Optional[Part]:
+        """A re-polled collector = ONE tool_call+tool_result pair (clean-wire rule).
+
+        ``wait_agent_tasks`` / ``check_agent_tasks`` re-polls are one logical
+        activity (waiting on the same tasks), not N transcript rows. A NEW
+        ``tool_call`` whose SEMANTIC identity — tool name + sorted
+        ``task_ids`` (:func:`_canonical_collector_key`), NOT the full args
+        dict — equals the LAST ``tool_call`` part's, with nothing between
+        them but that call's own ``tool_result``, REPLACES the prior call in
+        place: same part id/sequence, ``metadata.attempts`` incremented,
+        ``metadata.budgets`` appended with the re-poll's ``timeout_s`` (round-
+        6 evidence: the model legitimately varies the wait budget per re-poll
+        — 60s then 90s on the SAME task set — so the identity must ignore it
+        or the collapse never fires on real turns), ``message.part.updated``
+        published (:meth:`upsert_delegation_part` is the precedent). Its
+        ``tool_result`` then replaces the prior result the same way, carrying
+        cumulative ``metadata.attempts`` + ``metadata.total_wait_ms`` (the
+        attempts' summed durations) while the VISIBLE content is the newest
+        result VERBATIM — never a synthesized merge.
+
+        Narration parts (``text`` AND ``thinking`` — ``_STREAMED_TEXT_TYPES``,
+        the same narration lane) between re-polls never break the chain (owner
+        amendment, round-4 live evidence: real turns interleave narration
+        between EVERY re-poll, so strict adjacency made the collapse inert;
+        round-5 live evidence — rerun sess_c6241fc8906f, msg_asst_8894cb745b15
+        — showed the provider-thinking lane interleaved too, so a ``thinking``
+        part between re-polls must be skipped exactly like ``text``). The
+        narration parts stay exactly where they are — order preserved, never
+        absorbed — while the duplicate pair is replaced in place at its
+        ORIGINAL position. The chain DOES break on different args, any OTHER
+        tool's call/result pair, or an ``expert_handoff`` between them:
+        collapsing across those would reorder reality.
+
+        The caller (the tool observer) scopes this to the two collector tools
+        BY NAME; this method applies only the structural rule above — no
+        prose inspection, no generic tool collapsing.
+        """
+
+        with self._lock:
+            if self._frozen:
+                self._audit_late_op(
+                    "upsert_repeated_collector_call", part_id=part.id, part_type=part.type
+                )
+                return None
+            # The collapse is an atomic-part runtime boundary exactly like
+            # append_part: narration streamed since the last boundary closes
+            # here (and stays where it is) — the re-poll never absorbs it and
+            # later deltas never continue the pre-poll narration part.
+            self._close_open_text_locked()
+            self._current_stream_part_id = None
+            if part.type == "tool_call":
+                index = self._repeated_collector_call_index_locked(part)
+            elif part.type == "tool_result":
+                index = self._repeated_collector_result_index_locked(part)
+            else:
+                index = None
+            if index is not None:
+                existing = self._parts[index]
+                merged_metadata = {**existing.metadata, **part.metadata}
+                merged_metadata["attempts"] = int(existing.metadata.get("attempts") or 1) + 1
+                if part.type == "tool_call":
+                    if not part.thought:
+                        # Keep the started reasoning under the re-poll (the same
+                        # way the delegation upsert keeps the brief) when the
+                        # new attempt carries none of its own.
+                        part.thought = existing.thought
+                    # Honest per-attempt detail (owner amendment, round-6): the
+                    # collapse identity now ignores timeout_s, so record every
+                    # attempt's requested budget explicitly rather than losing
+                    # it silently. Absent when neither attempt carried one
+                    # (e.g. check_agent_tasks, which never blocks).
+                    prior_budgets = list(existing.metadata.get("budgets") or [])
+                    if not prior_budgets:
+                        first_budget = _collector_timeout_budget(existing.input)
+                        if first_budget is not None:
+                            prior_budgets = [first_budget]
+                    new_budget = _collector_timeout_budget(part.input)
+                    if new_budget is not None:
+                        prior_budgets.append(new_budget)
+                    if prior_budgets:
+                        merged_metadata["budgets"] = prior_budgets
+                    # A collapsed wait covering two attempts on the SAME task set
+                    # (P5 wire semantics) must never present FEWER resolved
+                    # ``waited_tasks`` rows than either attempt saw — union by
+                    # task_id rather than the generic ``{**existing, **new}``
+                    # merge's plain overwrite.
+                    prior_waited = existing.metadata.get("waited_tasks")
+                    new_waited = part.metadata.get("waited_tasks")
+                    if prior_waited is not None or new_waited is not None:
+                        merged_metadata["waited_tasks"] = _union_waited_tasks(
+                            prior_waited, new_waited
+                        )
+                if part.type == "tool_result":
+                    prior_total = existing.metadata.get("total_wait_ms")
+                    if prior_total is None:
+                        prior_total = existing.duration_ms
+                    merged_metadata["total_wait_ms"] = float(prior_total or 0.0) + float(
+                        part.duration_ms or 0.0
+                    )
+                    # The newest attempt owns the result facts: a prior
+                    # attempt's evidence must not survive under a newer
+                    # attempt that lacks it (e.g. a failed re-poll). The
+                    # TOP-LEVEL ``structured_content`` field (#1190) needs no
+                    # scrub here: the replacing part is stored wholesale below,
+                    # so the newest attempt's value (or absence) already wins.
+                    if "result" in merged_metadata and "result" not in part.metadata:
+                        merged_metadata.pop("result")
+                part.id = existing.id
+                part.sequence = existing.sequence
+                part.metadata = merged_metadata
+                # In-place list mutation (never rebound) — alias views observe it.
+                self._parts[index] = part
+                msg_id = self.ensure_message()
+                self._publisher.publish(
+                    "message.part.updated",
+                    {
+                        "turn_id": self.turn_id,
+                        "message_id": msg_id,
+                        "stream_source": str(part.metadata.get("stream_source") or stream_source),
+                        "part": part.to_wire(),
+                    },
+                )
+                return part
+        return self.append_part(part, stream_source=stream_source)
+
+    def _repeated_collector_call_index_locked(self, part: Part) -> Optional[int]:
+        """Ledger index of the prior same-args collector call ``part`` replaces.
+
+        Walks back from the tail to the LAST ``tool_call``, skipping narration
+        ``text`` AND ``thinking`` parts (``_STREAMED_TEXT_TYPES`` — both are
+        the narration lane, same order-preservation rationale: they never
+        break the chain because the pair collapses at its original position
+        and the narration stays exactly where it streamed). The call must
+        carry the same SEMANTIC identity — tool name + sorted ``task_ids``
+        (:func:`_canonical_collector_key`; deliberately NOT the full args
+        dict, so a re-poll with a different ``timeout_s`` still collapses),
+        and every part after it must be that call's own ``tool_result`` or
+        narration text/thinking. Anything else — a different task set,
+        another tool's call/result, an ``expert_handoff``, any other part
+        type — yields ``None`` and the caller appends normally.
+        """
+
+        new_key = _canonical_collector_key(part.tool_name, part.input)
+        if not new_key:
+            return None
+        for index in range(len(self._parts) - 1, -1, -1):
+            candidate = self._parts[index]
+            if candidate.type == "tool_call":
+                if candidate.tool_name != part.tool_name:
+                    return None
+                if _canonical_collector_key(candidate.tool_name, candidate.input) != new_key:
+                    return None
+                for trailing in self._parts[index + 1 :]:
+                    if trailing.type in _STREAMED_TEXT_TYPES:
+                        continue
+                    if trailing.type == "tool_result" and trailing.call_id == candidate.call_id:
+                        continue
+                    return None
+                return index
+            if candidate.type not in ("tool_result", *_STREAMED_TEXT_TYPES):
+                return None
+        return None
+
+    def _repeated_collector_result_index_locked(self, part: Part) -> Optional[int]:
+        """Ledger index of the prior collector result ``part`` replaces.
+
+        Matches the shape the sibling call-upsert leaves behind — the collapsed
+        ``tool_call`` (carrying THIS result's call_id) immediately followed by
+        the PRIOR attempt's ``tool_result`` — reached by walking back over any
+        narration ``text``/``thinking`` that streamed after the pair
+        (``_STREAMED_TEXT_TYPES`` — both lanes stay put, same as the sibling
+        call-upsert). Anything else yields ``None`` (append normally: an
+        uncollapsed call sits at the tail with nothing after it, so its
+        result never matches here).
+        """
+
+        if not str(part.call_id or ""):
+            return None
+        for index in range(len(self._parts) - 1, -1, -1):
+            candidate = self._parts[index]
+            if candidate.type == "tool_call":
+                if candidate.tool_name != part.tool_name:
+                    return None
+                if str(candidate.call_id or "") != str(part.call_id or ""):
+                    return None
+                if index + 1 >= len(self._parts):
+                    return None
+                prior = self._parts[index + 1]
+                if prior.type != "tool_result" or prior.tool_name != part.tool_name:
+                    return None
+                if str(prior.call_id or "") == str(part.call_id or ""):
+                    return None
+                return index + 1
+            if candidate.type not in ("tool_result", *_STREAMED_TEXT_TYPES):
+                return None
+        return None
+
     def append_part_once(self, key: str, part: Part, **kw: Any) -> Optional[Part]:
         """:meth:`append_part` gated on a turn-scoped idempotency key.
 
@@ -349,6 +686,20 @@ class TurnTranscript:
 
         with self._lock:
             return key in self._once_keys
+
+    def mark_part_key(self, key: str) -> bool:
+        """Consume a turn-scoped once-key WITHOUT appending a part.
+
+        For emissions that moved off the transcript (routing decisions became
+        semantic events — clean-wire rule) but keep the same once-per-turn
+        identity the part had. Returns ``False`` when already consumed.
+        """
+
+        with self._lock:
+            if key in self._once_keys:
+                return False
+            self._once_keys.add(key)
+            return True
 
     def append_text_delta(self, agent_id: str, field: str, chunk: str) -> None:
         """Append a streamed text/thinking delta.
@@ -433,6 +784,49 @@ class TurnTranscript:
 
         with self._lock:
             self._close_open_text_locked()
+
+    def discard_open_text(self) -> bool:
+        """Abandon the open streamed part WITHOUT closing/publishing it (D15).
+
+        Sibling of :meth:`close_open_text` for an attempt that never counted: the
+        LM transient-retry boundary (``lm.io_logging``) re-issues a call through
+        a fresh field extractor with no memory of a failed attempt, and
+        ``append_text_delta`` keeps re-using the open ``(agent_id, field)`` part
+        -- without this, the retry's text lands on top of the abandoned
+        attempt's in the SAME part (the duplicated-paragraph defect observed
+        live, ``sess_539d24da07bf`` ``part_2b645566433b``). Unconditionally
+        removes the part from ``self._parts`` (never a ``message.part.completed``
+        publish) -- append-only/no-rewrite still holds; it never counted. A
+        no-op when nothing is open, or frozen (audited, never silently absorbed).
+        """
+
+        with self._lock:
+            if self._frozen:
+                self._audit_late_op("discard_open_text")
+                return False
+            part = self._open_part
+            if part is None:
+                return False
+            self._open_part = None
+            self._open_agent = ""
+            self._open_field = ""
+            self._current_stream_part_id = None
+            buffered = "".join(self._buffers.pop(part.id, []))
+            for index, candidate in enumerate(self._parts):
+                if candidate is part:
+                    del self._parts[index]
+                    break
+            logger.info("transcript discarded_retry_part part=%s chars=%d", part.id, len(buffered))
+            stream_audit(
+                "transcript.discarded_retry_part",
+                session_id=self.session_id,
+                turn_id=self.turn_id,
+                part_id=part.id,
+                part_type=part.type,
+                chunk_len=len(buffered),
+                head=buffered[:120],
+            )
+            return True
 
     def annotate(self, part_id: str, **metadata: Any) -> None:
         """Merge post-hoc facts into a part's metadata — never its text.
@@ -683,14 +1077,13 @@ class TurnTranscript:
         # The buffer is the model's text byte-for-byte; the only transform is the
         # whitespace-only drop below (a part with no content emits nothing).
         if not buffered.strip():
-            # Whitespace-only: remove from the ledger and emit nothing.
-            # Identity-based removal — Part equality is by value and live
-            # ledgers can hold equal-valued parts.
+            # Whitespace-only: remove from the ledger, emit nothing. Identity-based
+            # removal -- Part equality is by value and live ledgers can hold dupes.
             for index, candidate in enumerate(self._parts):
                 if candidate is part:
                     del self._parts[index]
                     break
-            logger.info(
+            (logger.warning if part.type == "thinking" else logger.info)(  # gact-tui#362
                 "turn_transcript dropped_empty_part session=%s turn=%s part=%s type=%s",
                 self.session_id,
                 self.turn_id,
@@ -703,6 +1096,7 @@ class TurnTranscript:
                 turn_id=self.turn_id,
                 part_id=part.id,
                 part_type=part.type,
+                chars=len(buffered),
             )
             return
         # Mutate in place: external alias views (app.state.live_assistant_parts)

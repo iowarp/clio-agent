@@ -25,6 +25,7 @@ non-edge (precision over recall) stays DETECTABLE on the record, never silent.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
@@ -67,6 +68,12 @@ _NDP_DETAILS_TOOLS: frozenset[str] = frozenset({"get_dataset_details"})
 #: ``catalog_hits_not_consumed`` so the discovery is honestly recorded.
 _NDP_SEARCH_TOOLS: frozenset[str] = frozenset({"search_datasets", "list_organizations"})
 _NDP_STAGE_TOOL = "stage_resource"
+# #1200: clio-agent's own bounded relay transfer. Named here for the same reason
+# ``stage_resource`` is -- the tool's result carries a REMOTE origin the generic
+# args-based scan cannot see, and that origin is the used-edge authority for the
+# local file it wrote. Both the gateway-mounted name and the bare mount name are
+# listed because the short-name match sees whichever the dispatch used.
+_RELAY_FETCH_TOOLS: frozenset[str] = frozenset({"relay_fetch_artifact", "fetch_artifact"})
 
 #: Bound on how many authority-asserted catalog resources one result contributes,
 #: so a large search result cannot grow a transform record unboundedly.
@@ -85,15 +92,28 @@ _MAX_CANDIDATE_STRLEN = 4096
 # --------------------------------------------------------------------------- #
 
 
+#: Declared-channel arg names EXCLUDED from the generic heuristic scan — each has
+#: its OWN dedicated resolver, so letting the generic path-guesser ALSO walk it
+#: would produce a redundant/duplicate edge for the same input (#1191): ``used``
+#: is create_artifact's own explicit input-refs field, resolved by
+#: :mod:`clio_agent.gact.artifacts.declared_used_edges`.
+_DECLARED_CHANNEL_ARG_NAMES: frozenset[str] = frozenset({"used"})
+
+
 def _candidate_arg_strings(args: Any) -> list[tuple[str, str]]:
     """Walk call args for candidate path strings as ``(arg_name, value)`` pairs.
 
     Output-path args (:data:`OUTPUT_PATH_ARG_NAMES`) are EXCLUDED — those are the
-    generated side, not used inputs. Nested dicts/lists are walked to a bounded
-    depth and fan-out so a pathological arg blob cannot explode the scan (precision
-    over recall — a missed deep path is a lost edge, never a false one).
+    generated side, not used inputs. :data:`_DECLARED_CHANNEL_ARG_NAMES` (``used``)
+    is ALSO excluded — a dedicated resolver already owns it, so the generic
+    heuristic must not double-edge the same ref. Nested dicts/lists are walked to a
+    bounded depth and fan-out so a pathological arg blob cannot explode the scan
+    (precision over recall — a missed deep path is a lost edge, never a false one).
     """
     out: list[tuple[str, str]] = []
+
+    def _excluded(key: str) -> bool:
+        return key in OUTPUT_PATH_ARG_NAMES or key in _DECLARED_CHANNEL_ARG_NAMES
 
     def walk(name: str, value: Any, depth: int) -> None:
         if len(out) >= _MAX_ARG_STRINGS or depth > _MAX_ARG_DEPTH:
@@ -104,7 +124,7 @@ def _candidate_arg_strings(args: Any) -> list[tuple[str, str]]:
             return
         if isinstance(value, dict):
             for key, sub in value.items():
-                if str(key) in OUTPUT_PATH_ARG_NAMES:
+                if _excluded(str(key)):
                     continue
                 walk(str(key), sub, depth + 1)
         elif isinstance(value, (list, tuple)):
@@ -113,7 +133,7 @@ def _candidate_arg_strings(args: Any) -> list[tuple[str, str]]:
 
     if isinstance(args, dict):
         for key, value in args.items():
-            if str(key) in OUTPUT_PATH_ARG_NAMES:
+            if _excluded(str(key)):
                 continue
             walk(str(key), value, 0)
     return out
@@ -203,6 +223,8 @@ def detect_used_edges(
     trace_id: str,
     call_started_at: Optional[float] = None,
     allowed_workspace_ids: Optional[set[str]] = None,
+    call_id: str = "",
+    tool_name: str = "",
 ) -> EdgeScan:
     """Detect ``used`` edges from call args (item 3 — precision over recall).
 
@@ -227,6 +249,13 @@ def detect_used_edges(
     REUSES the foreign version's ``artifact_id`` (never a minted local id) and carries
     ``cross_workspace_bind=True``. Threaded IN (never reached via ``app`` here) so
     this detector keeps its acyclic position.
+
+    ``call_id`` / ``tool_name`` (A8, #1176) identify the CONSUMING call whose args
+    are being scanned — the caller (:func:`~clio_agent.gact.artifacts.transforms.record_transform`)
+    always has both. They stamp the producer of a designate-on-USE script mint
+    (below) so that version is joinable by session/call exactly like every other
+    tool-schema mint; omitted (module default ``""``) only by a caller — a direct
+    unit-test invocation — that genuinely has no call to attribute, never invented.
     """
     from clio_agent.gact.artifacts.minting import (  # noqa: PLC0415
         _contained,
@@ -316,6 +345,24 @@ def detect_used_edges(
                     path=resolved,
                     turn_id=turn_id,
                     trace_id=trace_id,
+                    # A8 (#1176): this mint seam was dropping ``producer`` entirely
+                    # (no kwarg → ``mint_artifact_outcome`` defaults it to ``{}``),
+                    # so a consumed script's OWN version carried no session/call
+                    # identity — unlike every other tool-schema mint. That breaks
+                    # the session-scoped artifacts route (it joins on
+                    # ``producer.session_id``) for exactly this record. Stamp the
+                    # SAME shape the other tool-schema seams use: the consuming
+                    # call's session/tool/call_id, plus a designation note so the
+                    # weaker "observed as a used input, not a designated output"
+                    # basis stays visible (never invented — arrives as "" only
+                    # when the caller genuinely has no call to attribute).
+                    producer={
+                        "designation": "used-script",
+                        "session_id": sid,
+                        "tool": tool_name,
+                        "call_id": call_id,
+                        "turn_id": turn_id,
+                    },
                 )
                 if outcome is not None:
                     minted_version = outcome.version
@@ -567,6 +614,8 @@ def detect_authority_edges(
     short = tool_name.rsplit(".", 1)[-1] if "." in tool_name else tool_name
     if short == _NDP_STAGE_TOOL:
         return EdgeScan(_stage_resource_edges(app, structured, workspace_id), [])
+    if short in _RELAY_FETCH_TOOLS:
+        return EdgeScan(_relay_fetch_edges(structured), [])
     if short in _NDP_DETAILS_TOOLS:
         return EdgeScan(_catalog_resource_edges(structured), [])
     if short in _NDP_SEARCH_TOOLS:
@@ -614,6 +663,41 @@ def _stage_resource_edges(
             sha256=sha,
             path=local_path,
             note="ndp_stage_resource",
+        )
+    ]
+
+
+def _relay_fetch_edges(structured: dict[str, Any]) -> list[ProvEdge]:
+    """Authority edge recording where a fetched artifact's bytes were produced.
+
+    The transfer is the transform: the local file exists because
+    ``relay_fetch_artifact`` moved custody of a remote artifact into this
+    workspace. The remote reference (cluster + relay job + artifact id) is the
+    authority for that file, so it rides a used-edge and the provenance graph
+    shows the local artifact standing on its cluster-side origin rather than
+    appearing from nowhere. The digest is relay's own recorded ``sha256``,
+    already verified against the transferred bytes by the tool -- so this edge
+    pins the REMOTE identity, not a re-hash of the local copy.
+    """
+    origin = structured.get("origin")
+    if not isinstance(origin, Mapping):
+        return []
+    artifact_id = str(origin.get("artifact_id") or "").strip()
+    job_id = str(origin.get("job_id") or "").strip()
+    if not artifact_id or not job_id:
+        return []
+    cluster = str(origin.get("cluster") or "").strip() or "unknown-cluster"
+    authority = str(origin.get("uri") or "").strip() or f"relay://{cluster}/{job_id}/{artifact_id}"
+    remote_sha = origin.get("remote_sha256")
+    return [
+        ProvEdge(
+            role=EdgeRole.USED,
+            evidence=EdgeEvidence.AUTHORITY,
+            authority=authority,
+            external_ref=f"external:relay://{cluster}/{job_id}/{artifact_id}",
+            sha256=remote_sha if isinstance(remote_sha, str) and remote_sha else None,
+            path=str(structured.get("local_path") or "").strip(),
+            note="relay_fetch_artifact",
         )
     ]
 

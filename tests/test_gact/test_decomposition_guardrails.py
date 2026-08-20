@@ -58,7 +58,29 @@ from clio_agent.gact.app import build_app
 # from routes/hooks.py — a registry no dispatcher ever fired.
 # 163 -> 164 (#1057 P2.7): +1 read-only GET /v1/hooks introspection route, owned by
 # routes/system.py, replacing the deleted CRUD surface with a debugging endpoint.
-EXPECTED_ROUTE_METHOD_PAIRS = 164
+# 164 -> 165 (#1117 P1.7): +1 POST /v1/mcp/servers/{sid}/prompts/get protocol prompt
+# fetch, owned by routes/mcp.py (prompts/get client support).
+# 165 -> 168 (#1127 P2.10): +3 run-projection routes owned by
+# routes/agent_tasks.py: GET /v1/runs plus POST detach and dismiss actions.
+# 168 -> 170 (83f18a00, #1185/#1179): +2 routes owned by routes/relay.py and
+# routes/trace.py — GET /v1/relay/status, GET /v1/sessions/{sid}/trace.
+# 170 -> 172 (ad71fe87, #1192): +2 blueprint file-browsing routes owned by
+# routes/blueprints.py — GET /v1/agent-blueprints/{blueprint_id}/files
+# (capped flat recursive listing) and GET
+# /v1/agent-blueprints/{blueprint_id}/files/read (traversal-hardened raw
+# read), registered ahead of the greedy {id:path} matcher. The commit
+# shipped the routes but left this fingerprint stale; recorded now.
+# 172 -> 173 (#1205): +1 GET /v1/sessions/{sid}/async-processes, owned by the new
+# routes/async_processes.py — the session-scoped agent+mcp-task union projection
+# the async-processes tray reads (live refresh rides the existing per-session SSE
+# channel, no new route for that half).
+# 173 -> 190 (feat/document-artifacts merge): +17 document manifest/content, rendition, immutable review,
+# working-copy, native-comment, and optional embedded-editor routes owned by
+# routes/documents.py and composed through routes/artifact_workspace.py.
+# 190 -> 191 (#1211): +1 POST /v1/providers/models/refresh, owned by the new
+# routes/provider_models_refresh.py (registered alongside routes/providers.py,
+# not inline in app.py).
+EXPECTED_ROUTE_METHOD_PAIRS = 191
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

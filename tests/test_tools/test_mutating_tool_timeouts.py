@@ -9,9 +9,9 @@ from typing import Any, Self
 
 import pytest
 
-from clio_agent.tools.execution import (
+from clio_agent.tools.execution import SyncMCPToolExecutor
+from clio_agent.tools.mcp_executor import (
     AsyncMCPToolExecutor,
-    SyncMCPToolExecutor,
     UncertainMutatingToolOutcomeError,
 )
 
@@ -283,3 +283,145 @@ def test_explicit_idempotent_timeout_keeps_existing_retry_behavior() -> None:
 
     assert '"pipeline_id": "asteroid"' in result
     assert client.calls == 2
+
+
+# --- #1230 part 3: derived per-call ceiling, not operator-tuned ------------
+
+
+def _tool_with_declared_budget(default_seconds: float) -> SimpleNamespace:
+    """A tool schema declaring its own typical duration via a
+    ``timeout_seconds`` default -- distinct from a CALLER explicitly passing
+    ``timeout_seconds`` (that stays additive, ``_explicit_tool_timeout_seconds``)."""
+
+    return SimpleNamespace(
+        name="jarvis_dispatch",
+        description="Dispatch a remote JARVIS operation synchronously.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "pipeline_id": {"type": "string"},
+                "timeout_seconds": {"type": "number", "default": default_seconds},
+            },
+        },
+        annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False},
+    )
+
+
+@pytest.mark.asyncio
+async def test_component_declared_budget_outranks_a_smaller_global_ceiling() -> None:
+    """Failing-first: a tool declaring a 600s budget under a 300s global
+    ceiling gets >= 600s -- the backstop is DERIVED, not operator-tuned."""
+
+    client = _Client()
+    executor = AsyncMCPToolExecutor(
+        object(),
+        timeout=300.0,
+        client_factory=lambda _server: client,
+        preloaded_tools={"jarvis_dispatch": _tool_with_declared_budget(600.0)},
+    )
+    await executor.start()
+    try:
+        budget = executor._timeout_budget_for_call("jarvis_dispatch", {"pipeline_id": "x"})
+    finally:
+        await executor.aclose()
+
+    assert budget.seconds == 600.0
+    assert budget.seconds >= 600.0
+    assert budget.explicitly_declared is True
+
+
+def test_component_declared_budget_applies_on_the_sync_wrapper_too() -> None:
+    """The sync adapter must not undercut the derived backstop either."""
+
+    client = _Client(delay_seconds=0.02)
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=0.01,  # a tiny global that would have killed this call before #1230
+        client_factory=lambda _server: client,
+        preloaded_tools={"jarvis_dispatch": _tool_with_declared_budget(5.0)},
+    )
+    try:
+        result = executor.call_tool("jarvis_dispatch", {"pipeline_id": "asteroid"})
+    finally:
+        executor.close()
+    assert '"pipeline_id": "asteroid"' in result
+
+
+@pytest.mark.asyncio
+async def test_undeclared_tool_keeps_the_global_backstop() -> None:
+    """A tool with no schema-declared timeout default keeps the flat global --
+    the derivation never invents a budget a component never declared."""
+
+    undeclared_tool = SimpleNamespace(
+        name="jarvis_dispatch",
+        description="No declared default.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "pipeline_id": {"type": "string"},
+                "timeout_seconds": {"type": "number"},
+            },
+        },
+        annotations={},
+    )
+    client = _Client()
+    executor = AsyncMCPToolExecutor(
+        object(),
+        timeout=300.0,
+        client_factory=lambda _server: client,
+        preloaded_tools={"jarvis_dispatch": undeclared_tool},
+    )
+    await executor.start()
+    try:
+        budget = executor._timeout_budget_for_call("jarvis_dispatch", {"pipeline_id": "x"})
+    finally:
+        await executor.aclose()
+
+    assert budget.seconds == 300.0
+    assert budget.explicitly_declared is False
+
+
+@pytest.mark.asyncio
+async def test_component_declared_budget_never_undercuts_a_larger_global() -> None:
+    """A small component-declared default must not SHRINK an already-larger
+    global ceiling -- the derivation is a floor, never a cap."""
+
+    client = _Client()
+    executor = AsyncMCPToolExecutor(
+        object(),
+        timeout=900.0,
+        client_factory=lambda _server: client,
+        preloaded_tools={"jarvis_dispatch": _tool_with_declared_budget(10.0)},
+    )
+    await executor.start()
+    try:
+        budget = executor._timeout_budget_for_call("jarvis_dispatch", {"pipeline_id": "x"})
+    finally:
+        await executor.aclose()
+
+    assert budget.seconds == 900.0
+
+
+@pytest.mark.asyncio
+async def test_wait_for_terminal_commitment_still_outranks_the_component_default() -> None:
+    """A genuine #1225 commitment call (wait_for_terminal=True, no explicit
+    numeric override) stays UNBOUNDED -- the #1230 derived backstop only
+    applies to ordinary, non-commitment calls."""
+
+    tool = _relay_jarvis_run_tool()  # declares wait_for_terminal + wait_timeout_seconds=600
+    client = _Client()
+    executor = AsyncMCPToolExecutor(
+        object(),
+        timeout=30.0,
+        client_factory=lambda _server: client,
+        preloaded_tools={"relay_jarvis_run": tool},
+    )
+    await executor.start()
+    try:
+        budget = executor._timeout_budget_for_call(
+            "relay_jarvis_run", {"pipeline_id": "x", "wait_for_terminal": True}
+        )
+    finally:
+        await executor.aclose()
+
+    assert budget.seconds is None

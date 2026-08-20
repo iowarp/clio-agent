@@ -362,6 +362,101 @@ class _Agent:
         return _Pred()
 
 
+# --------------------------------------------------------------------------- #
+# Declared structured_content (P5 wire semantics) — the wait_agent_tasks       #
+# treatment extended to the cron triad.                                        #
+# --------------------------------------------------------------------------- #
+
+
+def test_cron_create_declares_typed_structured_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    declared: list[dict] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+
+    def body() -> None:
+        app = _app(tmp_path)
+        _bind(app, "sess_1")
+        result = build_cron_create_tool().func(cron="0 9 * * *", prompt="daily standup")
+        assert len(declared) == 1
+        shape = declared[0]
+        assert next(iter(shape)) == "message"
+        assert shape["message"] == (
+            f"armed schedule {result['schedule_id']} — recurring cron 0 9 * * *; "
+            f"next fire {result['next_fire_at']}"
+        )
+        # SAME facts as the model-facing return, riding after the message.
+        assert {k: v for k, v in shape.items() if k != "message"} == result
+
+    _in_ctx(body)
+
+
+def test_cron_list_declares_typed_structured_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    declared: list[dict] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+
+    def body() -> None:
+        app = _app(tmp_path)
+        _bind(app, "sess_1")
+        # Empty case first: the honest "no schedules" message, never "0 schedules: ".
+        build_cron_list_tool().func()
+        assert declared[-1] == {"message": "no schedules armed for this session", "schedules": []}
+
+        build_cron_create_tool().func(cron="0 9 * * *", prompt="daily standup")
+        build_cron_create_tool().func(prompt="one shot", delay_s=60, recurring=False)
+        listed = build_cron_list_tool().func()
+
+        shape = declared[-1]
+        assert next(iter(shape)) == "message"
+        assert shape["message"] == "2 schedules: 1 recurring, 1 one-shot"
+        assert shape["schedules"] == listed
+
+    _in_ctx(body)
+
+
+def test_cron_delete_declares_typed_structured_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    declared: list[dict] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+
+    def body() -> None:
+        app = _app(tmp_path)
+        _bind(app, "sess_1")
+        result = build_cron_create_tool().func(cron="0 9 * * *", prompt="q")
+        sid = result["schedule_id"]
+
+        deleted = build_cron_delete_tool().func(schedule_id=sid)
+        assert deleted is True
+        assert declared[-1] == {
+            "message": f"cancelled schedule {sid}",
+            "schedule_id": sid,
+            "deleted": True,
+        }
+
+        # Idempotent re-delete: an honest "nothing to cancel" message, still declared.
+        again = build_cron_delete_tool().func(schedule_id=sid)
+        assert again is False
+        assert declared[-1] == {
+            "message": f"no schedule {sid} to cancel (already gone or never armed)",
+            "schedule_id": sid,
+            "deleted": False,
+        }
+
+    _in_ctx(body)
+
+
 @pytest.mark.usefixtures("host_agent_executor")
 def test_catalog_dispatch_routes_cron_and_schedule(tmp_path: Path) -> None:
     """The catalog command handler routes BOTH /cron and its /schedule alias to

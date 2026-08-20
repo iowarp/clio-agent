@@ -1,0 +1,20 @@
+{
+  "id": "part_background_exit_example",
+  "type": "background_exit",
+  "metadata": {
+    "stream_source": "live"
+  },
+  "agent_id": "remote",
+  "parent_agent": "main",
+  "child_agent": "remote",
+  "handle_id": "task_relay_example",
+  "run_label": "remote #1",
+  "live_state": "completed",
+  "host": "ares",
+  "placement": "relay:ares",
+  "task_id": "task_relay_example",
+  "job_id": "task_relay_example",
+  "exit_status": "completed",
+  "artifact_ref": "artifact://ws_default/result@v1",
+  "status": "completed"
+}

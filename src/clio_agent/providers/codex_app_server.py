@@ -462,6 +462,34 @@ class CodexAppServerProcess:
         finally:
             self._turn_lock.release()
 
+    def list_models(self, *, timeout: float = 20.0) -> list[dict[str, Any]]:
+        """Query the warm app-server for its live model catalog (#1211 ``model/list``).
+
+        Verified live against codex-cli 0.147.0: the app-server protocol carries a
+        real ``model/list`` JSON-RPC method (confirmed via ``codex app-server
+        generate-json-schema --experimental``) returning the ACCOUNT's current
+        served models — the enumeration the static registry catalog can never
+        keep up with (#1184: the registry's ``gpt-5.5``/``gpt-5.5-codex``/
+        ``gpt-5.1`` are stale/rejected once the account has moved on). Does NOT
+        take the per-process turn lock — a plain request/response with no
+        streaming sink, same reasoning as :meth:`start_thread` (never
+        interleaves with a concurrent turn's drain). Raises
+        :class:`CodexAppServerError` on a dead process or a protocol/timeout
+        failure — never a silent empty list.
+        """
+        deadline = time.monotonic() + timeout
+        if self._dead_reason is not None:
+            raise CodexAppServerError(
+                f"codex app-server process is dead ({self._dead_reason}); "
+                f"the pool evicts it on the next call"
+            )
+        self._ensure_initialized(max(0.1, deadline - time.monotonic()))
+        result = self._request(
+            "model/list", {}, timeout=max(0.1, deadline - time.monotonic())
+        )
+        data = result.get("data")
+        return data if isinstance(data, list) else []
+
     def start_thread(self, *, ephemeral: bool, timeout: float) -> str:
         """Open a thread and return its server-assigned id (the stateful open-handle).
 

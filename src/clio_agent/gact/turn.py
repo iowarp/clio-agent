@@ -49,10 +49,9 @@ from clio_agent.gact.delegation import (
 )
 from clio_agent.gact.enrichment import (
     _context_file_turn_provenance,
-    _enrich_with_context_files,
-    _enrich_with_requested_memory_search,
     _record_context_frame,
     consume_pending_agent_task_notifications,
+    enrich_turn_context,
     inject_pending_agent_task_notifications,
 )
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
@@ -64,6 +63,7 @@ from clio_agent.gact.messaging import (
 )
 from clio_agent.gact.plan_mode import inject_plan_mode_reminder
 from clio_agent.gact.replanning import inject_replan_suggestion
+from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.globals import (
     _BlueprintRootDisabled,
     _cancelled_error_info,
@@ -197,6 +197,9 @@ async def _run_turn_in_background(
         # do anything useful. Don't raise — the publishing path
         # would crash and pollute logs with no client to notify.
         return
+    # #1215 S5: first-turn bring-up phase from "the background task started
+    # running" to "turn.started published" (see the end_phase call below).
+    bringup_timing.timer_for_session(app, sid).start_phase("turn.accept_gap")
 
     # #767 Phase B: the turn's whole working set lives on one mutable ``TurnState``
     # threaded through the closures + body (formerly ~40 function-scope locals).
@@ -246,7 +249,9 @@ async def _run_turn_in_background(
             }
         )
         state.app.state.turn_attempts[state.retry_attempt_id] = updated
-        enforce_dict_bound(state.app, state.app.state.turn_attempts, "turn_attempts", session_id=state.sid)
+        enforce_dict_bound(
+            state.app, state.app.state.turn_attempts, "turn_attempts", session_id=state.sid
+        )
         state.app.state.bus.publish(
             Event(
                 type=f"turn.retry_{status}",
@@ -281,16 +286,20 @@ async def _run_turn_in_background(
             "agent_id": state.turn_agent_id or _session_agent_id(state.sess) or "main",
         },
     )
+    bringup_timing.timer_for_session(state.app, state.sid).end_phase("turn.accept_gap")
 
     # iowarp/clio-agent#5: prepend attached context files to the user's text so the
     # agent's forward() sees them as primed input (plain concat, expert-agnostic).
     context_file_error: ErrorInfo | None = None
-    state.context_file_provenance = _context_file_turn_provenance(state.app, state.sid, status="prepared")
+    state.context_file_provenance = _context_file_turn_provenance(
+        state.app, state.sid, status="prepared"
+    )
     state.memory_search_metadata = {}
     try:
-        state.enriched_text = _enrich_with_context_files(state.app, state.sid, state.user_text)
-        state.enriched_text, state.memory_search_metadata = _enrich_with_requested_memory_search(
-            state.app, state.sid, state.enriched_text, state.user_msg
+        # #1215 S5: enrich_turn_context times BOTH mechanisms below as ONE
+        # "enrichment" bring-up phase (owner module gact/enrichment.py).
+        state.enriched_text, state.memory_search_metadata = enrich_turn_context(
+            state.app, state.sid, state.user_text, state.user_msg
         )
         # #948 S6 [1]/[4]: surface prior-turn background task results (observe-later).
         # STAGE the ids only; consumption + terminal emission defer to the commit-to-
@@ -310,11 +319,15 @@ async def _run_turn_in_background(
             state.app, state.sid, state.sess, state.enriched_text
         )
         # Carry prior turns so a follow-up ("now plot it") reuses resolved state (no-op turn 1).
-        state.enriched_text = _compile_session_conversation_history(state.app, state.sid, state.enriched_text)
+        state.enriched_text = _compile_session_conversation_history(
+            state.app, state.sid, state.enriched_text
+        )
     except _ContextFileAccessError as exc:
         state.enriched_text = state.user_text
         context_file_error = exc.error_info
-        state.context_file_provenance = _context_file_turn_provenance(state.app, state.sid, status="error")
+        state.context_file_provenance = _context_file_turn_provenance(
+            state.app, state.sid, status="error"
+        )
     state.context_frame = _record_context_frame(
         state.app,
         state.sid,
@@ -424,6 +437,10 @@ async def _run_turn_in_background(
         # expert_handoffs and returns the prediction (TRICKY #2: pred is a seam
         # return value, ``state.pred = forward_turn(state)``).
         state.pred = await forward_turn(state)
+        # #1215 S5: bring-up as far as instrumented (fleet.mount not wired yet,
+        # #1215 stays open) ends here on the success path; a failed first turn's
+        # still-open timer settles later via the registry's LRU eviction.
+        bringup_timing.finish_bringup(state.app, state.sid)
 
         state.answer_text = getattr(state.pred, "answer", "")
         state.selected_agent = getattr(state.pred, "selected_expert", "") or ""
@@ -437,9 +454,7 @@ async def _run_turn_in_background(
             state.error_info = pred_error_info
             if not state.error_info.details.get("partial", False):
                 state.answer_text = ""
-        if maybe_pause_for_user(
-            state, state.pred, update_retry_attempt=_update_retry_attempt
-        ):
+        if maybe_pause_for_user(state, state.pred, update_retry_attempt=_update_retry_attempt):
             # #767 Phase B: the ask_user pause exits the turn before the
             # finalize region — the seam mints the question, flips the
             # session to waiting_user, and settles the ledger (see
@@ -525,7 +540,9 @@ async def _run_turn_in_background(
                 "status": "pending",
             }
             state.app.state.permissions[pid] = row
-            enforce_dict_bound(state.app, state.app.state.permissions, "permissions", session_id=state.sid)
+            enforce_dict_bound(
+                state.app, state.app.state.permissions, "permissions", session_id=state.sid
+            )
             _emit_semantic_event(
                 state.app,
                 state.sid,

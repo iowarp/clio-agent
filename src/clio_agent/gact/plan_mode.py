@@ -351,9 +351,8 @@ def build_plan_exit_tool(agent_def: Any) -> Any:
     plan-content parameter. On success it records the request and ends the turn for approval.
     """
 
-    import dspy  # noqa: PLC0415
-
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def plan_exit(summary: str, recommendedMode: str = "", riskNotes: str = "") -> str:  # noqa: N803
         """Finish planning and hand the plan back to the user for approval to leave plan mode.
@@ -381,10 +380,11 @@ def build_plan_exit_tool(agent_def: Any) -> Any:
             risk_notes=riskNotes,
         )
 
-    return dspy.Tool(
-        func=plan_exit,
+    return native_tool(
+        plan_exit,
         name="plan_exit",
         desc=plan_exit.__doc__,
+        title="Exit Plan",
         args={
             "summary": {
                 "type": "string",

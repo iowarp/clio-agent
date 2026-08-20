@@ -31,7 +31,39 @@
           "note": "Uncompressed sensor capture; compress me"
         }
       }
+    },
+    "D:\\Libraries\\Documents\\projects\\clio-agent\\data\\atmospheric.h5": {
+      "path": "D:\\Libraries\\Documents\\projects\\clio-agent\\data\\atmospheric.h5",
+      "uri": "hdf5://D:\\Libraries\\Documents\\projects\\clio-agent\\data\\atmospheric.h5",
+      "last_accessed": "2026-08-13T13:29:12.082791",
+      "root_info": {
+        "name": "/",
+        "type": "Group",
+        "keys": [
+          "simulation",
+          "time_step"
+        ],
+        "attrs": {
+          "created_by": "clio-agent data folder",
+          "version": "1.0"
+        }
+      }
+    },
+    "D:\\Libraries\\Documents\\projects\\clio-agent\\data\\sensors_raw.h5": {
+      "path": "D:\\Libraries\\Documents\\projects\\clio-agent\\data\\sensors_raw.h5",
+      "uri": "hdf5://D:\\Libraries\\Documents\\projects\\clio-agent\\data\\sensors_raw.h5",
+      "last_accessed": "2026-08-13T13:29:12.087825",
+      "root_info": {
+        "name": "/",
+        "type": "Group",
+        "keys": [
+          "sensors"
+        ],
+        "attrs": {
+          "note": "Uncompressed sensor capture; compress me"
+        }
+      }
     }
   },
-  "last_updated": "2026-07-21T00:35:13.628319"
+  "last_updated": "2026-08-13T13:29:12.175056"
 }

@@ -13,6 +13,10 @@ copying this module into a scratch worktree there and running::
     CLIO_TURN_TRANSCRIPT_GOLDEN_REGEN=1 uv run --extra dev pytest \
         tests/test_gact/test_turn_transcript_equivalence_pr2.py -k golden --no-cov
 
+The golden was recaptured after a0e1d9a9 (clean delegation wire): routing
+decisions are ``routing.decision`` semantic events now, so the stream carries
+no ``routing_decision`` ``message.part.added`` and persists no routing part.
+
 This module deliberately reuses the PR1 harness (normalizer, settle poll,
 scenario builders) via import so both trees drive the exact same probe.
 """

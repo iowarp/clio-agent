@@ -160,7 +160,9 @@ def test_get_lm_provider_reports_argonne_refresh_failure(tmp_path: Path, monkeyp
 
 
 def test_auth_provider_returns_interactive_argonne_instructions(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
+    monkeypatch: Any,
+    floor_sandbox: Any,
 ) -> None:
     """ALCF auth must launch/describe an interactive flow, not block the backend."""
 
@@ -222,6 +224,46 @@ def _patch_run_handshake(monkeypatch, report) -> None:
         return report
 
     monkeypatch.setattr("clio_agent.providers.handshake.run_handshake", _fake)
+
+
+def _patch_ambient_bind_network(monkeypatch) -> None:
+    """Stub the two REAL, never-mocked network calls every ``/v1/providers/lm``
+    bind reaches on its way through ``_apply_lm_provider`` (#1211 review B3).
+
+    Neither is exercised by these tests' own assertions, and neither was
+    previously mocked here (only the LM Studio-specific ``requests.get``/
+    ``requests.post`` load calls were):
+
+    * ``run_handshake`` -- dispatches to the per-provider connectivity probe
+      (``LMStudioHandshake``, for the lm_studio tests here) via an INJECTED
+      async http client, not the ``requests`` module the tests already mock.
+      A live probe against ``127.0.0.1:1234`` with nothing listening blocks on
+      a real OS-level connect timeout rather than failing instantly, and its
+      observed cost varied 0.3s-35s across repeated live measurement on this
+      box. Stubbed to raise, which ``_apply_lm_provider``'s existing
+      ``except Exception: handshake_report = None`` already handles as a
+      graceful degrade (matching a genuine unreachable-backend outcome).
+    * ``relay_agent_kwargs`` -- the first-bind path (``app.state.agent is
+      None``) calls ``construct_agent_with_relay``, which discovers this
+      environment's configured relay/MCP-federation catalog over a real
+      connection before constructing the (already-stubbed) agent; measured at
+      a consistent ~2.4s whenever that endpoint didn't answer immediately.
+
+    Combined, these two REAL dependencies (never touched by #1211 -- verified
+    byte-identical against the branch's merge-base) can legitimately exceed
+    ``_wait_lm_provider_ready``'s 5s deadline under real ambient conditions
+    that have nothing to do with the code under test; stubbing them here is
+    the root fix (hermetic isolation), not a timeout bump.
+    """
+
+    async def _unreachable_handshake(*args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        raise RuntimeError("handshake stubbed for hermetic test (no live backend)")
+
+    async def _no_relay_kwargs(app):  # noqa: ANN001
+        return {}
+
+    monkeypatch.setattr("clio_agent.providers.handshake.run_handshake", _unreachable_handshake)
+    monkeypatch.setattr("clio_agent.gact.relay_wiring.relay_agent_kwargs", _no_relay_kwargs)
 
 
 def test_provider_model_catalog_returns_handshake_models(tmp_path: Path, monkeypatch) -> None:
@@ -313,7 +355,214 @@ def test_provider_model_catalog_keeps_static_cli_candidates(tmp_path: Path) -> N
     assert codex["source"] == "static_catalog"
     assert {row["id"] for row in codex["models"]} >= {"gpt-5.5", "gpt-5.1"}
     assert claude["source"] == "static_catalog"
-    assert {row["id"] for row in claude["models"]} == {"sonnet", "opus", "haiku"}
+    # "fable" is the CLI's own current default alias (#1211 review D4) -- listed
+    # alongside the other documented aliases so a fresh install already shows it.
+    assert {row["id"] for row in claude["models"]} == {"fable", "sonnet", "opus", "haiku"}
+
+
+def test_provider_list_default_model_follows_overlay_once_refreshed(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """#1211 review D2 failing-first: the picker row's default_model follows the
+    overlay's discovered default (once a refresh has run), not the stale static
+    ``suggested_model`` the account may already reject (#1184)."""
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    from clio_agent.providers import model_discovery
+
+    model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="codex",
+            discovered=[{"id": "gpt-5.6-sol", "name": "Sol", "description": ""}],
+            source=model_discovery.CODEX_SOURCE,
+            default_model="gpt-5.6-sol",
+        )
+    )
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        rows = c.get("/v1/providers").json()["providers"]
+        detail = c.get("/v1/providers/codex").json()
+    codex_row = next(r for r in rows if r["id"] == "codex")
+    assert codex_row["default_model"] == "gpt-5.6-sol"
+    assert detail["default_model"] == "gpt-5.6-sol"
+
+
+def test_provider_list_default_model_falls_back_to_static_without_overlay(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        rows = c.get("/v1/providers").json()["providers"]
+    codex_row = next(r for r in rows if r["id"] == "codex")
+    assert codex_row["default_model"] == "gpt-5.5"  # the frozen static suggested_model
+
+
+def test_provider_list_default_model_claude_code_follows_cost_policy_not_cli_default(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Owner ruling 2026-08-14 (failing-first): the CLI's own bare default
+    resolves to the premium ``fable`` tier, but clio must never silently
+    default a user onto it -- the SERVED picker default for claude_code stays
+    ``sonnet`` (a deliberate cost policy) even once a refresh has discovered
+    fable as the CLI's live choice. Codex is unaffected: its own overlay
+    default still wins verbatim (populated in the same test as the twin)."""
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    from clio_agent.providers import model_discovery
+
+    model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="claude_code",
+            discovered=[
+                {"id": "fable", "name": "Fable", "description": ""},
+                {"id": "sonnet", "name": "Sonnet", "description": ""},
+                {"id": "opus", "name": "Opus", "description": ""},
+            ],
+            source=model_discovery.CLAUDE_CODE_SOURCE,
+            default_model="fable",  # the CLI's own bare-default choice
+        )
+    )
+    # Codex unaffected twin: its own overlay default is untouched by the
+    # claude_code-only cost policy.
+    model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="codex",
+            discovered=[{"id": "gpt-5.6-sol", "name": "Sol", "description": ""}],
+            source=model_discovery.CODEX_SOURCE,
+            default_model="gpt-5.6-sol",
+        )
+    )
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        rows = c.get("/v1/providers").json()["providers"]
+        claude_detail = c.get("/v1/providers/claude_code").json()
+        codex_detail = c.get("/v1/providers/codex").json()
+    claude_row = next(r for r in rows if r["id"] == "claude_code")
+    codex_row = next(r for r in rows if r["id"] == "codex")
+    assert claude_row["default_model"] == "sonnet"
+    assert claude_detail["default_model"] == "sonnet"
+    assert codex_row["default_model"] == "gpt-5.6-sol"
+    assert codex_detail["default_model"] == "gpt-5.6-sol"
+    # The overlay-diagnostic route surfaces the honest CLI choice alongside
+    # the policy default, never silently dropping it.
+    models_resp = c.get("/v1/providers/claude_code/models").json()
+    assert models_resp["default_model"] == "sonnet"
+    assert models_resp["cli_default"] == "fable"
+
+
+def test_put_lm_provider_omitted_model_claude_code_binds_sonnet_cost_policy_default(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Owner ruling 2026-08-14 (failing-first): an omitted-model claude_code
+    bind must resolve to the cost-policy default (sonnet), never the CLI's own
+    premium bare default (fable) even once a refresh has recorded fable as the
+    live CLI choice."""
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    from clio_agent.providers import model_discovery
+
+    model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="claude_code",
+            discovered=[
+                {"id": "fable", "name": "Fable", "description": ""},
+                {"id": "sonnet", "name": "Sonnet", "description": ""},
+            ],
+            source=model_discovery.CLAUDE_CODE_SOURCE,
+            default_model="fable",
+        )
+    )
+
+    captured: dict[str, Any] = {}
+
+    class _StubAgent(_RebindLMStub):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.arc = type(
+                "ARC",
+                (),
+                {
+                    "get_cache_stats": lambda self: {
+                        "hits": 0,
+                        "misses": 0,
+                        "hit_rate": 0.0,
+                        "capacity": 10,
+                    }
+                },
+            )()
+
+        def forward(self, *args: Any, **kwargs: Any) -> Any:
+            return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
+
+    def _stub_create_lm(cfg: Any) -> Any:
+        captured["cfg"] = cfg
+        return type("FakeLM", (), {"history": []})()
+
+    monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
+    monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/providers/lm",
+            json={"provider": "claude_code", "api_base": "claude-code://sdk", "model": ""},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["model"] == "sonnet"
+    assert captured["cfg"].model == "sonnet"
+
+
+def test_put_lm_provider_omitted_model_binds_the_overlay_default(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """#1211 review D2 failing-first: an omitted ``model`` on a PUT bind resolves
+    through the overlay's discovered default once a refresh has run, not the
+    stale static ``suggested_model`` (#1184's rejected pins)."""
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    from clio_agent.providers import model_discovery
+
+    model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="codex",
+            discovered=[{"id": "gpt-5.6-sol", "name": "Sol", "description": ""}],
+            source=model_discovery.CODEX_SOURCE,
+            default_model="gpt-5.6-sol",
+        )
+    )
+
+    captured: dict[str, Any] = {}
+
+    class _StubAgent(_RebindLMStub):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.arc = type(
+                "ARC",
+                (),
+                {
+                    "get_cache_stats": lambda self: {
+                        "hits": 0,
+                        "misses": 0,
+                        "hit_rate": 0.0,
+                        "capacity": 10,
+                    }
+                },
+            )()
+
+        def forward(self, *args: Any, **kwargs: Any) -> Any:
+            return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
+
+    def _stub_create_lm(cfg: Any) -> Any:
+        captured["cfg"] = cfg
+        return type("FakeLM", (), {"history": []})()
+
+    monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
+    monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/providers/lm",
+            json={"provider": "codex", "api_base": "codex://app-server", "model": ""},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["model"] == "gpt-5.6-sol"
+    assert captured["cfg"].model == "gpt-5.6-sol"
 
 
 def test_provider_model_catalog_unknown_provider_404(tmp_path: Path) -> None:
@@ -348,8 +597,24 @@ def test_health_lm_row_is_unified_probe_lm_provider(tmp_path: Path, monkeypatch)
     assert resp.status_code == 503
 
 
-def test_get_lm_provider_when_configured_from_boot_agent(tmp_path: Path) -> None:
-    """Env-booted agents should expose their effective provider config."""
+def test_get_lm_provider_when_configured_from_boot_agent(tmp_path: Path, monkeypatch) -> None:
+    """Env-booted agents should expose their effective provider config.
+
+    ``build_app`` unconditionally seeds ``app.state.provider_profiles`` from
+    ``load_config_from_env()`` (the file/env-resolved BOOT config), regardless
+    of the ``agent=`` object passed in here -- so this test is NOT hermetic
+    against a developer's real ``.env`` (``conf``'s file/env layer is process-
+    ambient, not tmp_path-scoped). Delete the knobs that boot config reads so
+    the seeded default profile is deterministically the lm_studio/no-transport
+    default this test's ``assert body["transport"] is None`` actually pins,
+    instead of silently depending on nobody's ``.env`` naming codex/claude_code.
+    """
+    for env_var in (
+        "CLIO_LM_PROVIDER",
+        "CLIO_CODEX_TRANSPORT",
+        "CLIO_CLAUDE_CODE_TRANSPORT",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
 
     agent = SimpleNamespace(
         _provider_config=SimpleNamespace(
@@ -524,6 +789,7 @@ def test_put_argonne_uses_provider_default_max_tokens_when_omitted(
     monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
     monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
+    _patch_ambient_bind_network(monkeypatch)
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
@@ -586,6 +852,7 @@ def test_put_argonne_preset_id_normalizes_to_runtime_provider_kind(
     monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
     monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
+    _patch_ambient_bind_network(monkeypatch)
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
@@ -644,6 +911,7 @@ def test_put_argonne_ignores_placeholder_api_key(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
     monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
+    _patch_ambient_bind_network(monkeypatch)
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
@@ -934,6 +1202,7 @@ def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkey
     monkeypatch.setattr("clio_agent.config.create_lm", lambda cfg: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
     monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
+    _patch_ambient_bind_network(monkeypatch)
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
@@ -1025,6 +1294,7 @@ def test_put_lm_provider_reuses_loaded_lm_studio_model(tmp_path: Path, monkeypat
     monkeypatch.setattr("clio_agent.config.create_lm", lambda cfg: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
     monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
+    _patch_ambient_bind_network(monkeypatch)
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:

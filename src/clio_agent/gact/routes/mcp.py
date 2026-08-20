@@ -18,9 +18,9 @@ SPEC §6.7 third-party MCP server surface the gact-tui MCP browser and the
 * ``POST /v1/mcp/servers/{sid}/reconnect`` -- re-probe a previously-installed
   server's stored transport spec (timeout-bounded; non-destructive).
 * ``GET /v1/mcp/servers/{sid}`` -- detail row for one server.
-* ``GET /v1/mcp/servers/{sid}/(tools|resources|prompts)`` -- detail enumeration
-  for the TUI MCP browser (bundled via the in-process gateway, external via a
-  short-lived ``fastmcp.Client`` connection).
+* ``GET /v1/mcp/servers/{sid}/(tools|resources|prompts)`` and ``POST .../prompts/get``
+  -- detail enumeration plus protocol prompt fetches (bundled via the in-process
+  gateway, external via a short-lived ``fastmcp.Client`` connection).
 
 Handlers close over the ``app`` argument (FastAPI's decorators need it) and
 read/write the live third-party registry via ``app.state.external_mcp_servers``.
@@ -43,7 +43,7 @@ import uuid
 from collections.abc import Mapping
 from contextlib import nullcontext
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 
@@ -60,10 +60,16 @@ from clio_agent.gact.permission_gate import (
     _normalize_mcp_tool_annotations,
 )
 from clio_agent.gact.routes._body import json_body
+from clio_agent.gact.routes.mcp_rows import (
+    bundled_server_tool_rows,
+    mcp_inventory_row,
+    mcp_prompt_result_row,
+)
 from clio_agent.gact.runtime.globals import _tool_session_context
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.execution import notify_tool_observer
-from clio_agent.tools.mcp_config import MCPTransportError, transport_from_spec
+from clio_agent.tools.mcp_config import MCPTransportError, redact_mcp_spec, transport_from_spec
+from clio_agent.tools.mcp_errors import typed_mcp_call_error
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -188,7 +194,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "transport": info.get("transport", "unknown"),
                     "tools_count": len(info.get("tools") or []),
                     "tools": list(info.get("tools") or []),
-                    "spec": info.get("spec", {}),
+                    "spec": redact_mcp_spec(info.get("spec", {})),
                 }
             )
         try:
@@ -260,27 +266,13 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         seconds, which would make the frequently-polled health check slow and
         flaky. The TUI calls this when it wants live tool-server status.
         """
+        from clio_agent.gact.routes.mcp_rows import handshake_server_row  # noqa: PLC0415
         from clio_agent.providers.handshake import handshake_mcp_servers  # noqa: PLC0415
 
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
         specs = _declared_mcp_specs(cwd=cwd)
         reports = await handshake_mcp_servers(list(specs.values()))
-        servers: list[dict[str, Any]] = []
-        for report in reports:
-            status = report.to_integration_status()
-            servers.append(
-                {
-                    "name": report.name,
-                    "reachable": report.ok,
-                    "state": status.state.value,
-                    "transport": report.transport,
-                    "tools_count": report.tool_count,
-                    "tools": list(report.tools),
-                    "error": report.error,
-                    "latency_ms": report.latency_ms,
-                }
-            )
-        return {"servers": servers}
+        return {"servers": [handshake_server_row(report) for report in reports]}
 
     @app.post("/v1/mcp/servers", status_code=201)
     async def install_mcp_server(request: Request) -> dict[str, Any]:
@@ -306,17 +298,17 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         try:
             from fastmcp import Client
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - safe exception type is returned
             raise HTTPException(
                 status_code=503,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
                         error="dependency_missing",
-                        message=f"fastmcp Client unavailable: {exc!r}",
+                        message=f"fastmcp Client unavailable (reason={type(exc).__name__})",
                         recoverable=False,
                     )
                 ).model_dump(exclude_none=True),
-            ) from exc
+            ) from None
 
         if transport_kind == "stdio":
             command = body.get("command")
@@ -403,7 +395,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     error=ErrorInfo(
                         error="upstream_unavailable",
                         message=f"MCP server probe failed: {connect_error}",
-                        details={"id": sid, "spec": spec},
+                        details={"id": sid, "spec": redact_mcp_spec(spec)},
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
@@ -415,7 +407,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             "transport": transport_kind,
             "tools_count": len(tool_names),
             "tools": tool_names,
-            "spec": spec,
+            "spec": redact_mcp_spec(spec),
         }
 
     @app.post("/v1/mcp/servers/{sid}/call")
@@ -518,23 +510,13 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     ).model_dump(exclude_none=True),
                 )
 
-            try:
-                from fastmcp import Client
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=503,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="dependency_missing",
-                            message=f"fastmcp Client unavailable: {exc!r}",
-                            recoverable=False,
-                        )
-                    ).model_dump(exclude_none=True),
-                ) from exc
-
+            # Build transport + client BEFORE tool-start: 422 bad spec / 503 missing dep (#1106).
             spec = info.get("spec", {})
             try:
+                from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
+
                 transport = transport_from_spec(spec)
+                client_ctx = make_mcp_client(transport, server_id=sid)  # #1201: direct connect
             except MCPTransportError as exc:
                 raise HTTPException(
                     status_code=422,
@@ -542,11 +524,22 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                         error=ErrorInfo(
                             error="mcp_spec_invalid",
                             message=str(exc),
-                            details={"id": sid, "spec": spec},
+                            details={"id": sid, "spec": redact_mcp_spec(spec)},
                             recoverable=True,
                         )
                     ).model_dump(exclude_none=True),
                 ) from exc
+            except ImportError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="dependency_missing",
+                            message=f"fastmcp Client unavailable (reason={type(exc).__name__})",
+                            recoverable=False,
+                        )
+                    ).model_dump(exclude_none=True),
+                ) from None
 
             # Fire tool observer manually so this call shows up in
             # tools_called + tool.call.* SSE events identically to an
@@ -556,7 +549,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                 tool_observer = app.state.make_tool_observer()
             notify_tool_observer(tool_observer, observer_name, tool_args, "started")
             try:
-                async with Client(transport) as client:
+                async with client_ctx as client:
                     result = await client.call_tool(tool_name, tool_args)
                 content = []
                 for c in getattr(result, "content", None) or []:
@@ -566,20 +559,23 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                             "text": getattr(c, "text", str(c)),
                         }
                     )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as raw_exc:  # noqa: BLE001
+                # #1114: typed translation first — no raw SDK class/message on the wire.
+                surfaced = typed_mcp_call_error(raw_exc, tool=tool_name) or raw_exc
                 notify_tool_observer(
-                    tool_observer, observer_name, tool_args, "completed", error=repr(exc)
+                    tool_observer, observer_name, tool_args, "completed", error=repr(surfaced)
                 )
                 raise HTTPException(
                     status_code=502,
                     detail=ErrorEnvelope(
                         error=ErrorInfo(
                             error="upstream_error",
-                            message=f"tool call failed: {exc!r}",
+                            message=f"tool call failed: {surfaced}",
+                            details=getattr(surfaced, "details", None) or {},
                             recoverable=True,
                         )
                     ).model_dump(exclude_none=True),
-                ) from exc
+                ) from raw_exc
             tool_result_text = "\n".join(str(item.get("text", item)) for item in content)
             if not tool_result_text:
                 data = getattr(result, "data", None)
@@ -660,24 +656,22 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         try:
             from fastmcp import Client
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - safe exception type is returned
             raise HTTPException(
                 status_code=503,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
                         error="dependency_missing",
-                        message=f"fastmcp Client unavailable: {exc!r}",
+                        message=f"fastmcp Client unavailable (reason={type(exc).__name__})",
                         recoverable=False,
                     )
                 ).model_dump(exclude_none=True),
-            ) from exc
+            ) from None
 
-        # Validate the stored transport spec BEFORE touching the registry row
-        # or attempting any connection. A malformed spec — stdio without a
-        # command, http/sse without a url, or an unknown transport — is a
-        # client-actionable 4xx (mcp_spec_invalid), not an unhandled internal
-        # exception. Short-circuit so the registry row is never left
-        # half-updated by a spec we could never have reconnected anyway.
+        # Validate the stored transport spec BEFORE touching the registry row or
+        # attempting any connection: a malformed spec (stdio without a command,
+        # http/sse without a url, unknown transport) is a client-actionable 4xx
+        # (mcp_spec_invalid), so the row is never left half-updated.
         spec = info.get("spec") or {}
         transport_kind = str(spec.get("transport") or "").lower()
 
@@ -688,7 +682,11 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     error=ErrorInfo(
                         error="mcp_spec_invalid",
                         message=message,
-                        details={"id": sid, "transport": transport_kind, "spec": spec},
+                        details={
+                            "id": sid,
+                            "transport": transport_kind,
+                            "spec": redact_mcp_spec(spec),
+                        },
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
@@ -753,11 +751,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     error=ErrorInfo(
                         error="mcp_reconnect_timeout",
                         message=timeout_msg,
-                        details={
-                            "id": sid,
-                            "spec": spec,
-                            "timeout_s": reconnect_timeout,
-                        },
+                        details={"id": sid, "timeout_s": reconnect_timeout},
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
@@ -793,7 +787,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     error=ErrorInfo(
                         error="upstream_unavailable",
                         message=f"MCP server reconnect failed: {connect_error}",
-                        details={"id": sid, "spec": spec},
+                        details={"id": sid, "spec": redact_mcp_spec(spec)},
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
@@ -819,7 +813,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             "transport": info.get("transport", ""),
             "tools_count": len(tool_names),
             "tools": tool_names,
-            "spec": spec,
+            "spec": redact_mcp_spec(spec),
         }
 
     @app.get("/v1/mcp/servers/{sid}")
@@ -841,35 +835,17 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
 
     # ---- /v1/mcp/servers/{sid}/(tools|resources|prompts) ----------------
-    # Detail enumeration for the TUI MCP browser. Bundled servers are
-    # introspected via the in-process gateway; external servers via a
-    # short-lived fastmcp.Client connection (same transport spec used at
-    # install time).
+    # Detail enumeration for the TUI MCP browser: bundled servers introspect via the
+    # in-process gateway, external servers via a short-lived fastmcp.Client connection.
 
-    def _bundled_server_tools(short_name: str) -> list[dict[str, Any]]:
-        """Return tools for a bundled in-process server, shaped for the
-        TUI's catalog detail rows (id/name/description)."""
-        try:
-            from clio_agent.tools.gateway import list_capabilities
-
-            caps = list_capabilities()
-        except Exception:  # noqa: BLE001 - gateway capabilities optional; empty on failure
-            return []
-        out = []
-        for tool in caps:
-            if tool.get("server") != short_name:
-                continue
-            out.append(
-                {
-                    "id": tool.get("name", ""),
-                    "name": tool.get("name", ""),
-                    "description": tool.get("description") or "",
-                }
-            )
-        return out
-
-    async def _external_mcp_inventory(sid: str, kind: str) -> list[dict[str, Any]]:
-        """Fetch tools|resources|prompts from a third-party MCP server."""
+    async def _external_mcp_inventory(
+        sid: str,
+        kind: Literal["tools", "resources", "prompts", "prompt"],
+        *,
+        prompt_name: str = "",
+        arguments: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        """List an external inventory or fetch one rendered prompt."""
         installed = getattr(app.state, "external_mcp_servers", {}) or {}
         info = installed.get(sid)
         if info is None:
@@ -885,17 +861,20 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         try:
             from fastmcp import Client
-        except Exception as exc:
+
+            from clio_agent.tools.mcp_connection_era import instrument_client_era
+            from clio_agent.tools.mcp_runtime import make_mcp_client
+        except Exception as exc:  # noqa: BLE001 - safe exception type is returned
             raise HTTPException(
                 status_code=503,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
                         error="dependency_missing",
-                        message=f"fastmcp Client unavailable: {exc!r}",
+                        message=f"fastmcp Client unavailable (reason={type(exc).__name__})",
                         recoverable=False,
                     )
                 ).model_dump(exclude_none=True),
-            ) from exc
+            ) from None
         spec = info.get("spec", {})
         try:
             transport = transport_from_spec(spec)
@@ -906,53 +885,37 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     error=ErrorInfo(
                         error="mcp_spec_invalid",
                         message=str(exc),
-                        details={"id": sid, "spec": spec},
+                        details={"id": sid, "spec": redact_mcp_spec(spec)},
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
             ) from exc
         rows: list[dict[str, Any]] = []
         try:
-            async with Client(transport) as client:
+            # #1201: a direct connect either way -- classify under both branches.
+            client_context = (
+                make_mcp_client(transport, server_id=sid)
+                if kind == "prompt"
+                else instrument_client_era(Client(transport), server_id=sid)
+            )
+            async with client_context as client:
                 if kind == "tools":
                     items = await client.list_tools()
-                    for t in items:
-                        rows.append(
-                            {
-                                "id": t.name,
-                                "name": t.name,
-                                "description": getattr(t, "description", "") or "",
-                                "annotations": _normalize_mcp_tool_annotations(t),
-                            }
-                        )
                 elif kind == "resources":
                     items = await client.list_resources()
-                    for r in items:
-                        uri = str(getattr(r, "uri", ""))
-                        rows.append(
-                            {
-                                "id": uri or getattr(r, "name", ""),
-                                "name": getattr(r, "name", "") or uri,
-                                "description": getattr(r, "description", "") or "",
-                            }
-                        )
                 elif kind == "prompts":
                     items = await client.list_prompts()
-                    for p in items:
-                        rows.append(
-                            {
-                                "id": p.name,
-                                "name": p.name,
-                                "description": getattr(p, "description", "") or "",
-                            }
-                        )
+                else:
+                    result = await client.get_prompt(prompt_name, arguments)
+                    return mcp_prompt_result_row(result)
+                rows.extend(mcp_inventory_row(item, kind=kind) for item in items)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(
                 status_code=502,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
                         error="upstream_error",
-                        message=f"MCP {kind} listing failed: {exc!r}",
+                        message=f"MCP {kind} {'fetch' if kind == 'prompt' else 'listing'} failed: {exc!r}",
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
@@ -967,7 +930,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         if sid.startswith("mcp_") and sid not in (
             getattr(app.state, "external_mcp_servers", {}) or {}
         ):
-            return {"tools": _bundled_server_tools(sid[len("mcp_") :])}
+            return {"tools": bundled_server_tool_rows(sid[len("mcp_") :])}
         return {"tools": await _external_mcp_inventory(sid, "tools")}
 
     @app.get("/v1/mcp/servers/{sid}/resources")
@@ -991,3 +954,32 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         ):
             return {"prompts": []}
         return {"prompts": await _external_mcp_inventory(sid, "prompts")}
+
+    @app.post("/v1/mcp/servers/{sid}/prompts/get")
+    async def get_mcp_prompt(sid: str, request: Request) -> dict[str, Any]:
+        """Fetch and render one external MCP prompt via ``prompts/get``."""
+        body = await json_body(request, route="POST /v1/mcp/servers/{sid}/prompts/get")
+        prompt_name = body.get("name")
+        arguments = body.get("arguments")
+        if (
+            not isinstance(prompt_name, str)
+            or not prompt_name.strip()
+            or (arguments is not None and not isinstance(arguments, dict))
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="bad_request",
+                        message="'name' must be a non-empty string and 'arguments' an object",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        prompt = await _external_mcp_inventory(
+            sid,
+            "prompt",
+            prompt_name=prompt_name.strip(),
+            arguments=arguments,
+        )
+        return {"prompt": prompt}

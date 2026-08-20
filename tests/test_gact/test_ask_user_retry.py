@@ -256,7 +256,10 @@ def test_orchestrator_ask_user_action_pauses_and_answer_resumes(tmp_path: Path) 
         and any("resumed with:" in part.get("text", "") for part in msg["parts"])
     )
     assert assistant["role"] == "assistant"
-    assert "resumed with:" in assistant["parts"][1]["text"]
+    # The text answer is the only part — routing decisions are semantic events
+    # (a0e1d9a9), never message parts.
+    assert [part["type"] for part in assistant["parts"]] == ["text"]
+    assert "resumed with:" in assistant["parts"][0]["text"]
     history = client.app.state.bus._history.get(sid, [])
     event_types = [event.type for event in history]
     assert "user_question.created" in event_types

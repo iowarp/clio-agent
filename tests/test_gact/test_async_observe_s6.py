@@ -144,9 +144,11 @@ def test_spawn_tool_spawns_async_mode(tmp_path: Path, monkeypatch) -> None:
 
     _declare(monkeypatch, "data_expert")
     captured: list[TaskSpec] = []
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     monkeypatch.setattr(
-        "clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe",
-        lambda a, spec: (
+        app.state.expert_invoker,
+        "invoke",
+        lambda spec: (
             captured.append(spec)
             or SimpleNamespace(task_id="task_abc", status="running", run_index=0, queued_reason="")
         ),
@@ -158,7 +160,6 @@ def test_spawn_tool_spawns_async_mode(tmp_path: Path, monkeypatch) -> None:
         "clio_agent.gact.agents.spawn_runtime._append_live_assistant_part", lambda *a, **k: None
     )
 
-    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app):
         with _active_turn(app, "sess_x"):
             tools = {
@@ -885,7 +886,200 @@ def test_consume_notification_is_atomic_under_racing_threads(tmp_path: Path) -> 
 
 
 # --------------------------------------------------------------------------- #
-# 11. Child excerpt cannot forge the marker / break the fence ([5])            #
+# 11. Delegation-return stamp on the child's final assistant message (p5)      #
+# --------------------------------------------------------------------------- #
+
+
+def _child_messages(client: TestClient, child_sid: str) -> list[dict[str, Any]]:
+    """The child session's message wire — exactly what a UI reads."""
+
+    resp = client.get(f"/v1/sessions/{child_sid}/messages")
+    assert resp.status_code == 200, resp.text
+    return resp.json()["messages"]
+
+
+def _wait_stamped(
+    client: TestClient, child_sid: str, timeout: float = 8.0
+) -> dict[str, Any] | None:
+    """Poll the child wire until a delegation_return stamp appears (the stamp lands
+    on the done-callback thread just after the registry transition turns terminal)."""
+
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        for m in _child_messages(client, child_sid):
+            stamp = (m.get("metadata") or {}).get("delegation_return")
+            if isinstance(stamp, dict):
+                return m
+        time.sleep(0.02)
+    return None
+
+
+def test_terminal_delegation_stamps_child_final_message_with_return_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Clean-wire (owner, 2026-08-05): the CHILD session's final assistant message —
+    the one whose text the parent collects as the delegation's output — must CARRY
+    the return-to-parent fact on the wire (``metadata.delegation_return``) so the UI
+    renders it without inferring; a re-terminal (double wait) neither duplicates nor
+    alters the persisted stamp."""
+
+    from clio_agent.gact.agents import spawn_runtime
+    from clio_agent.gact.delegation_return import stamp_delegation_return
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        task = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(
+                child_expert_id="main",
+                task_text="produce the deliverable",
+                parent_session_id=parent,
+                requesting_expert_id="main",
+                mode="async",
+            ),
+        )
+        settled = _wait_terminal(app, task.task_id)
+        assert settled.status == STATUS_COMPLETED
+
+        stamped_msg = _wait_stamped(client, settled.child_session_id)
+        assert stamped_msg is not None, "no child message carries delegation_return"
+        # The stamped message IS the one the sealed result records (message_ref) —
+        # the message whose text the parent collects verbatim as the output.
+        assert stamped_msg["id"] == settled.result["message_ref"]
+        assert stamped_msg["role"] == "assistant"
+        stamp = stamped_msg["metadata"]["delegation_return"]
+        assert stamp == {
+            "parent_session_id": parent,
+            "task_id": settled.task_id,
+            "parent_agent": "main",
+        }
+
+        # Re-stamping the same task is an idempotent no-op on the persisted record.
+        assert stamp_delegation_return(app, settled) is False
+
+        # Re-terminal: a double wait re-collects the row but must neither duplicate
+        # nor alter the stamp (exactly one stamped message, same content).
+        with _active_turn(app, parent):
+            tools = {
+                t.name: t for t in spawn_runtime.build_spawn_runtime_tools(_Agent(), _Def("main"))
+            }
+            tools["wait_agent_tasks"].func(task_ids=[settled.task_id], timeout_s=2.0)
+            tools["wait_agent_tasks"].func(task_ids=[settled.task_id], timeout_s=2.0)
+        rows_after = _child_messages(client, settled.child_session_id)
+        stamped_after = [
+            m
+            for m in rows_after
+            if isinstance((m.get("metadata") or {}).get("delegation_return"), dict)
+        ]
+        assert len(stamped_after) == 1, "double wait duplicated the delegation_return stamp"
+        assert stamped_after[0]["metadata"]["delegation_return"] == stamp
+        assert stamped_after[0]["id"] == stamped_msg["id"]
+
+
+def test_stamp_falls_back_to_newest_assistant_when_message_ref_absent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A terminal result sealed WITHOUT a message_ref (a relay-folded / forwarded
+    record): the newest assistant message of the child session at terminal time is
+    the honest fallback target, stamped when the delegation is collected."""
+
+    from clio_agent.gact.agents import spawn_runtime
+    from clio_agent.gact.types import Message, Part
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        child = app.state.sessions.create(
+            workspace_id="ws_default", title="c", parent_session_id=parent
+        )
+        final = Message(
+            id="msg_final",
+            session_id=child.id,
+            role="assistant",
+            created_at="2026-08-05T00:00:00+00:00",
+            updated_at="2026-08-05T00:00:00+00:00",
+            parts=[Part(type="text", text="the deliverable")],
+        )
+        app.state.messages[child.id] = [final]
+        task = AgentTask(
+            task_id="task_noref",
+            parent_session_id=parent,
+            child_session_id=child.id,
+            agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
+            status=STATUS_COMPLETED,
+            notify_pending=True,
+            result={"answer_excerpt": "the deliverable", "message_ref": "", "workflow_state": {}},
+            created_at="2026-08-05T00:00:00+00:00",
+            updated_at="2026-08-05T00:00:00+00:00",
+        )
+        persist_agent_task(app, task)
+        with _active_turn(app, parent):
+            tools = {
+                t.name: t for t in spawn_runtime.build_spawn_runtime_tools(_Agent(), _Def("main"))
+            }
+            tools["wait_agent_tasks"].func(task_ids=["task_noref"], timeout_s=1.0)
+        rows = _child_messages(client, child.id)
+        stamped = [
+            m for m in rows if isinstance((m.get("metadata") or {}).get("delegation_return"), dict)
+        ]
+        assert len(stamped) == 1
+        assert stamped[0]["id"] == "msg_final"
+        assert stamped[0]["metadata"]["delegation_return"] == {
+            "parent_session_id": parent,
+            "task_id": "task_noref",
+            "parent_agent": "main",
+        }
+
+
+def test_child_with_no_assistant_message_is_never_stamped(tmp_path: Path, monkeypatch) -> None:
+    """A child that produced NO assistant message has no delegation output to mark:
+    the stamp emits NOTHING rather than marking the wrong message."""
+
+    from clio_agent.gact.types import Message, Part
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        child = app.state.sessions.create(
+            workspace_id="ws_default", title="c", parent_session_id=parent
+        )
+        # A user-only ledger: the child died before answering.
+        app.state.messages[child.id] = [
+            Message(
+                id="msg_user_only",
+                session_id=child.id,
+                role="user",
+                created_at="2026-08-05T00:00:00+00:00",
+                updated_at="2026-08-05T00:00:00+00:00",
+                parts=[Part(type="text", text="do the thing")],
+            )
+        ]
+        task = AgentTask(
+            task_id="task_noans",
+            parent_session_id=parent,
+            child_session_id=child.id,
+            agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
+            status=STATUS_RUNNING,
+            created_at="2026-08-05T00:00:00+00:00",
+            updated_at="2026-08-05T00:00:00+00:00",
+        )
+        app.state.sessions.update(child.id, metadata_patch=task.to_metadata())
+        app.state.agent_task_registry.register(task)
+        _on_child_done(app, task.task_id, child.id, "async")
+        assert app.state.agent_task_registry.get("task_noans").status == STATUS_FAILED
+        rows = _child_messages(client, child.id)
+        assert rows, "the user message must still be served"
+        assert all("delegation_return" not in (m.get("metadata") or {}) for m in rows), (
+            "a child with no assistant message must not be stamped"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# 12. Child excerpt cannot forge the marker / break the fence ([5])            #
 # --------------------------------------------------------------------------- #
 
 

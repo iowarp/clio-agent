@@ -258,7 +258,7 @@ def _reset_process_arc():
 
 
 @pytest.fixture(autouse=True)
-def allow_pytest_tmp_path(tmp_path, monkeypatch):
+def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
     """Isolate tests from developer shell defaults, config-file-first (#985).
 
     Developer shells often set ``CLIO_ALLOWED_ROOTS`` narrowly for manual use, and
@@ -296,6 +296,12 @@ def allow_pytest_tmp_path(tmp_path, monkeypatch):
 
     xdg_root = tmp_path / "xdg"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_root))
+    # CLIO_USER_DIR is the only override platformdirs honors on EVERY OS —
+    # XDG alone is a no-op on Windows, which let route-level writes (the
+    # blueprint-sources registry) land in the real %LOCALAPPDATA% (~100 dead
+    # pytest fixture rows found 2026-08-13). Point it at the same tree the XDG
+    # layout resolves to so both resolution paths agree.
+    monkeypatch.setenv("CLIO_USER_DIR", str(xdg_root / "clio-agent"))
 
     # Union tmp_path with any dev-shell CLIO_ALLOWED_ROOTS, then build the FILE
     # value from it and DELETE the stale env var so the file is authoritative.
@@ -304,6 +310,18 @@ def allow_pytest_tmp_path(tmp_path, monkeypatch):
     if existing.strip():
         allowed_roots.extend(item for item in existing.split(os.pathsep) if item)
     monkeypatch.delenv("CLIO_ALLOWED_ROOTS", raising=False)
+
+    # Strip ambient relay wiring from tests that did not opt into a live door
+    # (``relay`` / ``live`` / ``real_case`` markers keep it). CLIO_RELAY_* can
+    # appear MID-SUITE: litellm's import-time dotenv slurps a repo-root ``.env``
+    # on the first turn that touches the LM stack, and a stale relay block there
+    # then configures a half-dead door for every later-built app (observed live
+    # 2026-08-19: ~15s connect timeouts inside child turns — the s7 parity
+    # reds). Tests that need relay config set it explicitly via monkeypatch,
+    # which runs after this fixture and still wins.
+    if not any(request.node.get_closest_marker(m) for m in ("relay", "live", "real_case")):
+        for _key in [k for k in os.environ if k.startswith("CLIO_RELAY_")]:
+            monkeypatch.delenv(_key, raising=False)
 
     # #948 S4b: the legacy native-expert runtime (the deleted Tier-1 planner) is
     # gone, and its ``CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS`` knob is retired, so
@@ -363,11 +381,17 @@ def _path_under(path: Path, base: Path) -> bool:
 
 def _write_test_default_registry_blueprint(xdg_root: Path) -> None:
     # Bind the fixture blueprint id to the loader's DEFAULT_AGENT_BLUEPRINT_ID so
-    # the two can never drift again: _builtin_agents() filters load_agent_blueprints
-    # by that id, so a mismatch yields an EMPTY /v1/agents catalog and breaks every
-    # agent-catalog/expert-pack test. (Commit 3bf695b changed the constant to
-    # "earthscope-gnss-region" for the demo default registry but left this fixture
-    # on the old "data-semantics" id.)
+    # the two can never drift again: every explicit
+    # ``POST /v1/sessions/{sid}/agent-blueprint`` activation test that names
+    # DEFAULT_AGENT_BLUEPRINT_ID resolves THIS fixture's rows via
+    # load_agent_blueprints(blueprint_id=...), so a mismatch breaks every
+    # activated-session agent-catalog/expert-pack test. (Commit 3bf695b changed
+    # the constant to "earthscope-gnss-region" for the demo default registry but
+    # left this fixture on the old "data-semantics" id.) NOTE: this snapshot is
+    # no longer implicitly loaded for a BARE/unactivated session --
+    # catalog._builtin_agents() (owner ruling 2026-08-05) always returns just the
+    # code-shipped builtin main; only an EXPLICIT activation resolves this
+    # fixture's rows.
     from clio_agent.gact.agent_blueprints import DEFAULT_AGENT_BLUEPRINT_ID  # noqa: PLC0415
 
     root = xdg_root / "clio-agent" / "agent-blueprints" / DEFAULT_AGENT_BLUEPRINT_ID

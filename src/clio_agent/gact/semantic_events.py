@@ -27,11 +27,9 @@ DEFAULT_DETAIL_LEVEL = "semantic"
 DETAIL_LEVELS = {"off", "metadata", "semantic", "full_debug"}
 REDACTED_VALUE = "[redacted]"
 # CLIO does NOT redact its own trajectory from the user's own session: the SSE
-# stream carries the full content (the user's text, the model's reasoning, tool
-# results, prompts, answers) so a generic client renders the real session — same
-# principle as the durable trace/ARC ("the highway carries the full trajectory").
-# Only GENUINE SECRETS — credentials that are never session content — are redacted
-# in the SSE/hook projection. Everything else (content, formerly in this set:
+# stream carries the full content so a generic client renders the real session
+# (same principle as the durable trace/ARC). Only GENUINE SECRETS — credentials
+# that are never session content — are redacted. Everything else (formerly here:
 # text, input, question, prompt, reasoning, reasoning_content, rendered_*, result,
 # response, content, args, arguments, raw, trajectory, transcript, final_message,
 # new_content, output) now passes through.
@@ -60,13 +58,9 @@ SSE_KEEP_KEYS_BY_EVENT: dict[str, frozenset[str]] = {
 
 # UI/SSE serving allow-list: the ONLY semantic-event types that reach the live
 # bus (GET /v1/sessions/{sid}/events) — the ReAct trajectory the TUI renders.
-# Everything else (turn/agent/llm/hook lifecycle, lm.call, the tool.call mirror,
-# memory/permission bookkeeping) is captured FULL on the durable trace + ARC but
-# is substrate the UI does not render, so it stays off the served wire. This is
-# the serving layer (order/cleanliness), NOT a capture filter: project_full and
-# ARC always see every event. Any FAILED/ERROR event passes regardless (errors
-# are first-class and never summarized away) EXCEPT the trace-only provenance
-# substrate (``SSE_TRACE_ONLY_EVENT_TYPES``), which is excluded unconditionally.
+# Everything else stays off the served wire but is captured FULL on the durable
+# trace + ARC (a serving-layer filter, never a capture filter). Any FAILED/ERROR
+# event passes regardless, EXCEPT ``SSE_TRACE_ONLY_EVENT_TYPES`` (unconditional).
 # See the four ReAct atoms:
 #   a) delegation  = blueprint.delegation.* + the orchestrator's reasoning
 #                    (carried on expert.response.completed for CoT orchestrators)
@@ -76,6 +70,9 @@ SSE_KEEP_KEYS_BY_EVENT: dict[str, frozenset[str]] = {
 SSE_UI_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "react.step.completed",
+        # Routing decisions are OBSERVABILITY events (the prototype's timeline
+        # "routing_decision" rows), never transcript parts (clean-wire rule).
+        "routing.decision",
         "expert.extract.completed",
         "expert.response.completed",
         "expert.lifecycle.started",
@@ -111,6 +108,12 @@ SSE_UI_EVENT_TYPES: frozenset[str] = frozenset(
         "artifact.created",
         "artifact.version.added",
         "artifact.alias.moved",
+        # Document artifacts: protocol-specific UI atoms, never inferred.
+        "document.review.created",
+        "document.review.dispatched",
+        "document.native_comment.imported",
+        "document.working_copy.changed",
+        "document.working_copy.conflict",
         # Grants on the record (B5 #979): every effective-boundary change is a
         # user/model DECISION the TUI renders — a workspace/session write-root grant
         # or revoke (``boundary.granted``/``boundary.revoked``, ``kind: root|domain``)
@@ -149,6 +152,7 @@ SSE_TRACE_ONLY_EVENT_TYPES: frozenset[str] = frozenset(
         "replan.stall_scored",
         "replan.suggested",
         "artifact.used",
+        "artifact.enriched",  # A9 (#1176) dedup-enrichment side index — substrate, not a UI row.
         "artifact.transform.recorded",
         "artifact.transform.failed",
         "artifact.proposed",
@@ -175,6 +179,14 @@ SSE_TRACE_ONLY_EVENT_TYPES: frozenset[str] = frozenset(
         # grant produces, never the raw per-connection egress); declared trace-only so no
         # status can lift it onto the UI stream.
         "net.egress",
+        # Built-toolset inventory (obs Tools tab "called | available" toggle):
+        # one ``agent.toolset.recorded`` per built react expert, read back by
+        # GET /v1/sessions/{sid}/trace for the "available" view. Durable-trace
+        # substrate only -- never a live SSE row (the tab reads the trace poll,
+        # not the event stream) -- declared here so no future non-"completed"
+        # status can lift it onto the wire via ``_SSE_ALWAYS_STATUSES``.
+        "agent.toolset.recorded",
+        "provider.thinking.redacted",  # no-silent-fallback CoT-redaction reason: trace-only
     }
 )
 

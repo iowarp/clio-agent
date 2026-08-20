@@ -223,9 +223,7 @@ with open({str(marker)!r}, "a", encoding="utf-8") as f:
     f.write("\\n")
 """
     set_config("trace.backend", "none")  # file-layer (file > env); #985 config-first
-    install_global_dispatcher(
-        make_command_dispatcher(tmp_path, event="SemanticEvent", body=body)
-    )
+    install_global_dispatcher(make_command_dispatcher(tmp_path, event="SemanticEvent", body=body))
     try:
         app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
         client = TestClient(app)
@@ -235,8 +233,15 @@ with open({str(marker)!r}, "a", encoding="utf-8") as f:
         install_global_dispatcher(None)
 
     rows = [json.loads(line) for line in marker.read_text().splitlines()]
-    assert rows[0]["event_type"] == "turn.started"
-    assert "turn.completed" in {row["event_type"] for row in rows}
+    # The GLOBAL dispatcher captures every semantic event in the process, so scope
+    # the ordering assertion to THIS turn's trace: a stray event from another
+    # session (e.g. a background LM failure elsewhere in the suite) must not be
+    # able to claim rows[0]. The hook records trace_id for exactly this purpose.
+    assert rows, "the SemanticEvent hook never fired"
+    turn_trace = next(row["trace_id"] for row in rows if row["event_type"] == "turn.started")
+    trace_rows = [row for row in rows if row["trace_id"] == turn_trace]
+    assert trace_rows[0]["event_type"] == "turn.started"
+    assert "turn.completed" in {row["event_type"] for row in trace_rows}
 
 
 def test_tool_observer_emits_semantic_tool_events(tmp_path: Path, monkeypatch) -> None:
@@ -268,6 +273,64 @@ def test_tool_observer_emits_semantic_tool_events(tmp_path: Path, monkeypatch) -
         and e.payload["event_type"] in ("tool.call.started", "tool.call.completed")
     ]
     assert tool_mirror == []
+
+
+def test_tool_observer_stamps_curated_title_on_call_events(tmp_path: Path) -> None:
+    """Round-9 wire defect: obs "called" rows rendered the raw tool name because
+    the tool.call.started/completed events never carried the title the observer
+    already resolves (and already stamps on the tool_call Part). The dedicated
+    bus events must carry it too, for a curated tool."""
+
+    from clio_agent.gact.agents.tool_instrumentation import instrument_tools, native_tool
+
+    def _rank_stations(**_: object) -> str:
+        return "ranked"
+
+    tool = native_tool(
+        _rank_stations,
+        name="p5_rank_stations",
+        desc="rank",
+        args={},
+        title="Rank stations",
+    )
+    instrument_tools([tool])
+
+    set_config("trace.backend", "none")  # file-layer (file > env); #985 config-first
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    observer = _make_tool_observer(app)
+
+    observer("p5_rank_stations", {}, "started", None)
+    observer("p5_rank_stations", {}, "completed", None, "ranked")
+
+    history = app.state.bus._history.get(sid, [])
+    dedicated = {
+        e.type: e for e in history if e.type in ("tool.call.started", "tool.call.completed")
+    }
+    assert dedicated["tool.call.started"].payload["tool_title"] == "Rank stations"
+    assert dedicated["tool.call.completed"].payload["tool_title"] == "Rank stations"
+
+
+def test_tool_observer_omits_title_when_tool_uncurated(tmp_path: Path) -> None:
+    """An uncurated tool's call events carry no tool_title -- never fabricated,
+    matching Part.tool_title's own "empty when uncurated" contract."""
+
+    set_config("trace.backend", "none")  # file-layer (file > env); #985 config-first
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    observer = _make_tool_observer(app)
+
+    observer("fs_read_file", {"path": "x.txt"}, "started", None)
+    observer("fs_read_file", {"path": "x.txt"}, "completed", None)
+
+    history = app.state.bus._history.get(sid, [])
+    dedicated = {
+        e.type: e for e in history if e.type in ("tool.call.started", "tool.call.completed")
+    }
+    assert "tool_title" not in dedicated["tool.call.started"].payload
+    assert "tool_title" not in dedicated["tool.call.completed"].payload
 
 
 def test_artifact_and_builtin_command_semantic_events(tmp_path: Path, monkeypatch) -> None:

@@ -307,7 +307,9 @@ def test_seal_and_settle_pairs_finalized_part(arc: ARCMemory, monkeypatch: Any) 
 # --------------------------------------------------------------------------- #
 
 
-def test_live_edge_integration_streamed_turn(tmp_path: Path, monkeypatch: Any) -> None:
+def test_live_edge_integration_streamed_turn(
+    tmp_path: Path, monkeypatch: Any, host_agent_executor: Any
+) -> None:
     """A streamed turn under atoms + live edge: reload==live holds; ONE atom per part.
 
     Drives a real streaming turn (deltas flow through ``emit_chunk`` -> the live-edge
@@ -315,6 +317,16 @@ def test_live_edge_integration_streamed_turn(tmp_path: Path, monkeypatch: Any) -
     log (``reload == live`` unchanged — the memory win is not regressed), and (2) the
     streamed text part costs exactly ONE sealed ``_events/m`` atom, not one per token
     (the write-amplification bound holds end-to-end).
+
+    Needs ``host_agent_executor``: 287dcf1e made a bare session execute the
+    code-shipped builtin react ``main`` on the SAME tool-executor-gated react
+    runtime seam as blueprint agents ("a host without a tool executor fails
+    typed before any LM call" — see the twin
+    test_agent_resolution_unify.py::test_bare_session_runs_builtin_main_and_fails_typed_on_inexecutable_host).
+    A ``build_app(agent=...)`` host fake only gets its ``forward`` called
+    through the ``host_agent_executor`` seam — without it the turn errors
+    with ``custom_agent_tool_executor_unavailable`` before
+    ``_try_streamed_forward`` (the thing under test) ever runs.
     """
 
     from fastapi.testclient import TestClient

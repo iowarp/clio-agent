@@ -228,7 +228,7 @@ def run_cron_command(app: Any, sid: str, request_body: Mapping[str, Any]) -> str
 def build_cron_create_tool() -> Any:
     """Build the ``cron_create`` dspy.Tool (auto-attached; result-only schedule_id)."""
 
-    import dspy  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def cron_create(
         cron: str = "",
@@ -266,7 +266,7 @@ def build_cron_create_tool() -> Any:
             recurring=bool(recurring),
             timezone_name=timezone,
         )
-        return {
+        result = {
             "schedule_id": sch.id,
             "cron": sch.cron,
             "run_at": sch.run_at,
@@ -274,11 +274,28 @@ def build_cron_create_tool() -> Any:
             "timezone": sch.timezone,
             "next_fire_at": sch.next_fire_at,
         }
+        # Declared structured payload (P5 wire semantics — the wait_agent_tasks
+        # treatment): a one-line ``message`` naming what armed FIRST, then the
+        # SAME fields the model-facing return already carries.
+        from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+            declare_structured_content,
+        )
 
-    return dspy.Tool(
-        func=cron_create,
+        kind = "recurring" if sch.recurring else "one-shot"
+        trigger = f"cron {sch.cron}" if sch.cron else f"run_at {sch.run_at}"
+        declare_structured_content(
+            {
+                "message": f"armed schedule {sch.id} — {kind} {trigger}; next fire {sch.next_fire_at}",
+                **result,
+            }
+        )
+        return result
+
+    return native_tool(
+        cron_create,
         name="cron_create",
         desc=cron_create.__doc__,
+        title="Create Cron",
         args={
             "cron": {
                 "type": "string",
@@ -308,7 +325,7 @@ def build_cron_create_tool() -> Any:
 def build_cron_list_tool() -> Any:
     """Build the ``cron_list`` read-back dspy.Tool (prevents double-arming)."""
 
-    import dspy  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def cron_list() -> list:
         """List THIS session's scheduled turns (the read-back before you arm a new one).
@@ -319,7 +336,7 @@ def build_cron_list_tool() -> Any:
 
         app, sid = _active()
         rows = app.state.schedules.list(session_id=sid)
-        return [
+        schedules = [
             {
                 "id": s.id,
                 "cron": s.cron,
@@ -330,14 +347,38 @@ def build_cron_list_tool() -> Any:
             }
             for s in rows
         ]
+        # Declared structured payload (P5 wire semantics — the wait_agent_tasks
+        # treatment): a one-line ``message`` tallying recurring vs one-shot
+        # FIRST, then the SAME rows the model-facing return already carries.
+        from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+            declare_structured_content,
+        )
 
-    return dspy.Tool(func=cron_list, name="cron_list", desc=cron_list.__doc__, args={})
+        n = len(schedules)
+        if n == 0:
+            message = "no schedules armed for this session"
+        else:
+            recurring_n = sum(1 for s in schedules if s["recurring"])
+            message = (
+                f"{n} schedule{'' if n == 1 else 's'}: "
+                f"{recurring_n} recurring, {n - recurring_n} one-shot"
+            )
+        declare_structured_content({"message": message, "schedules": schedules})
+        return schedules
+
+    return native_tool(
+        cron_list,
+        name="cron_list",
+        desc=cron_list.__doc__,
+        title="List Crons",
+        args={},
+    )
 
 
 def build_cron_delete_tool() -> Any:
     """Build the ``cron_delete`` dspy.Tool (cancel-both: store row + daemon deferred)."""
 
-    import dspy  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def cron_delete(schedule_id: str) -> bool:
         """Cancel a scheduled turn by its ``schedule_id`` (from cron_create/cron_list).
@@ -348,12 +389,30 @@ def build_cron_delete_tool() -> Any:
         recurring tick AND clears any pending busy-retry, so nothing fires afterward."""
 
         app, sid = _active()
-        return cancel_owned_schedule(app, sid, str(schedule_id or "").strip())
+        clean_id = str(schedule_id or "").strip()
+        deleted = cancel_owned_schedule(app, sid, clean_id)
+        # Declared structured payload (P5 wire semantics — the wait_agent_tasks
+        # treatment): the bare bool the model sees stays unchanged; the wire
+        # gets an honest one-line message derived from the SAME facts.
+        from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+            declare_structured_content,
+        )
 
-    return dspy.Tool(
-        func=cron_delete,
+        message = (
+            f"cancelled schedule {clean_id}"
+            if deleted
+            else f"no schedule {clean_id} to cancel (already gone or never armed)"
+        )
+        declare_structured_content(
+            {"message": message, "schedule_id": clean_id, "deleted": deleted}
+        )
+        return deleted
+
+    return native_tool(
+        cron_delete,
         name="cron_delete",
         desc=cron_delete.__doc__,
+        title="Delete Cron",
         args={
             "schedule_id": {
                 "type": "string",

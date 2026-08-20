@@ -18,18 +18,28 @@ orthogonal to the substrate). Declared-children resolution is monkeypatched.
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import json
+import threading
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from clio_agent.gact.agent_tasks import STATUS_COMPLETED, STATUS_RUNNING, AgentTask
+from clio_agent.gact.agent_tasks import (
+    STATUS_CANCELLED,
+    STATUS_COMPLETED,
+    STATUS_RUNNING,
+    AgentTask,
+)
 from clio_agent.gact.agents.invoker import (
     RELAY_STATE_MAP,
     TASK_CONSUMED_EVENT,
-    TASK_EVENT_VOCABULARY,
     ExpertInvoker,
     InProcessExpertInvoker,
     InvokerError,
@@ -40,6 +50,7 @@ from clio_agent.gact.agents.invoker import (
     spec_to_wire,
     task_event_type,
 )
+from clio_agent.gact.agents.relay_expert_invoker import RelayExpertInvoker
 from clio_agent.gact.app import build_app
 from clio_agent.gact.turn_spawn import (
     MAX_SPAWN_DEPTH,
@@ -48,8 +59,24 @@ from clio_agent.gact.turn_spawn import (
     cancel_agent_task,
     spawn_child_turn_threadsafe,
 )
+from clio_agent.tools.mcp_task_records import TaskKey, TaskRecord, resolve_store
+from clio_agent.tools.relay_transport import RelayTaskIdentity
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
+
+@pytest.mark.parametrize(
+    "invoker_type",
+    [InProcessExpertInvoker, RelayExpertInvoker],
+    ids=["in-process", "relay"],
+)
+def test_both_expert_invoker_implementations_satisfy_protocol(invoker_type: type) -> None:
+    """The S7 implementation matrix contains both protocol implementations."""
+
+    assert all(
+        callable(getattr(invoker_type, method, None))
+        for method in ("invoke", "wait", "check", "cancel", "message")
+    )
 
 
 class _Agent:
@@ -72,10 +99,258 @@ class _Agent:
         )()
 
 
+class _FakeRelayBackend:
+    """Deterministic relay state shared by every reconstructed fake client."""
+
+    def __init__(self) -> None:
+        self.tasks: dict[str, dict[str, Any]] = {}
+        self.submissions: list[dict[str, Any]] = []
+        self.messages: list[tuple[str, str]] = []
+        self.client_count = 0
+        self._next_id = 0
+        self._lock = threading.Lock()
+
+    def client(self, owner_session_id: str) -> "_FakeRelayClient":
+        """Return a fresh owner-bound client."""
+
+        return _FakeRelayClient(self, owner_session_id)
+
+    def create(self, owner_session_id: str, arguments: dict[str, Any]) -> RelayTaskIdentity:
+        """Admit one job and persist the exact reconnect key.
+
+        #1222: the real door has no inline ``context`` argument -- task content
+        travels through the ONE bounded post-admission follow-up round instead
+        (``request_followup_message``). A submission that opts into it starts
+        ``awaiting_input`` (mirrors the live door's observed ``input_required``
+        first poll); ``message()`` below resolves it with the real task text.
+        """
+
+        with self._lock:
+            self._next_id += 1
+            task_id = f"task_relay_{self._next_id:04d}"
+            task = {
+                "task_id": task_id,
+                "owner_session_id": owner_session_id,
+                "arguments": dict(arguments),
+                "context": {},
+                "polls": 0,
+                "cancel_requested": False,
+                "terminal": threading.Event(),
+                "stream_closed": threading.Event(),
+                "state": "queued",
+                "awaiting_input": bool(arguments.get("request_followup_message")),
+            }
+            self.tasks[task_id] = task
+            self.submissions.append(dict(arguments))
+        key = TaskKey(
+            server_id="fake-relay-server",
+            session_id=owner_session_id,
+            task_id=task_id,
+        )
+        resolve_store(None).put(
+            TaskRecord(
+                key=key,
+                tool="relay_submit_agent",
+                backend={"transport": "fake-relay"},
+                status="working",
+                created_at="2026-08-01T00:00:00+00:00",
+            )
+        )
+        return RelayTaskIdentity.from_key(key)
+
+    def current(self, task_id: str, *, terminal: bool = False) -> SimpleNamespace:
+        """Return one SEP task observation projected from canonical fake relay state."""
+
+        task = self.tasks[task_id]
+        task["polls"] += 1
+        if task["cancel_requested"]:
+            observation = "canceled"
+        elif task["awaiting_input"]:
+            observation = "input_required"
+        elif terminal:
+            observation = "succeeded"
+        elif task["polls"] == 1:
+            observation = "queued"
+        else:
+            observation = "running"
+        task["state"] = observation
+        if observation == "canceled":
+            task["terminal"].set()
+            resolve_store(None).drop(self._key(task))
+            return _relay_current("canceled")
+        if observation == "succeeded":
+            task["terminal"].set()
+            resolve_store(None).drop(self._key(task))
+            return _relay_current(
+                "succeeded",
+                result={"isError": False, "task_result": self.task_result(task)},
+            )
+        return _relay_current(observation)
+
+    def answer_input(self, task_id: str, text: str) -> None:
+        """Resolve exactly one parked admission round with the real task text.
+
+        Only the FIRST answer while ``awaiting_input`` is a task-content delivery
+        (mirrors the door's one bounded post-admission round); any later
+        ``message()`` call is mid-run steering and must not re-arm this or overwrite
+        the delivered task text.
+        """
+
+        with self._lock:
+            task = self.tasks[task_id]
+            if task["awaiting_input"]:
+                task["context"] = {"task_text": text}
+                task["awaiting_input"] = False
+                task["polls"] = 0
+
+    @staticmethod
+    def _key(task: dict[str, Any]) -> TaskKey:
+        return TaskKey(
+            server_id="fake-relay-server",
+            session_id=str(task["owner_session_id"]),
+            task_id=str(task["task_id"]),
+        )
+
+    @staticmethod
+    def task_result(task: dict[str, Any]) -> dict[str, Any]:
+        """Build the remote TaskResult boundary record.
+
+        #1222: ``agent_ref``/``depth`` are omitted -- the real relay job does not
+        know clio's internal expert/depth bookkeeping either (it only ever saw
+        ``prompt_path`` + the follow-up message text). ``_terminal_result``'s merge
+        falls back to the locally-seeded ``AgentTask`` values for those fields,
+        exactly like a real relay completion would.
+        """
+
+        text = str(task["context"].get("task_text", ""))
+        return {
+            "task_id": task["task_id"],
+            "parent_session_id": task["owner_session_id"],
+            "child_session_id": "",
+            "run_index": 0,
+            "status": "completed",
+            "queued_reason": "",
+            "error_reason": "",
+            "created_at": "2026-08-01T00:00:00+00:00",
+            "updated_at": "2026-08-01T00:00:01+00:00",
+            "result": {
+                "message_ref": "remote-message",
+                "answer_excerpt": f"child did: {text[:20]}",
+                "workflow_state": {},
+            },
+            "artifact_ref": "",
+        }
+
+
+class _FakeRelayClient:
+    """Async RelayTransportClient surface over the shared fake backend."""
+
+    def __init__(self, backend: _FakeRelayBackend, owner_session_id: str) -> None:
+        self.backend = backend
+        self.owner_session_id = owner_session_id
+
+    async def __aenter__(self) -> "_FakeRelayClient":
+        self.backend.client_count += 1
+        return self
+
+    async def __aexit__(self, *_args: Any) -> None:
+        return None
+
+    async def submit(self, tool_name: str, arguments: dict[str, Any]) -> RelayTaskIdentity:
+        assert tool_name == "relay_submit_agent"
+        return self.backend.create(self.owner_session_id, arguments)
+
+    async def poll(self, identity: RelayTaskIdentity) -> SimpleNamespace:
+        return self.backend.current(identity.task_id)
+
+    async def resume(
+        self, key: TaskKey, *, timeout_seconds: float | None = None
+    ) -> SimpleNamespace:
+        del timeout_seconds
+        return self.backend.current(key.task_id, terminal=True)
+
+    async def cancel(self, identity: RelayTaskIdentity) -> dict[str, bool]:
+        task = self.backend.tasks[identity.task_id]
+        task["cancel_requested"] = True
+        record = resolve_store(None).get(identity.key)
+        assert record is not None
+        from dataclasses import replace
+
+        resolve_store(None).put(replace(record, cancel_requested=True))
+        return {"acknowledged": True}
+
+    async def message(self, identity: RelayTaskIdentity, text: str) -> None:
+        self.backend.messages.append((identity.task_id, text))
+        self.backend.answer_input(identity.task_id, text)
+
+    async def stream_events(
+        self,
+        identity: RelayTaskIdentity,
+        *,
+        cursor: int = 1,
+    ) -> AsyncIterator[dict[str, Any]]:
+        assert cursor == 1
+        task = self.backend.tasks[identity.task_id]
+        result = self.backend.task_result(task)
+        try:
+            yield {
+                "task_id": identity.task_id,
+                "event_type": "agent.task.started",
+                "session_id": "",
+                "status": "running",
+                "payload": {**result, "status": "running", "result": None},
+            }
+            while not task["terminal"].is_set():
+                await asyncio.sleep(0.01)
+            status = "cancelled" if task["state"] == "canceled" else "completed"
+            event_type = f"agent.task.{status}"
+            yield {
+                "task_id": identity.task_id,
+                "event_type": event_type,
+                "session_id": "",
+                "status": status,
+                "payload": {**result, "status": status, "result": result["result"]},
+            }
+        finally:
+            task["stream_closed"].set()
+
+
+def _relay_current(
+    observation: str,
+    *,
+    result: dict[str, Any] | None = None,
+    error: dict[str, Any] | None = None,
+) -> SimpleNamespace:
+    """Build one fake ClientGetTaskResult for a committed map row."""
+
+    projection = RELAY_STATE_MAP[observation]
+    return SimpleNamespace(
+        status=projection["status"],
+        relay_state=observation,
+        status_message=f"Relay job is {observation}",
+        result=result,
+        error=error,
+    )
+
+
+def _relay_invoker(app: Any, backend: _FakeRelayBackend) -> RelayExpertInvoker:
+    """Construct the relay implementation with fixed remote execution inputs."""
+
+    return RelayExpertInvoker(
+        app,
+        backend.client,
+        cluster="ares",
+        prompt_path="/shared/clio/relay-expert.md",
+        mcp_config_path="/shared/clio/mcp.toml",
+        model="anthropic/claude",
+        workdir="/shared/work",
+    )
+
+
 def _declare(monkeypatch, *child_ids: str) -> None:
     monkeypatch.setattr(
         "clio_agent.gact.agents.resolution._runtime_declared_child_ids",
-        lambda app, pid, session_id="": set(child_ids),
+        lambda app, pid, session_id="", **_bindings: set(child_ids),
     )
 
 
@@ -100,6 +375,10 @@ _VOLATILE = frozenset(
         "created_at",
         "updated_at",
         "consumed_at",
+        # P2.10 parity is modulo executor-specific run-handle identity/placement.
+        "handle_id",
+        "host",
+        "placement",
     }
 )
 _VOLATILE_RESULT = frozenset({"message_ref"})
@@ -174,6 +453,15 @@ def test_taskspec_json_roundtrips_verbatim() -> None:
         mode="async",
         workflow_state={"plan": "P1", "steps": [1, 2, 3]},
         fanout_bound=4,
+        workspace_id="ws_science",
+        session_mode="architect",
+        session_scope_metadata={
+            "active_agent_blueprint_id": "science-blueprint",
+            "active_agent_blueprint_path": "/blueprints/science",
+            "active_expert_pack_id": "science-pack",
+            "active_expert_pack_path": "/packs/science",
+            "expert_pack_id": "legacy-science-pack",
+        },
     )
     wire = spec_to_wire(spec)
     # Genuinely JSON (survives a dumps/loads with no custom encoder).
@@ -183,9 +471,358 @@ def test_taskspec_json_roundtrips_verbatim() -> None:
     assert spec_from_wire({**wire, "future_field": 7}) == spec
 
 
+@pytest.mark.parametrize("implementation", ["in-process", "relay"])
+def test_s7_record_parity_across_both_invokers(
+    implementation: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both implementations produce the direct substrate TaskResult record."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    backend = _FakeRelayBackend()
+    with TestClient(app) as client:
+        invoker: ExpertInvoker = (
+            InProcessExpertInvoker(app)
+            if implementation == "in-process"
+            else _relay_invoker(app, backend)
+        )
+        p_inv = client.post("/v1/sessions", json={"title": "inv"}).json()["id"]
+        p_dir = client.post("/v1/sessions", json={"title": "dir"}).json()["id"]
+        handle = invoker.invoke(_spec(p_inv))
+        direct = spawn_child_turn_threadsafe(app, _spec(p_dir))
+        if implementation == "relay":
+            invoker = _relay_invoker(app, backend)
+        result = invoker.wait(handle, timeout_s=10.0)
+        assert app.state.agent_task_registry.event(direct.task_id).wait(timeout=10.0)
+        direct_result = TaskResult.from_task(app.state.agent_task_registry.get(direct.task_id))
+
+        assert _norm_payload(result.to_wire()) == _norm_payload(direct_result.to_wire())
+        assert result.status == direct_result.status == STATUS_COMPLETED
+        assert result.result["answer_excerpt"] == direct_result.result["answer_excerpt"]
+
+
+@pytest.mark.parametrize("implementation", ["in-process", "relay"])
+def test_s7_event_parity_across_both_invokers(
+    implementation: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both implementations publish the same ordered lifecycle event family."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    backend = _FakeRelayBackend()
+    with TestClient(app) as client:
+        invoker: ExpertInvoker = (
+            InProcessExpertInvoker(app)
+            if implementation == "in-process"
+            else _relay_invoker(app, backend)
+        )
+        p_inv = client.post("/v1/sessions", json={"title": "inv"}).json()["id"]
+        p_dir = client.post("/v1/sessions", json={"title": "dir"}).json()["id"]
+        handle = invoker.invoke(_spec(p_inv))
+        direct = spawn_child_turn_threadsafe(app, _spec(p_dir))
+        invoker.wait(handle, timeout_s=10.0)
+        _wait_terminal(app, direct.task_id)
+        _wait_task_events_settled(app, handle.child_session_id)
+        _wait_task_events_settled(app, direct.child_session_id)
+
+        actual = _norm_events(app, handle.child_session_id)
+        expected = _norm_events(app, direct.child_session_id)
+        assert actual == expected
+        assert [event_type for event_type, _payload in actual] == [
+            "agent.task.queued",
+            "agent.task.started",
+            "agent.task.completed",
+        ]
+
+
+@pytest.mark.parametrize("implementation", ["in-process", "relay"])
+def test_s7_typed_error_parity_across_both_invokers(
+    implementation: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both implementations preserve the direct typed undeclared-child refusal."""
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    backend = _FakeRelayBackend()
+    with TestClient(app):
+        invoker: ExpertInvoker = (
+            InProcessExpertInvoker(app)
+            if implementation == "in-process"
+            else _relay_invoker(app, backend)
+        )
+        parent = app.state.sessions.create(workspace_id="ws_default", title="p")
+        spec = TaskSpec(
+            child_expert_id="hpc_expert",
+            task_text="x",
+            parent_session_id=parent.id,
+        )
+        with pytest.raises(SpawnError) as inv_exc:
+            invoker.invoke(spec)
+        with pytest.raises(SpawnError) as direct_exc:
+            spawn_child_turn_threadsafe(app, spec)
+
+        assert inv_exc.value.reason == direct_exc.value.reason == "undeclared_child"
+        depth_spec = TaskSpec(
+            child_expert_id="data_expert",
+            task_text="x",
+            parent_session_id=parent.id,
+            depth=MAX_SPAWN_DEPTH + 1,
+        )
+        with pytest.raises(SpawnError) as inv_depth:
+            invoker.invoke(depth_spec)
+        with pytest.raises(SpawnError) as direct_depth:
+            spawn_child_turn_threadsafe(app, depth_spec)
+        assert inv_depth.value.reason == direct_depth.value.reason == "spawn_depth_exceeded"
+        assert backend.submissions == []
+
+
+def test_taskspec_maps_to_remote_agent_task_spec_verbatim(
+    tmp_path: Path,
+) -> None:
+    """Remote execution fields are configured; no inline context (#1222 -- the door's
+    real relay_submit_agent schema rejects it; task text travels via the follow-up
+    round instead, answered by invoke())."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    backend = _FakeRelayBackend()
+    invoker = _relay_invoker(app, backend)
+    spec = TaskSpec(
+        child_expert_id="worker",
+        task_text="inspect",
+        parent_session_id="session-parent",
+        requesting_expert_id="main",
+        workspace_id="ws-science",
+        session_mode="architect",
+        session_scope_metadata={"active_agent_blueprint_id": "science"},
+    )
+
+    assert invoker.remote_agent_task_spec(spec) == {
+        "prompt_path": "/shared/clio/relay-expert.md",
+        "mcp_config_path": "/shared/clio/mcp.toml",
+        "model": "anthropic/claude",
+        "workdir": "/shared/work",
+        "request_followup_message": True,
+    }
+
+
+def test_relay_invoke_does_not_serialize_network_round_trips(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding 12: two relay submissions enter the network seam concurrently."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    backend = _FakeRelayBackend()
+    invoker = _relay_invoker(app, backend)
+    entered = 0
+    entered_lock = threading.Lock()
+    both_entered = threading.Event()
+    release = threading.Event()
+
+    def blocked_submit(parent_session_id: str, _remote_spec: Any) -> tuple[Any, Any]:
+        nonlocal entered
+        with entered_lock:
+            entered += 1
+            index = entered
+            if entered == 2:
+                both_entered.set()
+        assert release.wait(timeout=2.0)
+        identity = RelayTaskIdentity.from_key(
+            TaskKey("fake-relay", parent_session_id, f"parallel-relay-{index}")
+        )
+        return identity, _relay_current("queued")
+
+    monkeypatch.setattr(invoker._runtime, "submit_and_poll", blocked_submit)
+    monkeypatch.setattr(invoker, "_start_event_pump", lambda _handle: None)
+
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "parallel relay"}).json()["id"]
+        spec = _spec(parent)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(invoker.invoke, spec) for _ in range(2)]
+            overlapped = both_entered.wait(timeout=0.5)
+            release.set()
+            handles = [future.result(timeout=5) for future in futures]
+
+    assert overlapped is True
+    assert {handle.task_id for handle in handles} == {"parallel-relay-1", "parallel-relay-2"}
+    assert sorted(handle.run_index for handle in handles) == [0, 1]
+
+
+def test_relay_message_answers_post_admission_input_on_retained_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The relay invoker carries a message over the retained durable identity.
+
+    #1222: ``invoke()`` itself already answers ONE parked admission round with the
+    spec's own task text (the door's only per-task channel), so the FIRST message
+    the fake backend observes is that initial delivery ("initial"); this test's own
+    explicit ``invoker.message(...)`` call is a SECOND, later, mid-run steering
+    round over the same retained identity.
+    """
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    backend = _FakeRelayBackend()
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "relay message"}).json()["id"]
+        invoker = _relay_invoker(app, backend)
+        handle = invoker.invoke(
+            TaskSpec(
+                child_expert_id="data_expert",
+                task_text="initial",
+                parent_session_id=parent,
+                placement="relay:ares",
+            )
+        )
+        invoker.message(handle, "Use the new boundary condition.")
+        result = invoker.wait(handle, timeout_s=1.0)
+        assert result.status == "completed"
+        assert backend.tasks[handle.task_id]["stream_closed"].wait(1.0)
+
+    assert backend.messages == [
+        (handle.task_id, "initial"),
+        (handle.task_id, "Use the new boundary condition."),
+    ]
+
+
+@pytest.mark.parametrize("observation", sorted(RELAY_STATE_MAP))
+def test_every_committed_relay_state_row_is_used(observation: str, tmp_path: Path) -> None:
+    """Every committed source row translates through the sole table."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    invoker = _relay_invoker(app, _FakeRelayBackend())
+    result = None
+    error = None
+    if observation == "succeeded":
+        result = {"isError": False}
+    elif observation == "tool-fail":
+        result = {"isError": True}
+    elif observation == "protocol":
+        error = {"reason": "agent_error"}
+    current = _relay_current(observation, result=result, error=error)
+
+    actual_observation, projection = invoker._relay_projection(current)
+
+    assert actual_observation == observation
+    assert projection is RELAY_STATE_MAP[observation]
+
+
+def test_relay_detach_new_invoker_reconnects_by_task_id_and_streams_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A new invoker/client resumes the retained task id and its event stream."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    backend = _FakeRelayBackend()
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        originating = _relay_invoker(app, backend)
+        handle = originating.invoke(_spec(parent))
+        assert handle.task_id == next(iter(backend.tasks))
+        assert resolve_store(None).get(originating._task_key(handle)) is not None
+        deadline = time.monotonic() + 5.0
+        while backend.client_count < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert backend.client_count >= 2
+
+        rebuilt = _relay_invoker(app, backend)
+        result = rebuilt.wait(handle, timeout_s=10.0)
+        _wait_task_events_settled(app, handle.child_session_id)
+
+    assert result.status == STATUS_COMPLETED
+    assert result.task_id == handle.task_id
+    assert backend.client_count >= 3
+    assert _norm_events(app, handle.child_session_id)[-1][0] == "agent.task.completed"
+
+
+def test_relay_live_task_events_use_committed_fold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The SSE door feeds TaskEvent objects through fold_agent_task_event."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    backend = _FakeRelayBackend()
+    seen = threading.Event()
+    from clio_agent.gact import task_fold as task_fold_module
+
+    original = task_fold_module.fold_agent_task_event
+
+    def recording_fold(app_arg: Any, observation: Any, **kwargs: Any) -> Any:
+        if isinstance(observation, TaskEvent):
+            seen.set()
+        return original(app_arg, observation, **kwargs)
+
+    monkeypatch.setattr(task_fold_module, "fold_agent_task_event", recording_fold)
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        handle = _relay_invoker(app, backend).invoke(_spec(parent))
+        assert seen.wait(timeout=5.0)
+        assert (
+            _wait_terminal(
+                app,
+                _relay_invoker(app, backend).wait(handle, timeout_s=10.0).task_id,
+            ).status
+            == STATUS_COMPLETED
+        )
+
+
+def test_relay_cancel_acknowledges_now_and_settles_later(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancellation ack keeps the task running until a later canonical poll."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    backend = _FakeRelayBackend()
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        invoker = _relay_invoker(app, backend)
+        handle = invoker.invoke(_spec(parent))
+        assert invoker.cancel(handle) is True
+        acknowledged = app.state.agent_task_registry.get(handle.task_id)
+        assert acknowledged.status != STATUS_CANCELLED
+        record = resolve_store(None).get(invoker._task_key(handle))
+        assert record is not None and record.cancel_requested is True
+
+        settled = invoker.check([handle])[0]
+
+    assert settled.status == STATUS_CANCELLED
+    assert invoker.cancel(handle) is False
+
+
 # ---------------------------------------------------------------------------
 # invoke parity: same record + same started events
 # ---------------------------------------------------------------------------
+
+
+def test_build_app_binds_in_process_expert_invoker(tmp_path: Path) -> None:
+    """P2.6: app assembly has one explicit default executor binding."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+
+    assert isinstance(app.state.expert_invoker, InProcessExpertInvoker)
+    assert app.state.expert_invoker.app is app
+
+
+def test_build_app_populates_configured_relay_expert_invoker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding 3: app assembly publishes a real invoker for the configured cluster."""
+
+    monkeypatch.setenv("CLIO_RELAY_MCP_URL", "http://127.0.0.1:18783/mcp")
+    monkeypatch.setenv("CLIO_RELAY_HTTP_URL", "http://127.0.0.1:8765")
+    monkeypatch.setenv("CLIO_RELAY_API_TOKEN", "relay-secret")
+    monkeypatch.setenv("CLIO_RELAY_CLUSTER", "local")
+    monkeypatch.setenv("CLIO_RELAY_REMOTE_AGENT_PROMPT_PATH", "/shared/prompts/worker.md")
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+
+    assert set(app.state.relay_expert_invokers) == {"local"}
+    assert isinstance(app.state.relay_expert_invokers["local"], RelayExpertInvoker)
+    assert app.state.relay_runtime_status == {"configured": True, "reason": None}
 
 
 def test_invoke_parity_records_and_events(tmp_path: Path, monkeypatch) -> None:
@@ -367,7 +1004,8 @@ def test_invoke_undeclared_child_parity(tmp_path: Path, monkeypatch) -> None:
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app):
         invoker = InProcessExpertInvoker(app)
-        spec = TaskSpec(child_expert_id="hpc_expert", task_text="x", parent_session_id="sess_p")
+        parent = app.state.sessions.create(workspace_id="ws_default", title="p")
+        spec = TaskSpec(child_expert_id="hpc_expert", task_text="x", parent_session_id=parent.id)
         with pytest.raises(SpawnError) as inv_exc:
             invoker.invoke(spec)
         with pytest.raises(SpawnError) as dir_exc:
@@ -503,13 +1141,14 @@ def test_run_index_and_notify_parity(tmp_path: Path, monkeypatch) -> None:
 
 def test_taskresult_drops_internal_bookkeeping(tmp_path: Path, monkeypatch) -> None:
     """The boundary :class:`TaskResult` omits EVERY :class:`AgentTask` field that is not
-    part of the executor boundary — all six, in two classes: parent-side observe-later /
+    part of the executor boundary — all eight, in three classes: parent-side observe-later /
     wire-dedup bookkeeping (``notify_pending`` / ``consumed_at`` / ``delegation_reported``)
     and spawn-request / topology fields the parent already holds on its ``TaskSpec``
-    (``parent_turn_id`` / ``child_turn_id`` / ``fanout_bound``).
+    (``parent_turn_id`` / ``child_turn_id`` / ``fanout_bound``), plus parent-side run-list
+    display state (``detached`` / ``dismissed``).
 
     Adversarial-review finding [5]: the drop-list must be EXHAUSTIVE against the code —
-    ``AgentTask`` minus ``TaskResult`` is exactly these six, no more, no less."""
+    ``AgentTask`` minus ``TaskResult`` is exactly these eight, no more, no less."""
 
     task_fields = set(AgentTask.__dataclass_fields__)
     result_fields = set(TaskResult.__dataclass_fields__)
@@ -520,9 +1159,11 @@ def test_taskresult_drops_internal_bookkeeping(tmp_path: Path, monkeypatch) -> N
         "parent_turn_id",
         "child_turn_id",
         "fanout_bound",
+        "detached",
+        "dismissed",
     }
-    assert dropped.isdisjoint(result_fields)  # none of the six survive the projection
-    # EXHAUSTIVE: the six named above are exactly the fields AgentTask has and
+    assert dropped.isdisjoint(result_fields)  # none of the eight survive the projection
+    # EXHAUSTIVE: the eight named above are exactly the fields AgentTask has and
     # TaskResult drops — a newly-added dropped/carried field must update this + the docs.
     assert task_fields - result_fields == dropped
     # But it DOES carry the durable, relay-compatible record vocabulary.
@@ -535,73 +1176,6 @@ def test_taskresult_drops_internal_bookkeeping(tmp_path: Path, monkeypatch) -> N
         "result",
         "artifact_ref",
     } <= result_fields
-
-
-def test_relay_state_map_is_total_and_lossless() -> None:
-    """Every clio status maps 1:1 to a clio-relay ``JobState`` (federation adapters
-    translate at the wire; neither side renames its durable records)."""
-
-    assert set(RELAY_STATE_MAP) == set(TASK_EVENT_VOCABULARY)
-    assert RELAY_STATE_MAP["completed"] == "succeeded"
-    assert RELAY_STATE_MAP["cancelled"] == "canceled"
-    # Lossless: distinct clio statuses never collapse to one relay state.
-    assert len(set(RELAY_STATE_MAP.values())) == len(RELAY_STATE_MAP)
-
-
-def _relay_jobstate_values() -> set[str]:
-    """Parse clio-relay's real ``JobState`` StrEnum values from its source, or skip.
-
-    clio-relay is not a clio-agent dependency (federation is future work), so its
-    models are not importable; we AST-parse the sibling checkout when present and skip
-    with a typed reason otherwise — the map is asserted against the REAL enum, never a
-    hand-copied literal list that could silently drift (adversarial-review finding [6])."""
-    import ast
-    import os
-
-    repo_root = Path(__file__).resolve().parents[2]
-    candidates = [
-        os.environ.get("CLIO_RELAY_ROOT", ""),
-        str(repo_root.parent / "clio-relay"),
-        str(repo_root.parent.parent / "clio-relay"),
-    ]
-    models: Path | None = None
-    for cand in candidates:
-        if not cand:
-            continue
-        p = Path(cand) / "src" / "clio_relay" / "models.py"
-        if p.is_file():
-            models = p
-            break
-    if models is None:
-        pytest.skip("clio-relay checkout not found (set CLIO_RELAY_ROOT); cannot verify JobState")
-
-    tree = ast.parse(models.read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == "JobState":
-            values: set[str] = set()
-            for stmt in node.body:
-                if isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Constant):
-                    values.add(str(stmt.value.value))
-            return values
-    pytest.skip("JobState enum not found in clio-relay models.py")
-    return set()  # unreachable (pragma)
-
-
-def test_relay_state_map_targets_are_real_jobstates() -> None:
-    """The map's targets must be REAL ``clio_relay.JobState`` values, injective into the
-    enum — asserted against relay's actual source, not a copied literal list.
-
-    Relay's enum also carries ``leased`` (a transitional scheduler state clio does not
-    originate), so the map is injective INTO ``JobState``, not onto it — that unmapped
-    state is the exact drift shape this guard exists to surface if it ever changes."""
-
-    job_states = _relay_jobstate_values()
-    mapped = set(RELAY_STATE_MAP.values())
-    missing = mapped - job_states
-    assert not missing, f"RELAY_STATE_MAP targets not present in relay JobState: {missing}"
-    # Injective, not onto: relay's transitional 'leased' is deliberately unmapped by clio.
-    assert "leased" in job_states  # present in relay; if this ever disappears, revisit the map
-    assert "leased" not in mapped
 
 
 # ---------------------------------------------------------------------------

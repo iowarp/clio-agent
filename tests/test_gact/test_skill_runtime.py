@@ -130,6 +130,57 @@ def test_load_skill_bundled_file_and_traversal_twin(pack: Path) -> None:
     assert "outside" in str(excinfo.value)
 
 
+# ---- declared structured_content (P5 wire semantics) ------------------------------
+
+
+def test_load_skill_declares_typed_structured_content_for_body(pack: Path, monkeypatch) -> None:
+    """load_skill gets wait_agent_tasks's OWN treatment: a ``message`` naming what
+    loaded + its line count FIRST, then the skill id/scope facts. The BODY stays the
+    model-facing return UNCHANGED (asserted separately above)."""
+
+    declared: list[dict] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+    out = tool.func(skill_id="quality-rubric")
+
+    assert "SECRET_PROCEDURE_MARKER" in out  # model-facing body unchanged
+    assert len(declared) == 1
+    shape = declared[0]
+    assert next(iter(shape)) == "message"
+    assert shape["message"] == "loaded skill 'quality-rubric' (1 line)"
+    assert shape["skill_id"] == "quality-rubric"
+    assert shape["scope"] == "pack"
+    assert shape["lines"] == 1
+    assert "file" not in shape
+
+
+def test_load_skill_declares_typed_structured_content_for_bundled_file(
+    pack: Path, monkeypatch
+) -> None:
+    declared: list[dict] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+    out = tool.func(skill_id="quality-rubric", file="references/checklist.md")
+
+    assert out == "THE CHECKLIST"  # model-facing content unchanged
+    assert len(declared) == 1
+    shape = declared[0]
+    assert (
+        shape["message"]
+        == "loaded file 'references/checklist.md' from skill 'quality-rubric' (1 line)"
+    )
+    assert shape["skill_id"] == "quality-rubric"
+    assert shape["file"] == "references/checklist.md"
+
+
 # ---- tool-less experts get bodies -------------------------------------------------
 
 
@@ -170,16 +221,38 @@ def test_default_root_auto_declares_workspace_skills_on_real_runtime_rows(
         assert "user-skill" in effective_declared_skills(root, catalog)
     for child in [r for r in rows if r.parent_id]:
         assert "user-skill" not in effective_declared_skills(child, catalog)
-    # And the listing seam (source_blueprint stamp) matches:
+    # A root tagged with the EXECUTING seam's own agent_blueprint_id matches:
     listing_root = AgentDef(
+        id="main",
+        source="expert_pack",
+        title="Main",
+        metadata={"agent_blueprint_id": DEFAULT_AGENT_BLUEPRINT_ID},
+    )
+    # Workspace skills lead the surface; clio's shipped built-in skills (``planning``,
+    # ``update-models``) are auto-declared after them onto the default-registry root
+    # (P1.5 #1067), alphabetically by id. #1211 review R6/D1: ``update-models`` is a
+    # DELIBERATE inclusion, not an oversight -- there is no per-skill auto-declare
+    # opt-out today, its declaration cost is the same ~100-token metadata-only block
+    # every built-in pays (RULE 6), and letting it auto-declare (rather than inventing
+    # new opt-out machinery) is what lets plain chat invoke `/update-models` without an
+    # edited blueprint, matching the existing ``planning`` precedent exactly.
+    assert effective_declared_skills(listing_root, catalog) == [
+        "user-skill",
+        "planning",
+        "update-models",
+    ]
+    # DELETED SEAM regression pin: the retired "listing seam" stamp
+    # (metadata["source_blueprint"] == "default_registry") -- the tag
+    # catalog._builtin_agents() used to attach when it implicitly loaded the
+    # installed-but-unactivated default registry snapshot -- must NEVER
+    # auto-declare on its own; only the executing seam's agent_blueprint_id does.
+    stale_listing_tag_root = AgentDef(
         id="main",
         source="expert_pack",
         title="Main",
         metadata={"source_blueprint": "default_registry"},
     )
-    # Workspace skills lead the surface; clio's shipped built-in skills (the ``planning``
-    # entry-skill) are auto-declared after them onto the default-registry root (P1.5 #1067).
-    assert effective_declared_skills(listing_root, catalog) == ["user-skill", "planning"]
+    assert effective_declared_skills(stale_listing_tag_root, catalog) == []
     # A non-default blueprint root does NOT auto-declare:
     other_root = AgentDef(
         id="root",
@@ -251,9 +324,7 @@ def test_appless_rebuild_serves_cached_surface(pack: Path, tmp_path: Path) -> No
 # ---- builder integration ------------------------------------------------------------
 
 
-def test_react_builder_wires_block_and_tool(
-    pack: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_react_builder_wires_block_and_tool(pack: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """End-to-end through the REAL builder: system prompt carries the metadata
     block (not the body) and the tools include load_skill."""
 

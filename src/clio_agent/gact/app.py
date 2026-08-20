@@ -54,6 +54,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clio_agent import conf
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.auth import configure_bearer_auth
+from clio_agent.gact.error_middleware import install_error_envelope
 from clio_agent.gact.semantic_events import (
     SemanticEventSink,
     build_trace_backend,
@@ -101,7 +103,6 @@ from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
     _format_sse,
     _gact_app_context,
     _iso_from_epoch,
-    _jsonish,
     _llm_provider_payload,
     _new_attempt_id,
     _new_cancellation_attempt_id,
@@ -326,6 +327,7 @@ def _enrich_cancellation_error_info(
 # (behavior-preserving extraction)                                              #
 # --------------------------------------------------------------------------- #
 # gact/_params.py -- user-agent generation-parameter parsing.
+from clio_agent.gact import relay_wiring  # noqa: E402
 from clio_agent.gact._params import (  # noqa: E402,F401
     _gact_turn_timeout_s,
     _semantic_trace_detail_level,
@@ -374,6 +376,7 @@ from clio_agent.gact.agents.composition import (  # noqa: E402, F401
     _runtime_active_workspace_context,
     _runtime_dynamic_agent_children_context,
 )
+from clio_agent.gact.agents.invoker import InProcessExpertInvoker  # noqa: E402
 from clio_agent.gact.agents.resolution import (  # noqa: E402, F401
     _agent_definition_is_agent_blueprint,
     _agent_definition_uses_blueprint_runtime,
@@ -472,13 +475,16 @@ from clio_agent.gact.providers.lmstudio import (  # noqa: E402,F401
     _lm_studio_headers,
     _release_owned_lm_studio_instance,
 )
+from clio_agent.gact.routes import artifact_workspace  # noqa: E402
 from clio_agent.gact.routes.agent_tasks import (  # noqa: E402
     register_agent_task_routes,
 )
 from clio_agent.gact.routes.agents import (  # noqa: E402
     register_agents_routes,
 )
-from clio_agent.gact.routes.artifacts import register_artifacts_routes  # noqa: E402
+from clio_agent.gact.routes.async_processes import (  # noqa: E402
+    register_async_process_routes,
+)
 from clio_agent.gact.routes.blueprints import (  # noqa: E402
     register_blueprints_routes,
 )
@@ -513,18 +519,17 @@ from clio_agent.gact.routes.permissions import (  # noqa: E402
 from clio_agent.gact.routes.prompts import (  # noqa: E402
     register_prompts_routes,
 )
-from clio_agent.gact.routes.providers import (  # noqa: E402
-    register_providers_routes,
+from clio_agent.gact.routes.provider_models_refresh import (
+    register_provider_models_refresh_routes,  # noqa: E402
 )
+from clio_agent.gact.routes.providers import register_providers_routes  # noqa: E402
+from clio_agent.gact.routes.relay import register_relay_routes  # noqa: E402
 from clio_agent.gact.routes.schedules import (  # noqa: E402
     register_schedules_routes,
 )
-from clio_agent.gact.routes.sessions import (  # noqa: E402
-    register_sessions_routes,
-)
-from clio_agent.gact.routes.system import (  # noqa: E402
-    register_system_routes,
-)
+from clio_agent.gact.routes.sessions import register_sessions_routes  # noqa: E402
+from clio_agent.gact.routes.system import register_system_routes  # noqa: E402
+from clio_agent.gact.routes.trace import register_trace_routes  # noqa: E402
 from clio_agent.gact.routes.workspaces import (  # noqa: E402
     register_workspaces_routes,
 )
@@ -730,6 +735,7 @@ def _clear_session_model_refs(app: "FastAPI") -> None:
 from clio_agent.gact.agent_tasks import (  # noqa: E402
     install_agent_task_registry,
 )
+from clio_agent.gact.mcp_task_events import install_mcp_task_event_publisher  # noqa: E402
 from clio_agent.gact.turn import (  # noqa: E402,F401
     _run_turn_in_background,
     _start_background_user_turn,
@@ -934,11 +940,21 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.sandbox = install_sandbox()
 
-    # #1001: bound the clio-owned MCP uv spawn cache at boot (off-loop; SKIPS if a peer
-    # clio process is alive; never mid-session). Typed reasons emitted by the helper.
+    # #1232 pt 4 + #1001: reap provably-orphaned clio-launched children (dead
+    # parent + clio identity; the daemon root is excluded by construction)
+    # BEFORE the MCP-cache prune's peer-liveness check runs — a still-running
+    # orphan from a prior hard kill otherwise looks like a live peer to
+    # ``live_peer_clio_processes`` and defers the prune indefinitely (the
+    # observed "deferred for two days" bug). Sequenced (not raced) so the
+    # ordering is real, still fully off-loop/best-effort/typed-logged.
+    from clio_agent.runtime.process_census import boot_reap_off_loop  # noqa: PLC0415
     from clio_agent.tools.mcp_cache import boot_prune_off_loop  # noqa: PLC0415
 
-    app.state.mcp_cache_prune_task = asyncio.create_task(boot_prune_off_loop())
+    async def _reap_orphans_then_prune_mcp_cache() -> None:
+        await boot_reap_off_loop()
+        await boot_prune_off_loop()
+
+    app.state.mcp_cache_prune_task = asyncio.create_task(_reap_orphans_then_prune_mcp_cache())
 
     task: Optional[asyncio.Task] = None
     if getattr(app.state, "schedules", None) is not None:
@@ -961,7 +977,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # not run (honest: no false 'resumed' claim), consistent with shutdown losing
     # other in-memory in-flight state.
     app.state.turn_runner.set_idle_hook(None)
-
+    await asyncio.to_thread(app.state.document_store.close)
     # #948 S1 (#662): quiesce the internal turn-PRODUCERS (the scheduler tick, the
     # agent-construction and lm-config tasks) BEFORE draining turns, so nothing can
     # spawn a fresh turn into the drain window. The scheduler is the one live
@@ -1042,15 +1058,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 async def _construct_agent_async(app: "FastAPI") -> None:
     """Build the real ClioAgent off the lifespan hot path.
 
-    DSPy import + ARC hydration + expert wiring takes ~10 s on Aurora's
-    frameworks Python (beartype import hook + Lustre cold reads). We
-    run it via ``run_in_executor`` so the event loop stays free for
-    /v1/capabilities, /v1/health, and the rest of the catalog while
-    the agent constructs. On success, stamps ``app.state.agent`` +
-    ``app.state.arc`` so the next POST /messages dispatches normally;
-    on failure, logs and leaves ``agent=None`` so /messages keeps
-    surfacing a structured 503 instead of a corrupted half-built
-    agent.
+    DSPy import, ARC hydration, and expert wiring take about 10 seconds on
+    Aurora, so ``run_in_executor`` keeps the event loop available. Success
+    publishes ``app.state.agent`` and ``app.state.arc``; failure leaves the
+    agent unset so message requests continue returning a structured 503
+    instead of observing a partially built agent.
     """
 
     loop = asyncio.get_running_loop()
@@ -1058,6 +1070,7 @@ async def _construct_agent_async(app: "FastAPI") -> None:
     # so the agent does not mint a fresh ARC — the same instance is app.state.arc for the
     # whole process across every later LM bind (no per-build ARC churn / trace ⊋ ARC split).
     arc = _process_arc(app)
+    relay_kwargs = await relay_wiring.relay_agent_kwargs(app)
 
     def _build() -> Any:
         import dspy  # noqa: PLC0415
@@ -1084,7 +1097,7 @@ async def _construct_agent_async(app: "FastAPI") -> None:
         # this exact config (credential included — the boot/default config is the
         # sanctioned env-credential read, design §6), so a GACT booted purely from
         # ``CLIO_LM_*`` still authenticates.
-        agent = ClioAgent(verbose=False, arc=arc, provider_config=cfg)
+        agent = ClioAgent(verbose=False, arc=arc, provider_config=cfg, **relay_kwargs)
         # Make the ProviderProfileStore the authoritative identity registry:
         # reseed its default from the agent's FINAL resolved config (post
         # lm_studio model discovery) so the store's default profile and
@@ -1102,6 +1115,13 @@ async def _construct_agent_async(app: "FastAPI") -> None:
             else ProviderProfileStore.seed(default_spec)
         )
         return agent
+
+    # Pre-import the heavy LM stack ON THIS THREAD before any builder thread
+    # runs: the deferred init here and a concurrent provider bind
+    # (construct_agent_with_relay) otherwise import litellm simultaneously on
+    # two executor threads, and the importlib race surfaces as KeyError('litellm')
+    # -> agent_init_error -> every turn 503s until a lucky reboot.
+    import litellm  # noqa: F401, PLC0415
 
     try:
         agent = await loop.run_in_executor(None, _build)
@@ -1216,12 +1236,14 @@ def build_app(
         lifespan=_lifespan,
     )
 
-    # CORS: browser/WebView frontends must opt in with explicit origins.
-    # CLIO's default auth scheme is trust_socket, which is safe for local
-    # non-browser clients but must not grant arbitrary browser origins access
-    # to a localhost agent. Operators can enable trusted web origins with
-    # ``gact.cors.origins`` in .clio/config.yaml; CLIO_GACT_CORS_ORIGINS remains
-    # a compatibility fallback.
+    configure_bearer_auth(app)
+
+    # Browser/WebView origins are explicit: trust_socket must not grant arbitrary
+    # sites access. Configure gact.cors.origins; CLIO_GACT_CORS_ORIGINS remains the
+    # compatibility fallback.
+    # Must precede CORSMiddleware; see install_error_envelope for why.
+    install_error_envelope(app)
+
     allow_origins = _gact_cors_origins()
     app.add_middleware(
         CORSMiddleware,
@@ -1342,14 +1364,17 @@ def build_app(
     # strong-ref set → no GC-cancellation; app-loop anchored; busy gate; typed
     # shutdown drain). ``in_flight_turns`` stays its per-session view.
     install_turn_runner(app)
-    # #948 S2 (#950): the AgentTask registry — an in-memory projection over the
-    # session store, rebuilt at boot by folding session_type=="agent_task" sessions
-    # (no fifth store). Feeds agent.task.* events + the task API; S3+ spawn into it.
+    # #948 S2 (#950): in-memory AgentTask projection over the session store, rebuilt
+    # from agent-task sessions; feeds events, the task API, and S3+ spawns.
     install_agent_task_registry(app)
-    # #948 S3 (#951): dedicated child-forward pool (never the default executor) so a
-    # parent blocked in a future wait can't starve its children. Sized to the
-    # concurrency cap (agent_tasks.max_concurrent / CLIO_MAX_CONCURRENT_AGENT_TASKS).
+    # #1205: bridge every durable MCP TaskRecord write (#1115) to this app's event
+    # bus, so the async-processes tray refreshes live instead of polling.
+    install_mcp_task_event_publisher(app)
+    # #948 S3 (#951): dedicated child-forward pool, sized to the concurrency cap,
+    # prevents a waiting parent from starving its children.
     install_agent_task_executor(app)
+    app.state.expert_invoker = InProcessExpertInvoker(app)
+    relay_wiring.configure_relay_expert_invokers(app)
     # #948 S1: schedule ids deferred because their session was busy at the cron
     # minute; _scheduler_tick_once retries them until the session frees (a coarse
     # cron can't be retried via due_now, which only re-yields on a cron match).
@@ -2177,10 +2202,13 @@ def build_app(
     # The AgentTask projection read + cancel routes, over
     # ``app.state.agent_task_registry`` (rebuilt at boot from agent-task sessions).
     register_agent_task_routes(app, deps)
+    # ---- /v1/sessions/{sid}/async-processes (#1205) ----
+    # Session-scoped union of spawned AgentTask rows and durable MCP TaskRecord
+    # rows, kind-discriminated, for the tray's single fetch.
+    register_async_process_routes(app, deps)
 
     # ---- /v1/artifacts + /v1/{sessions,workspaces}/{id}/artifacts (#966 S2/#968) ----
-    # Artifact registry read surface + user-pin channel, owned by routes/artifacts.py.
-    register_artifacts_routes(app, deps)
+    artifact_workspace.register_artifact_workspace_routes(app, deps)
 
     # ---- /v1/workspaces -------------------------
     # Workspace store CRUD + file listing/reading are owned by
@@ -2231,6 +2259,7 @@ def build_app(
     # (state/ops/compact/search) are owned by routes/context.py; the
     # state-assembly + ARC-unavailable helpers they share live there.
     register_context_routes(app, deps)
+    register_trace_routes(app, deps)
 
     # ---- /v1/sessions/{sid}/diffs/* + /context/files + /context/frames ---
     # Pending/applied file-diff list/apply/reject plus the context-file
@@ -2260,6 +2289,7 @@ def build_app(
     # the wire/limit constants live in runtime/constants.py. It needs no
     # cross-concern seam from ``deps``.
     register_system_routes(app, deps)
+    register_relay_routes(app, deps)
 
     # ---- /v1/sessions/{sid}/tasks + /v1/tasks/{tid} + memory/events + share ----
     # + /v1/shared/{token} + /v1/sessions/{sid}/events SSE: the misc session-
@@ -2283,6 +2313,7 @@ def build_app(
     # failure); it reaches the agent-rebuild hooks (install-tool-runtime-hooks /
     # clear-session-model-refs) through ``deps``.
     register_providers_routes(app, deps)
+    register_provider_models_refresh_routes(app, deps)  # POST .../models/refresh (#1211)
 
     # ---- /v1/catalog/tools + /v1/tools + /v1/tools/{tool_id} ----------
     # The built-in tool catalog and the unified live catalog (bundled gateway +
@@ -2364,25 +2395,8 @@ def build_app(
             content=envelope.model_dump(exclude_none=True),
         )
 
-    @app.exception_handler(Exception)
-    async def _unhandled_exception_handler(request, exc: Exception) -> JSONResponse:
-        """Return a structured 500 for unexpected route failures."""
-
-        envelope = ErrorEnvelope(
-            error=ErrorInfo(
-                error="internal_error",
-                message="Unhandled server error.",
-                details={
-                    "original_error": type(exc).__name__,
-                    "original_message": str(exc),
-                },
-                recoverable=False,
-            )
-        )
-        return JSONResponse(
-            status_code=500,
-            content=envelope.model_dump(exclude_none=True),
-        )
+    # The Exception backstop is registered by install_error_envelope above,
+    # paired with the middleware it must agree with.
 
     # --- optional web UI (`clio web`): serve the built SPA bundle same-origin ---
     # Gated on CLIO_WEB_DIR so the default server (TUI / headless API) is byte-for-

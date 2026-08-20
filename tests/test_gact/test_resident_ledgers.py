@@ -383,11 +383,21 @@ def test_estimate_bytes_counts_nested_and_image_payloads() -> None:
     light = [_msg("m", "s", text="hi")]
     nested = [_heavy_tool_message("m", "s", nested_text="Z" * 1_000_000)]
     image = [_heavy_tool_message("m", "s", data="B" * 1_000_000)]
+    light_bytes = _estimate_bytes(light)
     # The heavy off-text payloads dominate; the old text-only estimate scored them
     # at ~256 bytes. Sabotage: revert _estimate_bytes to text-only -> these go tiny.
     assert _estimate_bytes(nested) > 900_000
     assert _estimate_bytes(image) > 900_000
-    assert _estimate_bytes(light) < 1_000
+    # Additive Part fields grow the light fixture's serialized floor: P2.11's
+    # three empty fields moved it 960 -> 1,035; P2.14's four background-exit
+    # fields (#1131) -> 1,111; #1190's ``structured_content`` -> 1,137. Three more
+    # landed features each added their own Part fields: #1188 (285434f5)
+    # ``content_blocks``; the document-artifacts merge (3347d283, DocumentPartFields
+    # mixin -- review_id/artifact_id/artifact_version/artifact_sha256/review_text/
+    # anchor); and the action_card part (52387c2e, source/severity/title/body/
+    # actions) -> 1,322. It remains three orders of magnitude lighter than either
+    # heavy payload.
+    assert 1_100 <= light_bytes < 1_400
 
 
 def test_byte_cap_evicts_tool_result_heavy_sessions() -> None:

@@ -318,10 +318,89 @@ def _write_inline_content(
     return target, evidence, None
 
 
+def _mint_producer(sid: str, turn_id: str, agent_id: str) -> dict[str, Any]:
+    """The producer stamped on a fresh ``create_artifact`` mint (A8, #1176).
+
+    Parity with the tool-capture seams' producer shape (they always carry
+    ``tool`` + ``call_id`` alongside ``session_id``/``designation``) — a
+    create_artifact mint is itself a tool call, so its own record should be
+    joinable by call_id too. ``tool`` is a literal (this IS the create_artifact
+    tool); ``call_id`` is read from the observer thread-local the SAME call is
+    running under (never invented — ``""`` when genuinely unobserved, e.g. a
+    direct unit test that bypasses the tool-call wrapper).
+    """
+    from clio_agent.gact.artifacts.observer_bridge import observer_call_id  # noqa: PLC0415
+
+    return {
+        "designation": "agent-proposed",
+        "session_id": sid,
+        "turn_id": turn_id,
+        "agent_id": agent_id,
+        "tool": "create_artifact",
+        "call_id": observer_call_id(),
+    }
+
+
+def _dedup_enrich(
+    app: "FastAPI",
+    sid: str,
+    proposal: "Proposal",
+    *,
+    workspace_id: str,
+    name: str,
+    version: Any,
+    turn_id: str,
+    trace_id: str,
+) -> str:
+    """Record the caller's dedup-time enrichment onto an ALREADY-minted version (A9).
+
+    A ``create_artifact`` call hitting ``already_registered`` still names two real
+    facts a plain dedup return silently dropped: (1) THIS session used the
+    pre-existing version (:func:`~clio_agent.gact.artifacts.versions.emit_artifact_used`
+    — the same honest record every other dedup path already emits, which
+    ``promote_proposal``'s own pre-check dedup never reached), and (2) — when the
+    caller supplied a non-blank ``annotation`` — a description the version itself
+    may be missing (:func:`~clio_agent.gact.artifacts.dedup_enrichment.emit_artifact_enriched`,
+    merged onto a side index since the version is immutable). Returns the
+    enrichment's typed reason (``""`` when the proposal carried no annotation at
+    all — nothing to merge, never a spurious ``no_annotation_given`` on an
+    ordinary path-only dedup). Both emits are internally guarded — a dedup
+    enrichment must never break the tool call that already succeeded.
+    """
+    from clio_agent.gact.artifacts.dedup_enrichment import (  # noqa: PLC0415
+        emit_artifact_enriched,
+    )
+    from clio_agent.gact.artifacts.versions import emit_artifact_used  # noqa: PLC0415
+
+    emit_artifact_used(
+        app,
+        sid,
+        workspace_id=workspace_id,
+        name=name,
+        version=version,
+        turn_id=turn_id,
+        trace_id=trace_id,
+    )
+    if not proposal.annotation:
+        return ""
+    return emit_artifact_enriched(
+        app,
+        sid,
+        workspace_id=workspace_id,
+        name=name,
+        version=version,
+        annotation=proposal.annotation,
+        turn_id=turn_id,
+        trace_id=trace_id,
+    )
+
+
 __all__ = [
     "PROPOSED_ARTIFACT_EVENT",
+    "_dedup_enrich",
     "_emit_proposal_event",
     "_gate_content_write",
+    "_mint_producer",
     "_own_registered_target",
     "_session_for",
     "_write_inline_content",

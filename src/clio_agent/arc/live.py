@@ -258,7 +258,9 @@ class LiveRuntimeContext:
             # A standalone observer keeps the ``_events`` chunk family out of the
             # search-text companion too (parity with the production store ARCMemory
             # injects), so the log can never surface in scope search.
-            store = SegmentStore(_MemoryStore(), search_indexed=lambda scope: not is_events_scope(scope))
+            store = SegmentStore(
+                _MemoryStore(), search_indexed=lambda scope: not is_events_scope(scope)
+            )
         self._segments = store
 
     # ---- ingest (standalone / test convenience) ------------------------
@@ -332,6 +334,20 @@ class LiveRuntimeContext:
 
     # ---- read / replay -------------------------------------------------
 
+    def iter_session_event_segments(self, session_id: str) -> Iterator[Any]:
+        """Yield a session's semantic-event segments in canonical log order.
+
+        Args:
+            session_id: Session whose reserved ``_events`` chunk family is read.
+
+        Yields:
+            Persisted semantic-event segments, oldest first across ordered chunks.
+        """
+        for scope in self.events_scopes(session_id):
+            for segment in self._segments.render(session_id, scope):
+                if segment.kind == "semantic_event" and isinstance(segment.content, dict):
+                    yield segment
+
     def _turns(self, session_id: str) -> "OrderedDict[str, _LiveTurn]":
         """Rebuild ALL of a session's turns by querying the ``_events`` log, keeping the
         ``semantic_event`` segments, GROUPING them by ``turn_id`` (first-seen order), and
@@ -372,12 +388,8 @@ class LiveRuntimeContext:
         consumer needing them reads per-session instead.
         """
         for session_id in self._event_session_ids():
-            for scope in self.events_scopes(session_id):
-                for seg in self._segments.render(session_id, scope):
-                    if seg.kind != "semantic_event":
-                        continue
-                    if isinstance(seg.content, dict):
-                        yield seg.content
+            for segment in self.iter_session_event_segments(session_id):
+                yield segment.content
 
     def view(self, session_id: str, *, max_turns: Optional[int] = None) -> dict[str, Any]:
         """Summary of a session's turns (for context_compiler). ``max_turns`` is an

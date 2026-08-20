@@ -1,48 +1,40 @@
 """Dynamic-agent / Agent-Blueprint DSPy module builders for the GACT server (#714).
 
-This module owns the *expert builders* carved out of ``clio_agent.gact.app``: the
-factories that compile a registered dynamic agent (user agent or Agent
-Blueprint expert) into the concrete DSPy module that actually runs it --
+This module owns the expert builders carved out of ``clio_agent.gact.app``. They
+compile registered dynamic agents into concrete DSPy modules:
 
-* prompt-only user agents (:func:`_build_prompt_user_agent_module`),
-* tool-declaring user agents (:func:`_build_tool_user_agent_module`),
-* Agent-Blueprint experts of every ``module.kind``
-  (:func:`_build_blueprint_dspy_module`: predict / chain_of_thought / react),
+* prompt-only user agents (:func:`_build_prompt_user_agent_module`);
+* tool-declaring user agents (:func:`_build_tool_user_agent_module`);
+* Agent-Blueprint experts (:func:`_build_blueprint_dspy_module`) using predict,
+  chain-of-thought, or ReAct modules.
 
-together with their supporting machinery: the runtime signature builder
-(:func:`_blueprint_runtime_signature`), the LM-config / tool-resolution chain
-(including enabled external-MCP tools and the blueprint-tool telemetry wrapper),
-the bounded SCHEMA-REPAIR retry / re-extract / tool-intent-recovery helpers, and
-the synchronous child-expert + bounded-fanout delegation tools.
+Supporting machinery includes runtime signatures, LM and tool resolution, external
+MCP tools, blueprint telemetry, bounded schema repair, tool-intent recovery, and
+synchronous child-expert and bounded-fanout delegation.
 
-The retaining ReAct engine these builders instantiate lives in
-:mod:`clio_agent.gact.agents.runtime`. Agent/blueprint *resolution* and prompt
-*composition* live in :mod:`clio_agent.gact.agents.resolution` /
-:mod:`~clio_agent.gact.agents.composition`. Cross-concern helpers that still live
-in the ``gact.app`` turn handler / workflow-state subsystem (tool-result
-bounding, handoff-row coercion, workflow-state extraction, the runner-dispatch
-wrappers ``_blueprint_runner_for_agent`` / ``_run_dynamic_agent_compat``) are
-imported *lazily from* ``gact.app`` inside the functions that need them -- a
-deliberate strangler seam that keeps this module free of a module-load cycle back
-into ``gact.app`` until those concerns are extracted in later steps. The
-permission gate / tool observer are reached through ``app.state`` factories
-(``make_permission_gate`` / ``make_tool_observer``), never imported from
-``gact.app``.
+The retaining ReAct engine lives in :mod:`clio_agent.gact.agents.runtime`; resolution
+and prompt composition live in the sibling ``resolution`` and ``composition`` modules.
+Cross-concern helpers still owned by the ``gact.app`` turn handler or workflow-state
+subsystem are imported lazily inside the functions that need them, preserving the
+strangler seam without a module-load cycle. Permission-gate and tool-observer factories
+are reached through ``app.state`` and are never imported from ``gact.app``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import threading
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Literal, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import skill_runtime as _skill_runtime
+from clio_agent.gact.agents import toolset_inventory
 from clio_agent.gact.agents.auto_tools import build_auto_react_tools
 from clio_agent.gact.agents.composition import (
     _runtime_active_workspace_context,
@@ -63,7 +55,6 @@ from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
     _BlueprintTerminalWorkflowState,
     _emit_semantic_event,
-    _jsonish,
     _llm_provider_payload,
     _TurnCancelled,
     _UnsupportedSessionAgent,
@@ -74,6 +65,9 @@ from clio_agent.gact.runtime.type_parsing import (
     _structured_output_enabled,
 )
 from clio_agent.runtime import trace
+from clio_agent.tools.mcp_runtime import wire_value
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef
@@ -268,7 +262,10 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
         ) -> Any:
-            _ = (session_mode, session_edit_mode)  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
+            _ = (
+                session_mode,
+                session_edit_mode,
+            )  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(
@@ -350,10 +347,9 @@ async def _call_enabled_external_mcp_tool(
     """Call an explicitly enabled external MCP tool for a dynamic agent."""
 
     observer_name = f"{info.get('name', 'ext')}.{tool_name}"
-    # Reach the permission gate via the active app's state (the already-installed
-    # turn gate, else the build_app-stored factory) instead of importing
-    # ``_make_permission_gate`` from ``gact.app`` -- keeps this module off a
-    # module-load cycle back into the monolith (#714 DI seam).
+    # Reach the permission gate via the active app's state (installed turn gate, else
+    # the build_app-stored factory) rather than importing ``_make_permission_gate``
+    # from ``gact.app`` -- keeps this module off a module-load cycle (#714 DI seam).
     gate = getattr(app.state, "pending_permission_gate", None)
     if gate is None:
         gate = app.state.make_permission_gate()
@@ -366,39 +362,41 @@ async def _call_enabled_external_mcp_tool(
     if decision != "allow":
         raise PermissionError(f"tool call {observer_name!r} denied by permission gate")
 
-    try:
-        from fastmcp import Client  # noqa: PLC0415
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"fastmcp Client unavailable: {exc!r}") from exc
-
-    # Single canonical construction site. pdeathsig-wrapping (Linux-only, no-op
-    # elsewhere) now lives INSIDE the helper, so this external MCP child is reaped
-    # when the clio server dies hard -- identically to every other stdio spawn.
+    # Execution path (#1106 + #1113): this dynamic-agent call dispatches call_tool, so
+    # its client comes from make_elicitation_client — the single factory PLUS the
+    # elicitation handler bound to THIS call's invocation (one client per call).
+    from clio_agent.gact.elicitation_bridge import make_elicitation_client  # noqa: PLC0415
     from clio_agent.gact.mcp_apps import call_tool_result_to_observer  # noqa: PLC0415
     from clio_agent.tools.execution import notify_tool_observer  # noqa: PLC0415
     from clio_agent.tools.mcp_config import (  # noqa: PLC0415
         MCPTransportError,
         transport_from_spec,
     )
+    from clio_agent.tools.mcp_errors import typed_mcp_call_error  # noqa: PLC0415
 
     spec = info.get("spec", {})
     try:
         transport = transport_from_spec(spec)
-    except MCPTransportError as exc:
-        raise RuntimeError(f"unknown stored MCP transport for {server_id}: {spec!r}") from exc
+        client_ctx = make_elicitation_client(app, transport, server_id, tool_name)
+    except MCPTransportError:
+        raise RuntimeError(f"unknown stored MCP transport for {server_id}") from None
+    except Exception:  # noqa: BLE001
+        raise RuntimeError("fastmcp Client unavailable") from None
 
     tool_observer = getattr(app.state, "pending_tool_observer", None)
     if tool_observer is None:
         tool_observer = app.state.make_tool_observer()
     notify_tool_observer(tool_observer, observer_name, dict(tool_args), "started")
     try:
-        async with Client(transport) as client:
+        async with client_ctx as client:
             result = await client.call_tool(tool_name, dict(tool_args))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as raw_exc:  # noqa: BLE001
+        # #1114: typed translation first — the model never sees a raw SDK class/message.
+        surfaced = typed_mcp_call_error(raw_exc, tool=tool_name) or raw_exc
         notify_tool_observer(
-            tool_observer, observer_name, dict(tool_args), "completed", error=repr(exc)
+            tool_observer, observer_name, dict(tool_args), "completed", error=repr(surfaced)
         )
-        raise
+        raise surfaced from raw_exc
     content = getattr(result, "content", None) or []
     result_text = "\n".join(str(getattr(part, "text", part)) for part in content)
     if not result_text:
@@ -414,9 +412,8 @@ async def _call_enabled_external_mcp_tool(
         observer_name,
         dict(tool_args),
         "completed",
-        # Keep the legacy text projection for the model while giving the durable
-        # observer the server's machine-readable public MCP result.  Private
-        # `_meta` remains excluded from ordinary tool telemetry.
+        # Legacy text projection for the model; the durable observer gets the
+        # machine-readable public MCP result (private `_meta` stays excluded).
         result=observer_result,
     )
     if content:
@@ -474,10 +471,15 @@ def _run_external_mcp_tool_sync(
     return str(result.get("value", ""))
 
 
-def _enabled_external_mcp_dspy_tools(app: Any, requested_tools: list[str]) -> dict[str, Any]:
+def _enabled_external_mcp_dspy_tools(
+    app: Any, requested_tools: list[str], sources: dict[str, str]
+) -> dict[str, Any]:
     """Return DSPy Tool wrappers for enabled Agent Blueprint MCP tools."""
 
-    import dspy  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+        boundary_observed_tool,
+        mcp_tool_title,
+    )
 
     requested = set(requested_tools)
     available: dict[str, Any] = {}
@@ -496,6 +498,7 @@ def _enabled_external_mcp_dspy_tools(app: Any, requested_tools: list[str]) -> di
             if str(tool_row.get("status") or "") != "ready":
                 continue
             description = str(tool_row.get("description") or tool_name)
+            title = mcp_tool_title(tool_row)  # #1188: Tool.title, else ToolAnnotations.title
             schema = tool_row.get("input_schema") or {}
             properties = schema.get("properties", {}) if isinstance(schema, Mapping) else {}
             if not isinstance(properties, dict):
@@ -520,12 +523,18 @@ def _enabled_external_mcp_dspy_tools(app: Any, requested_tools: list[str]) -> di
 
             tool_fn.__name__ = tool_name
             tool_fn.__doc__ = description
-            available[tool_name] = dspy.Tool(
-                func=tool_fn,
+            # ``_run_external_mcp_tool_sync`` notifies the observer itself, so
+            # the construction is marked observed — the assembly seam must not
+            # add a second notification (exactly-once). ``title`` carries the
+            # upstream MCP tool's declared title (#1188), when present.
+            available[tool_name] = boundary_observed_tool(
+                tool_fn,
                 name=tool_name,
                 desc=description,
                 args=properties,
+                title=title,
             )
+            toolset_inventory.register_tool_source(sources, tool_name, str(server_id))
     return available
 
 
@@ -550,11 +559,29 @@ def _active_base_agent_tool_executor(base_agent: Any) -> Any:
         except Exception:  # noqa: BLE001 - degrade to default executor
             executor = None
         if executor is not None:
+            _emit_mcp_downgrade_events(executor)
             return executor
-    return getattr(base_agent, "tool_executor", None)
+    executor = getattr(base_agent, "tool_executor", None)
+    _emit_mcp_downgrade_events(executor)
+    return executor
 
 
-def _dynamic_agent_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
+def _emit_mcp_downgrade_events(executor: Any) -> None:
+    """Surface any recorded era downgrade for ``executor``'s servers (#1201)."""
+
+    app = _ctx.active_app()
+    if app is None:
+        return
+    from clio_agent.gact.mcp_connection_observability import (  # noqa: PLC0415
+        emit_downgrade_events_for_executor,
+    )
+
+    emit_downgrade_events_for_executor(app, _ctx.active_session_id(), executor)
+
+
+def _dynamic_agent_tools(
+    base_agent: Any, agent_def: "AgentDef", sources: dict[str, str]
+) -> list[Any]:
     """Resolve the exact DSPy tools a tool-declaring dynamic agent may use."""
 
     requested_tools = [str(t).strip() for t in agent_def.tools if str(t).strip()]
@@ -568,29 +595,55 @@ def _dynamic_agent_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
             )
         available_tools: dict[str, Any] = {}
     else:
-        available_tools = {
-            str(getattr(tool, "name", "")): tool
-            for tool in list(tool_executor.to_dspy_tools())
-            if getattr(tool, "name", "")
-        }
+        mounted = toolset_inventory.mounted_namespace_set(tool_executor)
+        available_tools = {}
+        for tool in list(tool_executor.to_dspy_tools()):
+            name = str(getattr(tool, "name", "") or "")
+            if not name:
+                continue
+            available_tools[name] = tool
+            # prefix is real provenance only if mounted (finding [D]); else "gateway".
+            prefix, sep, bare = name.partition("_")
+            source = prefix if (sep and bare and prefix in mounted) else "gateway"
+            toolset_inventory.register_tool_source(sources, name, source)
     app = _ctx.active_app()
     if app is not None:
-        available_tools.update(_enabled_external_mcp_dspy_tools(app, requested_tools))
+        available_tools.update(_enabled_external_mcp_dspy_tools(app, requested_tools, sources))
     missing_tools = [name for name in requested_tools if name not in available_tools]
-    if missing_tools:
-        raise _UnsupportedSessionAgent(
+    resolved_tools = [name for name in requested_tools if name in available_tools]
+    if missing_tools and not resolved_tools:  # nothing to degrade to -- brick TYPED (#1228 D3)
+        logger.warning(
+            "custom_agent_tools_unavailable diagnostics agent=%s available=%s "
+            "executor=%s federation=%s",
             agent_def.id,
-            reason="custom_agent_tools_unavailable",
-            tools=missing_tools,
+            sorted(available_tools)[:30],
+            type(tool_executor).__name__ if tool_executor is not None else None,
+            "present"
+            if getattr(base_agent, "_remote_mcp_federation", None) is not None
+            else "ABSENT",
         )
-    return [_recording_blueprint_tool(available_tools[name]) for name in requested_tools]
+        raise _UnsupportedSessionAgent(
+            agent_def.id, reason="custom_agent_tools_unavailable", tools=missing_tools
+        )
+    if missing_tools:  # >=1 resolved -- degrade typed-and-loud per tool (#1228 D3)
+        toolset_inventory.record_tools_unavailable_degraded(app, agent_def.id, missing_tools)
+    return [_recording_blueprint_tool(available_tools[name]) for name in resolved_tools]
+
+
+def _recorded_load_skill_tool(agent_def: "AgentDef", skill_rt: Any) -> Any:
+    """The auto-attached ``load_skill`` tool, recorded like a declared tool.
+
+    A skill load is loop evidence: the tool_call must reach the blueprint
+    tool rows (and through them the transcript wire), not just the trace log.
+    """
+
+    return _recording_blueprint_tool(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
 
 
 def _recording_blueprint_tool(tool: Any) -> Any:
     """Wrap a DSPy tool so blueprint ReAct predictions retain tool evidence."""
 
-    import dspy  # noqa: PLC0415
-
+    from clio_agent.gact.agents.tool_instrumentation import rebuilt_tool  # noqa: PLC0415
     from clio_agent.gact.app import (  # noqa: PLC0415
         _bounded_tool_call_result,
         _tool_result_is_error,
@@ -636,7 +689,9 @@ def _recording_blueprint_tool(tool: Any) -> Any:
 
     call_tool.__name__ = name
     call_tool.__doc__ = desc
-    return dspy.Tool(func=call_tool, name=name, desc=desc, args=args)
+    # Re-construction around a new callable: propagate the inner callable's
+    # instrumentation markers (a re-wrapped boundary tool stays exactly-once).
+    return rebuilt_tool(tool, call_tool, name=name, desc=desc, args=args)
 
 
 def _tool_names(tools: Iterable[Any]) -> list[str]:
@@ -946,21 +1001,16 @@ def _emit_invalid_tool_selection_event(
 def _tool_user_agent_max_iters(agent_def: "AgentDef", *, declared_children: int = 0) -> int:
     """The react loop's iteration budget for this expert.
 
-    #948 S4: an orchestrator's react loop IS the delegation flow now — each child
-    costs a spawn call plus a wait call, and the model legitimately re-spawns a
-    failed child. The old flat default of 5 (tuned for the deleted inline-tool
-    world) starved every orchestrator into a forced extract with no evidence,
-    which correctly failed typed (observed live). The default therefore scales
-    with the declared children; a blueprint's explicit ``max_iters`` param always
-    wins.
+    #1226 D1b: UNLIMITED (``0``) default -- not the old #948 S4 scaling cap
+    that starved a long orchestrator (L3 died at a turn budget mid-task). A
+    cap is now only an explicit blueprint opt-in (``max_iters``).
     """
-
     from clio_agent.gact.app import _user_agent_int_param  # noqa: PLC0415
 
-    default = 5 if declared_children <= 0 else min(24, 6 + 4 * declared_children)
-    max_iters = _user_agent_int_param(agent_def, "max_iters", default)
-    if max_iters <= 0:
-        raise ValueError("user agent parameter 'max_iters' must be positive")
+    del declared_children
+    max_iters = _user_agent_int_param(agent_def, "max_iters", 0)
+    if max_iters < 0:
+        raise ValueError("user agent parameter 'max_iters' must be zero (unlimited) or positive")
     return max_iters
 
 
@@ -1168,15 +1218,7 @@ def _blueprint_runtime_signature(agent_def: "AgentDef", *, app: Any = None) -> A
 
 
 def _emit_blueprint_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseException) -> None:
-    """Emit ``llm.response.failed`` carrying the retained ReAct trajectory.
-
-    Captures the one event stock dspy throws away: an expert that ran its tool
-    loop but failed the final typed-output extract. The retained trajectory rides
-    on the event so the canonical trace shows exactly what the model produced
-    before the drop -- and so the repair path can re-run extract over it. The
-    trajectory is in SENSITIVE_KEYS, so SSE strips it while the durable trace
-    keeps it. Best-effort: never let capture interfere with the repair flow.
-    """
+    """Best-effort failure event retaining the ReAct trajectory in durable trace only."""
 
     app = _ctx.active_app()
     sid = _ctx.active_session_id()
@@ -1184,15 +1226,14 @@ def _emit_blueprint_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseExcep
         return
     retained = _ctx.active_trajectory() if kind == "react" else None
     payload: dict[str, Any] = {
-        # `error` is a one-line summary for SSE/UI; `error_full` is the FULL,
-        # uncapped exception (with newlines) for the canonical trace -- never cap.
+        # SSE/UI gets a summary; canonical trace keeps the uncapped exception.
         "error": str(exc).replace("\n", " ")[:2000],
         "error_full": str(exc),
         "error_type": type(exc).__name__,
         "repairable": bool(_is_repairable_typed_output_error(exc)),
     }
     if retained and retained.get("trajectory"):
-        payload["trajectory"] = _jsonish(retained.get("trajectory"))
+        payload["trajectory"] = wire_value(retained.get("trajectory"), mode="gact_runtime")
     agent_id = str(getattr(agent_def, "id", "") or "")
     try:
         _emit_semantic_event(
@@ -1263,17 +1304,36 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     build_spawn_runtime_tools,
                 )
 
+                _declared_tools = _dynamic_agent_tools(
+                    base_agent, agent_def, (_sources := cast(dict[str, str], {}))
+                )
+                _spawn_tools = build_spawn_runtime_tools(base_agent, agent_def)
+                toolset_inventory.register_tool_sources(_sources, _spawn_tools, "spawn-runtime")
                 tools = [
-                    *_dynamic_agent_tools(base_agent, agent_def),
-                    *build_spawn_runtime_tools(base_agent, agent_def),
+                    *_declared_tools,
+                    *_spawn_tools,
                 ]
                 if skill_rt.resolved:
                     # Auto-attached infra (like child-delegation tools), not a
                     # curated domain tool (#919).
-                    tools.append(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
+                    _skill_tool = _recorded_load_skill_tool(agent_def, skill_rt)
+                    toolset_inventory.register_tool_sources(_sources, [_skill_tool], "native")
+                    tools.append(_skill_tool)
                 # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
-                tools += build_auto_react_tools(agent_def)
+                _auto_tools = build_auto_react_tools(agent_def)
+                toolset_inventory.register_tool_sources(_sources, _auto_tools, "native")
+                tools += _auto_tools
+                # THE assembly seam (owner 2026-08-05): every tool is observed by
+                # definition -- unmarked callables get the observer wrap + titles registered.
+                from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+                    instrument_tools,
+                )
+
+                tools = instrument_tools(tools)
                 self.tools = tools
+                # Obs Tools tab "available" view: the REAL built toolset,
+                # captured once here where it is actually in hand.
+                toolset_inventory.emit_agent_toolset_recorded(agent_def, tools, _sources)
                 # The iteration default scales with the declared children — an
                 # orchestrator pays spawn+wait per child inside this loop (#948 S4).
                 _n_children = 0
@@ -1359,7 +1419,10 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
         ) -> Any:
-            _ = (session_mode, session_edit_mode)  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
+            _ = (
+                session_mode,
+                session_edit_mode,
+            )  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(
@@ -1723,15 +1786,30 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             self._cred_resolver = CredentialResolver()
             self.config = self._resolved_spec.materialize(self._cred_resolver)
             self._provider_config = self.config
-            self.tools = _dynamic_agent_tools(base_agent, agent_def)
+            self.tools = _dynamic_agent_tools(
+                base_agent, agent_def, (_sources := cast(dict[str, str], {}))
+            )
             skill_rt = _skill_runtime.skill_runtime_for_agent(
                 _ctx.active_app(), agent_def, session_id=_ctx.active_session_id()
             )
             if skill_rt.resolved:
                 # Same react tier-1 + load_skill contract as blueprint experts (#919).
-                self.tools.append(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
+                _skill_tool = _recorded_load_skill_tool(agent_def, skill_rt)
+                toolset_inventory.register_tool_sources(_sources, [_skill_tool], "native")
+                self.tools.append(_skill_tool)
             # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
-            self.tools += build_auto_react_tools(agent_def)
+            _auto_tools = build_auto_react_tools(agent_def)
+            toolset_inventory.register_tool_sources(_sources, _auto_tools, "native")
+            self.tools += _auto_tools
+            # THE assembly seam (owner 2026-08-05): same default-on instrumentation as above.
+            from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+                instrument_tools,
+            )
+
+            self.tools = instrument_tools(self.tools)
+            # Obs Tools tab "available" view: the REAL built toolset,
+            # captured once here where it is actually in hand.
+            toolset_inventory.emit_agent_toolset_recorded(agent_def, self.tools, _sources)
             runtime = PromptRegistry().resolve("clio.runtime.tool_user_agent")
             runtime_text = str(getattr(runtime, "text", "") or "").strip()
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description
@@ -1784,7 +1862,10 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
         ) -> Any:
-            _ = (session_mode, session_edit_mode)  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
+            _ = (
+                session_mode,
+                session_edit_mode,
+            )  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(

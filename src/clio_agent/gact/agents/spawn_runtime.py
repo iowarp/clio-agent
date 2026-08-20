@@ -2,32 +2,28 @@
 
 The routing surface that REPLACES the deleted settle/synthesis orchestration and
 the deleted inline per-child delegate/fan-out tools. A tier-1 main is now a react
-agent whose answer IS the user deliverable; instead of emitting a typed routing
-field consumed by a settle loop, it CALLS these tools:
+agent whose answer IS the user deliverable; instead of a typed routing field
+consumed by a settle loop, it CALLS these tools:
 
 * ``spawn_agent_task(agent, task)`` — spawn a declared child as a REAL child turn
-  (S3 ``spawn_child_turn``, on the dedicated executor) and return its ``task_id``.
+  (S3 ``spawn_child_turn``) and return its ``task_id``.
 * ``wait_agent_tasks(task_ids, timeout_s)`` — block on the children's completion
-  Events and return their results (spawn + wait COMPOSE the old synchronous
-  delegate; the child runs on the dedicated pool so the waiting parent thread can
-  never starve it).
-* ``check_agent_tasks()`` — the parent's spawned tasks + their status (CONSUMES a
+  and return their results (spawn + wait COMPOSE the old synchronous delegate;
+  the child runs on the dedicated pool so waiting here never starves it).
+* ``check_agent_tasks()`` — the parent's spawned tasks + status (consumes a
   finished child: collect-and-close).
-* ``observe_agent_tasks(task_ids, cursor=...)`` — the OBSERVE posture (#1000): read a
-  child's event stream incrementally from a resumable cursor, with optional regex
-  pattern-return, WITHOUT consuming it (the read-only sibling of check; owner module
-  ``observe_runtime``). Acts on intermediate evidence while the child keeps running.
-* ``spawn_agents_parallel(spawns)`` — fan out several children at once (replaces
-  the deleted inline fan-out tool).
+* ``observe_agent_tasks(task_ids, cursor=...)`` — the OBSERVE posture (#1000):
+  read a child's event stream incrementally without consuming it (owner module
+  ``observe_runtime``).
+* ``spawn_agents_parallel(spawns)`` — fan out several children at once.
 
 Each tool re-emits the wire-facing ``blueprint.delegation.*`` / ``blueprint.fanout.*``
-events the old tools emitted AND appends the ``expert_handoff`` Parts the deleted
-sync-delegate path appended, so TUI handoff rendering stays lit (wire parity): the
-semantic events feed the activity label / execution trace / active-agent indicator,
-while the canonical transcript renderer keys the delegation header / nesting / return
-row exclusively off ``type=='expert_handoff'`` Parts (#948 S4 findings [6]/[7]).
-The child sessions + AgentTask records are the real substrate underneath — no
-inline in-thread child forward, no settle-loop routing vocabulary.
+events AND appends the ``expert_handoff`` Parts the deleted sync-delegate path
+appended (wire parity, #948 S4 findings [6]/[7]): events feed the activity label /
+trace / active-agent indicator, while the transcript renderer keys the delegation
+header/nesting/return row off ``type=='expert_handoff'`` Parts exclusively. The
+child sessions + AgentTask records are the real substrate — no inline in-thread
+child forward, no settle-loop routing vocabulary.
 """
 
 from __future__ import annotations
@@ -36,9 +32,17 @@ import json
 import logging
 import uuid
 from collections.abc import Mapping
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.agents.spawn_group import (
+    failed_spawn_metadata_row,
+    spawn_group_fields,
+    wait_structured_row,
+    wait_summary,
+)
+from clio_agent.gact.agents.spawn_placement import run_handle_fields
 from clio_agent.gact.runtime.globals import (
     _active_semantic_trace_id,
     _active_semantic_turn_id,
@@ -104,16 +108,13 @@ def _current_session_depth(app: Any, session_id: str) -> int:
 
 def _resolve_verbatim_output(app: Any, task: Any) -> tuple[str, dict[str, str]]:
     """Resolve the child's FULL final message text — the #880 verbatim contract:
-    the delegation ``output`` IS the child's answer, byte-for-byte, ALWAYS.
+    the delegation ``output`` IS the child's answer, byte-for-byte, ALWAYS. The
+    AgentTask record keeps only a BOUNDED excerpt (registry memory stays bounded),
+    so the full text is re-read at wait-time via the result's ``message_ref``.
 
-    The AgentTask record deliberately keeps only a BOUNDED excerpt (registry memory
-    stays bounded), so the full text is re-read at wait-time from the child session's
-    message store via the result's ``message_ref``.
-
-    Returns ``(output, markers)``. On success ``markers`` is empty and ``output`` is
-    the byte-identical child answer. If the child session/message is gone, falls back
-    to the bounded excerpt WITH a typed marker (never silently):
-    ``output_source='excerpt_fallback'`` + ``output_fallback_reason='child_message_gone'``.
+    Returns ``(output, markers)``: ``markers`` empty on success, else a typed
+    fallback to the bounded excerpt (``output_source='excerpt_fallback'`` +
+    ``output_fallback_reason='child_message_gone'``) when the message is gone.
     """
 
     from clio_agent.gact.turn_spawn import _message_text  # noqa: PLC0415
@@ -138,20 +139,14 @@ def _resolve_verbatim_output(app: Any, task: Any) -> tuple[str, dict[str, str]]:
 
 def _persist_delegation_reported(app: Any, task: Any) -> None:
     """Persist the once-per-task report flag to the child-session metadata so a
-    boot-rebuilt registry does not re-emit the terminal event.
-
-    Best-effort: if the child session is already gone the flag cannot be durably
-    written, but the task will not survive a reboot either (the boot fold folds only
-    existing sessions), so there is no re-emit risk — surface the typed reason,
-    never crash the wait (no-silent-fallback)."""
+    boot-rebuilt registry does not re-emit the terminal event. Best-effort: a gone
+    child session cannot survive a reboot either (no re-emit risk) -- surface the
+    typed reason, never crash the wait (no-silent-fallback)."""
 
     from clio_agent.gact.agent_tasks import AgentTaskError, persist_agent_task  # noqa: PLC0415
 
-    # Catch the FULL surface persist_agent_task can raise — AgentTaskError (child
-    # gone) AND the OSError family from the authoritative store's disk flush — so a
-    # transient store fault never crashes the wait/collect ([3] parity). At-least-
-    # once re-emit across a crash is acceptable and guarded by the delegation_reported
-    # once-gate on reboot.
+    # Catch the FULL raise surface (child-gone + the store's disk-flush OSError
+    # family) so a transient store fault never crashes the wait/collect ([3] parity).
     try:
         persist_agent_task(app, task)
     except (AgentTaskError, OSError) as exc:
@@ -166,10 +161,8 @@ def _merge_wait_workflow_states(
     results: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Deterministic request-order merge of a wait batch's per-run workflow_state
-    (#948 S5). Considers only rows that carry BOTH a ``run_index`` and a mapping
-    ``workflow_state`` (a completed run) — ``unknown_task`` / failed-empty rows
-    contribute nothing. Delegates the ordering + conflict detection to the owner
-    module (``workflow_state.merge``); returns ``(merged, conflicts)``."""
+    (#948 S5). Only rows carrying BOTH ``run_index`` and a mapping ``workflow_state``
+    contribute; ordering/conflict detection delegates to ``workflow_state.merge``."""
 
     from clio_agent.gact.workflow_state.merge import (  # noqa: PLC0415
         RunWorkflowState,
@@ -220,17 +213,12 @@ def _completion_payload(app: Any, task: Any) -> dict[str, Any]:
 
 
 def _started_handoff_part(
-    agent_def: "AgentDef", child_id: str, task_text: str, depth: int, run_index: int = 0
+    agent_def: "AgentDef", child_id: str, task_text: str, depth: int, spawned: Any
 ) -> Part:
     """The ``delegate.started`` expert_handoff Part appended to the PARENT transcript
-    when a child is spawned (#948 S4 finding [7]).
-
-    The canonical transcript renderer (transcriptDelegationModel.ts) drives the
-    delegation header, depth/indentation (from ``child_agent``/``parent_agent`` links)
-    and nested rows off ``type=='expert_handoff'`` Parts — NOT the semantic events — so
-    without this Part a spawned child renders nothing in the main transcript. Field
-    shape matches the pinned TUI: ``child_agent``/``parent_agent`` links, ``stage``
-    lifecycle, and ``metadata.question`` (the task the header shows)."""
+    when a child is spawned (#948 S4 finding [7]). The transcript renderer drives the
+    delegation header/depth/nesting off ``type=='expert_handoff'`` Parts — NOT the
+    semantic events — so without this Part a spawned child renders nothing."""
 
     started_row = {
         "agent_id": child_id,
@@ -239,8 +227,10 @@ def _started_handoff_part(
         "stage": "delegate.started",
         "question": task_text,
         "depth": depth,
-        "run_index": run_index,
+        "run_index": spawned.run_index,
     }
+    started_row.update(spawn_group_fields(spawned))
+    handle_fields = run_handle_fields(spawned, child_id)
     return Part(
         id=f"live_handoff_{uuid.uuid4().hex[:12]}",
         type="expert_handoff",
@@ -248,23 +238,46 @@ def _started_handoff_part(
         parent_agent=agent_def.id,
         child_agent=child_id,
         stage="delegate.started",
+        handle_id=handle_fields["handle_id"],
+        run_label=handle_fields["run_label"],
+        live_state=handle_fields["live_state"],
+        host=handle_fields["host"],
+        placement=handle_fields["placement"],
         status="running",
         text=f"{agent_def.id} -> {child_id}",
         metadata={**_handoff_part_metadata(started_row), "stream_source": "live"},
     )
 
 
+def _failed_spawn_handoff_part(
+    agent_def: "AgentDef", child_id: str, spawn_group_id: str, group_size: int, exc: Exception
+) -> Part:
+    """Terminal Part for a batch sibling refused before it ever spawned (finding
+    [E]): builds directly on the terminal lane so the group's declared total
+    always reconciles even when one sibling never got a child session."""
+
+    reason = getattr(exc, "reason", type(exc).__name__)
+    row = failed_spawn_metadata_row(child_id, agent_def.id, reason, spawn_group_id, group_size)
+    return Part(
+        id=f"live_handoff_{uuid.uuid4().hex[:12]}",
+        type="expert_handoff",
+        agent_id=agent_def.id,
+        parent_agent=agent_def.id,
+        child_agent=child_id,
+        stage="delegate.completed",
+        status="failed",
+        text=f"{agent_def.id} -> {child_id}",
+        metadata={**_handoff_part_metadata(row), "stream_source": "live"},
+    )
+
+
 def _return_handoff_part(agent_def: "AgentDef", task: Any, payload: dict[str, Any]) -> Part:
     """The terminal RETURN expert_handoff Part appended to the PARENT transcript when a
-    spawned child reaches a terminal state (#948 S4 finding [7]).
-
-    Both success AND failure conclude on the SAME terminal lane —
-    ``stage='delegate.completed'`` with the outcome riding ``status`` (#882) — so a
-    verbatim (dedup-free) client renders one return row per child, never a second
-    header, and a FAILED child is visible (not buried in raw tool JSON).
-    ``metadata.output`` is the child's FULL answer byte-for-byte (#880, resolved in
-    ``payload``); a failure carries empty output with the typed reason on
-    ``status``/``error`` and any verbatim-output degradation marker."""
+    spawned child reaches a terminal state (#948 S4 finding [7]). Success AND failure
+    conclude on the SAME terminal lane — ``stage='delegate.completed'`` with the
+    outcome riding ``status`` (#882) — so a failed child is visible, not buried in
+    raw tool JSON. ``metadata.output`` is the child's FULL answer byte-for-byte
+    (#880, resolved in ``payload``)."""
 
     child_id = task.agent_ref.get("expert_id", "")
     return_row = {
@@ -277,10 +290,12 @@ def _return_handoff_part(agent_def: "AgentDef", task: Any, payload: dict[str, An
         "error": task.error_reason or "",
         "run_index": task.run_index,
     }
+    return_row.update(spawn_group_fields(task))
     # Surface the verbatim-output degradation markers (never silent) onto the Part too.
     for marker in ("output_source", "output_fallback_reason"):
         if marker in payload:
             return_row[marker] = payload[marker]
+    handle_fields = run_handle_fields(task, child_id)
     return Part(
         id=f"live_handoff_{uuid.uuid4().hex[:12]}",
         type="expert_handoff",
@@ -288,26 +303,51 @@ def _return_handoff_part(agent_def: "AgentDef", task: Any, payload: dict[str, An
         parent_agent=agent_def.id,
         child_agent=child_id,
         stage="delegate.completed",
+        handle_id=handle_fields["handle_id"],
+        run_label=handle_fields["run_label"],
+        live_state=handle_fields["live_state"],
+        host=handle_fields["host"],
+        placement=handle_fields["placement"],
         status=task.status,
+        duration_ms=_task_duration_ms(task),
         text=f"{agent_def.id} <- {child_id}",
         metadata={**_handoff_part_metadata(return_row), "stream_source": "live"},
     )
 
 
+def _task_duration_ms(task: Any) -> float:
+    """The child's wall-clock duration from its task record timestamps
+    (``created_at`` at spawn, ``updated_at`` at terminal transition). Unparseable
+    timestamps leave the Part unstamped (0.0) — never fail on decoration."""
+
+    try:
+        created = datetime.fromisoformat(str(task.created_at))
+        updated = datetime.fromisoformat(str(task.updated_at))
+    except (TypeError, ValueError):
+        return 0.0
+    delta_ms = (updated - created).total_seconds() * 1000
+    return delta_ms if delta_ms > 0 else 0.0
+
+
 def _emit_delegation_terminal(app: Any, session_id: str, agent_def: "AgentDef", task: Any) -> None:
     """Emit a terminal task's once-per-task delegation event + return Part + resume.
 
-    Shared by :func:`wait_agent_tasks` and the declared-workflow runner
-    (:func:`emit_workflow_step_return`): BOTH spawn+wait through the same substrate,
-    so BOTH reach a terminal task and must render it exactly once. The once-per-task
-    claim (``mark_delegation_reported``) guarantees exactly-once wire emission no
-    matter which path gets there first (the server owns the de-duplicated stream)."""
+    Shared by :func:`wait_agent_tasks` and :func:`emit_workflow_step_return` (both
+    spawn+wait through the same invoker); ``mark_delegation_reported`` guarantees
+    exactly-once wire emission no matter which path gets there first (the server
+    owns the de-duplicated stream)."""
 
     registry = app.state.agent_task_registry
     reported = registry.mark_delegation_reported(task.task_id)
     if reported is None:
         return
     _persist_delegation_reported(app, reported)
+    # Clean-wire (owner, 2026-08-05): a task collected here may have reached
+    # terminal off THIS process's result-sealing fold seam (boot-refolded, seeded,
+    # or forwarded) -- stamp the return-to-parent edge here too, idempotent per task.
+    from clio_agent.gact.delegation_return import stamp_delegation_return  # noqa: PLC0415
+
+    stamp_delegation_return(app, task)
     payload = _completion_payload(app, task)
     child_id = task.agent_ref.get("expert_id", "")
     event_type = (
@@ -357,7 +397,7 @@ def emit_workflow_step_start(
 ) -> None:
     """Wire parity for a declared-workflow step spawn (#948 S5 work item 4).
 
-    A workflow step spawns its child directly through the substrate (never the
+    A workflow step spawns its child through the invoker (never the
     model's ``spawn_agent_task`` tool), so the runner re-emits the same
     ``blueprint.delegation.started`` event + started ``expert_handoff`` Part the tool
     path emits — otherwise the step's child would render nothing in the parent
@@ -379,7 +419,7 @@ def emit_workflow_step_start(
     _append_live_assistant_part(
         app,
         session_id,
-        _started_handoff_part(agent_def, child_id, task_text, spawned.depth, spawned.run_index),
+        _started_handoff_part(agent_def, child_id, task_text, spawned.depth, spawned),
     )
 
 
@@ -395,15 +435,22 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
     """Build the react-main spawn tools bound to ``agent_def`` as the requesting
     (parent) expert. Resolved lazily against the active app/session at call time."""
 
-    import dspy  # noqa: PLC0415
-
+    from clio_agent.gact.agent_messaging import build_message_agent_tool  # noqa: PLC0415
+    from clio_agent.gact.agents.invoker import (  # noqa: PLC0415
+        InvokerError,
+        SpawnError,
+        TaskHandle,
+        TaskSpec,
+    )
     from clio_agent.gact.agents.observe_runtime import build_observe_tool  # noqa: PLC0415
     from clio_agent.gact.agents.resolution import _runtime_declared_child_ids  # noqa: PLC0415
-    from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
-        SpawnError,
-        TaskSpec,
-        spawn_child_turn_threadsafe,
+    from clio_agent.gact.agents.spawn_placement import (  # noqa: PLC0415
+        invoker_for_placement,
+        invoker_for_task,
+        resolve_batch_placement,
     )
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
+    from clio_agent.gact.spawn_context import bind_task_spec_to_parent  # noqa: PLC0415
 
     # Only an agent with DECLARED children gets the routing surface — a leaf expert
     # has nothing to spawn (and spawn would reject an undeclared child anyway).
@@ -419,11 +466,22 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             raise RuntimeError("spawn-runtime tool requires an active CLIO app/session context")
         return app, session_id
 
-    def _do_spawn(agent: str, task: str, *, fanout_bound: int = 0) -> str:
-        """Spawn one declared child through the substrate + emit the started wire
+    def _do_spawn(
+        agent: str,
+        task: str,
+        *,
+        fanout_bound: int = 0,
+        placement: str | None = None,
+        spawn_group_id: str = "",
+        group_size: int = 0,
+    ) -> str:
+        """Spawn one declared child through the invoker + emit the started wire
         parity. ``fanout_bound`` (> 0) caps how many of THIS parent's concurrent
         children at this depth may run before a spawn queues — the fan-out admission
-        bound (#948 S5); 0 means only the global per-depth cap applies."""
+        bound (#948 S5); 0 means only the global per-depth cap applies. ``spawn_group_id``
+        / ``group_size`` (P5 wire semantics) are set ONLY by ``spawn_agents_parallel``
+        (one id shared by the whole batch) — a bare ``spawn_agent_task`` call leaves
+        them at their empty/0 default, so the minted record carries neither field."""
 
         app, session_id = _ctx_app_session()
         # Computed depth: a child spawns at (its own depth) + 1, so nesting
@@ -431,29 +489,42 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         # reachable (a root session spawns at depth 1) (#948 S4 adversarial review).
         depth = _current_session_depth(app, session_id) + 1
         try:
-            spawned = spawn_child_turn_threadsafe(
-                app,
-                TaskSpec(
-                    child_expert_id=agent,
-                    task_text=task,
-                    parent_session_id=session_id,
-                    requesting_expert_id=agent_def.id,
-                    # #953 [2]/[8]: stamp the ACTIVE turn id so run_index resets per
-                    # parent turn (else it accumulates across the whole session).
-                    parent_turn_id=_active_semantic_turn_id(),
-                    depth=depth,
-                    # #948 S6: ONE honest semantic — every model-driven spawn is
-                    # fire-and-forget (notify-later). The child is untied to this
-                    # turn's lifetime; on completion it sets notify_pending, which
-                    # the model collects in-turn (wait/check) or observes next turn
-                    # (injection). Both mark it consumed exactly once. (The declared-
-                    # workflow runner keeps mode="sync": it always collects its steps
-                    # within run_workflow, never observe-later.)
-                    mode="async",
-                    fanout_bound=fanout_bound,
+            binding = invoker_for_placement(app, session_id, placement)
+            spawned = binding.invoker.invoke(
+                bind_task_spec_to_parent(
+                    app,
+                    TaskSpec(
+                        child_expert_id=agent,
+                        task_text=task,
+                        parent_session_id=session_id,
+                        requesting_expert_id=agent_def.id,
+                        # #953 [2]/[8]: stamp the ACTIVE turn id so run_index resets per
+                        # parent turn (else it accumulates across the whole session).
+                        parent_turn_id=_active_semantic_turn_id(),
+                        depth=depth,
+                        # #948 S6: ONE honest semantic — every model-driven spawn is
+                        # fire-and-forget (notify-later). The child is untied to this
+                        # turn's lifetime; on completion it sets notify_pending, which
+                        # the model collects in-turn (wait/check) or observes next turn
+                        # (injection). Both mark it consumed exactly once. (The declared-
+                        # workflow runner keeps mode="sync": it always collects its steps
+                        # within run_workflow, never observe-later.)
+                        mode="async",
+                        fanout_bound=fanout_bound,
+                        placement=binding.placement,
+                        spawn_group_id=spawn_group_id,
+                        group_size=group_size,
+                    ),
                 ),
             )
         except SpawnError as exc:
+            if spawn_group_id:
+                # A batch sibling's slot must reconcile even on refusal (finding [E]).
+                _append_live_assistant_part(
+                    app,
+                    session_id,
+                    _failed_spawn_handoff_part(agent_def, agent, spawn_group_id, group_size, exc),
+                )
             return json.dumps({"error": exc.reason, "message": str(exc)}, sort_keys=True)
         _emit_semantic_event(
             app,
@@ -476,7 +547,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         _append_live_assistant_part(
             app,
             session_id,
-            _started_handoff_part(agent_def, agent, task, depth, spawned.run_index),
+            _started_handoff_part(agent_def, agent, task, depth, spawned),
         )
         return json.dumps(
             {
@@ -486,18 +557,19 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                 # Typed queued_reason at the concurrency cap (#948 S6): the handle
                 # returns IMMEDIATELY as queued|running, never blocking on admission.
                 "queued_reason": spawned.queued_reason,
+                **run_handle_fields(spawned, agent),
             },
             sort_keys=True,
         )
 
-    def spawn_agent_task(agent: str, task: str) -> str:
+    def spawn_agent_task(agent: str, task: str, placement: str | None = None) -> str:
         """Spawn a declared child expert as a background child turn; returns its
         task_id IMMEDIATELY (status queued|running). Fire-and-forget: the child runs
         untied to this turn — collect it now with wait_agent_tasks, poll it with
         check_agent_tasks, or let its result surface in your NEXT turn. Prefer to spawn
         ALL independent children before waiting on any."""
 
-        return _do_spawn(agent, task)
+        return _do_spawn(agent, task, placement=placement)
 
     def wait_agent_tasks(task_ids: list[str], timeout_s: float) -> str:
         """Block until the given spawned tasks finish (up to timeout_s), then return
@@ -511,39 +583,65 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         registry = app.state.agent_task_registry
         import time as _time  # noqa: PLC0415
 
-        from clio_agent.gact.agent_tasks import consume_notification  # noqa: PLC0415
+        from clio_agent.gact.agent_tasks import (  # noqa: PLC0415
+            consume_notification,
+            display_run_name,
+        )
 
-        deadline = _time.monotonic() + max(0.0, float(timeout_s or 0.0))
+        call_start = _time.monotonic()
+        deadline = call_start + max(0.0, float(timeout_s or 0.0))
         results = []
+        # Typed structured shape (owner ruling, P5): a tool DECLARES its wire
+        # presentation instead of the UI inferring it from JSON key order —
+        # built alongside ``results`` from the SAME per-task facts, and declared
+        # onto the wire's structured_content channel below (never returned to
+        # the model — that lane stays the compact ``results``/conflict rows).
+        structured_rows: list[dict[str, Any]] = []
         for tid in task_ids or []:
             # Validate the id BEFORE waiting: registry.event() would setdefault a
             # fresh never-set Event for an unknown/typo id and block the FULL budget
             # (starving every real id after it via the shared deadline). An unknown
             # id returns immediately with a typed row and emits nothing.
-            if registry.get(tid) is None:
+            task = registry.get(tid)
+            if task is None:
                 results.append({"task_id": tid, "error": "unknown_task"})
+                structured_rows.append(wait_structured_row(tid, "unknown_task", 0.0, ""))
                 continue
             remaining = max(0.0, deadline - _time.monotonic())
-            registry.event(tid).wait(timeout=remaining)
-            task = registry.get(tid)
-            if task is None:  # pragma: no cover - retained records are never removed
-                results.append({"task_id": tid, "error": "unknown_task"})
+            try:
+                binding = invoker_for_task(app, task)
+                task_result = binding.invoker.wait(TaskHandle.from_task(task), timeout_s=remaining)
+            except (InvokerError, SpawnError) as exc:
+                results.append({"task_id": tid, "error": exc.reason})
+                structured_rows.append(wait_structured_row(tid, exc.reason, 0.0, ""))
                 continue
-            payload = _completion_payload(app, task)
+            payload = _completion_payload(app, task_result)
             results.append(payload)
-            if task.is_terminal:
+            structured_rows.append(
+                wait_structured_row(
+                    display_run_name(
+                        task_result.agent_ref.get("expert_id", ""),
+                        task_result.run_index,
+                        task_result.run_label,
+                    ),
+                    task_result.status,
+                    _task_duration_ms(task_result),
+                    (task_result.result or {}).get("answer_excerpt", ""),
+                )
+            )
+            if task_result.is_terminal:
                 # Collecting a terminal task in-turn consumes its observe-later
                 # notification (#948 S6): the model saw the result HERE, so the next
                 # turn must not re-inject it. Exactly-once via the notify_pending gate.
-                consume_notification(app, task.task_id)
+                consume_notification(app, task_result.task_id)
                 # Once-per-task wire emission: the ROW above is returned on EVERY wait
                 # (the model may legitimately re-collect), but the terminal EVENT +
                 # return Part + parent-resume fire exactly once — the server owns the
                 # de-duplicated stream. A re-wait (partial-timeout re-collect, id
                 # repeated in a batch) claims nothing and emits nothing. Shared with the
                 # declared-workflow runner (both reach a terminal task via the same
-                # substrate).
-                _emit_delegation_terminal(app, session_id, agent_def, task)
+                # invoker boundary).
+                _emit_delegation_terminal(app, session_id, agent_def, task_result)
         # Deterministic ensemble merge (#948 S5): when this wait collected several
         # runs whose typed workflow_state sections COLLIDE, merge them in REQUEST
         # ORDER (run_index, never completion order) and surface every collision as a
@@ -563,13 +661,34 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                 ],
                 session_id,
             )
+        # Declare the typed structured shape (owner ruling, P5 wire semantics):
+        # summary line first, per-task rows, conflicts, merged state last — wired
+        # through the SAME structured_content channel MCP tool results use, so the
+        # UI's existing result ladder renders it with zero wait-specific client
+        # code. This does NOT change what the model itself receives below.
+        from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+            declare_structured_content,
+        )
+
+        elapsed_s = _time.monotonic() - call_start
+        declare_structured_content(
+            {
+                "summary": wait_summary(elapsed_s, structured_rows),
+                "results": structured_rows,
+                "workflow_state_conflicts": conflicts,
+                "merged_workflow_state": merged_state,
+            }
+        )
+        # The model-facing return stays the FULL-fidelity per-task rows (verbatim
+        # #880 output, typed conflicts, merged state) — compact is a UI concern,
+        # not a fidelity cut. Key order matches the declared shape's tail (harmless
+        # + helps the raw-JSON view); it is NOT the presentation mechanism.
         return json.dumps(
             {
                 "results": results,
-                "merged_workflow_state": merged_state,
                 "workflow_state_conflicts": conflicts,
+                "merged_workflow_state": merged_state,
             },
-            sort_keys=True,
             default=str,
         )
 
@@ -588,8 +707,21 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         wanted = set(task_ids or [])
         if wanted:
             tasks = [t for t in tasks if t.task_id in wanted]
+        grouped: list[tuple[Any, list[TaskHandle]]] = []
+        for task in tasks:
+            invoker = invoker_for_task(app, task).invoker
+            for grouped_invoker, handles in grouped:
+                if grouped_invoker is invoker:
+                    handles.append(TaskHandle.from_task(task))
+                    break
+            else:
+                grouped.append((invoker, [TaskHandle.from_task(task)]))
+        by_id: dict[str, Any] = {}
+        for invoker, handles in grouped:
+            by_id.update({result.task_id: result for result in invoker.check(handles)})
+        task_results = [by_id[task.task_id] for task in tasks]
         rows: list[dict[str, Any]] = []
-        for t in tasks:
+        for t in task_results:
             row: dict[str, Any] = {
                 "task_id": t.task_id,
                 "agent": t.agent_ref.get("expert_id", ""),
@@ -619,9 +751,20 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                 consume_notification(app, t.task_id)
                 _emit_delegation_terminal(app, session_id, agent_def, t)
             rows.append(row)
+        # Declared structured payload (P5 wire semantics, wait_agent_tasks's
+        # treatment): message FIRST, rows after. The tally/format logic lives
+        # in the owner module task_summary (shared with observe_agent_tasks).
+        from clio_agent.gact.agents.task_summary import task_status_message  # noqa: PLC0415
+        from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+            declare_structured_content,
+        )
+
+        declare_structured_content(
+            {"message": task_status_message([r.get("status", "") for r in rows]), "tasks": rows}
+        )
         return json.dumps({"tasks": rows}, sort_keys=True)
 
-    def spawn_agents_parallel(spawns: list[dict]) -> str:
+    def spawn_agents_parallel(spawns: list[dict], placement: str | None = None) -> str:
         """Fan out several declared children at once. ``spawns`` is a list of
         {agent, task}; returns their task_ids (collect with wait_agent_tasks).
 
@@ -632,6 +775,14 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
 
         app, session_id = _ctx_app_session()
         bound = _fanout_batch_bound(agent_def)
+        spawn_list = spawns or []
+        # Fan-out GROUP identity (P5 wire semantics): ONE id minted for this whole
+        # call and stamped on every sibling's started + completed expert_handoff
+        # metadata (spawn_group_fields) — the server emits explicit grouping so
+        # the UI never infers sibling Call boxes by adjacency/timing. A bare
+        # spawn_agent_task call never mints one.
+        spawn_group_id = f"fanout_{uuid.uuid4().hex[:12]}"
+        group_size = len(spawn_list)
         _emit_semantic_event(
             app,
             session_id,
@@ -639,16 +790,32 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             turn_id=_active_semantic_turn_id(),
             trace_id=_active_semantic_trace_id(),
             status="running",
-            summary=f"{agent_def.id} fanned out to {len(spawns or [])} children",
+            summary=f"{agent_def.id} fanned out to {group_size} children",
             actor={"agent_id": agent_def.id, "role": "parent_expert"},
             blueprint=_blueprint_block(agent_def, ""),
-            payload={"max_workers": bound} if bound else {},
+            payload={
+                **({"max_workers": bound} if bound else {}),
+                "spawn_group_id": spawn_group_id,
+                "group_size": group_size,  # finding [13]: declared total, not just the id
+            },
         )
         out = []
-        for entry in spawns or []:
+        placement = resolve_batch_placement(app, session_id, placement)
+        for entry in spawn_list:
             agent = str((entry or {}).get("agent") or "")
             task = str((entry or {}).get("task") or "")
-            out.append(json.loads(_do_spawn(agent, task, fanout_bound=bound)))
+            out.append(
+                json.loads(
+                    _do_spawn(
+                        agent,
+                        task,
+                        fanout_bound=bound,
+                        placement=placement,
+                        spawn_group_id=spawn_group_id,
+                        group_size=group_size,
+                    )
+                )
+            )
         return json.dumps({"spawned": out}, sort_keys=True)
 
     def run_workflow(request: str = "") -> str:
@@ -668,20 +835,36 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
         )
         return json.dumps(record, sort_keys=True, default=str)
 
+    # Declared presentation (tool_instrumentation): the spawn/fan-out/workflow
+    # tools' wire representation IS their ``expert_handoff`` part — declared
+    # ``handoff`` so the seam-attached observer records telemetry without a
+    # second representation on the wire. The collectors are plain ``row`` tools
+    # (owner, 2026-08-05: a wait/check is a REAL call, never invisible mechanism
+    # the narration references).
     tools = [
-        dspy.Tool(
-            func=spawn_agent_task,
+        native_tool(
+            spawn_agent_task,
             name="spawn_agent_task",
             desc=spawn_agent_task.__doc__,
+            title="Spawn Agent",
+            representation="handoff",
             args={
                 "agent": {"type": "string", "description": "Declared child expert id to spawn."},
                 "task": {"type": "string", "description": "The specific task for that child."},
+                "placement": {
+                    "type": "string",
+                    "description": (
+                        "Optional execution placement: local or relay:<cluster>. "
+                        "Omit to use the session policy, then the local default."
+                    ),
+                },
             },
         ),
-        dspy.Tool(
-            func=wait_agent_tasks,
+        native_tool(
+            wait_agent_tasks,
             name="wait_agent_tasks",
             desc=wait_agent_tasks.__doc__,
+            title="Wait",
             args={
                 "task_ids": {"type": "array", "description": "Task ids returned by spawn."},
                 "timeout_s": {
@@ -696,10 +879,11 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                 },
             },
         ),
-        dspy.Tool(
-            func=check_agent_tasks,
+        native_tool(
+            check_agent_tasks,
             name="check_agent_tasks",
             desc=check_agent_tasks.__doc__,
+            title="Check Tasks",
             args={
                 "task_ids": {
                     "type": "array",
@@ -707,15 +891,22 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                 },
             },
         ),
+        build_message_agent_tool(agent_def),
         # OBSERVE posture (#1000): the read-only sibling of check_agent_tasks, built in
         # its owner module (observe_runtime) so this file stays under the size ratchet.
         build_observe_tool(),
-        dspy.Tool(
-            func=spawn_agents_parallel,
+        native_tool(
+            spawn_agents_parallel,
             name="spawn_agents_parallel",
             desc=spawn_agents_parallel.__doc__,
+            title="Spawn Agents",
+            representation="handoff",
             args={
                 "spawns": {"type": "array", "description": "List of {agent, task} to fan out."},
+                "placement": {
+                    "type": "string",
+                    "description": ("Optional placement applied to every spawn in this batch."),
+                },
             },
         ),
     ]
@@ -725,10 +916,12 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
 
     if parse_workflow(agent_def) is not None:
         tools.append(
-            dspy.Tool(
-                func=run_workflow,
+            native_tool(
+                run_workflow,
                 name="run_workflow",
                 desc=run_workflow.__doc__,
+                title="Run Workflow",
+                representation="handoff",
                 args={
                     "request": {
                         "type": "string",

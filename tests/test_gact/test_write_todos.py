@@ -250,3 +250,41 @@ def test_recitation_noop_when_no_todos(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     sid = _session(app, mode="edit")
     assert inject_todo_recitation(app, sid, app.state.sessions.get(sid), "USER TURN") == "USER TURN"
+
+
+# ---- declared structured_content (P5 wire semantics) ------------------------------
+
+
+def test_write_todos_declares_typed_structured_content(tmp_path: Path, monkeypatch) -> None:
+    """write_todos gets wait_agent_tasks's OWN treatment: the SAME confirmation text
+    rides the wire's ``message`` FIRST, then the full list + counts. The model-facing
+    confirmation string (asserted elsewhere) is unchanged."""
+
+    declared: list[dict] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+    app = build_app(sessions_path=tmp_path / "s.json")
+    sid = _session(app)
+    tool = build_write_todos_tool(_AGENT)
+
+    out = _run(
+        app,
+        sid,
+        lambda: tool.func(
+            todos=[
+                {"content": "explore", "status": "in_progress"},
+                {"content": "write", "status": "pending"},
+                {"content": "review", "status": "pending"},
+                {"content": "ship", "status": "completed"},
+            ]
+        ),
+    )
+
+    assert len(declared) == 1
+    shape = declared[0]
+    assert next(iter(shape)) == "message"
+    assert shape["message"] == out  # SAME text as the model-facing confirmation
+    assert shape["counts"] == {"pending": 2, "in_progress": 1, "completed": 1}
+    assert [t["content"] for t in shape["todos"]] == ["explore", "write", "review", "ship"]

@@ -344,6 +344,119 @@ async def test_astream_sdk_translates_stream_events(monkeypatch) -> None:
     }
 
 
+async def test_astream_sdk_model_rejection_raises_typed_not_transient(monkeypatch) -> None:
+    """iowarp/clio-agent#1184, #1211 review A3 (failing-first at the mocked SDK
+    boundary): a definitive model-rejection (``is_error=True,
+    api_error_status=404``) must surface as ``litellm.BadRequestError`` carrying
+    the CLI's own rejection text, NOT the generic
+    ``"claude agent sdk returned an error"`` ``ClaudeCodeExecError`` -- and must
+    NEVER be classified transient (would retry forever for an error that can
+    never succeed)."""
+    import litellm
+
+    class FakeResultMessage:
+        usage = {"input_tokens": 2, "output_tokens": 0}
+        stop_reason = None
+        result = "There's an issue with the selected model (bogus). It may not exist."
+        is_error = True
+        api_error_status = 404
+        subtype = "success"
+
+    class FakeClaudeAgentOptions:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+    class FakeClaudeSDKClient:
+        def __init__(self, options: FakeClaudeAgentOptions) -> None:
+            pass
+
+        async def connect(self) -> None:
+            return None
+
+        async def disconnect(self) -> None:
+            return None
+
+        async def query(self, prompt: str, session_id: str = "default") -> None:
+            return None
+
+        async def receive_response(self) -> AsyncIterator[Any]:
+            # No AssistantMessage at all -- a rejected model produces no text,
+            # only the terminal error ResultMessage.
+            yield FakeResultMessage()
+
+    fake_sdk = ModuleType("claude_agent_sdk")
+    fake_sdk.AssistantMessage = type("FakeAssistantMessage", (), {})
+    fake_sdk.ClaudeAgentOptions = FakeClaudeAgentOptions
+    fake_sdk.ClaudeSDKClient = FakeClaudeSDKClient
+    fake_sdk.ResultMessage = FakeResultMessage
+    fake_sdk.StreamEvent = type("FakeStreamEvent", (), {})
+    fake_sdk.TextBlock = type("FakeTextBlock", (), {})
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+
+    with pytest.raises(litellm.BadRequestError) as excinfo:
+        async for _ in claude_code_litellm._astream_sdk(
+            prompt="hello", model="bogus", timeout=5.0, cwd="/tmp/clio"
+        ):
+            pass
+    # The CLI's own explanatory text survives verbatim -- what the transcript's
+    # generic error tail interpolates.
+    assert "issue with the selected model" in str(excinfo.value)
+    assert not isinstance(excinfo.value, ClaudeCodeExecError)
+
+    from clio_agent.lm.io_logging import _is_transient_provider_error
+
+    assert _is_transient_provider_error(excinfo.value) is False
+
+
+async def test_astream_sdk_non_rejection_error_status_stays_generic(monkeypatch) -> None:
+    """SABOTAGE-sensitive: a non-404 is_error status (e.g. a 500 server error)
+    must NOT be swept into the rejection classification -- it stays on the
+    existing generic ClaudeCodeExecError path."""
+
+    class FakeResultMessage:
+        usage = {"input_tokens": 2, "output_tokens": 0}
+        stop_reason = None
+        result = "internal server error"
+        is_error = True
+        api_error_status = 500
+        subtype = "success"
+
+    class FakeClaudeAgentOptions:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+    class FakeClaudeSDKClient:
+        def __init__(self, options: FakeClaudeAgentOptions) -> None:
+            pass
+
+        async def connect(self) -> None:
+            return None
+
+        async def disconnect(self) -> None:
+            return None
+
+        async def query(self, prompt: str, session_id: str = "default") -> None:
+            return None
+
+        async def receive_response(self) -> AsyncIterator[Any]:
+            yield FakeResultMessage()
+
+    fake_sdk = ModuleType("claude_agent_sdk")
+    fake_sdk.AssistantMessage = type("FakeAssistantMessage", (), {})
+    fake_sdk.ClaudeAgentOptions = FakeClaudeAgentOptions
+    fake_sdk.ClaudeSDKClient = FakeClaudeSDKClient
+    fake_sdk.ResultMessage = FakeResultMessage
+    fake_sdk.StreamEvent = type("FakeStreamEvent", (), {})
+    fake_sdk.TextBlock = type("FakeTextBlock", (), {})
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+
+    with pytest.raises(ClaudeCodeExecError, match="returned an error"):
+        async for _ in claude_code_litellm._astream_sdk(
+            prompt="hello", model="bogus", timeout=5.0, cwd="/tmp/clio"
+        ):
+            pass
+
+
 async def test_astream_sdk_promotes_dspy_contract_from_thinking_delta(monkeypatch) -> None:
     """Claude Code SDK may stream ChatAdapter fields on thinking_delta first."""
 

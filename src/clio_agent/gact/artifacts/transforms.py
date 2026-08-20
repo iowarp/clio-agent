@@ -33,9 +33,13 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from clio_schemas import TransformRecord
 
 from clio_agent import conf
+from clio_agent.gact.artifacts.declared_used_edges import (
+    create_artifact_used_refs,
+    detect_declared_used_edges,
+)
 from clio_agent.gact.artifacts.environment import (
     EnvironmentRecord,
     EnvironmentTier,
@@ -98,102 +102,6 @@ def instrument_total_max_bytes() -> int:
         default=_DEFAULT_INSTRUMENT_TOTAL_MAX_BYTES,
         cast=conf.as_int,
     )
-
-
-class TransformRecord(BaseModel):
-    """One coarse transform keyed by the observer ``call_id`` (owner decision #966.6).
-
-    Immutable value: the harness builds it; the model is never load-bearing (its
-    intent is quarantined in ``annotation``). ``environment`` stamps the tiered
-    identity; ``replay`` stamps the permanent guarantee derived from the tier and
-    the used-edge pinning.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    #: THE key — the tool observer's ``call_id`` (the activity id).
-    call_id: str
-    event_id: str = ""
-    session_id: str = ""
-    turn_id: str = ""
-    workspace_id: str = ""
-    status: TransformStatus = TransformStatus.SUCCESS
-    kind: TransformKind = TransformKind.ORDINARY
-    agent_role: AgentRole = AgentRole.EXECUTING
-    agent_id: str = ""
-    instrument: Instrument = Field(default_factory=Instrument)
-    environment: EnvironmentRecord = Field(default_factory=EnvironmentRecord)
-    replay: ReplayContract = ReplayContract.RE_RUNNABLE
-    replay_reason: str = ""
-    used: list[ProvEdge] = Field(default_factory=list)
-    generated: list[ProvEdge] = Field(default_factory=list)
-    started_at: str = ""
-    ended_at: str = ""
-    #: Model-provided intent (untrusted, quarantined — never merged into evidence).
-    annotation: str = ""
-    #: The contended candidate set (other active session ids on the workspace).
-    candidates: list[str] = Field(default_factory=list)
-    #: Typed notes for DETECTABLE non-edges (precision over recall, #966.10): a
-    #: freshly-written output under a non-designation arg (``unminted_output_candidate``,
-    #: finding [1]), a path-looking arg that never resolved (``unresolved_path_arg``,
-    #: finding [4]), a discovery search whose hits were listed not consumed
-    #: (``catalog_hits_not_consumed``, finding [2]). Each ``{reason, ...}``.
-    notes: list[dict[str, Any]] = Field(default_factory=list)
-
-    def to_payload(self) -> dict[str, Any]:
-        """The durable ``artifact.transform.recorded`` payload (fold source of truth)."""
-        return {
-            "event_id": self.event_id,
-            "call_id": self.call_id,
-            "session_id": self.session_id,
-            "turn_id": self.turn_id,
-            "workspace_id": self.workspace_id,
-            "status": self.status.value,
-            "kind": self.kind.value,
-            "agent_role": self.agent_role.value,
-            "agent_id": self.agent_id,
-            "instrument": self.instrument.model_dump(),
-            "environment": self.environment.model_dump(),
-            "replay": self.replay.value,
-            "replay_reason": self.replay_reason,
-            "used": [e.model_dump() for e in self.used],
-            "generated": [e.model_dump() for e in self.generated],
-            "started_at": self.started_at,
-            "ended_at": self.ended_at,
-            "annotation": self.annotation,
-            "candidates": list(self.candidates),
-            "notes": [dict(n) for n in self.notes],
-        }
-
-    def to_relay_provenance(self) -> dict[str, Any]:
-        """The extras block that rides relay ``ArtifactRef.metadata['clio.provenance.v1']``.
-
-        Relay's ``ArtifactUse`` is frozen + ``extra='forbid'`` with no metadata
-        field, so our mechanism/evidence/environment extras cannot ride the edge
-        itself — they ride the producing artifact's ``ArtifactRef.metadata`` under
-        this versioned key until relay's schema converges (the S5 convergence
-        issue). ``used_artifact_refs`` is the list of relay ``ArtifactUse`` dicts
-        for the hash-pinned used edges (the shape relay lands unchanged).
-        """
-        return {
-            "activity_id": self.call_id,
-            "instrument": self.instrument.model_dump(),
-            "environment": self.environment.model_dump(),
-            "replay": self.replay.value,
-            "used_evidence": [
-                {
-                    "artifact_id": e.artifact_id,
-                    "external_ref": e.external_ref,
-                    "authority": e.authority,
-                    "evidence": e.evidence.value,
-                    "note": e.note,
-                }
-                for e in self.used
-            ],
-            "used_artifact_refs": [
-                use for e in self.used if (use := e.to_artifact_use()) is not None
-            ],
-        }
 
 
 def transform_from_payload(payload: dict[str, Any]) -> Optional[TransformRecord]:
@@ -366,7 +274,7 @@ def _now_iso() -> str:
 
 
 def _generated_edges(
-    minted: list[ArtifactVersion], *, fence_proven: bool = False
+    minted: list[ArtifactVersion], *, call_id: str = "", fence_proven: bool = False
 ) -> list[ProvEdge]:
     """Project the versions minted this call to ``generated`` edges.
 
@@ -374,9 +282,25 @@ def _generated_edges(
     every generated edge when an active OS fence proved this call's output territory exclusive
     by construction (``transform_exclusivity.generated_fence_proven``). Identity evidence
     (``hash-pair`` / ``schema-arg``) is unchanged — the marker is a separate attribution axis.
+
+    A version whose recorded producing ``call_id`` is a DIFFERENT call than ``call_id``
+    was not appended by this call: the mint deduped this call's byte-identical output
+    onto an existing version (W&B same-sha dedup, owner decision #966.3 — the dedup
+    no-op deliberately emits no artifact event). The edge is still true provenance —
+    this call really re-wrote the bytes — but it carries ``note="same_sha_dedup"`` so
+    the trace distinguishes a re-production from a fresh mint (no-silent-fallback:
+    without the note, a deduped re-run is indistinguishable from a v1 mint on the
+    trace, the exact ambiguity behind the 2026-08-05 ndp re-run investigation).
+    Versions with no recorded producing call (reconcile / pack / harness producers)
+    are never stamped — precision over recall (#966.10).
     """
     edges: list[ProvEdge] = []
     for version in minted:
+        producing_call = str((version.producer or {}).get("call_id") or "")
+        deduped = bool(call_id) and bool(producing_call) and producing_call != call_id
+        note = "" if version.sha256 else "stat_pinned"
+        if deduped:
+            note = "same_sha_dedup"
         edges.append(
             ProvEdge(
                 role=EdgeRole.GENERATED,
@@ -386,11 +310,50 @@ def _generated_edges(
                 name="",
                 version=version.version,
                 path=version.path,
-                note=("" if version.sha256 else "stat_pinned"),
+                note=note,
                 fence_proven=fence_proven,
             )
         )
     return edges
+
+
+def _declared_generated_versions(
+    app: "FastAPI", *, tool_name: str, args: dict[str, Any], result: Any
+) -> list[ArtifactVersion]:
+    """The version(s) a ``create_artifact`` call minted THIS call, for #1191.
+
+    Resolved from the tool's OWN result wire (``result["artifacts"][*].artifact_id``)
+    via a registry lookup — never a re-mint. Gated on the SAME non-blank ``used``
+    check :mod:`declared_used_edges` uses (never on the tool name alone): a call
+    without declared inputs mints nothing here either, so its lineage graph stays
+    a single node exactly as before (#1191's regression pin — declaring inputs is
+    what earns the mint a producing-activity node; the two sides land together,
+    or neither does).
+    """
+    short = tool_name.rsplit(".", 1)[-1] if "." in tool_name else tool_name
+    if short != "create_artifact":
+        return []
+    if not create_artifact_used_refs(args):
+        return []
+    items = result.get("artifacts") if isinstance(result, dict) else None
+    if not isinstance(items, list):
+        return []
+    from clio_agent.gact.artifacts.registry import get_registry  # noqa: PLC0415
+
+    registry = get_registry(app)
+    out: list[ArtifactVersion] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict) or not item.get("accepted"):
+            continue
+        artifact_id = str(item.get("artifact_id") or "")
+        if not artifact_id or artifact_id in seen:
+            continue
+        seen.add(artifact_id)
+        found = registry.get_by_artifact_id(artifact_id)
+        if found is not None:
+            out.append(found[1])
+    return out
 
 
 def _script_instrument(tool_name: str, args: dict[str, Any], used: list[ProvEdge]) -> Instrument:
@@ -470,12 +433,18 @@ def record_transform(
         trace_id=trace_id,
         call_started_at=started_at,
         allowed_workspace_ids=allowed_workspace_ids,
+        call_id=call_id,
+        tool_name=tool_name,
     )
     authority_scan = detect_authority_edges(
         app, tool_name=tool_name, result=result, workspace_id=workspace_id
     )
-    used = [*used_scan.edges, *authority_scan.edges]
-    notes = [*used_scan.notes, *authority_scan.notes]
+    # #1191: create_artifact's own used=[...] refs (a no-op for every other tool).
+    declared_scan = detect_declared_used_edges(
+        app, tool_name=tool_name, args=args, workspace_id=workspace_id
+    )
+    used = [*used_scan.edges, *authority_scan.edges, *declared_scan.edges]
+    notes = [*used_scan.notes, *authority_scan.notes, *declared_scan.notes]
     # B4 (#978): join in-window ``net.egress`` records onto the used edges as
     # ``used web:<domain>@<time>`` — enriching a staged-download/catalog URL edge whose host
     # the chokepoint observed (step 1, one edge two evidence bases), or minting one fresh web
@@ -508,8 +477,15 @@ def record_transform(
         generated_fence_proven,
     )
 
+    # #1191: fold a used=[...]-declaring create_artifact call's OWN mint into
+    # `generated` too (see _declared_generated_versions).
     generated = _generated_edges(
-        minted, fence_proven=generated_fence_proven(app, workspace_id, sid, kind=kind)
+        [
+            *minted,
+            *_declared_generated_versions(app, tool_name=tool_name, args=args, result=result),
+        ],
+        call_id=call_id,
+        fence_proven=generated_fence_proven(app, workspace_id, sid, kind=kind),
     )
     started_iso = _iso_from_epoch_opt(started_at)
     record = TransformRecord(

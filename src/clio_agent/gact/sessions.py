@@ -89,6 +89,37 @@ def _default_store_path() -> Path:
     return paths.workspace_agent_dir() / "sessions.json"
 
 
+#: Modes this record may hold on disk that the wire model no longer accepts,
+#: mapped to the mode they are equivalent to.
+#:
+#: ``chat`` was deleted by P1.1 (#1063). That change is documented as
+#: behaviour-preserving — "nothing ever checked mode==\"chat\", so it behaved
+#: identically to ``edit``" — so this mapping restates an existing ruling
+#: rather than inventing one. Every session written before #1063 carries it.
+RETIRED_MODES: dict[str, str] = {"chat": "edit"}
+
+#: Where an unrecognised mode lands. ``plan`` is the read-only mode: an
+#: unknown value must never be resolved into MORE authority than it had, and
+#: guessing ``edit`` would hand write access to a record we cannot interpret.
+UNKNOWN_MODE_FALLBACK = "plan"
+
+#: Modes the wire model accepts (clio_agent.gact.types.Session).
+_WIRE_MODES = frozenset({"plan", "edit", "architect"})
+
+
+def normalize_stored_mode(mode: str) -> str:
+    """Map a stored mode onto one the wire model accepts.
+
+    The write side stopped accepting some values without migrating what was
+    already on disk (#1171). Reading must therefore tolerate what writing no
+    longer produces, or every pre-existing session becomes unreadable.
+    """
+
+    if mode in _WIRE_MODES:
+        return mode
+    return RETIRED_MODES.get(mode, UNKNOWN_MODE_FALLBACK)
+
+
 @dataclass
 class Session:
     """A single GACT v0.2 session record.
@@ -128,8 +159,8 @@ class Session:
     mode: str = "edit"
     edit_mode: str = "diff"
     # iowarp/clio-agent #1034 — approval axis, ORTHOGONAL to ``mode``. One of
-    # {ask, auto-edits, bypass, ai-review}; default "ask" preserves today's
-    # interactive-prompt behaviour. Literal validation lives on the wire model
+    # {ask, auto-edits, bypass, ai-review, spotter-ai}; default "ask" preserves
+    # today's interactive-prompt behaviour. Literal validation lives on the wire model
     # (types.Session); the dataclass stores the raw string so a defaulted field
     # round-trips old persisted rows (asdict/Session(**payload)) with no
     # migration.
@@ -153,7 +184,9 @@ class Session:
         field-friendly shape (no nulls where the client expects
         empty)."""
 
-        return asdict(self)
+        wire = asdict(self)
+        wire["mode"] = normalize_stored_mode(self.mode)
+        return wire
 
 
 class SessionStore:
@@ -182,6 +215,16 @@ class SessionStore:
         self._sessions: dict[str, Session] = {}
         if path is not None:
             self._load()
+            # #1115: a PERSISTENT session registry is the durable home for in-flight
+            # SEP-2663 task ids (RULE 4 - no fifth store). Publishing it here is what
+            # lets the tools layer reach a durable store without importing gact; an
+            # in-memory registry deliberately does not publish, because it would be
+            # claiming a crash-recovery guarantee it cannot keep.
+            from clio_agent.gact.mcp_task_store import (  # noqa: PLC0415 - keep leaf
+                install_session_task_store,
+            )
+
+            install_session_task_store(self)
 
     # ---- lifecycle ----------------------------------------------------
 
@@ -256,7 +299,7 @@ class SessionStore:
         sid = _SESSION_ID_PREFIX + uuid.uuid4().hex[:12]
         now = _utcnow_iso()
         valid_routing_modes = {"auto", "chat", "experts", "reasoning_only"}
-        valid_approval_modes = {"ask", "auto-edits", "bypass", "ai-review"}
+        valid_approval_modes = {"ask", "auto-edits", "bypass", "ai-review", "spotter-ai"}
         sess = Session(
             id=sid,
             workspace_id=workspace_id,
@@ -314,11 +357,27 @@ class SessionStore:
 
     def delete(self, sid: str) -> bool:
         with self._lock:
-            existed = sid in self._sessions
+            existing = self._sessions.get(sid)
+            existed = existing is not None
+            # #1115: a deleted session may still own LIVE remote SEP-2663 tasks. The
+            # deletion is never blocked or delayed by them, but the rows are captured
+            # here so they can be cancelled best-effort and migrated to the task
+            # store's holding path instead of vanishing with the session.
+            task_rows: dict[str, Any] = (
+                dict((existing.metadata or {}).get("mcp_tasks") or {})
+                if existing is not None
+                else {}
+            )
             self._sessions.pop(sid, None)
             if existed:
                 self._flush()
         if existed:
+            if task_rows:
+                from clio_agent.gact.mcp_task_store import (  # noqa: PLC0415 - keep leaf
+                    notify_session_deleted,
+                )
+
+                notify_session_deleted(sid, task_rows)
             # P2.3 SessionEnd lifecycle hook (observation): fires exactly once, only
             # when a session actually existed and was removed.
             from clio_agent.gact.hooks import dispatch_session_end  # noqa: PLC0415
@@ -387,6 +446,7 @@ class SessionStore:
                 "auto-edits",
                 "bypass",
                 "ai-review",
+                "spotter-ai",
             }:
                 sess.approval_mode = approval_mode
             if model is not None:

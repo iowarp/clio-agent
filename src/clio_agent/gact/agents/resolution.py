@@ -29,7 +29,6 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from clio_agent.gact import skills as _skills
 from clio_agent.gact.agent_blueprints import (
-    DEFAULT_AGENT_BLUEPRINT_ID,
     discover_agent_blueprints,
     load_agent_blueprint_path,
     load_agent_blueprints,
@@ -44,7 +43,6 @@ from clio_agent.gact.agents.composition import (
 )
 from clio_agent.gact.catalog import _builtin_agents
 from clio_agent.gact.expert_packs import (
-    discover_expert_packs,
     load_expert_packs,
     validate_expert_hierarchy,
 )
@@ -178,7 +176,12 @@ def _agent_definition_uses_blueprint_runtime(agent_def: "AgentDef") -> bool:
     # An Agent Blueprint expert ALWAYS runs on the blueprint runtime: the legacy
     # native-expert runtime it could route to (the deleted Tier-1 planner) is gone
     # (#948 S4b), so there is no configuration under which it routes elsewhere.
-    return _agent_definition_is_agent_blueprint(agent_def)
+    # The in-code builtin react main (catalog._builtin_main_agent) shares that
+    # runtime: a bare session executes it through the same module builder.
+    metadata = agent_def.metadata if isinstance(agent_def.metadata, Mapping) else {}
+    return _agent_definition_is_agent_blueprint(agent_def) or (
+        metadata.get("definition_kind") == "builtin_main"
+    )
 
 
 def _runtime_workspace_catalog_cwd(
@@ -202,6 +205,17 @@ def _runtime_workspace_catalog_cwd(
 
 
 def _runtime_active_agent_blueprint_id(app: "FastAPI", session_id: str = "") -> str:
+    """The session's EXPLICITLY activated blueprint id — never an implicit one.
+
+    A session that activated nothing gets no blueprint. The retired implicit
+    fallback (a discoverable ``DEFAULT_AGENT_BLUEPRINT_ID`` silently became the
+    session's agent set) meant a bare session inherited a full expert hierarchy
+    it never asked for — the owner's ruling (2026-08-05): a session with no
+    blueprint selected must not resolve one. Activation is the only path
+    (``POST /v1/sessions/{sid}/agent-blueprint`` or the workspace
+    manifest), and an unbound session runs the plain built-in main.
+    """
+
     if not session_id:
         return ""
     sess = app.state.sessions.get(session_id)
@@ -210,30 +224,7 @@ def _runtime_active_agent_blueprint_id(app: "FastAPI", session_id: str = "") -> 
     metadata = getattr(sess, "metadata", {}) or {}
     if not isinstance(metadata, Mapping):
         return ""
-    explicit = str(metadata.get("active_agent_blueprint_id") or "").strip()
-    if explicit:
-        return explicit
-    cwd = _runtime_workspace_catalog_cwd(app, session_id=session_id)
-    # Suppress the implicit default only on EXPLICIT ACTIVATION: a session-activated
-    # pack (id/path) or a workspace-scoped MANIFEST pack (``manifest_path`` set) IS the
-    # workspace's declared agent set (#770 C1). A GLOBAL pack or a LOOSE expert must NOT
-    # suppress -- it augments the resolved default main (#948 S4b findings 1/5/6).
-    pack_cwd = cwd or Path.cwd()
-    if (
-        _runtime_active_session_expert_pack_id(app, session_id)
-        or _runtime_active_session_expert_pack_path(app, session_id) is not None
-        or any(
-            pack.scope == "workspace" and pack.manifest_path is not None
-            for pack in discover_expert_packs(cwd=pack_cwd)
-        )
-    ):
-        return ""
-    if any(
-        row.id == DEFAULT_AGENT_BLUEPRINT_ID and row.enabled
-        for row in discover_agent_blueprints(cwd=cwd)
-    ):
-        return DEFAULT_AGENT_BLUEPRINT_ID
-    return ""
+    return str(metadata.get("active_agent_blueprint_id") or "").strip()
 
 
 def _runtime_active_agent_blueprint_path(app: "FastAPI", session_id: str = "") -> Path | None:
@@ -665,8 +656,8 @@ def _runtime_active_agent_blueprint_rows(
 
     This is the ONE seam both ``GET /v1/agents`` (via ``_agent_rows`` in
     :mod:`clio_agent.gact.app`) and the runtime turn path share. It applies, in
-    order: the default-blueprint fallback (when a session pinned no explicit
-    blueprint but a discoverable ``DEFAULT_AGENT_BLUEPRINT_ID`` exists), the
+    order: the session's EXPLICITLY activated blueprint (never an implicit
+    default — an unbound session resolves no blueprint at all), the
     session agent overlay, hierarchy validation, MCP tool-gating (descriptor
     validation + live-server re-enable), capability-ref projection, and the
     prompt registry -- so the route and the executing agent can never disagree

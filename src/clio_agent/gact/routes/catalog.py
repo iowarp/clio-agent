@@ -111,8 +111,8 @@ def _agent_runtime_tool_rows(app: FastAPI) -> list[dict[str, Any]]:
                 "description": str(_runtime_tool_value(tool, "description") or ""),
                 "server_id": f"mcp_{namespace}" if separator else "",
                 "source": "agent_runtime_mcp",
-                "input_schema": _runtime_tool_value(tool, "inputSchema", "input_schema") or {},
-                "output_schema": _runtime_tool_value(tool, "outputSchema", "output_schema") or {},
+                "input_schema": _runtime_tool_value(tool, "input_schema", "inputSchema") or {},
+                "output_schema": _runtime_tool_value(tool, "output_schema", "outputSchema") or {},
                 "owner": _tool_owner_for_catalog(tool_name),
                 "tags": _tool_tags_for_catalog(tool_name),
                 "visible_to": _tool_visible_to_for_catalog(tool_name),
@@ -244,11 +244,11 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                                 "description": getattr(t, "description", "") or "",
                                 "server_id": sid,
                                 "source": "mcp",
-                                "input_schema": getattr(t, "inputSchema", None)
-                                or getattr(t, "input_schema", None)
+                                "input_schema": getattr(t, "input_schema", None)
+                                or getattr(t, "inputSchema", None)
                                 or {},
-                                "output_schema": getattr(t, "outputSchema", None)
-                                or getattr(t, "output_schema", None)
+                                "output_schema": getattr(t, "output_schema", None)
+                                or getattr(t, "outputSchema", None)
                                 or {},
                                 "owner": _tool_owner_for_catalog(tool_name),
                                 "tags": _tool_tags_for_catalog(tool_name),
@@ -354,11 +354,11 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                                 "description": getattr(tt, "description", "") or "",
                                 "server_id": sid,
                                 "source": "mcp",
-                                "input_schema": getattr(tt, "inputSchema", None)
-                                or getattr(tt, "input_schema", None)
+                                "input_schema": getattr(tt, "input_schema", None)
+                                or getattr(tt, "inputSchema", None)
                                 or {},
-                                "output_schema": getattr(tt, "outputSchema", None)
-                                or getattr(tt, "output_schema", None)
+                                "output_schema": getattr(tt, "output_schema", None)
+                                or getattr(tt, "outputSchema", None)
                                 or {},
                                 "owner": _tool_owner_for_catalog(tool_id),
                                 "tags": _tool_tags_for_catalog(tool_id),

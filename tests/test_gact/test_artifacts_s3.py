@@ -190,7 +190,7 @@ def test_model_supplied_hash_is_ignored_harness_wins(tmp_path):
         ),
         workspace_id="ws1",
     )
-    assert result["accepted"] == 1
+    assert result["created"] == 1
     rec = get_registry(app).get("ws1", "r.md")
     assert rec is not None and rec.head is not None
     recorded = rec.head.sha256
@@ -408,10 +408,186 @@ def test_promote_batch_summary_counts(tmp_path):
         ],
         workspace_id="ws1",
     )
-    assert result["accepted"] == 1
+    assert result["created"] == 1
     assert result["deduplicated"] == 1
     assert result["rejected"] == 1
+    assert "accepted" not in result
     assert len(result["artifacts"]) == 3
+
+
+def test_dedup_only_batch_reads_honest_not_contradictory(tmp_path):
+    """Owner-flagged defect: the top-level count keys must never collide with the
+    per-item ``accepted`` BOOLEAN name. A batch of exactly one dedup previously
+    returned ``{"accepted": 0, "artifacts": [{"accepted": true, ...}]}`` — each
+    field individually honest, but the same name meaning a COUNT at the top and a
+    BOOLEAN per item reads as a flat contradiction to a consumer skimming one key.
+
+    Fix: the top-level summary uses unambiguous, disjoint names (``created``,
+    ``deduplicated``, ``rejected``) and drops ``accepted`` entirely; the per-item
+    wire dict's own ``accepted`` boolean is untouched (true for a dedup)."""
+    app, sess, _ = _make_app(tmp_path)
+    dup_src = tmp_path / "dup.md"
+    dup_src.write_text("same bytes", encoding="utf-8")
+    # Prime the registry with one existing version so the batch call below is a
+    # pure byte-identical re-designation (created=False, accepted=True).
+    promote_proposal(app, sess.id, Proposal(path=str(dup_src), kind="report"), workspace_id="ws1")
+
+    result = promote_proposals(
+        app,
+        sess.id,
+        [Proposal(path=str(dup_src), kind="report")],
+        workspace_id="ws1",
+    )
+
+    # Sabotage: reintroduce a top-level "accepted" count (or reuse `created` as
+    # the sum of accepted-and-created-or-deduped) -> this collides with the
+    # per-item boolean name again and these assertions redden.
+    assert result == {
+        "artifacts": [
+            {
+                "accepted": True,
+                "created": False,
+                "name": "dup.md",
+                "artifact_id": result["artifacts"][0]["artifact_id"],
+                "version": result["artifacts"][0]["version"],
+                "sha256": result["artifacts"][0]["sha256"],
+                "kind": "report",
+                "custody": result["artifacts"][0]["custody"],
+                "mechanism": result["artifacts"][0]["mechanism"],
+                "reason": "already_registered",
+            }
+        ],
+        "created": 0,
+        "deduplicated": 1,
+        "rejected": 0,
+    }
+    assert "accepted" not in result
+    # The per-item boolean is untouched: true for a dedup, honest on its own.
+    assert result["artifacts"][0]["accepted"] is True
+    assert result["artifacts"][0]["created"] is False
+
+
+# --------------------------------------------------------------------------- #
+# Declared structured_content (P5 wire semantics) — the wait_agent_tasks       #
+# treatment extended to create_artifact, wired AFTER the created/deduplicated/ #
+# rejected rename above (declare_create_artifact_structured_content reads the  #
+# SAME renamed counts).                                                        #
+# --------------------------------------------------------------------------- #
+
+
+def _declared(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    declared: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+    return declared
+
+
+def test_create_artifact_declares_structured_content_for_a_fresh_mint(tmp_path, monkeypatch):
+    declared = _declared(monkeypatch)
+    app, sess, _ = _make_app(tmp_path)
+    good = tmp_path / "smoke_hostname.sh"
+    good.write_text("echo hostname", encoding="utf-8")  # 13 bytes
+
+    result = promote_proposals(
+        app, sess.id, [Proposal(path=str(good), kind="script")], workspace_id="ws1"
+    )
+
+    assert len(declared) == 1
+    shape = declared[0]
+    assert next(iter(shape)) == "message"
+    assert shape["message"] == "created 1 artifact: smoke_hostname.sh (13 B)"
+    assert {k: v for k, v in shape.items() if k != "message"} == result
+
+
+def test_create_artifact_declares_structured_content_for_a_dedup(tmp_path, monkeypatch):
+    app, sess, _ = _make_app(tmp_path)
+    dup_src = tmp_path / "smoke_hostname.sh"
+    dup_src.write_text("echo hostname", encoding="utf-8")
+    promote_proposal(app, sess.id, Proposal(path=str(dup_src), kind="script"), workspace_id="ws1")
+
+    declared = _declared(monkeypatch)
+    result = promote_proposals(
+        app, sess.id, [Proposal(path=str(dup_src), kind="script")], workspace_id="ws1"
+    )
+
+    assert len(declared) == 1
+    shape = declared[0]
+    assert shape["message"] == "deduplicated against existing smoke_hostname.sh v1"
+    assert {k: v for k, v in shape.items() if k != "message"} == result
+
+
+def test_create_artifact_declares_structured_content_for_a_rejection(tmp_path, monkeypatch):
+    declared = _declared(monkeypatch)
+    app, sess, _ = _make_app(tmp_path)
+
+    result = promote_proposals(
+        app,
+        sess.id,
+        [Proposal(path=str(tmp_path / "missing.md"), kind="report")],
+        workspace_id="ws1",
+    )
+
+    assert len(declared) == 1
+    shape = declared[0]
+    assert shape["message"] == f"rejected: {RejectionReason.PATH_MISSING.value}"
+    assert {k: v for k, v in shape.items() if k != "message"} == result
+
+
+def test_create_artifact_declares_structured_content_for_a_batch(tmp_path, monkeypatch):
+    app, sess, _ = _make_app(tmp_path)
+    good = tmp_path / "g.md"
+    good.write_text("g", encoding="utf-8")
+    dup_src = tmp_path / "d.md"
+    dup_src.write_text("d", encoding="utf-8")
+    promote_proposal(app, sess.id, Proposal(path=str(dup_src), kind="report"), workspace_id="ws1")
+
+    declared = _declared(monkeypatch)
+    result = promote_proposals(
+        app,
+        sess.id,
+        [
+            Proposal(path=str(good), kind="report"),
+            Proposal(path=str(dup_src), kind="report"),
+            Proposal(path=str(tmp_path / "missing.md"), kind="report"),
+        ],
+        workspace_id="ws1",
+    )
+
+    assert len(declared) == 1
+    shape = declared[0]
+    assert next(iter(shape)) == "message"
+    assert shape["message"] == (
+        "3 artifacts: 1 created, 1 deduplicated, 1 rejected (g.md, d.md, missing.md)"
+    )
+    assert {k: v for k, v in shape.items() if k != "message"} == result
+
+
+def test_create_artifact_declares_structured_content_for_over_batch_rejection(
+    tmp_path, monkeypatch
+):
+    """The batch-cap short-circuit (finding [1]) is the OTHER promote_proposals
+    return point — it must declare too, not just the main summary path."""
+
+    monkeypatch.setattr(P, "proposals_batch_max", lambda: 1)
+    declared = _declared(monkeypatch)
+    app, sess, _ = _make_app(tmp_path)
+
+    result = promote_proposals(
+        app,
+        sess.id,
+        [
+            Proposal(path=str(tmp_path / "a.md"), kind="report"),
+            Proposal(path=str(tmp_path / "b.md"), kind="report"),
+        ],
+        workspace_id="ws1",
+    )
+
+    assert len(declared) == 1
+    shape = declared[0]
+    assert shape["message"] == f"rejected: {RejectionReason.OVER_BATCH.value}"
+    assert {k: v for k, v in shape.items() if k != "message"} == result
 
 
 # --------------------------------------------------------------------------- #
@@ -423,9 +599,35 @@ def test_create_artifact_tool_shape():
     agent_def = SimpleNamespace(id="expert-x")
     tool = build_create_artifact_tool(agent_def)
     assert tool.name == "create_artifact"
-    # Batch + single-item args are all present on the schema.
-    for arg in ("name", "kind", "path", "content", "annotation", "artifacts"):
+    # Batch + single-item args are all present on the schema, including the #1191
+    # OPTIONAL used=[...] input-refs field.
+    for arg in ("name", "kind", "path", "content", "annotation", "artifacts", "used"):
         assert arg in tool.args
+
+
+def test_create_artifact_tool_accepts_used_without_touching_promotion(tmp_path):
+    """#1191: `used` is accepted by the tool's own signature (so the observer
+    captures it in the call's args) but the mint decision itself is byte-identical
+    whether or not it is supplied — used=[...] never changes acceptance/created."""
+    app, sess, _arc = _make_app(tmp_path)
+    report = tmp_path / "cited.md"
+    report.write_text("# report\n", encoding="utf-8")
+    agent_def = SimpleNamespace(id="expert-x")
+    tool = build_create_artifact_tool(agent_def)
+
+    from clio_agent.gact import context as _ctx
+
+    token_app = _ctx.set_app(app)
+    token_sid = _ctx.set_session_id(sess.id)
+    try:
+        result = tool.func(kind="report", path=str(report), used=["artifact_bogus", str(tmp_path)])
+    finally:
+        _ctx.reset(token_sid)
+        _ctx.reset(token_app)
+    # Sabotage: thread `used` into the mint decision (e.g. reject an unresolvable
+    # ref) -> this flips to rejected/0 -> red.
+    assert result["created"] == 1
+    assert result["artifacts"][0]["accepted"] is True
 
 
 SKILL_BODY = "PROCEDURE_BODY_MARKER"
@@ -869,15 +1071,16 @@ def test_batch_over_max_rejected_with_single_event(tmp_path, monkeypatch):
         f.write_text(f"b{i}", encoding="utf-8")
         ok_items.append(Proposal(path=str(f), kind="report"))
     res_ok = promote_proposals(app, sess.id, ok_items, workspace_id="ws1")
-    assert res_ok["accepted"] == 3
+    assert res_ok["created"] == 3
     # One over the max -> the WHOLE batch is rejected with ONE typed over_batch event.
     before = len(_proposal_events(arc))
     over = [Proposal(kind="report") for _ in range(4)]
     res = promote_proposals(app, sess.id, over, workspace_id="ws1")
     # Sabotage: drop the batch bound -> each of the 4 items emits an event and
     # rejected==4 -> these assertions redden.
-    assert res["accepted"] == 0
+    assert res["created"] == 0
     assert res["rejected"] == 1
+    assert "accepted" not in res
     assert len(res["artifacts"]) == 1
     assert res["artifacts"][0]["reason"] == RejectionReason.OVER_BATCH.value
     assert len(_proposal_events(arc)) - before == 1
@@ -995,7 +1198,9 @@ def test_plan_mode_deny_carries_mode_message_and_target(tmp_path, monkeypatch):
     assert out.reason == RejectionReason.POLICY_DENIED.value
     detail = str(getattr(out, "detail", "") or getattr(out, "message", "") or out.to_wire())
     # The mode-aware message (names Plan Mode + the writable plan file) reached the model.
-    assert "plan" in detail.lower() and "read-only" in detail.lower() or "plan file" in detail.lower()
+    assert (
+        "plan" in detail.lower() and "read-only" in detail.lower() or "plan file" in detail.lower()
+    )
     # The judged target is named, so a wrong `name` is self-evident to the model.
     assert str((tmp_path / "my-plan.md").resolve()) in detail
 
@@ -1015,3 +1220,54 @@ def test_create_artifact_tool_doc_states_name_is_target_path():
     doc = str(getattr(tool, "desc", "") or getattr(tool, "__doc__", "") or "")
     lowered = doc.lower()
     assert "target path" in lowered and "content" in lowered
+
+
+def test_absolute_path_name_registers_under_basename(tmp_path):
+    """A create_artifact name that is a full path stays the WRITE TARGET but the
+    record identity is the basename — the same identity every tool/harness seam
+    mints (artifact_name_for_path). Live repro: the NDP report registered TWICE,
+    once as 'MTA1_LA_ground_motion_report.md' (tool seam) and once under its
+    absolute path (create_artifact), splitting one deliverable's version chain."""
+
+    app, sess, _ = _make_app(tmp_path)
+    target = tmp_path / "sub" / "MTA1_report.md"
+
+    out = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name=str(target), content="# body\n", kind="report"),
+        workspace_id="ws1",
+    )
+    assert out.accepted and out.created
+    assert out.name == "MTA1_report.md"
+    assert target.is_file()  # the full path is still where the file lands
+    assert get_registry(app).get("ws1", "MTA1_report.md") is not None
+    assert get_registry(app).get("ws1", str(target)) is None
+
+
+def test_path_seam_folds_into_the_same_record(tmp_path):
+    """After the identity normalization, a later basename-keyed mint of the same
+    bytes folds into the create_artifact record (already_registered, created=False)
+    instead of minting a second record."""
+
+    app, sess, _ = _make_app(tmp_path)
+    target = tmp_path / "MTA1_report.md"
+
+    first = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name=str(target), content="# body\n", kind="report"),
+        workspace_id="ws1",
+    )
+    assert first.accepted and first.created
+
+    second = promote_proposal(
+        app,
+        sess.id,
+        Proposal(path=str(target), kind="report"),
+        workspace_id="ws1",
+    )
+    assert second.accepted
+    assert second.created is False
+    assert second.reason == "already_registered"
+    assert second.name == "MTA1_report.md"

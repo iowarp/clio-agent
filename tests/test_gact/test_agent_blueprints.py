@@ -30,6 +30,7 @@ from clio_agent.gact.agent_blueprints import (
     load_agent_blueprints,
     validate_agent_blueprint_path,
 )
+from clio_agent.gact.agents import toolset_inventory
 from clio_agent.gact.app import (
     _active_base_agent_tool_executor,
     _blueprint_module_kind,
@@ -52,6 +53,7 @@ from clio_agent.gact.app import (
     _workflow_state_from_outputs,
     build_app,
 )
+from clio_agent.gact.runtime.globals import _UnsupportedSessionAgent
 from clio_agent.gact.types import AgentDef
 from tests.test_gact.conftest import complete_turn
 from tests.test_gact.earthscope_schema import EARTHSCOPE_WORKFLOW_STATE_SCHEMA
@@ -205,10 +207,23 @@ def test_default_registry_agent_blueprint_is_discoverable(
     )
 
 
-def test_builtin_agents_are_loaded_from_default_registry_snapshot(
+def test_builtin_agents_never_implicitly_load_an_installed_default_registry_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """DELIBERATE FLIP (was ``test_builtin_agents_are_loaded_from_default_registry_snapshot``).
+
+    ``_builtin_agents()`` used to silently load whatever Agent Blueprint snapshot
+    was pinned as ``DEFAULT_AGENT_BLUEPRINT_ID`` and relabel its rows "builtin" --
+    the same implicit-selection anti-pattern the blueprint lane's
+    explicit-activation-only ruling (owner, 2026-08-05, commit aa906022) forbids
+    for ``_runtime_active_agent_blueprint_id``, just surviving in this parallel
+    "builtin catalog" seam. An installed-but-never-activated snapshot is now
+    irrelevant to ``_builtin_agents()``: it always returns just the code-shipped
+    react main (``catalog._builtin_main_agent``), regardless of what happens to
+    be installed on disk.
+    """
+
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     # Isolate the per-user config dir with the cross-OS ``CLIO_USER_DIR``
     # override (Linux-only home/.config layout does not take effect on Windows).
@@ -219,11 +234,10 @@ def test_builtin_agents_are_loaded_from_default_registry_snapshot(
 
     agents = {row.id: row for row in _builtin_agents()}
 
-    assert {"root", "variant"} <= set(agents)
-    assert agents["root"].source == "expert_pack"
-    assert agents["root"].metadata["source_blueprint"] == "default_registry"
-    assert "agent_blueprints/builtin" not in agents["root"].metadata["definition_path"]
-    assert agents["variant"].metadata["install"]["commit"] == DEFAULT_REGISTRY_COMMIT
+    assert set(agents) == {"main"}
+    assert agents["main"].source == "builtin"
+    assert agents["main"].metadata.get("definition_kind") == "builtin_main"
+    assert "source_blueprint" not in agents["main"].metadata
 
 
 def test_default_registry_url_default_is_https() -> None:
@@ -432,12 +446,17 @@ def _prepare_default_store(
     """
 
     store = tmp_path / "store"
-    monkeypatch.delenv("CLIO_USER_DIR", raising=False)
+    # CLIO_USER_DIR is the ONLY cross-OS isolation: platformdirs ignores
+    # XDG_CONFIG_HOME on Windows, so an XDG-only override silently pointed the
+    # per-user store (and the blueprint-sources registry) at the REAL
+    # %LOCALAPPDATA% — every test run leaked a pytest-tmpdir source row into
+    # the production registry (~100 dead genomics rows found 2026-08-13).
+    config_dir = store / "clio-agent"
+    monkeypatch.setenv("CLIO_USER_DIR", str(config_dir))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(store))
     # #948 S4b: the refresh path must actually run, so re-enable the bootstrap
     # (conftest disables it globally for unit isolation).
     monkeypatch.delenv("CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP", raising=False)
-    config_dir = store / "clio-agent"
     if registry_url:
         # Config-over-env (the config-over-env principle): drive the registry URL
         # through the config FILE, not CLIO_BLUEPRINT_REGISTRY_URL.
@@ -533,9 +552,24 @@ def test_valid_default_install_is_not_refreshed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """(c) A valid react install triggers no refresh (no churn)."""
+    """(c) A valid react install triggers no refresh (no churn).
 
-    install_root, home = _prepare_default_store(tmp_path, monkeypatch)
+    Hermetic registry: an explicit LOCAL registry override carrying only the
+    already-installed default pack — without it the source resolves to the real
+    dev submodule and the per-boot sync legitimately installs the other
+    marketplace packs, which this test's no-churn spy must not conflate with a
+    refresh (review 2026-08-13 finding #10).
+    """
+
+    local_registry = tmp_path / "registry-local"
+    default_pack = local_registry / DEFAULT_AGENT_BLUEPRINT_ID
+    _write_blueprint_tree(
+        default_pack, main_md=_REACT_MAIN_MD, child_md=_REACT_CHILD_MD, commit="valid-head"
+    )
+    default_pack.joinpath(".clio-install.md").unlink()
+    install_root, home = _prepare_default_store(
+        tmp_path, monkeypatch, registry_url=local_registry.as_posix()
+    )
     _write_blueprint_tree(
         install_root, main_md=_REACT_MAIN_MD, child_md=_REACT_CHILD_MD, commit="valid-head"
     )
@@ -2699,7 +2733,14 @@ def test_active_agent_blueprint_drives_turn_runtime_and_overrides_builtin_ids(
         assistant = complete_turn(client, sid_blueprint, "prove runtime")
 
     assert [row["id"] for row in agents_blueprint] == ["data"]
-    assert any(row["id"] == "analysis" for row in agents_builtin)
+    # DELIBERATE FLIP: this used to assert the bare sibling session ("builtin",
+    # no activation) surfaced "analysis" -- which only ever came from
+    # catalog._builtin_agents() silently loading the conftest's installed
+    # default-registry snapshot (autouse allow_pytest_tmp_path fixture). Now that
+    # implicit load is deleted, the bare session honestly shows only the
+    # code-shipped builtin main, proving session-scoped activation isolation:
+    # sid_blueprint's activation of "remote-data" never leaks into sid_builtin.
+    assert [row["id"] for row in agents_builtin] == ["main"]
     assert calls == [
         {
             "agent_id": "data",
@@ -2905,7 +2946,7 @@ def test_enabled_agent_blueprint_mcp_descriptor_probes_and_calls_tool(
     class FakeClient:
         called_tool = ""
 
-        def __init__(self, transport: Any) -> None:
+        def __init__(self, transport: Any, **_: Any) -> None:
             self.transport = transport
 
         async def __aenter__(self) -> "FakeClient":
@@ -2999,7 +3040,7 @@ def test_enabled_agent_blueprint_mcp_tool_reenables_session_expert(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeClient:
-        def __init__(self, transport: Any) -> None:
+        def __init__(self, transport: Any, **_: Any) -> None:
             self.transport = transport
 
         async def __aenter__(self) -> "FakeClient":
@@ -3141,9 +3182,87 @@ def test_dynamic_agent_tools_include_enabled_agent_blueprint_mcp_tool(tmp_path: 
     )
 
     with _gact_app_context(app):
-        tools = _dynamic_agent_tools(base_agent, agent_def)
+        tools = _dynamic_agent_tools(base_agent, agent_def, {})
 
     assert [tool.name for tool in tools] == ["earthscope_query"]
+
+
+def test_dynamic_agent_tools_degrades_one_unprojected_tool_instead_of_bricking(
+    tmp_path: Path,
+) -> None:
+    """FAILING-FIRST for #1228 D3 (second half).
+
+    ``relay_artifact_lineage`` / ``relay_status`` were advertised by the live
+    relay door but absent from the agent-projected surface -- so an agent ACL
+    naming EITHER alongside an otherwise-fine tool made the WHOLE agent
+    unexecutable (``_UnsupportedSessionAgent`` / ``custom_agent_tools_unavailable``,
+    a hard failure) instead of a typed per-tool absence. This test does not
+    depend on the projection fix (the first D3 half): it proves the general
+    ACL-degrade contract directly against ``_dynamic_agent_tools`` with a tool
+    executor that resolves only ONE of two requested tools.
+
+    Before the fix: this raised. After: the build returns the one tool that
+    DID resolve, and the missing one is recorded where it is queryable after
+    the fact (this module's structured reason catalog), never silently
+    dropped and never fatal to the tools that did resolve.
+    """
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+
+    class _Tool:
+        name = "hdf5_list_datasets"
+
+    class _Executor:
+        def to_dspy_tools(self) -> list[Any]:
+            return [_Tool()]
+
+    base_agent = SimpleNamespace(tool_executor=_Executor())
+    agent_def = AgentDef(
+        id="tool_reviewer",
+        source="expert_pack",
+        title="Tool Reviewer",
+        tools=["hdf5_list_datasets", "relay_status"],
+    )
+
+    with _gact_app_context(app):
+        tools = _dynamic_agent_tools(base_agent, agent_def, {})
+
+    assert [tool.name for tool in tools] == ["hdf5_list_datasets"]
+    reasons = toolset_inventory.toolset_inventory_reasons(app, "")
+    assert {
+        "reason": "custom_agent_tool_unavailable",
+        "agent_id": "tool_reviewer",
+        "detail": "relay_status",
+    } in reasons
+
+
+def test_dynamic_agent_tools_still_bricks_when_nothing_resolves(tmp_path: Path) -> None:
+    """Unchanged regression: an ACL where NOTHING resolves has no reduced
+    toolset to degrade to, so it still fails typed -- #1228 D3's degrade only
+    applies when at least one requested tool is usable."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+
+    class _Tool:
+        name = "hdf5_list_datasets"
+
+    class _Executor:
+        def to_dspy_tools(self) -> list[Any]:
+            return [_Tool()]
+
+    base_agent = SimpleNamespace(tool_executor=_Executor())
+    agent_def = AgentDef(
+        id="tool_reviewer",
+        source="expert_pack",
+        title="Tool Reviewer",
+        tools=["fs_read_file"],
+    )
+
+    with _gact_app_context(app), pytest.raises(_UnsupportedSessionAgent) as raised:
+        _dynamic_agent_tools(base_agent, agent_def, {})
+
+    assert raised.value.reason == "custom_agent_tools_unavailable"
+    assert raised.value.tools == ["fs_read_file"]
 
 
 def test_active_base_agent_tool_executor_prefers_per_workspace() -> None:
@@ -3184,3 +3303,417 @@ def test_active_base_agent_tool_executor_falls_back_without_seam() -> None:
     default_executor = object()
     base_agent = SimpleNamespace(tool_executor=default_executor)
     assert _active_base_agent_tool_executor(base_agent) is default_executor
+
+
+# --------------------------------------------------------------------------- #
+# #1192: GET /v1/agent-blueprints/{id}/files + .../files/read -- the explorer  #
+# surface behind the blueprint window (previously metadata-only routes).      #
+# --------------------------------------------------------------------------- #
+
+
+def _install_genomics_blueprint(tmp_path: Path, client: Any) -> tuple[str, Path]:
+    """Install ``genomics`` (AGENT.md + experts/root.md + experts/variant.md)
+    into a fresh workspace; returns ``(workspace_id, marketplace_source_root)``.
+    """
+
+    marketplace = tmp_path / "marketplace"
+    _write_blueprint(marketplace / "genomics")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    wid = client.post(
+        "/v1/workspaces",
+        json={
+            "name": "Workspace",
+            "root_path": str(workspace),
+            "storage_root": str(workspace / ".clio"),
+        },
+    ).json()["id"]
+    installed = client.post(
+        "/v1/agent-blueprints/install",
+        json={"source": str(marketplace / "genomics"), "scope": "workspace", "workspace_id": wid},
+    )
+    assert installed.status_code == 201, installed.text
+    return wid, marketplace / "genomics"
+
+
+def test_agent_blueprint_files_lists_agent_md_and_experts(tmp_path: Path) -> None:
+    """Listing is a flat recursive walk: AGENT.md + experts/*.md, relative paths."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid, _ = _install_genomics_blueprint(tmp_path, client)
+        listed = client.get("/v1/agent-blueprints/genomics/files", params={"workspace_id": wid})
+
+    assert listed.status_code == 200, listed.text
+    rows = {row["path"]: row for row in listed.json()["entries"]}
+    assert "AGENT.md" in rows
+    assert rows["AGENT.md"]["type"] == "file"
+    assert isinstance(rows["AGENT.md"]["size"], int) and rows["AGENT.md"]["size"] > 0
+    assert "experts" in rows
+    assert rows["experts"]["type"] == "dir"
+    assert "experts/root.md" in rows
+    assert rows["experts/root.md"]["type"] == "file"
+    assert "experts/variant.md" in rows
+    assert rows["experts/variant.md"]["type"] == "file"
+
+
+def test_agent_blueprint_files_read_returns_raw_markdown(tmp_path: Path) -> None:
+    """Read serves the raw file content decoded as text/plain (#673/#676 convention)."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid, _ = _install_genomics_blueprint(tmp_path, client)
+        read = client.get(
+            "/v1/agent-blueprints/genomics/files/read",
+            params={"workspace_id": wid, "path": "experts/root.md"},
+        )
+
+    assert read.status_code == 200, read.text
+    assert read.headers["content-type"].startswith("text/plain")
+    assert "Coordinate genomics work." in read.text
+    assert "id: root" in read.text
+
+
+def test_agent_blueprint_files_read_rejects_path_traversal(tmp_path: Path) -> None:
+    """A ``..`` escape past the blueprint root is a typed 400, never a 200/500."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid, _ = _install_genomics_blueprint(tmp_path, client)
+        escaped = client.get(
+            "/v1/agent-blueprints/genomics/files/read",
+            params={"workspace_id": wid, "path": "../../../../etc/passwd"},
+        )
+
+    assert escaped.status_code == 400, escaped.text
+    body = escaped.json()
+    assert body["error"]["error"] == "path_outside_blueprint"
+
+
+def test_agent_blueprint_files_read_missing_file_is_404(tmp_path: Path) -> None:
+    """A well-formed relative path that does not exist under the root is a typed 404."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid, _ = _install_genomics_blueprint(tmp_path, client)
+        missing = client.get(
+            "/v1/agent-blueprints/genomics/files/read",
+            params={"workspace_id": wid, "path": "experts/does-not-exist.md"},
+        )
+
+    assert missing.status_code == 404, missing.text
+    assert missing.json()["error"]["error"] == "not_found"
+
+
+def test_agent_blueprint_files_unknown_id_is_404(tmp_path: Path) -> None:
+    """Listing (and reading) an unknown blueprint id is a typed 404, not an empty list."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid, _ = _install_genomics_blueprint(tmp_path, client)
+        listed = client.get(
+            "/v1/agent-blueprints/does-not-exist/files", params={"workspace_id": wid}
+        )
+        read = client.get(
+            "/v1/agent-blueprints/does-not-exist/files/read",
+            params={"workspace_id": wid, "path": "AGENT.md"},
+        )
+
+    assert listed.status_code == 404, listed.text
+    assert listed.json()["error"]["error"] == "not_found"
+    assert read.status_code == 404, read.text
+    assert read.json()["error"]["error"] == "not_found"
+
+
+def test_agent_blueprint_files_session_scoped_path_activation_resolves(
+    tmp_path: Path,
+) -> None:
+    """#1192 demo case: a blueprint activated by ON-DISK PATH (not an installed
+    id -- never discoverable via the catalog) resolves its files ONLY through
+    the session-scoped seam (``session_id`` + ``metadata.active_agent_blueprint_path``),
+    mirroring how ``earthscope-flat`` is activated in the desktop demo.
+    """
+
+    external_root = tmp_path / "external" / "earthscope-flat"
+    _write_blueprint(external_root, blueprint_id="earthscope-flat")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post("/v1/sessions", json={"workspace_id": wid, "title": "demo"}).json()["id"]
+        activated = client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"path": str(external_root / "AGENT.md")},
+        )
+        assert activated.status_code == 200, activated.text
+        assert activated.json()["active_agent_blueprint_id"] == "earthscope-flat"
+
+        # Never installed into any catalog root -- the bare (no session_id)
+        # lookup is a typed 404, proving the session-scoped assertion below
+        # exercises the path-activation seam and not an accidental catalog hit.
+        bare = client.get(
+            "/v1/agent-blueprints/earthscope-flat/files", params={"workspace_id": wid}
+        )
+        assert bare.status_code == 404, bare.text
+
+        listed = client.get(
+            "/v1/agent-blueprints/earthscope-flat/files", params={"session_id": sid}
+        )
+        assert listed.status_code == 200, listed.text
+        paths = {row["path"] for row in listed.json()["entries"]}
+        assert "AGENT.md" in paths
+        assert "experts/root.md" in paths
+        assert "experts/variant.md" in paths
+
+        read = client.get(
+            "/v1/agent-blueprints/earthscope-flat/files/read",
+            params={"session_id": sid, "path": "experts/root.md"},
+        )
+        assert read.status_code == 200, read.text
+        assert "Coordinate genomics work." in read.text
+
+        # A session_id whose ACTIVE blueprint id does not match the requested
+        # id must NOT leak that active path -- falls back to catalog resolution
+        # (404 here, since "genomics" was never installed either).
+        mismatched = client.get("/v1/agent-blueprints/genomics/files", params={"session_id": sid})
+        assert mismatched.status_code == 404, mismatched.text
+
+
+# --------------------------------------------------------------------------- #
+# Install-ALL registry semantics (owner ruling 2026-08-13): the marketplace is #
+# the shipped standard library — every valid pack on main installs, first-run  #
+# and as the registry gains packs; one broken pack never vetoes the set.       #
+# --------------------------------------------------------------------------- #
+_EXTRA_PACK_MD = """---
+id: extra-pack
+title: Extra Pack
+version: 0.1.0
+description: A second registry pack that must install by default.
+---
+
+A minimal single-agent pack.
+"""
+
+_BROKEN_PACK_MD = """---
+title: No Id Pack
+version: 0.1.0
+---
+
+Missing the required id field.
+"""
+
+
+def _make_multi_pack_registry_repo(path: Path) -> str:
+    """A git registry (branch main) with the default pack + a second pack as subdirs."""
+
+    default_dir = path / DEFAULT_AGENT_BLUEPRINT_ID
+    _write_blueprint_tree(
+        default_dir, main_md=_REACT_MAIN_MD, child_md=_REACT_CHILD_MD, commit="multi-head"
+    )
+    default_dir.joinpath(".clio-install.md").unlink()
+    extra_dir = path / "extra-pack"
+    extra_dir.mkdir(parents=True, exist_ok=True)
+    extra_dir.joinpath("AGENT.md").write_text(_EXTRA_PACK_MD, encoding="utf-8")
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "clio-test",
+        "GIT_AUTHOR_EMAIL": "clio-test@example.com",
+        "GIT_COMMITTER_NAME": "clio-test",
+        "GIT_COMMITTER_EMAIL": "clio-test@example.com",
+    }
+    subprocess.run(
+        ["git", "init", "-b", "main", str(path)], check=True, env=env, capture_output=True
+    )
+    subprocess.run(["git", "-C", str(path), "add", "."], check=True, env=env, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(path), "commit", "-m", "multi-pack registry"],
+        check=True,
+        env=env,
+        capture_output=True,
+    )
+    return path.as_uri()
+
+
+def test_first_run_bootstrap_installs_every_registry_pack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """First-run bootstrap installs ALL registry packs, not only the default id.
+
+    **Sabotage:** pass ``blueprint_id=DEFAULT_AGENT_BLUEPRINT_ID`` in the
+    bootstrap install again -> extra-pack never installs -> red.
+    """
+
+    registry_url = _make_multi_pack_registry_repo(tmp_path / "registry")
+    install_root, home = _prepare_default_store(tmp_path, monkeypatch, registry_url=registry_url)
+    diagnostic = ensure_default_registry_bootstrap(home=home, cwd=tmp_path / "cwd")
+    assert diagnostic == ""
+    assert install_root.joinpath("AGENT.md").exists()
+    assert install_root.parent.joinpath("extra-pack", "AGENT.md").exists()
+
+
+def test_bootstrap_installs_pack_added_to_local_registry_after_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A local-path registry that gains a pack installs it on the next bootstrap.
+
+    The ``earthscope-flat`` case: the pack landed on marketplace main a month
+    after the box's one-shot enumeration and was never installed.
+    **Sabotage:** drop the local sync from the bootstrap -> the default is
+    present so only the S4b evaluate runs -> the new pack never installs -> red.
+    """
+
+    registry_dir = tmp_path / "local-registry"
+    default_dir = registry_dir / DEFAULT_AGENT_BLUEPRINT_ID
+    _write_blueprint_tree(
+        default_dir, main_md=_REACT_MAIN_MD, child_md=_REACT_CHILD_MD, commit="local-head"
+    )
+    default_dir.joinpath(".clio-install.md").unlink()
+    install_root, home = _prepare_default_store(
+        tmp_path, monkeypatch, registry_url=registry_dir.as_posix()
+    )
+    assert ensure_default_registry_bootstrap(home=home, cwd=tmp_path / "cwd") == ""
+    assert install_root.joinpath("AGENT.md").exists()
+    late_dir = registry_dir / "late-pack"
+    late_dir.mkdir(parents=True)
+    late_dir.joinpath("AGENT.md").write_text(
+        _EXTRA_PACK_MD.replace("extra-pack", "late-pack"), encoding="utf-8"
+    )
+    # The sync is once-per-process (boot semantics); a new pack lands on the
+    # NEXT boot — simulated by the test-only gate reset.
+    from clio_agent.gact.agent_blueprint_refresh import reset_registry_sync_for_tests
+
+    reset_registry_sync_for_tests()
+    assert ensure_default_registry_bootstrap(home=home, cwd=tmp_path / "cwd") == ""
+    assert install_root.parent.joinpath("late-pack", "AGENT.md").exists()
+
+
+def test_uninstalled_pack_is_not_resurrected_by_the_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user uninstall is durable: the sync skips tombstoned ids until an
+    explicit reinstall clears the tombstone.
+
+    **Sabotage:** drop the tombstone check from the sync -> the pack reappears
+    on the next boot -> red (the review 2026-08-13 blocker).
+    """
+
+    from clio_agent.gact.agent_blueprint_refresh import reset_registry_sync_for_tests
+    from clio_agent.gact.agent_blueprints import (
+        install_agent_blueprint,
+        uninstall_agent_blueprint,
+    )
+
+    registry_dir = tmp_path / "local-registry"
+    default_dir = registry_dir / DEFAULT_AGENT_BLUEPRINT_ID
+    _write_blueprint_tree(
+        default_dir, main_md=_REACT_MAIN_MD, child_md=_REACT_CHILD_MD, commit="ts-head"
+    )
+    default_dir.joinpath(".clio-install.md").unlink()
+    extra_dir = registry_dir / "extra-pack"
+    extra_dir.mkdir(parents=True)
+    extra_dir.joinpath("AGENT.md").write_text(_EXTRA_PACK_MD, encoding="utf-8")
+    install_root, home = _prepare_default_store(
+        tmp_path, monkeypatch, registry_url=registry_dir.as_posix()
+    )
+    cwd = tmp_path / "cwd"
+    assert ensure_default_registry_bootstrap(home=home, cwd=cwd) == ""
+    extra_install = install_root.parent / "extra-pack"
+    assert extra_install.joinpath("AGENT.md").exists()
+
+    uninstall_agent_blueprint(blueprint_id="extra-pack", scope="global", cwd=cwd, home=home)
+    reset_registry_sync_for_tests()
+    assert ensure_default_registry_bootstrap(home=home, cwd=cwd) == ""
+    assert not extra_install.exists(), "sync must not resurrect a user-uninstalled pack"
+
+    install_agent_blueprint(
+        source=registry_dir.as_posix(),
+        scope="global",
+        cwd=cwd,
+        home=home,
+        blueprint_id="extra-pack",
+    )
+    assert extra_install.joinpath("AGENT.md").exists()
+    reset_registry_sync_for_tests()
+    assert ensure_default_registry_bootstrap(home=home, cwd=cwd) == ""
+    assert extra_install.joinpath("AGENT.md").exists(), "explicit reinstall clears the tombstone"
+
+
+def test_install_all_skips_invalid_pack_only_when_asked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``skip_invalid`` skips a broken pack and installs the rest; strict raises.
+
+    **Sabotage:** raise on invalid regardless of ``skip_invalid`` -> red; or
+    silently skip in strict mode -> the strict assertion goes red.
+    """
+
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint
+
+    source_dir = tmp_path / "mixed-registry"
+    good = source_dir / "extra-pack"
+    good.mkdir(parents=True)
+    good.joinpath("AGENT.md").write_text(_EXTRA_PACK_MD, encoding="utf-8")
+    broken = source_dir / "broken-pack"
+    broken.mkdir(parents=True)
+    broken.joinpath("AGENT.md").write_text(_BROKEN_PACK_MD, encoding="utf-8")
+
+    result = install_agent_blueprint(
+        source=str(source_dir),
+        scope="global",
+        cwd=tmp_path / "cwd",
+        home=tmp_path / "home",
+        skip_invalid=True,
+    )
+    assert [row["id"] for row in result["installed"]] == ["extra-pack"]
+    assert [row["id"] for row in result["skipped"]] == ["broken-pack"]
+
+    with pytest.raises(ValueError):
+        install_agent_blueprint(
+            source=str(source_dir),
+            scope="global",
+            cwd=tmp_path / "cwd2",
+            home=tmp_path / "home2",
+        )
+
+
+def test_dead_local_path_sources_are_pruned_on_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Loading the sources registry drops rows whose local path no longer exists.
+
+    Heals the pytest-tmpdir pollution class (~100 dead genomics rows) and keeps
+    URL rows untouched. **Sabotage:** return rows unpruned -> red.
+    """
+
+    from clio_agent.gact.routes.blueprints import _load_agent_blueprint_sources
+
+    user_dir = tmp_path / "user"
+    user_dir.mkdir()
+    monkeypatch.setenv("CLIO_USER_DIR", str(user_dir))
+    dead = tmp_path / "gone-fixture-dir"
+    rows = {
+        "sources": [
+            {"id": "src_dead", "source": str(dead), "ref": ""},
+            {
+                "id": "src_url",
+                "source": "https://github.com/iowarp/clio-agent-marketplace.git",
+                "ref": "main",
+            },
+        ]
+    }
+    user_dir.joinpath("agent-blueprint-sources.json").write_text(json.dumps(rows), encoding="utf-8")
+    loaded = _load_agent_blueprint_sources()
+    assert [row["id"] for row in loaded] == ["src_url"]
+    rewritten = json.loads(
+        user_dir.joinpath("agent-blueprint-sources.json").read_text(encoding="utf-8")
+    )
+    assert [row["id"] for row in rewritten["sources"]] == ["src_url"]

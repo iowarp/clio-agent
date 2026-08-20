@@ -334,33 +334,32 @@ def finalize_turn(
         responder_agent_id,
         state.active_agent_id or state.invocation_agent_id or "main",
     )
-    # Mechanism 1 replaced: the once-key IS the identity — the same
-    # ``route:{agent}`` key the live tool observer uses, so the banner lands
-    # exactly once whether it streamed live or lands here.
-    if state.selected_agent:
-        state.transcript.append_part_once(
-            f"route:{state.selected_agent}",
-            Part(
-                id=_new_part_id(),
-                type="routing_decision",
-                # The decision is MADE by the orchestrator; ``selected_agent`` is the
-                # CHOSEN expert.
-                agent_id=state.invocation_agent_id or "main",
-                metadata={
-                    k: v
-                    for k, v in {
-                        "route_source": state.route_source,
-                        "route_reason": state.route_reason,
-                    }.items()
-                    if v
-                },
-                selected_agent=state.selected_agent,
-                rationale=state.rationale,
-                confidence=0.0,
-                heuristic=False,
-                execution_path=state.execution_path,
-            ),
-            stream_source="batch",
+    # Clean-wire rule (owner 2026-08-05): the routing decision is OBSERVABILITY,
+    # never a transcript part — it rides the semantic highway. Same
+    # ``route:{agent}`` once-key the live tool observer consumes, so the event
+    # lands exactly once whether it fired live or lands here.
+    if state.selected_agent and state.transcript.mark_part_key(f"route:{state.selected_agent}"):
+        _emit_semantic_event(
+            state.app,
+            state.sid,
+            "routing.decision",
+            turn_id=state.turn_id,
+            trace_id=state.trace_id,
+            status="completed",
+            summary=f"routed to {state.selected_agent}",
+            actor={"agent_id": state.invocation_agent_id or "main", "role": "orchestrator"},
+            subject={"selected_agent": state.selected_agent},
+            payload={
+                k: v
+                for k, v in {
+                    "selected_agent": state.selected_agent,
+                    "rationale": state.rationale,
+                    "route_source": state.route_source,
+                    "route_reason": state.route_reason,
+                    "execution_path": state.execution_path,
+                }.items()
+                if v
+            },
         )
     # Mechanism 2 replaced: there is no finalize rebuild-from-rows — delegation
     # appended its expert_handoff parts once, at emit time; the
@@ -470,6 +469,14 @@ def finalize_turn(
     # one ``resource_link`` part per new version (owner decision #966.9), owned by
     # the artifacts package so finalize stays a one-line caller.
     append_turn_resource_links(
+        state.app, state.sid, state.turn_id, state.transcript, agent_id=responder_agent_id
+    )
+    # Owner ask 2026-08-06: roll up child/subagent mints too (owner module:
+    # artifacts/wire.py) — a delegated child's artifacts otherwise never surface
+    # on the parent's own settled message.
+    from clio_agent.gact.artifacts.wire import append_turn_child_resource_links  # noqa: PLC0415
+
+    append_turn_child_resource_links(
         state.app, state.sid, state.turn_id, state.transcript, agent_id=responder_agent_id
     )
 
@@ -705,6 +712,9 @@ def finalize_turn(
             },
         )
     )
+    from clio_agent.gact.spotter_watcher import on_turn_finalized  # noqa: PLC0415
+
+    on_turn_finalized(state.app, state.sid)
     # P2.3 PostToolBatch: fire ONCE per turn, after the turn's whole tool batch resolved and before
     # Stop/next step — only when the turn ran ≥1 tool. ``state.tools_called`` is the honest clio-owned
     # batch boundary (the DSPy ReAct loop owns per-model-step rounds; a finer seam moves this there).

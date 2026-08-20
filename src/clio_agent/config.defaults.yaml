@@ -11,7 +11,10 @@
 # CLIO_MAX_CONCURRENT_AGENT_TASKS  (int)  <- src/clio_agent/gact/turn_spawn.py
 agent_tasks.max_concurrent: 3
 
-# CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP  (bool)  <- src/clio_agent/gact/agent_blueprints.py
+# CLIO_CHILD_FORWARD_DEADLINE_S  (float)  <- src/clio_agent/gact/child_forward.py
+# agents.child_forward_deadline_s:  # computed at runtime: DEFAULT_ELICITATION_TIMEOUT_S
+
+# CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP  (bool)  <- src/clio_agent/gact/agent_blueprint_refresh.py
 agents.disable_default_registry_bootstrap: false
 
 # CLIO_ARC_CACHE_CAPACITY  (int)  <- src/clio_agent/arc/memory.py
@@ -137,6 +140,9 @@ debug.memprof_frames: 20
 # CLIO_STREAM_AUDIT_LOG  (str)  <- src/clio_agent/runtime/stream_audit.py
 # debug.stream_audit_log:  # default unset; resolved in code
 
+# CLIO_GACT_BEARER_TOKEN  (str)  <- src/clio_agent/gact/auth.py
+# gact.auth.bearer_token:  # default unset; resolved in code
+
 # CLIO_BLUEPRINT_REGISTRY_URL  (str)  <- src/clio_agent/gact/agent_blueprints.py
 gact.blueprint_registry.url: "https://github.com/iowarp/clio-agent-marketplace.git"
 
@@ -232,6 +238,9 @@ limits.lm_transient_backoff_s: 8.0
 
 # CLIO_LM_TRANSIENT_RETRIES  (float)  <- src/clio_agent/lm/io_logging.py
 limits.lm_transient_retries: 2.0
+
+# CLIO_MCP_CONTENT_BLOCK_MAX_BYTES  (int)  <- src/clio_agent/tools/mcp_results.py
+limits.mcp_content_block_max_bytes: 524288
 
 # CLIO_GACT_MCP_RECONNECT_TIMEOUT_S  (float)  <- src/clio_agent/gact/routes/mcp.py
 limits.mcp_reconnect_timeout_s: 15.0
@@ -329,6 +338,9 @@ lm.provider: "lm_studio"
 # CLIO_DATA_DIR  (str)  <- src/clio_agent/runtime/status.py
 paths.data_dir: ".clio/agent"
 
+# CLIO_MODEL_CATALOG  (str)  <- src/clio_agent/providers/model_discovery/overlay.py
+# paths.model_catalog:  # default unset; resolved in code
+
 # CLIO_MODEL_DB  (str)  <- src/clio_agent/providers/handshake/sources/db.py
 # paths.model_db:  # default unset; resolved in code
 
@@ -341,14 +353,68 @@ paths.data_dir: ".clio/agent"
 # CLIO_AI_REVIEW_TIMEOUT_S  (str)  <- src/clio_agent/gact/runtime/ai_review.py
 permissions.ai_review_timeout_s: "45.0"
 
+# CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
+providers.claude_code.max_concurrent_processes: 1.0
+
 # CLIO_CLAUDE_CODE_SESSION_REUSE  (bool)  <- src/clio_agent/providers/claude_code_sessions.py
 providers.claude_code.session_reuse: true
 
 # CLIO_CLAUDE_CODE_STATEFUL_CAPACITY  (float)  <- src/clio_agent/providers/claude_code_stateful.py
 providers.claude_code.stateful_capacity: 128.0
 
+# CLIO_CLAUDE_CODE_STREAM_IDLE_TTL_S  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
+providers.claude_code.stream_idle_ttl_s: 15.0
+
 # CLIO_CODEX_STATEFUL_CAPACITY  (float)  <- src/clio_agent/providers/codex_stateful.py
 providers.codex.stateful_capacity: 128.0
+
+# CLIO_RELAY_CLUSTER  (str)  <- src/clio_agent/tools/relay_factory.py
+# relay.cluster:  # default unset; resolved in code
+
+# CLIO_RELAY_CONSOLE_ENABLED  (bool)  <- src/clio_agent/tools/relay_console.py
+relay.console.enabled: true
+
+# CLIO_RELAY_CONSOLE_PULL_LIMIT_BYTES  (int)  <- src/clio_agent/tools/relay_console.py
+relay.console.pull_limit_bytes: 65536
+
+# CLIO_RELAY_CONSOLE_STREAM  (str)  <- src/clio_agent/tools/relay_console.py
+relay.console.stream: "console"
+
+# CLIO_RELAY_CONSOLE_TAIL_CAP_BYTES  (int)  <- src/clio_agent/tools/relay_console.py
+relay.console.tail_cap_bytes: 8192
+
+# CLIO_RELAY_FETCH_MAX_BYTES  (int)  <- src/clio_agent/tools/relay_artifact_fetch.py
+relay.fetch_max_bytes: 104857600
+
+# CLIO_RELAY_HTTP_URL  (str)  <- src/clio_agent/tools/relay_factory.py
+# relay.http_url:  # default unset; resolved in code
+
+# CLIO_RELAY_JARVIS_DOOR_NAMESPACE  (str)  <- src/clio_agent/tools/relay_factory.py
+relay.jarvis_door_namespace: "remote_jarvis"
+
+# CLIO_RELAY_MCP_URL  (str)  <- src/clio_agent/gact/relay_status.py
+# relay.mcp_url:  # default unset; resolved in code
+
+# CLIO_RELAY_SESSION_GENERATION_ID  (str)  <- src/clio_agent/tools/relay_factory.py
+# relay.owner_session_generation_id:  # default unset; resolved in code
+
+# CLIO_RELAY_OWNER_SESSION_ID  (str)  <- src/clio_agent/tools/relay_factory.py
+# relay.owner_session_id:  # default unset; resolved in code
+
+# CLIO_RELAY_REMOTE_AGENT_MCP_CONFIG_PATH  (str)  <- src/clio_agent/gact/relay_wiring.py
+# relay.remote_agent.mcp_config_path:  # default unset; resolved in code
+
+# CLIO_RELAY_REMOTE_AGENT_MODEL  (str)  <- src/clio_agent/gact/relay_wiring.py
+# relay.remote_agent.model:  # default unset; resolved in code
+
+# CLIO_RELAY_REMOTE_AGENT_PROMPT_PATH  (str)  <- src/clio_agent/gact/relay_wiring.py
+# relay.remote_agent.prompt_path:  # default unset; resolved in code
+
+# CLIO_RELAY_REMOTE_AGENT_WORKDIR  (str)  <- src/clio_agent/gact/relay_wiring.py
+# relay.remote_agent.workdir:  # default unset; resolved in code
+
+# CLIO_RELAY_TOOL_SURFACES_TTL_SECONDS  (int)  <- src/clio_agent/gact/relay_wiring.py
+relay.tool_surfaces_ttl_seconds: 300
 
 # CLIO_API_BASE  (str)  <- src/clio_agent/runtime/status.py
 # runtime.api_base:  # default unset; resolved in code
@@ -383,6 +449,12 @@ scheduler.min_interval_s: 60
 # CLIO_SCHEDULER_TZ  (str)  <- src/clio_agent/gact/scheduler.py
 # scheduler.timezone:  # default unset; resolved in code
 
+# CLIO_SPOTTER_BLUEPRINT_ID  (str)  <- src/clio_agent/gact/spotter_watcher.py
+spotter.watcher_blueprint_id: "spotter-ai"
+
+# CLIO_SPOTTER_EXPERT_ID  (str)  <- src/clio_agent/gact/spotter_watcher.py
+spotter.watcher_expert_id: "spotter_watcher"
+
 # CLIO_ALLOW_SYMLINKS  (bool)  <- src/clio_agent/tools/file_policy.py
 tools.file_policy.allow_symlinks: false
 
@@ -392,8 +464,32 @@ tools.file_policy.allow_symlinks: false
 # CLIO_MAX_FILE_SIZE_BYTES  (str)  <- src/clio_agent/tools/file_policy.py
 tools.file_policy.max_file_size_bytes: "1073741824"
 
+# CLIO_MCP_CALL_TIMEOUT_S  (float)  <- src/clio_agent/tools/execution.py
+tools.mcp.call_timeout_s: 30.0
+
+# CLIO_MCP_CONNECT_MODE  (str)  <- src/clio_agent/tools/mcp_connection_era.py
+tools.mcp.connect_mode: "auto"
+
+# CLIO_MCP_DISCOVERY_CONCURRENCY  (int)  <- src/clio_agent/tools/mcp_discovery.py
+tools.mcp.discovery_concurrency: 8
+
+# CLIO_MCP_DISCOVERY_HEAL_INTERVAL_S  (float)  <- src/clio_agent/tools/mcp_discovery.py
+tools.mcp.discovery_heal_interval_s: 20.0
+
+# CLIO_MCP_ELICITATION_URL_TRUSTED_ORIGINS  (list)  <- src/clio_agent/gact/elicitation_bridge.py
+# tools.mcp.elicitation.url_trusted_origins:  # computed at runtime: default
+
+# CLIO_MCP_INPUT_REQUIRED_MAX_ROUNDS  (int)  <- src/clio_agent/tools/mcp_runtime.py
+# tools.mcp.input_required_max_rounds:  # computed at runtime: DEFAULT_INPUT_REQUIRED_MAX_ROUNDS
+
+# CLIO_MCP_LAUNCHER_CACHE_LOCK_TIMEOUT_S  (float)  <- src/clio_agent/tools/launcher_cache_lock.py
+tools.mcp.launcher_cache_lock_timeout_s: 15.0
+
 # CLIO_MCP_LISTING_TTL_H  (float)  <- src/clio_agent/tools/listing_cache.py
 tools.mcp.listing_ttl_h: 24.0
+
+# CLIO_MCP_PROBE_TIMEOUT_RETRIES  (int)  <- src/clio_agent/tools/mcp_probe_hardening.py
+tools.mcp.probe_timeout_retries: 3
 
 # CLIO_MCP_SETUP_TIMEOUT_S  (float)  <- src/clio_agent/tools/execution.py
 tools.mcp.setup_timeout_s: 10.0

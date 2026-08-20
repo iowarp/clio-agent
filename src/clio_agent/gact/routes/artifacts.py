@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
+from clio_agent.gact.artifacts import dedup_enrichment
 from clio_agent.gact.artifacts.minting import (
     artifact_name_for_path,
     mint_artifact,
@@ -145,8 +146,19 @@ def _version_uri(workspace_id: str, name: str, version: ArtifactVersion) -> str:
     return artifact_uri(workspace_id, name, version.version)
 
 
-def _version_wire(workspace_id: str, name: str, version: ArtifactVersion) -> dict[str, Any]:
-    """Project one immutable version to its route wire dict."""
+def _version_wire(
+    workspace_id: str,
+    name: str,
+    version: ArtifactVersion,
+    registry: Optional[ArtifactRegistry] = None,
+) -> dict[str, Any]:
+    """Project one immutable version to its route wire dict.
+
+    ``registry`` (A9, #1176): merges in a dedup-time SUPPLEMENTAL annotation
+    where the version's own is blank — decision logic lives in
+    :func:`~clio_agent.gact.artifacts.dedup_enrichment.merged_annotation`.
+    """
+    annotation = dedup_enrichment.merged_annotation(version, registry)
     return {
         "artifact_id": version.artifact_id,
         "workspace_id": workspace_id,
@@ -161,7 +173,7 @@ def _version_wire(workspace_id: str, name: str, version: ArtifactVersion) -> dic
         "authority": version.evidence.authority,
         "path": version.path,
         "created_at": version.created_at,
-        "annotation": version.annotation,
+        "annotation": annotation,
         "producer": dict(version.producer),
         # S4 (#970): the ``wasRevisionOf`` edge + honest custody/kind markers.
         "prior_version": version.prior_version,
@@ -173,7 +185,9 @@ def _version_wire(workspace_id: str, name: str, version: ArtifactVersion) -> dic
     }
 
 
-def _record_wire(record: ArtifactRecord) -> dict[str, Any]:
+def _record_wire(
+    record: ArtifactRecord, registry: Optional[ArtifactRegistry] = None
+) -> dict[str, Any]:
     """Project a logical record (its version chain + aliases) to its wire dict."""
     head = record.head
     return {
@@ -183,11 +197,15 @@ def _record_wire(record: ArtifactRecord) -> dict[str, Any]:
         "latest_version": head.version if head is not None else 0,
         "head_artifact_id": head.artifact_id if head is not None else "",
         "aliases": dict(record.aliases),
-        "versions": [_version_wire(record.workspace_id, record.name, v) for v in record.versions],
+        "versions": [
+            _version_wire(record.workspace_id, record.name, v, registry) for v in record.versions
+        ],
     }
 
 
-def _record_wire_attributed(record: ArtifactRecord) -> dict[str, Any]:
+def _record_wire_attributed(
+    record: ArtifactRecord, registry: Optional[ArtifactRegistry] = None
+) -> dict[str, Any]:
     """A record wire dict PLUS ``producing_session_ids`` (parent-aggregation, GAP B).
 
     Additive over :func:`_record_wire` — used only by ``?include_children=true`` so a
@@ -195,7 +213,7 @@ def _record_wire_attributed(record: ArtifactRecord) -> dict[str, Any]:
     session ids across the record's versions; a chain can span sessions). The
     flag-off listing uses the base :func:`_record_wire` unchanged.
     """
-    wire = _record_wire(record)
+    wire = _record_wire(record, registry)
     wire["producing_session_ids"] = sorted(
         {str((v.producer or {}).get("session_id") or "") for v in record.versions} - {""}
     )
@@ -311,15 +329,32 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
         limit: int | None = None,
         before: str | None = None,
         include_children: bool = False,
+        include_used: bool = False,
     ) -> dict[str, Any]:
-        """List the artifacts of a session's workspace (newest-first, paginated).
+        """List THIS session's artifacts (newest-first, paginated), SESSION-scoped.
+
+        Candidate records are drawn from the session's workspace (below), but a
+        record is only returned if at least one of its versions was produced by this
+        session — otherwise a brand-new session in a workspace with prior artifacts
+        would inherit them (owner defect, 2026-08-05). A matched record is returned
+        WHOLE (every version, not just the ones this session produced).
 
         ``?include_children=true`` (GAP B, S5 #971) also lists the descendant child
-        sessions' workspaces so a parent ORCHESTRATOR sees its delegates' outputs:
-        children resolve via the agent-task registry (bounded), their workspaces
-        union with the parent's, records dedup by ``(workspace_id, name)``, and each
-        row carries its ``producing_session_ids``. Flag off → own workspace only,
+        sessions' workspaces AND treats their versions as in-scope too, so a parent
+        ORCHESTRATOR sees its delegates' outputs: children resolve via the
+        agent-task registry (bounded), their workspaces union with the parent's,
+        records dedup by ``(workspace_id, name)``, and each row carries its
+        ``producing_session_ids``. Flag off → own workspace + own session only,
         byte-identical to before.
+
+        ``?include_used=true`` (#1191, OPTIONAL): additionally surfaces records this
+        session USED but did not produce — a same-sha DEDUP onto a pre-existing
+        version (:meth:`~clio_agent.gact.artifacts.registry.ArtifactRegistry.record_artifact_used`).
+        Rides a SEPARATE top-level ``used`` list (same wire shape as ``artifacts``)
+        — never merged in, and a record already under ``artifacts`` is never
+        duplicated into ``used``. With ``include_children``, a descendant's uses
+        count too. Flag off (the default): BYTE-IDENTICAL to before this param
+        existed — no ``used``/``include_used`` key at all.
         """
         workspace_id = _session_workspace_id(app, sid)
         if workspace_id is None:
@@ -350,6 +385,22 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
                     if key not in seen_records:
                         seen_records.add(key)
                         records.append(record)
+        # SESSION-scoped, not workspace-scoped (owner defect, 2026-08-05): a shared
+        # workspace's records are only visible here if at least one version was
+        # produced by THIS session or, with include_children, a descendant session —
+        # otherwise a brand-new sibling session in a busy workspace inherits artifacts
+        # it never produced. A matched record is returned WHOLE (every version, not
+        # only the matching ones) — simplest honest semantics per the route's existing
+        # convention (versions are never sliced elsewhere in this listing).
+        allowed_session_ids = {sid, *child_ids}
+        records = [
+            record
+            for record in records
+            if any(
+                str((version.producer or {}).get("session_id") or "") in allowed_session_ids
+                for version in record.versions
+            )
+        ]
         page, next_cursor = _paginate_records(records, limit=_clamp_limit(limit), before=before)
         _audit(
             app,
@@ -358,16 +409,37 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
             workspace_id=workspace_id,
             returned=len(page),
             include_children=include_children,
+            include_used=include_used,
         )
         wire = _record_wire_attributed if include_children else _record_wire
         body: dict[str, Any] = {
-            "artifacts": [wire(r) for r in page],
+            "artifacts": [wire(r, registry) for r in page],
             "count": len(records),
             "next_cursor": next_cursor,
         }
         if include_children:
             body["include_children"] = True
             body["child_session_ids"] = child_ids
+        if include_used:
+            produced_keys = {(r.workspace_id, r.name) for r in records}
+            used_artifact_ids: set[str] = set()
+            for scope_sid in allowed_session_ids:
+                used_artifact_ids |= registry.used_artifact_ids_for_session(scope_sid)
+            seen_used_keys: set[tuple[str, str]] = set()
+            used_records: list[ArtifactRecord] = []
+            for artifact_id in used_artifact_ids:
+                found = registry.get_by_artifact_id(artifact_id)
+                if found is None:
+                    continue
+                used_record, _used_version = found
+                key = (used_record.workspace_id, used_record.name)
+                if key in produced_keys or key in seen_used_keys:
+                    continue
+                seen_used_keys.add(key)
+                used_records.append(used_record)
+            used_records.sort(key=lambda r: (r.workspace_id, r.name))
+            body["include_used"] = True
+            body["used"] = [_record_wire(r, registry) for r in used_records]
         return body
 
     @app.get("/v1/workspaces/{wid}/artifacts")
@@ -380,7 +452,7 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
         page, next_cursor = _paginate_records(records, limit=_clamp_limit(limit), before=before)
         _audit(app, route="list_workspace_artifacts", workspace_id=wid, returned=len(page))
         return {
-            "artifacts": [_record_wire(r) for r in page],
+            "artifacts": [_record_wire(r, registry) for r in page],
             "count": len(records),
             "next_cursor": next_cursor,
         }
@@ -421,8 +493,8 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         _audit(app, route="resolve_artifact_by_name", workspace_id=wid, name=name, ref=ref)
         return {
-            "artifact": _record_wire(record),
-            "resolved": _version_wire(wid, name, version),
+            "artifact": _record_wire(record, registry),
+            "resolved": _version_wire(wid, name, version, registry),
             "ref": ref,
         }
 
@@ -459,8 +531,8 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
         record, version = found
         _audit(app, route="get_artifact", artifact_id=artifact_id)
         return {
-            "artifact": _record_wire(record),
-            "resolved": _version_wire(record.workspace_id, record.name, version),
+            "artifact": _record_wire(record, registry),
+            "resolved": _version_wire(record.workspace_id, record.name, version, registry),
         }
 
     # ---- bytes (re-hash on read) -----------------------------------------
@@ -859,7 +931,7 @@ def _pin_mint(
             message="artifact pin mint returned no version",
             details={"workspace_id": workspace_id, "name": artifact_name},
         )
-    return _version_wire(workspace_id, artifact_name, version)
+    return _version_wire(workspace_id, artifact_name, version, get_registry(app))
 
 
 __all__ = ["register_artifacts_routes"]

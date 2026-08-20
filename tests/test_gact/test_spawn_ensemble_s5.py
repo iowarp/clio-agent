@@ -32,6 +32,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agent_tasks import STATUS_RUNNING, AgentTask, AgentTaskRegistry
+from clio_agent.gact.agents.invoker import InProcessExpertInvoker, TaskHandle, TaskResult
 from clio_agent.gact.app import build_app
 from clio_agent.gact.runtime.globals import _gact_app_context
 from clio_agent.gact.turn_spawn import TaskSpec, spawn_child_turn_threadsafe
@@ -138,10 +139,16 @@ def test_conflict_rows_carry_agent_id_for_cross_expert_same_run_index() -> None:
     and the stable-sort tie-break resolves the winner by wait-list order (#953 [1])."""
     runs = [
         RunWorkflowState(
-            run_index=0, task_id="task_r", workflow_state={"summary": {"v": "R"}}, agent_id="researcher"
+            run_index=0,
+            task_id="task_r",
+            workflow_state={"summary": {"v": "R"}},
+            agent_id="researcher",
         ),
         RunWorkflowState(
-            run_index=0, task_id="task_a", workflow_state={"summary": {"v": "A"}}, agent_id="analyst"
+            run_index=0,
+            task_id="task_a",
+            workflow_state={"summary": {"v": "A"}},
+            agent_id="analyst",
         ),
     ]
     merged, conflicts = merge_run_workflow_states(runs)
@@ -164,9 +171,7 @@ class _RecordingAgent:
     calls to (``_ctx.active_tool_session_id()``), appending a ledger row exactly as the
     live tool observer does — proving per-child attribution under interleaving."""
 
-    def __init__(
-        self, sleep_s: float = 0.0, barrier: threading.Barrier | None = None
-    ) -> None:
+    def __init__(self, sleep_s: float = 0.0, barrier: threading.Barrier | None = None) -> None:
         self.sleep_s = sleep_s
         # A load-insensitive concurrency WITNESS (#948 S5 flake hardening): when set,
         # every forward rendezvous at the barrier BEFORE it records its window, so the
@@ -308,6 +313,88 @@ def test_same_child_ensemble_three_distinct_records_sessions_and_run_indexes(
         assert len(completed) == 3
         # Every started event carries its run_index.
         assert sorted(e.payload["run_index"] for e in started) == [0, 1, 2]
+
+
+def test_spawn_child_turn_stamps_spawn_group_id_on_every_real_agent_task(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The REAL substrate (spawn_child_turn_threadsafe -> AgentTask) carries a
+    caller-supplied spawn_group_id/group_size through to the persisted record —
+    proving turn_spawn.py's propagation end-to-end (not just via a spy). This is
+    what spawn_agents_parallel relies on: it mints ONE id and passes it on every
+    TaskSpec in the batch, and the group identity must survive the
+    queued->running->completed lifecycle to reach the completed expert_handoff
+    Part at wait-time."""
+
+    # host_agent_executor only routes the "main" root through the host fake (its
+    # docstring: "Make a default session's react main execute the build_app host
+    # fake"), so a fan-out batch here spawns "main" 3x — same declared-child shape
+    # test_same_child_ensemble_three_distinct_records_sessions_and_run_indexes
+    # above already proves settles cleanly. What is NEW here is the group id.
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_RecordingAgent())
+    with TestClient(app) as client:
+        app.state.max_concurrent_agent_tasks = 3
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+
+        group_id = "fanout_test0000001"
+        spawned = [
+            spawn_child_turn_threadsafe(
+                app,
+                TaskSpec(
+                    child_expert_id="main",
+                    task_text=f"run {i}",
+                    parent_session_id=parent,
+                    requesting_expert_id="main",
+                    spawn_group_id=group_id,
+                    group_size=3,
+                ),
+            )
+            for i in range(3)
+        ]
+
+        # Durable on the record at spawn time (before any completion).
+        assert [t.spawn_group_id for t in spawned] == [group_id] * 3
+        assert [t.group_size for t in spawned] == [3, 3, 3]
+
+        settled = [_wait_terminal(app, t.task_id) for t in spawned]
+        assert [s.status for s in settled] == ["completed"] * 3
+        # Survives the queued->running->completed lifecycle.
+        assert [s.spawn_group_id for s in settled] == [group_id] * 3
+        assert [s.group_size for s in settled] == [3, 3, 3]
+
+        # TaskHandle/TaskResult (the executor-boundary projections
+        # spawn_runtime's started/completed Parts read) carry it too.
+        handles = [TaskHandle.from_task(t) for t in spawned]
+        assert [h.spawn_group_id for h in handles] == [group_id] * 3
+        results = [TaskResult.from_task(s) for s in settled]
+        assert [r.spawn_group_id for r in results] == [group_id] * 3
+        assert [r.group_size for r in results] == [3, 3, 3]
+
+
+def test_spawn_child_turn_leaves_spawn_group_id_empty_for_a_bare_spec(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A TaskSpec that never sets spawn_group_id (a bare spawn_agent_task call, or
+    a declared run_workflow step) mints a record with NEITHER field set — the
+    empty/0 default, never invented."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_RecordingAgent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+
+        task = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(
+                child_expert_id="main",
+                task_text="solo",
+                parent_session_id=parent,
+                requesting_expert_id="main",
+            ),
+        )
+        assert task.spawn_group_id == ""
+        assert task.group_size == 0
 
 
 def test_ensemble_of_three_runs_concurrently_overlapping_windows(
@@ -481,7 +568,11 @@ def test_cancel_cascade_is_transitive_to_grandchildren(tmp_path: Path) -> None:
         main = client.post("/v1/sessions", json={"title": "m"}).json()["id"]
         # A is a direct child of main; B is a child of A's OWN child session (a grandchild).
         a = seed_agent_task(
-            app, parent_session_id=main, agent_ref={"expert_id": "A"}, depth=1, status=STATUS_RUNNING
+            app,
+            parent_session_id=main,
+            agent_ref={"expert_id": "A"},
+            depth=1,
+            status=STATUS_RUNNING,
         )
         b = seed_agent_task(
             app,
@@ -540,11 +631,13 @@ class _StubSessions:
 
 
 def _fake_app(registry: AgentTaskRegistry, messages: dict[str, list[Message]]) -> SimpleNamespace:
-    return SimpleNamespace(
+    app = SimpleNamespace(
         state=SimpleNamespace(
             agent_task_registry=registry, sessions=_StubSessions(), messages=dict(messages)
         )
     )
+    app.state.expert_invoker = InProcessExpertInvoker(app)
+    return app
 
 
 def _assistant_message(msg_id: str, sid: str, text: str) -> Message:

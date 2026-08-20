@@ -80,6 +80,7 @@ $ clio-agent serve --host 127.0.0.1 --port 17800
 | **POST** | `/v1/sessions/{sid}/messages` | enqueue a user turn; response acks quickly |
 | **DELETE** | `/v1/sessions/{sid}/messages/{message_id}` | delete one message from a specific session |
 | **GET** | `/v1/sessions/{sid}/events` | SSE stream for `message.*`, `tool.call.*`, and session status events |
+| **GET** | `/v1/agent-tasks/{task_id}/live` | JSON live handle by default; with `Accept: text/event-stream`, ordered `timeline_row` relay application events and typed `timeline_drop` frames |
 | **POST** | `/v1/sessions/{sid}/cancel` | best-effort cancellation envelope |
 | **GET / PUT** | `/v1/providers/lm` | inspect or hot-swap LM provider config |
 
@@ -100,6 +101,15 @@ catalog is advertised in `/v1/capabilities` as
 Provider/planner failures during live stream execution settle the turn
 with structured `error_info` instead of falling back to fabricated answer
 text.
+
+When a staged background-task notification wins the shared consume gate, the
+existing model-grounding text remains and the same turn also emits one
+`type="background_exit"` part. Its stable fields are `task_id`, `job_id`,
+`exit_status` (`completed|failed|canceled`), optional `artifact_ref`, and the shared
+run-handle group (`handle_id`, `run_label`, `live_state`, `host`, `placement`). The
+live-door `timeline_row` payload uses schema `clio.relay-timeline-row.v1` and carries
+those run fields plus `sequence`, `event_type`, `source`, `summary`, `occurred_at`,
+and `payload`.
 
 Cancellation is also explicit rather than hidden. Cancelling a running turn settles the GACT envelope as cancelled; if provider/tool work is already inside an executor thread, `session.status_changed` marks `execution_cancellation="best_effort"` and `executor_work_may_continue=true`.
 

@@ -871,3 +871,58 @@ def test_arc_fold_matches_direct_fold_parity():
         vd.kind,
         vd.artifact_id,
     )
+
+
+def test_capture_released_registry_refolds_once_on_first_access(tmp_path, monkeypatch):
+    """A capture_released boot (no reachable fold source — observed live as an
+    early-boot arc_iter_failed) self-heals: the FIRST off-loop reader triggers
+    one refold now that the sources are up; a second failure never loops."""
+
+    from types import SimpleNamespace
+
+    from clio_agent.gact.artifacts import registry as registry_module
+    from clio_agent.gact.artifacts.registry import ArtifactRegistry, get_registry
+
+    empty = ArtifactRegistry()
+    empty.capture_released = {"reason": "capture_released", "detail": "test"}
+    app = SimpleNamespace(state=SimpleNamespace(artifact_registry=empty))
+
+    rebuilt = ArtifactRegistry()
+    calls: list[int] = []
+
+    def fake_rebuild(target):
+        calls.append(1)
+        target.state.artifact_registry = rebuilt
+        return rebuilt
+
+    monkeypatch.setattr(
+        "clio_agent.gact.artifacts.registry_boot.rebuild_registry_at_boot", fake_rebuild
+    )
+    assert get_registry(app) is rebuilt
+    assert calls == [1]
+    # Subsequent access returns the rebuilt registry without another fold.
+    assert get_registry(app) is rebuilt
+    assert calls == [1]
+    del registry_module  # imported for parity with module-local patching
+
+
+def test_capture_released_refold_is_single_shot_on_failure(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from clio_agent.gact.artifacts.registry import ArtifactRegistry, get_registry
+
+    empty = ArtifactRegistry()
+    empty.capture_released = {"reason": "capture_released", "detail": "test"}
+    app = SimpleNamespace(state=SimpleNamespace(artifact_registry=empty))
+    calls: list[int] = []
+
+    def failing_rebuild(_target):
+        calls.append(1)
+        raise RuntimeError("still unreadable")
+
+    monkeypatch.setattr(
+        "clio_agent.gact.artifacts.registry_boot.rebuild_registry_at_boot", failing_rebuild
+    )
+    assert get_registry(app) is empty
+    assert get_registry(app) is empty
+    assert calls == [1]

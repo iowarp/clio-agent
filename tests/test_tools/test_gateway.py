@@ -5,10 +5,9 @@ declared MCP servers mounted as proxies. These tests are hermetic: declared
 servers are stood up as in-process FastMCP proxies (no subprocess, no network).
 """
 
-import warnings
-
 import pytest
 from fastmcp import Client, FastMCP
+from fastmcp.server import create_proxy
 
 from clio_agent.tools.gateway import (
     _list_tools_sync,
@@ -71,20 +70,6 @@ def test_mount_helper_uses_namespace_when_supported():
     assert calls == [(server, "fs")]
 
 
-def test_mount_helper_falls_back_to_prefix():
-    """Installed FastMCP 2.x exposes prefix, so the helper must preserve it."""
-    calls = []
-
-    class Parent:
-        def mount(self, server, prefix=None):
-            calls.append((server, prefix))
-
-    server = object()
-    _mount_with_namespace(Parent(), server, "shell")
-
-    assert calls == [(server, "shell")]
-
-
 def test_namespace_of_splits_on_first_underscore():
     assert _namespace_of("ndp_search_datasets") == "ndp"
     assert _namespace_of("fs_read_file") == "fs"
@@ -140,11 +125,9 @@ def declared_server() -> FastMCP:
 
 def _in_process_factory(declared: FastMCP):
     """Proxy factory that wraps an in-process server (no subprocess)."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
 
-        def factory(_spec: MCPServerSpec) -> FastMCP:
-            return FastMCP.as_proxy(Client(declared))
+    def factory(_spec: MCPServerSpec) -> FastMCP:
+        return create_proxy(declared)
 
     return factory
 
@@ -179,6 +162,17 @@ def test_build_gateway_no_specs_is_builtins_only():
     names = {t.name for t in _list_tools_sync(gw)}
     assert "shell_bash" in names
     assert not any(n.startswith("demo_") for n in names)
+
+
+def test_build_gateway_reports_unconfigured_relay_tool_surface() -> None:
+    """Finding 5: an absent P2 relay surface is a typed, queryable degradation."""
+
+    gateway = build_gateway({})
+
+    degrade = gateway._clio_degraded_capabilities["relay"]
+    assert degrade["reason"] == "relay_tools_not_configured"
+    assert degrade["category"] == "relay_configuration"
+    assert "configure_relay" in degrade["recovery_actions"]
 
 
 def test_build_gateway_skips_unusable_spec(declared_server: FastMCP):
@@ -235,9 +229,7 @@ def test_build_gateway_threads_cwd_to_stdio_only(declared_server: FastMCP):
 
     def factory(spec: MCPServerSpec, cwd: str | None = None) -> FastMCP:
         seen[spec.name] = cwd
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            return FastMCP.as_proxy(Client(declared_server))
+        return create_proxy(declared_server)
 
     specs = {
         "local": MCPServerSpec(name="local", transport="stdio", command="x"),

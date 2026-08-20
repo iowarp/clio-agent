@@ -565,6 +565,27 @@ def run_goal_command(app: Any, sid: str, request_body: Mapping[str, Any]) -> str
     )
 
 
+def _goal_status_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Declare ``goal_status``'s typed wire payload (P5 wire semantics — the
+    ``wait_agent_tasks`` treatment) then return ``result`` unchanged (the
+    model-facing shape is untouched). ``message`` is derived from the SAME
+    armed-state facts, never a readback the model could steer toward."""
+
+    from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+        declare_structured_content,
+    )
+
+    if result.get("active"):
+        message = (
+            f"goal active: {result.get('condition', '')!r} "
+            f"({result.get('iters_elapsed', 0)}/{result.get('max_goal_iters', 0)} iters)"
+        )
+    else:
+        message = "no active goal"
+    declare_structured_content({"message": message, **result})
+    return result
+
+
 # goal_status — the model's READ-ONLY surface (NO set_goal / goal_clear tool).
 def build_goal_status_tool() -> Any:
     """Build the ``goal_status`` read-only dspy.Tool (auto-attached; mirrors ``cron_list``).
@@ -575,7 +596,7 @@ def build_goal_status_tool() -> Any:
     runs the judge and never exposes a ``met`` completion readback the model could steer toward
     (completion is decided at the finalize boundary by the bounded judge, A4)."""
 
-    import dspy  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def goal_status() -> dict:
         """Read THIS session's active goal condition + progress (READ-ONLY).
@@ -588,17 +609,25 @@ def build_goal_status_tool() -> Any:
         app = _ctx.active_app()
         sid = _ctx.active_session_id()
         if app is None or not sid:
-            return {"active": False, "condition": "", "iters_elapsed": 0}
+            return _goal_status_result({"active": False, "condition": "", "iters_elapsed": 0})
         goal = _get_goal(app, sid)
         if not goal or not goal.get("active"):
-            return {"active": False, "condition": "", "iters_elapsed": 0}
+            return _goal_status_result({"active": False, "condition": "", "iters_elapsed": 0})
         elapsed_s, tokens_spent = _budget_spent(app, sid, goal)
-        return {
-            "active": True,
-            "condition": str(goal.get("condition") or ""),
-            "iters_elapsed": int(goal.get("iters_elapsed", 0) or 0),
-            "max_goal_iters": int(goal.get("max_goal_iters", 0) or 0),
-            "budget_spent": {"wallclock_s": elapsed_s, "tokens": tokens_spent},
-        }
+        return _goal_status_result(
+            {
+                "active": True,
+                "condition": str(goal.get("condition") or ""),
+                "iters_elapsed": int(goal.get("iters_elapsed", 0) or 0),
+                "max_goal_iters": int(goal.get("max_goal_iters", 0) or 0),
+                "budget_spent": {"wallclock_s": elapsed_s, "tokens": tokens_spent},
+            }
+        )
 
-    return dspy.Tool(func=goal_status, name="goal_status", desc=goal_status.__doc__, args={})
+    return native_tool(
+        goal_status,
+        name="goal_status",
+        desc=goal_status.__doc__,
+        title="Goal Status",
+        args={},
+    )

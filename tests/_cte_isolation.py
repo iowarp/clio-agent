@@ -163,6 +163,17 @@ def isolate_cte_env(root: Path, environ: dict[str, str]) -> CteIsolation:
     environ["CLIO_ARC_STORE_CONFIG"] = str(config_path)
     environ["CLIO_SERVER_CONF"] = str(config_path)
     environ["CLIO_CORE_PORT"] = str(port)
+    # #1148 — hermetic shm namespace. clio-core names its IPC shared-memory
+    # segments ``chi_*_segment_${USER}`` and expands ``USER`` via plain getenv
+    # (unset on Windows), so without this EVERY daemon on the box — host-shared
+    # and all "private" suite daemons — mapped the SAME segments and corrupted
+    # each other under concurrent runs (proven by A/B repro; the clio_run.exe
+    # access-violation dialogs). A unique per-run USER, exported before both the
+    # daemon spawn and the in-process client attach (both expand the same
+    # variable), gives this suite run its own segment namespace and keeps the
+    # host daemon's namespace untouchable by tests.
+    user_base = environ.get("USERNAME") or environ.get("USER") or "clio"
+    environ["USER"] = f"{user_base}-cte-{port}"
     return CteIsolation(
         root=root,
         state_dir=state_dir,

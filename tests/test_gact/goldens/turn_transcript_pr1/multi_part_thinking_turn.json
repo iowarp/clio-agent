@@ -183,42 +183,9 @@
     {
       "payload": {
         "message_id": "<msg#4>",
-        "part": {
-          "agent_id": "main",
-          "id": "<part#8>",
-          "metadata": {
-            "route_reason": "planner selected code expert",
-            "route_source": "dspy"
-          },
-          "rationale": "matched coding keywords",
-          "selected_agent": "code_expert",
-          "type": "routing_decision"
-        },
-        "stream_source": "batch",
-        "turn_id": "<msg#1>"
-      },
-      "type": "message.part.added"
-    },
-    {
-      "payload": {
-        "message_id": "<msg#4>",
         "metadata": {
           "agent_runtime": {
-            "agent_blueprint": {
-              "id": "earthscope-gnss-region",
-              "scope": "global",
-              "version": "0.1.0"
-            },
             "agent_id": "main",
-            "commands": [
-              "/cache-stats",
-              "/clear",
-              "/cron",
-              "/dump-trace",
-              "/goal",
-              "/loop",
-              "/optimize"
-            ],
             "execution_mode": "blueprint_react",
             "fanout": {},
             "kind": "dynamic_agent",
@@ -232,30 +199,26 @@
             "module": {
               "kind": "react"
             },
-            "pack": {
-              "id": "earthscope-gnss-region",
-              "scope": "global",
-              "version": "0.1.0"
-            },
-            "parent_id": "",
             "prompt": {
               "has_system_prompt": true,
               "source": "agent_definition"
             },
-            "skill_resolution": {},
-            "skills": [],
-            "source": "expert_pack",
+            "source": "builtin",
             "structured_outputs": {},
-            "title": "Main Agent",
-            "tools": []
+            "title": "CLIO Main Agent",
+            "tools": [
+              "fs_apply_edit_write",
+              "fs_propose_edit",
+              "fs_read_file",
+              "shell_bash"
+            ]
           },
           "prompt_resolution": {
-            "checksum": "3ca3e7d2a553cda024225057aecbb4215a86f139e3a4094a7779c3c4d98b71aa",
-            "composed_with_agent_body": true,
-            "id": "clio.main.planner",
+            "checksum": "be97f9edf62fe19554939dda2afaaf4224323d88a7542c3b485f562a1a9d73d3",
+            "id": "clio.chat",
             "profile": "default",
             "scope": "builtin",
-            "source_path": "package://clio_agent.prompt_packs.builtin/clio.main.planner.md",
+            "source_path": "package://clio_agent.prompt_packs.builtin/clio.chat.md",
             "status": "resolved"
           },
           "stream_source": "live"
@@ -302,18 +265,6 @@
       "sequence": 3,
       "text": "The answer is 42.",
       "type": "text"
-    },
-    {
-      "agent_id": "main",
-      "id": "<part#8>",
-      "metadata": {
-        "route_reason": "planner selected code expert",
-        "route_source": "dspy"
-      },
-      "rationale": "matched coding keywords",
-      "selected_agent": "code_expert",
-      "sequence": 4,
-      "type": "routing_decision"
     }
   ]
 }

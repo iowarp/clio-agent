@@ -90,6 +90,12 @@ class LiveTaskHandle:
     timeline: list[dict[str, Any]] = field(default_factory=list)
     """The child channel's ``agent.task.*`` lifecycle events, oldest first."""
 
+    timeline_rows: list[dict[str, Any]] = field(default_factory=list)
+    """Bounded relay application rows projected for this task, oldest first."""
+
+    timeline_drops: list[dict[str, Any]] = field(default_factory=list)
+    """Catalogued relay frames refused by the live-view router."""
+
     handoff_parts: list[dict[str, Any]] = field(default_factory=list)
     """The PARENT-transcript ``expert_handoff`` Parts for THIS run (by run_index)."""
 
@@ -240,7 +246,9 @@ def _live_actions(task_id: str, child_session_id: str) -> list[dict[str, Any]]:
             "mode": "steer",
             "method": "POST",
             "path": f"/v1/agent-tasks/{task_id}/steer",
-            "description": "Send a mid-turn steer to a genuinely running child (409 otherwise).",
+            "description": (
+                "Message the child using its retained placement; completed children wake."
+            ),
         },
     ]
 
@@ -259,9 +267,14 @@ def project_live_handle(app: "FastAPI", task_id: str) -> Optional[LiveTaskHandle
     task = app.state.agent_task_registry.get(task_id)
     if task is None:
         return None
+    from clio_agent.gact.relay_timeline import relay_timeline_view  # noqa: PLC0415
+
+    timeline_rows, timeline_drops = relay_timeline_view(app, task_id)
     return LiveTaskHandle(
         task=asdict(task),
         timeline=_timeline_for(app, task.child_session_id),
+        timeline_rows=timeline_rows,
+        timeline_drops=timeline_drops,
         handoff_parts=_handoff_parts_for(app, task),
         child_head=_child_head(app, task.child_session_id),
         actions=_live_actions(task_id, task.child_session_id),

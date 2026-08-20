@@ -30,6 +30,7 @@ imports dspy + the shared runtime funnel + ``gact.context`` only, never
 
 from __future__ import annotations
 
+import itertools
 import logging
 import uuid
 from typing import Any
@@ -50,8 +51,8 @@ from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
     _emit_expert_lifecycle_event,
     _emit_react_step_event,
-    _jsonish,
 )
+from clio_agent.tools.mcp_runtime import wire_value
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +72,7 @@ def _arc_scope() -> tuple[Any, str, str]:
     # (react_run == -1). Attribution readers use active_react_scope() unchanged.
     scope = _ctx.run_keyed_scope(_ctx.active_react_scope())
     session = _ctx.active_react_session()
-    arc = (
-        getattr(getattr(app, "state", None), "arc", None) if (app is not None and scope) else None
-    )
+    arc = getattr(getattr(app, "state", None), "arc", None) if (app is not None and scope) else None
     return arc, session, scope
 
 
@@ -112,9 +111,7 @@ def _arc_write(
             run_span_id=run_span_id,
         )
     except Exception:  # noqa: BLE001
-        logger.warning(
-            "arc live-plane append failed kind=%s scope=%s", kind, scope, exc_info=True
-        )
+        logger.warning("arc live-plane append failed kind=%s scope=%s", kind, scope, exc_info=True)
 
 
 def _reset_working_set(arc: Any, session: str, scope: str) -> None:
@@ -260,12 +257,24 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
         expert_id=expert_id,
         expert_span_id=expert_span_id,
         status="running",
-        payload={"input": _jsonish(dict(pending_inputs))},
+        payload={"input": wire_value(dict(pending_inputs), mode="gact_runtime")},
     )
     parent_token = _ctx.set_parent_span(expert_span_id)
     break_reason = "max_iters"
+    # #1226 D1b: max_iters <= 0 is UNLIMITED, not an error and not a silent
+    # 0-iteration loop -- the standing ruling is 0/unlimited by default; a
+    # cap survives only as an explicit, blueprint-declared opt-in runaway
+    # backstop (see ``_tool_user_agent_max_iters``). itertools.count() never
+    # exhausts, so the loop below can only end via an explicit break (parse
+    # error / context window / empty tool calls) or a submit return -- never
+    # by "running out of turns" mid-task.
+    turn_indices = range(max_iters) if max_iters > 0 else itertools.count()
+    # Both iterables always yield at least once (range(max_iters) for
+    # max_iters > 0; itertools.count() is infinite) -- pre-bound only so a
+    # static checker can see `turn_index` is never actually unbound below.
+    turn_index = -1
     try:
-        for turn_index in range(max_iters):
+        for turn_index in turn_indices:
             step_span_id = uuid.uuid4().hex[:16]
             step_token = _ctx.set_parent_span(step_span_id)
             thought_token = None
@@ -301,7 +310,10 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
                     arc,
                     session,
                     scope,
-                    {"thought": str(thought or ""), "tools": [c.name for c in tool_calls.tool_calls]},
+                    {
+                        "thought": str(thought or ""),
+                        "tools": [c.name for c in tool_calls.tool_calls],
+                    },
                     step=turn_index,
                     turn_id=turn_id,
                     expert_span_id=expert_span_id,
@@ -331,21 +343,28 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
 
                 if final_outputs is not None:
                     _emit_expert_completed(expert_id, expert_span_id, final_outputs, turn_index + 1)
-                    return Prediction(
-                        **final_outputs, history=history, termination_reason="submit"
-                    )
+                    return Prediction(**final_outputs, history=history, termination_reason="submit")
             finally:
                 if thought_token is not None:
                     _ctx.reset(thought_token)
                 _ctx.reset(step_token)
 
-        result = agent._forced_submit(history, pending_inputs, break_reason, max_iters)
+        # Bounded (max_iters > 0): byte-identical to stock -- the loop only
+        # reaches here by exhausting range(max_iters), so max_iters IS the
+        # next turn index. Unbounded (max_iters <= 0): itertools.count()
+        # never exhausts, so reaching here means an explicit break fired at
+        # `turn_index`; the next turn index is one past that, never the
+        # (here, meaningless) 0/negative sentinel.
+        forced_submit_turn_index = max_iters if max_iters > 0 else turn_index + 1
+        result = agent._forced_submit(
+            history, pending_inputs, break_reason, forced_submit_turn_index
+        )
         produced = set(result.keys()) if hasattr(result, "keys") else set()
         _emit_expert_completed(
             expert_id,
             expert_span_id,
             {k: getattr(result, k) for k in agent.signature.output_fields if k in produced},
-            max_iters,
+            forced_submit_turn_index,
         )
         return result
     finally:

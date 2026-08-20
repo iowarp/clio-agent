@@ -32,17 +32,29 @@ def test_factory_maps_claude_code_level_to_optional_params() -> None:
     )
     assert off == {"claude_code_thinking": {"type": "disabled"}}
 
+    # display: "summarized" un-redacts the CoT text (claude CLI >= 2.1.x defaults
+    # the thinking display to "omitted"/signature-only; probed 2026-08-05).
+    shipped_low = {
+        "claude_code_thinking": {
+            "type": "enabled",
+            "budget_tokens": 2048,
+            "display": "summarized",
+        }
+    }
     low = _thinking_kwargs(
         LMProviderConfig(provider="claude_code", model="haiku", thinking_level="low")
     )
-    assert low == {"claude_code_thinking": {"type": "enabled", "budget_tokens": 2048}}
+    assert low == shipped_low
 
-    # Unset on HAIKU → the shipped default 'low' (#895 acceptance outcome);
+    # Unset on HAIKU (#895 acceptance outcome) and on SONNET (the CLI runs sonnet
+    # thinking-OFF without a config; probed 2026-08-05) → the shipped default 'low';
     # unset on other models → nothing (pre-#895 behavior), never reasoning_effort.
     default_haiku = _thinking_kwargs(LMProviderConfig(provider="claude_code", model="haiku"))
-    assert default_haiku == {"claude_code_thinking": {"type": "enabled", "budget_tokens": 2048}}
+    assert default_haiku == shipped_low
     default_sonnet = _thinking_kwargs(LMProviderConfig(provider="claude_code", model="sonnet"))
-    assert default_sonnet == {}
+    assert default_sonnet == shipped_low
+    default_opus = _thinking_kwargs(LMProviderConfig(provider="claude_code", model="opus"))
+    assert default_opus == {}
 
 
 def test_factory_maps_anthropic_and_effort_providers() -> None:

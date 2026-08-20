@@ -35,7 +35,6 @@ from clio_agent.gact.live_handle import (
     _CHILD_HEAD_PART_TEXT_MAX,
     STEER_REJECT_CHILD_GONE,
     STEER_REJECT_CHILD_IDLE,
-    STEER_REJECT_TASK_TERMINAL,
     project_live_handle,
 )
 from clio_agent.gact.loop_inbox import USER_STEER_MARKER
@@ -390,7 +389,7 @@ def test_steer_empty_text_rejected_422(tmp_path: Path) -> None:
         assert app.state.loop_inboxes.get(task.child_session_id) is None
 
 
-def test_steer_terminal_child_rejected_typed_409(tmp_path: Path) -> None:
+def test_steer_cancelled_child_is_typed_unwakeable_409(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app) as client:
         parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
@@ -406,8 +405,8 @@ def test_steer_terminal_child_rejected_typed_409(tmp_path: Path) -> None:
         resp = client.post(f"/v1/agent-tasks/{task.task_id}/steer", json={"text": "hi"})
         assert resp.status_code == 409
         err = resp.json()["error"]
-        assert err["error"] == "child_not_running"
-        assert err["details"]["reason"] == STEER_REJECT_TASK_TERMINAL
+        assert err["error"] == "task_unwakeable"
+        assert err["details"]["status"] == STATUS_CANCELLED
         # Nothing buffered anywhere.
         assert app.state.loop_inboxes.get(task.child_session_id) is None
 

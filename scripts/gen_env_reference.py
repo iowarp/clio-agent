@@ -87,7 +87,7 @@ BOOTSTRAP_VARS: frozenset[str] = frozenset({"CLIO_USER_DIR", "CLIO_ENV_FILE"})
 
 # Secret tier: never written to a shared config file; env-only by policy.
 SECRET_VARS: frozenset[str] = frozenset(
-    {"CLIO_LM_API_KEY", "CLIO_ARGONNE_TOKEN", "ALCF_INFERENCE_TOKEN"}
+    {"CLIO_LM_API_KEY", "CLIO_ARGONNE_TOKEN", "ALCF_INFERENCE_TOKEN", "CLIO_RELAY_API_TOKEN"}
 )
 SECRET_PREFIXES: tuple[str, ...] = ("CLIO_CRED_",)
 

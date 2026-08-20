@@ -12,11 +12,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from clio_agent.gact.agent_blueprints import (
-    DEFAULT_AGENT_BLUEPRINT_ID,
-    load_agent_blueprints,
-)
-
 # SKILL.md discovery/parsing is owned by gact.skills (#917); since #918 skills
 # no longer materialize as agents — only the frontmatter parser is shared here.
 from clio_agent.gact.skills import _parse_skill_frontmatter
@@ -24,26 +19,57 @@ from clio_agent.gact.types import AgentDef, Tool
 
 
 def _builtin_agents() -> list[AgentDef]:
-    """Return default registry Agent Blueprint rows, if installed.
+    """Return the code-shipped builtin agent catalog: just the react ``main``.
 
-    The historical in-repo builtin blueprint directory is no longer a runtime
-    source. This function name remains for older call sites, but its rows come
-    from normal Agent Blueprint discovery and retain registry install metadata.
+    This USED to silently load whatever Agent Blueprint snapshot happened to be
+    pinned as ``DEFAULT_AGENT_BLUEPRINT_ID`` (an installed marketplace default,
+    e.g. ``earthscope-gnss-region``) and re-label its rows "builtin" -- so every
+    merge that treated this list as ground truth (``GET /v1/agents``' fallback,
+    declared-child resolution for spawn, the session-less prompt-context tree,
+    ``/v1/catalog/tools``) silently surfaced an installed-but-never-activated
+    marketplace pack as if it were part of the product. That is exactly the
+    implicit agent selection the blueprint lane's explicit-activation-only ruling
+    forbids (owner, 2026-08-05, commit aa906022) -- it just survived in this
+    parallel "builtin" seam instead of ``_runtime_active_agent_blueprint_id``.
+
+    The fallback is deleted here too: the ONLY code-shipped agent is
+    :func:`_builtin_main_agent`, and every consumer that merges this list with
+    genuinely-installed expert packs (loose/workspace/global, or an EXPLICITLY
+    activated blueprint/pack) now sees an honest catalog -- no
+    discoverable-but-unactivated registry snapshot leaks in.
     """
 
-    builtin_rows = []
-    for row in load_agent_blueprints(blueprint_id=DEFAULT_AGENT_BLUEPRINT_ID):
-        metadata = {
-            **row.metadata,
-            "source_blueprint": "default_registry",
-            # routes_to is derived from the blueprint's own metadata (children),
-            # never a core-hardcoded expert list.
-            "routes_to": row.metadata.get("routes_to", []),
-        }
-        if row.parent_id:
-            metadata.setdefault("parent", row.parent_id)
-        builtin_rows.append(row.model_copy(update={"metadata": metadata}))
-    return builtin_rows
+    return [_builtin_main_agent()]
+
+
+def _builtin_main_agent() -> AgentDef:
+    """The in-code react ``main`` a session with NO activated Agent Blueprint runs.
+
+    Owner ruling (2026-08-05): a session never resolves a DISCOVERABLE Agent
+    Blueprint it did not activate. A bare session must still work (RULE 2), so
+    it executes THIS shipped definition — code, not disk discovery. It runs on
+    the same react runtime as blueprint mains (``definition_kind: builtin_main``
+    routes it through ``_build_blueprint_dspy_module``), and its tool surface is
+    the universal in-process builtins (``clio_agent.tools.catalog.TOOL_CATALOG``,
+    the fs/shell tools every host tool fleet mounts). Loose expert-pack experts
+    declaring ``parent_id: main`` hang off it in the builtin/expert-pack
+    hierarchy, so they remain reachable as declared spawn children.
+    """
+
+    from clio_agent.tools.catalog import TOOL_CATALOG  # noqa: PLC0415
+
+    return AgentDef(
+        id="main",
+        source="builtin",
+        title="CLIO Main Agent",
+        description=("Built-in react main executed by sessions with no activated Agent Blueprint."),
+        tier=1,
+        specialization="orchestrator",
+        module={"kind": "react"},
+        prompt_id="clio.chat",
+        tools=sorted(TOOL_CATALOG),
+        metadata={"definition_kind": "builtin_main"},
+    )
 
 
 def _load_command_files_from_disk(

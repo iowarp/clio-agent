@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from clio_agent.gact.agent_blueprints import DEFAULT_AGENT_BLUEPRINT_ID
 from clio_agent.gact.app import build_app
 
 
@@ -65,8 +66,7 @@ def test_post_agent_then_list(client: TestClient) -> None:
         body["capability_refs"][0]["status"],
     ) == ("tool", "fs_read_file", "available")
     assert any(
-        ref["kind"] == "command" and ref["id"] == "/review"
-        for ref in body["capability_refs"]
+        ref["kind"] == "command" and ref["id"] == "/review" for ref in body["capability_refs"]
     )
 
     # GET /v1/agents now includes it (and the built-ins).
@@ -177,8 +177,32 @@ def test_persistence_round_trip(tmp_path: Path) -> None:
     assert restored["commands"] == ["/persisted"]
 
 
-def test_builtin_agents_surface_prompts(client: TestClient) -> None:
+def test_bare_session_builtin_main_has_no_installed_default_registry_prompt(
+    client: TestClient,
+) -> None:
+    """A session with NO explicit activation never surfaces the installed
+    default-registry snapshot's rows or prompts (owner ruling 2026-08-05,
+    commit aa906022 + catalog._builtin_agents()'s matching fix): the ONLY
+    builtin is the code-shipped react main."""
+
     rows = client.get("/v1/agents").json()["agents"]
+    assert [row["id"] for row in rows] == ["main"]
+    main = rows[0]
+    assert main["source"] == "builtin"
+    assert "CLIO's agent planner" not in main["system_prompt"]
+
+
+def test_activated_default_registry_agents_surface_prompts(client: TestClient) -> None:
+    sid = client.post("/v1/sessions", json={"title": "activated"}).json()["id"]
+    assert (
+        client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"blueprint_id": DEFAULT_AGENT_BLUEPRINT_ID},
+        ).status_code
+        == 200
+    )
+
+    rows = client.get("/v1/agents", params={"session_id": sid}).json()["agents"]
     main = next(a for a in rows if a["id"] == "main")
     data = next(a for a in rows if a["id"] == "data")
 
@@ -235,9 +259,7 @@ def test_skill_frontmatter_parses_via_catalog(monkeypatch, tmp_path: Path) -> No
     )
     nested = tmp_path / ".agents" / "skills" / "source-command" / "wtfp-help"
     nested.mkdir(parents=True)
-    (nested / "SKILL.md").write_text(
-        "Help users with source-command workflows.", encoding="utf-8"
-    )
+    (nested / "SKILL.md").write_text("Help users with source-command workflows.", encoding="utf-8")
 
     refs = {r.id: r for r in SkillCatalog(home=tmp_path / "no-home", cwd=tmp_path).discover()}
     codex_ref = refs["tui-test"]
@@ -249,4 +271,3 @@ def test_skill_frontmatter_parses_via_catalog(monkeypatch, tmp_path: Path) -> No
     assert codex_ref.body == "Use deterministic TUI testing workflows."
     assert refs["wtfp-help"].description == "Help users with source-command workflows."
     assert refs["wtfp-help"].source == "agents"
-

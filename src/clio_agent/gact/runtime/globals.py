@@ -46,6 +46,7 @@ from clio_agent.gact.events import Event
 from clio_agent.gact.semantic_events import DEFAULT_DETAIL_LEVEL, SemanticEvent
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.runtime import trace
+from clio_agent.tools.mcp_runtime import wire_value
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -114,16 +115,26 @@ _ACTIVE_BLUEPRINT_TOOL_ROWS = _CompatVar(
 
 @contextmanager
 def _tool_session_context(sid: str) -> Iterator[None]:
-    """Bind the tool session id + workspace root for the current turn.
+    """Bind the tool session id + workspace root + active blueprint for the turn.
 
     The four tool-runtime hooks are resolved per tool call by the installed
     ``ToolRuntimeHooks`` resolver (``resolve_tool_runtime`` dispatching on the
     keystone-bound ``_ctx.active_app()``), so this no longer binds them. It binds
-    only the tool session id (read by the permission gate to attribute the call to
-    the live turn's session) and the workspace root — resolved off the live app so
-    the tool executor grounds output artifacts into the bound workspace (#735).
+    the tool session id (read by the permission gate to attribute the call to
+    the live turn's session), the workspace root — resolved off the live app so
+    the tool executor grounds output artifacts into the bound workspace (#735) —
+    and the session's EXPLICITLY-activated Agent Blueprint id (#1232 pt 1), so
+    ``ClioAgent._active_tool_executor`` mounts exactly that blueprint's declared
+    ``mcp_servers`` (if any) into the per-workspace gateway, never every
+    installed blueprint's servers and never at boot.
     """
-    from clio_agent.tools.execution import tool_workspace_context  # noqa: PLC0415
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        _runtime_active_agent_blueprint_id,
+    )
+    from clio_agent.tools.execution import (  # noqa: PLC0415
+        tool_blueprint_context,
+        tool_workspace_context,
+    )
 
     workspace_root = ""
     app = _ctx.active_app()
@@ -135,6 +146,7 @@ def _tool_session_context(sid: str) -> Iterator[None]:
         workspace_id = str(getattr(sess, "workspace_id", "") or "") if sess is not None else ""
         ws = workspaces.get(workspace_id) if workspaces is not None and workspace_id else None
         workspace_root = str(getattr(ws, "root_path", "") or "")
+    blueprint_id = _runtime_active_agent_blueprint_id(app, sid) if app is not None else ""
     token = _ctx.set_tool_session_id(sid)
     # #933: pin the workspace fleet for the WHOLE turn — between-call idleness
     # inside a live turn must not count toward the reaper's TTL.
@@ -142,7 +154,11 @@ def _tool_session_context(sid: str) -> Iterator[None]:
     lease = getattr(agent, "lease_workspace_fleet", None)
     try:
         if workspace_root and callable(lease):
-            with lease(workspace_root), tool_workspace_context(workspace_root):
+            with (
+                lease(workspace_root),
+                tool_workspace_context(workspace_root),
+                tool_blueprint_context(blueprint_id),
+            ):
                 yield
         else:
             if workspace_root:
@@ -154,7 +170,10 @@ def _tool_session_context(sid: str) -> Iterator[None]:
                     sid,
                     workspace_root,
                 )
-            with tool_workspace_context(workspace_root):
+            with (
+                tool_workspace_context(workspace_root),
+                tool_blueprint_context(blueprint_id),
+            ):
                 yield
     finally:
         _ctx.reset(token)
@@ -246,24 +265,6 @@ def _iso_from_epoch(ts: float) -> str:
     registry's created_at format."""
 
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
-
-
-def _jsonish(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, Mapping):
-        return {str(k): _jsonish(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonish(v) for v in value]
-    if isinstance(value, set):
-        return sorted(_jsonish(v) for v in value)
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        try:
-            return _jsonish(model_dump(exclude_none=True))
-        except TypeError:
-            return _jsonish(model_dump())
-    return str(value)
 
 
 def _semantic_trace_id(turn_id: str) -> str:
@@ -560,11 +561,11 @@ def _emit_react_step_event(
                 # models like gemma). ``reasoning`` = the raw reasoning channel
                 # (chain-of-thought) for reasoning models — distinct from thought.
                 # Allowed through the SSE projection only for this event type.
-                "thought": _jsonish(thought),
-                "reasoning": _jsonish(reasoning),
+                "thought": wire_value(thought, mode="gact_runtime"),
+                "reasoning": wire_value(reasoning, mode="gact_runtime"),
                 "tool_name": str(tool_name or ""),
-                "tool_args": _jsonish(tool_args),
-                "observation": _jsonish(observation),
+                "tool_args": wire_value(tool_args, mode="gact_runtime"),
+                "observation": wire_value(observation, mode="gact_runtime"),
                 "is_finish": bool(is_finish),
             },
         )
@@ -863,11 +864,11 @@ class _UnsupportedSessionAgent(RuntimeError):
 class _NoResolvableAgent(RuntimeError):
     """Raised when a default/main session resolves NO executable agent.
 
-    #948 S4b: the legacy Tier-1 ``ClioAgent.forward`` planner that used to run for
-    a default/``main`` session with no Agent Blueprint is DELETED. When neither the
-    active blueprint's declared root nor the default-registry blueprint resolves,
-    the turn MUST fail TYPED here — never fall through to a legacy planner pathway.
-    The turn handler maps this to a ``no_resolvable_agent`` error envelope.
+    #948 S4b: the legacy planner is DELETED, and a BARE session (nothing activated)
+    runs the in-code builtin react main (``catalog._builtin_main_agent``) — so this
+    marks the remaining hole: an EXPLICITLY activated blueprint (session id/path
+    set) that resolves no executable agent. Fail TYPED — never a legacy pathway,
+    never a silent builtin-main substitute; maps to ``no_resolvable_agent``.
     """
 
     def __init__(self, agent_id: str = "") -> None:

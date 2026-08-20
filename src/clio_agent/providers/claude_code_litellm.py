@@ -26,6 +26,7 @@ from typing import Any
 
 from clio_agent.providers._cli_provider import (
     messages_to_prompt,
+    raise_model_rejected,
     register_custom_provider,
 )
 from clio_agent.providers.claude_code_audit import (
@@ -45,6 +46,7 @@ from clio_agent.providers.claude_code_sessions import (
     _SdkSessionPool,
     _streaming_chunk,
     session_reuse_enabled,
+    stream_scope_for,
     transient_transport_error_message,
     transient_transport_error_types,
 )
@@ -54,6 +56,8 @@ from clio_agent.providers.claude_code_stateful import (
 )
 from clio_agent.providers.claude_code_thinking_split import (
     _split_provider_thinking_contract_delta,
+    emit_provider_thinking,
+    note_redacted_thinking,
 )
 from clio_agent.runtime import trace
 from clio_agent.runtime.stream_audit import stream_audit
@@ -71,6 +75,14 @@ CLAUDE_BINARY_NAME = "claude"
 # The Claude Agent SDK transport (persistent pooled CLI session) is the only
 # transport since v0.8.0; "exec" (one `claude -p` per call) was deleted.
 DEFAULT_TRANSPORT = "sdk"
+
+#: A ``ResultMessage.api_error_status`` of 404 is the ONLY definitive
+#: model-rejection signal claude_code exposes (#1184, #1211 review A3/D3) --
+#: matches the discovery-side probe classifier in
+#: ``providers.model_discovery.claude_code._CLAUDE_REJECTION_STATUS``. Any
+#: other ``is_error`` status (429/5xx/None) stays on the existing generic
+#: error path -- transient noise must never be misclassified as a rejection.
+CLAUDE_CODE_REJECTION_STATUS = 404
 
 
 class ClaudeCodeCLIUnavailableError(RuntimeError):
@@ -180,19 +192,18 @@ async def _astream_sdk(
     #878 suppression) is identical on both paths — only the client lifecycle
     differs.
     """
-    try:
-        from claude_agent_sdk import (  # noqa: PLC0415
-            AssistantMessage,
-            ClaudeSDKClient,
-            ResultMessage,
-            StreamEvent,
-            TextBlock,
-        )
-    except ImportError as exc:
-        raise ClaudeCodeCLIUnavailableError(
-            "claude_code_transport='sdk' requires the claude-agent-sdk package "
-            "(install the 'claude-code' extra)."
-        ) from exc
+    # Single typed seam (finding #2): a structured mcp-2 unavailability error
+    # instead of a raw ImportError trace when the SDK is absent/uninstallable.
+    from clio_agent.providers.claude_code_options import require_claude_agent_sdk  # noqa: PLC0415
+
+    require_claude_agent_sdk()
+    from claude_agent_sdk import (  # noqa: PLC0415
+        AssistantMessage,
+        ClaudeSDKClient,
+        ResultMessage,
+        StreamEvent,
+        TextBlock,
+    )
 
     call_id = (
         send.call_id if send is not None else ""
@@ -211,10 +222,9 @@ async def _astream_sdk(
     payload = send.payload if send is not None else prompt
     session_id = send.session_id if send is not None else uuid.uuid4().hex
     if session_reuse_enabled():
-        # Pooled connection (connect reused, hosted on the entry's own loop-thread so
-        # it survives the per-call asyncio.run() loops). The entry's query lock
-        # serialises the query→receive cycle.
-        entry = _STREAM_CLIENT_POOL.entry_for(model=model, cwd=cwd, thinking=thinking)
+        entry = _STREAM_CLIENT_POOL.entry_for(
+            model=model, cwd=cwd, thinking=thinking, scope=stream_scope_for(send)
+        )
         source = entry.stream(
             payload=payload,
             session_id=session_id,
@@ -240,6 +250,7 @@ async def _astream_sdk(
         nonlocal emitted_partial, final_text, final_usage, final_reason
         provider_thinking_marker_tail = ""
         provider_thinking_contract_started = False
+        redacted_thinking_total = 0
         promoted_contract_text = ""
         emitted_regular_text = ""
         start = time.monotonic()
@@ -303,28 +314,9 @@ async def _astream_sdk(
                         marker_tail=provider_thinking_marker_tail,
                         contract_started=provider_thinking_contract_started,
                     )
-                    try:
-                        from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
-                            note_lm_provider_thinking_delta,
-                        )
-
-                        if provider_thinking:
-                            stream_audit(
-                                "provider.normalized",
-                                provider="claude_code_sdk",
-                                call_index=call_index,
-                                event_index=index,
-                                source_channel="thinking_delta",
-                                normalized_event="turn.trace.delta",
-                                chunk_len=len(provider_thinking),
-                                duplicate_suppressed=False,
-                                head=provider_thinking[:120],
-                            )
-                            note_lm_provider_thinking_delta(
-                                provider_thinking, provider="claude_code_sdk"
-                            )
-                    except Exception:  # noqa: BLE001,S110 - debug stream must not break provider
-                        pass
+                    emit_provider_thinking(
+                        provider_thinking, call_index=call_index, event_index=index
+                    )
                     if promoted_text:
                         promoted_contract_text += promoted_text
                         emitted_partial = True
@@ -346,6 +338,17 @@ async def _astream_sdk(
                             promoted_text[:80],
                         )
                         yield _streaming_chunk(text=promoted_text, is_finished=False)
+                else:
+                    # No thinking TEXT on this event. If it is a redacted thinking
+                    # delta (empty text + estimated_tokens — CLI thinking display
+                    # 'omitted'), record the typed provider_thinking_redacted
+                    # reason instead of letting the CoT vanish silently.
+                    redacted_thinking_total = note_redacted_thinking(
+                        msg.event,
+                        call_index=call_index,
+                        event_index=index,
+                        total=redacted_thinking_total,
+                    )
                 if text:
                     emitted_regular_text += text
                     if promoted_contract_text and promoted_contract_text.startswith(
@@ -391,16 +394,9 @@ async def _astream_sdk(
                     yield _streaming_chunk(text=text, is_finished=False)
             elif isinstance(msg, AssistantMessage):
                 if provider_thinking_marker_tail and not provider_thinking_contract_started:
-                    try:
-                        from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
-                            note_lm_provider_thinking_delta,
-                        )
-
-                        note_lm_provider_thinking_delta(
-                            provider_thinking_marker_tail, provider="claude_code_sdk"
-                        )
-                    except Exception:  # noqa: BLE001,S110 - debug stream must not break provider
-                        pass
+                    emit_provider_thinking(
+                        provider_thinking_marker_tail, call_index=call_index, event_index=index
+                    )
                     provider_thinking_marker_tail = ""
                 parts = [b.text for b in msg.content if isinstance(b, TextBlock)]
                 if parts:
@@ -448,9 +444,26 @@ async def _astream_sdk(
                 if not final_text and getattr(msg, "result", None):
                     final_text = str(msg.result or "").strip()
                 if getattr(msg, "is_error", False):
+                    status = getattr(msg, "api_error_status", None)
+                    if status == CLAUDE_CODE_REJECTION_STATUS:
+                        # #1184 / #1211 review A3: a definitive rejection (verified
+                        # live: api_error_status 404 + a "issue with the selected
+                        # model" result text) -- never retried as transient, and the
+                        # CLI's own explanatory text rides into the transcript
+                        # (see raise_model_rejected's docstring), not just the
+                        # bare status integer the old raise kept.
+                        raise_model_rejected(
+                            message=(
+                                f"claude_code rejected model {model!r} "
+                                f"(api_error_status={status}): "
+                                f"{getattr(msg, 'result', '') or 'model not available'}"
+                            ),
+                            model=f"claude_code/{model}",
+                            llm_provider="claude_code",
+                        )
                     raise ClaudeCodeExecError(
                         f"claude agent sdk returned an error for model={model}: "
-                        f"{getattr(msg, 'api_error_status', None) or getattr(msg, 'subtype', None)}"
+                        f"{status or getattr(msg, 'subtype', None)}"
                     )
 
     # Both message sources are timeout-bounded internally (the pooled entry enforces

@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.artifacts.ingest_edges import join_call_to_serving_child
 from clio_agent.gact.delegation import _expert_handoff_fields
+from clio_agent.gact.elicitation_correlation import close_invocation, open_invocation
 from clio_agent.gact.events import Event
 from clio_agent.gact.evidence import (
     _bounded_tool_call_result,
@@ -54,6 +55,7 @@ from clio_agent.gact.thought_dedup import TOOL_THOUGHT_STAGE, classify_live_thou
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime import trace
 from clio_agent.runtime.stream_audit import stream_audit
+from clio_agent.tools.mcp_results import content_blocks_for_wire
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -62,11 +64,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Per-thread call_id + start-time stash so the ``completed`` phase reuses the
-# same id and can compute duration. MCPToolBridge invokes the observer on a
-# worker thread, so threading-locals (not contextvars) are the right scope.
+# Per-thread stash (worker-thread scope -> threading-locals): ``completed`` reuses the
+# call_id + computes duration; ``_OBSERVER_ELICIT_REC`` holds the #1113 correlation
+# record opened at ``started`` and closed at ``completed``.
 _OBSERVER_CALL_IDS = threading.local()
 _OBSERVER_CALL_T0 = threading.local()
+_OBSERVER_ELICIT_REC = threading.local()
+
+# The spawn-runtime COLLECTOR tools (owner 2026-08-05): a react main re-polling
+# ``wait_agent_tasks`` / ``check_agent_tasks`` on the same args is ONE logical
+# activity, so the transcript collapses consecutive same-args re-polls onto one
+# tool_call+tool_result pair updated in place
+# (:meth:`TurnTranscript.upsert_repeated_collector_call`). The observer decides
+# by tool NAME only — scoped STRICTLY to these two tools, no generic tool
+# collapsing; the structural adjacency rule lives in the transcript.
+_COLLECTOR_TOOL_NAMES = frozenset({"wait_agent_tasks", "check_agent_tasks"})
 
 
 def _tool_call_event_key(call: Mapping[str, Any]) -> tuple[str, str]:
@@ -387,8 +399,7 @@ def _ensure_live_assistant_message(app: "FastAPI", sid: str) -> str:
     transcript = _session_turn_transcript(app, sid)
     if transcript is not None:
         # #767 PR1: the ledger is the sole minter of the assistant message id
-        # (message.created published exactly once, whichever producer arrives
-        # first); mirrored into the legacy dicts for untouched readers.
+        # (message.created once); mirrored into the legacy dicts for untouched readers.
         msg_id = transcript.ensure_message()
         _mirror_transcript_state(app, sid, transcript)
         return msg_id
@@ -428,7 +439,20 @@ def _append_live_assistant_part(app: "FastAPI", sid: str, part: Part) -> None:
     if transcript is not None:
         # #767 PR1: append through the single-writer ledger — it closes its own
         # open text, mints ids, and publishes message.part.added itself.
-        transcript.append_part(part)
+        # ONE delegation = ONE expert_handoff part (clean-wire rule): a terminal
+        # handoff updates its started part in place (message.part.updated).
+        if part.type == "expert_handoff":
+            transcript.upsert_delegation_part(part)
+        elif (
+            part.type in ("tool_call", "tool_result")
+            and str(part.tool_name or "") in _COLLECTOR_TOOL_NAMES
+        ):
+            # Consecutive same-args collector re-polls collapse onto ONE pair
+            # (clean-wire rule): the observer decides by tool NAME only; the
+            # transcript applies the structural adjacency rule.
+            transcript.upsert_repeated_collector_call(part)
+        else:
+            transcript.append_part(part)
         _mirror_transcript_state(app, sid, transcript)
         return
 
@@ -437,15 +461,27 @@ def _append_live_assistant_part(app: "FastAPI", sid: str, part: Part) -> None:
     if live_parts is None:
         live_parts = {}
         app.state.live_assistant_parts = live_parts
-    live_parts.setdefault(sid, []).append(part)
+    rows = live_parts.setdefault(sid, [])
+    updated = False
+    if part.type == "expert_handoff" and str(part.handle_id or ""):
+        for index, row in enumerate(rows):
+            if row.type == "expert_handoff" and str(row.handle_id or "") == str(part.handle_id):
+                part.id = row.id
+                part.sequence = row.sequence
+                part.metadata = {**row.metadata, **part.metadata}
+                rows[index] = part
+                updated = True
+                break
+    if not updated:
+        rows.append(part)
     app.state.bus.publish(
         Event(
-            type="message.part.added",
+            type="message.part.updated" if updated else "message.part.added",
             session_id=sid,
             payload={
                 "turn_id": _active_semantic_turn_id(),
                 "message_id": msg_id,
-                # Real runtime parts (tool calls/results, routing) emitted live during
+                # Real runtime parts (tool calls/results) emitted live during
                 # the turn (#711); not provider-token text, but emitted in real time.
                 "stream_source": str(part.metadata.get("stream_source") or "live"),
                 "part": part.to_wire(),
@@ -469,9 +505,8 @@ def _append_live_assistant_part_once(
 
     transcript = _session_turn_transcript(app, sid)
     if transcript is not None:
-        # #767 PR1: the idempotency key is turn-scoped ledger state. A
-        # duplicate key never closes streamed text — the boundary close runs
-        # inside append_part only when the key is fresh.
+        # #767 PR1: the idempotency key is turn-scoped ledger state. A duplicate key
+        # never closes streamed text — the boundary close runs only when the key is fresh.
         if transcript.has_part_key(key):
             return False
         appended = transcript.append_part_once(key, part)
@@ -514,33 +549,60 @@ def _agent_tool_owner(app: "FastAPI", tool_name: str) -> tuple[str, str]:
     return "", ""
 
 
+def _routing_event_once(app: "FastAPI", sid: str, key: str) -> bool:
+    """Once-per-turn guard for routing events (the part-once key store, reused)."""
+
+    transcript = _session_turn_transcript(app, sid)
+    if transcript is not None:
+        if transcript.has_part_key(key):
+            return False
+        transcript.mark_part_key(key)
+        return True
+    live_keys = getattr(app.state, "live_assistant_part_keys", None)
+    if live_keys is None:
+        live_keys = {}
+        app.state.live_assistant_part_keys = live_keys
+    session_keys = live_keys.setdefault(sid, set())
+    if key in session_keys:
+        return False
+    session_keys.add(key)
+    return True
+
+
 def _emit_live_tool_route_context(app: "FastAPI", sid: str, tool_name: str) -> None:
     """Emit route/handoff context immediately before a live tool call."""
 
     public_agent, owner = _agent_tool_owner(app, tool_name)
     if not public_agent or public_agent in {"chat", "none"}:
         return
-    _append_live_assistant_part_once(
+    # Clean-wire rule (owner 2026-08-05): a routing decision is OBSERVABILITY,
+    # not conversation — it rides the semantic highway (trace + obs SSE), never
+    # a transcript part. Same once-per-turn key the part used.
+    if not _routing_event_once(app, sid, f"route:{public_agent}"):
+        return
+    from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
+        _active_semantic_trace_id,
+        _active_semantic_turn_id,
+        _emit_semantic_event,
+    )
+
+    _emit_semantic_event(
         app,
         sid,
-        f"route:{public_agent}",
-        Part(
-            id=f"live_route_{public_agent}",
-            type="routing_decision",
-            # The routing decision is MADE by the orchestrator; ``selected_agent``
-            # below is the CHOSEN expert.
-            agent_id="main",
-            selected_agent=public_agent,
-            rationale=f"Agent planner selected {public_agent} for tool {tool_name}.",
-            confidence=0.0,
-            heuristic=False,
-            metadata={
-                "route_source": "live_tool_observer",
-                "route_reason": f"Resolved from live tool owner {owner}.",
-                "stream_source": "live",
-            },
-            execution_path=f"orchestrator -> {public_agent}",
-        ),
+        "routing.decision",
+        turn_id=_active_semantic_turn_id(),
+        trace_id=_active_semantic_trace_id(),
+        status="completed",
+        summary=f"routed to {public_agent}",
+        actor={"agent_id": "main", "role": "orchestrator"},
+        subject={"selected_agent": public_agent},
+        payload={
+            "selected_agent": public_agent,
+            "rationale": f"Agent planner selected {public_agent} for tool {tool_name}.",
+            "route_source": "live_tool_observer",
+            "route_reason": f"Resolved from live tool owner {owner}.",
+            "execution_path": f"orchestrator -> {public_agent}",
+        },
     )
     if owner and owner != public_agent:
         row = {
@@ -588,6 +650,16 @@ def _make_tool_observer(app: "FastAPI"):
     deterministic short-circuit paths).
     """
 
+    # Declared-presentation + call-metadata registries (populated at the seam;
+    # default "row"/no-metadata for undeclared names — never name-matching).
+    from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+        bounded_tool_call_input,
+        declared_tool_representation,
+        declared_tool_title,
+        pop_declared_structured_content,
+        tool_call_metadata_resolver,
+    )
+
     def observe(
         name: str,
         args: Mapping[str, Any],
@@ -595,29 +667,55 @@ def _make_tool_observer(app: "FastAPI"):
         error: Optional[str],
         result: Any | None = None,
     ) -> None:
+        if phase == "started":
+            # Belt-and-braces leak fix: discard a PRIOR call's leaked
+            # declare_structured_content() before it can be misread as this call's.
+            pop_declared_structured_content()
         sid, _current = _resolve_tool_session(app)
         if not sid:
             return
-        # The expert that OWNS (runs) this tool, for per-part attribution. Empty
-        # when CLIO can't resolve a routed owner (e.g. an orchestrator-level tool).
+        # A representation may only ADD adornment, never remove the call row
+        # (owner ruling, P5 wire semantics) -- every EXECUTED call emits its
+        # tool_call/tool_result parts unconditionally. "handoff" alone skips
+        # the row (its own expert_handoff part already IS call evidence).
+        representation = declared_tool_representation(name)
+        representation_fields = (
+            {"representation": representation} if representation != "row" else {}
+        )
+        # Round-9: tool.call.* events carry the same curated title (never
+        # fabricated) Part.tool_title uses below, so obs "called" rows stop
+        # rendering the raw tool name.
+        tool_title = declared_tool_title(name)
+        tool_title_fields = {"tool_title": tool_title} if tool_title else {}
+        # The expert that OWNS (runs) this tool, for per-part attribution (#732).
         _public_agent, tool_owner = _agent_tool_owner(app, name)
-        # Attribute the tool_call/tool_result to the expert that INVOKED the tool
-        # (the active ReAct scope, e.g. ``geospatial``), NOT the tool's owning
-        # server/group (``geo``/``ndp``) — #732. Falls back to the owner when no
-        # react scope is active (an orchestrator-level / chat-path tool call).
+        # Attribute to the INVOKING expert (active ReAct scope), not the tool's owning
+        # server/group; fall back to the owner outside a react scope (#732).
         invoking_expert = _ctx.active_react_scope() or tool_owner
         if phase == "started":
             call_id = f"call_{uuid.uuid4().hex[:12]}"
-            # Stash the per-thread call_id so the completion event
-            # uses the same id. Threading-locals works for
-            # MCPToolBridge's worker thread.
+            # Per-thread call_id/t0 so completion reuses the id + computes duration.
             _OBSERVER_CALL_IDS.value = call_id
-            # Stamp the start time so completion can compute duration.
             _OBSERVER_CALL_T0.value = time.time()
+            # P1.3 #1113: open the correlation record for THIS call (call task) so a
+            # mid-call elicitation resolves at the receive loop.
+            _OBSERVER_ELICIT_REC.value = open_invocation(
+                app, session_id=sid, tool_name=name, invocation_id=call_id
+            )
             # B5 #979.7 (deferred B4 WRITER): join call_id → confined FLEET child (no-op on the
             # floor / built-in namespaces → the egress mint abstains). See ingest_edges.
             join_call_to_serving_child(app, sid, name, call_id)
             _emit_live_tool_route_context(app, sid, name)
+            # Shared by the semantic event + the dedicated bus event below (safe:
+            # _build_semantic_event copies rather than mutating it).
+            started_payload = {
+                "call_id": call_id,
+                "tool": name,
+                "args": dict(args),
+                "telemetry_source": "live_observer",
+                **representation_fields,
+                **tool_title_fields,
+            }
             _emit_semantic_event(
                 app,
                 sid,
@@ -628,25 +726,13 @@ def _make_tool_observer(app: "FastAPI"):
                 summary=f"Tool {name} started.",
                 actor={"tool": name},
                 subject={"call_id": call_id},
-                payload={
-                    "call_id": call_id,
-                    "tool": name,
-                    "args": dict(args),
-                    "telemetry_source": "live_observer",
-                },
+                payload=started_payload,
             )
             app.state.bus.publish(
-                Event(
-                    type="tool.call.started",
-                    session_id=sid,
-                    payload={
-                        "call_id": call_id,
-                        "tool": name,
-                        "args": dict(args),
-                        "telemetry_source": "live_observer",
-                    },
-                )
+                Event(type="tool.call.started", session_id=sid, payload=started_payload)
             )
+            if representation == "handoff":
+                return
             step_thought = _ctx.active_step_thought()
             # #732/#883: next_thought owns its OWN streamed text row; the copy on
             # tool_call.thought is redundant. Clear it IFF THIS step's next_thought
@@ -677,6 +763,12 @@ def _make_tool_observer(app: "FastAPI"):
                 )
             if decision.clear or not step_thought:
                 step_thought = ""
+            call_metadata = {"stream_source": "live", "telemetry_source": "live_observer"}
+            # Per-tool STARTED metadata via the registry (tool_instrumentation.py)
+            # -- never a hardcoded tool name in this generic path.
+            metadata_resolver = tool_call_metadata_resolver(name)
+            if metadata_resolver is not None:
+                call_metadata.update(metadata_resolver(app, args))
             _append_live_assistant_part(
                 app,
                 sid,
@@ -686,14 +778,16 @@ def _make_tool_observer(app: "FastAPI"):
                     agent_id=invoking_expert,
                     call_id=call_id,
                     tool_name=name,
+                    tool_title=declared_tool_title(name),
                     # The step's reasoning rides the tool_call part (#732): the
                     # model's text and the action it chose are one ordered event.
                     thought=step_thought,
-                    input=dict(args),
-                    metadata={"stream_source": "live", "telemetry_source": "live_observer"},
+                    input=bounded_tool_call_input(name, args),
+                    metadata=call_metadata,
                 ),
             )
         elif phase == "completed":
+            close_invocation(getattr(_OBSERVER_ELICIT_REC, "value", None))  # P1.3 #1113
             call_id = getattr(_OBSERVER_CALL_IDS, "value", "") or ""
             t0 = getattr(_OBSERVER_CALL_T0, "value", None)
             duration_ms = (time.time() - t0) * 1000 if t0 else 0.0
@@ -712,10 +806,22 @@ def _make_tool_observer(app: "FastAPI"):
                     "executor_work_may_continue": True,
                 }
             ok = completion_error is None
+            # A native tool may DECLARE its own typed structured payload (P5 wire
+            # semantics — the same declared-presentation contract an MCP tool's
+            # structuredContent gives, without changing what the model itself
+            # received as the tool's plain return value). Read + clear it exactly
+            # once per completed call — success or error — so a stale declaration
+            # can never leak onto a later call on this thread. Falls back to the
+            # MCP-shaped extraction below when nothing was declared.
+            declared_structured = pop_declared_structured_content()
             structured_content = (
-                result.get("structuredContent")
-                if isinstance(result, Mapping) and "structuredContent" in result
-                else None
+                declared_structured
+                if declared_structured is not None
+                else (
+                    result.get("structuredContent")
+                    if isinstance(result, Mapping) and "structuredContent" in result
+                    else None
+                )
             )
             result_summary = f"Tool {name} {'completed' if ok else 'failed'}."
             # Served payload = the tool-response atom's FACTS (ok/duration/cached/result/
@@ -728,6 +834,8 @@ def _make_tool_observer(app: "FastAPI"):
                 "duration_ms": duration_ms,
                 "cached": False,
                 "telemetry_source": "live_observer",
+                **representation_fields,
+                **tool_title_fields,
                 **({"error": completion_error} if completion_error else {}),
                 **({"result": _bounded_tool_call_result(result)} if result is not None else {}),
                 **cancellation_metadata,
@@ -747,6 +855,7 @@ def _make_tool_observer(app: "FastAPI"):
                         "duration_ms": duration_ms,
                         "cached": False,
                         "telemetry_source": "live_observer",
+                        **representation_fields,
                         **({"error": completion_error} if completion_error else {}),
                         **(
                             {"result": _bounded_tool_call_result(result)}
@@ -780,6 +889,9 @@ def _make_tool_observer(app: "FastAPI"):
                     payload=payload,
                 )
             )
+            from clio_agent.gact.spotter_watcher import wake_on_parent_activity  # noqa: PLC0415
+
+            wake_on_parent_activity(app, sid, tool_name=name, ok=ok, result=structured_content)
             # Seam #966 S1+S5 (#971): mint generated versions + record the coarse
             # TransformRecord (success AND failure — a failed write is provenance).
             if not completed_after_cancel:
@@ -791,6 +903,8 @@ def _make_tool_observer(app: "FastAPI"):
             _OBSERVER_CALL_T0.value = (
                 None  # finding [3]: clear the latch (idle thread -> DIRTY lease)
             )
+            if representation == "handoff":
+                return
             result_text = completion_error or (
                 _tool_result_preview(result) if result is not None else "completed"
             )
@@ -806,6 +920,12 @@ def _make_tool_observer(app: "FastAPI"):
                     is_error=not ok,
                     duration_ms=duration_ms,
                     cached=False,
+                    # #1190: the structured copy is a TOP-LEVEL part field (the UI
+                    # render ladder's contract) — ONE home, never mirrored into
+                    # ``metadata``. Wire-only: the model's observation is the
+                    # separate ``model_text`` built at the execution boundary.
+                    structured_content=structured_content,
+                    content_blocks=content_blocks_for_wire(result),  # #1188
                     content=[
                         Part(
                             id=f"live_{call_id}_result_text",
@@ -817,11 +937,6 @@ def _make_tool_observer(app: "FastAPI"):
                     metadata={
                         "stream_source": "live",
                         "telemetry_source": "live_observer",
-                        **(
-                            {"structured_content": structured_content}
-                            if structured_content is not None
-                            else {}
-                        ),
                         **(
                             {"result": _bounded_tool_call_result(result)}
                             if result is not None

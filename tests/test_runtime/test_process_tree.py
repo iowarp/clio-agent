@@ -65,7 +65,7 @@ def test_daemon_spawn_breaks_away_from_job_on_windows(monkeypatch: pytest.Monkey
     """
     from clio_agent.arc import storage
 
-    monkeypatch.setattr(storage.sys, "platform", "win32")
+    monkeypatch.setattr("sys.platform", "win32")
     kwargs = storage._detached_popen_kwargs()
     breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
     assert kwargs["creationflags"] & breakaway, (

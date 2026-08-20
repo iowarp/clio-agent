@@ -90,18 +90,19 @@ def effective_declared_skills(agent_def: "AgentDef", catalog: SkillCatalog) -> l
 
     declared = [str(s).strip() for s in agent_def.skills if str(s).strip()]
     meta = agent_def.metadata if isinstance(agent_def.metadata, dict) else {}
-    # BOTH row seams must match (the listing seam stamps source_blueprint; the
-    # EXECUTING seam — load_agent_blueprints via _runtime_active_agent_blueprint_rows
-    # — stamps agent_blueprint_id/agent_blueprint_root_expert instead).
+    # The EXECUTING seam (load_agent_blueprints via
+    # _runtime_active_agent_blueprint_rows, reached only for a session's
+    # EXPLICITLY activated blueprint) stamps agent_blueprint_id/
+    # agent_blueprint_root_expert. The former parallel "listing seam" stamp
+    # (metadata["source_blueprint"] == "default_registry") is deleted along with
+    # its only producer, catalog._builtin_agents()'s implicit default-registry
+    # load (no session ever activated it, so it never earned auto-declaration).
     from clio_agent.gact.agent_blueprints import DEFAULT_AGENT_BLUEPRINT_ID  # noqa: PLC0415
 
     is_root = not (agent_def.parent_id or "") or (
         str(meta.get("agent_blueprint_root_expert") or "") == agent_def.id
     )
-    is_default = (
-        str(meta.get("source_blueprint") or "") == "default_registry"
-        or str(meta.get("agent_blueprint_id") or "") == DEFAULT_AGENT_BLUEPRINT_ID
-    )
+    is_default = str(meta.get("agent_blueprint_id") or "") == DEFAULT_AGENT_BLUEPRINT_ID
     is_default_root = is_default and is_root
     if is_default_root:
         # Auto-declare the user's workspace skills first (so they lead the surface), then
@@ -145,9 +146,7 @@ def skill_runtime_for_agent(
     elif getattr(agent_def, "skills", None):
         # No app, no cache: resolution falls back to the process cwd — typed,
         # never silent (workspace-tier skills may differ on this basis).
-        trace.event(
-            "SKILLS", "app-less skill resolution for %s uses process cwd", aid or "?"
-        )
+        trace.event("SKILLS", "app-less skill resolution for %s uses process cwd", aid or "?")
     catalog = SkillCatalog(cwd=cwd)
     declared = effective_declared_skills(agent_def, catalog)
     if not declared:
@@ -212,10 +211,46 @@ def skill_bodies_context(runtime: SkillRuntime) -> str:
     return "\n\n".join(parts) if len(parts) > 1 else ""
 
 
+def _declare_load_skill_structured_content(
+    *,
+    skill_id: str,
+    scope: str,
+    path: str,
+    text: str,
+    file: str = "",
+    bundled_files: list[str] | None = None,
+) -> None:
+    """Declare ``load_skill``'s typed wire payload (P5 wire semantics — the
+    ``wait_agent_tasks`` treatment): a ``message`` naming what loaded + its
+    line count FIRST, then the id/scope/path facts. The BODY itself stays the
+    model-facing return unchanged (:func:`load_skill`'s own text) — this only
+    curates the wire's presentation, never a second copy of the content."""
+
+    from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+        declare_structured_content,
+    )
+
+    lines = len(text.splitlines())
+    label = f"file {file!r} from skill {skill_id!r}" if file else f"skill {skill_id!r}"
+    payload: dict[str, Any] = {
+        "message": f"loaded {label} ({lines} line{'' if lines == 1 else 's'})",
+        "skill_id": skill_id,
+        "scope": scope,
+        "path": path,
+        "lines": lines,
+        "bytes": len(text.encode("utf-8")),
+    }
+    if file:
+        payload["file"] = file
+    if bundled_files:
+        payload["bundled_files"] = bundled_files
+    declare_structured_content(payload)
+
+
 def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
     """The tier-2 ``load_skill`` DSPy tool (auto-attached infrastructure)."""
 
-    import dspy  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     resolved = runtime.resolved
     agent_id = getattr(agent_def, "id", "?")
@@ -245,9 +280,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             app = _ctx.active_app()
             sid = _ctx.active_session_id()
             if app is None or not sid:
-                trace.event(
-                    "SKILLS", "skill.loaded outside app/session: %s %s", skill_id, ref.path
-                )
+                trace.event("SKILLS", "skill.loaded outside app/session: %s %s", skill_id, ref.path)
                 return
             payload: dict[str, Any] = {
                 "skill_id": skill_id,
@@ -276,9 +309,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                     payload=payload,
                 )
             except Exception as exc:  # noqa: BLE001 - capture never breaks the load
-                trace.event(
-                    "SKILLS", "skill.loaded emit failed for %s: %s", skill_id, exc
-                )
+                trace.event("SKILLS", "skill.loaded emit failed for %s: %s", skill_id, exc)
 
         if ref.layout != "skill_md":
             if file:
@@ -299,6 +330,9 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                 raise ValueError(f"bundled file {file!r} unreadable: {exc}") from exc
             trace.event("SKILLS", "agent %s loaded %s file %s", agent_id, skill_id, file)
             _emit_loaded(len(content.encode("utf-8")), bundled_file=file)
+            _declare_load_skill_structured_content(
+                skill_id=skill_id, scope=ref.scope, path=ref.path, text=content, file=file
+            )
             return content
         # P1.0 (#1062): a skill may declare a PRIVILEGED runtime EFFECT in its
         # frontmatter (enter_mode / spawn_subagent_with_skill). Invoking the skill
@@ -334,11 +368,15 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             if bundled
             else ""
         )
+        _declare_load_skill_structured_content(
+            skill_id=skill_id, scope=ref.scope, path=ref.path, text=body, bundled_files=bundled
+        )
         return f"# Skill: {skill_id}\n{body}{listing}"
 
-    return dspy.Tool(
-        func=load_skill,
+    return native_tool(
+        load_skill,
         name="load_skill",
+        title="Load Skill",
         desc=(
             "Load the full procedure of one of this expert's declared skills "
             "(see 'Skills available to you'). Call BEFORE performing the task "

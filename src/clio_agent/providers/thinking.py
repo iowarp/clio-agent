@@ -7,11 +7,15 @@ Claude-shaped (design constraint from #896):
 * **anthropic** (native LiteLLM): ``thinking={"type":"enabled","budget_tokens":N}``.
 * **claude_code** (Claude Agent SDK transport): the SDK
   ``ClaudeAgentOptions.thinking`` config — ``{"type":"disabled"}`` for ``off`` and
-  ``{"type":"enabled","budget_tokens":N}`` for a level. Verified empirically that
-  the SDK/CLI default for haiku is thinking-**ON**, so ``off`` must send
-  ``disabled`` *explicitly*; a zero ``thinking_budget`` alone cannot express it
-  (0 = "unset / let the provider default govern"). That is exactly why the
-  external level is a sibling knob to ``thinking_budget``.
+  ``{"type":"enabled","budget_tokens":N,"display":"summarized"}`` for a level.
+  ``display`` is load-bearing: claude CLI >= 2.1.x defaults the thinking display
+  to ``omitted`` (signature-only — ``thinking_delta`` events carry empty text
+  plus an ``estimated_tokens`` count), so without it no CoT text ever reaches
+  clio. Verified empirically that the SDK/CLI default for haiku is
+  thinking-**ON**, so ``off`` must send ``disabled`` *explicitly*; a zero
+  ``thinking_budget`` alone cannot express it (0 = "unset / let the provider
+  default govern"). That is exactly why the external level is a sibling knob to
+  ``thinking_budget``.
 * **codex** (``codex app-server`` transport): ``model_reasoning_effort`` bucketed
   to the level, carried under ``codex_reasoning_effort`` so the bridge pins it on
   ``turn/start`` (LiteLLM ignores ``reasoning_effort`` on the CustomLLM, which is
@@ -168,10 +172,23 @@ def resolve_thinking(provider: str, level: str | None, budget: int | None) -> Th
 
     if provider in _BUDGET_PROVIDERS:
         if provider == "claude_code":
+            # "display": "summarized" is load-bearing. claude CLI >= 2.1.x defaults
+            # the SDK thinking display to "omitted" (signature-only thinking blocks:
+            # thinking_delta arrives with empty text plus an estimated_tokens count),
+            # so an enabled config WITHOUT it streams zero CoT text. Verified live
+            # 2026-08-05 on CLI 2.1.222 / claude-agent-sdk 0.2.128: enabled without
+            # display => 0 thinking chars; enabled+summarized (and also
+            # adaptive+summarized) => real CoT text streams. Budget-based "enabled"
+            # (not "adaptive") is kept so the off|low|medium|high vocabulary retains
+            # its budget semantics; "disabled" takes no display key (SDK TypedDict).
             sdk_thinking: dict[str, Any] = (
                 {"type": "disabled"}
                 if effective == "off"
-                else {"type": "enabled", "budget_tokens": budget_tokens}
+                else {
+                    "type": "enabled",
+                    "budget_tokens": budget_tokens,
+                    "display": "summarized",
+                }
             )
             return ThinkingPlan(
                 provider=provider,
@@ -294,10 +311,22 @@ def shipped_default_level(provider: str, model: str, level: str | None, budget: 
     The owner's acceptance rule: ship the lowest level that passes verification.
     haiku via claude_code ships ``low`` — verified on the 2-turn EarthScope
     probe at 2.9x less wall-clock / 3.2x fewer output tokens than the SDK
-    default, WITH the marketplace follow-up fix. Applies only when the user set
+    default, WITH the marketplace follow-up fix. sonnet via claude_code also
+    ships ``low``: probed live 2026-08-05 (claude CLI 2.1.222 / claude-agent-sdk
+    0.2.128) — with no thinking config the CLI runs sonnet thinking-OFF (zero
+    thinking blocks in the partial-message stream), so a sonnet main and leaves
+    inheriting the provider default model (``suggested_model="sonnet"``) had no
+    provider-CoT lane at all; ``low`` (2048 budget) is the conservative floor,
+    the same shipped level haiku verified. Applies only when the user set
     neither a level nor a budget; explicit settings always win; other
     models/providers keep ``None`` (the provider/SDK default governs).
     """
-    if level is None and not budget and provider == "claude_code" and "haiku" in model.lower():
+    lowered = model.lower()
+    if (
+        level is None
+        and not budget
+        and provider == "claude_code"
+        and ("haiku" in lowered or "sonnet" in lowered)
+    ):
         return "low"
     return level

@@ -42,8 +42,10 @@ from clio_agent.gact.artifacts.minting import (
 )
 from clio_agent.gact.artifacts.proposal_effects import (
     PROPOSED_ARTIFACT_EVENT,
+    _dedup_enrich,
     _emit_proposal_event,
     _gate_content_write,
+    _mint_producer,
     _write_inline_content,
 )
 from clio_agent.gact.artifacts.records import (
@@ -54,6 +56,7 @@ from clio_agent.gact.artifacts.records import (
     Mechanism,
 )
 from clio_agent.gact.artifacts.registry import get_registry
+from clio_agent.gact.artifacts.wire import declare_create_artifact_structured_content
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -189,6 +192,10 @@ class ProposalOutcome:
     created: bool = False
     version: Optional[ArtifactVersion] = None
     workspace_id: str = ""
+    #: A9 (#1176): typed dedup-enrichment outcome (see ``proposal_effects._dedup_enrich``).
+    #: ``""`` (nothing to merge) omits the key from ``to_wire`` — a plain dedup's wire
+    #: shape stays byte-identical to before this field existed.
+    enrichment: str = ""
 
     def to_wire(self) -> dict[str, Any]:
         """Project to the model-facing observation dict (bounded-repair-friendly)."""
@@ -200,7 +207,7 @@ class ProposalOutcome:
                 "detail": self.detail,
             }
         ver = self.version
-        return {
+        wire = {
             "accepted": True,
             "created": self.created,
             "name": self.name,
@@ -212,6 +219,9 @@ class ProposalOutcome:
             "mechanism": ver.mechanism.value if ver is not None else "",
             "reason": self.reason,
         }
+        if self.enrichment:
+            wire["enrichment"] = self.enrichment
+        return wire
 
 
 def _rejected(name: str, reason: RejectionReason, detail: str = "") -> ProposalOutcome:
@@ -370,7 +380,15 @@ def promote_proposal(
             )
             return reject
         assert target is not None and evidence is not None  # narrowed by reject is None
-        name = proposal.name or artifact_name_for_path(target)
+        # proposal.name is the WRITE TARGET (may be a full path); the record
+        # identity is always the basename so every seam (tool-declared,
+        # harness-write, model-designated) folds one deliverable into ONE
+        # version chain instead of splitting on the name's spelling.
+        name = (
+            artifact_name_for_path(proposal.name)
+            if proposal.name
+            else artifact_name_for_path(target)
+        )
         path = target
     elif proposal.path:
         # Ground BOTH channels against the workspace root (finding [4/5/9]): a
@@ -397,7 +415,9 @@ def promote_proposal(
                 source=source,
             )
             return outcome
-        name = proposal.name or artifact_name_for_path(path)
+        name = (
+            artifact_name_for_path(proposal.name) if proposal.name else artifact_name_for_path(path)
+        )
         if not path.is_file():
             outcome = _rejected(
                 name, RejectionReason.PATH_MISSING, f"{proposal.path!r} does not exist"
@@ -455,6 +475,17 @@ def promote_proposal(
     existing = registry.get(workspace_id, name)
     existing_version = existing.version_for_sha(evidence.sha256) if existing is not None else None
     if existing_version is not None:
+        # A9 (#1176): a dedup is not a no-op for the caller's OWN declared enrichment.
+        enrichment = _dedup_enrich(
+            app,
+            sid,
+            proposal,
+            workspace_id=workspace_id,
+            name=name,
+            version=existing_version,
+            turn_id=turn_id,
+            trace_id=trace_id,
+        )
         outcome = ProposalOutcome(
             accepted=True,
             name=name,
@@ -462,6 +493,7 @@ def promote_proposal(
             created=False,
             version=existing_version,
             workspace_id=workspace_id,
+            enrichment=enrichment,
         )
         _emit_proposal_event(
             app,
@@ -502,12 +534,7 @@ def promote_proposal(
         evidence=evidence,
         kind=kind,
         mechanism=Mechanism.MODEL,
-        producer={
-            "designation": "agent-proposed",
-            "session_id": sid,
-            "turn_id": turn_id,
-            "agent_id": agent_id,
-        },
+        producer=_mint_producer(sid, turn_id, agent_id),
         custody=path_ingest.custody if path_ingest is not None else Custody.WORKSPACE_REFERENCED,
         path=str(path),
         annotation=proposal.annotation,
@@ -534,6 +561,17 @@ def promote_proposal(
         # bytes first. Report created=False and consume NO cap budget — a
         # re-designation of identical bytes is never a new promotion, even under a
         # race — instead of the stale created=True + cap consumption.
+        # A9 (#1176): the SAME enrichment merge as the pre-check dedup above (idempotent).
+        enrichment = _dedup_enrich(
+            app,
+            sid,
+            proposal,
+            workspace_id=workspace_id,
+            name=name,
+            version=mint.version,
+            turn_id=turn_id,
+            trace_id=trace_id,
+        )
         outcome = ProposalOutcome(
             accepted=True,
             name=name,
@@ -541,6 +579,7 @@ def promote_proposal(
             created=False,
             version=mint.version,
             workspace_id=workspace_id,
+            enrichment=enrichment,
         )
         _emit_proposal_event(
             app,
@@ -587,8 +626,8 @@ def promote_proposals(
     """Promote a batch of proposals; return the model-facing summary + per-item wire.
 
     Each item is validated + minted independently (one over-cap item does not abort
-    the rest — the model sees exactly which succeeded). The summary counts make the
-    turn's designation footprint legible for bounded repair.
+    the rest — the model sees exactly which succeeded): ``created``/``deduplicated``/
+    ``rejected`` — no top-level ``accepted`` (it collided with the per-item boolean).
 
     A batch carrying more than ``proposals_batch_max()`` items is rejected WHOLE
     with ONE typed ``over_batch`` event (finding [1]): otherwise every item — even
@@ -614,12 +653,14 @@ def promote_proposals(
             proposal=Proposal(),
             source="none",
         )
-        return {
+        result = {
             "artifacts": [outcome.to_wire()],
-            "accepted": 0,
+            "created": 0,
             "deduplicated": 0,
             "rejected": 1,
         }
+        declare_create_artifact_structured_content([outcome], result)
+        return result
     outcomes = [
         promote_proposal(
             app,
@@ -632,15 +673,17 @@ def promote_proposals(
         )
         for p in proposals
     ]
-    accepted = sum(1 for o in outcomes if o.accepted and o.created)
+    created = sum(1 for o in outcomes if o.accepted and o.created)
     deduplicated = sum(1 for o in outcomes if o.accepted and not o.created)
     rejected = sum(1 for o in outcomes if not o.accepted)
-    return {
+    result = {
         "artifacts": [o.to_wire() for o in outcomes],
-        "accepted": accepted,
+        "created": created,
         "deduplicated": deduplicated,
         "rejected": rejected,
     }
+    declare_create_artifact_structured_content(outcomes, result)
+    return result
 
 
 def parse_proposals(
@@ -682,9 +725,8 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
     Returns the typed record on acceptance or a typed rejection the model can react
     to. The harness computes every hash — any ``sha256`` in the args is ignored.
     """
-    import dspy  # noqa: PLC0415
-
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     agent_id = str(getattr(agent_def, "id", "") or "")
 
@@ -695,18 +737,27 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
         content: str = "",
         annotation: str = "",
         artifacts: Optional[list[dict[str, Any]]] = None,
+        used: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         """Register a session output as an artifact (model contract lives in the dspy ``desc``).
 
         ``path`` registers an EXISTING file; ``content`` authors a NEW file WRITTEN AT
         ``name`` — the target path (workspace-relative or absolute), not a display label.
+
+        ``used`` (#1191, OPTIONAL): cites the inputs this deliverable was DERIVED
+        FROM (paths and/or artifact ids). NOT threaded into the promotion below —
+        the mint decision is unaffected. The tool-observer transform seam
+        (``declared_used_edges.detect_declared_used_edges``, fired AFTER this call
+        returns) reads it from this call's own args and records real ``used`` PROV
+        edges on the producing activity; an unresolvable ref is typed, never
+        fabricated; omitted/blank leaves the mint exactly as it is today.
         """
         app = _ctx.active_app()
         sid = _ctx.active_session_id()
         if app is None or not sid:
             return {
                 "artifacts": [],
-                "accepted": 0,
+                "created": 0,
                 "deduplicated": 0,
                 "rejected": 0,
                 "error": "create_artifact called outside an active session",
@@ -732,9 +783,13 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             agent_id=agent_id,
         )
 
-    return dspy.Tool(
-        func=create_artifact,
+    # Declared "chip": normal tool_call/tool_result parts PLUS its resource_link
+    # chip, appended at turn finalize — adornment, never a call-row replacement.
+    return native_tool(
+        create_artifact,
         name="create_artifact",
+        title="Create Artifact",
+        representation="chip",
         desc=(
             "Designate a deliverable as a first-class artifact — YOU decide what is "
             "worth keeping (a report, a document you wrote, a generated file). "
@@ -747,10 +802,12 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             "dataset|image|report|script|config|model|ui_payload|other. Put your "
             "intent (why it matters, deliverable vs scratch) in annotation. To "
             "designate several at once pass artifacts=[{name,kind,path|content,"
-            "annotation}, ...]. Returns each record on acceptance, or a typed "
-            "rejection reason (path_missing, escapes_root, over_cap, invalid_kind, "
-            "missing_input) you can correct and retry. Nothing is auto-registered; "
-            "the artifact exists only because you called this."
+            "annotation}, ...]. OPTIONAL: cite what this deliverable was DERIVED "
+            "FROM via used=[...] (paths and/or artifact ids) so its lineage graph "
+            "shows its real inputs. Returns each record on acceptance, or a typed rejection reason "
+            "(path_missing, escapes_root, over_cap, invalid_kind, missing_input) you "
+            "can correct and retry. Nothing is auto-registered; the artifact exists "
+            "only because you called this."
         ),
         args={
             "name": {
@@ -779,6 +836,14 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             "artifacts": {
                 "type": "array",
                 "description": "Batch: a list of {name,kind,path|content,annotation} proposals.",
+            },
+            "used": {
+                "type": "array",
+                "description": (
+                    "OPTIONAL: workspace paths and/or artifact ids this deliverable was "
+                    "derived from. Recorded as real provenance edges on this mint; an "
+                    "unresolvable ref is typed on the trace, never silently dropped."
+                ),
             },
         },
     )

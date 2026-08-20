@@ -46,8 +46,8 @@ reads on purpose, so a config file cannot silently redirect them):
   ``paths``), ``CLIO_ENV_FILE`` / ``CLIO_ENV_FILE_LOADED`` (the dotenv loader in
   ``clio_agent.config``), and ``XDG_CONFIG_HOME`` (drives the file discovery).
 - *Secret tier* — never committed to a shared config file; env-only by policy:
-  ``CLIO_LM_API_KEY``, ``CLIO_ARGONNE_TOKEN``, ``ALCF_INFERENCE_TOKEN``, and the
-  ``CLIO_CRED_*`` credential vars.
+  ``CLIO_LM_API_KEY``, ``CLIO_ARGONNE_TOKEN``, ``ALCF_INFERENCE_TOKEN``,
+  ``CLIO_RELAY_API_TOKEN``, and the ``CLIO_CRED_*`` credential vars.
 - *Provider auth-status probes* — presence-of-env checks that drive the auth UI
   in ``clio_agent.gact.routes.providers`` must reflect the real process env, not
   a file layer, so they stay env-direct.

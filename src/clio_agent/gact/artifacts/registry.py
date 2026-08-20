@@ -50,23 +50,33 @@ logger = logging.getLogger(__name__)
 
 ARTIFACT_CREATED_EVENT = "artifact.created"
 #: The version-chain + alias atoms of the ``artifact.*`` family (SSE-served, #968),
-#: emitted from S4 (#970). ``artifact.used`` is deliberately absent — it stays
-#: trace-only. ``artifact.transform.recorded`` (S5 #971) IS folded (below) to
-#: rebuild the transform/lineage index, but stays OFF the SSE wire (the S2 split).
+#: emitted from S4 (#970). ``artifact.used`` is deliberately absent from the SSE
+#: wire — it stays trace-only (:data:`~clio_agent.gact.semantic_events.SSE_TRACE_ONLY_EVENT_TYPES`
+#: already reserves it). ``artifact.transform.recorded`` (S5 #971) IS folded (below)
+#: to rebuild the transform/lineage index, but stays OFF the SSE wire (the S2 split).
 ARTIFACT_VERSION_ADDED_EVENT = "artifact.version.added"
 ARTIFACT_ALIAS_MOVED_EVENT = "artifact.alias.moved"
 ARTIFACT_TRANSFORM_RECORDED_EVENT = "artifact.transform.recorded"
+#: The use/custody atom (#1191): a same-sha DEDUP mint emits no new version/edge —
+#: this is the honest "the deduping session used it" fact, folded (below) into a
+#: per-session USE index only. Trace-only, like ``artifact.transform.recorded``.
+ARTIFACT_USED_EVENT = "artifact.used"
+#: A9 (#1176) dedup-enrichment atom — see :mod:`~clio_agent.gact.artifacts.dedup_enrichment`.
+#: Trace-only, like ``artifact.used``; folded into its own side index below.
+ARTIFACT_ENRICHED_EVENT = "artifact.enriched"
 
 #: The event types the boot fold rebuilds the registry from: v1 creation (S1), v2+
-#: revisions + alias moves (S4 #970), and TransformRecords (S5 #971). ``artifact.used``
-#: / ``.proposed`` are NOT here. Transform events rebuild the lineage index only —
-#: they never touch the version chains.
+#: revisions + alias moves (S4 #970), TransformRecords (S5 #971), the per-session
+#: USE index (#1191), and the dedup-enrichment index (A9, #1176). ``.proposed`` is
+#: NOT here — transform/use/enriched events rebuild their own indexes only.
 _FOLD_EVENT_TYPES: frozenset[str] = frozenset(
     {
         ARTIFACT_CREATED_EVENT,
         ARTIFACT_VERSION_ADDED_EVENT,
         ARTIFACT_ALIAS_MOVED_EVENT,
         ARTIFACT_TRANSFORM_RECORDED_EVENT,
+        ARTIFACT_USED_EVENT,
+        ARTIFACT_ENRICHED_EVENT,
     }
 )
 
@@ -236,6 +246,16 @@ class ArtifactRegistry:
         #: ``(workspace_id, name, alias)`` → the winning move's ``(at, event_id)``, so
         #: an order-shuffled replay rebuilds the identical alias map (greatest wins).
         self._alias_move_keys: dict[tuple[str, str, str], tuple[str, str]] = {}
+        #: Per-session USE index (#1191): ``session_id`` -> relay ``artifact_id``s
+        #: that session USED via a same-sha dedup (never produced). Folded
+        #: idempotently (:meth:`fold_artifact_used`) or recorded live at mint time
+        #: (:meth:`record_artifact_used`); read by ``?include_used=true``.
+        self._used_by_session: dict[str, set[str]] = {}
+        #: Dedup-enrichment side index (A9, #1176): ``artifact_id`` -> a SUPPLEMENTAL
+        #: annotation a later ``create_artifact`` dedup declared (decision logic in
+        #: :mod:`~clio_agent.gact.artifacts.dedup_enrichment`; read via
+        #: :meth:`supplemental_annotation`).
+        self._supplemental_annotations: dict[str, str] = {}
 
     # ---- fold --------------------------------------------------------------
 
@@ -261,6 +281,10 @@ class ArtifactRegistry:
             return self.fold_alias_moved(payload)
         if event_type == ARTIFACT_TRANSFORM_RECORDED_EVENT:
             return self.fold_transform_recorded(payload)
+        if event_type == ARTIFACT_USED_EVENT:
+            return self.fold_artifact_used(payload)
+        if event_type == ARTIFACT_ENRICHED_EVENT:
+            return self.fold_artifact_enriched(payload)
         if event_type in _FOLD_EVENT_TYPES:
             return self.fold_payload(payload)
         return FoldResult(applied=False, reason="unfolded_type")
@@ -314,6 +338,77 @@ class ArtifactRegistry:
         """Every TransformRecord produced in ``session_id`` (chronological by call)."""
         with self._lock:
             return [t for t in self._transforms.values() if t.session_id == session_id]
+
+    def record_artifact_used(
+        self, session_id: str, artifact_id: str, *, event_id: str = ""
+    ) -> bool:
+        """Record a live same-sha-dedup USE for ``session_id`` (#1191, materialize half —
+        paired with the durable :func:`~clio_agent.gact.artifacts.versions.emit_artifact_used`
+        emit). Idempotent by ``event_id``; returns whether newly recorded."""
+        if not session_id or not artifact_id:
+            return False
+        with self._lock:
+            if event_id:
+                if event_id in self._seen_event_ids:
+                    return False
+                self._seen_event_ids.add(event_id)
+            used = self._used_by_session.setdefault(session_id, set())
+            if artifact_id in used:
+                return False
+            used.add(artifact_id)
+            return True
+
+    def fold_artifact_used(self, payload: dict[str, Any]) -> FoldResult:
+        """Fold one ``artifact.used`` payload (#1191) via :meth:`record_artifact_used`
+        (the SAME index the live mint path writes) — malformed (no session/artifact
+        id) is dropped with a typed reason."""
+        session_id = str(payload.get("session_id") or "")
+        artifact_id = str(payload.get("artifact_id") or "")
+        event_id = str(payload.get("event_id") or "")
+        if not session_id or not artifact_id:
+            return FoldResult(applied=False, reason="malformed")
+        if not self.record_artifact_used(session_id, artifact_id, event_id=event_id):
+            return FoldResult(applied=False, reason="duplicate_event_id")
+        return FoldResult(applied=True, reason="")
+
+    def used_artifact_ids_for_session(self, session_id: str) -> set[str]:
+        """Relay ``artifact_id``s ``session_id`` USED via dedup (#1191, never produced)."""
+        with self._lock:
+            return set(self._used_by_session.get(session_id, ()))
+
+    def record_artifact_enrichment(
+        self, artifact_id: str, *, annotation: str = "", event_id: str = ""
+    ) -> str:
+        """Attach a SUPPLEMENTAL annotation to ``artifact_id`` (A9, #1176).
+
+        Decision logic lives in the owner module
+        :func:`~clio_agent.gact.artifacts.dedup_enrichment.decide_enrichment`
+        (no-accretion — this file is at its ratchet ceiling); returns one of its
+        typed reasons, never a silent drop.
+        """
+        from clio_agent.gact.artifacts.dedup_enrichment import decide_enrichment  # noqa: PLC0415
+
+        with self._lock:
+            return decide_enrichment(self, artifact_id, annotation, event_id)
+
+    def fold_artifact_enriched(self, payload: dict[str, Any]) -> FoldResult:
+        """Fold one ``artifact.enriched`` payload (A9, #1176) via
+        :meth:`record_artifact_enrichment` — malformed (no artifact id) is a
+        typed skip."""
+        artifact_id = str(payload.get("artifact_id") or "")
+        if not artifact_id:
+            return FoldResult(applied=False, reason="malformed")
+        reason = self.record_artifact_enrichment(
+            artifact_id,
+            annotation=str(payload.get("annotation") or ""),
+            event_id=str(payload.get("event_id") or ""),
+        )
+        return FoldResult(applied=(reason == "merged"), reason=reason)
+
+    def supplemental_annotation(self, artifact_id: str) -> str:
+        """The dedup-enrichment annotation attached to ``artifact_id``, or ``""``."""
+        with self._lock:
+            return self._supplemental_annotations.get(artifact_id, "")
 
     def all_transforms(self) -> list[Any]:
         """A snapshot of every TransformRecord known (for lineage traversal / tests)."""
@@ -369,7 +464,13 @@ class ArtifactRegistry:
                     key: tuple[Any, ...] = (
                         (version.version,)
                         if allowed_workspace_ids is None
-                        else (ws == workspace_id, version.created_at or "", ws, name, version.version)
+                        else (
+                            ws == workspace_id,
+                            version.created_at or "",
+                            ws,
+                            name,
+                            version.version,
+                        )
                     )
                     if best_key is None or key >= best_key:
                         best_key, best = key, (record, version)
@@ -730,6 +831,35 @@ def _safe_mechanism(value: str) -> Mechanism:
 _REGISTRY_INIT_LOCK = threading.Lock()
 
 
+def _retry_boot_fold(app: "FastAPI") -> Optional[ArtifactRegistry]:
+    """One-shot lazy refold after a ``capture_released`` boot.
+
+    Observed live: the boot fold's ARC read raises during early boot
+    (``arc_iter_failed``) while the same store serves reads minutes later, so
+    the registry served empty for the whole process life. Off-loop callers
+    refold inline and get the rebuilt registry; on-loop callers must not run
+    the fold's synchronous native I/O, so the refold runs on a daemon thread
+    and THIS reader still sees the empty registry — the next one gets the
+    rebuilt projection.
+    """
+    from clio_agent.gact.artifacts import registry_boot  # noqa: PLC0415 — import cycle
+
+    def _refold() -> None:
+        try:
+            rebuilt = registry_boot.rebuild_registry_at_boot(app)
+            logger.info("artifact registry lazy refold completed records=%d", rebuilt.count())
+        except Exception as exc:  # noqa: BLE001 — a failed retry keeps the typed state
+            logger.warning("artifact registry lazy refold failed cause=%r", exc)
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        _refold()
+        return getattr(app.state, "artifact_registry", None)
+    threading.Thread(target=_refold, name="artifact-registry-refold", daemon=True).start()
+    return None
+
+
 def get_registry(app: "FastAPI") -> ArtifactRegistry:
     """Return the app's artifact registry, rebuilding it from the log on first access.
 
@@ -744,6 +874,21 @@ def get_registry(app: "FastAPI") -> ArtifactRegistry:
     """
     registry = getattr(app.state, "artifact_registry", None)
     if registry is not None:
+        if (
+            registry.capture_released is not None
+            and registry.count() == 0
+            and not getattr(registry, "_boot_retry_attempted", False)
+        ):
+            # The boot fold found NO reachable source (observed live: the ARC
+            # reader raises during early boot while the same store serves
+            # reads minutes later). One lazy refold on first access — ARC is
+            # up by now — instead of serving an empty registry all process
+            # long. One attempt only; a second failure keeps the typed
+            # capture_released state.
+            registry._boot_retry_attempted = True
+            retried = _retry_boot_fold(app)
+            if retried is not None:
+                return retried
         return registry
     # First access — a rebuild is required. It must never run on the loop thread.
     try:
@@ -768,7 +913,9 @@ def get_registry(app: "FastAPI") -> ArtifactRegistry:
 __all__ = [
     "ARTIFACT_ALIAS_MOVED_EVENT",
     "ARTIFACT_CREATED_EVENT",
+    "ARTIFACT_ENRICHED_EVENT",
     "ARTIFACT_TRANSFORM_RECORDED_EVENT",
+    "ARTIFACT_USED_EVENT",
     "ARTIFACT_VERSION_ADDED_EVENT",
     "ArtifactRegistry",
     "FoldResult",

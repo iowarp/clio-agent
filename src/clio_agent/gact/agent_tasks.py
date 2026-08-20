@@ -70,7 +70,15 @@ ERROR_REASONS = frozenset(
     {
         "agent_error",
         "spawn_depth_exceeded",
-        "child_requires_user_input",
+        # #1113: an unattended child that pauses for input no longer FAILS with
+        # ``child_requires_user_input`` — its question is forwarded to the parent's
+        # HITL surface (elicitation_bridge). The forward binds to the task, so its
+        # edges terminate typed: no pending question to forward, a headless-parent
+        # deadline, and a parent cancel/decline each fail the task with these.
+        "child_question_forward_failed",
+        "child_forward_unattended_timeout",
+        "child_forward_declined",
+        "child_forward_not_resumable",
         "cancelled_by_parent",
         "child_session_gone",
         "timeout",
@@ -81,6 +89,19 @@ ERROR_REASONS = frozenset(
         "server_restart_interrupted",
     }
 )
+
+
+def display_run_name(agent_id: str, run_index: int, run_label: str) -> str:
+    """The ONE server-side display-name rule for a spawned run (wire semantics).
+
+    ``run_label`` wins when the task carries one; otherwise
+    ``"{agent_id} #{run_index + 1}"``. Shared by every wire surface that needs a
+    human-facing name for a task (``wait_agent_tasks``'s resolved
+    ``waited_tasks``/structured ``results`` rows) so the rule lives in exactly
+    ONE place — the server decides, the UI never infers.
+    """
+
+    return run_label or f"{agent_id} #{run_index + 1}"
 
 
 class AgentTaskError(ValueError):
@@ -122,6 +143,29 @@ class AgentTask:
     # admission (``_admit_next_queued``) honors the bound after a boot rebuild too; 0
     # means only the global per-depth cap applies.
     fanout_bound: int = 0
+    # Fan-out GROUP identity (wire semantics, P5): minted ONCE per
+    # ``spawn_agents_parallel`` call and stamped on every sibling spawned in that
+    # call, so the wire carries explicit grouping instead of the UI inferring it
+    # by adjacency/timing (the clean-wire rule: the SERVER emits display
+    # semantics). Empty for a single ``spawn_agent_task`` spawn and for declared
+    # ``run_workflow`` steps — never invented; absent, not a null/empty sentinel
+    # value the UI would have to special-case. Durable on the record (assigned
+    # once at spawn) so it survives the queued->running->completed lifecycle and
+    # a boot rebuild, and rides ``TaskHandle``/``TaskResult`` across the invoker
+    # boundary to reach the completed ``expert_handoff`` Part at wait-time.
+    spawn_group_id: str = ""
+    # The batch's total spawn count (>= 1) when ``spawn_group_id`` is set; 0 when
+    # absent (mirrors ``spawn_group_id``'s presence, never invented independently).
+    group_size: int = 0
+    # P2.10 (#1127): additive run-handle vocabulary. These fields remain on the
+    # authoritative child-session record so local and relay runs project identically.
+    handle_id: str = ""
+    run_label: str = ""
+    live_state: str = ""
+    host: str = "local"
+    placement: str = "local"
+    detached: bool = False
+    dismissed: bool = False
     status: str = STATUS_QUEUED
     queued_reason: str = ""
     error_reason: str = ""
@@ -143,6 +187,12 @@ class AgentTask:
     # RESULT ROW is still returned on every wait; only the EVENT is once. Persisted
     # to the child-session metadata so a boot-rebuilt registry does not re-emit.
     delegation_reported: bool = False
+
+    def __post_init__(self) -> None:
+        """Keep lifecycle-backed live state canonical at record construction."""
+
+        if self.status != STATUS_RUNNING or not self.live_state or self.live_state in STATUSES:
+            object.__setattr__(self, "live_state", self.status)
 
     def to_metadata(self) -> dict[str, Any]:
         """The child-session metadata block that is the authoritative store."""
@@ -230,6 +280,7 @@ class AgentTaskRegistry:
         *,
         error_reason: str = "",
         result: Optional[dict[str, Any]] = None,
+        artifact_ref: Optional[str] = None,
         notify_pending: Optional[bool] = None,
         updated_at: str = "",
     ) -> AgentTask:
@@ -274,13 +325,15 @@ class AgentTaskRegistry:
                     "failed transition requires a typed error_reason",
                     reason="missing_error_reason",
                 )
-            updates: dict[str, Any] = {"status": new_status}
+            updates: dict[str, Any] = {"status": new_status, "live_state": new_status}
             if updated_at:
                 updates["updated_at"] = updated_at
             if error_reason:
                 updates["error_reason"] = error_reason
             if result is not None:
                 updates["result"] = result
+            if artifact_ref is not None:
+                updates["artifact_ref"] = artifact_ref
             if notify_pending is not None:
                 updates["notify_pending"] = notify_pending
             updated = replace(current, **updates)
@@ -364,6 +417,53 @@ class AgentTaskRegistry:
                     self._index(task)
                     n += 1
             return n
+
+
+def resolve_waited_task_rows(app: "FastAPI", task_ids: Iterable[str]) -> list[dict[str, Any]]:
+    """Resolve each ``task_id``'s DISPLAY row from the registry AT CALL TIME.
+
+    The clean-wire rule for ``wait_agent_tasks``: the tool_call Part carries
+    ``metadata.waited_tasks`` — one row per requested id —
+    ``{task_id, agent_id, run_index, run_label, child_session_id, name}`` —
+    so the UI never has to re-derive a display name from a raw task-id array.
+    ``name`` is :func:`display_run_name`. Static task identity (agent, run
+    index, run label, child session) is already durable on the record at
+    spawn time, so this is resolvable BEFORE the wait ever blocks — it does
+    not wait for or depend on the outcome.
+
+    An id the registry does not (yet, or no longer) know still yields a row —
+    never silently dropped from the array — with empty resolved fields and
+    ``name`` falling back to the raw id (the best the server can say).
+    """
+
+    reg = getattr(app.state, "agent_task_registry", None)
+    rows: list[dict[str, Any]] = []
+    for tid in task_ids:
+        task = reg.get(tid) if reg is not None else None
+        if task is None:
+            rows.append(
+                {
+                    "task_id": tid,
+                    "agent_id": "",
+                    "run_index": 0,
+                    "run_label": "",
+                    "child_session_id": "",
+                    "name": tid,
+                }
+            )
+            continue
+        agent_id = task.agent_ref.get("expert_id", "")
+        rows.append(
+            {
+                "task_id": task.task_id,
+                "agent_id": agent_id,
+                "run_index": task.run_index,
+                "run_label": task.run_label,
+                "child_session_id": task.child_session_id,
+                "name": display_run_name(agent_id, task.run_index, task.run_label),
+            }
+        )
+    return rows
 
 
 #: Default ceiling on descendant-session traversal (:func:`descendant_session_ids`).
@@ -510,6 +610,17 @@ def seed_agent_task(
     depth: int = 1,
     task_id: str = "",
     status: str = STATUS_QUEUED,
+    workspace_id: str | None = None,
+    session_mode: str | None = None,
+    session_scope_metadata: Mapping[str, Any] | None = None,
+    run_index: int = 0,
+    fanout_bound: int = 0,
+    queued_reason: str = "",
+    placement: str = "local",
+    host: str = "",
+    run_label: str = "",
+    spawn_group_id: str = "",
+    group_size: int = 0,
 ) -> AgentTask:
     """Mint a child session + its AgentTask projection, persist, register, and
     publish the initial lifecycle event.
@@ -526,14 +637,18 @@ def seed_agent_task(
     now = datetime.now(timezone.utc).isoformat()
     tid = task_id or ("task_" + uuid.uuid4().hex[:12])
     parent = app.state.sessions.get(parent_session_id)
-    workspace_id = (
-        getattr(parent, "workspace_id", "ws_default") if parent is not None else "ws_default"
+    child_workspace_id = (
+        workspace_id
+        if workspace_id is not None
+        else (getattr(parent, "workspace_id", "ws_default") if parent is not None else "ws_default")
     )
     child = app.state.sessions.create(
-        workspace_id=workspace_id,
+        workspace_id=child_workspace_id,
         title=f"agent-task {tid[-6:]}",
         parent_session_id=parent_session_id,
-        agent={"id": agent_ref.get("expert_id", "")},
+        metadata={"spawn_placement": placement, **dict(session_scope_metadata or {})},
+        agent={"id": agent_ref.get("expert_id", ""), "mode": "subagent"},
+        mode=session_mode or getattr(parent, "mode", "edit"),
     )
     task = AgentTask(
         task_id=tid,
@@ -542,7 +657,17 @@ def seed_agent_task(
         parent_turn_id=parent_turn_id,
         agent_ref=dict(agent_ref),
         depth=depth,
+        run_index=run_index,
+        fanout_bound=fanout_bound,
+        spawn_group_id=spawn_group_id,
+        group_size=group_size,
+        handle_id=tid,
+        run_label=run_label or f"{agent_ref.get('expert_id', 'agent')} #{run_index + 1}",
+        live_state=status,
+        host=host or (placement.split(":", 1)[1] if placement.startswith("relay:") else "local"),
+        placement=placement,
         status=status,
+        queued_reason=queued_reason,
         created_at=now,
         updated_at=now,
     )

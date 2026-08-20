@@ -164,6 +164,12 @@ def test_stream_fallback_reasons_are_audited_and_reject_unknowns(tmp_path: Path)
         "sync_execution_path",
         "dynamic_prompt_stream_unavailable",
         "dynamic_tool_stream_unavailable",
+        "mcp_result_downgraded_to_complete",
+        "mcp_capability_refused",
+        "mcp_protocol_refused",
+        "mcp_wire_cancellation_unavailable",
+        # P1.4 #1114: the MRTR loop exhausted its config-resolved round bound.
+        "mcp_input_required_rounds_exceeded",
     } == set(catalog)
     for reason, details in catalog.items():
         assert details["synthetic_posthoc"] is True, reason
@@ -613,22 +619,38 @@ def test_pre_stream_failure_surfaces_error_without_sync_rerun(
     )
 
 
-def test_non_text_parts_skip_deltas(app_client) -> None:
-    app, client, _ = app_client
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "hi"}]},
-    )
+def test_non_text_parts_skip_deltas(tmp_path: Path) -> None:
+    # An atomic non-text part (tool_call) arrives via .added, never .delta —
+    # only live provider text streams as delta events. (routing_decision was the
+    # old fixture here; routing decisions are semantic events now, a0e1d9a9.)
+    class _ToolObservingAgent:
+        def forward(self, question: str, session_id: str) -> _Pred:
+            from clio_agent.tools.execution import current_tool_runtime
+
+            observer = current_tool_runtime().tool_observer
+            assert observer is not None
+            observer("fs_read_file", {"path": "README.md"}, "started", None)
+            observer("fs_read_file", {"path": "README.md"}, "completed", None, {"ok": True})
+            return _Pred(answer="tool turn done")
+
+    from .conftest import complete_turn
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_ToolObservingAgent())
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        complete_turn(client, sid, "hi")
     history = app.state.bus._history.get(sid, [])
-    # routing_decision arrives via .added, not .delta.
-    routing_added = [
+    tool_call_added = [
         e
         for e in history
-        if e.type == "message.part.added" and e.payload["part"]["type"] == "routing_decision"
+        if e.type == "message.part.added" and e.payload["part"]["type"] == "tool_call"
     ]
-    assert len(routing_added) == 1
-    assert routing_added[0].payload["part"]["selected_agent"] == "data_expert"
+    assert len(tool_call_added) == 1
+    assert tool_call_added[0].payload["part"]["tool_name"] == "fs_read_file"
+    # The non-text part never streamed: no delta event targets its part id.
+    part_id = tool_call_added[0].payload["part"]["id"]
+    deltas = [e for e in history if e.type == "message.part.delta"]
+    assert all(e.payload.get("part_id") != part_id for e in deltas)
 
 
 def test_live_streamed_deltas_are_marked_live(

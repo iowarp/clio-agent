@@ -10,11 +10,15 @@ default/``main`` session with no resolvable Agent Blueprint ran
 asserting the turn produced that prediction.
 
 S4b deleted the legacy planner and its ``else`` branch. Every default/``main``
-session now resolves the default-registry Agent Blueprint's react ``main`` root
-(the ONE blueprint branch) and runs it through
+session now resolves a react ``main`` and runs it through
 ``_build_blueprint_dspy_module(app.state.agent, dynamic_agent)`` +
-``_try_streamed_forward_compat`` / ``_run_blueprint_dspy_agent``. That module is a
-real DSPy react program that would call an LM — which unit tests do not have.
+``_try_streamed_forward_compat`` / ``_run_blueprint_dspy_agent``. Which ``main`` --
+a session with an EXPLICITLY activated Agent Blueprint runs that blueprint's
+root; a BARE session (no activation, owner ruling 2026-08-05, commit aa906022)
+runs the in-code ``catalog._builtin_main_agent()`` instead, on the SAME builder
+seam (``_agent_definition_uses_blueprint_runtime`` routes ``definition_kind:
+builtin_main`` through it too). Either way that module is a real DSPy react
+program that would call an LM — which unit tests do not have.
 
 The seam
 --------

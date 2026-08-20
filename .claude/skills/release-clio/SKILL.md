@@ -54,6 +54,11 @@ git merge --no-ff develop -m "Merge develop: release vX.Y.Z — <summary>"
 - `src/clio_agent/__init__.py` → `__version__ = "X.Y.Z"`
 - `uv.lock` → run `uv lock` (updates the clio-agent entry), commit it.
 - `install/README.md` → bump the `CLIO_VERSION=` example.
+- `tests/test_scripts/test_release_install_policy.py` → bump `EXPECTED_VERSION` (it
+  pins pyproject + `__init__` + `uv.lock` + the documented install command; a bump
+  that misses it fails the full suite — hit on the v0.9.0 cut).
+- `README.md` + `docs/INSTALL.md` → the `clio-agent==X.Y.Z` install lines (the
+  policy test greps them).
 - Commit the submodule gitlink bumps + version together: `chore(release): vX.Y.Z`.
 
 ### 4b. Roll the CHANGELOG (GACT-contract surface only)
@@ -100,6 +105,45 @@ raise past that line fails plain CI.
 git tag -a vX.Y.Z HEAD -m "release: vX.Y.Z — <summary>"
 git push origin main && git push origin develop && git push origin vX.Y.Z
 ```
+
+### 6b. Author the GitHub release notes (NEVER skip — the workflow leaves a bare page)
+`clio-bundles.yml` creates the GitHub release as a side effect of asset upload, so
+without this step the release page shows only the merge-commit subject ("Merge pull
+request #NNNN from iowarp/develop") — the v0.8.0/v0.8.1/v0.9.0 pages all shipped
+that way and had to be healed after the fact. Right after the tag push:
+
+```sh
+gh release edit vX.Y.Z --title "vX.Y.Z" --notes-file notes.md
+```
+
+The title is the bare version — nothing appended, no campaign or theme name.
+`notes.md` is written for an external user or engineer who has never read this
+repo's design docs; it is NOT a condensed CHANGELOG. Owner-locked style rules
+(the first curated v0.9.0 page was rejected for breaking them):
+
+- **Audience**: name each feature by what the user can now DO ("Planning mode:
+  the agent works out a plan before touching anything"), never by internal
+  vocabulary. If a term only means something to someone who read the design docs
+  (resolver, policy rows, tighten-only, typed reasons, campaign/slice/epic, live
+  gate, settle loop, wire/SSE, CAS/GC roots), translate it into its user-visible
+  outcome or drop it.
+- **Shape**: a 1–2 sentence intro; then one `###` heading per feature with 2–3
+  plain sentences, ending with its issue/PR refs in parentheses; then `## Fixed`
+  / `## Changed` / `## Breaking` as applicable; end with the CHANGELOG link and
+  (newest release only) the `uv tool install ... clio-agent==X.Y.Z` line.
+- **Punctuation**: NO em-dashes or en-dashes anywhere in the published page; use
+  semicolons, colons, and parentheses. Write issue ranges as lists ("#1069,
+  #1070") or with "to", never with a dash.
+- **Voice**: it must not read AI-written — no bold-name-plus-dash bullet pattern,
+  no rhetorical flourishes, no marketing adjectives, no emoji. Calibration: the
+  open-webui releases, but shorter.
+- **Accuracy**: before publishing, verify every issue/PR number resolves to what
+  the sentence claims (`gh issue view N` / `gh pr view N`).
+
+The `release-check` job auto-fills the body from the CHANGELOG section as a
+BACKSTOP when the page is still bare, but the curated edit above is the standard —
+run it even when the backstop fired (your edit wins; the backstop never overwrites
+a non-bare body).
 
 ### 7. Verify CI green + artifacts
 ```sh

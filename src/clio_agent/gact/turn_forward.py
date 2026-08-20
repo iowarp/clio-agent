@@ -38,16 +38,21 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.agents.composition import _apply_prompt_registry_to_agent
 from clio_agent.gact.agents.resolution import (
     _agent_definition_uses_blueprint_runtime,
     _resolve_runtime_dynamic_agent,
     _runtime_active_agent_blueprint_agent_ids,
+    _runtime_active_agent_blueprint_id,
+    _runtime_active_agent_blueprint_path,
     _runtime_active_agent_blueprint_root_id,
     _runtime_active_agent_blueprint_rows,
 )
+from clio_agent.gact.catalog import _builtin_main_agent
 from clio_agent.gact.evidence import _dynamic_agent_runtime_provenance
 from clio_agent.gact.messaging import _prediction_summary
 from clio_agent.gact.providers.auth import _refresh_argonne_lm_token
+from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.globals import (
     _BlueprintRootDisabled,
     _emit_semantic_event,
@@ -67,6 +72,7 @@ from clio_agent.gact.turn_watchdog import await_turn_work, cancel_requested
 
 if TYPE_CHECKING:
     from clio_agent.gact.turn_state import TurnState
+    from clio_agent.gact.types import AgentDef
     from clio_agent.prompts import PromptRegistry
 
 
@@ -92,12 +98,20 @@ def _forward_executor(state: "TurnState") -> Any:
 async def forward_turn(state: "TurnState") -> Any:
     """Run one complete forward/delegation turn under its workspace lease."""
 
-    # Tool wrappers bind a concrete workspace executor while modules are built.
-    # Pin that fleet across initial construction, every delegated child, parent
-    # resumes, and the gaps between them; otherwise the idle reaper can close a
-    # still-referenced executor during a long multi-expert turn.
-    with _tool_session_context(state.sid):
-        return await _forward_turn_leased(state)
+    # #1215 S5: workspace.lease is the OUTER bring-up phase for this whole call
+    # (the lease is held for its entire body) -- blueprint.resolve NESTS inside
+    # it in _forward_turn_leased below, by necessity: the two are not
+    # sequential in real execution (blueprint resolution happens WHILE the
+    # lease is held), so treating them as independent depth-0 phases would
+    # double-count wall time (see the module docstring's SEAM WIRING note in
+    # bringup_timing.py). Nesting is correct here, not a flattening shortcut.
+    with bringup_timing.timer_for_session(state.app, state.sid).phase("workspace.lease"):
+        # Tool wrappers bind a concrete workspace executor while modules are built.
+        # Pin that fleet across initial construction, every delegated child, parent
+        # resumes, and the gaps between them; otherwise the idle reaper can close a
+        # still-referenced executor during a long multi-expert turn.
+        with _tool_session_context(state.sid):
+            return await _forward_turn_leased(state)
 
 
 async def _forward_turn_leased(state: "TurnState") -> Any:
@@ -130,6 +144,10 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
     # _cancellation_checker, exactly like the former closure.
     cancel_cb = partial(cancel_requested, state)
 
+    # #1215 S5: NESTED under workspace.lease (see forward_turn) -- resolves the
+    # active agent + builds its DSPy module; end_phase call sits right after the
+    # module build below, before the actual LLM request dispatch begins.
+    bringup_timing.timer_for_session(state.app, state.sid).start_phase("blueprint.resolve")
     session_agent_id = _session_agent_id(state.sess)
     state.active_agent_id = state.turn_agent_id or session_agent_id
     active_blueprint_root_id = _runtime_active_agent_blueprint_root_id(state.app, state.sid)
@@ -151,21 +169,28 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
         # no fall-through to the legacy planner (both observed on the live gate).
         rows = _runtime_active_agent_blueprint_rows(state.app, session_id=state.sid)
         root_errors = next(
-            (
-                list(row.validation_errors)
-                for row in rows
-                if row.id == active_blueprint_root_id
-            ),
+            (list(row.validation_errors) for row in rows if row.id == active_blueprint_root_id),
             [],
         )
-        blueprint_id = str(
-            rows[0].metadata.get("agent_blueprint_id") or "" if rows else ""
-        )
+        blueprint_id = str(rows[0].metadata.get("agent_blueprint_id") or "" if rows else "")
         raise _BlueprintRootDisabled(
             active_blueprint_root_id,
             blueprint_id=blueprint_id,
             validation_errors=root_errors,
         )
+    # BARE session (owner ruling 2026-08-05 + RULE 2): the session activated NO
+    # blueprint (no id, no path — not merely "nothing resolved"), so it executes
+    # the shipped builtin react main from code. An EXPLICITLY activated blueprint
+    # that resolves nothing stays on the typed _NoResolvableAgent path below —
+    # the builtin main never silently substitutes for a broken activation.
+    run_builtin_main = (
+        not active_blueprint_root_id
+        and state.active_agent_id in _EXECUTABLE_SESSION_AGENT_IDS
+        and not _runtime_active_agent_blueprint_id(state.app, state.sid)
+        and _runtime_active_agent_blueprint_path(state.app, state.sid) is None
+    )
+    if run_builtin_main:
+        state.active_agent_id = "main"
     routing_mode = getattr(state.sess, "routing_mode", "auto") or "auto"
     state.invocation_agent_id = state.active_agent_id or "orchestrator"
     _emit_semantic_event(
@@ -189,9 +214,18 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
     from clio_agent.agent import cancellation_checker as _cancellation_checker  # noqa: PLC0415
 
     _refresh_argonne_lm_token(state.app.state.agent)
+    # #1227 D2: re-discover the relay catalog once its TTL has elapsed instead
+    # of trusting the boot-time snapshot forever -- a no-op read on every turn
+    # until the TTL fires, so this is not a per-turn relay round trip.
+    from clio_agent.gact.relay_wiring import (  # noqa: PLC0415
+        refresh_relay_tool_surfaces_if_stale,
+    )
+
+    await refresh_relay_tool_surfaces_if_stale(state.app)
 
     if (
-        state.active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS
+        run_builtin_main
+        or state.active_agent_id not in _EXECUTABLE_SESSION_AGENT_IDS
         or state.active_agent_id in active_blueprint_agent_ids
     ):
         prompt_registry_factory = getattr(state.app.state, "prompt_registry_for_request", None)
@@ -203,12 +237,22 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
                 else None
             ),
         )
-        dynamic_agent = _resolve_runtime_dynamic_agent(
-            state.app,
-            state.active_agent_id,
-            session_id=state.sid,
-            prompt_registry=prompt_registry,
-        )
+        if run_builtin_main:
+            # The builtin main is code, not a discoverable definition: it is
+            # materialized here (prompt registry applied like every resolved
+            # agent), never via blueprint/pack discovery. A host that cannot
+            # execute it fails TYPED at module build (_UnsupportedSessionAgent
+            # from _dynamic_agent_tools) — never an empty assistant message.
+            dynamic_agent: "AgentDef | None" = _apply_prompt_registry_to_agent(
+                state.app, _builtin_main_agent(), prompt_registry=prompt_registry
+            )
+        else:
+            dynamic_agent = _resolve_runtime_dynamic_agent(
+                state.app,
+                state.active_agent_id,
+                session_id=state.sid,
+                prompt_registry=prompt_registry,
+            )
         if dynamic_agent is None:
             raise _UnsupportedSessionAgent(state.active_agent_id)
         state.prompt_resolution = dict(dynamic_agent.metadata.get("prompt_resolution") or {})
@@ -244,6 +288,9 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
             )
         finally:
             _ctx.reset(session_token)
+        # #1215 S5: blueprint resolution + module build are done; the LLM
+        # request dispatch below is NOT part of blueprint.resolve.
+        bringup_timing.timer_for_session(state.app, state.sid).end_phase("blueprint.resolve")
         llm_actor = {
             "agent_id": dynamic_agent.id,
             "agent_title": dynamic_agent.title,
@@ -357,13 +404,15 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
                 payload=_prediction_summary(state.pred),
             )
     else:
-        # #948 S4b: the agent id is in {"", "main", "default"} but NO Agent
-        # Blueprint resolved for it — neither the active blueprint's declared
-        # root nor the default registry blueprint (normal pack-less sessions
-        # resolve the latter via _runtime_active_agent_blueprint_rows). The
-        # legacy Tier-1 planner (ClioAgent.forward) that used to run here is
-        # DELETED, so there is nothing to execute. Fail TYPED — never fall
-        # through to a legacy pathway.
+        # #948 S4b: the agent id is in {"", "main", "default"} but the session
+        # EXPLICITLY activated a blueprint (id/path set) that resolves no such
+        # executable agent — e.g. an activation naming a blueprint that is
+        # missing from disk or fully disabled. A bare session never reaches
+        # here (it runs the builtin react main above); an explicit activation
+        # must not be silently downgraded to the builtin main. The legacy
+        # Tier-1 planner (ClioAgent.forward) that used to run here is DELETED,
+        # so there is nothing to execute. Fail TYPED — never fall through to a
+        # legacy pathway.
         raise _NoResolvableAgent(state.active_agent_id or session_agent_id)
     _emit_semantic_event(
         state.app,

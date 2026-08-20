@@ -54,6 +54,7 @@ import contextlib
 import logging
 import queue
 import threading
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -71,6 +72,18 @@ from clio_agent.providers.claude_code_sdk_pool import (
     _SdkSession,
     _SdkSessionPool,
 )
+
+# Idle-reap + concurrency-cap bounds (#775 no-accretion owner split): pure
+# behaviour over THIS module's pool/entry classes, kept in its own file so it
+# does not regrow this one. Imported here (not the other way) — the sibling
+# only reaches back into claude_code_sessions via deferred, function-local
+# imports, so this stays a one-directional, non-circular dependency.
+from clio_agent.providers.claude_code_stream_bounds import (
+    max_concurrent_claude_processes,
+    reap_idle_stream_entry,
+    stream_idle_ttl_s,
+    sweep_idle_scoped_entries,
+)
 from clio_agent.runtime.stream_audit import stream_audit, stream_audit_enabled
 
 logger = logging.getLogger(__name__)
@@ -79,9 +92,12 @@ __all__ = [
     "TRANSPORT_FAILURE_REASONS",
     "TRANSIENT_TRANSPORT_MARKER",
     "ClaudeStreamClientPool",
+    "max_concurrent_claude_processes",
     "session_reuse_enabled",
+    "stream_idle_ttl_s",
     "transient_transport_error_message",
     "transient_transport_error_types",
+    "stream_scope_for",
     "transport_failure_payload",
     "_streaming_chunk",
     # blocking-path pool (re-exported from claude_code_sdk_pool for the seams)
@@ -108,6 +124,19 @@ TRANSPORT_FAILURE_REASONS: dict[str, dict[str, Any]] = {
             "subprocess died or the stream broke). The poisoned client is dropped and "
             "the failure surfaces as a typed transient error so the LM retry layer "
             "re-issues the call on a fresh connection."
+        ),
+    },
+    "idle_reaped": {
+        "category": "session_idle_reap",
+        "description": (
+            "A SCOPE-KEYED pooled connection (a spawned expert's own isolated "
+            "claude-sdk-cli subprocess, #COPPER12 scope-keying) sat connected but "
+            "unused past the idle TTL while its stateful scope was still open (e.g. "
+            "a parent orchestrator blocked in wait_agent_tasks while its own scope's "
+            "connection idled). Proactively dropped to bound how many concurrently- "
+            "spawned experts' CLI subprocesses stay resident; the next send on this "
+            "scope reclassifies as a full resend (never a delta onto a subprocess "
+            "with no memory of the prefix)."
         ),
     },
 }
@@ -281,7 +310,9 @@ class _StreamClientEntry:
     next (possibly different-expert) call its leftover response.
     """
 
-    def __init__(self, options_factory: Any) -> None:
+    def __init__(
+        self, options_factory: Any, connect_slots: threading.Semaphore | None = None
+    ) -> None:
         self._options_factory = options_factory
         self._lock = threading.Lock()  # guards loop/thread construction
         self._loop: Any = None
@@ -289,6 +320,18 @@ class _StreamClientEntry:
         self._client: Any = None
         self._connect_lock = asyncio.Lock()  # owner-loop bound (lazy, first await)
         self._query_lock = asyncio.Lock()  # owner-loop bound (lazy, first await)
+        # Process-wide connect gate (:func:`max_concurrent_claude_processes`):
+        # every entry's connect draws from the SAME N slots and releases on
+        # disconnect, bounding total resident CLI subprocesses regardless of
+        # how many scope-keyed entries exist. ``None`` (test default) = uncapped.
+        self._connect_slots = connect_slots
+        # Idle-reap bookkeeping (plain threading.Lock — read/written from both
+        # the caller's loop, in :meth:`stream`, and the sweep in
+        # :meth:`ClaudeStreamClientPool._sweep_idle_scoped_entries`, which runs
+        # on WHATEVER thread calls ``entry_for`` next).
+        self._activity_lock = threading.Lock()
+        self._in_flight = False
+        self._idle_since = time.monotonic()
 
     def _ensure_loop(self) -> None:
         with self._lock:
@@ -301,8 +344,58 @@ class _StreamClientEntry:
             thread.start()
             self._loop, self._thread = loop, thread
 
+    def _mark_busy(self) -> None:
+        """Flag this entry as mid-stream — never eligible for the idle reap."""
+        with self._activity_lock:
+            self._in_flight = True
+
+    def _mark_idle(self) -> None:
+        """Flag this entry as done streaming and reset its idle clock."""
+        with self._activity_lock:
+            self._in_flight = False
+            self._idle_since = time.monotonic()
+
+    def idle_for(self) -> float | None:
+        """Seconds since the last :meth:`stream` call finished.
+
+        ``None`` while a call is in flight (a live-in-use entry must never be
+        reaped out from under its own caller). A freshly constructed, never-used
+        entry reports idle-since-construction, so a scope that opens a
+        connection then stalls before its first send is still reapable.
+        """
+        with self._activity_lock:
+            if self._in_flight:
+                return None
+            return time.monotonic() - self._idle_since
+
+    async def _acquire_connect_slot(self) -> None:
+        """Wait for a free process-wide connect slot (no-op if uncapped).
+
+        Polls the plain ``threading.Semaphore`` with a bounded per-attempt
+        timeout via ``run_in_executor`` rather than one unbounded blocking
+        acquire: an unbounded acquire's underlying OS thread cannot be
+        interrupted by cancelling the ``await`` — a caller cancelled while
+        queued (e.g. kill-on-cancel) would abandon interest but leave that
+        thread blocked, and it would silently consume a LATER release as a
+        phantom acquire nothing ever pairs with a matching release, slowly
+        leaking slots. Each bounded poll instead returns on its own; a
+        cancellation between polls stops cleanly with no orphaned waiter.
+        """
+        if self._connect_slots is None:
+            return
+        loop = asyncio.get_running_loop()
+        while not await loop.run_in_executor(None, self._connect_slots.acquire, True, 0.2):
+            continue
+
     async def _ensure_client(self, on_construct: Any) -> Any:
-        """Connect the client once (runs on the owner loop, double-checked)."""
+        """Connect the client once (runs on the owner loop, double-checked).
+
+        When a process-wide connect gate is configured (:attr:`_connect_slots`,
+        :func:`max_concurrent_claude_processes`) this WAITS for a free slot
+        before connecting — never fails or degrades — bounding total resident
+        ``claude`` CLI subprocesses regardless of how many scope-keyed entries
+        exist (:meth:`_acquire_connect_slot`).
+        """
         if self._client is not None:
             return self._client
         async with self._connect_lock:
@@ -310,14 +403,26 @@ class _StreamClientEntry:
                 return self._client
             from claude_agent_sdk import ClaudeSDKClient  # noqa: PLC0415
 
-            client = ClaudeSDKClient(options=self._options_factory())
-            on_construct()
-            await client.connect()
+            await self._acquire_connect_slot()
+            try:
+                client = ClaudeSDKClient(options=self._options_factory())
+                on_construct()
+                await client.connect()
+            except BaseException:
+                if self._connect_slots is not None:
+                    self._connect_slots.release()
+                raise
             self._client = client
             return client
 
     async def _areset_client(self) -> None:
-        """Disconnect + drop the client (owner loop) so the next call reconnects."""
+        """Disconnect + drop the client (owner loop) so the next call reconnects.
+
+        Releases this entry's connect-gate slot (:attr:`_connect_slots`) — the
+        exact counterpart of the acquire in :meth:`_ensure_client` — so the
+        process-wide cap actually frees up for a queued connect once this
+        subprocess is really gone.
+        """
         client, self._client = self._client, None
         if client is None:
             return
@@ -325,6 +430,9 @@ class _StreamClientEntry:
             await client.disconnect()
         except Exception:  # noqa: BLE001 - best-effort teardown; never block the caller
             logger.warning("claude stream client disconnect failed", exc_info=True)
+        finally:
+            if self._connect_slots is not None:
+                self._connect_slots.release()
 
     def _abort_active_query(self) -> None:
         """Kill the currently-streaming query by resetting this entry's client on its
@@ -354,6 +462,7 @@ class _StreamClientEntry:
         error / caller-abandon drops the pooled client (no cross-call bleed).
         """
         self._ensure_loop()
+        self._mark_busy()  # idle-reap must never pull this entry mid-stream
         caller_loop = asyncio.get_running_loop()
         chunks: queue.SimpleQueue[tuple[Any, Any]] = queue.SimpleQueue()
         # Kill-on-cancel binding (#993): capture the GACT session that owns this call in
@@ -403,6 +512,7 @@ class _StreamClientEntry:
                 # a half-drained connection is never reused.
                 with contextlib.suppress(Exception):
                     asyncio.run_coroutine_threadsafe(self._areset_client(), self._loop)
+            self._mark_idle()
 
     def close_blocking(self) -> None:
         """Disconnect the client and stop the loop-thread (atexit / test reset)."""
@@ -418,6 +528,25 @@ class _StreamClientEntry:
         finally:
             loop.call_soon_threadsafe(loop.stop)
 
+    def close_nonblocking(self) -> None:
+        """Disconnect the client and stop the loop-thread WITHOUT blocking the caller.
+
+        The idle-reap sweep (:func:`~clio_agent.providers.claude_code_stream_bounds.sweep_idle_scoped_entries`)
+        runs synchronously inside ``entry_for``, on the CALLER's own event loop — unlike
+        :meth:`close_blocking` (atexit / test reset, where blocking is fine), stalling
+        that loop for the ``.result(timeout=15)`` wait would delay whatever OTHER
+        concurrent work shares it. Fire-and-forget: schedule the same disconnect, then
+        stop the loop via a done-callback once it actually completes rather than
+        waiting synchronously. Idempotent — a second call sees ``self._loop is None``
+        and no-ops.
+        """
+        with self._lock:
+            loop, self._loop, self._thread = self._loop, None, None
+        if loop is None or not loop.is_running():
+            return
+        fut = asyncio.run_coroutine_threadsafe(self._areset_client(), loop)
+        fut.add_done_callback(lambda _f: loop.call_soon_threadsafe(loop.stop))
+
 
 class ClaudeStreamClientPool:
     """Process-wide pool of persistent streaming clients (#891, reconciles #715/#818).
@@ -430,24 +559,85 @@ class ClaudeStreamClientPool:
     conversation boundary, not the client.
     """
 
-    def __init__(self) -> None:
-        self._entries: dict[tuple[str, str | None, str | None], _StreamClientEntry] = {}
+    def __init__(self, *, max_concurrent: int | None = None) -> None:
+        self._entries: dict[tuple[str, str | None, str | None, str], _StreamClientEntry] = {}
         self._guard = threading.Lock()
         self._construct_count = 0
+        # Process-wide connect gate (#COPPER12 fan-out follow-up): every entry
+        # this pool constructs shares ONE semaphore, so total CONCURRENTLY-
+        # CONNECTED claude-sdk-cli subprocesses is bounded regardless of how
+        # many scope-keyed entries exist. Resolved from config by default;
+        # pass an explicit int (tests) to pin a specific cap.
+        n = max_concurrent if max_concurrent is not None else max_concurrent_claude_processes()
+        self._connect_slots = threading.Semaphore(n)
 
     def entry_for(
-        self, *, model: str, cwd: str | None, thinking: dict[str, Any] | None
+        self,
+        *,
+        model: str,
+        cwd: str | None,
+        thinking: dict[str, Any] | None,
+        scope: str | None = None,
     ) -> _StreamClientEntry:
-        """Return (creating if needed) the pooled entry for the transport params."""
-        key = (model, cwd, thinking_key(thinking))
+        """Return (creating if needed) the pooled entry for the transport params.
+
+        ``scope`` is the per-forward stateful scope token and MUST be passed for
+        every ENGAGED (delta-capable) send: a delta rides the conversation state of
+        the connection it is sent on, so two concurrent expert loops multiplexing
+        delta runs over ONE connection cross their conversations — the AGENT-COPPER12
+        defect, where a child expert's delta send under its own ``session_id``
+        returned the PARENT's continuation (the SDK connection, not the per-call
+        ``session_id``, is the real conversation boundary for resumed sends).
+        Scope-keyed entries give each stateful loop its own connection; the loop's
+        many iterations still amortize the one connect (#891). Non-engaged sends
+        (full prompt under a fresh ``session_id``) stay on the shared base entry —
+        the per-call boundary IS proven for those.
+
+        A scope-keyed request first sweeps every IDLE scope-keyed entry past
+        :func:`stream_idle_ttl_s` (own scope included) — the moment a fan-out
+        (``spawn_agents_parallel``) or a long-waiting parent is about to grow the
+        resident claude-sdk-cli count is exactly when a sibling that has gone
+        quiet (e.g. the parent itself, blocked in ``wait_agent_tasks`` with its
+        own connection idling) should be reclaimed first. The shared base entry
+        (``scope=""``) is never swept.
+        """
+        if scope:
+            for evicted_key, evicted_entry in sweep_idle_scoped_entries(self):
+                reap_idle_stream_entry(evicted_key, evicted_entry)
+        key = (model, cwd, thinking_key(thinking), scope or "")
         with self._guard:
             entry = self._entries.get(key)
             if entry is None:
                 entry = _StreamClientEntry(
-                    lambda: build_sdk_options(model=model, cwd=cwd, stream=True, thinking=thinking)
+                    lambda: build_sdk_options(model=model, cwd=cwd, stream=True, thinking=thinking),
+                    connect_slots=self._connect_slots,
                 )
                 self._entries[key] = entry
             return entry
+
+    def release(self, scope: str) -> None:
+        """Close and drop every entry keyed to ``scope`` (stateful_scope teardown).
+
+        Called by :func:`clio_agent.providers.stateful_common.stateful_scope` on
+        loop end via ``register_scope_registry`` — a loop's connection never
+        outlives the loop (#900). Best-effort: a teardown failure is logged by the
+        entry, never raised into the forward's ``finally``.
+        """
+        if not scope:
+            return
+        with self._guard:
+            keys = [key for key in self._entries if key[3] == scope]
+            entries = [self._entries.pop(key) for key in keys]
+        for entry in entries:
+            with contextlib.suppress(Exception):
+                entry.close_blocking()
+
+    def mark_reset(self, scope: str, reason: str) -> None:
+        """Scope-registry protocol no-op: a prefix reset keeps the connection.
+
+        An ARC-op reset means the NEXT send is a full send under a fresh
+        ``session_id`` — safe on the same connection; only scope END closes it.
+        """
 
     def bump_construct(self) -> None:
         """Increment the connect counter (called once per real client connect)."""
@@ -481,8 +671,30 @@ class ClaudeStreamClientPool:
             self._construct_count = 0
 
 
+def stream_scope_for(send: Any) -> str | None:
+    """The pool-entry scope for one send: its stateful scope IFF the send is engaged.
+
+    An engaged send is delta-capable, so it must ride its own scope-keyed
+    connection (see :meth:`ClaudeStreamClientPool.entry_for`); a non-engaged send
+    (full prompt, fresh ``session_id``) shares the base entry.
+    """
+    if send is None or not getattr(send, "engaged", False):
+        return None
+    token = getattr(send, "scope_token", None)
+    return str(token) if token is not None else None
+
+
 _STREAM_CLIENT_POOL = ClaudeStreamClientPool()
 atexit.register(_STREAM_CLIENT_POOL.close_blocking)
+
+# Scope-end teardown seam: the pool implements the scope-registry protocol
+# (``release`` / ``mark_reset``), so a react forward's scope exit closes the
+# forward's own stateful connection (see ``entry_for``'s scope keying).
+from clio_agent.providers.stateful_common import (
+    register_scope_registry as _register_scope,  # noqa: E402
+)
+
+_register_scope(_STREAM_CLIENT_POOL)  # type: ignore[arg-type]  # duck-typed scope-registry protocol
 
 
 def _reset_sessions_for_tests() -> None:

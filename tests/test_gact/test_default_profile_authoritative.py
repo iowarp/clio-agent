@@ -202,6 +202,54 @@ def test_boot_passes_one_config_and_store_default_drives_main_lm(monkeypatch, tm
     assert "boot-authoritative-model" in agent._main_lm.model
 
 
+def test_boot_passes_discovered_relay_surfaces_into_clio_agent(monkeypatch, tmp_path) -> None:
+    """Finding 4: the production agent constructor receives remote and JARVIS owners."""
+
+    import dspy
+
+    import clio_agent.tools.relay_transport as relay_module
+    from clio_agent.gact.app import _construct_agent_async
+
+    remote = object()
+    jarvis = object()
+
+    async def fake_discover() -> Any:
+        return SimpleNamespace(
+            remote_mcp_federation=remote,
+            jarvis_jobs=jarvis,
+            status={"configured": True, "reason": None},
+        )
+
+    monkeypatch.setattr(relay_module, "discover_relay_tool_surfaces", fake_discover, raising=False)
+    monkeypatch.setattr(dspy, "configure", lambda **_kwargs: None)
+    monkeypatch.setattr(config_mod, "create_lm", lambda _cfg: SimpleNamespace(model="stub"))
+    monkeypatch.setattr(config_mod, "create_chat_adapter", lambda _cfg: object())
+    recorded: dict[str, Any] = {}
+
+    class RecordingAgent:
+        def __init__(
+            self,
+            *args: Any,
+            arc: Any = None,
+            provider_config: LMProviderConfig | None = None,
+            **kwargs: Any,
+        ) -> None:
+            recorded.update(kwargs)
+            assert provider_config is not None
+            self.arc = arc
+            self._provider_config = provider_config
+            self._main_lm = SimpleNamespace(model="stub")
+
+    monkeypatch.setattr("clio_agent.agent.ClioAgent", RecordingAgent)
+    app = build_app(sessions_path=tmp_path / "relay-wiring.json")
+
+    asyncio.run(_construct_agent_async(app))
+
+    assert recorded["remote_mcp_federation"] is remote
+    assert recorded["jarvis_jobs"] is jarvis
+    assert app.state.relay_tool_status == {"configured": True, "reason": None}
+
+
 def test_boot_seed_still_matches_env_single_provider(monkeypatch, tmp_path) -> None:
     """GACT single-provider operation unchanged: build_app seeds default from env.
 

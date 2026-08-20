@@ -34,6 +34,8 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from clio_agent.errors import MCP_TASK_RECORD_STORE_ABSENT
+from clio_agent.gact.relay_status import relay_capabilities
 from clio_agent.gact.runtime.capabilities import (
     _capability_gap_metadata,
     _latency_stat,
@@ -68,6 +70,7 @@ from clio_agent.runtime.status import (
     RuntimeReport,
     collect_runtime_status,
 )
+from clio_agent.tools.mcp_task_records import task_record_store_is_durable
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -431,6 +434,8 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/capabilities", response_model=Capabilities)
     async def capabilities() -> Capabilities:
+        bearer_enabled = bool(getattr(app.state, "bearer_token", None))
+        task_store_durable = task_record_store_is_durable()
         return Capabilities(
             contract_version=CONTRACT_VERSION,
             backend=BackendInfo(
@@ -485,7 +490,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 integration_health=True,  # /v1/health above carries it
                 tool_telemetry=True,  # BBB18 — tool.call.started/completed events
                 x_clio_cancellation="best_effort",
-                x_clio_executor_cancellation=False,
+                x_clio_executor_cancellation=True,  # #1116 — MCP request task -> wire cancel
                 x_clio_text_streaming="best_effort_live",
                 x_clio_synthetic_posthoc_streaming=False,
                 x_clio_stream_fallback_reasons=_stream_fallback_reason_capabilities(),
@@ -498,6 +503,38 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 x_clio_context_frames=True,
                 x_clio_semantic_events=True,
                 x_clio_artifacts=True,  # #968 — /v1/artifacts + artifact.* + resource_link
+                x_clio_document_artifacts={
+                    "protocol_version": "0.1.0",
+                    "profiles": [
+                        "markdown",
+                        "pdf",
+                        "latex",
+                        "html-static",
+                        "ooxml-word",
+                        "ooxml-sheet",
+                        "ooxml-slides",
+                        "odf-text",
+                        "odf-sheet",
+                        "odf-slides",
+                    ],
+                    "anchors": [
+                        "text-quote",
+                        "pdf-quad",
+                        "dom",
+                        "sheet-range",
+                        "slide-shape",
+                        "native-comment",
+                        "source-map",
+                    ],
+                    "review_parts": True,
+                    "floating_comments": True,
+                    "immutable_revisions": True,
+                    "native_working_copies": True,
+                    "native_comment_trigger": "@clio",
+                    "embedded_editors": ["onlyoffice", "collabora"],
+                    "static_html_scripts": "blocked",
+                    "executable_html_transition": "live-web",
+                },
                 x_clio_semantic_trace_backend=getattr(
                     app.state.semantic_trace_backend,
                     "name",
@@ -515,9 +552,20 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ),
                 x_clio_capability_gaps=_capability_gap_metadata(),
+                x_clio_task_record_store={
+                    "durable": task_store_durable,
+                    "reason": None if task_store_durable else MCP_TASK_RECORD_STORE_ABSENT,
+                },
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
-            auth=AuthInfo(schemes=["trust_socket"], current="trust_socket"),
+            auth=AuthInfo(
+                schemes=["trust_socket", "bearer"] if bearer_enabled else ["trust_socket"],
+                current="bearer" if bearer_enabled else "trust_socket",
+            ),
+            relay=relay_capabilities(
+                getattr(app.state, "relay_tool_status", None)
+                or getattr(app.state, "relay_runtime_status", None)
+            ),
         )
 
     @app.get("/v1/hooks")

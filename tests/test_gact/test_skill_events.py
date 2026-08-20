@@ -56,15 +56,14 @@ def test_load_skill_emits_exactly_one_skill_loaded(
         captured.append({"event_type": event_type, **kw})
         return {}
 
-    monkeypatch.setattr(
-        "clio_agent.gact.runtime.globals._emit_semantic_event", _capture
-    )
+    monkeypatch.setattr("clio_agent.gact.runtime.globals._emit_semantic_event", _capture)
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
         agent = _agent(pack)
         runtime = sr.skill_runtime_for_agent(app, agent)
         tool = sr.build_load_skill_tool(agent, runtime)
+
         def _call_under_turn() -> None:
             # set_turn_identity is a BARE set (no token) — run inside a copied
             # context so the identity never leaks past this test.
@@ -136,6 +135,7 @@ def test_emit_failure_never_breaks_a_successful_load(
         agent = _agent(pack)
         runtime = sr.skill_runtime_for_agent(app, agent)
         tool = sr.build_load_skill_tool(agent, runtime)
+
         def _call_under_turn() -> str:
             _ctx.set_turn_identity(
                 app=app, session_id=sid, turn_id="turn_920", trace_id="trace_920"
@@ -184,3 +184,57 @@ def test_runtime_provenance_carries_skill_resolution(pack: Path, tmp_path: Path)
     payload = _dynamic_agent_runtime_provenance(app, agent, execution_mode="blueprint")
     assert payload["skill_resolution"]["rubric"]["status"] == "resolved"
     assert payload["skill_resolution"]["ghost"]["status"] == "missing"
+
+
+def test_load_skill_call_is_recorded_on_the_blueprint_tool_rows(pack: Path) -> None:
+    """The auto-attached load_skill is wrapped like a declared tool: calling it
+    lands a row on the active blueprint tool rows — the stream that becomes
+    tool_call/tool_result transcript parts — so a skill load is visible in the
+    loop, not only in the trace log. (Found live: the materio-md compute expert
+    loaded both its skills with zero wire evidence.)"""
+
+    from clio_agent.gact.agents.builders import _recorded_load_skill_tool
+
+    agent = _agent(pack)
+    runtime = sr.skill_runtime_for_agent(None, agent)
+    tool = _recorded_load_skill_tool(agent, runtime)
+    assert getattr(tool, "name", "") == "load_skill"
+
+    rows: list[dict[str, Any]] = []
+
+    def _call_with_rows() -> str:
+        _ctx.set_blueprint_tool_rows(rows)
+        return tool.func(skill_id="rubric")
+
+    out = contextvars.copy_context().run(_call_with_rows)
+    assert BODY in out
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["name"] == "load_skill"
+    assert row["ok"] is True
+    assert row["args"] == {"skill_id": "rubric"}
+    assert row["telemetry_source"] == "blueprint_react_tool_wrapper"
+
+
+def test_failed_load_skill_call_is_recorded_as_an_error_row(pack: Path) -> None:
+    """An unknown-skill load still leaves wire evidence: the recording wrapper
+    appends an ok=False row with the error before re-raising."""
+
+    from clio_agent.gact.agents.builders import _recorded_load_skill_tool
+
+    agent = _agent(pack)
+    runtime = sr.skill_runtime_for_agent(None, agent)
+    tool = _recorded_load_skill_tool(agent, runtime)
+
+    rows: list[dict[str, Any]] = []
+
+    def _call_with_rows() -> None:
+        _ctx.set_blueprint_tool_rows(rows)
+        with pytest.raises(ValueError, match="unknown skill"):
+            tool.func(skill_id="nope")
+
+    contextvars.copy_context().run(_call_with_rows)
+    assert len(rows) == 1
+    assert rows[0]["name"] == "load_skill"
+    assert rows[0]["ok"] is False
+    assert "unknown skill" in rows[0]["error"]

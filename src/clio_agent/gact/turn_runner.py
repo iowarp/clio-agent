@@ -127,6 +127,14 @@ class TurnRunner:
 
         self._loop = loop
 
+    def call_soon_threadsafe(self, callback: Callable[..., None], *args: object) -> None:
+        """Schedule ``callback`` on the bound app-lifetime event loop."""
+
+        loop = self._loop
+        if loop is None:
+            raise RuntimeError("turn runner event loop is not bound")
+        loop.call_soon_threadsafe(callback, *args)
+
     def busy(self, sid: str) -> bool:
         """True iff a turn is currently in flight for ``sid`` — the within-session
         concurrency signal the POST route gates on."""

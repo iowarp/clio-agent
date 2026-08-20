@@ -28,6 +28,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -35,6 +36,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agents import spawn_runtime
+from clio_agent.gact.agents.invoker import ExpertInvoker, TaskHandle, TaskResult
 from clio_agent.gact.app import build_app
 from clio_agent.gact.expert_packs import validate_expert_hierarchy
 from clio_agent.gact.runtime.globals import _gact_app_context
@@ -87,6 +89,40 @@ def _errors_for(parent: AgentDef, children: list[AgentDef]) -> list[str]:
     rows = validate_expert_hierarchy([parent, *children])
     by_id = {row.id: row for row in rows}
     return by_id[parent.id].validation_errors
+
+
+class _WorkflowInvokerSpy:
+    """Protocol-complete stub proving workflow invoke/cancel boundary routing."""
+
+    def __init__(self) -> None:
+        self.invoked: list[Any] = []
+        self.cancelled: list[TaskHandle] = []
+
+    def invoke(self, spec: Any) -> TaskHandle:
+        self.invoked.append(spec)
+        return TaskHandle(
+            task_id="task_workflow_stub",
+            parent_session_id=spec.parent_session_id,
+            child_session_id="child_workflow_stub",
+            status="running",
+            depth=spec.depth,
+        )
+
+    def wait(self, handle: TaskHandle, timeout_s: float) -> TaskResult:
+        del handle, timeout_s
+        raise AssertionError("workflow progress watch does not call blocking wait")
+
+    def check(self, handles: list[TaskHandle]) -> list[TaskResult]:
+        del handles
+        raise AssertionError("workflow progress watch does not call model poll")
+
+    def cancel(self, handle: TaskHandle) -> bool:
+        self.cancelled.append(handle)
+        return True
+
+    def message(self, handle: TaskHandle, text: str, metadata: Any = None) -> None:
+        del handle, text, metadata
+        raise AssertionError("workflow routing does not message a child")
 
 
 def _wait_terminal(app: Any, task_id: str, timeout: float = 15.0) -> Any:
@@ -336,6 +372,44 @@ def _run_workflow_app(
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     agent.app = app
     return app
+
+
+def test_workflow_spawn_and_cancel_route_through_expert_invoker(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """P2.6: workflow substrate invoke/cancel use the configured Protocol."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    spy = _WorkflowInvokerSpy()
+    assert isinstance(spy, ExpertInvoker)
+    app.state.expert_invoker = spy
+    running = SimpleNamespace(
+        task_id="task_workflow_stub",
+        status="running",
+        result=None,
+        error_reason="",
+        is_terminal=False,
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.workflows.watch_step",
+        lambda *_args, **_kwargs: (running, "stalled", 1.0),
+    )
+    monkeypatch.setattr(spawn_runtime, "emit_workflow_step_start", lambda *_args: None)
+    monkeypatch.setattr(spawn_runtime, "emit_workflow_step_return", lambda *_args: None)
+
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        record = run_declared_workflow(
+            app,
+            _wf_def([{"id": "s", "child": "a", "task": "work"}]),
+            parent,
+            inactivity_window_s=0.1,
+        )
+
+    assert record["status"] == "stalled"
+    assert len(spy.invoked) == 1
+    assert spy.invoked[0].child_expert_id == "a"
+    assert [handle.task_id for handle in spy.cancelled] == ["task_workflow_stub"]
 
 
 def test_runner_executes_a_b_c_in_order_with_per_step_records(tmp_path: Path, monkeypatch) -> None:

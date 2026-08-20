@@ -4,6 +4,215 @@ All notable changes to clio-agent's GACT-contract surface are
 documented in this file. Internal changes that don't affect the
 TUI/HTTP surface aren't tracked here.
 
+## Unreleased
+
+## [0.9.1] — 2026-08-19
+
+> **Note:** `0.10.0a1` was tagged from this same content on 2026-08-19 and
+> then retracted (its GitHub tag/page were deleted) before it reached a
+> default install; PyPI's `0.10.0a1` upload is orphaned and invisible to
+> stable-ordering installs. The work itself was never wrong, only the
+> version lane: the v0.10 program (MCP v2, federation, and the Session v3
+> UI — `docs/design/v010-program-2026-08.md`, program umbrella #1096) does
+> not cut its first real `0.10.0` tag until P5, once the paired gact-tui
+> Session v3 UI lands and the program's composed gate is green. Until then
+> `0.9.x` is the sanctioned release lane, so this content ships as `0.9.1`
+> instead. MCP v2 (P0-P1) and relay federation (P2) below are complete and
+> live; the Session v3 UI (P3-P5) has not started.
+
+This release carries the MCP 2026-07-28 protocol upgrade, relay federation
+(one spawn surface, remote MCP tools, JARVIS/Spack, execution-output
+artifact fetch), live model-catalog discovery, document artifacts + human
+review, the spotter-ai approval mode, a session-scoped async-processes
+surface, a round of relay-surface fixes (wait-as-commitment, unlimited
+turn default, catalog TTL refresh), and a serve-boot performance redesign
+that landed since the 0.10.0a1 prep.
+
+### Added — MCP protocol v2 (P0-P1, #1096)
+
+- **Protocol upgrade to the 2026-07-28 line** (#1107). fastmcp 4.0.0b1 /
+  mcp 2.0.0 replace the prior 2025-11-25 pin; a published compatibility
+  matrix confirms both the new line and legacy (pre-2026-07-28) MCP
+  servers round-trip. A `server/discover` handshake floor stamps
+  per-request `_meta` capability flags and `clientInfo` on every call
+  through one client factory (#1111).
+- **Elicitation bridged into the HITL question pipeline** (#1113). A
+  server-initiated elicitation (form or URL mode) now mints the same
+  `UserQuestion` a native ask does — one answer surface, no parallel
+  store — and parks the in-flight tool call on an async-safe future
+  until the user answers, declines, or cancels.
+- **Bounded multi-round tool-input retry (MRTR)** (#1114). A tool call
+  that comes back `InputRequiredResult` is retried with the user's
+  supplied inputs for a bounded number of rounds instead of failing
+  outright, with a typed exhaustion reason if the rounds run out.
+- **Durable, reconnectable tasks extension client** (SEP-2663, #1115).
+  Long-running MCP tool calls get a durable, deduplicated task record
+  that survives a reconnect (poll/resume by task id) instead of being
+  tied to one connection's lifetime.
+- **Foreground call cancellation** (#1116) and **`prompts/get` support**
+  (#1117) round out the client surface.
+- **MCP client auth** (#1118): custom headers on runtime-configured
+  server specs, plus OAuth, for non-loopback and third-party MCP servers.
+- **Typed protocol refusals + an extended degrade catalog** (#1112) so a
+  version mismatch or unsupported result shape surfaces as a specific
+  reason instead of a generic tool failure.
+- Our own fs/shell/gateway MCP servers speak the new line, verified by a
+  standing conformance suite pinned to the 2026-07-28 spec.
+
+### Added — relay federation (P2, #1096)
+
+- **One spawn surface, local or remote** (#1127). `spawn_agent_task` /
+  `spawn_agents_parallel` take a `placement` parameter (`local` or
+  `relay:<cluster>`, with a session-policy fallback) instead of separate
+  local/remote tools; a `RelayExpertInvoker` (#1126) runs a spawned
+  child on a remote cluster through the identical grammar (same
+  `expert_handoff`/run-handle part shapes, same typed errors) a local
+  child uses, verified by a parity suite parametrized over both
+  implementations. A runs registry/API projects both uniformly.
+- **`message-an-agent`, unified across the boundary** (#1128): steer,
+  queue, and wake a spawned agent — local or remote — through one tool.
+- **Remote MCP federation tools** (#1129): a remote application's tools
+  are called as durable `mcp_call` jobs behind a handle-first surface;
+  an oversized result fails with a typed reason instead of being
+  silently truncated.
+- **Curated JARVIS/Spack durable-job surface** (#1130): submit and query
+  HPC application runs (e.g. ParaView, LAMMPS) over the relay transport;
+  `jarvis_run` is handle-first (submit only), and `jarvis_get_execution`
+  gives one unified lifecycle/progress/artifacts/services view.
+- **Background-exit injection + live execution views** (#1131): a
+  detached remote job's completion is injected back into the session
+  exactly once, with a live progress view streamed over SSE.
+- **`relay_fetch_artifact`**: transfers one bounded remote execution
+  output into the local workspace as a first-class artifact (the
+  execution-output artifact path on the clio-agent side).
+- Relay's own state machine (`RELAY_STATE_MAP`) and schema shapes are
+  shared via the new `clio-schemas` package (#1120, #1121), with
+  cross-repo schema-equality CI guarding drift.
+
+### Added — model catalog & provider governance
+
+- **Live model-catalog discovery** (#1211): `codex` and `claude_code`
+  provider catalogs are now discovered from the live CLI/account instead
+  of hardcoded, with a `POST /v1/providers/models/refresh` overlay and
+  the built-in `update-models` skill as the model-facing interface. A
+  failed probe never clears a provider's prior discovered list.
+- **Typed model-rejection classification** (#1184): a model the account
+  no longer serves now raises a typed rejection on both the `codex` and
+  `claude_code` bridges instead of being misclassified as a transient
+  error and retried 2-3 times for nothing.
+- `claude_code` defaults to Sonnet under the standing cost policy.
+
+### Added — session surfaces
+
+- **Session-scoped async-processes surface** (#1205): `GET
+  /v1/sessions/{sid}/async-processes` unions spawned agent tasks with
+  durable MCP task records (relay/JARVIS jobs included) into one tray,
+  with live SSE updates and explicit retention/dismiss semantics.
+- **Document artifacts + human review**: document production and
+  rendition, plus routes for a human to review a generated document
+  before it's finalized.
+- **Spotter-ai approval mode**: a fifth `session.approval_mode` (grants
+  no auto-approval of its own — behaves like `ask`) that arms a standing
+  push-wake watcher child bound to its own Agent Blueprint; a generic
+  `action_card` part and a `raise_alert_card` tool let an agent surface
+  something that needs attention without a bespoke UI part per use case.
+- Blueprint marketplace packs install by default (all packs, deduped
+  discovery, durable uninstalls) instead of requiring manual selection.
+
+### Changed
+
+- **`wait_for_terminal` is honored as a real commitment** (#1224,
+  #1225). The relay federation wrapper previously forwarded
+  `wait_for_terminal` but always returned the same queued handle,
+  forcing a second `relay_wait` call and roughly doubling agent tool
+  calls; it now resolves through the durable task record, and the MCP
+  executor no longer silently truncates an undeclared-budget wait at a
+  30s per-tool default.
+- **Unlimited turn budget is the default** (#1224, #1226). The ReAct
+  loop's per-turn iteration cap no longer defaults to a deterministic
+  formula that could starve a long-running orchestrator mid-task; a cap
+  now survives only as an explicit, blueprint-declared opt-in. The
+  provider-level session turn budget (`max_turns`) is likewise unlimited
+  by default, bounding the SDK session rather than one query.
+- **Relay's tool-surface catalog refreshes on a TTL** (#1224, #1227,
+  default 300s) instead of being discovered once at boot and cached
+  forever, so a tool that appears on the door later becomes usable
+  without a restart.
+- **A named-but-unprojected relay tool degrades per-tool, not per-agent**
+  (#1224, #1228): if an agent's tool ACL names a relay tool the door
+  advertises but clio hadn't projected (e.g. `relay_artifact_lineage`,
+  `relay_status`), that one tool now degrades with a typed reason
+  instead of bricking the whole agent build.
+- **Provider chain-of-thought reaches the wire again**: a CLI default
+  change had silently dropped every `claude_code` thinking delta: the
+  SDK now requests summarized display explicitly, Sonnet gets the same
+  conservative thinking floor Haiku already had, and a redacted delta is
+  now a typed `provider_thinking_redacted` reason instead of a silent drop.
+- **Serve boot is lazy and non-blocking** (#1232). The boot gateway now
+  mounts only the active session's blueprint-declared MCP servers instead
+  of every installed blueprint's, and lists every declared namespace
+  concurrently with its own per-namespace deadline instead of serially —
+  three dead namespaces, or one heavy unrelated science pack, no longer
+  cost minutes of boot. A namespace that misses its deadline degrades
+  typed and self-heals on a background probe; "agent ready" never waits
+  on a declared MCP server.
+- **Concurrent MCP launcher spawns no longer race the same cache**
+  (#1232). A stdio MCP launcher spawn now takes a bounded, clio-owned
+  lock before touching the shared uv cache, failing fast with a typed
+  reason instead of hanging when the lock is wedged; a per-server
+  `probe_timeout_retries` override no longer inflates every sibling
+  server's connect budget.
+- **Boot reaps provably orphaned MCP/CLI child processes** (#1232). A
+  process-census pass now kills, not just reports, a child process whose
+  parent is confirmed dead (re-checked at kill time); the daemon-owning
+  clio-core process is never a candidate.
+
+### Fixed
+
+- **Ambient-relay turn poison** (#1229): a stale repo-root `.env` and a
+  library's import-time dotenv load could leak relay endpoint
+  environment variables into an unrelated turn, dialing a half-dead door
+  and stalling for roughly 15 seconds. Fixed at the source (retired
+  `.env`), at the discovery seam (never runs an ambient round trip
+  inside a turn), and by test-fixture isolation.
+- `/v1/sessions` no longer 500s on sessions written by an older server
+  version.
+- Server errors (5xx) now reach the browser as a real error instead of
+  an opaque "Failed to fetch".
+- A session no longer silently inherits a blueprint or expert-pack
+  default it never activated.
+- `POST /messages` with a missing `parts[]` returns a typed 400 instead
+  of an internal error.
+- A namespace-dispatch defect that mis-reported real backend tool
+  failures as "unknown tool" is fixed.
+- MCP tool-result plumbing: list/bool results reach the UI as JSON
+  instead of a Python repr, typed MCP content blocks and tool titles are
+  preserved end to end, and turn-end artifact rollups land every mint in
+  a turn's tree on the parent message.
+- **Relay task records bind to the live session, not the relay
+  owner-session** (#1231, PR #1234). The production relay client is a
+  boot-time singleton reused across many turns/sessions, so it previously
+  stamped every task with the relay owner-session id, which no CLIO
+  session store could ever resolve; task records now resolve the active
+  gact session fresh at submit time. A job's bounded console tail also
+  now folds into the session's live `mcp_task.*` event stream on every
+  poll, so long-running remote jobs show real progress instead of going
+  silent until completion.
+- **Relay federation tools are usable on the first turn** (#1232
+  follow-up). Lazy boot deferred the relay federation's projected tool
+  definitions to a background pass, so any agent whose tool ACL named a
+  relay tool before that pass completed bricked typed instead of working.
+  Federation tools now seed synchronously alongside the built-ins, first
+  discovery pushes onto the live agent (not only internal server state),
+  and an unconfigured relay transport still stays a strict no-op (no
+  ambient discovery leaking into an unrelated turn).
+- **`relay_list_artifacts` and `relay_read_artifact` are reachable.** A
+  remote job's produced (not only consumed) artifacts are now listed,
+  and the tool that fetches their bytes is projected onto the agent
+  surface — closing a gap where a remote job's minted output artifact
+  was undiscoverable and, even once found, unreadable from any client
+  tool.
+
 ## [0.9.0] — 2026-07-29
 
 ### Governance surfaces campaign (#1057)

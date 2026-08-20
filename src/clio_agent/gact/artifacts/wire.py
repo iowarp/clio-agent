@@ -18,13 +18,17 @@ route so a client can retrieve the content hash-verified.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.artifacts.records import ArtifactKind, ArtifactVersion
 from clio_agent.gact.types import Part
+from clio_agent.runtime.humanize import format_bytes
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
+    from clio_agent.gact.artifacts.proposals import ProposalOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -230,12 +234,144 @@ def append_turn_resource_links(
         )
 
 
+def append_turn_child_resource_links(
+    app: "FastAPI", sid: str, turn_id: str, transcript: Any, *, agent_id: str = ""
+) -> None:
+    """Roll up artifacts minted by CHILD sessions spawned THIS turn (owner ask
+    2026-08-06): "show at the end of the turn ALL artifacts that have been
+    generated in that turn by any of the agents or subagents".
+
+    :func:`append_turn_resource_links` gives the PARENT's own mints wire identity
+    from its per-session turn buffer; a delegated child's mints only ever chipped
+    into the CHILD's own transcript because that buffer is session-scoped and
+    already drained by the child's OWN finalize by the time this parent finalize
+    runs — so the buffer is not a source here. Instead this walks the agent-task
+    registry for the child sessions this parent TURN spawned (``parent_turn_id ==
+    turn_id`` — a prior turn's child never matches) plus their full descendant
+    tree (a child's own children, still entirely owned by this turn's work: each
+    spawn mints a brand-new session, never reused across turns or parents), then
+    reads every version those sessions produced from the artifact REGISTRY — the
+    authoritative in-process projection (RULE 4), not a heuristic.
+
+    Appended as one contiguous run, ordered by mint time, AFTER
+    :func:`append_turn_resource_links` so both runs land adjacent on the message
+    (one ARTIFACTS grid client-side); any ``artifact_id`` already riding a
+    ``resource_link`` part on this message is skipped, so the parent's own chips
+    can never duplicate. No descendant spawned this turn -> no registry scan, no
+    parts (never an empty grid marker). Fully guarded: a rollup failure must
+    never break the turn's answer.
+    """
+    try:
+        reg = getattr(app.state, "agent_task_registry", None)
+        if reg is None:
+            return
+        direct_children = [
+            str(task.child_session_id)
+            for task in reg.for_parent(sid)
+            if task.child_session_id and task.parent_turn_id == turn_id
+        ]
+        if not direct_children:
+            return
+
+        from clio_agent.gact.agent_tasks import descendant_session_ids  # noqa: PLC0415
+        from clio_agent.gact.artifacts.registry import get_registry  # noqa: PLC0415
+        from clio_agent.gact.runtime.globals import _new_part_id  # noqa: PLC0415
+
+        session_ids: set[str] = set(direct_children)
+        for child_sid in direct_children:
+            session_ids.update(descendant_session_ids(app, child_sid))
+
+        already = {
+            str(part.metadata.get("artifact_id") or "")
+            for part in transcript.snapshot()
+            if part.type == "resource_link"
+        }
+
+        rows: list[tuple[str, str, ArtifactVersion]] = []
+        for record in get_registry(app).all_records():
+            for version in record.versions:
+                producer_sid = str((version.producer or {}).get("session_id") or "")
+                if producer_sid not in session_ids or version.artifact_id in already:
+                    continue
+                rows.append((record.workspace_id, record.name, version))
+        rows.sort(key=lambda row: row[2].created_at or "")
+
+        for workspace_id, name, version in rows:
+            transcript.append_part(
+                resource_link_part(
+                    workspace_id, name, version, part_id=_new_part_id(), agent_id=agent_id
+                ),
+                stream_source="batch",
+            )
+    except Exception:  # noqa: BLE001 — a wire-identity rollup must never break a turn
+        logger.warning(
+            "artifact child resource_link rollup skipped reason=turn_rollup_failed session=%s",
+            sid,
+        )
+
+
+def create_artifact_summary_message(outcomes: "Sequence[ProposalOutcome]") -> str:
+    """One-line wire summary for ``create_artifact``'s declared ``structured_content``
+    (P5 wire semantics — the ``wait_agent_tasks`` treatment): derived directly from
+    each outcome's own accepted/created/reason facts — never invented, never a
+    second guess at what ``promote_proposals`` already decided.
+
+    A single-item batch (the common case) names the ONE outcome: a fresh mint with
+    its size, a dedup against the existing version, or the typed rejection reason.
+    A multi-item batch reports the created/deduplicated/rejected tally plus a
+    bounded sample of the first few names (never a raw dump).
+    """
+
+    if len(outcomes) == 1:
+        outcome = outcomes[0]
+        if not outcome.accepted:
+            return f"rejected: {outcome.reason}"
+        if outcome.created:
+            size = outcome.version.size_bytes if outcome.version is not None else None
+            suffix = f" ({format_bytes(size)})" if isinstance(size, int) else ""
+            return f"created 1 artifact: {outcome.name}{suffix}"
+        version_n = outcome.version.version if outcome.version is not None else 0
+        return f"deduplicated against existing {outcome.name} v{version_n}"
+    created = sum(1 for o in outcomes if o.accepted and o.created)
+    deduplicated = sum(1 for o in outcomes if o.accepted and not o.created)
+    rejected = sum(1 for o in outcomes if not o.accepted)
+    names = [o.name for o in outcomes if o.name]
+    sample = ", ".join(names[:3])
+    if len(names) > 3:
+        sample += f", +{len(names) - 3} more"
+    summary = (
+        f"{len(outcomes)} artifacts: {created} created, "
+        f"{deduplicated} deduplicated, {rejected} rejected"
+    )
+    return f"{summary} ({sample})" if sample else summary
+
+
+def declare_create_artifact_structured_content(
+    outcomes: "Sequence[ProposalOutcome]", result: Mapping[str, Any]
+) -> None:
+    """Declare ``create_artifact``'s typed wire payload: the composed summary
+    ``message`` FIRST, then the SAME ``artifacts``/``created``/``deduplicated``/
+    ``rejected`` fields the model-facing ``result`` already carries. Both of
+    ``promote_proposals``'s return points stay a single call — the substantive
+    logic lives HERE so proposals.py's ratcheted line count stays flat.
+    """
+
+    from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+        declare_structured_content,
+    )
+
+    declare_structured_content({"message": create_artifact_summary_message(outcomes), **result})
+
+
 __all__ = [
     "ARTIFACT_SERVER_ID",
     "PROPOSED_ARTIFACT_EVENT",
     "UI_PAYLOAD_MIME",
+    "append_turn_child_resource_links",
     "append_turn_resource_links",
     "artifact_uri",
+    "create_artifact_summary_message",
+    "declare_create_artifact_structured_content",
     "fetch_url_for",
     "mime_for",
     "proposed_diff_payload",

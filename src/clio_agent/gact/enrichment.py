@@ -55,6 +55,7 @@ from clio_agent.gact.permission_gate import (
     _record_resolved_permission,
 )
 from clio_agent.gact.providers.config import _active_lm_model_ref
+from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.constants import _CTX_MAX_BYTES
 from clio_agent.gact.runtime.globals import (
     _ContextFileAccessError,
@@ -597,6 +598,21 @@ def _enrich_with_requested_memory_search(
     ), metadata
 
 
+def enrich_turn_context(
+    app: "FastAPI", sid: str, user_text: str, user_msg: "Message"
+) -> tuple[str, dict[str, Any]]:
+    """#1215 S5: both enrichment mechanisms as ONE timed "enrichment" phase.
+
+    Pure timed combinator -- delegates unchanged to the two real functions
+    above (no logic moves); the turn loop's single call site replaces its
+    former two separate calls with this one.
+    """
+
+    with bringup_timing.timer_for_session(app, sid).phase("enrichment"):
+        text = _enrich_with_context_files(app, sid, user_text)
+        return _enrich_with_requested_memory_search(app, sid, text, user_msg)
+
+
 # Clio-owned marker for the server-composed observe-later notification block
 # (#948 S6). The block is SERVER grounding prepended to the model's turn input —
 # never user text and never model output — so it carries this constant header (the
@@ -746,14 +762,20 @@ def consume_pending_agent_task_notifications(app: "FastAPI", sid: str, task_ids:
         # Consume (atomic once-guard); a concurrent wait may already have consumed
         # it, in which case this no-ops. The terminal emission below is separately
         # once-gated, so we ALWAYS attempt it (exactly-once regardless of order).
-        consume_notification(app, task_id)
+        claimed = consume_notification(app, task_id)
+        if claimed is not None:
+            from clio_agent.gact.background_exit import (  # noqa: PLC0415
+                emit_background_exit_part,
+            )
+
+            emit_background_exit_part(app, sid, claimed)
         parent_id = task.agent_ref.get("requesting_expert_id", "") or "main"
         parent_def = AgentDef(
             id=parent_id,
             title=parent_id,
             metadata={"agent_blueprint_id": blueprint_id},
         )
-        _emit_delegation_terminal(app, sid, parent_def, task)
+        _emit_delegation_terminal(app, sid, parent_def, claimed or task)
 
 
 def _context_file_turn_provenance(app: "FastAPI", sid: str, *, status: str) -> dict[str, Any]:

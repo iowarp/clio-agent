@@ -60,7 +60,7 @@ class _FakeResult:
 class _FakeClient:
     """Async-context fastmcp.Client stand-in that returns a canned result."""
 
-    def __init__(self, transport: Any) -> None:
+    def __init__(self, transport: Any, **_: Any) -> None:
         self._transport = transport
 
     async def __aenter__(self) -> "_FakeClient":

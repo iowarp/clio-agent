@@ -1,0 +1,79 @@
+# ---------- Elastic constants (C11, C12, C44) of FCC Cu via finite-difference stress-strain ----------
+# Single-atom-basis FCC Bravais lattice: affine strain fully determines atomic
+# displacement (no internal relaxation degrees of freedom), so each strained
+# stress is evaluated with zero dynamics steps ("run 0") after affinely
+# remapping atoms via change_box, then the box change is exactly undone
+# before the next probe. Cubic symmetry (C11=C22=C33, C12=C13=C23,
+# C44=C55=C66) means uniaxial-x and shear-yz probes are sufficient.
+# Units: metal (pressure in bar). Stress = -pressure (LAMMPS sign
+# convention); GPa conversion factor cfac = 1e-4 (1 bar = 1e-4 GPa).
+
+units           metal
+atom_style      atomic
+boundary        p p p
+atom_modify     map array
+
+variable        a0      equal 3.615
+variable        delta   equal 1.0e-6
+variable        cfac    equal 1.0e-4
+
+lattice         fcc ${a0}
+region          simbox block 0 6 0 6 0 6 units lattice
+create_box      1 simbox
+create_atoms    1 box
+mass            1 63.546
+
+pair_style      eam
+pair_coeff      * * Cu_u3.eam
+
+neighbor        1.0 bin
+neigh_modify    delay 0 every 1 check yes
+
+min_style       cg
+fix             relaxbox all box/relax iso 0.0 vmax 0.001
+minimize        1.0e-12 1.0e-12 2000 20000
+unfix           relaxbox
+minimize        1.0e-12 1.0e-12 2000 20000
+
+change_box      all triclinic
+
+variable        lz0 equal lz
+
+run             0
+variable        pxx0 equal pxx
+variable        pyy0 equal pyy
+variable        pzz0 equal pzz
+variable        pyz0 equal pyz
+
+# ---- uniaxial x, +delta ----
+change_box      all x scale $(1.0+v_delta) remap units box
+run             0
+variable        pxx_xp equal pxx
+variable        pyy_xp equal pyy
+change_box      all x scale $(1.0/(1.0+v_delta)) remap units box
+
+# ---- uniaxial x, -delta ----
+change_box      all x scale $(1.0-v_delta) remap units box
+run             0
+variable        pxx_xm equal pxx
+variable        pyy_xm equal pyy
+change_box      all x scale $(1.0/(1.0-v_delta)) remap units box
+
+# ---- shear yz, +delta ----
+change_box      all yz delta $(v_delta*v_lz0) remap units box
+run             0
+variable        pyz_yzp equal pyz
+change_box      all yz delta $(-v_delta*v_lz0) remap units box
+
+# ---- shear yz, -delta ----
+change_box      all yz delta $(-v_delta*v_lz0) remap units box
+run             0
+variable        pyz_yzm equal pyz
+change_box      all yz delta $(v_delta*v_lz0) remap units box
+
+# ---- elastic constants (GPa) ----
+variable        C11 equal -(v_pxx_xp-v_pxx_xm)/(2.0*v_delta)*v_cfac
+variable        C12 equal -(v_pyy_xp-v_pyy_xm)/(2.0*v_delta)*v_cfac
+variable        C44 equal -(v_pyz_yzp-v_pyz_yzm)/(2.0*v_delta)*v_cfac
+
+print           "ELASTIC_CONSTANTS_GPa C11=${C11} C12=${C12} C44=${C44}"

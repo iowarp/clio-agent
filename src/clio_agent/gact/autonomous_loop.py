@@ -657,7 +657,7 @@ def run_loop_command(app: Any, sid: str, request_body: Mapping[str, Any]) -> str
 def build_loop_wakeup_tool() -> Any:
     """Build the ``loop_wakeup`` dspy.Tool (auto-attached; self-pace control)."""
 
-    import dspy  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def loop_wakeup(
         delay_seconds: int = WAKEUP_MIN_S,
@@ -684,10 +684,11 @@ def build_loop_wakeup_tool() -> Any:
             delay_seconds=delay_seconds, prompt=prompt, reason=reason, stop=stop
         )
 
-    return dspy.Tool(
-        func=loop_wakeup,
+    return native_tool(
+        loop_wakeup,
         name="loop_wakeup",
         desc=loop_wakeup.__doc__,
+        title="Loop Wakeup",
         args={
             "delay_seconds": {
                 "type": "integer",

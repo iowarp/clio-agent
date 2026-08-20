@@ -19,13 +19,21 @@ Usage:
 
 import asyncio
 import concurrent.futures
+import functools
 import inspect
 import logging
 import time
 from collections.abc import Callable, Iterable, Mapping
-from typing import Any, cast
+from contextlib import suppress
+from typing import TYPE_CHECKING, Any
 
 from fastmcp import Client, FastMCP
+from fastmcp.server.providers.proxy import FastMCPProxy
+
+if TYPE_CHECKING:
+    from clio_agent.tools.jarvis_jobs import JarvisJobs
+    from clio_agent.tools.mcp_runtime import MCPClientCapabilities, MCPClientHandlers
+    from clio_agent.tools.remote_mcp import RemoteMcpFederation
 
 from clio_agent.tools.catalog import (
     TOOL_CATALOG,
@@ -33,7 +41,12 @@ from clio_agent.tools.catalog import (
     classification_tags,
     normalize_mcp_annotations,
 )
-from clio_agent.tools.mcp_config import BUILTIN_SERVER_NAMES, MCPServerSpec, transport_for
+from clio_agent.tools.mcp_config import (
+    BUILTIN_SERVER_NAMES,
+    MCPServerSpec,
+    MCPSpawnError,
+    transport_for,
+)
 from clio_agent.tools.servers.fs_server import fs_server
 from clio_agent.tools.servers.shell_server import shell_server
 
@@ -41,13 +54,8 @@ logger = logging.getLogger(__name__)
 
 
 def _mount_with_namespace(parent: FastMCP, server: FastMCP, namespace: str) -> None:
-    """Mount a server with stable namespaced tool names across FastMCP versions."""
-    mount_params = inspect.signature(parent.mount).parameters
-    mount = cast(Any, parent.mount)
-    if "namespace" in mount_params:
-        mount(server, namespace=namespace)
-    else:
-        mount(server, prefix=namespace)
+    """Mount a server with a stable namespaced tool name prefix."""
+    parent.mount(server, namespace=namespace)
 
 
 def _mount_builtins(gw: FastMCP) -> None:
@@ -73,23 +81,107 @@ def get_gateway() -> FastMCP:
     return gateway
 
 
-def _proxy_for_spec(spec: MCPServerSpec, cwd: str | None = None) -> FastMCP:
+def _proxy_for_spec(
+    spec: MCPServerSpec,
+    cwd: str | None = None,
+    *,
+    handlers: "MCPClientHandlers | None" = None,
+    capabilities: "MCPClientCapabilities | None" = None,
+) -> FastMCP:
     """Build a lazy FastMCP proxy backed by a Client over the spec's transport.
 
     The proxy connects lazily on first ``list_tools``/``call_tool``, so an
     unreachable declared server only degrades to "that namespace has no tools"
     rather than failing gateway construction.
 
+    This is an EXECUTION path: the proxy's backend client dispatches ``call_tool``
+    to the declared server. BOTH the handler-populated and no-handler cases build
+    ONE :class:`fastmcp.server.providers.proxy.ProxyClient` base through
+    :func:`make_mcp_client` (#1106/#1111) — the single site that stamps CLIO's
+    ``clientInfo`` identity, installs any hook dispatchers (#1106), and installs
+    any declared ``capabilities`` (#1111). Using ``ProxyClient`` for BOTH cases is
+    load-bearing: it preserves FastMCP's ``_ForwardingClientSession`` and
+    ``forward_incoming_headers=True`` — so caller authorization is forwarded to
+    HTTP backends, unhandled sampling / roots / log requests are push-forwarded to
+    the front, and backend results are relayed (not re-validated) mid-proxy. A hook
+    that CLIO wires overrides only that one handler; the rest keep forwarding. The
+    capability ``session_class`` subclasses the proxy's forwarding session, so
+    forwarding is COMPOSED, never discarded. Earlier the no-handler branch handed
+    the raw transport to ``create_proxy`` (leaking ``mcp/0.1.0`` downstream) and
+    the handler branch built a plain ``Client`` (discarding all of the above).
+
+    The base is built once and cloned per request via ``.new()`` — carrying the
+    session kwargs, hook dispatchers, and ``_transport_options`` (capability
+    ``session_class``) onto each clone — with ``_mirror_front_era_mode`` applied to
+    the clone (mode + ``backend_mode``) so the whole chain speaks one protocol era
+    end-to-end (proven by ``test_gateway_mirrors_front_era_to_backend``). This
+    base-once / clone-per-request pattern is required for correct era mirroring: a
+    fresh per-call construction reuses the transport's kept-alive session and leaks
+    the first request's era onto later requests. Constructing the base opens no
+    connection; a subprocess spawns only when a clone connects.
+
+    #1201 (adversarial review, PR #1202): THIS clone -- the one ``_client_factory``
+    returns -- is the ONE seam that dials the real backend transport for real.
+    ``base_backend`` itself is never entered (only its clones are), so era
+    instrumentation is applied fresh to ``fresh`` on every call, never to
+    ``base_backend`` (a live probe, ``scripts/diagnostics/
+    probe_1201_era_detectability.py``, proved the executor's own front-leg
+    capture on the composite gateway is BLIND here: ``_mirror_front_era_mode``
+    just above forces this SAME clone's mode to match the front's
+    already-negotiated, always-modern era before it ever connects for real).
+
     ``cwd`` (when given) is passed to stdio transports so the subprocess is
     spawned in that working directory; http transports ignore it.
     """
-    import warnings  # noqa: PLC0415
+    transport = transport_for(spec, cwd=cwd)
 
-    with warnings.catch_warnings():
-        # FastMCP 3.2 deprecates as_proxy in favor of create_proxy; both are the
-        # same machinery. Silence the deprecation so a successful mount stays quiet.
-        warnings.simplefilter("ignore")
-        return FastMCP.as_proxy(Client(transport_for(spec, cwd=cwd)))
+    from dataclasses import replace  # noqa: PLC0415
+
+    from fastmcp.server.providers.proxy import ProxyClient, _mirror_front_era_mode  # noqa: PLC0415
+
+    from clio_agent.tools.mcp_connection_era import instrument_client_era  # noqa: PLC0415
+    from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
+
+    base_backend = make_mcp_client(
+        transport, handlers=handlers, capabilities=capabilities, client_cls=ProxyClient
+    )
+
+    def _client_factory() -> Any:
+        fresh = base_backend.new()
+        mode = _mirror_front_era_mode()
+        # #1206 (owner ruling 2026-08-14): era selection comes ONLY from the
+        # OFFICIAL negotiation with THIS peer, never a mirrored assumption.
+        # Client._negotiate()'s pinned-exact-version branch -- always what a
+        # MODERN front's mirror returns here, since our front (Client(proxy)
+        # in mcp_executor.py) is always modern/in-process/instant --
+        # fabricates a DiscoverResult locally and never contacts the peer. A
+        # genuinely legacy-only backend (fastmcp 3.4.7 in an agent-blueprint's
+        # own venv, e.g. spotter-ai/phenotype) then never gets the
+        # `initialize` its session state machine requires first, so it
+        # rejects every later request forever -- deterministic, live-
+        # reproduced (#1206), not a timing race. Mirroring "legacy" is kept
+        # (that branch DOES send the real handshake, needed so a legacy
+        # front's push-forwarding reaches a like-negotiated backend --
+        # test_gateway_mirrors_front_era_to_backend); a modern pin runs real
+        # "auto" negotiation instead, landing on the identical outcome for a
+        # genuinely modern backend, honestly on legacy otherwise.
+        if mode == "legacy":
+            fresh.mode = mode
+            fresh._transport_options = replace(fresh._transport_options, backend_mode=mode)
+        elif mode is not None:
+            fresh.mode = "auto"
+        # Applied to THIS clone: base_backend is never entered directly (only
+        # its .new() clones are, per-request), so this is where the one REAL
+        # backend connect this factory ever produces actually gets classified.
+        return instrument_client_era(fresh, server_id=spec.name)
+
+    # provider_error_strategy="raise": FastMCPProxy IS an AggregateProvider
+    # wrapping exactly ONE child provider (its own ProxyProvider) -- never a
+    # second one to skip past. "warn" (fastmcp's default) would let
+    # aggregate.py swallow ANY non-NotFoundError from that one provider -- a
+    # real connect/protocol failure included -- into a fabricated "not
+    # found"; NotFoundError itself is unaffected either way.
+    return FastMCPProxy(client_factory=_client_factory, provider_error_strategy="raise")
 
 
 def _proxy_factory_accepts_cwd(factory: Callable[..., FastMCP]) -> bool:
@@ -116,13 +208,19 @@ def build_gateway(
     cwd: str | None = None,
     base_gateway: FastMCP | None = None,
     proxy_factory: Callable[..., FastMCP] | None = None,
+    handlers: "MCPClientHandlers | None" = None,
+    capabilities: "MCPClientCapabilities | None" = None,
+    remote_mcp_federation: "RemoteMcpFederation | None" = None,
+    jarvis_jobs: "JarvisJobs | None" = None,
+    relay_status: Mapping[str, Any] | None = None,
 ) -> FastMCP:
     """Build the agent's tool gateway: built-ins PLUS the declared MCP servers.
 
     Each usable declared spec is mounted under its name as namespace via a
-    FastMCP proxy (``FastMCP.as_proxy(Client(transport_for(spec)))``), preserving
-    the ``<name>_<tool>`` naming. The universal built-ins (``fs``/``shell``) are
-    always present; a declared server may not shadow a built-in namespace.
+    lazy FastMCP proxy whose backend is built through ``make_mcp_client`` (so it
+    carries CLIO identity), preserving the ``<name>_<tool>`` naming. The universal
+    built-ins (``fs``/``shell``) are always present; a declared server may not
+    shadow a built-in namespace.
 
     Args:
         declared_specs: ``name -> MCPServerSpec`` declarations to mount. Specs
@@ -141,6 +239,21 @@ def build_gateway(
             second argument, else ``proxy_factory(spec)`` for compatibility.
             Tests inject an in-process proxy here so no subprocess is spawned;
             production never passes this.
+        handlers: Optional execution-path handler bundle (#1106) forwarded to the
+            default proxy factory so each declared server's backend client carries
+            the CLIO dispatchers. Ignored when ``proxy_factory`` is supplied.
+        capabilities: Optional client-capability declaration (#1111) forwarded to
+            the default proxy factory so each declared server's backend advertises
+            it. Ignored when ``proxy_factory`` is supplied.
+        remote_mcp_federation: Optional relay catalog snapshot projected under the
+            reserved ``remote`` namespace. Its bare server names are mounted back
+            into the exact relay aliases ``remote_<ns>_<tool>``.
+
+        jarvis_jobs: Optional curated durable application surface mounted under the
+            reserved jarvis namespace.
+        relay_status: Optional typed production wiring status. A non-empty reason is
+            retained on the gateway for diagnostics even when only part of the relay
+            surface could be mounted.
 
     Returns:
         The gateway with the built-ins and declared proxies mounted.
@@ -151,13 +264,88 @@ def build_gateway(
         namespace, never as a startup crash.
     """
     gw = base_gateway if base_gateway is not None else _new_base_gateway()
-    make_proxy = proxy_factory or _proxy_for_spec
+    if proxy_factory is not None:
+        make_proxy = proxy_factory
+    elif handlers is not None or capabilities is not None:
+        # Bind the execution-path handler bundle / capability declaration onto the
+        # default factory so proxy backend clients carry them (#1106/#1111).
+        make_proxy = functools.partial(
+            _proxy_for_spec, handlers=handlers, capabilities=capabilities
+        )
+    else:
+        make_proxy = _proxy_for_spec
     accepts_cwd = _proxy_factory_accepts_cwd(make_proxy)
     # Attached to the gateway object (not a module map keyed by id(gw)): it
     # dies with the gateway, id-reuse cannot alias a stale registry, and a
     # second build over the same base MERGES instead of overwriting.
     registry: dict[str, Any] = getattr(gw, "_clio_namespace_proxies", {})
     specs_registry: dict[str, MCPServerSpec] = getattr(gw, "_clio_namespace_specs", {})
+    degraded: dict[str, dict[str, Any]] = getattr(gw, "_clio_degraded_capabilities", {})
+
+    reason = str((relay_status or {}).get("reason") or "")
+    relay_details = (relay_status or {}).get("details")
+    if remote_mcp_federation is None and jarvis_jobs is None and not reason:
+        reason = "relay_tools_not_configured"
+    if reason:
+        definitions = {
+            "relay_tools_not_configured": {
+                "category": "relay_configuration",
+                "description": "Relay-backed remote MCP and JARVIS tools are not configured.",
+                "recovery_actions": ["configure_relay"],
+            },
+            "relay_catalog_discovery_failed": {
+                "category": "relay_connectivity",
+                "description": "Relay catalog discovery failed during agent construction.",
+                "recovery_actions": ["check_relay_service", "retry_agent_construction"],
+            },
+        }
+        definition = definitions.get(
+            reason,
+            {
+                "category": "relay_configuration",
+                "description": "Relay-backed tools are unavailable.",
+                "recovery_actions": ["configure_relay"],
+            },
+        )
+        degraded["relay"] = {
+            "reason": reason,
+            **definition,
+            **({"details": dict(relay_details)} if isinstance(relay_details, Mapping) else {}),
+        }
+        logger.warning("relay tool surface degraded reason=%s", reason)
+    else:
+        degraded.pop("relay", None)
+
+    if remote_mcp_federation is not None:
+        from clio_agent.tools.remote_mcp import (  # noqa: PLC0415
+            RELAY_FOLLOW_NAMESPACE,
+            REMOTE_MCP_NAMESPACE,
+        )
+
+        occupied = _mounted_namespaces(gw) | set(BUILTIN_SERVER_NAMES)
+        federation_namespaces = {REMOTE_MCP_NAMESPACE}
+        if remote_mcp_federation.catalog.follow_tools:
+            federation_namespaces.add(RELAY_FOLLOW_NAMESPACE)
+        collision = occupied & federation_namespaces
+        if collision:
+            raise ValueError("remote MCP federation namespace is already provided")
+        remote_server = remote_mcp_federation.server
+        _mount_with_namespace(gw, remote_server, REMOTE_MCP_NAMESPACE)
+        registry[REMOTE_MCP_NAMESPACE] = remote_server
+        if remote_mcp_federation.catalog.follow_tools:
+            follow_server = remote_mcp_federation.follow_server
+            _mount_with_namespace(gw, follow_server, RELAY_FOLLOW_NAMESPACE)
+            registry[RELAY_FOLLOW_NAMESPACE] = follow_server
+
+    if jarvis_jobs is not None:
+        from clio_agent.tools.jarvis_jobs import JARVIS_NAMESPACE  # noqa: PLC0415
+
+        occupied = _mounted_namespaces(gw) | set(BUILTIN_SERVER_NAMES)
+        if JARVIS_NAMESPACE in occupied:
+            raise ValueError("curated JARVIS jobs namespace is already provided")
+        jarvis_server = jarvis_jobs.server
+        _mount_with_namespace(gw, jarvis_server, JARVIS_NAMESPACE)
+        registry[JARVIS_NAMESPACE] = jarvis_server
 
     # Names already provided (built-ins / earlier mounts) must not be shadowed.
     existing = _mounted_namespaces(gw) | set(BUILTIN_SERVER_NAMES)
@@ -191,6 +379,7 @@ def build_gateway(
             logger.warning("failed to mount declared MCP %r: %s", name, exc)
     gw._clio_namespace_proxies = registry  # type: ignore[attr-defined]
     gw._clio_namespace_specs = specs_registry  # type: ignore[attr-defined]
+    gw._clio_degraded_capabilities = degraded  # type: ignore[attr-defined]
     return gw
 
 
@@ -218,6 +407,48 @@ def _mounted_namespaces(gw: FastMCP) -> set[str]:
     return {_namespace_of(tool.name) for tool in tools}
 
 
+def list_builtin_tool_definitions() -> dict[str, Any]:
+    """List the in-process built-in servers' (fs/shell) tools — fast, no I/O.
+
+    #1232 pt 2: the boot path (``ClioAgent.__init__``) calls this synchronously
+    to seed SOME tool definitions immediately — built-ins never spawn a
+    subprocess or block — before backgrounding the slower declared-namespace
+    pass (``tools.mcp_discovery.discover_declared_tools_bounded``), so "agent
+    ready" never waits on any declared MCP server.
+    """
+
+    tools: dict[str, Any] = {}
+    for namespace, server in (("fs", fs_server), ("shell", shell_server)):
+        for tool in _list_tools_sync(server):
+            prefixed = f"{namespace}_{tool.name}"
+            tools[prefixed] = tool.model_copy(update={"name": prefixed})
+    return tools
+
+
+def list_relay_tool_definitions(federation: Any) -> dict[str, Any]:
+    """List the relay federation's projected tools — fast, no I/O (#1232 gap).
+
+    The federation catalog already holds the discovered Tool objects
+    (``remote_*`` aliases + the projected ``relay_*`` follow tools), so like
+    the built-ins they are listable synchronously. Deferring them to the
+    background namespace pass left the boot/first-turn ``_tool_definitions``
+    builtins-only, and every custom-agent ACL naming a relay tool bricked
+    typed (L3 runs 4-9: ``available=['fs_*', 'shell_bash']`` with
+    ``federation=present``).
+    """
+
+    if federation is None:
+        return {}
+    catalog = getattr(federation, "catalog", None)
+    if catalog is None:
+        return {}
+    tools: dict[str, Any] = {}
+    for source in (getattr(catalog, "tools", {}), getattr(catalog, "follow_tools", {})):
+        for name, tool in dict(source).items():
+            tools[str(name)] = tool
+    return tools
+
+
 def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
     """One transient SEQUENTIAL listing pass: ``{tool_name: MCPTool}``.
 
@@ -237,7 +468,17 @@ def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
     warning — the same semantics the composite's swallowed-mount aggregation
     had, now with OUR reason attached. Feed the result to BOTH
     ``build_tool_catalog(tools=...)`` and the executors' ``preloaded_tools``
-    so boot pays exactly one pass and executors never re-list (#932).
+    so a full refresh pays exactly one pass and executors never re-list (#932).
+
+    #1232 pt 2: the BOOT path no longer calls this directly (its unbounded,
+    fully-serial cost — no per-namespace timeout, one dead namespace's retry
+    budget fully before the next starts — is exactly what let three dead
+    namespaces turn into minutes of boot). Boot uses
+    ``list_builtin_tool_definitions`` + ``tools.mcp_discovery.
+    discover_declared_tools_bounded`` instead; THIS function remains the
+    complete/synchronous pass for non-boot callers (a full catalog refresh
+    route, ``list_gateway_tools``) that want every namespace resolved before
+    returning and can tolerate the wait.
     """
 
     from clio_agent.tools import listing_cache  # noqa: PLC0415
@@ -251,14 +492,33 @@ def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
         cacheable = spec is not None and spec.transport == "stdio" and bool(spec.command)
         listed: list[Any] | None = None
         if cacheable and spec is not None:
-            listed = listing_cache.load_listing(
-                namespace, spec.command, tuple(spec.args), spec.env
-            )
+            listed = listing_cache.load_listing(namespace, spec.command, tuple(spec.args), spec.env)
         live = listed is None
         if live:
             before = _descendant_pids()
             try:
-                listed = _list_tools_sync(server)
+                # Declared servers list through a LISTING-OWNED transport
+                # (finding 1); only the in-process built-ins use the shared
+                # server object (they carry no transport).
+                if spec is None:
+                    listed = _list_tools_sync(server)
+                else:
+                    try:
+                        listed = _list_declared_tools(spec)
+                    except MCPSpawnError as spawn_exc:
+                        # The spec cannot yield a listing-owned transport: an
+                        # injected in-process proxy (tests) whose backend has NO
+                        # transport to poison, or a misconfigured launcher whose
+                        # mounted proxy will re-confirm the degrade below. Only
+                        # then do we touch the mounted server. Logged so the
+                        # fallback is never silent.
+                        logger.debug(
+                            "namespace=%s: spec transport unavailable (%s); "
+                            "listing via the mounted proxy",
+                            namespace,
+                            spawn_exc,
+                        )
+                        listed = _list_tools_sync(server)
             except Exception as exc:  # noqa: BLE001 - typed namespace degrade, never a boot crash
                 logger.warning(
                     "tool_listing_failed namespace=%s reason=%s (namespace degrades to no tools)",
@@ -341,19 +601,69 @@ def namespace_specs(gw: FastMCP) -> dict[str, MCPServerSpec]:
     return dict(getattr(gw, "_clio_namespace_specs", {}))
 
 
+def _run_coro_sync(factory: Callable[[], Any]) -> Any:
+    """Run a coroutine to completion on a fresh loop, safe inside or outside one.
+
+    ``factory`` is a zero-arg callable returning a fresh coroutine each time it is
+    invoked (a coroutine object cannot be awaited twice, and the running-loop
+    branch re-creates it on the pool thread).
+    """
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(factory())
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        return pool.submit(lambda: asyncio.run(factory())).result()
+
+
 def _list_tools_sync(gw: FastMCP) -> list[Any]:
-    """List a gateway's tools synchronously, safe inside or outside an event loop."""
+    """List an IN-PROCESS server's tools synchronously (no declared transports).
+
+    Used only for in-process FastMCP servers (the ``fs``/``shell`` built-ins and
+    the built-ins-only base gateway): those carry no client transport, so a
+    throwaway listing loop cannot strand a kept-alive session or spawn a
+    subprocess. Declared (proxy-backed) servers MUST list through
+    :func:`_list_declared_tools`, which owns its transport exclusively.
+    """
 
     async def _list() -> list[Any]:
         async with Client(gw) as client:
             return await client.list_tools()
 
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(_list())
-    with concurrent.futures.ThreadPoolExecutor() as pool:
-        return pool.submit(lambda: asyncio.run(_list())).result()
+    return _run_coro_sync(_list)
+
+
+def _list_declared_tools(spec: MCPServerSpec) -> list[Any]:
+    """List one declared server's BARE tools via a LISTING-OWNED transport.
+
+    Exclusive ownership (finding 1): the listing builds its OWN transport from the
+    spec and tears it down in a ``finally`` on the same short-lived loop, so it
+    never connects the shared proxy transport the long-lived executor reuses.
+    Two properties follow directly:
+
+    * A catalog refresh can never disconnect an in-flight executor call — the two
+      run on disjoint transport instances and disjoint subprocesses.
+    * No cross-loop poisoning: fastmcp-4 pins a kept-alive ``ClientSession`` to
+      the loop that opened it, but a listing-owned transport is fully torn down
+      before its loop closes, so nothing loop-bound survives.
+    """
+
+    async def _list() -> list[Any]:
+        client = Client(transport_for(spec))
+        try:
+            async with client:
+                return await client.list_tools()
+        finally:
+            # Listing-owned: force the transport down on THIS loop instead of
+            # leaning on stdio ``keep_alive`` (fastmcp-4 default), which would
+            # otherwise strand a loop-bound session and leave the subprocess up.
+            disconnect = getattr(client.transport, "disconnect", None)
+            if disconnect is not None:
+                with suppress(Exception):
+                    await disconnect()
+
+    return _run_coro_sync(_list)
 
 
 def _namespace_of(tool_name: str) -> str:
@@ -448,7 +758,11 @@ def build_tool_catalog(
         return merged
 
     visibility = _expert_visibility(experts)
-    listed = tools if tools is not None else _list_tools_sync(declared_gateway)
+    # Exclusive ownership (finding 1): when tools are not supplied, derive them
+    # through ``list_tool_definitions`` — a per-namespace listing over
+    # LISTING-OWNED transports — never a composite ``Client(gateway)`` pass that
+    # would connect (and, pre-fix, poison) the shared proxy transports.
+    listed = tools if tools is not None else list(list_tool_definitions(declared_gateway).values())
     for tool in listed:
         name = tool.name
         if name in merged:
@@ -488,7 +802,10 @@ def list_capabilities(gw: FastMCP | None = None) -> list[dict[str, str]]:
         List of dicts with name, description (first sentence), and server keys.
     """
     target = gw if gw is not None else gateway
-    tools = _list_tools_sync(target)
+    # Exclusive ownership (finding 1): enumerate through the per-namespace,
+    # LISTING-OWNED primitive rather than a composite ``Client(gateway)`` pass
+    # that would connect the shared proxy transports.
+    tools = list(list_tool_definitions(target).values())
     capabilities = []
     for t in sorted(tools, key=lambda x: x.name):
         desc = t.description or ""
@@ -516,14 +833,20 @@ async def list_gateway_tools(gw: FastMCP | None = None) -> list[dict[str, Any]]:
         List of dicts with name, description, input_schema, and server for each tool.
     """
     target = gw if gw is not None else gateway
-    async with Client(target) as client:
-        mcp_tools = await client.list_tools()
-        return [
-            {
-                "name": t.name,
-                "description": t.description,
-                "input_schema": t.inputSchema,
-                "server": _namespace_of(t.name),
-            }
-            for t in mcp_tools
-        ]
+    # Exclusive ownership (finding 4): route through the per-namespace,
+    # LISTING-OWNED primitive so introspecting a declared gateway on this
+    # (possibly short-lived) loop never connects — and cannot strand a
+    # kept-alive session on — the shared proxy transports the executor reuses.
+    # Offloaded to a worker thread because ``list_tool_definitions`` is a
+    # blocking, own-loop listing pass.
+    definitions = await asyncio.to_thread(list_tool_definitions, target)
+    return [
+        {
+            "name": t.name,
+            "description": t.description,
+            # fastmcp-4: ``Tool.inputSchema`` -> ``Tool.input_schema``.
+            "input_schema": getattr(t, "input_schema", None),
+            "server": _namespace_of(t.name),
+        }
+        for t in definitions.values()
+    ]

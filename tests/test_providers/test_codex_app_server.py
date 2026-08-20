@@ -86,6 +86,7 @@ class FakeAppServer:
         turn_scripts: list[list[tuple[str, dict[str, Any]]]] | None = None,
         thread_id: str = "thread-1",
         server_request: bool = False,
+        model_list_response: dict[str, Any] | None = None,
     ) -> None:
         if turn_scripts is None:
             turn_scripts = [turn_script or []]
@@ -93,6 +94,13 @@ class FakeAppServer:
         self._turn_count = 0
         self.thread_id = thread_id
         self.server_request = server_request
+        #: #1211: the model/list RPC result; defaults to a small fixed catalog.
+        self.model_list_response = model_list_response or {
+            "data": [
+                {"id": "gpt-5.6-sol", "displayName": "GPT-5.6-Sol", "description": "d", "isDefault": True},
+                {"id": "gpt-5.6-terra", "displayName": "GPT-5.6-Terra", "description": "d", "isDefault": False},
+            ]
+        }
         self.stdout = _FakeStdout()
         self.stdin = _FakeStdin(self._on_line)
         self.stderr = _FakeStdout()
@@ -123,6 +131,8 @@ class FakeAppServer:
         elif method == "turn/interrupt":
             self.interrupts.append(msg.get("params") or {})
             self._respond(mid, {})
+        elif method == "model/list":
+            self._respond(mid, self.model_list_response)
         elif method == "turn/start":
             self.turn_start_params = msg.get("params")
             if self.server_request:
@@ -697,6 +707,50 @@ def test_start_thread_on_dead_process_is_typed() -> None:
     proc._mark_dead("stdout_closed")
     with pytest.raises(CodexAppServerError, match="dead"):
         proc.start_thread(ephemeral=False, timeout=5.0)
+
+
+# --------------------------------------------------------------------------- #
+# model/list (#1211 catalog discovery).
+# --------------------------------------------------------------------------- #
+def test_list_models_returns_the_servers_data_rows() -> None:
+    """list_models issues model/list and returns the raw ``data`` rows verbatim."""
+    fake = FakeAppServer(
+        turn_script=[],
+        model_list_response={
+            "data": [
+                {"id": "gpt-5.6-sol", "displayName": "GPT-5.6-Sol", "isDefault": True},
+                {"id": "gpt-5.6-luna", "displayName": "GPT-5.6-Luna", "isDefault": False},
+            ]
+        },
+    )
+    proc = _make_process(fake)
+    try:
+        rows = proc.list_models(timeout=10.0)
+    finally:
+        proc.close()
+    assert [r["id"] for r in rows] == ["gpt-5.6-sol", "gpt-5.6-luna"]
+    assert rows[0]["isDefault"] is True
+    # No thread/turn was opened -- model/list is a plain request/response.
+    assert fake.thread_start_params == []
+
+
+def test_list_models_on_dead_process_is_typed() -> None:
+    """Defensive: listing models on a dead process raises typed, not a broken pipe."""
+    proc = CodexAppServerProcess(binary="codex", model="", cwd=None)
+    proc._mark_dead("stdout_closed")
+    with pytest.raises(CodexAppServerError, match="dead"):
+        proc.list_models(timeout=5.0)
+
+
+def test_list_models_malformed_result_is_empty_not_raising() -> None:
+    """A server result with no (or non-list) ``data`` yields [] rather than crashing."""
+    fake = FakeAppServer(turn_script=[], model_list_response={"nextCursor": None})
+    proc = _make_process(fake)
+    try:
+        rows = proc.list_models(timeout=10.0)
+    finally:
+        proc.close()
+    assert rows == []
 
 
 def test_run_turn_on_thread_on_dead_process_is_typed() -> None:

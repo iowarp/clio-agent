@@ -11,6 +11,14 @@ This concern owns the marketplace/install surface for agent blueprints under
 * ``GET /v1/agent-blueprints`` / ``GET /v1/agent-blueprints/{id}`` -- discover
   installed blueprints (workspace/global/builtin) and resolve one to its agent
   hierarchy + MCP descriptors.
+* ``GET /v1/agent-blueprints/{id}/files`` / ``.../files/read`` -- flat
+  recursive file listing + raw content read for a blueprint root
+  (iowarp/clio-agent#1192), the explorer surface behind the blueprint window.
+  Both accept ``session_id`` to resolve a PATH-activated blueprint. Their
+  logic lives in the owner module :mod:`clio_agent.gact.agent_blueprint_files`
+  (no accretion); these two handlers are thin call sites, registered ahead of
+  the greedy ``GET .../{id}`` below so they are not shadowed by its
+  ``:path`` converter.
 * ``POST /v1/agent-blueprints/validate`` -- validate a blueprint root on disk.
 * ``POST /v1/agent-blueprints/install`` / ``.../{id}/update`` /
   ``DELETE /v1/agent-blueprints/{id}`` -- the install/update/uninstall engine.
@@ -35,8 +43,7 @@ Handlers reach ``app.state`` directly and never import :mod:`clio_agent.gact.app
 
 from __future__ import annotations
 
-import hashlib
-import json
+import logging
 import os
 import subprocess
 import tempfile
@@ -46,7 +53,24 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import Response
 
+from clio_agent.gact.agent_blueprint_files import (
+    BlueprintPathEscapesRootError,
+    is_textual_blueprint_file,
+    list_blueprint_files,
+    resolve_agent_blueprint_root,
+    resolve_blueprint_file_path,
+)
+from clio_agent.gact.agent_blueprint_sources import (
+    load_agent_blueprint_sources as _load_agent_blueprint_sources,
+)
+from clio_agent.gact.agent_blueprint_sources import (
+    save_agent_blueprint_sources as _save_agent_blueprint_sources,
+)
+from clio_agent.gact.agent_blueprint_sources import (
+    source_registry_id as _source_registry_id,
+)
 from clio_agent.gact.agent_blueprints import (
     DEFAULT_AGENT_BLUEPRINT_ID,
     discover_agent_blueprints,
@@ -54,6 +78,7 @@ from clio_agent.gact.agent_blueprints import (
     load_agent_blueprints,
     load_mcp_descriptors,
     parse_agent_blueprint_root,
+    runtime_tool_names_for_validation,
     uninstall_agent_blueprint,
     update_installed_agent_blueprint,
     validate_agent_blueprint_path,
@@ -64,53 +89,14 @@ from clio_agent.gact.agents.resolution import (
     _runtime_session_agent_overlay,
     _runtime_workspace_catalog_cwd,
 )
+from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
 from clio_agent.gact.permission_gate import _normalize_mcp_tool_annotations
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
-
-
-def _agent_blueprint_sources_path() -> Path:
-    """Return the on-disk path of the blueprint-source registry JSON."""
-
-    from clio_agent import paths  # noqa: PLC0415
-
-    return paths.user_config_dir() / "agent-blueprint-sources.json"
-
-
-def _source_registry_id(source: str, ref: str = "") -> str:
-    """Derive a stable ``src_*`` id from a source URL/path and optional ref."""
-
-    digest = hashlib.sha256(f"{source}\n{ref}".encode("utf-8")).hexdigest()[:12]
-    return f"src_{digest}"
-
-
-def _load_agent_blueprint_sources() -> list[dict[str, Any]]:
-    """Load the persisted blueprint-source rows (empty list if absent/corrupt)."""
-
-    path = _agent_blueprint_sources_path()
-    if not path.exists():
-        return []
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 - unreadable/invalid sources file yields no rows
-        return []
-    rows = payload.get("sources") if isinstance(payload, dict) else payload
-    if not isinstance(rows, list):
-        return []
-    return [dict(row) for row in rows if isinstance(row, dict)]
-
-
-def _save_agent_blueprint_sources(rows: list[dict[str, Any]]) -> None:
-    """Persist the blueprint-source rows to the user config dir."""
-
-    path = _agent_blueprint_sources_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"sources": rows}, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
 
 
 def _agent_blueprint_candidates(root: Path) -> list[dict[str, Any]]:
@@ -293,6 +279,119 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
         blueprints = [row.to_wire() for row in discover_agent_blueprints(cwd=cwd)]
         return {"agent_blueprints": blueprints}
 
+    @app.get("/v1/agent-blueprints/{blueprint_id}/files")
+    async def list_agent_blueprint_files(
+        blueprint_id: str,
+        workspace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """iowarp/clio-agent#1192 -- flat recursive listing of a blueprint root.
+
+        Mirrors ``GET /v1/workspaces/{wid}/files``'s conventions (path/type/
+        size relative to the root, capped walk, skip cost-walking dirs) but
+        scoped to an agent-blueprint root. ``session_id`` additionally
+        resolves a PATH-activated blueprint (see
+        :func:`clio_agent.gact.agent_blueprint_files.resolve_agent_blueprint_root`)
+        when its own id matches ``blueprint_id`` -- the demo case
+        (``earthscope-flat``) where a blueprint is activated by on-disk path
+        rather than by installed id. Registered ahead of the greedy
+        ``{blueprint_id:path}`` GET below so it is not shadowed.
+        """
+
+        root = resolve_agent_blueprint_root(
+            app, blueprint_id, workspace_id=workspace_id or "", session_id=session_id or ""
+        )
+        if root is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"agent blueprint not found: {blueprint_id}",
+                        details={"agent_blueprint_id": blueprint_id},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return {"entries": list_blueprint_files(root)}
+
+    @app.get("/v1/agent-blueprints/{blueprint_id}/files/read")
+    async def read_agent_blueprint_file(
+        blueprint_id: str,
+        path: str,
+        workspace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> Response:
+        """iowarp/clio-agent#1192 -- raw content read for one blueprint file.
+
+        Path-traversal-hardened to the blueprint root (a ``..`` escape is a
+        typed 400); a missing file is a typed 404. Text is served decoded as
+        ``text/plain``, binary raw with its real content type, mirroring
+        ``GET /v1/workspaces/{wid}/files/read`` (#673, #676).
+        """
+
+        root = resolve_agent_blueprint_root(
+            app, blueprint_id, workspace_id=workspace_id or "", session_id=session_id or ""
+        )
+        if root is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"agent blueprint not found: {blueprint_id}",
+                        details={"agent_blueprint_id": blueprint_id},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        try:
+            target = resolve_blueprint_file_path(root, path)
+        except BlueprintPathEscapesRootError:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="path_outside_blueprint",
+                        message=f"path escapes blueprint root: {path}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from None
+        if not target.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"file not found: {path}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        try:
+            data = target.read_bytes()
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="read_failed",
+                        message=f"could not read file: {exc}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+        if is_textual_blueprint_file(target.name, data):
+            return Response(
+                content=data.decode("utf-8", errors="replace"),
+                media_type="text/plain; charset=utf-8",
+            )
+        import mimetypes  # noqa: PLC0415
+
+        guessed, _ = mimetypes.guess_type(target.name)
+        return Response(content=data, media_type=guessed or "application/octet-stream")
+
     @app.get("/v1/agent-blueprints/{blueprint_id:path}")
     async def get_agent_blueprint(
         blueprint_id: str,
@@ -343,7 +442,11 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        return validate_agent_blueprint_path(Path(path), scope=str(req.get("scope") or "session"))
+        return validate_agent_blueprint_path(
+            Path(path),
+            scope=str(req.get("scope") or "session"),
+            runtime_tool_names=runtime_tool_names_for_validation(app),
+        )
 
     @app.post("/v1/agent-blueprints/install", status_code=201)
     async def install_agent_blueprint_route(req: dict[str, Any]) -> dict[str, Any]:
@@ -642,17 +745,23 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                             "description": getattr(live_tool, "description", "")
                             or declared.get("description")
                             or "",
+                            # #1188 MCP half: carry the upstream tool's declared
+                            # title (Tool.title, else ToolAnnotations.title) through
+                            # so the dspy-tool bridge
+                            # (builders._enabled_external_mcp_dspy_tools) can curate
+                            # Part.tool_title from it, when present.
+                            "title": mcp_tool_title(live_tool) or declared.get("title") or "",
                             "status": "ready",
                             "enabled": True,
                             "server_id": sid,
                             "descriptor_id": descriptor_id,
                             "agent_blueprint_id": blueprint_id,
-                            "input_schema": getattr(live_tool, "inputSchema", None)
-                            or getattr(live_tool, "input_schema", None)
+                            "input_schema": getattr(live_tool, "input_schema", None)
+                            or getattr(live_tool, "inputSchema", None)
                             or declared.get("input_schema")
                             or {},
-                            "output_schema": getattr(live_tool, "outputSchema", None)
-                            or getattr(live_tool, "output_schema", None)
+                            "output_schema": getattr(live_tool, "output_schema", None)
+                            or getattr(live_tool, "outputSchema", None)
                             or declared.get("output_schema")
                             or {},
                             "annotations": _normalize_mcp_tool_annotations(live_tool),
@@ -737,7 +846,11 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             blueprint.to_wire() if blueprint is not None else None
         )
         if blueprint is None and blueprint_path is not None:
-            validation = validate_agent_blueprint_path(blueprint_path, scope="session")
+            validation = validate_agent_blueprint_path(
+                blueprint_path,
+                scope="session",
+                runtime_tool_names=runtime_tool_names_for_validation(app),
+            )
             raw_blueprint = validation.get("agent_blueprint")
             blueprint_wire = raw_blueprint if isinstance(raw_blueprint, dict) else None
         return {
@@ -775,7 +888,11 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
         blueprint_path = str(req.get("path") or req.get("blueprint_path") or "").strip()
         cwd = _runtime_workspace_catalog_cwd(app, session_id=sid)
         if blueprint_path:
-            validation = validate_agent_blueprint_path(Path(blueprint_path), scope="session")
+            validation = validate_agent_blueprint_path(
+                Path(blueprint_path),
+                scope="session",
+                runtime_tool_names=runtime_tool_names_for_validation(app),
+            )
             if not validation.get("enabled", False):
                 raise HTTPException(
                     status_code=400,

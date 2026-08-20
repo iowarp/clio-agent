@@ -211,10 +211,17 @@ def bind_live_emitter(state: "TurnState", loop: "asyncio.AbstractEventLoop") -> 
         # scheduling the cross-thread emit, so the same-thread tool observer's
         # thought-dedup gate has a race-free source. Bound method over the turn's
         # transcript, so it is naturally turn-scoped and dies with the turn.
+        # Also pass the transcript's SYNCHRONOUS discard hook (D15): the LM
+        # transient-retry boundary calls it, in the SAME executor thread, right
+        # before re-issuing a call after a transport failure, so the abandoned
+        # attempt's already-streamed text does not survive into the retry's
+        # fresh stream of the same still-open part (see
+        # ``lm_activity.note_lm_retry_reset``).
         set_live_chunk_emitter(
             loop,
             partial(emit_chunk, state),
             state.transcript.record_streamed_field_text,
+            state.transcript.discard_open_text,
         )
     except Exception:  # noqa: BLE001,S110 - live-stream wiring is best-effort
         pass

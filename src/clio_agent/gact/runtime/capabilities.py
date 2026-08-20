@@ -31,6 +31,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from clio_agent.errors import (
+    MCP_CAPABILITY_REFUSED,
+    MCP_INPUT_REQUIRED_ROUNDS_EXCEEDED,
+    MCP_PROTOCOL_REFUSED,
+    MCP_RESULT_DOWNGRADED_TO_COMPLETE,
+    MCP_WIRE_CANCELLATION_UNAVAILABLE,
+)
 from clio_agent.optimizer.stub import (
     OPTIMIZER_NOT_IMPLEMENTED_MESSAGE,
     OPTIMIZER_NOT_IMPLEMENTED_REASON,
@@ -138,6 +145,54 @@ _STREAM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
         "live_streaming": False,
         "recovery_actions": ["continue_without_live_streaming", "reconfigure"],
         "description": "A registered tool agent could not use live streaming.",
+    },
+    MCP_RESULT_DOWNGRADED_TO_COMPLETE: {
+        "category": "mcp_result_tolerance",
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["continue_with_complete_result", "upgrade_mcp_server"],
+        "description": (
+            "An MCP result explicitly carried a resultType this tasks-off client does not "
+            "support, so it was downgraded to complete. An absent resultType is normal "
+            "completeness and does not emit this reason."
+        ),
+    },
+    MCP_CAPABILITY_REFUSED: {
+        "category": "mcp_capability_refusal",
+        "json_rpc_code": -32021,
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["enable_required_client_capability", "retry"],
+        "description": "The MCP server refused a request requiring an absent client capability.",
+    },
+    MCP_PROTOCOL_REFUSED: {
+        "category": "mcp_protocol_refusal",
+        "json_rpc_code": -32022,
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["negotiate_supported_protocol_version", "retry"],
+        "description": "The MCP server refused the negotiated protocol version.",
+    },
+    MCP_WIRE_CANCELLATION_UNAVAILABLE: {
+        "category": "mcp_transport_limitation",
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["continue_with_cooperative_cancellation", "upgrade_mcp_transport"],
+        "description": (
+            "The MCP transport did not settle after its in-flight call task was cancelled, "
+            "so CLIO surfaced typed cooperative cancellation without claiming the server stopped."
+        ),
+    },
+    MCP_INPUT_REQUIRED_ROUNDS_EXCEEDED: {
+        "category": "mcp_result_tolerance",
+        "synthetic_posthoc": True,
+        "live_streaming": False,
+        "recovery_actions": ["raise_input_required_max_rounds", "fix_mcp_server", "retry"],
+        "description": (
+            "The modern-era MRTR loop (InputRequiredResult -> retry with inputResponses) "
+            "exceeded its config-resolved tools.mcp.input_required_max_rounds bound without "
+            "reaching a terminal result; the tool call surfaced a typed degrade."
+        ),
     },
 }
 
