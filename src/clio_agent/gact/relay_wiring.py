@@ -54,20 +54,26 @@ async def relay_tool_surfaces_for_app(app: FastAPI) -> Any:
     app.state.relay_tool_surfaces = surfaces
     app.state.relay_tool_status = dict(surfaces.status)
     app.state.relay_tool_surfaces_discovered_at = time.monotonic()
+    logger.warning(
+        "relay first discovery reason=%s federation=%s",
+        surfaces.status.get("reason"),
+        "present" if surfaces.remote_mcp_federation is not None else "ABSENT",
+    )
     return surfaces
 
 
 async def refresh_relay_tool_surfaces_if_stale(app: FastAPI) -> Any:
     """Re-discover the relay catalog once its TTL has elapsed (#1227 D2).
 
-    Refreshes an EXISTING catalog only. First discovery is an app-assembly /
-    agent-construction concern (:func:`relay_agent_kwargs` →
-    :func:`relay_tool_surfaces_for_app`); when no catalog has ever been
-    discovered this is a no-op, because a turn must never pay an ambient
-    first-discovery round trip (observed live: a stale repo ``.env`` loaded by
-    litellm's import-time dotenv configured a half-dead door mid-process, and
-    this seam's former first-discovery branch then blocked every child turn of
-    every later-built app ~15s — the s7 parity reds). On the common path this
+    First discovery happens here ONLY for an explicitly configured relay
+    transport: under the #1232 lazy boot nothing discovers eagerly anymore, so
+    the first turn is the construction moment (observed live: with the
+    unconditional no-op, the #1229 no-ambient-discovery rule and the #1232
+    lazy boot composed into NOBODY ever discovering — every custom-agent ACL
+    bricked typed on custom_agent_tools_unavailable, L3 runs 4-5). The
+    ambient-poison case #1229 fixed stays dead: an UNCONFIGURED transport
+    (typed RelayTransportUnavailable, e.g. env leaked mid-process on a box
+    with no relay) is still a no-op — a turn never pays an ambient probe. On the common path this
     is one ``time.monotonic()`` subtraction unless the TTL has elapsed. When it has, the catalog is re-discovered and, critically, the
     already-constructed singleton agent (``app.state.agent`` -- one host per
     process, reused turn to turn) has its relay-owned attributes updated IN
@@ -83,7 +89,23 @@ async def refresh_relay_tool_surfaces_if_stale(app: FastAPI) -> Any:
 
     existing = getattr(app.state, "relay_tool_surfaces", None)
     if existing is None:
-        return None
+        from clio_agent.tools.relay_transport import (  # noqa: PLC0415
+            RelayTransportUnavailable,
+            resolve_relay_transport_config,
+        )
+
+        if isinstance(resolve_relay_transport_config(), RelayTransportUnavailable):
+            return None
+        surfaces = await relay_tool_surfaces_for_app(app)
+        # Push onto the LIVE agent exactly like the TTL path below: under the
+        # #1232 lazy boot the agent was constructed without relay kwargs, so
+        # filling app.state alone leaves its gateway toolless and every
+        # custom-agent ACL bricks (L3 run 6: identical
+        # custom_agent_tools_unavailable AFTER first discovery succeeded).
+        agent = getattr(app.state, "agent", None)
+        if agent is not None and surfaces is not None:
+            _refresh_agent_relay_tool_surfaces(agent, surfaces)
+        return surfaces
 
     discovered_at = getattr(app.state, "relay_tool_surfaces_discovered_at", None)
     ttl = _relay_tool_surfaces_ttl_seconds()

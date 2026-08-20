@@ -134,22 +134,28 @@ async def test_refresh_failure_keeps_the_previous_surfaces(
 
 
 @pytest.mark.asyncio
-async def test_refresh_without_a_catalog_is_a_noop_never_a_first_discovery(
+async def test_refresh_without_a_catalog_noops_when_relay_is_unconfigured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No prior discovery at all -> the per-turn seam does NOTHING.
+    """No catalog + UNCONFIGURED transport -> the per-turn seam does NOTHING.
 
-    First discovery is an app-assembly concern (``relay_agent_kwargs``); a turn
-    must never pay an ambient discovery round trip. Observed live: a stale repo
-    ``.env`` loaded by litellm's import-time dotenv configured a half-dead door
-    mid-process, and the seam's former first-discovery branch then blocked every
-    child turn of every later-built app ~15s (the s7 parity reds)."""
+    The ambient-poison guard (#1229): a stale repo ``.env`` loaded by litellm's
+    import-time dotenv configured a half-dead door mid-process, and an
+    unconditional first-discovery branch then blocked every child turn of every
+    later-built app ~15s (the s7 parity reds). A transport that resolves
+    unavailable must never be probed from a turn."""
+
+    from clio_agent.tools.relay_transport import RelayTransportUnavailable
 
     app = _FakeApp()
     monkeypatch.setattr(relay_wiring.time, "monotonic", lambda: 500.0)
+    monkeypatch.setattr(
+        "clio_agent.tools.relay_transport.resolve_relay_transport_config",
+        lambda: RelayTransportUnavailable(reason="relay_not_configured"),
+    )
 
     async def _discover() -> Any:
-        raise AssertionError("the per-turn seam must never run a first discovery")
+        raise AssertionError("an unconfigured transport must never be probed from a turn")
 
     monkeypatch.setattr("clio_agent.tools.relay_transport.discover_relay_tool_surfaces", _discover)
 
@@ -158,6 +164,36 @@ async def test_refresh_without_a_catalog_is_a_noop_never_a_first_discovery(
     assert result is None
     assert getattr(app.state, "relay_tool_surfaces", None) is None
     assert getattr(app.state, "relay_tool_surfaces_discovered_at", None) is None
+
+
+async def test_refresh_without_a_catalog_first_discovers_when_relay_is_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No catalog + CONFIGURED transport -> the seam performs first discovery.
+
+    Under the #1232 lazy boot nothing discovers eagerly, so the first turn is
+    the construction moment. Observed live (L3 runs 4-5): with an unconditional
+    no-op here, #1229 + #1232 composed into NOBODY discovering and every
+    custom-agent ACL bricked typed on custom_agent_tools_unavailable."""
+
+    app = _FakeApp()
+    monkeypatch.setattr(relay_wiring.time, "monotonic", lambda: 500.0)
+    monkeypatch.setattr(
+        "clio_agent.tools.relay_transport.resolve_relay_transport_config",
+        lambda: object(),
+    )
+    fresh = _surfaces("lazy-first")
+
+    async def _discover() -> Any:
+        return fresh
+
+    monkeypatch.setattr("clio_agent.tools.relay_transport.discover_relay_tool_surfaces", _discover)
+
+    result = await relay_wiring.refresh_relay_tool_surfaces_if_stale(app)
+
+    assert result is fresh
+    assert app.state.relay_tool_surfaces is fresh
+    assert app.state.relay_tool_surfaces_discovered_at == 500.0
 
 
 class _FakeGatewayAgent:

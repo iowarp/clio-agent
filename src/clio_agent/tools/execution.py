@@ -63,6 +63,16 @@ _ACTIVE_TOOL_WORKSPACE_ROOT: contextvars.ContextVar[str] = contextvars.ContextVa
     default="",
 )
 
+# The session's EXPLICITLY-activated Agent Blueprint id, for the SAME reason the
+# workspace root gets its own ContextVar (#1232 pt 1): ``agent.py``'s per-workspace
+# tool-gateway builder reads this to decide which blueprint's declared
+# ``mcp_servers`` (if any) mount for the active turn — never every installed
+# blueprint's servers, and never at boot (see ``ClioAgent._discover_pack_servers``).
+_ACTIVE_TOOL_BLUEPRINT_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "clio_active_tool_blueprint_id",
+    default="",
+)
+
 
 @contextmanager
 def tool_workspace_context(root: str | Path | None) -> Iterator[None]:
@@ -79,6 +89,29 @@ def get_active_tool_workspace_root() -> str:
     """Return the active session workspace root, or ``""`` when none is bound."""
 
     return _ACTIVE_TOOL_WORKSPACE_ROOT.get()
+
+
+@contextmanager
+def tool_blueprint_context(blueprint_id: str | None) -> Iterator[None]:
+    """Bind the session's explicitly-activated Agent Blueprint id (#1232 pt 1).
+
+    An empty/``None`` id (no blueprint activated) is the default and correct
+    state for a bare session — it makes the per-workspace tool gateway mount
+    NO pack-declared MCP servers, matching ``_runtime_active_agent_blueprint_id``'s
+    "never an implicit one" contract.
+    """
+
+    token = _ACTIVE_TOOL_BLUEPRINT_ID.set(str(blueprint_id or ""))
+    try:
+        yield
+    finally:
+        _ACTIVE_TOOL_BLUEPRINT_ID.reset(token)
+
+
+def get_active_tool_blueprint_id() -> str:
+    """Return the active session's Agent Blueprint id, or ``""`` when none is bound."""
+
+    return _ACTIVE_TOOL_BLUEPRINT_ID.get()
 
 
 # --------------------------------------------------------------------------- #
@@ -1169,11 +1202,13 @@ __all__ = [
     "create_async_tool_executor",
     "create_sync_tool_executor",
     "current_tool_runtime",
+    "get_active_tool_blueprint_id",
     "get_active_tool_workspace_root",
     "notify_global_tool_observer",
     "notify_tool_observer",
     "recorded_tool_runtime_reasons",
     "set_tool_runtime_fallback",
     "set_tool_runtime_resolver",
+    "tool_blueprint_context",
     "tool_workspace_context",
 ]

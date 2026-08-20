@@ -28,7 +28,6 @@ from pathlib import Path
 from clio_agent import conf
 from clio_agent.gact.agent_blueprints import (
     _BLUEPRINT_ROOT_NAME,
-    _DEFAULT_BOOTSTRAP_ENV,
     DEFAULT_AGENT_BLUEPRINT_ID,
     DEFAULT_REGISTRY_COMMIT,
     DEFAULT_REGISTRY_REF,
@@ -64,7 +63,13 @@ def ensure_default_registry_bootstrap(
 
     if conf.resolve(
         "agents.disable_default_registry_bootstrap",
-        env=_DEFAULT_BOOTSTRAP_ENV,
+        # Literal (not the cross-module ``_DEFAULT_BOOTSTRAP_ENV`` re-export):
+        # scripts/gen_env_reference.py's AST walk only resolves module
+        # constants defined IN THE SAME FILE it is scanning, so an imported
+        # reference here silently dropped this knob from the generated
+        # docs/config.defaults.yaml since the #948 S4b split moved this call
+        # site out of agent_blueprints.py without inlining the value.
+        env="CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP",
         default=False,
         cast=conf.as_bool,
     ):

@@ -940,11 +940,21 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.sandbox = install_sandbox()
 
-    # #1001: bound the clio-owned MCP uv spawn cache at boot (off-loop; SKIPS if a peer
-    # clio process is alive; never mid-session). Typed reasons emitted by the helper.
+    # #1232 pt 4 + #1001: reap provably-orphaned clio-launched children (dead
+    # parent + clio identity; the daemon root is excluded by construction)
+    # BEFORE the MCP-cache prune's peer-liveness check runs — a still-running
+    # orphan from a prior hard kill otherwise looks like a live peer to
+    # ``live_peer_clio_processes`` and defers the prune indefinitely (the
+    # observed "deferred for two days" bug). Sequenced (not raced) so the
+    # ordering is real, still fully off-loop/best-effort/typed-logged.
+    from clio_agent.runtime.process_census import boot_reap_off_loop  # noqa: PLC0415
     from clio_agent.tools.mcp_cache import boot_prune_off_loop  # noqa: PLC0415
 
-    app.state.mcp_cache_prune_task = asyncio.create_task(boot_prune_off_loop())
+    async def _reap_orphans_then_prune_mcp_cache() -> None:
+        await boot_reap_off_loop()
+        await boot_prune_off_loop()
+
+    app.state.mcp_cache_prune_task = asyncio.create_task(_reap_orphans_then_prune_mcp_cache())
 
     task: Optional[asyncio.Task] = None
     if getattr(app.state, "schedules", None) is not None:

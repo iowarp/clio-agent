@@ -246,7 +246,7 @@ def test_agent_request_fleet_restart_evicts_then_rebuilds(monkeypatch) -> None:
         def close(self) -> None:
             self.closed = True
 
-    def fake_build(*, cwd=None, set_catalog=False):
+    def fake_build(*, cwd=None, set_catalog=False, blueprint_id=""):
         built.append(cwd)
         return f"gateway:{cwd}"
 

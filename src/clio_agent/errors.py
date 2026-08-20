@@ -61,6 +61,28 @@ MCP_PROTOCOL_DOWNGRADED_TO_LEGACY = "mcp_protocol_downgraded_to_legacy"
 #: treating "malformed" the same as "no servers declared". A MISSING file is
 #: still normal and returns ``{}`` without this reason.
 MCP_YAML_DECLARATION_UNREADABLE = "mcp_yaml_declaration_unreadable"
+#: #1232 pt 2: a declared MCP namespace did not answer its bounded discovery
+#: attempt (connect + list_tools) before the per-namespace deadline. NEVER
+#: blocks "agent ready" -- the namespace's tools are simply absent from the
+#: catalog until a background re-probe heals it (MCP_NAMESPACE_DISCOVERY_HEALED).
+MCP_NAMESPACE_DISCOVERY_TIMEOUT = "mcp_namespace_discovery_timeout"
+#: #1232 pt 2: a declared MCP namespace's discovery attempt raised (spawn
+#: failure, connection refused, malformed response, ...) rather than timing
+#: out. Same non-blocking/heals-in-background contract as the timeout reason.
+MCP_NAMESPACE_DISCOVERY_UNREACHABLE = "mcp_namespace_discovery_unreachable"
+#: #1232 pt 2: a previously-degraded namespace (either reason above) answered
+#: on a background re-probe; its tools are now merged into the live catalog.
+MCP_NAMESPACE_DISCOVERY_HEALED = "mcp_namespace_discovery_healed"
+#: #1232 pt 3: a stdio MCP launcher (uv/uvx) could not acquire the dedicated
+#: launcher cache lock within the bounded wait -- fails FAST and typed instead
+#: of hanging the connect forever (the #1186 cache-lock-contention family).
+#: Feeds the same background re-probe as a discovery degrade.
+LAUNCHER_CACHE_LOCK_TIMEOUT = "launcher_cache_lock_timeout"
+#: #1232 pt 4: the boot process-census killed a PROVABLY-orphaned clio-launched
+#: child process (dead parent PID + clio launcher identity) instead of only
+#: reporting it. The shared clio-core CTE daemon is excluded by construction
+#: (see runtime/process_census.py) and never matches this reason.
+PROCESS_CENSUS_ORPHAN_REAPED = "process_census_orphan_reaped"
 
 
 class ClioError(Exception):
