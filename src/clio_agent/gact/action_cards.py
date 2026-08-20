@@ -342,6 +342,10 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
         stub_rows, skipped = _coerce_stub_actions(stub_actions)
         actions.extend(stub_rows)
 
+        # A live task only ever comes out of _calling_task(app, sid), so app is
+        # narrowed non-None here (the None case early-returned above).
+        assert app is not None
+
         # Branded emitter identity: the calling session's OWN activated Agent
         # Blueprint (e.g. "spotter-ai"), never the bare expert id -- the card
         # header reads as the PRODUCT ("SPOTTER AI"), not an internal expert

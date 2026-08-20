@@ -74,6 +74,7 @@ def _run_foreground_coroutine(
     deadline = None if timeout is None else time.monotonic() + timeout
     while True:
         remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        wait_seconds: float | None
         if cancellation_checker is not None:
             wait_seconds = (
                 _CANCELLATION_POLL_SECONDS
