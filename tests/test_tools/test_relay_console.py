@@ -52,12 +52,28 @@ class _FakeRelayHttpClient:
 def _scripted_log_handler(
     chunks: list[tuple[str, int]], calls: list[httpx.Request]
 ) -> Callable[[httpx.Request], httpx.Response]:
-    """Return each queued ``(data, next_offset)`` pair in order, one per call."""
+    """Return each queued ``(text, next_offset)`` pair in order, one per call.
+
+    Serves relay's REAL log envelope (``job_id``/``stream``/``offset``/
+    ``next_offset``/``eof``/``text`` -- verified against the live door), not
+    an invented shape: the pre-fix client parsed a ``data`` key relay never
+    serves, so every live pull failed while these fixtures stayed green.
+    """
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
-        data, next_offset = chunks[len(calls) - 1]
-        return httpx.Response(200, json={"data": data, "next_offset": next_offset})
+        text, next_offset = chunks[len(calls) - 1]
+        return httpx.Response(
+            200,
+            json={
+                "job_id": request.url.path.split("/")[2],
+                "stream": request.url.path.rsplit("/", 1)[-1],
+                "offset": int(request.url.params.get("offset", "0")),
+                "next_offset": next_offset,
+                "eof": len(calls) >= len(chunks),
+                "text": text,
+            },
+        )
 
     return handler
 
@@ -188,6 +204,54 @@ async def test_on_poll_no_record_is_a_silent_noop() -> None:
 
     assert calls == []
     assert store.get(key) is None
+
+
+async def test_on_poll_pulls_the_console_stream_not_the_process_stdio() -> None:
+    """The fold must ask for relay's ``console`` stream (the application
+    output clio-relay#259 feeds), never ``stdout`` -- for an ``mcp_call`` job
+    that stream is the MCP jsonrpc wire, which is plumbing, not console.
+    Run 13's live diagnosis: the client pulled ``/logs/stdout`` and would have
+    folded protocol frames had the envelope parse not also been broken."""
+
+    key = _key()
+    store = InMemoryTaskRecordStore()
+    store.put(TaskRecord(key=key, tool="relay_run", status="working"))
+    calls: list[httpx.Request] = []
+    client = _FakeRelayHttpClient(_scripted_log_handler([("app output\n", 11)], calls))
+    on_poll = make_console_on_poll(client, "job-1")
+
+    await _drive(on_poll, store, key, rounds=1)
+
+    assert len(calls) == 1
+    assert calls[0].url.path == "/jobs/job-1/logs/console"
+
+
+async def test_on_poll_rejects_the_legacy_data_envelope_without_folding(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Run 13's root cause, pinned: a door answering the pre-fix invented
+    ``{"data": ...}`` shape is a MALFORMED envelope -- the hook must warn and
+    fold nothing, never guess. (The live door serves ``text``; this guards
+    against the fixture-only shape ever counting as valid again.)"""
+
+    key = _key()
+    store = InMemoryTaskRecordStore()
+    store.put(TaskRecord(key=key, tool="relay_run", status="working"))
+    before = store.get(key)
+    calls: list[httpx.Request] = []
+
+    def legacy_handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"data": "app output\n", "next_offset": 11})
+
+    client = _FakeRelayHttpClient(legacy_handler)
+    on_poll = make_console_on_poll(client, "job-1")
+
+    with caplog.at_level(logging.WARNING, logger="clio_agent.tools.relay_console"):
+        await _drive(on_poll, store, key, rounds=1)
+
+    assert store.get(key) is before
+    assert any("relay_console_pull_failed" in message for message in caplog.messages)
 
 
 # --------------------------------------------------------------------------- #

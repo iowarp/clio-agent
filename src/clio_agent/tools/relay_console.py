@@ -5,8 +5,8 @@ the per-job event stream (that is clio-relay#259, the SOURCE half this issue
 was narrowed away from) -- so until it does, this module is a PULL: on every
 #1115 poll round (:func:`clio_agent.tools.mcp_tasks.drive_task_to_terminal`'s
 generic ``on_poll`` hook, #1231 Part 2), it fetches the next bounded increment
-of a job's stdout from relay's authenticated HTTP door
-(``GET /jobs/{job_id}/logs/stdout?offset=N&limit=M``, mirroring
+of a job's console from relay's authenticated HTTP door
+(``GET /jobs/{job_id}/logs/{stream}?offset=N&limit=M``, mirroring
 :meth:`~clio_agent.tools.relay_transport.RelayTransportClient.fetch_artifact``'s
 idiom), folds it into a BOUNDED rolling tail, and writes it through
 :class:`~clio_agent.tools.mcp_task_records.TaskRecordStore` -- the SAME
@@ -52,6 +52,7 @@ __all__ = [
     "RELAY_LOG_PULL_HARD_CAP_BYTES",
     "console_enabled",
     "console_pull_limit_bytes",
+    "console_stream",
     "console_tail_cap_bytes",
     "make_console_on_poll",
 ]
@@ -103,6 +104,26 @@ def console_pull_limit_bytes() -> int:
         cast=conf.as_int,
     )
     return max(1, min(limit, RELAY_LOG_PULL_HARD_CAP_BYTES))
+
+
+def console_stream() -> str:
+    """Which relay log stream the console fold pulls.
+
+    Config key ``relay.console.stream`` / env ``CLIO_RELAY_CONSOLE_STREAM``.
+    Default ``"console"``: the application-output stream clio-relay#259 feeds
+    from the running execution (LAMMPS thermo lines, mpirun output, ...).
+    ``"stdout"``/``"stderr"`` remain addressable for diagnostics, but they
+    carry the job *process*'s stdio -- for an ``mcp_call`` job that is the
+    MCP jsonrpc wire, which must never be presented as application console.
+    """
+
+    value = conf.resolve(
+        "relay.console.stream",
+        env="CLIO_RELAY_CONSOLE_STREAM",
+        default="console",
+        cast=str,
+    )
+    return str(value).strip() or "console"
 
 
 def console_tail_cap_bytes() -> int:
@@ -172,22 +193,26 @@ async def _pull_increment(
         multi-byte UTF-8 boundary clipped mid-character is never miscounted.
 
     Raises:
-        ValueError: The response is not the documented envelope. Caught by
-            the caller (:func:`make_console_on_poll`) -- never propagated.
+        ValueError: The response is not relay's documented log envelope
+            (``{"text": str, "next_offset": int, "eof": bool, ...}`` --
+            verified against the live door; the pre-fix client expected a
+            ``data`` key that relay never serves, so every pull failed as a
+            swallowed warning). Caught by the caller
+            (:func:`make_console_on_poll`) -- never propagated.
     """
 
-    path = f"/jobs/{quote(job_id, safe='')}/logs/stdout"
+    path = f"/jobs/{quote(job_id, safe='')}/logs/{quote(console_stream(), safe='')}"
     params = {"offset": offset, "limit": console_pull_limit_bytes()}
     response = await client._require_http_client().get(path, params=params)  # noqa: SLF001
     response.raise_for_status()
     payload = response.json()
     if not isinstance(payload, Mapping):
         raise ValueError("relay console log response is not an object")
-    data = payload.get("data")
+    text = payload.get("text")
     next_offset = payload.get("next_offset")
-    if not isinstance(data, str) or not isinstance(next_offset, int) or next_offset < offset:
-        raise ValueError("relay console log response is missing data/next_offset")
-    return data, next_offset
+    if not isinstance(text, str) or not isinstance(next_offset, int) or next_offset < offset:
+        raise ValueError("relay console log response is missing text/next_offset")
+    return text, next_offset
 
 
 def make_console_on_poll(

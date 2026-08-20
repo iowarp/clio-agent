@@ -7,6 +7,7 @@ import json
 import socket
 import threading
 import time
+import unittest.mock
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace
 from datetime import timedelta
@@ -23,6 +24,7 @@ from fastmcp_tasks import TasksExtension
 from fastmcp_tasks.client_models import ClientCreateTaskResult
 
 from clio_agent.tools.mcp_task_records import (
+    TERMINAL_TASK_STATES,
     InMemoryTaskRecordStore,
     TaskKey,
     TaskRecord,
@@ -157,11 +159,19 @@ class _FakeRelayApp:
             ).encode()
             await self._respond(send, 200, body, b"text/event-stream")
             return
-        if path.startswith("/jobs/") and path.endswith("/logs/stdout"):
+        if path.startswith("/jobs/") and "/logs/" in path:
             job_id = path.split("/")[2]
+            stream_name = path.rsplit("/", 1)[-1]
             query = parse_qs(scope.get("query_string", b"").decode())
             if job_id in self._capture.console_log_fail_job_ids:
                 await self._respond(send, 500, b"log door unavailable", b"text/plain")
+                return
+            # The application console lives ONLY on relay's `console` stream
+            # (clio-relay#259); `stdout`/`stderr` carry the job process's stdio
+            # (for mcp_call jobs, the jsonrpc wire). Serving nothing for other
+            # stream names is what proves the client asks for the right one.
+            if stream_name != "console":
+                await self._respond(send, 404, b"no such log stream", b"text/plain")
                 return
             offset = int(query.get("offset", ["0"])[0])
             limit = int(query.get("limit", ["65536"])[0])
@@ -173,7 +183,16 @@ class _FakeRelayApp:
             encoded = written.encode("utf-8")
             chunk = encoded[offset : offset + limit]
             next_offset = offset + len(chunk)
-            body = json.dumps({"data": chunk.decode("utf-8"), "next_offset": next_offset}).encode()
+            body = json.dumps(
+                {
+                    "job_id": job_id,
+                    "stream": stream_name,
+                    "offset": offset,
+                    "next_offset": next_offset,
+                    "eof": not pending,
+                    "text": chunk.decode("utf-8"),
+                }
+            ).encode()
             await self._respond(send, 200, body, b"application/json")
             return
         if path.startswith("/artifacts/") and path.endswith("/content"):
@@ -939,6 +958,45 @@ async def test_wait_folds_growing_console_tail_and_notifies_the_change_listener(
     settled = store.get(task.key)
     assert settled is not None
     assert settled.backend["console"]["truncated"] is False
+
+
+async def test_terminal_record_resolution_still_folds_the_console_tail(
+    relay_backend: _Backend,
+) -> None:
+    """FAILING-FIRST for run 13's zero-fold gap: a job that settles before
+    anyone waits (fast workload, record terminal at first lookup) resolves
+    through ``wait_for_submitted_job``'s ``poll()`` branch — which carried no
+    console hook, so the record stayed console-less forever. Every explicit
+    resolution must fold the latest console increment."""
+
+    async with _client(relay_backend) as relay:
+        task = await relay.submit("relay_run", {"delay": 0.05})
+        relay_backend.capture.console_log_lines[task.job_id] = [
+            "LAMMPS (23 Jun 2022)\nStep Temp E_pair\n",
+        ]
+        # Drive to terminal WITHOUT consuming the console queue: wait() with
+        # the fold disabled mirrors a serve whose pulls all failed (run 13).
+        with unittest.mock.patch(
+            "clio_agent.tools.relay_transport.make_console_on_poll", return_value=None
+        ):
+            settled_result = await relay.wait(task, timeout_seconds=15)
+        assert settled_result.status == "completed"
+        record = task_record_store().get(task.key)
+        assert record is not None
+        assert record.status in TERMINAL_TASK_STATES
+        assert "console" not in record.backend
+
+        # The fix: resolving the already-terminal record folds the tail.
+        resolved = await relay.wait_for_submitted_job(task.job_id)
+
+    assert resolved is not None
+    assert resolved.status == "completed"
+    settled = task_record_store().get(task.key)
+    assert settled is not None
+    console = settled.backend.get("console")
+    assert console is not None, "terminal-record resolution must fold the console tail"
+    assert console["tail"].startswith("LAMMPS (23 Jun 2022)")
+    assert console["offset"] > 0
 
 
 async def test_wait_completes_normally_when_the_console_log_door_fails(

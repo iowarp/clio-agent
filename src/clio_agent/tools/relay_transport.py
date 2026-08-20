@@ -468,6 +468,13 @@ class RelayTransportClient:
         # semantics; removal is an explicit later dismiss via
         # run_registry.dismiss_run, never an automatic side effect of settling).
         store.put(replace(latest, status=current.status))
+        # #1231: every explicit resolution folds one console increment, so a
+        # record that settled before anyone waited (fast job, terminal at
+        # first lookup) and every relay_observe peek still carry the latest
+        # console tail — wait()'s per-poll hook alone left those paths empty.
+        on_poll = make_console_on_poll(self, task.task_id)
+        if on_poll is not None:
+            await on_poll(current, task.key, store)
         return current
 
     async def wait(
