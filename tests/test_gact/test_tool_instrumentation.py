@@ -500,8 +500,8 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
     """Drive the real react-runtime observed-call path for every tool
     auto-attached to a dynamic react expert (``auto_tools.build_auto_react_tools``:
     create_artifact, plan_exit, write_todos, the cron triad, loop_wakeup,
-    goal_status, raise_alert_card) plus a plain curated native "row" tool, and
-    assert each
+    goal_status, raise_alert_card, refresh_provider_models) plus a plain
+    curated native "row" tool, and assert each
     EXECUTED call lands at least one ``tool_call`` part on the live transcript
     — whether the call itself succeeds or raises (the tool_call part is
     appended at the "started" phase, before the underlying function even
@@ -548,6 +548,13 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
             # alert_card_no_parent error rather than raising; the tool_call part
             # still lands unconditionally (that is exactly the invariant here).
             "raise_alert_card": {"title": "t", "body": "b"},
+            # #1211 review R6/S2: auto-attached ONLY for a tier-1 MAIN session
+            # (this harness's agent_def has no parent_id, so it qualifies).
+            # Scans configured providers only (is_provider_configured) and each
+            # probe is deadline-bounded, so this stays fast/offline in CI; it
+            # may raise (e.g. no providers configured) -- the invariant under
+            # test holds regardless.
+            "refresh_provider_models": {},
         }
         assert set(calls) == set(auto_tools), (
             "auto_tools.build_auto_react_tools grew/shrank — update this sabotage test's "

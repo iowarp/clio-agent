@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.agents.relay_expert_invoker import RelayExpertInvoker
 from clio_agent.tools.execution import create_sync_tool_executor
-from clio_agent.tools.gateway import namespace_proxies
+from clio_agent.tools.gateway import list_relay_tool_definitions, namespace_proxies
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 #: ``custom_agent_tools_unavailable`` / ``not_implemented``, a MISLEADING
 #: reason (the truth was catalog staleness, not tool unavailability).
 RELAY_TOOL_SURFACES_DEFAULT_TTL_SECONDS = 300
+
+#: Retry clock for a DEGRADED stored catalog (no federation — the door was
+#: down or answered without its remote catalog). Deliberately short: the next
+#: turn after the door recovers should heal, and a down door costs at most one
+#: bounded probe per window — never a per-turn hammer, never a 300s brick.
+_RELAY_DISCOVERY_FAILURE_TTL_SECONDS = 20.0
 
 
 def _relay_tool_surfaces_ttl_seconds() -> float:
@@ -109,6 +115,14 @@ async def refresh_relay_tool_surfaces_if_stale(app: FastAPI) -> Any:
 
     discovered_at = getattr(app.state, "relay_tool_surfaces_discovered_at", None)
     ttl = _relay_tool_surfaces_ttl_seconds()
+    # Cache doctrine (L3 run-15 brick): a FAILED discovery must never ride the
+    # success TTL. A stored catalog with no federation (the door was down or
+    # answered degraded) is retryable on a SHORT clock, so the first turn
+    # after the door comes up heals instead of bricking every turn for the
+    # whole TTL window. A WORKING catalog keeps the long TTL — one transient
+    # probe failure never tears it down (the except branch below).
+    if getattr(existing, "remote_mcp_federation", None) is None:
+        ttl = min(ttl, _RELAY_DISCOVERY_FAILURE_TTL_SECONDS)
     if isinstance(discovered_at, (int, float)) and (time.monotonic() - discovered_at) < ttl:
         return existing
 
@@ -152,6 +166,17 @@ def _refresh_agent_relay_tool_surfaces(agent: Any, surfaces: Any) -> None:
     agent._remote_mcp_federation = surfaces.remote_mcp_federation  # noqa: SLF001
     agent._jarvis_jobs = surfaces.jarvis_jobs  # noqa: SLF001
     agent._relay_status = dict(surfaces.status)  # noqa: SLF001
+    # Late-arrival seed (L3 run-14 brick): construction seeded
+    # ``_tool_definitions`` while the federation was still ABSENT, and this
+    # rebuild used to pass that stale builtins-only dict as
+    # ``preloaded_tools`` — so a discovery that succeeded AFTER construction
+    # pushed the federation onto the agent while its executor kept offering
+    # four builtins, and every custom-agent ACL still bricked
+    # (federation=present in the diagnostics, tools absent). Re-seed from the
+    # same projection the construction path uses.
+    agent._tool_definitions.update(  # noqa: SLF001
+        list_relay_tool_definitions(surfaces.remote_mcp_federation)
+    )
     gateway = agent._build_tool_gateway(set_catalog=True)  # noqa: SLF001
     executor = create_sync_tool_executor(
         gateway,

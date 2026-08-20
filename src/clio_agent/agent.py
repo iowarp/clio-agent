@@ -535,6 +535,8 @@ class ClioAgent(dspy.Module):
                     # just activated/deactivated) since this resident fleet was
                     # built — evict so the rebuild mounts exactly the NOW-active
                     # blueprint's declared servers, never a stale/foreign set.
+                    # (blueprint_switched requires executor is not None above.)
+                    assert executor is not None
                     try:
                         executor.close()
                     except Exception as exc:  # noqa: BLE001 - typed, never fatal
@@ -600,8 +602,14 @@ class ClioAgent(dspy.Module):
                 # a stub simply always rebuilds (mounted_blueprint_id reads
                 # back "" via getattr's default either way).
                 with suppress(AttributeError, TypeError):
-                    executor._clio_mounted_blueprint_id = blueprint_id  # noqa: SLF001
+                    setattr(executor, "_clio_mounted_blueprint_id", blueprint_id)  # noqa: B010
                 executors[root] = executor
+            # #1230: resolving-for-use counts as activity so a reap tick landing
+            # in the gap before the caller's dispatch marks this executor busy
+            # cannot pop it out from under an about-to-start call.
+            reaper = getattr(self, "_workspace_reaper", None)
+            if reaper is not None:
+                reaper.note_resolved(root)
             return executor
 
     @contextmanager

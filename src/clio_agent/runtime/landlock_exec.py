@@ -154,7 +154,10 @@ def _add_path_rule(libc: ctypes.CDLL, ruleset_fd: int, path: str, access: int) -
     root / an absent optional dev node is not an error (it simply grants nothing).
     """
     try:
-        fd = os.open(path, os.O_PATH)
+        # O_PATH is Linux-only (absent from Windows typeshed); this module only
+        # ever executes under Linux landlock, so the fallback value is dead code
+        # that exists purely to keep cross-platform type-checking clean.
+        fd = os.open(path, getattr(os, "O_PATH", 0))
     except OSError:
         return
     try:

@@ -77,7 +77,15 @@ RATCHET_BASELINE: dict[str, int] = {
     # assignment; production SyncMCPToolExecutor instances always do.)
     # +8 (b8eff254): the synchronous federation-projections seed at
     # construction (list_relay_tool_definitions merge -- the L3 run-4..9 fix).
-    "src/clio_agent/agent.py": 981,
+    # +2 (c47441f6): mypy narrowing for the blueprint-switch eviction (an
+    # assert + its comment); no behavior change.
+    # #1230 (+6 on top): WorkspaceExecutorReaper.note_resolved() at the one
+    # _active_tool_executor call site -- resolving-for-use now counts as
+    # activity so a reap tick landing in the gap before the caller's dispatch
+    # marks the executor busy cannot pop it out from under an about-to-start
+    # call. The reaper's TTL pin itself lives in the owner module
+    # tools/reaper.py; only the guarded one-call notify lands here.
+    "src/clio_agent/agent.py": 989,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -636,7 +644,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # the existing tool_workspace_context immediately above it (this module
     # already owns that contextvar, so its sibling belongs here too, not a
     # new file). No behavior on the existing workspace-root path changes.
-    "src/clio_agent/tools/execution.py": 1214,
+    # #1230: +5 (1214 -> 1219) — the unbounded #1225 commitment wait now scopes
+    # inside `with commitment_activity.track(timeout is None):` so the turn's
+    # no-progress watchdog can see it as progress and pause the ceiling. Logic
+    # (the tracker + the no-op-unless-unbounded context manager) lives entirely
+    # in the new owner module runtime/commitment_activity.py; only the import +
+    # the one `with` line land here.
+    "src/clio_agent/tools/execution.py": 1219,
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.
@@ -644,6 +658,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # warning is queryable by the new doctor sub-check
     # (runtime/mcp_launcher.py::probe_mcp_yaml_declarations), not just a log
     # line. Ratchets back below 800 if this snapshot moves to its own module.
+    # #1230: not previously baselined (sat exactly at the 800 default cap). +8
+    # for the per-call ceiling derivation call site in _timeout_budget_for_call
+    # (a component-declared schema-default budget now floors the backstop
+    # above the flat operator-tuned global) — the derivation itself lives in
+    # the new owner module tools/mcp_timeout_budget.py; only the import + the
+    # property-extraction/compare lines land here.
+    "src/clio_agent/tools/mcp_executor.py": 808,
     "src/clio_agent/tools/mcp_config.py": 821,
     # #1231 Part 1/2 (consumer half of the live-console feature): not previously
     # baselined -- this file was ALREADY 7 lines over the 800 cap before this
@@ -658,8 +679,24 @@ RATCHET_BASELINE: dict[str, int] = {
     # lives entirely in the NEW owner module tools/relay_console.py
     # (make_console_on_poll); only the import + one keyword argument + a
     # docstring note land here. Ratchets back below 800 with the #714/#767
-    # decomposition.
-    "src/clio_agent/tools/relay_transport.py": 820,
+    # decomposition. +7 (820->827): the #1231 run-13 fix folds one console
+    # increment on every explicit resolution in ``poll()`` (terminal-at-lookup
+    # records and relay_observe peeks were console-less forever) -- the fold
+    # logic itself stays in relay_console.py; only the hook call lands here.
+    # +26 (827->853): the missing CLIENT half of #1231 -- register/unregister this
+    # instance's console observer factory (tools/task_observers.py) against its own
+    # backend_identity() server_id at __aenter__/__aexit__, so a relay-backed task
+    # that resolves through the TRANSPARENT #1115 extension path (never through this
+    # client's own submit()/poll()/wait()) also folds its console tail. The registry
+    # + the guarded resolve-and-catch live in the new owner module
+    # tools/task_observers.py; only the register/unregister call sites + the
+    # _observer_server_id bookkeeping field land here.
+    # +3 (853->856): ``backend_identity(getattr(mcp_client, "transport", mcp_client))``
+    # -- a real ``fastmcp.Client`` always has ``.transport`` (matches submit()'s own
+    # derivation exactly), but test_mcp_execution_era_visibility.py's minimal
+    # era-classification fake client does not, and crashed __aenter__ before this
+    # fallback (a pre-existing, unrelated test this change must not break).
+    "src/clio_agent/tools/relay_transport.py": 856,
     # #1232 pt 2: not previously baselined (under the 800 cap). +28 for
     # list_builtin_tool_definitions -- the boot path needs a FAST,
     # synchronous, no-I/O tool-definitions seed (built-ins only) so
