@@ -223,7 +223,14 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1211: +1 for the POST /v1/providers/models/refresh route registration (import
     # + one register call); the body lives entirely in its own owner modules,
     # routes/provider_models_refresh.py and providers/model_discovery.py.
-    "src/clio_agent/gact/app.py": 2556,  # relay wiring moved to gact/relay_wiring.py
+    # #1232 pt 4: +10 to sequence the boot orphan-process reap BEFORE the
+    # existing #1001 MCP-cache prune's peer-liveness check (a still-running
+    # orphaned clio_run.exe from a prior hard kill otherwise looks like a live
+    # peer and defers the prune indefinitely — the observed "deferred for two
+    # days" bug). All reap logic lives in the owner module
+    # runtime/process_census.py (reap_orphaned_processes/boot_reap_off_loop);
+    # only the sequencing wrapper + its one call site land here.
+    "src/clio_agent/gact/app.py": 2566,  # relay wiring moved to gact/relay_wiring.py
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
