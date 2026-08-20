@@ -26,6 +26,18 @@ A log-pull failure (relay unreachable, endpoint not yet deployed, malformed
 response) is NEVER allowed to break the wait: it is caught here, reported at
 WARNING once per drive and DEBUG thereafter (never floods the log on a
 persistently-down door), and the poll loop continues untouched.
+
+#1236 (the live-console last hop). The full-record ``store.put`` above already
+fans a ``mcp_task.updated`` snapshot out on every fold, but that snapshot
+carries the WHOLE rolling tail every time -- fine for reload/catch-up honesty,
+wasteful (and, on a busy session, a real risk of crowding other events out of
+the bounded per-session SSE history/queue) as the live signal for "new console
+arrived." This module additionally calls the SEPARATE, LEAN
+:func:`~clio_agent.tools.mcp_task_records.task_console_listener` hook with just
+the new bytes whenever a fold actually grows the tail, so
+:mod:`clio_agent.gact.mcp_task_events` can publish a small, dedicated
+``mcp_task.console`` delta event alongside the existing snapshot one -- the
+record remains the sole source of truth for the full tail.
 """
 
 from __future__ import annotations
@@ -37,6 +49,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from clio_agent import conf
+from clio_agent.tools.mcp_task_records import task_console_listener
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from fastmcp_tasks.client_models import ClientGetTaskResult
@@ -231,6 +244,12 @@ def make_console_on_poll(
     hook returns without touching the record. ``store.put`` is called only
     when new bytes actually arrived -- a poll that observes no growth leaves
     the record, and its ``updated_at``/SSE fan-out, untouched.
+
+    When new bytes DID arrive, the fold also calls the installed
+    :func:`~clio_agent.tools.mcp_task_records.task_console_listener` with the
+    delta (never the whole tail) -- #1236's lean live-stream event, so a UI
+    watching the session sees new console lines without waiting for a reload
+    or re-consuming a growing snapshot on every poll.
     """
 
     if not console_enabled():
@@ -276,5 +295,27 @@ def make_console_on_poll(
             "truncated": truncated,
         }
         store.put(replace(latest, backend=new_backend))
+        # #1236: tell the LEAN delta listener too (if the gact layer installed
+        # one) -- separate from the full-record store.put above, which already
+        # fans out through TaskRecordStore's own change-listener carrying the
+        # WHOLE (up to console_tail_cap_bytes) rolling tail on every fold. That
+        # full-snapshot event stays for reload/catch-up honesty, but repeating it
+        # on every poll of a long drive is exactly the kind of stream bloat #832
+        # ("server owns the clean stream") warns against -- this hook carries
+        # just the NEW bytes so a live subscriber never has to re-consume a
+        # growing snapshot to render an append. Never allowed to break the wait:
+        # a broken listener is caught and warned, same contract as the pull
+        # above.
+        listener = task_console_listener()
+        if listener is not None:
+            try:
+                listener(key, console_stream(), chunk, next_offset, truncated)
+            except Exception as exc:  # noqa: BLE001 - a broken listener must never break the wait
+                logger.warning(
+                    "relay console delta listener failed reason=relay_console_delta_listener_failed "
+                    "job_id=%s: %r",
+                    job_id,
+                    exc,
+                )
 
     return _on_poll

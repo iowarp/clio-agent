@@ -23,6 +23,7 @@ from clio_agent.tools.mcp_task_records import (
     InMemoryTaskRecordStore,
     TaskKey,
     TaskRecord,
+    set_task_console_listener,
 )
 from clio_agent.tools.relay_console import (
     CONSOLE_TAIL_TRUNCATED_REASON,
@@ -346,3 +347,145 @@ async def test_on_poll_log_failure_is_non_fatal_and_warns_once_then_debug(
     record = store.get(key)
     assert record is not None
     assert "console" not in record.backend
+
+
+# --------------------------------------------------------------------------- #
+# #1236: the lean console-delta listener. Separate from the full-record       #
+# store.put notify (which fans a whole-tail snapshot out via                  #
+# task_change_listener on every fold) -- this hook exists so the live stream  #
+# does not have to re-consume a growing snapshot on every poll.               #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(autouse=True)
+def _clear_console_listener() -> Any:
+    """Never leak one test's installed listener into another's process-global."""
+
+    yield
+    set_task_console_listener(None)
+
+
+async def test_on_poll_notifies_the_console_listener_with_just_the_delta() -> None:
+    """FAILING-FIRST for #1236: the listener must fire on each fold with ONLY
+    the new bytes (never the accumulated tail) -- proven across two polls so a
+    listener that received the whole tail would visibly fail the second
+    assertion."""
+
+    key = _key()
+    store = InMemoryTaskRecordStore()
+    store.put(TaskRecord(key=key, tool="relay_run", status="working"))
+    calls: list[httpx.Request] = []
+    handler = _scripted_log_handler([("first line\n", 11), ("second line\n", 23)], calls)
+    client = _FakeRelayHttpClient(handler)
+    on_poll = make_console_on_poll(client, "job-1")
+
+    notified: list[tuple[Any, ...]] = []
+    set_task_console_listener(
+        lambda k, channel, delta, offset, truncated: notified.append(
+            (k, channel, delta, offset, truncated)
+        )
+    )
+
+    await _drive(on_poll, store, key, rounds=2)
+
+    assert len(notified) == 2
+    k0, channel0, delta0, offset0, truncated0 = notified[0]
+    assert k0 == key
+    assert channel0 == "console"
+    assert delta0 == "first line\n", "the delta, not the accumulated tail"
+    assert offset0 == 11
+    assert truncated0 is False
+    k1, channel1, delta1, offset1, truncated1 = notified[1]
+    assert delta1 == "second line\n", "the SECOND delta must not repeat the first"
+    assert offset1 == 23
+
+
+async def test_on_poll_does_not_notify_the_console_listener_when_nothing_grew() -> None:
+    """The deliverable's other half: a poll that observes zero new bytes must
+    fire NO console event at all -- matches the existing
+    ``test_on_poll_skips_put_when_no_new_bytes`` contract for the record write,
+    now proven for the listener too."""
+
+    key = _key()
+    store = InMemoryTaskRecordStore()
+    store.put(TaskRecord(key=key, tool="relay_run", status="working"))
+    calls: list[httpx.Request] = []
+    client = _FakeRelayHttpClient(_scripted_log_handler([("", 0)], calls))
+    on_poll = make_console_on_poll(client, "job-1")
+
+    notified: list[Any] = []
+    set_task_console_listener(lambda *args: notified.append(args))
+
+    await _drive(on_poll, store, key, rounds=1)
+
+    assert notified == []
+
+
+async def test_on_poll_console_listener_absent_is_a_quiet_noop() -> None:
+    """No listener installed (the default, e.g. a bare unit test with no gact
+    server booted) must not raise -- mirrors task_change_listener's own
+    documented absent-is-fine contract."""
+
+    key = _key()
+    store = InMemoryTaskRecordStore()
+    store.put(TaskRecord(key=key, tool="relay_run", status="working"))
+    calls: list[httpx.Request] = []
+    client = _FakeRelayHttpClient(_scripted_log_handler([("data\n", 5)], calls))
+    on_poll = make_console_on_poll(client, "job-1")
+
+    await _drive(on_poll, store, key, rounds=1)  # must not raise
+
+    record = store.get(key)
+    assert record is not None
+    assert record.backend["console"]["tail"] == "data\n"
+
+
+async def test_on_poll_console_listener_failure_is_non_fatal(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A broken listener must never break the wait -- same contract as a
+    broken log-pull, caught and warned, never propagated."""
+
+    key = _key()
+    store = InMemoryTaskRecordStore()
+    store.put(TaskRecord(key=key, tool="relay_run", status="working"))
+    calls: list[httpx.Request] = []
+    client = _FakeRelayHttpClient(_scripted_log_handler([("data\n", 5)], calls))
+    on_poll = make_console_on_poll(client, "job-1")
+
+    def _broken(*args: Any) -> None:
+        raise RuntimeError("listener boom")
+
+    set_task_console_listener(_broken)
+
+    with caplog.at_level(logging.WARNING, logger="clio_agent.tools.relay_console"):
+        await _drive(on_poll, store, key, rounds=1)  # must not raise
+
+    assert any("relay_console_delta_listener_failed" in m for m in caplog.messages)
+    # The record write itself still succeeded -- only the listener call failed.
+    record = store.get(key)
+    assert record is not None
+    assert record.backend["console"]["tail"] == "data\n"
+
+
+async def test_on_poll_console_listener_channel_follows_the_configured_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The channel field must never be hardcoded to "stdout"/"console" -- it
+    follows :func:`console_stream`'s config, so a future relay stderr tail
+    (item 4, relay-side work) slots in without a clio-agent shape change."""
+
+    monkeypatch.setenv("CLIO_RELAY_CONSOLE_STREAM", "stderr")
+    key = _key()
+    store = InMemoryTaskRecordStore()
+    store.put(TaskRecord(key=key, tool="relay_run", status="working"))
+    calls: list[httpx.Request] = []
+    client = _FakeRelayHttpClient(_scripted_log_handler([("oops\n", 5)], calls))
+    on_poll = make_console_on_poll(client, "job-1")
+
+    notified: list[Any] = []
+    set_task_console_listener(lambda k, channel, delta, offset, truncated: notified.append(channel))
+
+    await _drive(on_poll, store, key, rounds=1)
+
+    assert notified == ["stderr"]
