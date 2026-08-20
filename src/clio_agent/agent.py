@@ -529,6 +529,22 @@ class ClioAgent(dspy.Module):
             blueprint_switched = (
                 executor is not None and not stale and mounted_blueprint_id != blueprint_id
             )
+            # #1236: a resident executor minted while the relay federation was
+            # ABSENT (or under an older catalog) must not outlive a successful
+            # refresh — the run-15/17 brick: the per-turn refresh rebuilt the
+            # DEFAULT executor while the workspace's resident one kept serving
+            # a toolless (or partial) snapshot, so the ACL bricked with
+            # federation=present. Same eviction shape as blueprint_switched.
+            current_epoch = getattr(self, "_relay_federation_epoch", 0)
+            executor_epoch = (
+                getattr(executor, "_clio_federation_epoch", current_epoch)
+                if executor is not None
+                else current_epoch
+            )
+            federation_switched = (
+                executor is not None and not stale and executor_epoch != current_epoch
+            )
+            blueprint_switched = blueprint_switched or federation_switched
             if executor is None or stale or blueprint_switched:
                 if blueprint_switched:
                     # #1232 pt 1: the workspace's active blueprint changed (or
@@ -603,6 +619,9 @@ class ClioAgent(dspy.Module):
                 # back "" via getattr's default either way).
                 with suppress(AttributeError, TypeError):
                     setattr(executor, "_clio_mounted_blueprint_id", blueprint_id)  # noqa: B010
+                    # #1236: stamp the federation epoch this executor was built
+                    # under, so a later successful refresh evicts it (above).
+                    setattr(executor, "_clio_federation_epoch", current_epoch)  # noqa: B010
                 executors[root] = executor
             # #1230: resolving-for-use counts as activity so a reap tick landing
             # in the gap before the caller's dispatch marks this executor busy

@@ -85,7 +85,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # marks the executor busy cannot pop it out from under an about-to-start
     # call. The reaper's TTL pin itself lives in the owner module
     # tools/reaper.py; only the guarded one-call notify lands here.
-    "src/clio_agent/agent.py": 989,
+    # +19 (#1236): federation-epoch eviction of resident workspace executors —
+    # an executor minted while the federation was ABSENT must not outlive a
+    # successful refresh (the run-15/17 custom_agent_tools_unavailable-with-
+    # federation=present brick). Same eviction shape as blueprint_switched;
+    # the epoch bump itself lives in gact/relay_wiring.py.
+    "src/clio_agent/agent.py": 1008,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
