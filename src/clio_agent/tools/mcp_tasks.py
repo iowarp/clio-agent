@@ -114,6 +114,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "EFFECTIVE_STATUS_REASON_MAX_CHARS",
     "REMOVED_TASK_METHODS",
     "TASKS_EXTENSION_ID",
     "TERMINAL_TASK_STATES",
@@ -129,6 +130,7 @@ __all__ = [
     "TaskRecord",
     "TaskRecordStore",
     "cancel_task",
+    "derive_effective_status",
     "drive_task_to_terminal",
     "iter_task_records",
     "open_task_records",
@@ -460,7 +462,7 @@ async def _poll_until_terminal(
             raise TimeoutError(f"task {key.task_id} did not finish within {timeout_seconds}s")
 
         current = await send_task_get(session, key.task_id, budget)
-        _record_status(store, ledger, key, current.status)
+        _record_status(store, ledger, key, current)
         if on_poll is not None:
             await on_poll(current, key, store)
         if current.status in TERMINAL_TASK_STATES:
@@ -480,7 +482,7 @@ async def _poll_until_terminal(
                 elicitation_callback,
                 remaining(),
             )
-            _record_status(store, ledger, key, current.status)
+            _record_status(store, ledger, key, current)
             if newly_elicited:
                 no_progress = 0
                 backoff = MIN_POLL_INTERVAL
@@ -508,15 +510,88 @@ async def _poll_until_terminal(
         await poll_sleep(delay)
 
 
+#: Cap on the error text extracted from a delivered-error result's content
+#: blocks and carried on ``TaskRecord.effective_status_reason`` (#1236). The
+#: record is UI-facing context, not the log of record — relay/the tool's own
+#: full output is reachable through the normal artifact/console channels; this
+#: only needs to be long enough to tell an operator WHAT failed at a glance.
+EFFECTIVE_STATUS_REASON_MAX_CHARS = 4_000
+
+
+def _extract_result_error_message(result: Mapping[str, Any]) -> str:
+    """Best-effort text pulled from a delivered error result's content blocks.
+
+    Mirrors the same "join the text blocks" idiom already used for a genuine
+    protocol failure (``fastmcp_tasks.client._terminal_error_message`` reading
+    ``final.error``, and ``jarvis_result_contract._remote_message`` reading a
+    JARVIS-specific nested envelope) — this is the GENERIC, backend-agnostic
+    version of that idiom, applied to the outer ``CallToolResult`` dict SEP-2663
+    hands back on a ``status: "completed"`` delivery.
+    """
+
+    content = result.get("content")
+    texts: list[str] = []
+    if isinstance(content, list):
+        texts = [
+            str(block["text"])
+            for block in content
+            if isinstance(block, Mapping) and isinstance(block.get("text"), str)
+        ]
+    if not texts:
+        return "task completed with an error result (isError=true) with no text content"
+    joined = "\n".join(texts)
+    return joined[:EFFECTIVE_STATUS_REASON_MAX_CHARS]
+
+
+def derive_effective_status(current: ClientGetTaskResult) -> tuple[str, str | None]:
+    """Derive the protocol-truth status/reason pair for one observed poll (#1236).
+
+    SEP-2663 ``status: "completed"`` means only that the server DELIVERED a
+    result — never that the underlying application call itself succeeded. A
+    delivered result whose own ``isError`` is true (``mcp_types.CallToolResult``'s
+    own error channel) is a real failure the protocol status alone launders into
+    a bare "completed" (clio-relay#265, owner ruling 2026-08-20: "completed is a
+    terrible status indicator" — producing the declared outputs, or at minimum
+    NOT erroring, is part of what completed means). This function downgrades
+    exactly that one case to ``"failed"`` with the extracted error text; every
+    other protocol status (``working``/``input_required``/``failed``/
+    ``cancelled``, and a genuinely clean ``completed``) passes through
+    unchanged — this is protocol-truth derivation, never a heuristic guess.
+    """
+
+    if current.status != "completed":
+        return current.status, None
+    result = current.result
+    if not isinstance(result, Mapping) or not result.get("isError"):
+        return "completed", None
+    return "failed", _extract_result_error_message(result)
+
+
 def _record_status(
-    store: TaskRecordStore, ledger: TaskInputLedger, key: TaskKey, status: str
+    store: TaskRecordStore, ledger: TaskInputLedger, key: TaskKey, current: ClientGetTaskResult
 ) -> None:
-    """Write an observed status (and the answer ledger) through to the store."""
+    """Write an observed status (and the answer ledger) through to the store.
+
+    Also derives and stamps ``effective_status``/``effective_status_reason``
+    (#1236) on every write, not just the terminal one — a mid-drive
+    ``working``/``input_required`` observation trivially passes through
+    unchanged, so this stays the single write funnel rather than special-casing
+    the terminal transition.
+    """
 
     existing = store.get(key)
     if existing is None:
         return
-    store.put(replace(existing, status=status, input_answers=ledger.snapshot()))
+    effective_status, reason = derive_effective_status(current)
+    store.put(
+        replace(
+            existing,
+            status=current.status,
+            effective_status=effective_status,
+            effective_status_reason=reason,
+            input_answers=ledger.snapshot(),
+        )
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -562,7 +637,17 @@ async def cancel_task(
     resolved = resolve_store(store)
     existing = resolved.get(key)
     if existing is not None:
-        resolved.put(replace(existing, status="cancelled"))
+        # #1236: an explicit cancel ack is unambiguous -- stamp the honest field
+        # alongside the raw one so a run card reading ``display_status`` sees
+        # "cancelled" immediately rather than a stale pre-cancel effective_status.
+        resolved.put(
+            replace(
+                existing,
+                status="cancelled",
+                effective_status="cancelled",
+                effective_status_reason=None,
+            )
+        )
     return ack
 
 

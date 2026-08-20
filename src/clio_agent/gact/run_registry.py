@@ -74,17 +74,28 @@ def _relay_run(record: TaskRecord) -> dict[str, Any]:
     renders them verbatim. ``updated_at`` is now wired through from the real,
     stamped field (``TaskRecord.updated_at``, #1205 2nd/3rd round) instead of
     a hardcoded empty string.
+
+    #1236 (clio-relay#265's client half, owner ruling 2026-08-20): ``status``
+    here is now :attr:`TaskRecord.display_status` — the protocol-truth-derived
+    field, primary because a run card reading the raw SEP-2663 wire status
+    alone would show a delivered-error task as bare "completed" ("completed is
+    a terrible status indicator"). The raw wire value is never discarded: it
+    rides alongside as ``protocol_status``, and ``status_reason`` carries the
+    extracted error text when the two diverge.
     """
 
     cluster = record.backend.get("cluster")
     is_relay = isinstance(cluster, str) and bool(cluster)
-    live_state = _RELAY_LIVE_STATES.get(record.status, record.status)
+    display_status = record.display_status
+    live_state = _RELAY_LIVE_STATES.get(display_status, display_status)
     return {
         "handle_id": record.task_id,
         "task_id": record.task_id,
         "run_label": record.tool or f"task {record.task_id}",
         "live_state": live_state,
-        "status": record.status,
+        "status": display_status,
+        "protocol_status": record.status,
+        "status_reason": record.effective_status_reason,
         "host": cluster if is_relay else record.key.server_id,
         "placement": f"relay:{cluster}" if is_relay else f"mcp:{record.key.server_id}",
         "parent_session_id": record.session_id or "",

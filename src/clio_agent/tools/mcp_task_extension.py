@@ -138,6 +138,10 @@ async def persist_created_task(
         tool=tool_name,
         backend=dict(identity.locator),
         status=create_result.status,
+        # #1236: trivially equal to ``status`` at creation -- there is no
+        # delivered result yet to derive an error out of, so no separate
+        # derivation call is needed here (only a completed poll ever diverges).
+        effective_status=create_result.status,
         created_at=getattr(create_result, "created_at", "") or utcnow_iso(),
     )
     try:

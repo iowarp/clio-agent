@@ -1187,3 +1187,189 @@ def test_absent_durable_store_degrades_to_memory_with_a_typed_reason(caplog: Any
         assert "mcp_task_record_store_absent" in caplog.text
     finally:
         set_task_record_store(None)
+
+
+# --------------------------------------------------------------------------- #
+# #1236 (clio-relay#265's client half, owner ruling 2026-08-20): effective    #
+# status derivation. SEP-2663 "completed" only means DELIVERED, not that the  #
+# application call itself succeeded -- a delivered result carrying            #
+# isError=true must derive to "failed", never surface as bare "completed".    #
+# --------------------------------------------------------------------------- #
+
+
+def _get_result(
+    status: str,
+    *,
+    result: dict[str, Any] | None = None,
+    task_id: str = "task-eff",
+) -> Any:
+    """A ``ClientGetTaskResult`` as ``tasks/get`` returns it -- pure model
+    construction, no network/session involved (mirrors ``_task_payload`` but
+    returns the validated object ``derive_effective_status`` consumes)."""
+
+    from fastmcp_tasks.client_models import ClientGetTaskResult
+
+    return ClientGetTaskResult.model_validate(_task_payload(task_id, status, result=result))
+
+
+@pytest.mark.parametrize("status", ["working", "input_required", "failed", "cancelled"])
+def test_derive_effective_status_passes_every_non_completed_status_through_unchanged(
+    status: str,
+) -> None:
+    """Only a ``"completed"`` delivery is ever inspected -- every other protocol
+    status (including a genuine ``failed``) passes through byte-identical, with
+    no reason attached. This is protocol-truth derivation, never a heuristic
+    that second-guesses a status the server already reported honestly."""
+
+    from clio_agent.tools.mcp_tasks import derive_effective_status
+
+    effective, reason = derive_effective_status(_get_result(status))
+    assert effective == status
+    assert reason is None
+
+
+def test_derive_effective_status_a_clean_completion_stays_completed() -> None:
+    from clio_agent.tools.mcp_tasks import derive_effective_status
+
+    result = {"content": [{"type": "text", "text": "all good"}]}
+    effective, reason = derive_effective_status(_get_result("completed", result=result))
+    assert effective == "completed"
+    assert reason is None
+
+
+def test_derive_effective_status_downgrades_a_delivered_error_result() -> None:
+    """The exhibit from clio-relay#265's enforcement-stack reprobe: a relay job
+    that genuinely failed (MPI rejected it, exit 186) still delivers as SEP-2663
+    ``status: "completed"`` because delivering an error IS a completed dispatch
+    -- the failure travels in the result's own ``isError``, not the status
+    field. This is exactly what must derive to ``"failed"``."""
+
+    from clio_agent.tools.mcp_tasks import derive_effective_status
+
+    result = {
+        "isError": True,
+        "content": [{"type": "text", "text": "LAMMPS exited with code 186"}],
+    }
+    effective, reason = derive_effective_status(_get_result("completed", result=result))
+    assert effective == "failed"
+    assert reason == "LAMMPS exited with code 186"
+
+
+def test_derive_effective_status_joins_multiple_text_blocks() -> None:
+    from clio_agent.tools.mcp_tasks import derive_effective_status
+
+    result = {
+        "isError": True,
+        "content": [
+            {"type": "text", "text": "first line"},
+            {"type": "image", "data": "irrelevant"},
+            {"type": "text", "text": "second line"},
+        ],
+    }
+    _, reason = derive_effective_status(_get_result("completed", result=result))
+    assert reason == "first line\nsecond line"
+
+
+def test_derive_effective_status_iserror_with_no_text_content_has_a_named_placeholder() -> None:
+    """An error result with no text block (e.g. a binary-only content list)
+    still derives to "failed" -- the ABSENCE of extractable text is never
+    treated as the absence of an error."""
+
+    from clio_agent.tools.mcp_tasks import derive_effective_status
+
+    result = {"isError": True, "content": []}
+    effective, reason = derive_effective_status(_get_result("completed", result=result))
+    assert effective == "failed"
+    assert reason is not None and "isError" in reason
+
+
+def test_derive_effective_status_reason_is_capped() -> None:
+    from clio_agent.tools.mcp_tasks import (
+        EFFECTIVE_STATUS_REASON_MAX_CHARS,
+        derive_effective_status,
+    )
+
+    huge = "x" * (EFFECTIVE_STATUS_REASON_MAX_CHARS * 3)
+    result = {"isError": True, "content": [{"type": "text", "text": huge}]}
+    _, reason = derive_effective_status(_get_result("completed", result=result))
+    assert reason is not None
+    assert len(reason) == EFFECTIVE_STATUS_REASON_MAX_CHARS
+
+
+async def test_the_real_poll_loop_stamps_effective_status_on_a_delivered_error() -> None:
+    """End-to-end through ``resume_task`` -> ``_record_status`` (not the pure
+    helper in isolation): a completed-with-isError delivery must land on the
+    STORED record with the raw ``status`` preserved (never destroyed) and
+    ``effective_status``/``effective_status_reason`` carrying the honest
+    derivation, so ``display_status`` (what a run card/SSE event actually
+    reads, #1236) says "failed"."""
+
+    store = _fresh_store()
+    key = _key("task-real-error")
+    store.put(TaskRecord(key=key, tool="jarvis_run", status="working"))
+    session = ScriptedSession(
+        [
+            _task_payload(
+                "task-real-error",
+                "completed",
+                result={
+                    "isError": True,
+                    "content": [{"type": "text", "text": "exit code 186"}],
+                },
+            ),
+        ]
+    )
+
+    final = await resume_task(session, key, store=store)
+
+    assert final.status == "completed", "the RAW protocol status is unchanged"
+    settled = store.get(key)
+    assert settled is not None
+    assert settled.status == "completed", "raw status is never destroyed"
+    assert settled.effective_status == "failed"
+    assert settled.effective_status_reason == "exit code 186"
+    assert settled.display_status == "failed"
+
+
+async def test_the_real_poll_loop_leaves_a_clean_completion_effective_status_completed() -> None:
+    store = _fresh_store()
+    key = _key("task-real-clean")
+    store.put(TaskRecord(key=key, tool="jarvis_run", status="working"))
+    session = ScriptedSession(
+        [_task_payload("task-real-clean", "completed", result={"content": []})]
+    )
+
+    await resume_task(session, key, store=store)
+
+    settled = store.get(key)
+    assert settled is not None
+    assert settled.effective_status == "completed"
+    assert settled.effective_status_reason is None
+    assert settled.display_status == "completed"
+
+
+async def test_cancel_task_stamps_effective_status_cancelled_alongside_status() -> None:
+    """``cancel_task`` is ack-only (no later ``tasks/get`` to derive from) --
+    it stamps ``effective_status="cancelled"`` directly rather than leaving a
+    stale pre-cancel effective_status behind for ``display_status`` to read."""
+
+    class _AckSession:
+        async def send_request(
+            self, request: Any, result_type: Any, request_read_timeout_seconds: float | None = None
+        ) -> Any:
+            return result_type()
+
+    store = _fresh_store()
+    key = _key("task-real-cancel")
+    store.put(TaskRecord(key=key, tool="jarvis_run", status="working", effective_status="working"))
+
+    from clio_agent.tools.mcp_tasks import cancel_task
+
+    await cancel_task(_AckSession(), key, store=store)
+
+    settled = store.get(key)
+    assert settled is not None
+    assert settled.status == "cancelled"
+    assert settled.effective_status == "cancelled"
+    assert settled.effective_status_reason is None
+    assert settled.display_status == "cancelled"

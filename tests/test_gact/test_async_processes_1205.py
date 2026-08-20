@@ -113,9 +113,7 @@ def test_route_dedupes_a_relay_backed_agent_tasks_own_task_record(tmp_path: Path
             status=STATUS_RUNNING,
             placement="relay:ares",
         )
-        mirrored_key = TaskKey(
-            server_id="relay-ares", session_id=sid, task_id=agent_task.task_id
-        )
+        mirrored_key = TaskKey(server_id="relay-ares", session_id=sid, task_id=agent_task.task_id)
         task_record_store().put(
             TaskRecord(key=mirrored_key, tool="relay_submit_agent", status="working")
         )
@@ -743,3 +741,75 @@ def test_relay_run_projection_still_labels_genuine_relay_jobs(tmp_path: Path) ->
     assert row["source"] == "relay_job"
     assert row["placement"] == "relay:ares"
     assert row["host"] == "ares"
+
+
+# --------------------------------------------------------------------------- #
+# #1236 (clio-relay#265's client half, owner ruling 2026-08-20): a task       #
+# delivered with isError=true must surface as "failed" on BOTH run-card       #
+# surfaces, never bare "completed" -- driven end to end through the REAL      #
+# poll loop, not a hand-stamped record.                                       #
+# --------------------------------------------------------------------------- #
+
+
+async def test_relay_run_and_async_processes_both_surface_the_effective_status_for_a_delivered_error(
+    tmp_path: Path,
+) -> None:
+    """A task delivered with ``isError: true`` drives to SEP-2663
+    ``status: "completed"`` (the dispatch DID deliver) -- but BOTH run-card
+    surfaces (``project_runs``, the ``/v1/runs`` listing dismiss/detach act on,
+    and the session-scoped async-processes tray) must show it as "failed",
+    with the raw protocol status preserved alongside, never bare "completed"
+    (clio-relay#265's owner ruling: "completed is a terrible status
+    indicator")."""
+
+    from mcp.types import Result as McpResult
+
+    from clio_agent.gact.run_registry import project_runs
+    from clio_agent.tools.mcp_tasks import resume_task
+
+    class _ErrorTerminalSession:
+        async def send_request(
+            self,
+            request: Any,
+            result_type: Any,
+            request_read_timeout_seconds: float | None = None,
+        ) -> Any:
+            if request.method == "tasks/get":
+                return result_type.model_validate(
+                    {
+                        "taskId": "jarvis-delivered-error",
+                        "status": "completed",
+                        "createdAt": "2026-08-20T00:00:00+00:00",
+                        "lastUpdatedAt": "2026-08-20T00:00:00+00:00",
+                        "resultType": "complete",
+                        "result": {
+                            "isError": True,
+                            "content": [{"type": "text", "text": "exit code 186"}],
+                        },
+                    }
+                )
+            return McpResult()
+
+    app = _build(tmp_path)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        key = TaskKey(server_id="relay-ares", session_id=sid, task_id="jarvis-delivered-error")
+        task_record_store().put(TaskRecord(key=key, tool="jarvis_run", status="working"))
+
+        final = await resume_task(_ErrorTerminalSession(), key)
+        assert final.status == "completed", "the raw protocol status is unchanged"
+
+        processes = client.get(f"/v1/sessions/{sid}/async-processes").json()["processes"]
+        tray_row = next(r for r in processes if r["id"] == "jarvis-delivered-error")
+        assert tray_row["live_state"] == "failed"
+        assert tray_row["status"] == "completed", "raw wire status still rides in to_wire()"
+        assert tray_row["effective_status"] == "failed"
+        assert tray_row["effective_status_reason"] == "exit code 186"
+
+        runs = {row["handle_id"]: row for row in project_runs(app)}
+
+    run_row = runs["jarvis-delivered-error"]
+    assert run_row["live_state"] == "failed"
+    assert run_row["status"] == "failed", "the run card's PRIMARY status is the honest one"
+    assert run_row["protocol_status"] == "completed", "the raw wire value is never discarded"
+    assert run_row["status_reason"] == "exit code 186"

@@ -72,13 +72,21 @@ def _agent_process(task: AgentTask) -> dict[str, Any]:
 
 
 def _mcp_task_process(record: TaskRecord) -> dict[str, Any]:
-    """Project one durable ``TaskRecord`` as a ``kind="mcp-task"`` row."""
+    """Project one durable ``TaskRecord`` as a ``kind="mcp-task"`` row.
+
+    ``live_state`` is derived from :attr:`TaskRecord.display_status` (#1236),
+    not the raw wire ``status`` -- a task delivered with ``isError: true`` must
+    show as ``failed`` here too, matching the SSE event type the same record
+    publishes. ``record.to_wire()`` still carries BOTH the raw ``status`` and
+    the honest ``effective_status``/``effective_status_reason`` -- nothing is
+    hidden, only ``live_state`` picks a primary.
+    """
 
     return {
         "kind": "mcp-task",
         "id": record.task_id,
         "title": record.tool or f"mcp task {record.task_id}",
-        "live_state": _MCP_TASK_LIVE_STATES.get(record.status, record.status),
+        "live_state": _MCP_TASK_LIVE_STATES.get(record.display_status, record.display_status),
         **record.to_wire(),
     }
 

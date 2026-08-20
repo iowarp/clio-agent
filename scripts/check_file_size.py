@@ -753,7 +753,15 @@ RATCHET_BASELINE: dict[str, int] = {
     # derivation exactly), but test_mcp_execution_era_visibility.py's minimal
     # era-classification fake client does not, and crashed __aenter__ before this
     # fallback (a pre-existing, unrelated test this change must not break).
-    "src/clio_agent/tools/relay_transport.py": 856,
+    # +12 (856->868, #1236): ``poll()`` -- the explicit single-observation path --
+    # now derives the SAME honest ``effective_status``/``effective_status_reason``
+    # pair ``tools/mcp_tasks.py``'s own poll loop (``_record_status``) does, via
+    # the shared ``derive_effective_status`` helper that OWNS the derivation logic
+    # (mcp_tasks.py); only the one extra call + the two extra ``replace()`` kwargs
+    # land here, so a task resolved through this explicit path (not the transparent
+    # #1115 extension) does not read a delivered-error result as bare "completed"
+    # either (clio-relay#265's "completed is a terrible status indicator" ruling).
+    "src/clio_agent/tools/relay_transport.py": 868,
     # #1232 pt 2: not previously baselined (under the 800 cap). +28 for
     # list_builtin_tool_definitions -- the boot path needs a FAST,
     # synchronous, no-I/O tool-definitions seed (built-ins only) so

@@ -45,6 +45,7 @@ from clio_agent.tools.mcp_task_records import (
 )
 from clio_agent.tools.mcp_tasks import (
     cancel_task,
+    derive_effective_status,
     resume_task,
     send_task_get,
     send_task_update,
@@ -496,7 +497,18 @@ class RelayTransportClient:
         # RETAIN the settled record (matches AgentTask's dismissed-field
         # semantics; removal is an explicit later dismiss via
         # run_registry.dismiss_run, never an automatic side effect of settling).
-        store.put(replace(latest, status=current.status))
+        # #1236: derive the honest effective status the SAME way #1115's own poll
+        # loop does (_record_status) -- this explicit single-observation path must
+        # not let a delivered-error "completed" read as bare success either.
+        effective_status, effective_reason = derive_effective_status(current)
+        store.put(
+            replace(
+                latest,
+                status=current.status,
+                effective_status=effective_status,
+                effective_status_reason=effective_reason,
+            )
+        )
         # #1231: every explicit resolution folds one console increment, so a
         # record that settled before anyone waited (fast job, terminal at
         # first lookup) and every relay_observe peek still carry the latest
