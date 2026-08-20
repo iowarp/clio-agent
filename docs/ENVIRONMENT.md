@@ -139,6 +139,10 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MODEL_CATALOG` | `paths.model_catalog` | str | _(unset)_ | `src/clio_agent/providers/model_discovery/overlay.py` |
 | `CLIO_MODEL_DB` | `paths.model_db` | str | _(unset)_ | `src/clio_agent/providers/handshake/sources/db.py` |
 | `CLIO_RELAY_CLUSTER` | `relay.cluster` | str | _(unset)_ | `src/clio_agent/tools/relay_factory.py` |
+| `CLIO_RELAY_CONSOLE_ENABLED` | `relay.console.enabled` | bool | `true` | `src/clio_agent/tools/relay_console.py` |
+| `CLIO_RELAY_CONSOLE_PULL_LIMIT_BYTES` | `relay.console.pull_limit_bytes` | int | `65536` | `src/clio_agent/tools/relay_console.py` |
+| `CLIO_RELAY_CONSOLE_STREAM` | `relay.console.stream` | str | `console` | `src/clio_agent/tools/relay_console.py` |
+| `CLIO_RELAY_CONSOLE_TAIL_CAP_BYTES` | `relay.console.tail_cap_bytes` | int | `8192` | `src/clio_agent/tools/relay_console.py` |
 | `CLIO_RELAY_FETCH_MAX_BYTES` | `relay.fetch_max_bytes` | int | `104857600` | `src/clio_agent/tools/relay_artifact_fetch.py` |
 | `CLIO_RELAY_HTTP_URL` | `relay.http_url` | str | _(unset)_ | `src/clio_agent/tools/relay_factory.py` |
 | `CLIO_RELAY_JARVIS_DOOR_NAMESPACE` | `relay.jarvis_door_namespace` | str | `remote_jarvis` | `src/clio_agent/tools/relay_factory.py` |

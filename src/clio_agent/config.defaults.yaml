@@ -365,6 +365,18 @@ providers.codex.stateful_capacity: 128.0
 # CLIO_RELAY_CLUSTER  (str)  <- src/clio_agent/tools/relay_factory.py
 # relay.cluster:  # default unset; resolved in code
 
+# CLIO_RELAY_CONSOLE_ENABLED  (bool)  <- src/clio_agent/tools/relay_console.py
+relay.console.enabled: true
+
+# CLIO_RELAY_CONSOLE_PULL_LIMIT_BYTES  (int)  <- src/clio_agent/tools/relay_console.py
+relay.console.pull_limit_bytes: 65536
+
+# CLIO_RELAY_CONSOLE_STREAM  (str)  <- src/clio_agent/tools/relay_console.py
+relay.console.stream: "console"
+
+# CLIO_RELAY_CONSOLE_TAIL_CAP_BYTES  (int)  <- src/clio_agent/tools/relay_console.py
+relay.console.tail_cap_bytes: 8192
+
 # CLIO_RELAY_FETCH_MAX_BYTES  (int)  <- src/clio_agent/tools/relay_artifact_fetch.py
 relay.fetch_max_bytes: 104857600
 

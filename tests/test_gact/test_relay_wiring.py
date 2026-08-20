@@ -151,7 +151,7 @@ async def test_refresh_without_a_catalog_noops_when_relay_is_unconfigured(
     monkeypatch.setattr(relay_wiring.time, "monotonic", lambda: 500.0)
     monkeypatch.setattr(
         "clio_agent.tools.relay_transport.resolve_relay_transport_config",
-        lambda: RelayTransportUnavailable(reason="relay_not_configured"),
+        lambda: RelayTransportUnavailable(reason="relay_not_configured", details={}),
     )
 
     async def _discover() -> Any:
@@ -204,7 +204,9 @@ class _FakeGatewayAgent:
     bound, not multiply)."""
 
     def __init__(self) -> None:
-        self._tool_definitions = None
+        # A real ClioAgent ALWAYS holds a dict here (builtins seeded at
+        # construction) -- the late-arrival re-seed updates it in place.
+        self._tool_definitions = {"shell_bash": {"name": "shell_bash"}}
         self.tool_executor = object()  # the "old" executor identity
         self.gateway_builds = 0
 
@@ -225,6 +227,7 @@ def test_refresh_agent_relay_tool_surfaces_rebuilds_the_default_gateway(
 
     monkeypatch.setattr(relay_wiring, "create_sync_tool_executor", lambda *a, **k: object())
     monkeypatch.setattr(relay_wiring, "namespace_proxies", lambda gw: {})
+    monkeypatch.setattr(relay_wiring, "list_relay_tool_definitions", lambda federation: {})
 
     agent = _FakeGatewayAgent()
     old_executor = agent.tool_executor
@@ -240,3 +243,40 @@ def test_refresh_agent_relay_tool_surfaces_rebuilds_the_default_gateway(
     assert agent._remote_mcp_federation is marker_federation
     assert agent.gateway_builds == 1
     assert agent.tool_executor is not old_executor
+
+
+def test_refresh_agent_relay_tool_surfaces_reseeds_tool_definitions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FAILING-FIRST for the run-14 brick: a federation discovered AFTER
+    ClioAgent construction must re-seed ``_tool_definitions`` when it is
+    pushed onto the live agent -- pre-fix the rebuild passed the stale
+    builtins-only dict as ``preloaded_tools``, so the executor kept offering
+    four builtins while the diagnostics read federation=present, and every
+    custom-agent ACL still bricked custom_agent_tools_unavailable."""
+
+    captured_kwargs: dict = {}
+
+    def _capture_executor(*args, **kwargs) -> object:
+        captured_kwargs.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(relay_wiring, "create_sync_tool_executor", _capture_executor)
+    monkeypatch.setattr(relay_wiring, "namespace_proxies", lambda gw: {})
+    relay_definitions = {"relay_wait": {"name": "relay_wait"}}
+    monkeypatch.setattr(
+        relay_wiring, "list_relay_tool_definitions", lambda federation: relay_definitions
+    )
+
+    agent = _FakeGatewayAgent()
+    surfaces = SimpleNamespace(
+        remote_mcp_federation=object(),
+        jarvis_jobs=None,
+        status={"configured": True, "reason": None},
+    )
+
+    relay_wiring._refresh_agent_relay_tool_surfaces(agent, surfaces)
+
+    assert "relay_wait" in agent._tool_definitions, "late federation must re-seed definitions"
+    assert "shell_bash" in agent._tool_definitions, "builtins must survive the re-seed"
+    assert captured_kwargs["preloaded_tools"] is agent._tool_definitions
