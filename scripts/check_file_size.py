@@ -75,7 +75,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # handful of pre-existing tests deliberately stub create_sync_tool_executor
     # with a bare string sentinel, which does not support attribute
     # assignment; production SyncMCPToolExecutor instances always do.)
-    "src/clio_agent/agent.py": 973,
+    # +8 (b8eff254): the synchronous federation-projections seed at
+    # construction (list_relay_tool_definitions merge -- the L3 run-4..9 fix).
+    "src/clio_agent/agent.py": 981,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -143,7 +145,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # resolution reader site) -- the actual event-building logic lives in the
     # owner module gact/mcp_connection_observability.py; only the small
     # _emit_mcp_downgrade_events call-site wrapper + its two call sites land here.
-    "src/clio_agent/gact/agents/builders.py": 1939,
+    # +13 (b8eff254): the typed custom_agent_tools_unavailable diagnostics
+    # block (fires only on the brick path; the L3 run-4..9 hunt).
+    "src/clio_agent/gact/agents/builders.py": 1952,
     # #948 S4/S5/S6 growth already carried this file past the flat 800 cap (to 842)
     # before it was ever added to this baseline — a pre-existing gap this change
     # did not introduce (it was silently exempt from the ratchet, not under it).
@@ -641,6 +645,21 @@ RATCHET_BASELINE: dict[str, int] = {
     # (runtime/mcp_launcher.py::probe_mcp_yaml_declarations), not just a log
     # line. Ratchets back below 800 if this snapshot moves to its own module.
     "src/clio_agent/tools/mcp_config.py": 821,
+    # #1231 Part 1/2 (consumer half of the live-console feature): not previously
+    # baselined -- this file was ALREADY 7 lines over the 800 cap before this
+    # change (unbaselined pre-existing debt), i.e. 807 -> 820. Part 1 (+6 net):
+    # resolve TaskKey.session_id from the ACTIVE gact session at submit time
+    # instead of freezing it to the relay owner-session id at __init__ (the
+    # ``mcp_task_record_held_locally`` root cause) -- the resolution logic
+    # itself lives in the owner module tools/relay_contract.py
+    # (resolve_relay_task_session_id); only the two-field constructor storage +
+    # the one-call submit-time resolve land here. Part 2 (+7 net): wire the
+    # console-tail on_poll hook into ``wait()`` -- the pull/fold/config logic
+    # lives entirely in the NEW owner module tools/relay_console.py
+    # (make_console_on_poll); only the import + one keyword argument + a
+    # docstring note land here. Ratchets back below 800 with the #714/#767
+    # decomposition.
+    "src/clio_agent/tools/relay_transport.py": 820,
     # #1232 pt 2: not previously baselined (under the 800 cap). +28 for
     # list_builtin_tool_definitions -- the boot path needs a FAST,
     # synchronous, no-I/O tool-definitions seed (built-ins only) so
@@ -650,8 +669,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # gained the small builtins-only extraction (it needs fs_server/
     # shell_server/_list_tools_sync, already private to this module) plus a
     # docstring cross-reference on list_tool_definitions. Ratchets back below
-    # 800 if this helper moves out too.
-    "src/clio_agent/tools/gateway.py": 828,
+    # 800 if this helper moves out too. (+~24 more, b8eff254: the federation
+    # projections seed list_relay_tool_definitions -- the L3 run-4..9 fix.)
+    "src/clio_agent/tools/gateway.py": 852,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.

@@ -121,6 +121,7 @@ __all__ = [
     "NamedCancelTaskRequest",
     "NamedGetTaskRequest",
     "NamedUpdateTaskRequest",
+    "OnPollHook",
     "TaskInputAnswer",
     "TaskInputLedger",
     "TaskKey",
@@ -152,6 +153,16 @@ TASK_ID_PARAM = "taskId"
 #: removal is assertable (``tests/test_tools/test_mcp_tasks.py``) rather than a
 #: comment nobody can check.
 REMOVED_TASK_METHODS: tuple[str, ...] = ("tasks/list", "tasks/result")
+
+#: Generic per-poll observation hook (#1231 Part 2). Invoked with the latest
+#: ``tasks/get`` result, the task's durable key, and its record store on EVERY
+#: observed poll (including the terminal one), after the status is recorded.
+#: This module stays backend-agnostic: relay's bounded console-tail pull-and-
+#: fold lives entirely in the owner module ``tools/relay_console.py``, built by
+#: ``make_console_on_poll`` and passed in by the caller. A hook must never
+#: raise -- a log-pull failure is the caller's typed debug/warning to make, not
+#: this loop's problem, matching the existing ``poll_sleep`` injection idiom.
+OnPollHook = Callable[[ClientGetTaskResult, TaskKey, TaskRecordStore], Awaitable[None]]
 
 
 def utcnow_iso() -> str:
@@ -360,6 +371,7 @@ async def drive_task_to_terminal(
     max_no_progress_rounds: int | None = None,
     lease: TaskLease | None = None,
     poll_sleep: Callable[[float], Awaitable[None]] | None = None,
+    on_poll: OnPollHook | None = None,
 ) -> ClientGetTaskResult:
     """Poll ``tasks/get`` to a terminal state under an exclusive lease.
 
@@ -380,6 +392,9 @@ async def drive_task_to_terminal(
     ``poll_sleep`` is the poll loop's clock boundary. Tests may inject a recorder
     without replacing the process-wide event-loop scheduler; production uses
     :func:`asyncio.sleep`.
+
+    ``on_poll`` is an optional generic per-poll observation hook (#1231 Part 2) --
+    see :data:`OnPollHook`. ``None`` (the default) skips the call entirely.
 
     The record's status is written through ``store`` on every observed transition and
     dropped once the task settles, so a crash leaves behind exactly the ids that are
@@ -410,6 +425,7 @@ async def drive_task_to_terminal(
             store=record_store,
             max_no_progress_rounds=max_no_progress_rounds,
             poll_sleep=asyncio.sleep if poll_sleep is None else poll_sleep,
+            on_poll=on_poll,
         )
     finally:
         if owned_lease:
@@ -426,6 +442,7 @@ async def _poll_until_terminal(
     store: TaskRecordStore,
     max_no_progress_rounds: int,
     poll_sleep: Callable[[float], Awaitable[None]],
+    on_poll: OnPollHook | None = None,
 ) -> ClientGetTaskResult:
     """The lease-protected poll loop body (see :func:`drive_task_to_terminal`)."""
 
@@ -444,6 +461,8 @@ async def _poll_until_terminal(
 
         current = await send_task_get(session, key.task_id, budget)
         _record_status(store, ledger, key, current.status)
+        if on_poll is not None:
+            await on_poll(current, key, store)
         if current.status in TERMINAL_TASK_STATES:
             # #1205 review D1 (2nd round): RETAIN the settled record (matches
             # AgentTask's dismissed-field semantics, never vanish it here) —
@@ -559,6 +578,7 @@ async def resume_task(
     elicitation_callback: Any = None,
     timeout_seconds: float | None = None,
     store: TaskRecordStore | None = None,
+    on_poll: OnPollHook | None = None,
 ) -> ClientGetTaskResult:
     """Resume a persisted task on a FRESH session and drive it to a terminal state.
 
@@ -568,7 +588,8 @@ async def resume_task(
     — resuming by bare task id could seed one backend's task with another's answers.
     The record's persisted answers seed the ledger, so a question the human answered
     before the crash is neither re-asked nor lost: an undelivered answer is
-    retransmitted verbatim.
+    retransmitted verbatim. ``on_poll`` forwards straight through to
+    :func:`drive_task_to_terminal` -- see :data:`OnPollHook`.
 
     Raises:
         ToolError: If ``key`` has no persisted record — there is nothing to resume,
@@ -590,4 +611,5 @@ async def resume_task(
         timeout_seconds=timeout_seconds,
         ledger=TaskInputLedger.from_record(record),
         store=record_store,
+        on_poll=on_poll,
     )

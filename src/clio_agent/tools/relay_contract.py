@@ -306,3 +306,44 @@ def session_scoped_idempotency_key(key: str) -> str:
     except Exception:  # noqa: BLE001 - session context is optional for this transport
         session_id = ""
     return f"{session_id}-{key}" if session_id else key
+
+
+def resolve_relay_task_session_id(
+    explicit_session_id: str | None, owner_session_id: str | None
+) -> str | None:
+    """Resolve the CLIO session id a relay :class:`TaskKey` binds to.
+
+    A relay owner-session id (e.g. ``ares-l3-20260819``) is a RELAY identity —
+    no CLIO session store can ever resolve it as a durable task's
+    ``session_id``, which is exactly why every attributed record fell back to
+    ``mcp_task_record_held_locally (session row absent)`` in every ares run:
+    the durable key pointed at an id gact's own session store had never heard
+    of.
+
+    Resolved FRESH on every call (never cached at ``__init__``). The
+    production transport client is a boot-time singleton reused across many
+    turns and sessions (:func:`~clio_agent.tools.relay_factory.discover_relay_tool_surfaces`
+    builds one ``factory`` closure called per tool invocation) — binding once
+    at construction would freeze the key to whichever session (if any) was
+    active at boot, not the session actually submitting the task.
+
+    Precedence:
+
+    1. ``explicit_session_id`` — a caller that passed a CLIO session id to the
+       transport client constructor always wins (harness/CLI callers that
+       already know their session).
+    2. The ACTIVE gact session, resolved via the same guarded deferred-import
+       seam :func:`session_scoped_idempotency_key` already uses.
+    3. ``owner_session_id`` — the relay owner-session fallback for callers
+       outside a gact session (harness, CLI, tests): unresolvable by a CLIO
+       session store, but keeps their existing behavior unchanged.
+    """
+    if explicit_session_id is not None:
+        return explicit_session_id
+    try:
+        from clio_agent.gact.context import active_session_id  # noqa: PLC0415
+
+        session_id = active_session_id() or ""
+    except Exception:  # noqa: BLE001 - session context is optional for this transport
+        session_id = ""
+    return session_id or owner_session_id

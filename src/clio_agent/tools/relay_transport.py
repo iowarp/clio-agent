@@ -49,6 +49,7 @@ from clio_agent.tools.mcp_tasks import (
     send_task_get,
     send_task_update,
 )
+from clio_agent.tools.relay_console import make_console_on_poll
 from clio_agent.tools.relay_contract import (
     RELAY_EVENT_NEXT_CURSOR_FIELD,
     RELAY_INLINE_LIMIT_CODE,
@@ -62,6 +63,7 @@ from clio_agent.tools.relay_contract import (
     RelayTransportContractError,
     decode_sse_payload,
     raise_inline_submission,
+    resolve_relay_task_session_id,
     session_scoped_idempotency_key,
     validate_result,
     validate_submit_arguments,
@@ -204,7 +206,9 @@ class RelayTransportClient:
             raise ConfigError("relay request_timeout_seconds must be positive")
         self._mcp_url = mcp_url
         self._http_base_url = http_base_url.rstrip("/")
-        self._session_id = session_id if session_id is not None else owner_session_id
+        # Resolved fresh per-submit, never here -- see resolve_relay_task_session_id.
+        self._explicit_session_id = session_id
+        self._owner_session_id = owner_session_id
         self._store = store
         self._timeout = request_timeout_seconds
         self._headers = {"Authorization": f"Bearer {token}"}
@@ -308,7 +312,9 @@ class RelayTransportClient:
         backend = backend_identity(client.transport)
         key = TaskKey(
             server_id=backend.server_id,
-            session_id=self._session_id,
+            session_id=resolve_relay_task_session_id(
+                self._explicit_session_id, self._owner_session_id
+            ),
             task_id=create_result.task_id,
         )
         await persist_created_task(
@@ -470,7 +476,13 @@ class RelayTransportClient:
         *,
         timeout_seconds: float | None = None,
     ) -> ClientGetTaskResult:
-        """Drive a persisted task to terminal through #1115's leased poll loop."""
+        """Drive a persisted task to terminal through #1115's leased poll loop.
+
+        Folds relay's bounded console tail into the record on every poll (#1231
+        Part 2, pull-based until relay#259 ships a push stream) -- logic lives
+        entirely in the owner module ``tools/relay_console.py``; this is the
+        one wiring call.
+        """
 
         self._validate_identity(task)
         final = await resume_task(
@@ -478,6 +490,7 @@ class RelayTransportClient:
             task.key,
             timeout_seconds=timeout_seconds,
             store=self._record_store(),
+            on_poll=make_console_on_poll(self, task.task_id),
         )
         self._require_poll_interval(task.task_id, final.poll_interval_ms)
         validate_result(task.task_id, final)
