@@ -90,7 +90,18 @@ RATCHET_BASELINE: dict[str, int] = {
     # successful refresh (the run-15/17 custom_agent_tools_unavailable-with-
     # federation=present brick). Same eviction shape as blueprint_switched;
     # the epoch bump itself lives in gact/relay_wiring.py.
-    "src/clio_agent/agent.py": 1008,
+    # +18 (#1237 hotfix): blueprint activation's synchronous
+    # discover_declared_tools_bounded() full-fleet pass at first resolve is
+    # DELETED (owner ruling 2026-08-20: activation mounts nothing eagerly) —
+    # replaced with a zero-I/O listing_cache read per declared namespace and
+    # a stamped declared-namespace -> spec map (_clio_namespace_specs) that
+    # the on-demand-mount seam (tools/mcp_discovery.ensure_namespace, called
+    # from builders.py / mcp_executor.py) consults to tell "declared but not
+    # yet listed" from "genuinely unknown". This call site is the sole owner
+    # of "which blueprint/gateway, when to rebuild" (ClioAgent's own
+    # workspace-executor registry); the on-demand mount machinery itself
+    # lives in the owner module tools/mcp_discovery.py.
+    "src/clio_agent/agent.py": 1026,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.

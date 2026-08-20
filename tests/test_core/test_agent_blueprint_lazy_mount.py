@@ -164,6 +164,49 @@ class TestActiveToolExecutorBlueprintScoping:
     def test_default_executor_used_with_no_active_workspace(self, agent: ClioAgent) -> None:
         assert agent._active_tool_executor() is agent.tool_executor
 
+    def test_blueprint_activation_mounts_zero_mcp_servers(
+        self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """#1237 Gap 1 (owner ruling 2026-08-20): blueprint activation must NOT
+        cold-spawn any declared server. Pre-fix, _active_tool_executor's first
+        resolve ran discover_declared_tools_bounded synchronously over every
+        declared namespace; this asserts that call is GONE from the resolve
+        path entirely -- a spy on it must never fire, and the resident
+        executor's namespace-spec map (the on-demand-mount seam) must still
+        carry both declared namespaces even though neither was ever listed."""
+
+        def _fake_discover():
+            return [
+                _blueprint("pack-a", {"geo": "uvx geo-mcp serve", "pandas": "uvx pandas-mcp serve"})
+            ]
+
+        monkeypatch.setattr(
+            "clio_agent.gact.agent_blueprints.discover_agent_blueprints", _fake_discover
+        )
+        spy_calls: list[object] = []
+        monkeypatch.setattr(
+            "clio_agent.agent.discover_declared_tools_bounded",
+            lambda specs, **_kw: spy_calls.append(specs)
+            or type("R", (), {"tools": {}, "degraded": {}})(),
+        )
+        monkeypatch.setattr("clio_agent.tools.listing_cache.load_listing", lambda *a, **kw: None)
+        from clio_agent.tools.execution import tool_workspace_context
+
+        root = str(tmp_path)
+        with tool_workspace_context(root), tool_blueprint_context("pack-a"):
+            executor = agent._active_tool_executor()
+
+        assert spy_calls == [], (
+            "discover_declared_tools_bounded fired at activation -- blueprint "
+            "activation must mount NOTHING eagerly (#1237)"
+        )
+        declared_specs = getattr(executor, "_clio_namespace_specs", {})
+        assert set(declared_specs) == {"geo", "pandas"}
+        # Neither namespace's tools were preloaded (no cache hit, no live pass).
+        names = executor.get_tool_names()
+        assert not any(n.startswith("geo_") for n in names)
+        assert not any(n.startswith("pandas_") for n in names)
+
     def test_workspace_gateway_mounts_only_the_active_blueprint(
         self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
