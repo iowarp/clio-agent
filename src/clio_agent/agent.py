@@ -644,7 +644,12 @@ class ClioAgent(dspy.Module):
                     # _connect_namespace reads it there, for the dispatch-
                     # time launcher-cache-lock gate).
                     setattr(executor, "_clio_namespace_specs", declared_specs)  # noqa: B010
-                    setattr(executor._async_executor, "_clio_namespace_specs", declared_specs)  # noqa: B010
+                    # getattr: the SyncToolExecutor protocol doesn't declare the
+                    # concrete wrapper's _async_executor slot (and test doubles
+                    # genuinely lack it).
+                    inner_executor = getattr(executor, "_async_executor", None)
+                    if inner_executor is not None:
+                        setattr(inner_executor, "_clio_namespace_specs", declared_specs)  # noqa: B010
                 executors[root] = executor
             # #1230: resolving-for-use counts as activity so a reap tick landing
             # in the gap before the caller's dispatch marks this executor busy

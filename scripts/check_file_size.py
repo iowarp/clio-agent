@@ -104,8 +104,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # +5 (#1237 hotfix follow-on): stamp _clio_namespace_specs on the inner
     # AsyncMCPToolExecutor too (not just the sync wrapper), so
     # mcp_executor.py's _connect_namespace can gate its dispatch-time
-    # launcher-cache-lock acquisition on the declared spec.
-    "src/clio_agent/agent.py": 1031,
+    # launcher-cache-lock acquisition on the declared spec. (+5 more: that
+    # stamp goes through getattr — the SyncToolExecutor protocol doesn't
+    # declare _async_executor and test doubles lack it; mypy CI catch.)
+    "src/clio_agent/agent.py": 1036,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
