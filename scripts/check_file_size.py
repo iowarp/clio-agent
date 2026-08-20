@@ -75,7 +75,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # handful of pre-existing tests deliberately stub create_sync_tool_executor
     # with a bare string sentinel, which does not support attribute
     # assignment; production SyncMCPToolExecutor instances always do.)
-    "src/clio_agent/agent.py": 973,
+    # +8 (b8eff254): the synchronous federation-projections seed at
+    # construction (list_relay_tool_definitions merge -- the L3 run-4..9 fix).
+    "src/clio_agent/agent.py": 981,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
