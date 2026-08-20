@@ -31,19 +31,86 @@ the SDK's for every TYPED answer:
 and differs in exactly one branch: ``REQUEST_TIMEOUT`` retries the same
 probe up to ``tools.mcp.probe_timeout_retries`` (default 3) additional
 times, then re-raises the timeout — never ``initialize``.
+
+#1232 pt 4: that retry budget is now PER-SERVER, not only global. Raising
+``CLIO_MCP_PROBE_TIMEOUT_RETRIES``/``tools.mcp.probe_timeout_retries`` for one
+slow-but-legitimate server used to multiply the connect cost of every OTHER
+dead namespace too (they all share the one global knob). A caller that knows
+which server/namespace it is connecting on behalf of binds
+:func:`probe_server_context` around the connect; :func:`resolve_timeout_retries`
+then reads ``tools.mcp.servers.<server_id>.probe_timeout_retries`` first
+(config-FILE only — see the dynamic env name below) and falls back to the
+unchanged global default when no override is declared for that server.
 """
 
 from __future__ import annotations
 
+import contextvars
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _INSTALLED = False
 
+# The MCP server/namespace name the CURRENT connect is being made on behalf of
+# (#1232 pt 4). Contextvars propagate correctly across the awaits inside one
+# asyncio task, so a bounded-concurrent discovery pass (tools/mcp_discovery.py)
+# binding this around each namespace's own task gets the right per-server
+# override even though every namespace probes at once.
+_CURRENT_PROBE_SERVER_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "clio_mcp_probe_server_id", default=""
+)
 
-def _resolve_timeout_retries() -> int:
+
+@contextmanager
+def probe_server_context(server_id: str) -> Iterator[None]:
+    """Bind the MCP server/namespace name for the connect(s) made in this scope.
+
+    Callers that connect on behalf of a KNOWN declared server (the boot
+    discovery pass, ``gateway._list_declared_tools``) wrap their connect with
+    this so :func:`resolve_timeout_retries` can resolve that server's override.
+    An unbound connect (never entered) always uses the global default.
+    """
+
+    token = _CURRENT_PROBE_SERVER_ID.set(server_id or "")
+    try:
+        yield
+    finally:
+        _CURRENT_PROBE_SERVER_ID.reset(token)
+
+
+def resolve_timeout_retries(server_id: str = "") -> int:
+    """The probe-timeout retry budget for one server (#1232 pt 4).
+
+    ``server_id`` defaults to the CURRENTLY-BOUND :func:`probe_server_context`
+    value. Resolution order: a per-server override
+    (``tools.mcp.servers.<server_id>.probe_timeout_retries``, config-FILE only
+    — the env name is synthesized per server id, so it is deliberately absent
+    from the generated env reference, same convention as
+    ``CLIO_CRED_<PROVIDER>_<ACCOUNT>`` in ``providers/credentials.py``) then the
+    unchanged global ``tools.mcp.probe_timeout_retries`` default (3).
+    """
+
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    resolved_id = (server_id or _CURRENT_PROBE_SERVER_ID.get()).strip()
+    if resolved_id:
+        env_key = "".join(c if c.isalnum() else "_" for c in resolved_id.upper())
+        override = conf.resolve(
+            f"tools.mcp.servers.{resolved_id}.probe_timeout_retries",
+            env=f"CLIO_MCP_PROBE_TIMEOUT_RETRIES__{env_key}",
+            default=None,
+            cast=conf.as_int,
+        )
+        if override is not None:
+            return int(override)
+    return _resolve_global_timeout_retries()
+
+
+def _resolve_global_timeout_retries() -> int:
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
 
     return int(
@@ -72,7 +139,7 @@ async def hardened_negotiate_auto(session: Any) -> None:
 
     version = LATEST_MODERN_VERSION
     mutual_retry_used = False
-    timeout_retries_left = _resolve_timeout_retries()
+    timeout_retries_left = resolve_timeout_retries()
 
     while True:
         try:
@@ -158,5 +225,13 @@ def install_probe_hardening() -> None:
     _INSTALLED = True
     logger.info(
         "mcp_probe_hardening_installed reason=timeout_is_not_an_era_verdict retries=%d",
-        _resolve_timeout_retries(),
+        _resolve_global_timeout_retries(),
     )
+
+
+__all__ = [
+    "hardened_negotiate_auto",
+    "install_probe_hardening",
+    "probe_server_context",
+    "resolve_timeout_retries",
+]
