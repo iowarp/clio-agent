@@ -6,18 +6,27 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
-## [0.10.0a1] — 2026-08-19
+## [0.9.1] — 2026-08-19
 
-The first pre-release of the v0.10 program (MCP v2, federation, and the
-Session v3 UI — `docs/design/v010-program-2026-08.md`, program umbrella
-#1096). Per that program's own versioning rule, phases P0-P2 (protocol
-upgrade, MCP v2 compliance, and relay federation) tag as `0.10.0-alphaN`
-off `develop` as they gate; the full `v0.10.0` cuts only after P5, once
-the paired gact-tui Session v3 UI lands and the program's composed gate
-is green. This build does **not** merge to `main`. Alongside the program
-work, this build also carries document artifacts + human review, the
-spotter-ai approval mode, live model-catalog discovery, and a session-scoped
-async-processes surface.
+> **Note:** `0.10.0a1` was tagged from this same content on 2026-08-19 and
+> then retracted (its GitHub tag/page were deleted) before it reached a
+> default install; PyPI's `0.10.0a1` upload is orphaned and invisible to
+> stable-ordering installs. The work itself was never wrong, only the
+> version lane: the v0.10 program (MCP v2, federation, and the Session v3
+> UI — `docs/design/v010-program-2026-08.md`, program umbrella #1096) does
+> not cut its first real `0.10.0` tag until P5, once the paired gact-tui
+> Session v3 UI lands and the program's composed gate is green. Until then
+> `0.9.x` is the sanctioned release lane, so this content ships as `0.9.1`
+> instead. MCP v2 (P0-P1) and relay federation (P2) below are complete and
+> live; the Session v3 UI (P3-P5) has not started.
+
+This release carries the MCP 2026-07-28 protocol upgrade, relay federation
+(one spawn surface, remote MCP tools, JARVIS/Spack, execution-output
+artifact fetch), live model-catalog discovery, document artifacts + human
+review, the spotter-ai approval mode, a session-scoped async-processes
+surface, a round of relay-surface fixes (wait-as-commitment, unlimited
+turn default, catalog TTL refresh), and a serve-boot performance redesign
+that landed since the 0.10.0a1 prep.
 
 ### Added — MCP protocol v2 (P0-P1, #1096)
 
@@ -139,6 +148,24 @@ async-processes surface.
   SDK now requests summarized display explicitly, Sonnet gets the same
   conservative thinking floor Haiku already had, and a redacted delta is
   now a typed `provider_thinking_redacted` reason instead of a silent drop.
+- **Serve boot is lazy and non-blocking** (#1232). The boot gateway now
+  mounts only the active session's blueprint-declared MCP servers instead
+  of every installed blueprint's, and lists every declared namespace
+  concurrently with its own per-namespace deadline instead of serially —
+  three dead namespaces, or one heavy unrelated science pack, no longer
+  cost minutes of boot. A namespace that misses its deadline degrades
+  typed and self-heals on a background probe; "agent ready" never waits
+  on a declared MCP server.
+- **Concurrent MCP launcher spawns no longer race the same cache**
+  (#1232). A stdio MCP launcher spawn now takes a bounded, clio-owned
+  lock before touching the shared uv cache, failing fast with a typed
+  reason instead of hanging when the lock is wedged; a per-server
+  `probe_timeout_retries` override no longer inflates every sibling
+  server's connect budget.
+- **Boot reaps provably orphaned MCP/CLI child processes** (#1232). A
+  process-census pass now kills, not just reports, a child process whose
+  parent is confirmed dead (re-checked at kill time); the daemon-owning
+  clio-core process is never a candidate.
 
 ### Fixed
 
@@ -162,6 +189,29 @@ async-processes surface.
   instead of a Python repr, typed MCP content blocks and tool titles are
   preserved end to end, and turn-end artifact rollups land every mint in
   a turn's tree on the parent message.
+- **Relay task records bind to the live session, not the relay
+  owner-session** (#1231, PR #1234). The production relay client is a
+  boot-time singleton reused across many turns/sessions, so it previously
+  stamped every task with the relay owner-session id, which no CLIO
+  session store could ever resolve; task records now resolve the active
+  gact session fresh at submit time. A job's bounded console tail also
+  now folds into the session's live `mcp_task.*` event stream on every
+  poll, so long-running remote jobs show real progress instead of going
+  silent until completion.
+- **Relay federation tools are usable on the first turn** (#1232
+  follow-up). Lazy boot deferred the relay federation's projected tool
+  definitions to a background pass, so any agent whose tool ACL named a
+  relay tool before that pass completed bricked typed instead of working.
+  Federation tools now seed synchronously alongside the built-ins, first
+  discovery pushes onto the live agent (not only internal server state),
+  and an unconfigured relay transport still stays a strict no-op (no
+  ambient discovery leaking into an unrelated turn).
+- **`relay_list_artifacts` and `relay_read_artifact` are reachable.** A
+  remote job's produced (not only consumed) artifacts are now listed,
+  and the tool that fetches their bytes is projected onto the agent
+  surface — closing a gap where a remote job's minted output artifact
+  was undiscoverable and, even once found, unreadable from any client
+  tool.
 
 ## [0.9.0] — 2026-07-29
 

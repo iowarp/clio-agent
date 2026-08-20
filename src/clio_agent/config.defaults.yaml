@@ -353,11 +353,17 @@ paths.data_dir: ".clio/agent"
 # CLIO_AI_REVIEW_TIMEOUT_S  (str)  <- src/clio_agent/gact/runtime/ai_review.py
 permissions.ai_review_timeout_s: "45.0"
 
+# CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
+providers.claude_code.max_concurrent_processes: 1.0
+
 # CLIO_CLAUDE_CODE_SESSION_REUSE  (bool)  <- src/clio_agent/providers/claude_code_sessions.py
 providers.claude_code.session_reuse: true
 
 # CLIO_CLAUDE_CODE_STATEFUL_CAPACITY  (float)  <- src/clio_agent/providers/claude_code_stateful.py
 providers.claude_code.stateful_capacity: 128.0
+
+# CLIO_CLAUDE_CODE_STREAM_IDLE_TTL_S  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
+providers.claude_code.stream_idle_ttl_s: 15.0
 
 # CLIO_CODEX_STATEFUL_CAPACITY  (float)  <- src/clio_agent/providers/codex_stateful.py
 providers.codex.stateful_capacity: 128.0
