@@ -77,14 +77,15 @@ RATCHET_BASELINE: dict[str, int] = {
     # assignment; production SyncMCPToolExecutor instances always do.)
     # +8 (b8eff254): the synchronous federation-projections seed at
     # construction (list_relay_tool_definitions merge -- the L3 run-4..9 fix).
-    # #1230 (rebase onto develop's #1232 growth): +6 (981 -> 987) for
-    # WorkspaceExecutorReaper.note_resolved() at the one _active_tool_executor
-    # call site -- resolving-for-use now counts as activity so a reap tick
-    # landing in the gap before the caller's dispatch marks the executor busy
-    # cannot pop it out from under an about-to-start call. The reaper's TTL
-    # pin itself lives in the owner module tools/reaper.py; only the guarded
-    # one-call notify lands here.
-    "src/clio_agent/agent.py": 987,
+    # +2 (c47441f6): mypy narrowing for the blueprint-switch eviction (an
+    # assert + its comment); no behavior change.
+    # #1230 (+6 on top): WorkspaceExecutorReaper.note_resolved() at the one
+    # _active_tool_executor call site -- resolving-for-use now counts as
+    # activity so a reap tick landing in the gap before the caller's dispatch
+    # marks the executor busy cannot pop it out from under an about-to-start
+    # call. The reaper's TTL pin itself lives in the owner module
+    # tools/reaper.py; only the guarded one-call notify lands here.
+    "src/clio_agent/agent.py": 989,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -678,8 +679,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # lives entirely in the NEW owner module tools/relay_console.py
     # (make_console_on_poll); only the import + one keyword argument + a
     # docstring note land here. Ratchets back below 800 with the #714/#767
-    # decomposition.
-    "src/clio_agent/tools/relay_transport.py": 820,
+    # decomposition. +7 (820->827): the #1231 run-13 fix folds one console
+    # increment on every explicit resolution in ``poll()`` (terminal-at-lookup
+    # records and relay_observe peeks were console-less forever) -- the fold
+    # logic itself stays in relay_console.py; only the hook call lands here.
+    "src/clio_agent/tools/relay_transport.py": 827,
     # #1232 pt 2: not previously baselined (under the 800 cap). +28 for
     # list_builtin_tool_definitions -- the boot path needs a FAST,
     # synchronous, no-I/O tool-definitions seed (built-ins only) so
