@@ -77,7 +77,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # assignment; production SyncMCPToolExecutor instances always do.)
     # +8 (b8eff254): the synchronous federation-projections seed at
     # construction (list_relay_tool_definitions merge -- the L3 run-4..9 fix).
-    "src/clio_agent/agent.py": 981,
+    # +2 (c47441f6): mypy narrowing for the blueprint-switch eviction (an
+    # assert + its comment); no behavior change.
+    "src/clio_agent/agent.py": 983,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
