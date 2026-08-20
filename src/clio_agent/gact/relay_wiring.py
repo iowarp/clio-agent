@@ -54,6 +54,11 @@ async def relay_tool_surfaces_for_app(app: FastAPI) -> Any:
     app.state.relay_tool_surfaces = surfaces
     app.state.relay_tool_status = dict(surfaces.status)
     app.state.relay_tool_surfaces_discovered_at = time.monotonic()
+    logger.warning(
+        "relay first discovery reason=%s federation=%s",
+        surfaces.status.get("reason"),
+        "present" if surfaces.remote_mcp_federation is not None else "ABSENT",
+    )
     return surfaces
 
 

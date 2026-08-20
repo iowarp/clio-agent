@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import threading
 import time
@@ -65,6 +66,8 @@ from clio_agent.gact.runtime.type_parsing import (
 )
 from clio_agent.runtime import trace
 from clio_agent.tools.mcp_runtime import wire_value
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef
@@ -609,6 +612,16 @@ def _dynamic_agent_tools(
     missing_tools = [name for name in requested_tools if name not in available_tools]
     resolved_tools = [name for name in requested_tools if name in available_tools]
     if missing_tools and not resolved_tools:  # nothing to degrade to -- brick TYPED (#1228 D3)
+        logger.warning(
+            "custom_agent_tools_unavailable diagnostics agent=%s available=%s "
+            "executor=%s federation=%s",
+            agent_def.id,
+            sorted(available_tools)[:30],
+            type(tool_executor).__name__ if tool_executor is not None else None,
+            "present"
+            if getattr(base_agent, "_remote_mcp_federation", None) is not None
+            else "ABSENT",
+        )
         raise _UnsupportedSessionAgent(
             agent_def.id, reason="custom_agent_tools_unavailable", tools=missing_tools
         )

@@ -65,6 +65,7 @@ from clio_agent.tools.gateway import (
     build_gateway,
     build_tool_catalog,
     list_builtin_tool_definitions,
+    list_relay_tool_definitions,
     namespace_proxies,
     namespace_specs,
 )
@@ -390,6 +391,13 @@ class ClioAgent(dspy.Module):
             # namespaces discover CONCURRENTLY in the background below — never
             # gating readiness on any of them (see _start_mcp_namespace_discovery).
             self._tool_definitions = list_builtin_tool_definitions()
+            # Relay federation projections are in-process too (#1232 gap): the
+            # discovered catalog already holds their Tool objects, so they seed
+            # synchronously with the builtins — only spawned MCP namespaces are
+            # deferred to the background pass.
+            self._tool_definitions.update(
+                list_relay_tool_definitions(getattr(self, "_remote_mcp_federation", None))
+            )
             catalog = build_tool_catalog(
                 tool_gateway, experts=experts, tools=list(self._tool_definitions.values())
             )

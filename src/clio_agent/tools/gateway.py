@@ -425,6 +425,30 @@ def list_builtin_tool_definitions() -> dict[str, Any]:
     return tools
 
 
+def list_relay_tool_definitions(federation: Any) -> dict[str, Any]:
+    """List the relay federation's projected tools — fast, no I/O (#1232 gap).
+
+    The federation catalog already holds the discovered Tool objects
+    (``remote_*`` aliases + the projected ``relay_*`` follow tools), so like
+    the built-ins they are listable synchronously. Deferring them to the
+    background namespace pass left the boot/first-turn ``_tool_definitions``
+    builtins-only, and every custom-agent ACL naming a relay tool bricked
+    typed (L3 runs 4-9: ``available=['fs_*', 'shell_bash']`` with
+    ``federation=present``).
+    """
+
+    if federation is None:
+        return {}
+    catalog = getattr(federation, "catalog", None)
+    if catalog is None:
+        return {}
+    tools: dict[str, Any] = {}
+    for source in (getattr(catalog, "tools", {}), getattr(catalog, "follow_tools", {})):
+        for name, tool in dict(source).items():
+            tools[str(name)] = tool
+    return tools
+
+
 def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
     """One transient SEQUENTIAL listing pass: ``{tool_name: MCPTool}``.
 
