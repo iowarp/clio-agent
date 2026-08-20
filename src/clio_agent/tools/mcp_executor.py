@@ -28,6 +28,7 @@ from clio_agent.tools.mcp_connection_era import (
 )
 from clio_agent.tools.mcp_errors import typed_mcp_call_error, typed_mcp_protocol_error
 from clio_agent.tools.mcp_runtime import make_mcp_client
+from clio_agent.tools.mcp_timeout_budget import component_declared_timeout_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -490,6 +491,13 @@ class AsyncMCPToolExecutor:
             return _ToolTimeoutBudget(base + declared, explicitly_declared=True)
         if _is_wait_for_terminal_commitment(tool, args):
             return _ToolTimeoutBudget(None, explicitly_declared=True)
+        # #1230: no caller-declared budget and not a commitment -- derive the
+        # backstop ABOVE any component-declared budget (the tool's OWN schema
+        # default), never a flat operator-tuned global that can undercut it.
+        properties = _mapping_value(_tool_input_schema(tool).get("properties")) or {}
+        component = component_declared_timeout_seconds(properties)
+        if component is not None and component > base:
+            return _ToolTimeoutBudget(component, explicitly_declared=True)
         return _ToolTimeoutBudget(base, explicitly_declared=configured_explicitly)
 
     def _tool_timeout_is_retry_safe(self, name: str) -> bool:
