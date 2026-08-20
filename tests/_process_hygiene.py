@@ -210,6 +210,15 @@ def child_snapshot(root_pid: int, *, exclude_subtree: Optional[int] = None) -> d
         if child.pid in excluded:
             continue
         try:
+            # CPython's own multiprocessing.resource_tracker is exempt (#1240,
+            # named by the audit's own forensics): the stdlib spawns it lazily
+            # ONCE per interpreter the first time any test touches
+            # multiprocessing primitives, it is owned by the pytest process
+            # itself, and it CANNOT be released by a test -- killing it would
+            # break every later multiprocessing use. It dies with the
+            # interpreter; flagging it is a false positive, not a leak.
+            if "multiprocessing.resource_tracker" in " ".join(child.cmdline()):
+                continue
             out[child.pid] = child.name()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
