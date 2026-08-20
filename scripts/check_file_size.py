@@ -43,8 +43,39 @@ DEFAULT_MAX_LINES = 800
 # repository root and use forward slashes.
 RATCHET_BASELINE: dict[str, int] = {
     # #948 S4b: ClioAgent.agent.py dropped from its 2798-line baseline to ~723
-    # once the dead Tier-1 planner half was deleted (host-only surface). Now
-    # under DEFAULT_MAX_LINES, so its ratchet entry is removed entirely.
+    # once the dead Tier-1 planner half was deleted (host-only surface). Went
+    # back under DEFAULT_MAX_LINES at that point, so its entry was removed.
+    # #1232 pts 1+2: back over the cap (723 -> 961) for the boot-design fixes
+    # whose per-workspace/per-blueprint decision genuinely belongs on
+    # ClioAgent (the sole owner of the tool-gateway construction + the
+    # workspace-executor registry these fixes extend):
+    #   pt 1 (lazy blueprint-fleet mounting): _discover_pack_servers/
+    #   _build_tool_gateway take a `blueprint_id` (mount ONE activated
+    #   blueprint's servers, never every installed one) and
+    #   _active_tool_executor evicts+rebuilds a workspace's resident executor
+    #   when its active blueprint changes, computing that gateway's OWN
+    #   preloaded-tool schemas via a bounded discovery pass so the blueprint's
+    #   tools are actually visible to to_dspy_tools() (AsyncMCPToolExecutor
+    #   freezes _mcp_tools at start() and never re-lists -- #932).
+    #   pt 2 (non-blocking discovery): __init__ seeds builtins-only tool
+    #   definitions synchronously and starts _start_mcp_namespace_discovery/
+    #   _merge_discovered_tools on a background thread instead of blocking on
+    #   the old serial list_tool_definitions pass; shutdown() stops the new
+    #   healer thread symmetrically with the existing workspace reaper.
+    # The bounded-concurrent pass + healer THEMSELVES live in the owner
+    # module tools/mcp_discovery.py (no-accretion); only the ClioAgent-level
+    # decision points (which blueprint/gateway, when to rebuild, how to merge
+    # into the live catalog) land here, because they need ClioAgent's own
+    # state (_tool_definitions, _tool_gateway, the workspace executor
+    # registry). Ratchets back with the #714/#767 decomposition.
+    # (957 -> 965: +8 to stop a stale NamespaceDiscoveryHealer thread leaking
+    # on every periodic relay-catalog refresh -- request_stop() call + guard.
+    # 965 -> 973: +8 for a `with suppress(AttributeError, TypeError)` guard
+    # around the _clio_mounted_blueprint_id cache-bookkeeping stamp -- a
+    # handful of pre-existing tests deliberately stub create_sync_tool_executor
+    # with a bare string sentinel, which does not support attribute
+    # assignment; production SyncMCPToolExecutor instances always do.)
+    "src/clio_agent/agent.py": 973,
     "src/clio_agent/arc/memory.py": 1394,
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -192,7 +223,14 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1211: +1 for the POST /v1/providers/models/refresh route registration (import
     # + one register call); the body lives entirely in its own owner modules,
     # routes/provider_models_refresh.py and providers/model_discovery.py.
-    "src/clio_agent/gact/app.py": 2556,  # relay wiring moved to gact/relay_wiring.py
+    # #1232 pt 4: +10 to sequence the boot orphan-process reap BEFORE the
+    # existing #1001 MCP-cache prune's peer-liveness check (a still-running
+    # orphaned clio_run.exe from a prior hard kill otherwise looks like a live
+    # peer and defers the prune indefinitely — the observed "deferred for two
+    # days" bug). All reap logic lives in the owner module
+    # runtime/process_census.py (reap_orphaned_processes/boot_reap_off_loop);
+    # only the sequencing wrapper + its one call site land here.
+    "src/clio_agent/gact/app.py": 2566,  # relay wiring moved to gact/relay_wiring.py
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -370,7 +408,15 @@ RATCHET_BASELINE: dict[str, int] = {
     # #948 S4 live-gate fix: +22 for _BlueprintRootDisabled (typed disabled-root
     # failure; lives with its sibling turn exceptions).
     # P0.1d (#1105): 977 -> 960 after folding _jsonish into tools/mcp_runtime.py.
-    "src/clio_agent/gact/runtime/globals.py": 960,
+    # #1232 pt 1: +18 for tool_blueprint_context wiring into _tool_session_context
+    # (resolving the session's active blueprint id + binding it alongside the
+    # existing workspace-root binding for the turn) so
+    # ClioAgent._active_tool_executor can mount exactly the activated
+    # blueprint's declared servers. The blueprint-id contextvar itself lives
+    # in the owner module tools/execution.py; only the per-turn resolve +
+    # bind call site lands here (mirrors the existing tool_workspace_context
+    # wiring immediately above it).
+    "src/clio_agent/gact/runtime/globals.py": 978,
     "src/clio_agent/gact/streaming.py": 995,
     # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
     # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
@@ -581,7 +627,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # to enumerate an executor's declared namespaces; the accessor itself
     # lives on AsyncMCPToolExecutor in mcp_executor.py, this is the thin
     # delegate).
-    "src/clio_agent/tools/execution.py": 1179,
+    # #1232 pt 1: +35 for the tool_blueprint_context ContextVar + context
+    # manager + get_active_tool_blueprint_id accessor -- the SAME pattern as
+    # the existing tool_workspace_context immediately above it (this module
+    # already owns that contextvar, so its sibling belongs here too, not a
+    # new file). No behavior on the existing workspace-root path changes.
+    "src/clio_agent/tools/execution.py": 1214,
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.
@@ -590,6 +641,17 @@ RATCHET_BASELINE: dict[str, int] = {
     # (runtime/mcp_launcher.py::probe_mcp_yaml_declarations), not just a log
     # line. Ratchets back below 800 if this snapshot moves to its own module.
     "src/clio_agent/tools/mcp_config.py": 821,
+    # #1232 pt 2: not previously baselined (under the 800 cap). +28 for
+    # list_builtin_tool_definitions -- the boot path needs a FAST,
+    # synchronous, no-I/O tool-definitions seed (built-ins only) so
+    # ClioAgent.__init__ never waits on any declared MCP namespace. The real
+    # new logic (bounded-concurrent discovery + the background healer) lives
+    # entirely in the owner module tools/mcp_discovery.py; this file only
+    # gained the small builtins-only extraction (it needs fs_server/
+    # shell_server/_list_tools_sync, already private to this module) plus a
+    # docstring cross-reference on list_tool_definitions. Ratchets back below
+    # 800 if this helper moves out too.
+    "src/clio_agent/tools/gateway.py": 828,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.

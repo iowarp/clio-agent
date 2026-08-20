@@ -18,6 +18,8 @@ from mcp_types.version import LATEST_MODERN_VERSION
 from clio_agent.tools.mcp_probe_hardening import (
     hardened_negotiate_auto,
     install_probe_hardening,
+    probe_server_context,
+    resolve_timeout_retries,
 )
 
 
@@ -119,3 +121,54 @@ def test_install_swaps_both_import_bindings() -> None:
     install_probe_hardening()
     assert sdk_probe.negotiate_auto is hardened_negotiate_auto
     assert fastmcp_client.negotiate_auto is hardened_negotiate_auto
+
+
+# --------------------------------------------------------------------------- #
+# #1232 pt 4: per-server probe-timeout-retry override.                         #
+# --------------------------------------------------------------------------- #
+
+
+def test_resolve_timeout_retries_default_is_global(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No override anywhere -> the unchanged global default (3)."""
+
+    monkeypatch.delenv("CLIO_MCP_PROBE_TIMEOUT_RETRIES", raising=False)
+    assert resolve_timeout_retries("unrelated-server") == 3
+    assert resolve_timeout_retries() == 3
+
+
+def test_resolve_timeout_retries_per_server_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SABOTAGE: raising ONE server's retries must not move an unrelated server's budget."""
+
+    monkeypatch.setenv("CLIO_MCP_PROBE_TIMEOUT_RETRIES__SLOW_SERVER", "9")
+    monkeypatch.delenv("CLIO_MCP_PROBE_TIMEOUT_RETRIES", raising=False)
+    assert resolve_timeout_retries("slow-server") == 9
+    # A DIFFERENT (dead) server's budget is completely unaffected -- the
+    # exact multiplication bug #1232 pt 4 fixes.
+    assert resolve_timeout_retries("dead-server") == 3
+
+
+def test_resolve_timeout_retries_reads_bound_probe_server_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no explicit id, resolves against the currently-bound probe_server_context."""
+
+    monkeypatch.setenv("CLIO_MCP_PROBE_TIMEOUT_RETRIES__CTX_SERVER", "5")
+    assert resolve_timeout_retries() == 3  # unbound -> global
+    with probe_server_context("ctx-server"):
+        assert resolve_timeout_retries() == 5
+    assert resolve_timeout_retries() == 3  # context released on exit
+
+
+@pytest.mark.asyncio
+async def test_hardened_negotiate_auto_uses_the_bound_servers_retry_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SABOTAGE: a server-scoped override of 0 retries must exhaust on the FIRST timeout,
+    even though the (unrelated) global default of 3 would have tolerated it."""
+
+    monkeypatch.setenv("CLIO_MCP_PROBE_TIMEOUT_RETRIES__PROBE_ME", "0")
+    session = _FakeSession([_timeout()])
+    with probe_server_context("probe-me"), pytest.raises(MCPError) as exc_info:
+        await hardened_negotiate_auto(session)
+    assert exc_info.value.code == REQUEST_TIMEOUT
+    assert session.discover_calls == [LATEST_MODERN_VERSION]  # exactly one attempt, zero retries

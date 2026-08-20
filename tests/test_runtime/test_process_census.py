@@ -106,6 +106,149 @@ def test_probe_row_ready_when_all_rooted() -> None:
     assert row.details["count"] == 1
 
 
+def test_reap_kills_provably_orphaned_process() -> None:
+    """#1232 pt 4: a dead-parent CLIO child is REAPED (killed), not just reported."""
+    nodes = [
+        _node(_SERVER, 1, "python.exe"),
+        _node(_DAEMON, 1, "clio_run.exe"),
+        _node(700, 650, "clio-kit.exe"),  # parent 650 is GONE from the table
+    ]
+    killed: list[int] = []
+    reaped = pc.reap_orphaned_processes(
+        nodes=nodes,
+        server_root_pid=_SERVER,
+        daemon_root_pid=_DAEMON,
+        kill=killed.append,
+    )
+    assert killed == [700]
+    assert len(reaped) == 1
+    assert reaped[0] == pc.ReapedProcess(pid=700, name="clio-kit.exe", kind="mcp_stdio")
+
+
+def test_reap_excludes_daemon_root_by_construction() -> None:
+    """#1232 pt 4: the breakaway clio-core daemon is NEVER a kill candidate.
+
+    ``classify_parentage`` skips both root pids entirely (they are never
+    emitted as rows), so the daemon root can never be reaped no matter how
+    stale ITS own parent chain looks -- prove it directly: a daemon root
+    whose own "parent" is long gone still yields zero kills.
+    """
+    nodes = [
+        _node(_SERVER, 1, "python.exe"),
+        _node(_DAEMON, 99999, "clio_run.exe"),  # daemon's own ppid is dead/unknown
+        _node(700, 650, "clio-kit.exe"),  # a genuine orphan, for contrast
+    ]
+    killed: list[int] = []
+    reaped = pc.reap_orphaned_processes(
+        nodes=nodes,
+        server_root_pid=_SERVER,
+        daemon_root_pid=_DAEMON,
+        kill=killed.append,
+    )
+    assert _DAEMON not in killed
+    assert killed == [700]
+    assert all(r.pid != _DAEMON for r in reaped)
+
+
+def test_reap_never_kills_any_clio_core_daemon_kind_row() -> None:
+    """#1232 pt 4 safety hardening: a live test caught this exact scenario killing a
+    REAL, in-use clio-core daemon holding live session data.
+
+    A ``clio_core_daemon``-kind process that classifies as ``orphaned_from_tree`` is
+    NOT automatically the stale corpse the issue describes: a multi-daemon
+    environment (e.g. a session-isolated/private daemon whose pidfile the single
+    ``daemon_root_pid`` lookup does not resolve) can make a genuinely-live,
+    currently-in-use daemon look identical to a stale one by parentage alone. This
+    row -- pid 900, kind clio_core_daemon, dead parent, NOT the recorded daemon
+    root -- is exactly the shape that got auto-killed during development. It must
+    now be report-only (never a kill candidate), regardless of parentage.
+    """
+    nodes = [
+        _node(_SERVER, 1, "python.exe"),
+        _node(_DAEMON, 1, "clio_run.exe"),  # the recorded (correctly-identified) daemon
+        _node(900, 88888, "clio_run.exe"),  # a DIFFERENT clio_run.exe, dead parent
+    ]
+    killed: list[int] = []
+    reaped = pc.reap_orphaned_processes(
+        nodes=nodes,
+        server_root_pid=_SERVER,
+        daemon_root_pid=_DAEMON,
+        kill=killed.append,
+    )
+    # It still surfaces as a reportable orphan (unchanged doctor visibility)...
+    rows = pc.classify_parentage(nodes, server_root_pid=_SERVER, daemon_root_pid=_DAEMON)
+    orphan = next(r for r in rows if r.pid == 900)
+    assert orphan.descends_from == pc.ORPHANED_FROM_TREE
+    assert orphan.kind == "clio_core_daemon"
+    # ...but is NEVER auto-killed.
+    assert killed == []
+    assert reaped == []
+
+
+def test_reap_skips_when_parent_alive_at_kill_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A parent that came back alive between snapshot and kill is NEVER reaped."""
+    nodes = [
+        _node(_SERVER, 1, "python.exe"),
+        _node(700, 650, "clio-kit.exe"),  # snapshot says parent 650 is dead
+    ]
+    monkeypatch.setattr(pc, "_pid_alive", lambda pid: pid == 650)  # ...but it is alive NOW
+    killed: list[int] = []
+    reaped = pc.reap_orphaned_processes(
+        nodes=nodes, server_root_pid=_SERVER, daemon_root_pid=None, kill=killed.append
+    )
+    assert killed == []
+    assert reaped == []
+
+
+def test_reap_ignores_non_orphaned_rows() -> None:
+    """A cleanly-rooted process is never a kill candidate."""
+    nodes = [
+        _node(_SERVER, 1, "python.exe"),
+        _node(300, _SERVER, "clio-kit.exe"),
+    ]
+    killed: list[int] = []
+    reaped = pc.reap_orphaned_processes(
+        nodes=nodes, server_root_pid=_SERVER, daemon_root_pid=None, kill=killed.append
+    )
+    assert killed == []
+    assert reaped == []
+
+
+def test_reap_continues_after_one_kill_failure() -> None:
+    """A kill that raises (already exited, access denied) is typed-skipped, never aborts the pass."""
+    nodes = [
+        _node(_SERVER, 1, "python.exe"),
+        _node(700, 650, "clio-kit.exe"),
+        _node(701, 651, "uvx.exe"),
+    ]
+
+    def _flaky_kill(pid: int) -> None:
+        if pid == 700:
+            raise ProcessLookupError("already exited")
+
+    reaped = pc.reap_orphaned_processes(
+        nodes=nodes, server_root_pid=_SERVER, daemon_root_pid=None, kill=_flaky_kill
+    )
+    assert [r.pid for r in reaped] == [701]
+
+
+@pytest.mark.asyncio
+async def test_boot_reap_off_loop_runs_the_reap_and_never_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The boot hook runs the reap off-loop and swallows a failure (never breaks boot)."""
+    calls: list[str] = []
+    monkeypatch.setattr(pc, "reap_orphaned_processes", lambda: calls.append("ran") or [])
+    await pc.boot_reap_off_loop()
+    assert calls == ["ran"]
+
+    def _boom() -> list[pc.ReapedProcess]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(pc, "reap_orphaned_processes", _boom)
+    await pc.boot_reap_off_loop()  # must not raise
+
+
 def test_real_spawn_is_descendant_of_this_process() -> None:
     """A really-spawned child is a psutil descendant of the current process (live path)."""
     psutil = pytest.importorskip("psutil")
