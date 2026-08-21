@@ -1,0 +1,2 @@
+Show me the simulation evolving over time - I want to actually see it, frame
+by frame, not just numbers.

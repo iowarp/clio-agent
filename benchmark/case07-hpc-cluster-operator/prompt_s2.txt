@@ -1,0 +1,3 @@
+That simulation you can run - I care about its I/O behavior on the cluster's
+filesystem. Profile the I/O it does and summarize what you find: how much is
+read vs written, and where the hotspots are.
