@@ -465,7 +465,7 @@ tools.file_policy.allow_symlinks: false
 tools.file_policy.max_file_size_bytes: "1073741824"
 
 # CLIO_MCP_CALL_TIMEOUT_S  (float)  <- src/clio_agent/tools/execution.py
-tools.mcp.call_timeout_s: 30.0
+tools.mcp.call_timeout_s: 600.0
 
 # CLIO_MCP_COLD_SPAWN_RUNAWAY_S  (float)  <- src/clio_agent/tools/mcp_discovery.py
 tools.mcp.cold_spawn_runaway_s: 600.0

@@ -123,7 +123,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MCP_CACHE_MAX_BYTES` | `tools.mcp_cache.max_bytes` | int | `2147483648` | `src/clio_agent/tools/mcp_cache.py` |
 | `CLIO_MCP_CACHE_TEMP_MAX_AGE_DAYS` | `tools.mcp_cache.temp_max_age_days` | float | `3.0` | `src/clio_agent/runtime/disk_gc.py` |
 | `CLIO_MCP_CACHE_TEMP_ROOTS` | `tools.mcp_cache.temp_roots` | str | _(unset)_ | `src/clio_agent/runtime/disk_gc.py` |
-| `CLIO_MCP_CALL_TIMEOUT_S` | `tools.mcp.call_timeout_s` | float | `30.0` | `src/clio_agent/tools/execution.py` |
+| `CLIO_MCP_CALL_TIMEOUT_S` | `tools.mcp.call_timeout_s` | float | `600.0` | `src/clio_agent/tools/execution.py` |
 | `CLIO_MCP_COLD_SPAWN_RUNAWAY_S` | `tools.mcp.cold_spawn_runaway_s` | float | `600.0` | `src/clio_agent/tools/mcp_discovery.py` |
 | `CLIO_MCP_CONNECT_MODE` | `tools.mcp.connect_mode` | str | `auto` | `src/clio_agent/tools/mcp_connection_era.py` |
 | `CLIO_MCP_CONTENT_BLOCK_MAX_BYTES` | `limits.mcp_content_block_max_bytes` | int | `524288` | `src/clio_agent/tools/mcp_results.py` |

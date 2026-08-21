@@ -496,13 +496,16 @@ def create_sync_tool_executor(
 ) -> SyncToolExecutor:
     """Create a sync executor for CLI and deterministic expert call sites."""
     # #1186 follow-on: the per-call ceiling is config-resolved like setup_timeout.
-    # 30s starves real scientific tools (a 50MB staged CSV made plot_plot_timeseries
-    # time out regardless of row caps); deployments size this to their data.
+    # The default is a RUNAWAY BACKSTOP, not an operational clock (#1244 run-3
+    # kill: a 30s default starved every legitimately-paced batch tool). The
+    # precise clocks are the tool's own declared budget (#1230 timeout_seconds
+    # schema default), the caller's explicit arg, and #1225's unbounded
+    # wait_for_terminal commitment — this global only catches a hung server.
     effective_timeout = (
         conf.resolve(
             "tools.mcp.call_timeout_s",
             env="CLIO_MCP_CALL_TIMEOUT_S",
-            default=30.0,
+            default=600.0,
             cast=conf.as_float,
         )
         if timeout is None
