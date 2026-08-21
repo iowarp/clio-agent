@@ -521,7 +521,7 @@ class ClioAgent(dspy.Module):
         if not root:
             return self.tool_executor
         blueprint_id = get_active_tool_blueprint_id().strip()
-        lock, executors, _leases = self._workspace_state()
+        lock, executors, leases = self._workspace_state()
         with lock:
             executor = executors.get(root)
             stale = executor is not None and getattr(executor, "closed", False)
@@ -540,11 +540,16 @@ class ClioAgent(dspy.Module):
             federation_switched = (
                 executor is not None and not stale and executor_epoch != current_epoch
             )
-            # Additive semantics (replaces #1232's one-blueprint-per-root
-            # eviction, which closed the shared fleet out from under a
-            # concurrent session's live turn — the workload+watcher shape):
-            # an unmounted blueprint merges in below; ``blueprint_id == ""``
-            # reuses the fleet as-is (reachability is the agent build's ACL).
+            reaper = getattr(self, "_workspace_reaper", None)
+            if (
+                federation_switched
+                and reaper is not None
+                and reaper.defer_restart_if_active(root, executor, leases)
+            ):
+                # #1244: never close under a live turn; reaper drains at idle.
+                federation_switched = False
+            # Additive blueprint semantics (#1244): an unmounted blueprint
+            # merges in below; ``blueprint_id == ""`` reuses the fleet as-is.
             from clio_agent.tools.fleet_blueprint_merge import (  # noqa: PLC0415
                 _mounted_blueprint_ids,
                 merge_blueprint_namespaces,
@@ -629,9 +634,7 @@ class ClioAgent(dspy.Module):
                     namespace_servers=namespace_proxies(gateway),
                     server_id=f"gateway:{root}",
                 )
-                # Bookkeeping stamps (legacy id, additive mounted-set, #1236
-                # epoch, #1237 declared specs on sync + inner async) live with
-                # the merge owner; best-effort on bare test doubles.
+                # Stamps (ids/epoch/specs) live with the merge owner module.
                 stamp_fresh_fleet(
                     executor,
                     blueprint_id=blueprint_id,
@@ -651,10 +654,7 @@ class ClioAgent(dspy.Module):
                     blueprint_id=blueprint_id,
                     root=root,
                 )
-            # #1230: resolving-for-use counts as activity so a reap tick landing
-            # in the gap before the caller's dispatch marks this executor busy
-            # cannot pop it out from under an about-to-start call.
-            reaper = getattr(self, "_workspace_reaper", None)
+            # #1230: resolve-for-use counts as activity (resolve-to-busy gap).
             if reaper is not None:
                 reaper.note_resolved(root)
             return executor

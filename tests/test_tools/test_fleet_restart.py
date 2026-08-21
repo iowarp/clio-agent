@@ -274,3 +274,43 @@ def test_agent_request_fleet_restart_without_reaper_is_typed_no_resident() -> No
     agent = _bare_agent()  # a bare stub has no reaper — a typed skip, never a silent success
     assert agent.request_fleet_restart("/ws/x") == RESTART_NO_RESIDENT
     assert agent.request_fleet_restart("") == RESTART_NO_RESIDENT
+
+
+# --------------------------------------------------------------------------- #
+# defer_restart_if_active (#1244): a catalog invalidation never closes a fleet
+# under a live turn - busy/leased defers to the idle pass, idle closes inline.
+# --------------------------------------------------------------------------- #
+
+
+def test_defer_restart_if_active_busy_fleet_defers() -> None:
+    executor = FakeExecutor(busy=True)
+    reaper = _reaper({"/ws/r": executor})
+
+    assert reaper.defer_restart_if_active("/ws/r", executor, {}) is True
+    assert "/ws/r" in reaper._pending_restarts
+    assert executor.closed is False, "a busy fleet must NEVER be closed by the caller"
+
+
+def test_defer_restart_if_active_leased_fleet_defers() -> None:
+    executor = FakeExecutor(busy=False)
+    reaper = _reaper({"/ws/r": executor})
+
+    assert reaper.defer_restart_if_active("/ws/r", executor, {"/ws/r": 1}) is True
+    assert "/ws/r" in reaper._pending_restarts
+
+
+def test_defer_restart_if_active_idle_unleased_allows_inline_close() -> None:
+    executor = FakeExecutor(busy=False)
+    reaper = _reaper({"/ws/r": executor})
+
+    assert reaper.defer_restart_if_active("/ws/r", executor, {}) is False
+    assert "/ws/r" not in reaper._pending_restarts
+
+
+def test_defer_restart_if_active_probe_error_fails_safe() -> None:
+    executor = ProbeExplodingExecutor()
+    reaper = _reaper({"/ws/r": executor})
+
+    assert reaper.defer_restart_if_active("/ws/r", executor, {}) is True, (
+        "an unprovable-idle fleet must defer, never be closed inline"
+    )

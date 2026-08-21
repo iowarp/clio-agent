@@ -350,3 +350,59 @@ def test_refresh_agent_relay_tool_surfaces_reseeds_tool_definitions(
     assert "relay_wait" in agent._tool_definitions, "late federation must re-seed definitions"
     assert "shell_bash" in agent._tool_definitions, "builtins must survive the re-seed"
     assert captured_kwargs["preloaded_tools"] is agent._tool_definitions
+
+
+def test_refresh_agent_relay_tool_surfaces_unchanged_catalog_is_a_noop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1244 rerun evidence (2026-08-21): an UNCHANGED catalog must not bump
+    the federation epoch or rebuild anything -- pre-fix, every TTL-expired
+    refresh bumped unconditionally, and an ABSENT federation keeps the SHORT
+    failure TTL, so a relay-less serve bumped every turn and every resident
+    workspace fleet was evicted mid-turn on its next resolve (the
+    ``SyncMCPToolExecutor is closed`` campaign kills)."""
+
+    monkeypatch.setattr(relay_wiring, "create_sync_tool_executor", lambda *a, **k: object())
+    monkeypatch.setattr(relay_wiring, "namespace_proxies", lambda gw: {})
+    monkeypatch.setattr(relay_wiring, "list_relay_tool_definitions", lambda federation: {})
+
+    agent = _FakeGatewayAgent()
+    old_executor = agent.tool_executor
+    surfaces = SimpleNamespace(
+        remote_mcp_federation=None,
+        jarvis_jobs=None,
+        status={"configured": False, "reason": "relay_tools_not_configured"},
+    )
+
+    relay_wiring._refresh_agent_relay_tool_surfaces(agent, surfaces)
+
+    assert getattr(agent, "_relay_federation_epoch", 0) == 0, "no epoch churn without a change"
+    assert agent.gateway_builds == 0, "unchanged catalog must not rebuild the gateway"
+    assert agent.tool_executor is old_executor, "unchanged catalog must not swap the executor"
+
+
+def test_refresh_agent_relay_tool_surfaces_changed_catalog_still_bumps_epoch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sabotage twin of the no-op guard: a genuinely CHANGED catalog (absent ->
+    present with tools) still bumps the epoch and rebuilds (#1236 intact)."""
+
+    monkeypatch.setattr(relay_wiring, "create_sync_tool_executor", lambda *a, **k: object())
+    monkeypatch.setattr(relay_wiring, "namespace_proxies", lambda gw: {})
+    monkeypatch.setattr(
+        relay_wiring,
+        "list_relay_tool_definitions",
+        lambda federation: {} if federation is None else {"relay_wait": {"name": "relay_wait"}},
+    )
+
+    agent = _FakeGatewayAgent()
+    surfaces = SimpleNamespace(
+        remote_mcp_federation=object(),
+        jarvis_jobs=None,
+        status={"configured": True, "reason": None},
+    )
+
+    relay_wiring._refresh_agent_relay_tool_surfaces(agent, surfaces)
+
+    assert getattr(agent, "_relay_federation_epoch", 0) == 1, "a real change must bump the epoch"
+    assert agent.gateway_builds == 1

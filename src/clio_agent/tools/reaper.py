@@ -272,6 +272,33 @@ class WorkspaceExecutorReaper:
             )
             return 0
 
+    def defer_restart_if_active(self, root: str, executor: Any, leases: dict[str, int]) -> bool:
+        """Defer an invalidation restart when ``root``'s fleet is in live use (#1244).
+
+        MUST be called while the caller already holds the shared registry lock
+        (:meth:`note_resolved`'s contract — ``self._lock`` IS that lock and is
+        not reentrant). Returns ``True`` when the fleet is busy or turn-leased:
+        the restart joins the idle-pass pending set (typed reason) and the
+        caller keeps serving the resident executor — a catalog invalidation
+        never closes a fleet under a live turn (the executor-closed campaign
+        kills). Returns ``False`` when the fleet is idle and unleased (safe to
+        close inline).
+        """
+
+        try:
+            active = bool(getattr(executor, "busy", False)) or leases.get(root, 0) > 0
+        except Exception:  # noqa: BLE001 - can't prove idle -> never close inline
+            active = True
+        if not active:
+            return False
+        self._pending_restarts.add(root)
+        trace.event(
+            "TOOLS",
+            "workspace_fleet_federation_evict_deferred root=%s reason=busy_or_leased",
+            root,
+        )
+        return True
+
     def note_resolved(self, root: str) -> None:
         """Mark ``root`` as just resolved for an imminent call (#1230).
 

@@ -353,6 +353,42 @@ class TestActiveToolExecutorBlueprintScoping:
         assert specs.get("shared") is spec_before, "collision must keep the FIRST mounted spec"
         assert "b-only" in specs, "non-colliding namespaces still merge"
 
+    def test_federation_epoch_bump_defers_eviction_under_a_live_turn_lease(
+        self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """#1244 rerun evidence: a federation-epoch invalidation landing while
+        the root is turn-leased must NOT close the resident fleet — the live
+        turn keeps its consistent snapshot and the restart defers to the
+        reaper's idle pass. Pre-fix this closed inline (no busy/lease check),
+        killing the in-flight campaign turn."""
+
+        def _fake_discover():
+            return [_blueprint("pack-a", {"a-server": "uvx a-mcp serve"})]
+
+        monkeypatch.setattr(
+            "clio_agent.gact.agent_blueprints.discover_agent_blueprints", _fake_discover
+        )
+        monkeypatch.setattr(
+            "clio_agent.agent.discover_declared_tools_bounded",
+            lambda specs, **_kw: type(
+                "R", (), {"tools": {}, "degraded": dict.fromkeys(specs, "unreachable")}
+            )(),
+        )
+        from clio_agent.tools.execution import tool_workspace_context
+
+        root = str(tmp_path)
+        with tool_workspace_context(root), tool_blueprint_context("pack-a"):
+            first = agent._active_tool_executor()
+            agent._relay_federation_epoch = getattr(agent, "_relay_federation_epoch", 0) + 1
+            with agent.lease_workspace_fleet(root):
+                second = agent._active_tool_executor()
+
+        assert second is first, "a leased root must keep serving its resident fleet"
+        assert getattr(first, "closed", False) is False
+        assert root in agent._workspace_reaper._pending_restarts, (
+            "the invalidation must be flagged for the reaper's idle pass, not dropped"
+        )
+
     def test_federation_epoch_bump_evicts_resident_executor(
         self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

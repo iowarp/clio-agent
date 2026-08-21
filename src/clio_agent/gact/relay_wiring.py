@@ -163,6 +163,19 @@ def _refresh_agent_relay_tool_surfaces(agent: Any, surfaces: Any) -> None:
     ``agent._remote_mcp_federation`` fresh on its next reaper-evicted rebuild.
     """
 
+    # #1244 rerun evidence (2026-08-21): an UNCHANGED catalog must be a no-op.
+    # This used to fall through unconditionally, bumping the federation epoch
+    # on every TTL-expired refresh — and an ABSENT federation keeps the SHORT
+    # failure TTL, so a relay-less serve bumped every turn, evicting every
+    # resident workspace fleet mid-turn (the executor-closed campaign kills).
+    # Identity = presence + the projected tool-name set, compared against the
+    # agent's LIVE state (no stored marker to seed or drift).
+    old_federation = getattr(agent, "_remote_mcp_federation", None)
+    new_definitions = list_relay_tool_definitions(surfaces.remote_mcp_federation)
+    if (old_federation is None) == (surfaces.remote_mcp_federation is None) and frozenset(
+        list_relay_tool_definitions(old_federation)
+    ) == frozenset(new_definitions):
+        return
     agent._remote_mcp_federation = surfaces.remote_mcp_federation  # noqa: SLF001
     agent._jarvis_jobs = surfaces.jarvis_jobs  # noqa: SLF001
     agent._relay_status = dict(surfaces.status)  # noqa: SLF001
@@ -174,9 +187,7 @@ def _refresh_agent_relay_tool_surfaces(agent: Any, surfaces: Any) -> None:
     # four builtins, and every custom-agent ACL still bricked
     # (federation=present in the diagnostics, tools absent). Re-seed from the
     # same projection the construction path uses.
-    agent._tool_definitions.update(  # noqa: SLF001
-        list_relay_tool_definitions(surfaces.remote_mcp_federation)
-    )
+    agent._tool_definitions.update(new_definitions)  # noqa: SLF001
     # #1236: bump the federation epoch so RESIDENT per-workspace executors
     # (minted under the previous — possibly ABSENT — federation) evict on
     # their next resolve instead of serving a stale tool snapshot forever
