@@ -26,7 +26,7 @@ import re
 import threading
 import time
 from collections.abc import Mapping
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, List
 
 import dspy
@@ -506,13 +506,15 @@ class ClioAgent(dspy.Module):
         The gateway also reads the active session's EXPLICITLY-activated Agent
         Blueprint id (#1232 pt 1, ``tools.execution.get_active_tool_blueprint_id``)
         and mounts ONLY that blueprint's declared ``mcp_servers`` — never every
-        installed blueprint's. A resident executor built for a different (or no)
-        blueprint than the one now active for this root is evicted and rebuilt so
-        activation/deactivation actually changes what is mounted; this is a
-        one-blueprint-at-a-time-per-root simplification — two sessions sharing one
-        workspace root with DIFFERENT active blueprints will thrash rebuilds on
-        every call, which is out of scope for #1232 (no evidence it occurs today:
-        a workspace is provisioned per session).
+        installed blueprint's. A resolve under a blueprint the resident fleet has
+        not yet mounted MERGES that blueprint's declared namespaces into the SAME
+        executor (``tools.fleet_blueprint_merge``) instead of evicting it: two
+        sessions sharing one workspace root with different active blueprints is a
+        real, designed topology (a workload session + its standing watcher
+        child), and #1232's original close-and-rebuild-on-switch closed the
+        shared fleet out from under the other session's LIVE turn (whose DSPy
+        tools hold their executor binding for the whole turn). Eviction remains
+        only for genuinely-invalidating events (#1236 federation epoch).
         """
 
         root = get_active_tool_workspace_root().strip()
@@ -523,18 +525,12 @@ class ClioAgent(dspy.Module):
         with lock:
             executor = executors.get(root)
             stale = executor is not None and getattr(executor, "closed", False)
-            mounted_blueprint_id = (
-                getattr(executor, "_clio_mounted_blueprint_id", "") if executor is not None else ""
-            )
-            blueprint_switched = (
-                executor is not None and not stale and mounted_blueprint_id != blueprint_id
-            )
             # #1236: a resident executor minted while the relay federation was
             # ABSENT (or under an older catalog) must not outlive a successful
             # refresh — the run-15/17 brick: the per-turn refresh rebuilt the
             # DEFAULT executor while the workspace's resident one kept serving
             # a toolless (or partial) snapshot, so the ACL bricked with
-            # federation=present. Same eviction shape as blueprint_switched.
+            # federation=present.
             current_epoch = getattr(self, "_relay_federation_epoch", 0)
             executor_epoch = (
                 getattr(executor, "_clio_federation_epoch", current_epoch)
@@ -544,34 +540,44 @@ class ClioAgent(dspy.Module):
             federation_switched = (
                 executor is not None and not stale and executor_epoch != current_epoch
             )
-            blueprint_switched = blueprint_switched or federation_switched
-            if executor is None or stale or blueprint_switched:
-                if blueprint_switched:
-                    # #1232 pt 1: the workspace's active blueprint changed (or
-                    # just activated/deactivated) since this resident fleet was
-                    # built — evict so the rebuild mounts exactly the NOW-active
-                    # blueprint's declared servers, never a stale/foreign set.
-                    # (blueprint_switched requires executor is not None above.)
+            # Additive semantics (replaces #1232's one-blueprint-per-root
+            # eviction, which closed the shared fleet out from under a
+            # concurrent session's live turn — the workload+watcher shape):
+            # an unmounted blueprint merges in below; ``blueprint_id == ""``
+            # reuses the fleet as-is (reachability is the agent build's ACL).
+            from clio_agent.tools.fleet_blueprint_merge import (  # noqa: PLC0415
+                _mounted_blueprint_ids,
+                merge_blueprint_namespaces,
+                stamp_fresh_fleet,
+            )
+
+            blueprint_missing = (
+                executor is not None
+                and not stale
+                and not federation_switched
+                and bool(blueprint_id)
+                and blueprint_id not in _mounted_blueprint_ids(executor)
+            )
+            if executor is None or stale or federation_switched:
+                if federation_switched:
                     assert executor is not None
+                    from clio_agent.runtime import trace  # noqa: PLC0415
+
                     try:
                         executor.close()
                     except Exception as exc:  # noqa: BLE001 - typed, never fatal
-                        from clio_agent.runtime import trace  # noqa: PLC0415
-
                         trace.event(
                             "TOOLS",
-                            "workspace_fleet_blueprint_switch_close_failed root=%s reason=%s",
+                            "workspace_fleet_federation_evict_close_failed root=%s reason=%s",
                             root,
                             exc,
                         )
-                    from clio_agent.runtime import trace  # noqa: PLC0415
-
                     trace.event(
                         "TOOLS",
-                        "workspace_fleet_blueprint_switch root=%s from=%s to=%s",
+                        "workspace_fleet_federation_epoch_evict root=%s from_epoch=%s to_epoch=%s",
                         root,
-                        mounted_blueprint_id or "<none>",
-                        blueprint_id or "<none>",
+                        executor_epoch,
+                        current_epoch,
                     )
                 # First use for this root, the #933 reaper reclaimed the fleet, or
                 # the active blueprint changed — rebuild lazily (spawns nothing
@@ -623,34 +629,28 @@ class ClioAgent(dspy.Module):
                     namespace_servers=namespace_proxies(gateway),
                     server_id=f"gateway:{root}",
                 )
-                # Best-effort cache-consistency bookkeeping, not core behavior:
-                # a real SyncMCPToolExecutor always supports attribute
-                # assignment; only a bare-primitive test double (a handful of
-                # tests deliberately stub create_sync_tool_executor with a
-                # plain string sentinel) would not. A blueprint switch on such
-                # a stub simply always rebuilds (mounted_blueprint_id reads
-                # back "" via getattr's default either way).
-                with suppress(AttributeError, TypeError):
-                    setattr(executor, "_clio_mounted_blueprint_id", blueprint_id)  # noqa: B010
-                    # #1236: stamp the federation epoch this executor was built
-                    # under, so a later successful refresh evicts it (above).
-                    setattr(executor, "_clio_federation_epoch", current_epoch)  # noqa: B010
-                    # #1237: the DECLARED namespace -> spec map for this
-                    # blueprint (empty with none active), so an on-demand
-                    # mount (builders.py / mcp_executor.py._route) can tell
-                    # "declared but not yet listed" from "genuinely unknown".
-                    # Stamped on BOTH the sync wrapper (builders.py reads it
-                    # there) and its inner async executor (mcp_executor.py's
-                    # _connect_namespace reads it there, for the dispatch-
-                    # time launcher-cache-lock gate).
-                    setattr(executor, "_clio_namespace_specs", declared_specs)  # noqa: B010
-                    # getattr: the SyncToolExecutor protocol doesn't declare the
-                    # concrete wrapper's _async_executor slot (and test doubles
-                    # genuinely lack it).
-                    inner_executor = getattr(executor, "_async_executor", None)
-                    if inner_executor is not None:
-                        setattr(inner_executor, "_clio_namespace_specs", declared_specs)  # noqa: B010
+                # Bookkeeping stamps (legacy id, additive mounted-set, #1236
+                # epoch, #1237 declared specs on sync + inner async) live with
+                # the merge owner; best-effort on bare test doubles.
+                stamp_fresh_fleet(
+                    executor,
+                    blueprint_id=blueprint_id,
+                    federation_epoch=current_epoch,
+                    declared_specs=declared_specs,
+                )
                 executors[root] = executor
+            elif blueprint_missing:
+                # A second session's blueprint joins the SAME resident fleet:
+                # declared specs + lazy proxies + warm cached listings merge in
+                # (spawn-free); cold namespaces mount on demand at first need
+                # (ensure_namespace), exactly like the rebuild path's.
+                assert executor is not None
+                merge_blueprint_namespaces(
+                    executor,
+                    self._build_tool_gateway(cwd=root, blueprint_id=blueprint_id),
+                    blueprint_id=blueprint_id,
+                    root=root,
+                )
             # #1230: resolving-for-use counts as activity so a reap tick landing
             # in the gap before the caller's dispatch marks this executor busy
             # cannot pop it out from under an about-to-start call.

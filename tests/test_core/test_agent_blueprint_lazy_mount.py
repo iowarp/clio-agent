@@ -241,9 +241,14 @@ class TestActiveToolExecutorBlueprintScoping:
         assert gateway_key is executor
         assert getattr(executor, "_clio_mounted_blueprint_id", None) == "pack-a"
 
-    def test_blueprint_switch_evicts_and_rebuilds(
+    def test_second_blueprint_merges_into_resident_fleet_without_evicting(
         self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
+        """The spotter regression (shared-root workload + watcher): a resolve
+        under a SECOND blueprint must merge into the resident fleet, never
+        close it — #1232's close-and-rebuild killed the other session's live
+        turn (``SyncMCPToolExecutor is closed`` mid-campaign, 2026-08-21)."""
+
         def _fake_discover():
             return [
                 _blueprint("pack-a", {"a-server": "uvx a-mcp serve"}),
@@ -267,9 +272,86 @@ class TestActiveToolExecutorBlueprintScoping:
         with tool_workspace_context(root), tool_blueprint_context("pack-b"):
             second = agent._active_tool_executor()
 
-        assert first is not second
-        assert getattr(second, "_clio_mounted_blueprint_id", None) == "pack-b"
-        assert getattr(first, "closed", False) is True
+        # SAME resident fleet, alive, carrying BOTH blueprints' namespaces.
+        assert first is second
+        assert getattr(first, "closed", False) is False
+        specs = getattr(first, "_clio_namespace_specs", {})
+        assert set(specs) == {"a-server", "b-server"}
+        assert getattr(first, "_clio_mounted_blueprint_ids", set()) == {"pack-a", "pack-b"}
+        # The async twin routes the merged namespace too (lazy proxy present).
+        inner = getattr(first, "_async_executor", None)
+        assert inner is not None
+        assert "b-server" in inner._namespace_servers
+        # Re-resolving under EITHER blueprint keeps the fleet (no thrash).
+        with tool_workspace_context(root), tool_blueprint_context("pack-a"):
+            third = agent._active_tool_executor()
+        assert third is first
+        assert getattr(first, "closed", False) is False
+
+    def test_deactivated_blueprint_reuses_resident_fleet_without_evicting(
+        self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``blueprint_id == \"\"`` declares no servers: the resident fleet is
+        reused as-is (reachability is the agent build's ACL, not residency)."""
+
+        def _fake_discover():
+            return [_blueprint("pack-a", {"a-server": "uvx a-mcp serve"})]
+
+        monkeypatch.setattr(
+            "clio_agent.gact.agent_blueprints.discover_agent_blueprints", _fake_discover
+        )
+        monkeypatch.setattr(
+            "clio_agent.agent.discover_declared_tools_bounded",
+            lambda specs, **_kw: type(
+                "R", (), {"tools": {}, "degraded": dict.fromkeys(specs, "unreachable")}
+            )(),
+        )
+        from clio_agent.tools.execution import tool_workspace_context
+
+        root = str(tmp_path)
+        with tool_workspace_context(root), tool_blueprint_context("pack-a"):
+            first = agent._active_tool_executor()
+        with tool_workspace_context(root), tool_blueprint_context(""):
+            second = agent._active_tool_executor()
+
+        assert second is first
+        assert getattr(first, "closed", False) is False
+
+    def test_namespace_collision_keeps_first_mounted_spec(
+        self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Two blueprints declaring the SAME namespace with different commands:
+        the first mounted spec wins; the conflict is a typed report entry,
+        never a silent override of a live namespace."""
+
+        def _fake_discover():
+            return [
+                _blueprint("pack-a", {"shared": "uvx a-mcp serve"}),
+                _blueprint("pack-b", {"shared": "uvx b-mcp serve", "b-only": "uvx b2 serve"}),
+            ]
+
+        monkeypatch.setattr(
+            "clio_agent.gact.agent_blueprints.discover_agent_blueprints", _fake_discover
+        )
+        monkeypatch.setattr(
+            "clio_agent.agent.discover_declared_tools_bounded",
+            lambda specs, **_kw: type(
+                "R", (), {"tools": {}, "degraded": dict.fromkeys(specs, "unreachable")}
+            )(),
+        )
+        from clio_agent.tools.execution import tool_workspace_context
+
+        root = str(tmp_path)
+        with tool_workspace_context(root), tool_blueprint_context("pack-a"):
+            first = agent._active_tool_executor()
+        spec_before = getattr(first, "_clio_namespace_specs", {}).get("shared")
+        with tool_workspace_context(root), tool_blueprint_context("pack-b"):
+            second = agent._active_tool_executor()
+
+        assert second is first
+        specs = getattr(first, "_clio_namespace_specs", {})
+        assert specs.get("shared") is spec_before, "collision must keep the FIRST mounted spec"
+        assert "b-only" in specs, "non-colliding namespaces still merge"
 
     def test_federation_epoch_bump_evicts_resident_executor(
         self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
