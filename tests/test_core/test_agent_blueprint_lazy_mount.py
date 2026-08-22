@@ -18,7 +18,11 @@ import pytest
 
 from clio_agent.agent import ClioAgent
 from clio_agent.gact.agent_blueprints import AgentBlueprintDefinition
-from clio_agent.tools.execution import get_active_tool_blueprint_id, tool_blueprint_context
+from clio_agent.tools.execution import (
+    get_active_tool_blueprint_id,
+    get_active_tool_blueprint_path,
+    tool_blueprint_context,
+)
 from clio_agent.tools.gateway import namespace_specs
 
 
@@ -97,6 +101,51 @@ class TestDiscoverPackServers:
         monkeypatch.setattr("clio_agent.gact.agent_blueprints.discover_agent_blueprints", _boom)
         assert agent._discover_pack_servers("pack-a") == {}
 
+    def test_path_activated_blueprint_exposes_its_declared_server(
+        self, agent: ClioAgent, tmp_path: Path
+    ) -> None:
+        blueprint = tmp_path / "AGENT.md"
+        blueprint.write_text(
+            """---
+id: spotter-ai
+title: Spotter
+version: 1.0.0
+root_expert: watcher
+blueprint:
+  format: agent-blueprint-v1
+mcp_servers:
+  spotter:
+    command: uv
+    args: [run, spotter-mcp]
+experts:
+  - watcher.md
+---
+""",
+            encoding="utf-8",
+        )
+        (tmp_path / "watcher.md").write_text(
+            """---
+id: watcher
+title: Watcher
+tier: 1
+module:
+  kind: react
+signature:
+  inputs:
+    question: {type: string}
+  outputs:
+    answer: {type: string}
+tools: [spotter_capabilities]
+---
+""",
+            encoding="utf-8",
+        )
+
+        with tool_blueprint_context("spotter-ai", blueprint):
+            servers = agent._discover_pack_servers("spotter-ai")
+
+        assert set(servers["spotter-ai"]) == {"spotter"}
+
 
 class TestBootGatewayNeverMountsPackServers:
     def test_boot_gateway_excludes_an_installed_but_inactive_blueprints_server(
@@ -124,9 +173,11 @@ class TestToolBlueprintContext:
         assert get_active_tool_blueprint_id() == ""
 
     def test_bind_and_reset(self) -> None:
-        with tool_blueprint_context("my-blueprint"):
+        with tool_blueprint_context("my-blueprint", "/packs/my-blueprint/AGENT.md"):
             assert get_active_tool_blueprint_id() == "my-blueprint"
+            assert get_active_tool_blueprint_path() == "/packs/my-blueprint/AGENT.md"
         assert get_active_tool_blueprint_id() == ""
+        assert get_active_tool_blueprint_path() == ""
 
     def test_none_binds_empty(self) -> None:
         with tool_blueprint_context(None):

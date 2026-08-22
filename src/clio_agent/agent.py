@@ -27,6 +27,7 @@ import threading
 import time
 from collections.abc import Mapping
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List
 
 import dspy
@@ -59,6 +60,7 @@ from clio_agent.tools.catalog import (
 from clio_agent.tools.execution import (
     create_sync_tool_executor,
     get_active_tool_blueprint_id,
+    get_active_tool_blueprint_path,
     get_active_tool_workspace_root,
 )
 from clio_agent.tools.gateway import (
@@ -317,8 +319,23 @@ class ClioAgent(dspy.Module):
             return {}
         from clio_agent.gact.agent_blueprints import (  # noqa: PLC0415
             discover_agent_blueprints,
+            parse_agent_blueprint_root,
         )
 
+        blueprint_path = get_active_tool_blueprint_path().strip()
+        if blueprint_path:
+            try:
+                blueprint = parse_agent_blueprint_root(Path(blueprint_path), scope="session")
+            except Exception as exc:  # noqa: BLE001 - explicit path degrades to no servers
+                if self.verbose:
+                    print(f"[ClioAgent] active blueprint path parse failed: {exc}")
+                return {}
+            if blueprint.id != blueprint_id or not blueprint.enabled:
+                return {}
+            servers = blueprint.metadata.get("mcp_servers")
+            if isinstance(servers, Mapping) and servers:
+                return {blueprint.id: {str(key): value for key, value in servers.items()}}
+            return {}
         try:
             blueprints = discover_agent_blueprints()
         except Exception as exc:  # noqa: BLE001 - discovery is best-effort
