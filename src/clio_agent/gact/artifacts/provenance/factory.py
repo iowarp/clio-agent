@@ -110,6 +110,18 @@ def build_artifact_provenance_backend(
                     cast=conf.as_str,
                 ).strip()
                 or "clio-agent",
+                server_url=conf.resolve(
+                    "provenance.artifacts.cmf.server_url",
+                    env="CLIO_CMF_SERVER_URL",
+                    default="",
+                    cast=conf.as_str,
+                ).strip(),
+                publish_timeout_s=conf.resolve(
+                    "provenance.artifacts.cmf.publish_timeout_s",
+                    env="CLIO_CMF_PUBLISH_TIMEOUT_S",
+                    default=30.0,
+                    cast=conf.as_float,
+                ),
             )
         )
     include_events = frozenset(

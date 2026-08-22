@@ -40,6 +40,7 @@ def _config(tmp_path: Path, *, artifact_store: str = "local") -> CMFProviderConf
         metadata_path=tmp_path / "cmf" / "mlmd.sqlite",
         artifact_root=tmp_path / "cmf" / "artifacts",
         artifact_store=artifact_store,
+        server_url="http://cmf.example.test",
     )
 
 
@@ -178,6 +179,8 @@ class _FakeBridge:
 
     def request(self, operation: str, **payload: Any) -> dict[str, Any]:
         self.requests.append((operation, payload))
+        if operation == "publish":
+            return {"ok": True, "status": "success", "status_code": 200}
         if operation == "lineage":
             artifact_id = str(payload["artifact_id"])
             return {
@@ -216,8 +219,53 @@ def test_cmf_provider_submits_explicit_events_and_normalizes_queries(tmp_path: P
 
     assert bridge.requests[0][0] == "record"
     assert bridge.requests[0][1]["event"]["event_id"] == "sem_1"
-    assert bridge.requests[1][0] == "lineage"
+    assert bridge.requests[1] == (
+        "publish",
+        {"server_url": "http://cmf.example.test", "timeout_s": 30.0},
+    )
+    assert bridge.requests[2][0] == "lineage"
+    assert bridge.requests[3][0] == "publish"
     assert graph is not None and graph["provider"] == "cmf"
+    assert bridge.closed
+
+
+class _RetryingPublishBridge(_FakeBridge):
+    def __init__(self) -> None:
+        super().__init__()
+        self.publish_attempts = 0
+
+    def request(self, operation: str, **payload: Any) -> dict[str, Any]:
+        if operation == "publish":
+            self.requests.append((operation, payload))
+            self.publish_attempts += 1
+            if self.publish_attempts == 1:
+                raise RuntimeError("CMF server unavailable")
+            return {"ok": True, "status": "success", "status_code": 200}
+        return super().request(operation, **payload)
+
+
+def test_cmf_publication_retries_from_durable_local_mlmd(tmp_path: Path) -> None:
+    bridge = _RetryingPublishBridge()
+    provider = CMFArtifactProvenanceProvider(_config(tmp_path), bridge=bridge)  # type: ignore[arg-type]
+    event = SemanticEvent(
+        event_type="artifact.created",
+        session_id="sess_1",
+        workspace_id="ws_1",
+        trace_id="trace_1",
+        span_id="sem_1",
+        payload={"artifact_id": "artifact_1", "name": "result.csv", "version": 1},
+    )
+
+    with pytest.raises(RuntimeError, match="CMF server unavailable"):
+        provider.emit(event)
+
+    provider.close()
+
+    assert [operation for operation, _payload in bridge.requests] == [
+        "record",
+        "publish",
+        "publish",
+    ]
     assert bridge.closed
 
 

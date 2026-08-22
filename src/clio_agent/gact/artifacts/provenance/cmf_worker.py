@@ -49,7 +49,9 @@ class CMFEventStore:
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
         self.store = api["sqlite"]({"filename": str(metadata_path)}).connect()
         self.pipeline_name = pipeline_name
+        self.metadata_path = metadata_path
         self.artifact_root = artifact_root
+        self.last_publication: dict[str, Any] | None = None
         self.parent = api["parent"](
             self.store,
             pipeline_name,
@@ -64,6 +66,47 @@ class CMFEventStore:
             {"clio_substream": "artifact-provenance"},
         )
         api["associate"](self.store, self.parent, self.stage)
+
+    def publish(self, server_url: str, *, timeout_s: float) -> dict[str, Any]:
+        """Serialize cumulative MLMD and publish it through CMF's server protocol."""
+        import requests
+        from cmflib.cmfquery import CmfQuery
+
+        base_url = server_url.strip().rstrip("/")
+        if not base_url:
+            raise ValueError("publish requires a CMF server URL")
+        if timeout_s <= 0:
+            raise ValueError("publish timeout must be greater than zero")
+        json_payload = CmfQuery(str(self.metadata_path)).dumptojson(self.pipeline_name, None)
+        if not json_payload:
+            raise RuntimeError(f"CMF produced no metadata payload for {self.pipeline_name!r}")
+        response = requests.post(
+            f"{base_url}/api/mlmd_push",
+            json={
+                "exec_uuid": None,
+                "json_payload": json_payload,
+                "pipeline_name": self.pipeline_name,
+            },
+            timeout=timeout_s,
+        )
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                f"CMF metadata push returned invalid JSON (status={response.status_code})"
+            ) from exc
+        status = str(body.get("status") or "") if isinstance(body, dict) else ""
+        if response.status_code != 200 or status not in {"success", "exists"}:
+            raise RuntimeError(
+                "CMF metadata push failed "
+                f"(status={response.status_code}, result={status or 'unknown'})"
+            )
+        self.last_publication = {
+            "status": status,
+            "status_code": response.status_code,
+            "pipeline_name": self.pipeline_name,
+        }
+        return dict(self.last_publication)
 
     def record(self, event: dict[str, Any]) -> dict[str, Any]:
         event_type = str(event.get("event_type") or "")
@@ -543,6 +586,7 @@ def main() -> int:
                         "ml_metadata_version": importlib.metadata.version("ml-metadata"),
                         "metadata_path": str(args.metadata),
                         "artifact_root": str(args.artifact_root),
+                        "last_publication": database.last_publication,
                     }
                 )
                 continue
@@ -551,6 +595,13 @@ def main() -> int:
                 if not isinstance(event, dict):
                     raise ValueError("record requires an event object")
                 _write({"ok": True, **database.record(event)})
+                continue
+            if operation == "publish":
+                result = database.publish(
+                    str(request.get("server_url") or ""),
+                    timeout_s=float(request.get("timeout_s") or 30.0),
+                )
+                _write({"ok": True, **result})
                 continue
             if operation == "lineage":
                 graph = database.lineage(

@@ -398,8 +398,14 @@ provenance.artifacts.cmf.artifact_store: "reference"
 # CLIO_CMF_PIPELINE_NAME  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
 provenance.artifacts.cmf.pipeline_name: "clio-agent"
 
+# CLIO_CMF_PUBLISH_TIMEOUT_S  (float)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+provenance.artifacts.cmf.publish_timeout_s: 30.0
+
 # CLIO_CMF_PYTHON  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
 # provenance.artifacts.cmf.python:  # default unset; resolved in code
+
+# CLIO_CMF_SERVER_URL  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+# provenance.artifacts.cmf.server_url:  # default unset; resolved in code
 
 # CLIO_ARTIFACT_PROVENANCE_EVENTS  (list)  <- src/clio_agent/gact/artifacts/provenance/factory.py
 # provenance.artifacts.include_events:  # computed at runtime: sorted(DEFAULT_ARTIFACT_EVENTS)

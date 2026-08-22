@@ -44,6 +44,8 @@ class CMFProviderConfig:
     artifact_root: Path
     artifact_store: str = "reference"
     pipeline_name: str = "clio-agent"
+    server_url: str = ""
+    publish_timeout_s: float = 30.0
 
     def __post_init__(self) -> None:
         if self.artifact_store not in {"reference", "local"}:
@@ -52,6 +54,8 @@ class CMFProviderConfig:
             )
         if not self.pipeline_name.strip():
             raise ValueError("provenance.artifacts.cmf.pipeline_name must not be empty")
+        if self.publish_timeout_s <= 0:
+            raise ValueError("provenance.artifacts.cmf.publish_timeout_s must be greater than zero")
 
 
 class CMFBridgeError(RuntimeError):
@@ -323,8 +327,18 @@ class CMFArtifactProvenanceProvider:
 
     def emit(self, event: "SemanticEvent") -> ProviderReceipt:
         """Submit one explicit artifact event to the isolated CMF runtime."""
-        self._bridge.request("record", event=event.to_dict("full"))
+        response = self._bridge.request("record", event=event.to_dict("full"))
+        if self.config.server_url and not response.get("filtered"):
+            self._publish()
         return ProviderReceipt.ACCEPTED
+
+    def _publish(self) -> dict[str, Any]:
+        """Publish cumulative local MLMD through CMF's server ingestion protocol."""
+        return self._bridge.request(
+            "publish",
+            server_url=self.config.server_url,
+            timeout_s=self.config.publish_timeout_s,
+        )
 
     def lineage(
         self,
@@ -350,8 +364,12 @@ class CMFArtifactProvenanceProvider:
         return self._bridge.request("health")
 
     def close(self) -> None:
-        """Close the isolated CMF runtime."""
-        self._bridge.close()
+        """Attempt one final cumulative publication, then close the CMF runtime."""
+        try:
+            if self.config.server_url:
+                self._publish()
+        finally:
+            self._bridge.close()
 
 
 __all__ = [
