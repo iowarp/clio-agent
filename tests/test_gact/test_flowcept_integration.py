@@ -82,11 +82,12 @@ assert "PRIVATE RESPONSE" not in serialized
 assert "lm.response.completed" in serialized
 provider.emit(
     SemanticEvent(
-        event_type="session.deleted",
+        event_type="turn.completed",
         session_id="sess_offline",
         workspace_id="ws_science",
-        trace_id="session:sess_offline",
-        payload={"started_at": created.occurred_at},
+        trace_id="trace_1",
+        turn_id="turn_1",
+        status="completed",
     )
 )
 terminal_buffer = provider._runtime.get_buffer()
@@ -95,6 +96,22 @@ assert any(
     and getattr(row.get("status"), "value", row.get("status")) == "FINISHED"
     for row in terminal_buffer
 ), terminal_buffer
+provider.emit(
+    SemanticEvent(
+        event_type="turn.started",
+        session_id="sess_offline",
+        workspace_id="ws_science",
+        trace_id="trace_2",
+        turn_id="turn_2",
+        status="started",
+    )
+)
+reopened_buffer = provider._runtime.get_buffer()
+assert any(
+    row.get("type") == "workflow"
+    and getattr(row.get("status"), "value", row.get("status")) == "RUNNING"
+    for row in reopened_buffer
+), reopened_buffer
 provider.close()
 """.replace("SETTINGS", repr(str(settings)))
     env = os.environ.copy()

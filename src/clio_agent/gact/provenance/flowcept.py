@@ -209,6 +209,7 @@ class FlowceptProvenanceProvider:
         self._runtime.start()
         self._sessions: dict[str, dict[str, str]] = {}
         self._published_workflows: set[str] = set()
+        self._workflow_status: dict[str, str] = {}
         self._published_agents: set[str] = set()
         self._closed = False
 
@@ -225,6 +226,7 @@ class FlowceptProvenanceProvider:
         payload = event.payload if isinstance(event.payload, dict) else {}
         row = self._sessions.setdefault(event.session_id, {})
         row.setdefault("workspace_id", event.workspace_id)
+        row.setdefault("started_at", event.occurred_at)
         if event.event_type == "session.created":
             row["parent_session_id"] = str(payload.get("parent_session_id") or "")
             raw_agent = payload.get("agent")
@@ -290,6 +292,7 @@ class FlowceptProvenanceProvider:
         }
         self._runtime._first_interceptor.send_workflow_message(workflow)
         self._published_workflows.add(workflow_id)
+        self._workflow_status[workflow_id] = "RUNNING"
         return workflow_id, campaign_id
 
     def _publish_agent(
@@ -345,9 +348,16 @@ class FlowceptProvenanceProvider:
             return ProviderReceipt.FILTERED
         self._remember_session(event)
         workflow_id, campaign_id = self._publish_workflow(event)
+        if (
+            self.config.workflow_scope == "session"
+            and event.event_type == "turn.started"
+            and self._workflow_status.get(workflow_id) != "RUNNING"
+        ):
+            self._update_workflow(event, workflow_id, campaign_id, terminal=False)
         agent_id, source_agent_id = self._publish_agent(event, workflow_id, campaign_id)
         if event.event_type == "session.deleted":
-            self._finish_workflow(event, workflow_id, campaign_id)
+            if self.config.workflow_scope == "session":
+                self._update_workflow(event, workflow_id, campaign_id, terminal=True)
             return ProviderReceipt.ACCEPTED
 
         status = (
@@ -380,26 +390,54 @@ class FlowceptProvenanceProvider:
             capture_telemetry=False,
         )
         del task
+        if self.config.workflow_scope == "session" and event.event_type in {
+            "turn.completed",
+            "turn.failed",
+        }:
+            self._update_workflow(event, workflow_id, campaign_id, terminal=True)
         return ProviderReceipt.ACCEPTED
 
-    def _finish_workflow(self, event: SemanticEvent, workflow_id: str, campaign_id: str) -> None:
+    def _update_workflow(
+        self,
+        event: SemanticEvent,
+        workflow_id: str,
+        campaign_id: str,
+        *,
+        terminal: bool,
+    ) -> None:
+        """Publish session workflow state as turns start and settle."""
         workflow = self._workflow_module.WorkflowObject(
             workflow_id=workflow_id,
             name=f"CLIO session {event.session_id}",
         )
         workflow.campaign_id = campaign_id
-        workflow.started_at = _epoch(event.payload.get("started_at", ""))
-        workflow.ended_at = _epoch(event.occurred_at)
-        workflow.status = self._vocabulary.Status.FINISHED
+        started_at = self._sessions.get(event.session_id, {}).get("started_at", "")
+        workflow.started_at = _epoch(started_at)
+        failed = event.event_type == "turn.failed" or event.status.lower() in {
+            "failed",
+            "error",
+            "cancelled",
+        }
+        if terminal:
+            workflow.ended_at = _epoch(event.occurred_at)
+            workflow.status = (
+                self._vocabulary.Status.ERROR if failed else self._vocabulary.Status.FINISHED
+            )
+            state = "ERROR" if failed else "FINISHED"
+        else:
+            workflow.status = self._vocabulary.Status.RUNNING
+            state = "RUNNING"
         workflow.subtype = "agentic_workflow"
         workflow.custom_metadata = {
             "clio": {
                 "session_id": event.session_id,
                 "workspace_id": event.workspace_id,
-                "terminal_event_id": event.span_id,
+                "state_event_id": event.span_id,
+                "state_event_type": event.event_type,
             }
         }
         self._runtime._first_interceptor.intercept(workflow.to_dict())
+        self._workflow_status[workflow_id] = state
 
     def services_status(self) -> dict[str, str]:
         """Delegate liveness checks to Flowcept."""
