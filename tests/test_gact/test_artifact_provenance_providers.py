@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -13,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.artifacts.export import _version_bytes
 from clio_agent.gact.artifacts.proposals import Proposal, promote_proposal
+from clio_agent.gact.artifacts.provenance import cmf_worker
 from clio_agent.gact.artifacts.provenance.cmf import (
     CMFArtifactProvenanceProvider,
     CMFArtifactStore,
@@ -65,6 +67,52 @@ def test_cmf_python_keeps_virtualenv_launcher_path(
     monkeypatch.setattr(Path, "resolve", _unexpected_resolve)
 
     assert _resolve_python(str(launcher)) == str(launcher.absolute())
+
+
+def test_cmf_worker_posts_server_payload_without_optional_http_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The isolated worker uses a complete CMF JSON request over the stdlib wire."""
+    captured: dict[str, Any] = {}
+
+    class _Response:
+        status = 200
+
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *_args: Any) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"status":"success"}'
+
+    def _urlopen(request: Any, *, timeout: float) -> _Response:
+        captured["url"] = request.full_url
+        captured["headers"] = dict(request.headers)
+        captured["body"] = json.loads(request.data)
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(cmf_worker, "urlopen", _urlopen)
+
+    status, body = cmf_worker._post_json(
+        "http://cmf.example.test/api/mlmd_push",
+        {"exec_uuid": None, "json_payload": "{}", "pipeline_name": "pipeline-1"},
+        timeout=12.5,
+    )
+
+    assert (status, body) == (200, {"status": "success"})
+    assert captured == {
+        "url": "http://cmf.example.test/api/mlmd_push",
+        "headers": {"Content-type": "application/json"},
+        "body": {
+            "exec_uuid": None,
+            "json_payload": "{}",
+            "pipeline_name": "pipeline-1",
+        },
+        "timeout": 12.5,
+    }
 
 
 def _version(identity: Any) -> ArtifactVersion:

@@ -14,6 +14,8 @@ import traceback
 from collections import deque
 from pathlib import Path
 from typing import Any, Optional
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 
 def _imports() -> dict[str, Any]:
@@ -69,7 +71,6 @@ class CMFEventStore:
 
     def publish(self, server_url: str, *, timeout_s: float) -> dict[str, Any]:
         """Serialize cumulative MLMD and publish it through CMF's server protocol."""
-        import requests
         from cmflib.cmfquery import CmfQuery
 
         base_url = server_url.strip().rstrip("/")
@@ -80,30 +81,23 @@ class CMFEventStore:
         json_payload = CmfQuery(str(self.metadata_path)).dumptojson(self.pipeline_name, None)
         if not json_payload:
             raise RuntimeError(f"CMF produced no metadata payload for {self.pipeline_name!r}")
-        response = requests.post(
+        status_code, body = _post_json(
             f"{base_url}/api/mlmd_push",
-            json={
+            {
                 "exec_uuid": None,
                 "json_payload": json_payload,
                 "pipeline_name": self.pipeline_name,
             },
             timeout=timeout_s,
         )
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise RuntimeError(
-                f"CMF metadata push returned invalid JSON (status={response.status_code})"
-            ) from exc
         status = str(body.get("status") or "") if isinstance(body, dict) else ""
-        if response.status_code != 200 or status not in {"success", "exists"}:
+        if status_code != 200 or status not in {"success", "exists"}:
             raise RuntimeError(
-                "CMF metadata push failed "
-                f"(status={response.status_code}, result={status or 'unknown'})"
+                f"CMF metadata push failed (status={status_code}, result={status or 'unknown'})"
             )
         self.last_publication = {
             "status": status,
-            "status_code": response.status_code,
+            "status_code": status_code,
             "pipeline_name": self.pipeline_name,
         }
         return dict(self.last_publication)
@@ -557,6 +551,29 @@ def _bounded_component(
 def _write(response: dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
     sys.stdout.flush()
+
+
+def _post_json(url: str, payload: dict[str, Any], *, timeout: float) -> tuple[int, Any]:
+    """POST JSON without adding a dependency to the isolated CMF environment."""
+    request = Request(
+        url,
+        data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:  # noqa: S310 - configured CMF URL
+            status_code = int(response.status)
+            raw = response.read()
+    except HTTPError as exc:
+        status_code = int(exc.code)
+        raw = exc.read()
+    try:
+        return status_code, json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"CMF metadata push returned invalid JSON (status={status_code})"
+        ) from exc
 
 
 def main() -> int:
