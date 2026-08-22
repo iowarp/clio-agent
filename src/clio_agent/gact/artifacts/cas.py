@@ -306,6 +306,7 @@ class IngestedIdentity:
     reason: str
     not_ingested_size: Optional[int] = None
     blob_path: Optional[Path] = None
+    storage_receipt: Optional[dict[str, object]] = None
 
 
 def sha256_file(path: str | Path) -> str:

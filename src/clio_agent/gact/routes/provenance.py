@@ -115,10 +115,21 @@ def register_provenance_routes(app: FastAPI, deps: "GactDeps") -> None:
             .strip()
             .lower()
         )
+        artifact_backend = getattr(app.state, "artifact_provenance_backend", None)
+        artifact_health = getattr(artifact_backend, "health", None)
+        artifact_row = artifact_health() if callable(artifact_health) else {}
+        artifact_provider = str(getattr(artifact_backend, "provider_name", "native") or "native")
         return {
             "schema_version": "clio.provenance_providers.v1",
             "default_provider": default_provider,
             "providers": providers,
+            "artifact": {
+                "provider": artifact_provider,
+                "queryable": bool(artifact_row.get("queryable", True)),
+                "durable": bool(artifact_row.get("durable", True)),
+                "status": str(artifact_row.get("status") or "ready"),
+                "health": artifact_row,
+            },
         }
 
     @app.get("/v1/sessions/{sid}/provenance/execution")

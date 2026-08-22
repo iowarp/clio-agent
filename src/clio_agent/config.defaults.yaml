@@ -386,6 +386,33 @@ provenance.agentic.query_default: "native"
 # CLIO_PROVENANCE_QUEUE_SIZE  (int)  <- src/clio_agent/gact/provenance/factory.py
 provenance.agentic.queue_size: 4096
 
+# CLIO_CMF_ARTIFACT_ROOT  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+# provenance.artifacts.cmf.artifact_root:  # default unset; resolved in code
+
+# CLIO_CMF_ARTIFACT_STORE  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+provenance.artifacts.cmf.artifact_store: "reference"
+
+# CLIO_CMF_METADATA_PATH  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+# provenance.artifacts.cmf.metadata_path:  # default unset; resolved in code
+
+# CLIO_CMF_PIPELINE_NAME  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+provenance.artifacts.cmf.pipeline_name: "clio-agent"
+
+# CLIO_CMF_PYTHON  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+# provenance.artifacts.cmf.python:  # default unset; resolved in code
+
+# CLIO_ARTIFACT_PROVENANCE_EVENTS  (list)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+# provenance.artifacts.include_events:  # computed at runtime: sorted(DEFAULT_ARTIFACT_EVENTS)
+
+# CLIO_NATIVE_ARTIFACT_STORE  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+provenance.artifacts.native.storage: "file"
+
+# CLIO_ARTIFACT_PROVENANCE_PROVIDER  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+provenance.artifacts.provider: "native"
+
+# CLIO_ARTIFACT_PROVENANCE_QUEUE_SIZE  (int)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+provenance.artifacts.queue_size: 4096
+
 # CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
 providers.claude_code.max_concurrent_processes: 1.0
 

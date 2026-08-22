@@ -513,11 +513,14 @@ def mint_tool_declared_outputs(
     routed to the honest drift reconcile (finding [8]). Content CHANGED outside the
     call still mints — designation is designation.
     """
-    from clio_agent.gact.artifacts.cas import ingest_identity  # noqa: PLC0415
     from clio_agent.gact.artifacts.designation import (  # noqa: PLC0415
         grounded_output_paths,
         kind_for_path,
         result_declared_paths,
+    )
+    from clio_agent.gact.artifacts.storage import (  # noqa: PLC0415
+        ingest_artifact_identity,
+        producer_with_storage_receipt,
     )
 
     root = _workspace_root(app, workspace_id)
@@ -564,9 +567,9 @@ def mint_tool_declared_outputs(
             )
             continue
         try:
-            # S6 (#972): stream the identity hash ONCE and tee small bytes into CAS
-            # (custody ``cas``); over threshold → referenced + typed not_ingested_size.
-            ingested = ingest_identity(path, workspace_root=root)
+            # Route identity and custody through the selected artifact store. The
+            # native store retains the S6 single-pass CAS/threshold semantics.
+            ingested = ingest_artifact_identity(app, path, workspace_root=root)
         except OSError:
             logger.warning(
                 "artifact mint skipped reason=stat_hash_failed tool=%s %s=%s path=%s",
@@ -608,6 +611,7 @@ def mint_tool_declared_outputs(
             "designation": f"tool-{channel}",
             ("result_key" if channel == "result" else "arg"): label,
         }
+        producer = producer_with_storage_receipt(producer, ingested)
         version = mint_artifact(
             app,
             sid,
@@ -650,10 +654,13 @@ def mint_pack_declared_paths(
     load-bearing: a path already minted by seam (a) with identical content
     deduplicates at the mint (no new version). Best-effort.
     """
-    from clio_agent.gact.artifacts.cas import ingest_identity  # noqa: PLC0415
     from clio_agent.gact.artifacts.designation import (  # noqa: PLC0415
         kind_for_path,
         pack_declared_paths,
+    )
+    from clio_agent.gact.artifacts.storage import (  # noqa: PLC0415
+        ingest_artifact_identity,
+        producer_with_storage_receipt,
     )
 
     root = _workspace_root(app, workspace_id)
@@ -673,7 +680,7 @@ def mint_pack_declared_paths(
         try:
             if not path.is_file():
                 continue
-            ingested = ingest_identity(path, workspace_root=root)
+            ingested = ingest_artifact_identity(app, path, workspace_root=root)
         except OSError:
             logger.warning(
                 "artifact mint skipped reason=pack_declared_stat_failed path=%s", raw_path
@@ -707,11 +714,14 @@ def mint_pack_declared_paths(
             evidence=evidence,
             kind=kind_for_path(path),
             mechanism=Mechanism.HARNESS,
-            producer={
-                "designation": "pack-declared",
-                "session_id": sid,
-                "turn_id": turn_id,
-            },
+            producer=producer_with_storage_receipt(
+                {
+                    "designation": "pack-declared",
+                    "session_id": sid,
+                    "turn_id": turn_id,
+                },
+                ingested,
+            ),
             custody=ingested.custody,
             path=str(path),
             turn_id=turn_id,
@@ -780,21 +790,25 @@ def mint_harness_write(
 ) -> None:
     """Seam (b) entry point: mint an ``artifact.created`` for a user-approved write.
 
-    Finding [3]: the just-written bytes are ingested into CAS for durable custody
-    (delegated to :func:`cas.harness_write_identity`, which falls back to the writer's
-    in-hand ``sha256`` on a stat/hash failure). The ACTIVE turn id is threaded from the
+    Finding [3]: the just-written bytes are handed to the selected artifact store
+    (falling back to the writer's in-hand ``sha256`` on a stat/hash failure). The
+    ACTIVE turn id is threaded from the
     turn-identity contextvar so a write DURING a turn buffers its version and drains to
     a ``resource_link`` part at finalize — parity with seams (a)/(c). Fully guarded: an
     artifact mint must never break the approved write.
     """
     try:
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
-        from clio_agent.gact.artifacts.cas import harness_write_identity  # noqa: PLC0415
         from clio_agent.gact.artifacts.designation import kind_for_path  # noqa: PLC0415
+        from clio_agent.gact.artifacts.storage import (  # noqa: PLC0415
+            harness_write_artifact_identity,
+            producer_with_storage_receipt,
+        )
 
         workspace_id = str(getattr(session, "workspace_id", "") or "")
         try:
-            ingested = harness_write_identity(
+            ingested = harness_write_artifact_identity(
+                app,
                 target,
                 workspace_root=_workspace_root(app, workspace_id),
                 in_hand_sha=str(write_result.get("sha256") or ""),
@@ -813,11 +827,14 @@ def mint_harness_write(
             evidence=ingested.evidence,
             kind=kind_for_path(target),
             mechanism=Mechanism.HARNESS,
-            producer={
-                "session_id": str(getattr(session, "id", "") or ""),
-                "tool": "fs_apply_edit_write",
-                "turn_id": _ctx.active_turn_id(),
-            },
+            producer=producer_with_storage_receipt(
+                {
+                    "session_id": str(getattr(session, "id", "") or ""),
+                    "tool": "fs_apply_edit_write",
+                    "turn_id": _ctx.active_turn_id(),
+                },
+                ingested,
+            ),
             custody=ingested.custody,
             path=target,
             turn_id=_ctx.active_turn_id(),

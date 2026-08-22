@@ -14,12 +14,10 @@ thread (:func:`_registry`) — a route handler runs on the event loop, where a
 first access would raise :class:`RegistryFoldOnLoopError`. Byte-serving,
 re-hashing and the pin mint are likewise offloaded (blocking file I/O).
 
-Custody note (S2): every artifact minted this campaign is
-``workspace-referenced`` — CAS ingestion is S6. The ``/bytes`` route therefore
-re-hashes the referenced workspace file and, on a valid hash, points the client
-at the path-based workspace file route (``custody_not_cas``); a hash mismatch is
-a typed ``integrity_violation``. Detection is the universal guarantee (design §7)
-— it covers workspace-referenced bytes too, not only CAS.
+Artifact custody is provider-scoped. The ``/bytes`` route first asks the selected
+store for provider-owned bytes, then applies the existing workspace-reference
+fallback. Every served hashed object is verified; a hash mismatch is a typed
+``integrity_violation``.
 """
 
 from __future__ import annotations
@@ -541,14 +539,11 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def get_artifact_bytes(artifact_id: str) -> Response:
         """Serve a version's bytes hash-verified, or a typed 409.
 
-        Order (detection is the universal guarantee, design §7): resolve the version
-        → re-hash the referenced bytes → a recorded-hash MISMATCH is a 409
-        ``integrity_violation`` (the file changed since mint), for ANY custody →
-        then the custody gate: a non-CAS version is a 409 ``custody_not_cas`` that
-        points the client at the path-based workspace file route (the bytes live in
-        the workspace, not the app store; S6 adds CAS ingestion). Only a CAS version
-        with a valid hash is served here. A stat-pinned version (no recorded sha)
-        skips the integrity check — identity was never hashed.
+        Order (detection is the universal guarantee, design §7): resolve the version,
+        ask the selected provider store for owned bytes, and verify the recorded hash.
+        A reference-only version falls back to the contained workspace path and the
+        existing typed custody/integrity results. A stat-pinned version has no content
+        hash to verify.
         """
         registry = await _registry(app)
         found = registry.get_by_artifact_id(artifact_id)
@@ -672,11 +667,13 @@ def _serve_bytes(app: FastAPI, record: ArtifactRecord, version: ArtifactVersion)
 
     The single ladder — no second byte-serving path (review guard):
 
-    1. **CAS blob** (content-addressed, app-owned) — for a ``cas`` version the bytes
+    1. **Selected provider-owned object** — native resolves its SHA-256 CAS and CMF
+       resolves its receipt-addressed local object. The object is verified before serve.
+    2. **Native CAS compatibility rung** — for a ``cas`` version the bytes
        live in ``<root>/.clio/agent/artifacts/cas/<sha[:2]>/<sha>``, so they survive
        a deleted/overwritten workspace file. Self-validating: the blob is re-hashed
        on read and a mismatch is a 409 ``integrity_violation``.
-    2. **Referenced workspace path** — the fallback when a ``cas`` blob was evicted
+    3. **Referenced workspace path** — the fallback when a ``cas`` blob was evicted
        (the workspace copy, still verified, is served) AND the source for a
        ``workspace-referenced`` version (which 409s ``custody_not_cas`` after the
        integrity re-hash, pointing the client at the workspace file route).
@@ -684,10 +681,30 @@ def _serve_bytes(app: FastAPI, record: ArtifactRecord, version: ArtifactVersion)
     Detection (the re-hash) is the universal guarantee (design §7). Runs on a worker
     thread; :func:`_artifact_error` HTTPExceptions propagate to FastAPI unchanged.
     """
+    from clio_agent.gact.artifacts.storage import (  # noqa: PLC0415
+        resolve_owned_artifact_path,
+    )
+
+    root = _workspace_root(app, record.workspace_id)
+    owned = resolve_owned_artifact_path(app, version, workspace_root=root)
+    if owned is not None:
+        return _open_verify_stream(owned, version.sha256, version, record.name)
+    receipt = (version.producer or {}).get("storage_receipt")
+    if isinstance(receipt, dict) and receipt.get("provider") == "cmf":
+        raise _artifact_error(
+            status_code=409,
+            error="artifact_store_unavailable",
+            message="CMF has custody but its recorded artifact object is unavailable",
+            details={
+                "artifact_id": version.artifact_id,
+                "provider": "cmf",
+                "object_uri": str(receipt.get("object_uri") or ""),
+            },
+        )
+
     # Defence in depth: never read outside the workspace root (owner decision 10).
     # An UNRESOLVABLE root REFUSES the serve (typed ``containment_unresolved``) —
     # containment cannot be verified, so precision over recall (finding [5]).
-    root = _workspace_root(app, record.workspace_id)
     if root is None:
         raise _artifact_error(
             status_code=409,
@@ -843,8 +860,11 @@ def _pin_mint(
     caller re-raises (raising HTTP here would surface as a bare 500 through
     ``to_thread``).
     """
-    from clio_agent.gact.artifacts.cas import ingest_identity  # noqa: PLC0415
     from clio_agent.gact.artifacts.designation import kind_for_path  # noqa: PLC0415
+    from clio_agent.gact.artifacts.storage import (  # noqa: PLC0415
+        ingest_artifact_identity,
+        producer_with_storage_receipt,
+    )
     from clio_agent.tools.file_policy import _is_relative_to  # noqa: PLC0415
 
     root = _workspace_root(app, workspace_id)
@@ -874,9 +894,9 @@ def _pin_mint(
             details={"workspace_id": workspace_id, "path": raw_path},
         )
     try:
-        # S6 (#972): a user-pinned small file is ingested into CAS (custody ``cas``)
-        # via the single streamed read; over threshold → referenced + typed size.
-        ingested = ingest_identity(resolved, workspace_root=root)
+        # A user-pinned file uses the selected provider store. Native file storage
+        # retains the S6 single-pass CAS/threshold semantics.
+        ingested = ingest_artifact_identity(app, resolved, workspace_root=root)
     except OSError:
         return _artifact_error(
             status_code=409,
@@ -907,10 +927,13 @@ def _pin_mint(
             evidence=evidence,
             kind=kind,
             mechanism=Mechanism.HARNESS,
-            producer={
-                "designation": "user-pinned",
-                "session_id": sid,
-            },
+            producer=producer_with_storage_receipt(
+                {
+                    "designation": "user-pinned",
+                    "session_id": sid,
+                },
+                ingested,
+            ),
             custody=ingested.custody,
             path=str(resolved),
             annotation=annotation,

@@ -8,6 +8,12 @@ from typing import Any
 EXECUTION_PROVENANCE_SCHEMA = "clio.execution_provenance.v1"
 _TERMINAL_SUFFIXES = (".completed", ".failed", ".error", ".cancelled")
 _START_SUFFIXES = (".started", ".running")
+_SPAN_FAMILIES = {
+    "expert.lifecycle.started": "expert.lifecycle",
+    "expert.extract.completed": "expert.lifecycle",
+    "llm.request.started": "llm.request",
+    "llm.response.completed": "llm.request",
+}
 
 
 def _timestamp(value: Any) -> float | None:
@@ -22,6 +28,9 @@ def _timestamp(value: Any) -> float | None:
 
 
 def _base_event_type(event_type: str) -> str:
+    family = _SPAN_FAMILIES.get(event_type)
+    if family is not None:
+        return family
     for suffix in (*_START_SUFFIXES, *_TERMINAL_SUFFIXES):
         if event_type.endswith(suffix):
             return event_type[: -len(suffix)]
@@ -87,7 +96,11 @@ def normalize_semantic_events(
         key = (event_session, base_type, correlation)
         status = str(event.get("status") or "completed").lower()
         occurred = _timestamp(event.get("occurred_at"))
-        is_start = event_type.endswith(_START_SUFFIXES) or status in {"started", "running"}
+        # A running status does not necessarily open a lifecycle span. Token deltas,
+        # progress samples, and other one-shot observations use it too. Lifecycle
+        # opening is carried by the event type; terminal status remains useful for
+        # one-shot completed/failed records.
+        is_start = event_type.endswith(_START_SUFFIXES)
         is_terminal = event_type.endswith(_TERMINAL_SUFFIXES) or status in {
             "completed",
             "finished",
@@ -114,6 +127,17 @@ def normalize_semantic_events(
                 span["duration_ms"] = max(0.0, (occurred - float(span["start_time"])) * 1000.0)
             span["source_event_ids"].append(str(event.get("event_id") or span_id))
             span["attributes"]["terminal_event_type"] = event_type
+            continue
+
+        if is_start and key in open_spans:
+            # Streamed and synchronous instrumentation can both announce the same
+            # logical LM request. With no distinct correlation id they are duplicate
+            # evidence for one span, not two independently closable lifecycles.
+            span = spans[open_spans[key]]
+            span["source_event_ids"].append(str(event.get("event_id") or span_id))
+            duplicate_types = span["attributes"].setdefault("start_event_types", [])
+            if event_type not in duplicate_types:
+                duplicate_types.append(event_type)
             continue
 
         span = {

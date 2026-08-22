@@ -686,6 +686,7 @@ class SemanticEventSink:
         *,
         bus: EventBus,
         trace_backend: SemanticTraceBackend,
+        artifact_backend: Any = None,
         detail_level: str = DEFAULT_DETAIL_LEVEL,
         capture: bool = True,
         hooks_full: bool = False,
@@ -693,6 +694,7 @@ class SemanticEventSink:
     ) -> None:
         self.bus = bus
         self.trace_backend = trace_backend
+        self.artifact_backend = artifact_backend
         self.detail_level = normalize_detail_level(detail_level)
         # ``capture`` gates the DURABLE canonical write (an SSE ``detail_level``
         # of "off" must NOT blind the canonical store — that is an SSE-only knob).
@@ -711,6 +713,11 @@ class SemanticEventSink:
         # redaction happens per-consumer below.
         if self.capture:
             self.trace_backend.emit(event)
+            # Artifact provenance is an overlapping substream of this same
+            # agentic highway, not a second source. Its selector/provider owns
+            # the event policy and bounded delivery after ARC accepted the event.
+            if self.artifact_backend is not None:
+                self.artifact_backend.emit(event)
         for consumer in self.live_consumers:
             try:
                 consumer(event)  # raw SemanticEvent, pre-projection (ARC folds this)

@@ -196,6 +196,28 @@ def test_normalization_pairs_started_and_completed_events() -> None:
     assert result["complete"] is True
 
 
+def test_normalization_pairs_cross_family_lifecycles_and_ignores_running_samples() -> None:
+    rows = [
+        _event("expert.lifecycle.started", status="running").to_dict(),
+        _event("expert.extract.completed", status="completed").to_dict(),
+        _event("llm.request.started", status="running").to_dict(),
+        _event("llm.request.started", status="running").to_dict(),
+        _event("llm.response.completed", status="completed").to_dict(),
+        _event("lm.token.delta", status="running").to_dict(),
+    ]
+
+    result = normalize_semantic_events(rows, provider="native", session_id="sess_root")
+
+    assert result["complete"] is True
+    assert [span["event_type"] for span in result["spans"]] == [
+        "expert.lifecycle.started",
+        "llm.request.started",
+        "lm.token.delta",
+    ]
+    assert len(result["spans"][1]["source_event_ids"]) == 3
+    assert result["spans"][2]["end_time"] is None
+
+
 def test_execution_endpoint_is_provider_independent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

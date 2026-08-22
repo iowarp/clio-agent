@@ -1,15 +1,14 @@
 # Optional Provenance Providers and Artifact Storage
 
-- **Status:** Agentic-provider and Flowcept slice implemented; CMF/artifact-provider slice remains design
+- **Status:** Implemented first slice with real CMF, Flowcept, NDP, and Spotter verification
 - **Date:** 2026-08-21
 - **Scope:** `clio-agent` provenance semantics, optional downstream provenance providers,
   artifact identity and custody, and the proposed CMF integration boundary
 - **Audience:** CLIO, Flowcept, and HPE CMF collaborators working on the genesis proposal
 
-This document records the conclusions, corrections, rejected alternatives, and open
-questions from the provenance-integration discussion. It deliberately separates what
-`clio-agent` does today from the target design. It is not evidence that the proposed
-provider or storage interfaces have been implemented.
+This document records the conclusions, corrections, rejected alternatives, implementation,
+and open questions from the provenance-integration work. It distinguishes the first
+implemented slice from later storage and distributed-provider extensions.
 
 External source snapshots inspected during the discussion:
 
@@ -17,10 +16,11 @@ External source snapshots inspected during the discussion:
 - ORNL Flowcept: `c000b10ea49659af6c5821b61918f3893bd46a92`
 - IOWarp Core: `a02bc8e7813b09f81b616a96283d02626ecf1c22`
 
-No external repository was modified. The CMF Python 3.12 analysis used
-dependency-resolution dry runs and in-memory source compilation, not a successful CMF
-installation or runtime qualification. The implementation update below supersedes the
-pre-implementation Flowcept statements retained in the rest of this design record.
+The external repositories were inspected but not modified. A real Flowcept full-online
+Redis/MongoDB profile was deployed on the `homelab` SSH host. A real CMF 0.1.0 and
+ML Metadata 1.15.0 runtime was also installed there in an isolated Python 3.9 environment
+and exercised against the CLIO CMF worker. Section 14 records the exact implementation and
+live-verification boundary.
 
 ## Contents
 
@@ -37,89 +37,7 @@ pre-implementation Flowcept statements retained in the rest of this design recor
 11. [Acceptance criteria](#11-acceptance-criteria)
 12. [Questions for the HPE CMF team](#12-questions-for-the-hpe-cmf-team)
 13. [Source evidence index](#13-source-evidence-index)
-
-## Implementation update: agentic provenance and Flowcept
-
-The first implementation slice now exists on `feat/flowcept-provenance`. It deliberately
-implements only the parent agentic-provenance stream; the artifact selector, native
-artifact-provider extraction, and CMF provider remain follow-on work.
-
-Implemented CLIO surfaces:
-
-- `src/clio_agent/gact/provenance/` now contains the provider protocol, bounded
-  asynchronous dispatcher, configuration factory, JSONL provider, Flowcept provider, and
-  provider-neutral execution normalization.
-- `provenance.agentic.providers` is the authoritative configured provider set. Its
-  committed default is `[jsonl]`; Flowcept is absent unless explicitly selected. The old
-  `trace.backend` values remain compatibility inputs only when the new list is not set.
-- The Flowcept dependency is in the optional `flowcept` extra and is imported lazily only
-  when selected. A normal CLIO installation therefore does not require Flowcept, Redis,
-  or MongoDB.
-- ARC remains first in the write order. After ARC accepts an event, the dispatcher offers
-  that same event to each selected agentic provider. Each provider has its own bounded
-  queue and health counters, so a slow or failed optional provider cannot block or erase
-  the other projections.
-- Flowcept filtering and privacy projection live entirely inside `flowcept.py`. The
-  default is metadata-only and excludes thinking/token classes. CLIO creates explicit,
-  deterministic campaign, workflow, agent, and task correlations; it does not wrap CLIO
-  functions with Flowcept decorators and does not give Flowcept custody of artifact bytes.
-- Flowcept 1.0.3 exposes public `FlowceptTask` and `Flowcept.save_agent` paths, but no public
-  controller method that accepts an externally identified `WorkflowObject`. The adapter's
-  two workflow messages therefore use the active controller-owned interceptor's normal MQ
-  ingress (never direct database insertion). Those accesses are deliberately confined to
-  `flowcept.py` as the principal Flowcept-team review/refinement point.
-- `GET /v1/provenance/providers` exposes configured/queryable provider health.
-  `GET /v1/sessions/{sid}/provenance/execution` returns the same
-  `clio.execution_provenance.v1` model for `native` and `flowcept`, including child
-  sessions. Native queries prefer the complete durable JSONL view and fall back to live
-  ARC only when no JSONL reader is configured.
-- Session creation and deletion now enter the ARC-first semantic highway centrally,
-  including forked and watcher child sessions.
-
-The corresponding `gact-tui` slice is on `feat/flowcept-observability`. The web client
-discovers CLIO providers and requests the normalized CLIO model; it never queries Flowcept
-directly. One timeline projection feeds the existing log and Gantt modes, and the same
-snapshot feeds a graph/details mode. Artifact lineage remains on its independent CLIO
-artifact API, so the UI does not know whether a future native or CMF artifact provider
-constructed that graph.
-
-### Live acceptance evidence
-
-The gold Flowcept services run on the `homelab` SSH host as Docker Compose services:
-
-- Redis 7 provides Flowcept's MQ and KV coordination.
-- MongoDB 8 provides durable online query storage.
-- Both bind to homelab loopback and were reached through an SSH tunnel for this isolated
-  development run. No Flowcept web UI or separate persistence container was needed: the
-  selected full-online Flowcept runtime in the CLIO process owned capture, queueing,
-  persistence consumption, and database access.
-
-Observed live results on 2026-08-21:
-
-- Flowcept 1.0.3 imported and ran under CLIO's Python 3.12 environment. Redis MQ, Redis KV,
-  and MongoDB all reported `ok`; a real capture/query smoke produced one workflow, one
-  agent, two spans, and no private prompt/response sentinel in metadata-only storage.
-- A real Codex `gpt-5.6-luna` base-agent turn completed and produced queryable native and
-  Flowcept execution records.
-- The EarthScope/NDP run produced 116 queryable Flowcept tasks across workflow, model,
-  tool, delegation, transform, and turn events. One clio-kit geospatial child
-  materialization failed with `FileNotFoundError`; that workload failure did not stop
-  Flowcept persistence.
-- A fresh post-fix session returned the same `session.created` and `arc.op` events through
-  both `native` and `flowcept`, proving the normalized provider switch against live data.
-- A final live parity round-trip stored `turn.started` plus `turn.completed` and queried
-  them back as one complete Flowcept-backed span with two correlated source events.
-- A Spotter-protected session produced a parent session and watcher child represented as
-  two Flowcept workflows. A real Phenotype/Spotter attempt discovered all three Phenotype
-  MCP tools, ran Codex Luna, and stored 24 spans across both sessions, but remained
-  nonterminal after the four-minute acceptance bound. This is an honest outstanding
-  Spotter/Phenotype orchestration hang, not a successful workload claim.
-
-The focused provider tests, real installed-Flowcept subprocess test, Ruff, and mypy pass.
-The provider-neutral core/web tests, existing observability tests, TypeScript checks, and
-changed-file ESLint pass. A repository-wide Python test run did not finish within the
-15-minute bound and includes pre-existing skipped tests; it is not claimed as a green
-full-suite gate.
+14. [Implemented slice and live verification](#14-implemented-slice-and-live-verification)
 
 ## 1. Executive conclusion
 
@@ -552,7 +470,456 @@ global list beside JSONL, Flowcept, and CMF. It is a child capability of the sel
 ArtifactProvenanceProvider
 +-- native
 |   `-- storage: file | clio_core
-`-- cmf…5129 tokens truncated…**: explicit opt-in for the maximum content allowed by CLIO's
+`-- cmf
+    +-- metadata: SQLite | PostgreSQL/server
+    `-- artifacts: DVC local | MinIO | S3 | SSH | OSDF/other supported remotes
+```
+
+The native provider owns CLIO's current version graph, transform records, custody
+semantics, and byte access. Its filesystem implementation is today's CLIO CAS; clio-core
+is the alternative tiered storage implementation.
+
+The CMF provider owns the CMF mapping and delegates storage through CMF's supported
+interfaces. CMF actually has two storage concerns that must remain named separately:
+
+- MLMD lineage metadata in a local SQLite file or PostgreSQL/server deployment;
+- artifact bytes in DVC's local cache or a configured remote.
+
+The common provider contract lets the CLIO UI, export, preview, download, verification,
+and reproduction work without knowing which provider-specific storage layout is active.
+Today those paths primarily understand CLIO CAS and workspace paths, so selecting CMF
+before re-sourcing those reads through the provider would leave holes.
+
+### 5.2 Custody, references, and mirrors
+
+The default is one provider and one expected primary copy. A workspace reference is not a
+storage provider: it is a non-custodial artifact state in which CLIO records the locator
+and available identity evidence without ingesting the bytes.
+
+Mirroring may be added explicitly inside an artifact provider when the user asks for
+redundancy, offline operation, migration safety, or different retention domains. Permanent
+duplication is not a correctness requirement and must never happen merely because two
+provenance projections are enabled.
+
+Every storage implementation must stream rather than require a whole artifact in memory.
+It must return an algorithm-qualified `StorageReceipt`; garbage collection and deletion
+need explicit provider policy because immutable version records may outlive local custody.
+
+### 5.3 Current size policy
+
+The current defaults are configurable in `src/clio_agent/config.defaults.yaml`:
+
+| Artifact size | Identity behavior | Custody behavior |
+| --- | --- | --- |
+| Up to 16 MiB | Stream SHA-256 | Ingest into CLIO CAS |
+| Over 16 MiB through 64 MiB | Stream SHA-256 | Workspace-referenced |
+| Over 64 MiB | Size and mtime only | Stat-pinned workspace reference |
+
+The relevant settings are:
+
+```yaml
+artifacts.cas_budget_bytes: 536870912
+artifacts.cas_max_file_bytes: 16777216
+artifacts.hash_max_file_bytes: 67108864
+artifacts.hash_stat_cache: false
+```
+
+The thresholds are not actually immutable hardcoded policy: configuration resolution
+already exists. The design problem is the meaning of the 64 MiB ceiling. It currently
+means "do not synchronously read the whole file," but also leaves the version without a
+content hash.
+
+A better policy vocabulary would be:
+
+```yaml
+artifacts:
+  identity:
+    max_sync_hash_bytes: 67108864
+    large_file_policy: async_ingest   # async_ingest | authority_checksum | stat_only
+```
+
+Then 64 MiB means "do not block the turn," not "never establish content identity."
+
+An asynchronous lifecycle may require new semantic events such as:
+
+```text
+artifact.discovered
+artifact.ingest.started
+artifact.identity.resolved
+artifact.ingest.failed
+```
+
+Until that schema exists, stat-pinned identity must remain honestly weaker. A downstream
+CMF/DVC digest is additional evidence and should not silently replace the CLIO version's
+recorded identity.
+
+### 5.4 IOWarp Core/CTE for large artifacts
+
+IOWarp Core's Context Transfer Engine supports multiple storage targets, block/page-level
+placement, offsets, and asynchronous blob operations. That makes it a promising large-file
+artifact store or ingest/tiering layer.
+
+It should be implemented as a new `ClioCoreArtifactStore`, not by reusing ARC's current
+`ClioCoreStore`:
+
+- ARC records and artifact bytes need separate namespaces, pools, and budgets.
+- An artifact ingest should stream chunks to CTE while computing CLIO SHA-256 in the same
+  pass.
+- The receipt should record the CTE tag/blob identity and CLIO digest.
+- Large artifacts must not evict or starve live context memory.
+- CTE currently provides blob storage and placement, not an observed native content-hash
+  receipt. CLIO still owns its SHA-256 identity unless CTE adds such a contract.
+- Current CLIO documentation says cross-restart recovery of CTE's file tier is still work
+  in progress; guaranteed archival durability must be proven before CTE becomes the sole
+  long-term store.
+
+## 6. CMF analysis and final design
+
+### 6.1 What `cmflib` is
+
+`cmflib` is CMF's primary Python authoring and client library, not a minor helper. It owns:
+
+- pipeline, stage/context, and execution creation;
+- dataset, model, metrics, and dataslice logging;
+- input/output events and attributions;
+- local MLMD SQLite and server-side PostgreSQL access;
+- DVC and Git operations;
+- metadata query and graph projection;
+- artifact push/pull and server federation.
+
+Avoiding `cmflib` entirely would mean reimplementing a substantial portion of CMF. The
+integration should prefer a supported CMF API or a safe library seam, not mimic CMF's
+private storage formats.
+
+### 6.2 Native semantic mapping
+
+CMF has useful native lineage semantics. CLIO should use them before falling back to custom
+properties.
+
+| CLIO concept | CMF projection | Fidelity |
+| --- | --- | --- |
+| Workspace / provenance domain | Pipeline plus stable CLIO identifiers | Native container plus properties |
+| Agent stage or relevant context | CMF Context / pipeline stage | Native when the stage mapping is meaningful |
+| `TransformRecord` | Execution | Native |
+| `ProvEdge(role=used)` | MLMD `Event.INPUT` | Native |
+| `ProvEdge(role=generated)` | MLMD `Event.OUTPUT` | Native |
+| `ArtifactVersion` | Dataset/model/metrics/general artifact | Native artifact plus CLIO properties |
+| Tool/instrument and bounded arguments | Execution properties | Mostly native properties |
+| Environment identity | Execution properties | Mostly native properties |
+| `revision_of` and aliases | Version/custom relationship properties | No exact universal CMF equivalent established |
+| Evidence class and mechanism | Namespaced CLIO properties | CLIO-specific |
+| Custody and custody gap | Namespaced CLIO properties | CLIO-specific |
+| Replay contract | Namespaced CLIO properties | CLIO-specific |
+| ARC event/session/turn/span ids | Namespaced correlation properties | Lossless correlation |
+| Agent/expert identity | Context/execution properties or namespaced properties | Mapping depends on CMF ontology choice |
+
+Custom properties are for residual CLIO semantics and lossless round trips, not an excuse
+to flatten native CMF artifacts, executions, contexts, and input/output edges into opaque
+JSON.
+
+### 6.3 CMF graph and CLIO visualization
+
+CMF has two graph-related facilities:
+
+1. Standard lineage derived from MLMD artifacts, executions, and input/output events. Its
+   server UI provides artifact, execution, and artifact-execution trees.
+2. An optional Neo4j graph layer activated with `graph=True`.
+
+Neither CMF UI is required for the genesis goal. The desired product surface is the
+`clio-agent` UI. Today it renders the native provider's `ArtifactVersion` and
+`TransformRecord` projection; the target UI must instead query the common
+`ArtifactProvenanceProvider` interface so a selected CMF provider can return equivalent
+lineage without making CMF's web UI part of CLIO.
+
+If importing provenance authored outside CLIO becomes a goal, it should be a separate
+`CMFLineageReader` capability. Possible inputs are:
+
+- a local MLMD SQLite file;
+- a supported CMF export;
+- a CMF HTTP query API.
+
+Only the HTTP option implies a CMF server. A local CMF provider can read its local MLMD
+store directly through the provider contract.
+
+### 6.4 CMF transport choices
+
+The stable internal design is:
+
+```text
+ARC agentic stream
+    -> artifact selector
+         -> artifact-provenance substream
+              -> CMFArtifactProvenanceProvider
+                   +-> metadata: local cmflib/MLMD | CMF HTTP/server
+                   `-> artifacts: DVC local | configured remote
+```
+
+The artifact factory selects `CMFArtifactProvenanceProvider`; metadata transport and DVC
+storage remain internal CMF-provider concerns.
+
+#### Local library transport
+
+This uses the real CMF object model and MLMD writer, but the current `Cmf` constructor:
+
+- changes the process working directory;
+- performs prechecks;
+- opens SQLite in normal client mode;
+- checks out a Git branch; and
+- optionally opens Neo4j.
+
+Those process-global side effects are unsafe inside an automatic artifact provider. A
+good HPE contribution would be a side-effect-free writer mode that does not change cwd or
+run Git/DVC unless artifact custody is explicitly requested.
+
+#### HTTP transport
+
+HTTP provides dependency and process isolation. The current CMF server exposes
+`POST /mlmd_push`, but it accepts a batch/federation JSON representation and feeds the CMF
+merger. It is not clearly a stable per-semantic-event ingestion API.
+
+Before relying on it, ask HPE to do one of the following:
+
+1. confirm and version `/mlmd_push` as a supported integration contract;
+2. add an official pipeline/context/execution/artifact/event ingestion API; or
+3. provide a supported serializer that produces the accepted batch schema.
+
+Generating CMF's complete merger JSON directly from CLIO without a supported schema would
+be fragile.
+
+#### Subprocess transport
+
+The implemented first slice uses a configured CMF-compatible Python subprocess. It keeps
+`cmflib`/MLMD out of CLIO's Python 3.12 dependency graph and avoids the process-global
+`Cmf` client lifecycle. The worker uses CMF's SQLite store and metadata helpers to create
+native MLMD contexts, executions, artifacts, and input/output events. This is a small,
+reviewable compatibility seam, not a claim that CMF's current lower-level helpers are a
+versioned third-party API. If CMF supports Python 3.12 and offers a side-effect-free writer,
+the subprocess can collapse back into an ordinary lazy import.
+
+### 6.5 Python compatibility
+
+At the inspected snapshot:
+
+- `clio-agent` targets Python 3.12.
+- CMF declares `requires-python = ">=3.9,<3.12"`.
+- CMF pins `ml-metadata==1.15.0` along with DVC, Ray, Neo4j, protobuf, and other substantial
+  dependencies.
+
+A Python 3.12 `uv pip install --dry-run` was unsatisfiable because ML Metadata 1.15.0 has no
+compatible CPython 3.12 wheel. Current ML Metadata releases also have platform-wheel
+constraints that require qualification. In contrast, all 70 inspected `cmflib` Python
+files compiled as Python 3.12 source without syntax failures.
+
+The correct conclusion is limited:
+
+- CMF source is not obviously Python-language-incompatible with 3.12.
+- CMF's declared range and compiled dependency pins currently block an ordinary 3.12
+  installation.
+- HPE may be able to resolve this by upgrading MLMD/dependencies and running the real CMF
+  suite on Python 3.12.
+- Source compilation is not runtime compatibility evidence.
+
+CMF must remain an optional extra or transport integration so none of these dependencies
+enter the default CLIO environment.
+
+### 6.6 CMF hashing and artifact custody
+
+CMF normally calls `dvc add` or `dvc import-url`, derives the DVC object hash, stages the
+`.dvc` file in Git, and links the resulting artifact to an execution. CMF therefore detects
+artifact changes when CMF/DVC logging is invoked; it does not continuously watch arbitrary
+workspace files.
+
+CMF also provides `log_dataset_with_version`, which accepts a caller-supplied version/hash
+and skips `commit_output`. That is useful for metadata-only projection, but it does not copy
+or archive the bytes.
+
+Digest ownership must be explicit:
+
+- CLIO SHA-256 remains the canonical CLIO identity when CLIO performed the read.
+- A CMF/DVC store may compute its native digest when it takes custody.
+- Never label CLIO SHA-256 as CMF's native DVC MD5.
+- Store a crosswalk receipt with algorithm-qualified digests, for example:
+
+```json
+{
+  "clio": {"algorithm": "sha256", "digest": "..."},
+  "cmf_dvc": {"algorithm": "md5", "digest": "...", "uri": "..."}
+}
+```
+
+The CMF artifact provider may be configured for metadata plus referenced external custody,
+or for metadata plus CMF/DVC custody. In the latter mode its DVC backend owns retrieval and
+CLIO's export/reproduction paths must go through the common artifact-provider interface.
+
+### 6.7 CMF artifact storage does not imply a CMF server
+
+CMF delegates artifact storage to DVC. Its local backend is a filesystem
+content-addressed store with paths such as:
+
+```text
+<repository>/files/md5/<first-two>/<remainder>
+```
+
+Therefore:
+
+- the first `local` storage slice writes and verifies the DVC MD5 object layout directly,
+  without invoking DVC or changing Git state in the CLIO workspace;
+- this is a DVC-compatible local object store, but HPE should confirm the supported ingest
+  seam before it is described as a general CMF/DVC repository integration;
+- a CMF SSH remote requires an SSH-accessible filesystem, not the CMF metadata server;
+- a CMF S3/MinIO remote requires object storage;
+- a hosted object store may provide external durability;
+- CMF server/PostgreSQL store collaborative metadata, not the DVC artifact bytes.
+
+This is CAS behavior, but not automatically a hardened archive. Durability, redundancy,
+access control, and backup quality come from the selected DVC backend.
+
+### 6.8 CMF infrastructure decision
+
+The final scope decisions are:
+
+- Shared CMF metadata is not a goal.
+- CMF's web lineage UI is not required; lineage belongs in the CLIO UI.
+- CMF's MCP server is not required; Spotter-AI can expose CLIO provenance query tools.
+- CMF artifact custody is optional and can use a local DVC CAS without a service.
+
+Consequently, the initial CMF integration requires **no homelab infrastructure**.
+
+For completeness, a read-only homelab inspection on 2026-08-21 found Docker 29.2.0,
+Compose 5.0.2, 48 GiB free disk, about 3.3 GiB available RAM, all 9 GiB swap occupied, and
+65 active containers. The stock CMF server Compose stack would add PostgreSQL, CMF server,
+UI, TensorBoard, MCP, and Nginx. It has no resource limits; builds a TensorBoard image from
+`tensorflow/tensorflow:latest`; exposes an API with permissive CORS and no observed
+application authentication; and maps port 443 although its supplied Nginx configuration
+listens only on HTTP port 80. The example MinIO stack uses an old 2021 image and default
+credentials. If collaborative CMF services are ever requested, use a lean, pinned,
+authenticated deployment rather than the examples unchanged.
+
+## 7. Spotter-AI MCP and the CLIO UI
+
+Agent-side provenance queries should operate over the configured agentic and artifact
+provider interfaces. A Spotter-AI MCP integration can expose tools such as:
+
+- `provenance_get_lineage`
+- `provenance_find_artifacts`
+- `provenance_get_execution`
+- `provenance_explain_derivation`
+- `provenance_get_provider_receipts`
+- `provenance_verify_artifact`
+
+This avoids requiring CMF's MCP service and gives every agent a consistent CLIO interface
+regardless of which optional providers are selected.
+
+The CLIO UI should likewise render through those provider interfaces:
+
+- artifact, activity, revision, used, generated, and gap nodes/edges from ARC;
+- identity and custody evidence;
+- provider projection status and external ids as annotations; and
+- storage availability and verification receipts.
+
+It must not depend on CMF's own UI. When CMF is the selected artifact provider, CLIO may
+query it through `ArtifactProvenanceProvider`; when native is selected, no CMF query is
+needed.
+
+## 8. Flowcept analysis and final role
+
+The initial decorator concern was too narrow. At the inspected snapshot Flowcept supports:
+
+- non-intrusive observability adapters for external services and frameworks;
+- direct decorators and context managers;
+- explicit programmatic `FlowceptTask` creation and `send()`;
+- a common message schema, buffering, MQ publication, and custom consumers;
+- workflow, task, agent, telemetry, used/generated, and object records;
+- offline JSONL operation as well as LMDB or MongoDB-backed persistence; and
+- a read-only REST API, UI, and MCP/query layer over persisted provenance.
+
+CLIO therefore does not need to decorate individual functions. Its Flowcept provider can
+receive the already-emitted ARC semantic events at coarse boundaries and create explicit
+Flowcept workflow/task records.
+
+Flowcept implements the **agentic provenance provider** contract. It receives the parent
+stream, then applies Flowcept-specific policy internally:
+
+```text
+ARC agentic-provenance stream
+    -> FlowceptAgenticProvenanceProvider
+         -> filter / sample / project
+              -> explicit Flowcept workflow/task messages
+                   -> offline buffer/JSONL or MQ/consumer/database
+```
+
+For example, Flowcept may filter `lm.token.delta`, thinking/redaction bookkeeping,
+high-volume ARC operations, or other events that do not warrant a Flowcept task. Those
+choices must stay inside `flowcept.py`, be configurable, and return a `filtered` receipt
+rather than look like unexplained loss.
+
+Artifact events remain part of the parent stream, so Flowcept may represent useful
+artifact creation or transform summaries as task `used`/`generated` references. That does
+not make Flowcept the artifact-provenance provider and does not give it custody of CLIO
+artifact bytes. Flowcept's own MongoDB/GridFS blob facility is internal Flowcept
+functionality, not a proposed CLIO artifact-storage backend in this design.
+
+Flowcept and CMF are consequently not sisters behind one adapter protocol and neither is a
+child of the other:
+
+- Flowcept consumes the parent agentic-provenance stream.
+- CMF implements the specialized artifact-provenance provider over the derived substream.
+- A Flowcept-to-CMF consumer could be a separate ecosystem interoperability project, but
+  CLIO-originated events should not traverse Flowcept in order to reach CMF.
+
+### 8.1 Reassessment of the Flowcept integration concerns
+
+Flowcept already owns the capture lifecycle and the path from captured records to its
+configured buffer, MQ, consumer, and database. CLIO does not need to select or implement any
+of those internal routes. Its responsibility is limited to:
+
+1. load Flowcept only when the optional provider is enabled;
+2. configure Flowcept using the selected Flowcept profile/settings;
+3. map and filter ARC events into Flowcept's documented workflow, agent, and task semantics;
+4. hand those records to Flowcept through its public capture API; and
+5. start, flush, and stop Flowcept according to its documented lifecycle.
+
+CLIO must not call MongoDB, Redis, an MQ client, a Flowcept consumer, or a Flowcept DAO
+directly. Earlier exploration of direct database and interceptor methods established how
+Flowcept works internally, but those are not separate CLIO architecture choices.
+
+Flowcept's use of active workflow/campaign state is consequently a validation concern rather
+than a request for a new Flowcept publication contract. The initial gold target is one local
+agent/process. Later concurrent and distributed tests should follow Flowcept's documented
+practice of supplying explicit workflow and campaign identifiers across producers.
+
+CLIO also does not need to wrap its functions with `agent_flowcept_task`: ARC has already
+observed the execution and established its outcome. The provider hands the resulting semantic
+record to Flowcept without allowing provenance capture to change the agent/tool result.
+
+### 8.2 Flowcept is configured, not reimplemented
+
+The `flowcept.py` integration is a thin optional bridge from ARC semantics to Flowcept
+semantics. Storage and query behavior are selected using ordinary Flowcept configuration.
+Changing from offline JSONL to the `full-online` profile must not require a different CLIO
+mapper or direct knowledge of Flowcept's Redis/MongoDB implementation.
+
+### 8.3 Content and privacy projection
+
+Flowcept receives the parent agentic-provenance stream, but that does not imply that every
+event payload is exported verbatim. Prompt text, model responses, tool arguments/results,
+reasoning or thinking content, environment data, and file content can contain secrets,
+personal data, unpublished research, or simply high-volume noise.
+
+The Flowcept provider therefore needs an event export controller applied before constructing
+Flowcept records. It uses the existing ARC event types to decide whether an event is included
+or filtered, followed by field-level projection for included events. It does not require a
+new event-domain taxonomy.
+
+The content modes below are useful presets for that controller rather than three hard-coded
+provider implementations:
+
+- **metadata** (recommended default): identifiers, relationships, event types, timings,
+  status, model/tool names, counts, hashes, and artifact references, but no raw prompt,
+  response, reasoning, or tool payload content;
+- **redacted semantic content**: bounded prompt/response/tool fields after CLIO secret and
+  policy redaction, with truncation and omission recorded; and
+- **full permitted content**: explicit opt-in for the maximum content allowed by CLIO's
   policy, still subject to mandatory secret handling and size limits.
 
 Thinking/token streams and other especially sensitive or high-volume event classes may be
@@ -639,11 +1006,10 @@ The deployed stack contains only Flowcept's Redis/MongoDB dependencies. A Flowce
 web UI, or CLIO integration process must still be configured separately.
 
 There is no remaining CLIO storage-routing or publication-facade question. CLIO configures
-Flowcept's `full-online` profile and hands it mapped events through Flowcept's public capture
-API. Flowcept manages the buffer, Redis publication, persistence consumer, MongoDB writes, and
-query surfaces. The remaining implementation work is to define the single-agent mapping
-goldens and event export controller, pin the optional Flowcept dependency/configuration, and
-prove end-to-end records are queryable in that local profile.
+Flowcept's `full-online` profile and hands it mapped events through Flowcept's capture runtime.
+Flowcept manages the buffer, Redis publication, persistence consumer, MongoDB writes, and
+query surfaces. The first single-agent mapping, event export controller, optional dependency,
+and provider-neutral query surface are implemented and were proved against that profile.
 
 ## 9. Decision ledger
 
@@ -712,9 +1078,12 @@ prove end-to-end records are queryable in that local profile.
 - Whether agentic provenance supports multiple simultaneous non-JSONL providers by default
   or requires explicit fan-out policy.
 
-## 10. Suggested implementation sequence
+## 10. Implementation sequence and status
 
-This sequence minimizes semantic risk and preserves optionality.
+This sequence minimizes semantic risk and preserves optionality. Steps 1-7 and the
+provider-neutral read surfaces in step 9 are implemented in the first slice. The native
+`clio_core` artifact store, CMF remotes, and broader distributed validation remain follow-up
+work.
 
 1. **Freeze stream semantics.** Test ARC-first ordering, the full parent-stream shape,
    existing artifact event constants/fold inputs, and JSONL compatibility.
@@ -820,6 +1189,9 @@ This sequence minimizes semantic risk and preserves optionality.
 9. Which CMF UI relationships require Neo4j, and which are derived entirely from MLMD?
 10. Would HPE review and help refine a small CLIO mapper/transport module and its mapping
     goldens?
+11. Is direct, atomic insertion into a configured DVC object store a supported custody seam,
+    or should CMF expose a side-effect-free artifact-ingest API that returns the native digest
+    and object URI without staging `.dvc` files in the caller's Git workspace?
 
 ## 13. Source evidence index
 
@@ -873,3 +1245,97 @@ This sequence minimizes semantic risk and preserves optionality.
 - [Workflow, task, object, and PROV-AGENT schema](https://github.com/ORNL/flowcept/blob/c000b10ea49659af6c5821b61918f3893bd46a92/docs/schemas.rst)
 - [Flowcept blob and version storage](https://github.com/ORNL/flowcept/blob/c000b10ea49659af6c5821b61918f3893bd46a92/docs/blob_data.rst)
 - [Explicit task implementation](https://github.com/ORNL/flowcept/blob/c000b10ea49659af6c5821b61918f3893bd46a92/src/flowcept/instrumentation/task_capture.py)
+
+## 14. Implemented slice and live verification
+
+### 14.1 Code boundary
+
+The first slice implements two distinct provider axes:
+
+- agentic provenance remains the ARC-sourced parent stream, with `jsonl` enabled by
+  default and Flowcept lazily enabled through `provenance.agentic.providers`;
+- artifact provenance is an overlapping selected substream, with `native` as the default
+  provider and `cmf` selected through `provenance.artifacts.provider`.
+
+The artifact provider owns its store. Native currently implements the existing filesystem
+SHA-256 CAS. CMF currently implements `reference` and DVC-compatible `local` custody. Selecting
+CMF does not also write the CLIO CAS. Minting, pinning, download, export, and lineage use the
+selected store/provider interface, while the HTTP lineage response retains CLIO's common graph
+shape. The native `clio_core` store and CMF remotes remain explicit follow-up implementations.
+
+CMF and Flowcept remain optional. The base runtime imports neither package. Flowcept is an
+optional extra; CMF runs through an explicitly configured isolated interpreter because its
+current dependency range is incompatible with CLIO's Python 3.12 environment.
+
+### 14.2 Real CMF qualification
+
+On 2026-08-21 the worker was exercised on `ssh homelab` using Python 3.9.2, real
+`cmflib==0.1.0`, and real `ml-metadata==1.15.0`. A fresh SQLite/MLMD database received two
+artifact records and one transform execution. Querying the output artifact returned three
+nodes and the expected edges:
+
+```text
+artifact_cmf_input --used--> activity:call_cmf_live
+activity:call_cmf_live --generated--> artifact_cmf_output
+```
+
+The response preserved CLIO artifact ids, SHA-256 identities, session/turn ids, tool, status,
+and ARC event correlations in namespaced CMF properties. The fresh MLMD SQLite file was 245760
+bytes. The two local custody objects were also present under `files/md5/<xx>/<rest>` and their
+computed MD5 values matched their object names.
+
+This qualifies the implemented mapping and local object layout against the real packages. It
+does not yet qualify a CMF remote, the CMF server, or a Windows-native MLMD wheel. The current
+worker uses CMF's lower-level SQLite/metadata helpers specifically to avoid the `Cmf` client's
+cwd/Git/DVC side effects; that seam is intentionally isolated for HPE review.
+
+### 14.3 Real Flowcept, NDP, and Spotter qualification
+
+The homelab Flowcept profile ran Redis 7 and MongoDB 8 with loopback-only ports reached through
+an SSH tunnel. CLIO ran from the feature worktree with JSONL plus Flowcept and used the Codex
+provider with `gpt-5.6-luna`; Claude was not used.
+
+A terminal NDP run invoked the real `ndp_search_datasets` tool and returned the EarthScope
+Stations Dataset (`811f0bcc-99e5-455c-bcf6-7c63c2634f41`) and resource
+`a420cc30-2262-423a-8c63-3ad8d91f2a8f`. Under `spotter-ai`, a second terminal NDP run invoked
+the same live tool, then woke the standing Spotter watcher. The watcher itself ran with an
+explicit session overlay selecting Codex Luna, invoked the real `spotter_campaign_health` MCP
+tool, and completed. Leaving `spotter-ai` transitioned its standing task to
+`status=cancelled, live_state=cancelled`, which is the intended terminal disarm state.
+
+CLIO's provider-neutral query returned the same three terminal turns and the same three
+completed tool spans from native JSONL and Flowcept for the combined parent/child session.
+Direct Flowcept Mongo queries returned 103 records for the NDP parent and 54 for the Spotter
+child; Flowcept reported its KV, MongoDB, and MQ services healthy, with zero CLIO dispatcher
+failures or overflows.
+
+Two failed probes remain useful negative evidence rather than acceptance results: the generic
+NDP benchmark runner did not activate the EarthScope blueprint and therefore lacked the NDP
+tool, and a simple built-in-main Spotter trigger produced streamed text but the blueprint
+wrapper classified the answer as empty. The corrected blueprint-aware NDP plus Spotter run is
+the terminal green path described above.
+
+The first live query exposed a provider-neutral normalization defect: one-shot running token
+samples were treated as open lifecycle spans, while expert and LLM start/end records use
+different event names. The read model now opens spans from lifecycle event types, pairs the
+expert and LLM families explicitly, and coalesces duplicate starts with the same correlation.
+Replaying the combined parent/child JSONL through the corrected normalizer reports
+`complete=true`, three terminal turns, and no truncation. The same normalizer is used for
+Flowcept records.
+
+### 14.4 Verification gates and boundary
+
+The no-infrastructure provider tests passed 21/21. The broader artifact, export, semantic-
+event, and session-export selection passed 360 tests; its two environment-skipped relay shape
+checks were then rerun against the real sibling `clio-relay` models and both passed. Ruff passed
+for every changed Python file, and Mypy reported no issues in the 16 selected provider, mint,
+export, route, and event modules. The UI's focused Vitest suites passed 2 core-client and 3 web-observability tests, and
+both TypeScript projects passed `tsc --noEmit`.
+
+The repository-wide non-integration command was also attempted, but it is not recorded as
+green: on managed Windows it reached roughly 65 percent and timed out after 20 minutes with
+unrelated failures and environment-gated skips. One failure was reproduced independently:
+`test_set_app_arc_sets_and_wires` hardcodes `/tmp/_arc_set_app_arc_test` and fails with
+`WinError 5` before exercising its ARC wiring assertion. The focused gates above are the
+acceptance evidence for this slice; the incomplete broad command is retained as non-green
+evidence rather than being silently omitted.

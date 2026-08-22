@@ -1040,6 +1040,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             _trace_close()
         except Exception:  # pragma: no cover - defensive shutdown cleanup  # noqa: BLE001,S110 - defensive shutdown cleanup
             pass
+    _artifact_backend = getattr(app.state, "artifact_provenance_backend", None)
+    _artifact_close = getattr(_artifact_backend, "close", None)
+    if callable(_artifact_close):
+        try:
+            _artifact_close()
+        except Exception:  # pragma: no cover - defensive shutdown cleanup  # noqa: BLE001,S110
+            pass
     # #900: explicit clean-shutdown teardown (promoted from atexit best-effort) — close
     # the agent's MCP stdio executors + pooled SDK CLI transports now, with typed logging,
     # off the event loop (thread joins). A HARD kill skips this; the Job Object / pdeathsig
@@ -1279,6 +1286,11 @@ def build_app(
     app.state.semantic_trace_backend = build_trace_backend(
         session_store_path.parent / "semantic_traces"
     )
+    from clio_agent.gact.artifacts.provenance import build_artifact_provenance_backend
+
+    app.state.artifact_provenance_backend = build_artifact_provenance_backend(
+        app, session_store_path.parent / "artifact_provenance"
+    )
     # ARC-as-source: the sink has NO arc live_consumer. ARC is the SOURCE now —
     # _emit_semantic_event routes each event through arc.record_semantic_event, which
     # folds the observer (on_semantic_event) INSIDE its record and then derives THIS
@@ -1288,6 +1300,7 @@ def build_app(
     app.state.semantic_event_sink = SemanticEventSink(
         bus=app.state.bus,
         trace_backend=app.state.semantic_trace_backend,
+        artifact_backend=app.state.artifact_provenance_backend,
         detail_level=app.state.semantic_trace_detail_level,
         live_consumers=None,
     )
