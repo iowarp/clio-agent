@@ -148,9 +148,7 @@ def _tool_session_context(sid: str) -> Iterator[None]:
         ws = workspaces.get(workspace_id) if workspaces is not None and workspace_id else None
         workspace_root = str(getattr(ws, "root_path", "") or "")
     blueprint_id = _runtime_active_agent_blueprint_id(app, sid) if app is not None else ""
-    blueprint_path = (
-        _runtime_active_agent_blueprint_path(app, sid) if app is not None else None
-    )
+    blueprint_path = _runtime_active_agent_blueprint_path(app, sid) if app is not None else None
     token = _ctx.set_tool_session_id(sid)
     # #933: pin the workspace fleet for the WHOLE turn — between-call idleness
     # inside a live turn must not count toward the reaper's TTL.
