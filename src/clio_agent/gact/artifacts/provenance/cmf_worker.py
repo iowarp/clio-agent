@@ -78,6 +78,7 @@ class CMFEventStore:
             raise ValueError("publish requires a CMF server URL")
         if timeout_s <= 0:
             raise ValueError("publish timeout must be greater than zero")
+        _ensure_execution_uuids(self.store, self._api["value"])
         json_payload = CmfQuery(str(self.metadata_path)).dumptojson(self.pipeline_name, None)
         if not json_payload:
             raise RuntimeError(f"CMF produced no metadata payload for {self.pipeline_name!r}")
@@ -214,6 +215,7 @@ class CMFEventStore:
         )
         for key, item in custom.items():
             execution.custom_properties[key].CopyFrom(self._api["value"](item))
+        execution.properties["Execution_uuid"].CopyFrom(self._api["value"](call_id))
         self.store.put_executions([execution])
         self._link_edges(execution.id, body.get("used"), input_event=True)
         self._link_edges(execution.id, body.get("generated"), input_event=False)
@@ -424,6 +426,26 @@ def _cmf_artifact_type(kind: str) -> str:
     if kind in {"environment", "script"}:
         return "Environment"
     return "Dataset"
+
+
+def _ensure_execution_uuids(store: Any, value_factory: Any) -> int:
+    """Backfill CMF's federation-required execution identifier property."""
+    updates = []
+    for execution in store.get_executions():
+        current = execution.properties.get("Execution_uuid")
+        if current is not None and str(_value(current) or "").strip():
+            continue
+        custom = _custom(execution)
+        identifier = str(
+            custom.get("clio_call_id")
+            or custom.get("clio_arc_event_id")
+            or f"clio-execution-{int(execution.id)}"
+        )
+        execution.properties["Execution_uuid"].CopyFrom(value_factory(identifier))
+        updates.append(execution)
+    if updates:
+        store.put_executions(updates)
+    return len(updates)
 
 
 def _custom(obj: Any) -> dict[str, Any]:

@@ -115,6 +115,43 @@ def test_cmf_worker_posts_server_payload_without_optional_http_dependency(
     }
 
 
+def test_cmf_worker_backfills_federation_execution_uuid() -> None:
+    """Existing local MLMD rows become valid inputs to CMF federation."""
+
+    class _Value:
+        def __init__(self, value: str = "") -> None:
+            self.string_value = value
+
+        def CopyFrom(self, other: "_Value") -> None:
+            self.string_value = other.string_value
+
+        def WhichOneof(self, _name: str) -> str:
+            return "string_value"
+
+    execution = SimpleNamespace(
+        id=42,
+        properties={"Execution_uuid": _Value()},
+        custom_properties={"clio_call_id": _Value("call-42")},
+    )
+
+    class _Store:
+        def __init__(self) -> None:
+            self.updated: list[Any] = []
+
+        def get_executions(self) -> list[Any]:
+            return [execution]
+
+        def put_executions(self, rows: list[Any]) -> None:
+            self.updated.extend(rows)
+
+    store = _Store()
+
+    assert cmf_worker._ensure_execution_uuids(store, _Value) == 1
+    assert execution.properties["Execution_uuid"].string_value == "call-42"
+    assert store.updated == [execution]
+    assert cmf_worker._ensure_execution_uuids(store, _Value) == 0
+
+
 def _version(identity: Any) -> ArtifactVersion:
     return ArtifactVersion(
         artifact_id="artifact_cmf_1",
