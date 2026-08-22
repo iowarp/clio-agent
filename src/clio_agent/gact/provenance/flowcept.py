@@ -436,7 +436,13 @@ class FlowceptProvenanceProvider:
                 "state_event_type": event.event_type,
             }
         }
-        self._runtime._first_interceptor.intercept(workflow.to_dict())
+        document = workflow.to_dict()
+        if not terminal:
+            # Flowcept workflow updates use MongoDB ``$set`` and WorkflowObject.to_dict()
+            # omits ``None``. Send the null explicitly so a new turn clears the
+            # previous terminal timestamp instead of exposing RUNNING + stale ended_at.
+            document["ended_at"] = None
+        self._runtime._first_interceptor.intercept(document)
         self._workflow_status[workflow_id] = state
 
     def services_status(self) -> dict[str, str]:

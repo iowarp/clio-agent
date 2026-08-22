@@ -110,6 +110,7 @@ reopened_buffer = provider._runtime.get_buffer()
 assert any(
     row.get("type") == "workflow"
     and getattr(row.get("status"), "value", row.get("status")) == "RUNNING"
+    and row.get("ended_at") is None
     for row in reopened_buffer
 ), reopened_buffer
 provider.close()
