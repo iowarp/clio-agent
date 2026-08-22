@@ -1,6 +1,6 @@
 # Optional Provenance Providers and Artifact Storage
 
-- **Status:** Implemented first slice with real CMF, Flowcept, NDP, and Spotter verification
+- **Status:** Implemented CLIO write-side slice; unified Spotter MCP remains unimplemented
 - **Date:** 2026-08-21
 - **Scope:** `clio-agent` provenance semantics, optional downstream provenance providers,
   artifact identity and custody, and the proposed CMF integration boundary
@@ -9,6 +9,13 @@
 This document records the conclusions, corrections, rejected alternatives, implementation,
 and open questions from the provenance-integration work. It distinguishes the first
 implemented slice from later storage and distributed-provider extensions.
+
+> **Query-plane correction:** This document primarily records CLIO's producer/write-side
+> integration. The temporary SQLite Spotter demonstration in section 14 is not the canonical
+> provenance MCP. The corrected standalone, producer-independent query architecture is defined
+> in [Unified Spotter provenance MCP](unified-spotter-provenance-mcp-2026-08.md). That design
+> supersedes any suggestion here that CLIO should federate, emulate, or normalize Flowcept and
+> CMF query semantics for Spotter.
 
 External source snapshots inspected during the discussion:
 
