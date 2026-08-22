@@ -1,379 +1,293 @@
 # Unified Spotter provenance MCP
 
-Status: corrected architecture and implementation contract  
+Status: implemented and live-qualified against Flowcept plus CMF
 Date: August 2026
 
 ## Purpose
 
-Spotter needs one MCP server through which an agent or UI can inspect provenance
-stored in JSONL, Flowcept, CMF, a CLIO-native provenance store, or a future
-provider. Spotter is not a CLIO-specific MCP. Any runtime that publishes valid
-records into a supported provenance system must be queryable after the producer
-has stopped.
+Spotter provides one purpose-built, read-only MCP for investigating agentic execution and
+artifact lineage. It is our interface, designed from scratch after inspecting the Flowcept and
+CMF query surfaces. It is not a proxy for either upstream MCP and it does not call clio-agent.
 
-The unified MCP is deliberately **not** a least-common-denominator abstraction.
-It exposes the maximum capability union of its configured providers, retains
-provider-native semantics and results, and returns an explicit capability error
-when a requested operation is unavailable. It must never fabricate Flowcept or
-CMF semantics from weaker native evidence.
+The producer and query paths are intentionally different:
 
-## Non-negotiable architecture
+```text
+gact-tui -> stable REST resources -> clio-agent -> configured provenance provider
 
-There are two independent planes.
+agent -> purpose-specific MCP tools -> Spotter MCP -> provider stores and services
+```
+
+The UI path has a small, stable wire contract. The agent path has more, narrower tools so a model
+can select the right operation. gact-tui never embeds or invokes Spotter MCP.
+
+## System boundary
 
 ### Write plane
 
+CLIO is one producer. ARC remains its live context substrate and semantic-event source. CLIO
+projects that stream downstream according to explicit configuration:
+
 ```text
-Any agent or workflow runtime
-        |
-        | publishes provenance
-        v
-  +-----+---------------+------------------+----------------+
-  |                     |                  |                |
-JSONL files       Flowcept runtime     CMF/MLMD       CLIO-native store
-                  and its storage      and artifact   or future provider
-                  profile              storage
+ARC semantic-event highway
+    |
+    +-- agentic provenance stream -> JSONL, CLIO, or Flowcept provider
+    |
+    `-- selected artifact substream -> native or CMF artifact provider
+                                           |
+                                           `-- provider-owned artifact storage
 ```
 
-CLIO is one possible producer on this plane. ARC supplies CLIO's semantic-event
-highway. CLIO's configured write adapters publish the parent agentic stream and
-artifact substream to the selected systems. The JSONL, Flowcept, and CMF
-integrations in CLIO belong here: mapping, delivery, filtering, health, storage
-receipts, and write-side configuration.
+Artifact provenance is an overlapping substream, not a second event source. Flowcept and CMF are
+optional and are not ARC replacements. Selecting Flowcept does not select artifact custody;
+selecting CMF does not make Flowcept a prerequisite.
 
-Other agents may publish directly to exactly the same systems. Spotter cannot
-assume that CLIO created the data.
+Other runtimes can write compatible JSONL or use Flowcept/CMF directly. Spotter queries durable
+provider state, so the original producer need not still be running.
 
 ### Query plane
 
 ```text
-                         Unified Spotter MCP
-                         /       |        \
-                        /        |         \
-           JSONL/native adapter  |     official CMF MCP
-                                 |
-                        official Flowcept MCP
+explicit CLIO YAML
+      |
+      v
+Spotter provider factory
+      |
+      +-- Flowcept client -> MongoDB
+      +-- CMF client      -> CMF REST server
+      `-- native client   -> documented JSONL/workspace evidence
 ```
 
-The Spotter MCP talks directly to provider storage/query infrastructure:
+The CLIO YAML is configuration evidence only. Spotter reads it to determine which providers are
+enabled, which one is the query default for each domain, and where their stores/services live.
+Spotter never calls GACT, imports CLIO application state, or asks CLIO to translate results.
 
-- configured JSONL files or mounted volumes;
-- the official Flowcept MCP and the Flowcept storage profile it controls;
-- the official CMF MCP and its configured CMF server instances;
-- a CLIO-native provenance-store interface, when one is configured;
-- future adapters registered through the same provider contract.
+Provider clients are direct:
 
-The Spotter MCP does **not** call a running `clio-agent`, inspect GACT app state,
-or ask CLIO to translate one provider's semantics into another provider's
-semantics. Stopping the producing agent must not prevent later provenance
-queries.
+- Flowcept queries the persisted workflow/task collections in MongoDB.
+- CMF queries the current pipeline/stage/execution/artifact REST resources.
+- Native queries explicit JSONL and workspace evidence under a documented portable schema.
 
-## Repository boundaries
+The upstream Flowcept and CMF MCPs informed the vocabulary and capability analysis. They are not
+runtime dependencies and are not started, proxied, or composed by Spotter.
 
-### `clio-agent`
+## Provider selection
 
-CLIO owns only its producer responsibilities:
+Provider selection is deployment configuration, never a model-supplied tool argument. The current
+configuration axes are independent:
 
-- emit ARC-derived semantic events;
-- select and configure write-side agentic and artifact providers;
-- project events into Flowcept and CMF without making either mandatory;
-- manage write delivery, filtering, receipts, health, and shutdown;
-- select artifact custody independently where supported.
-
-CLIO must not contain the Spotter query federation layer. In particular, it must
-not contain a router that substitutes native CLIO queries for unavailable
-Flowcept or CMF operations.
-
-### Spotter MCP
-
-The canonical Spotter implementation belongs in the CLIO agent marketplace. It
-owns:
-
-- provider discovery and capabilities;
-- clients for the official Flowcept and CMF MCPs;
-- JSONL and other native-store readers;
-- the maximum unified tool registry;
-- lossless provider result preservation;
-- optional UI projections;
-- typed capability, availability, and provider errors;
-- access policy for destructive or administrative upstream tools.
-
-### UI
-
-The UI consumes MCP result metadata and provider-independent render models. It
-does not require CLIO to reinterpret the selected provider. Provider-specific
-features remain available as additional views rather than being erased to fit a
-smaller schema.
-
-## Upstream MCPs inspected
-
-The design is grounded in the actual upstream repositories and registered MCP
-schemas, not their README summaries alone.
-
-- Flowcept: `ORNL/flowcept` at
-  `c000b10ea49659af6c5821b61918f3893bd46a92`.
-- CMF: `HewlettPackard/cmf` at
-  `53d9c3e518ab2fde46955f10520d4842c572bf05`.
-
-Both packages were installed in isolated environments and their real FastMCP
-tool registries were enumerated. Both currently resolve an incompatible MCP 2.x
-through their open-ended dependency declarations; constraining MCP below 2 made
-the current sources importable for schema inspection. This is an upstream
-packaging compatibility issue to verify with the teams, not a reason to replace
-their interfaces.
-
-## Maximum capability union
-
-The combined server starts from the full upstream tool registries. Provider
-prefixes already distinguish most names, so upstream semantics should be
-retained rather than renamed into weaker generic operations.
-
-### Flowcept surface
-
-The inspected Flowcept MCP registers 36 tools:
-
-- database queries: `db_query_tasks`, `db_query_workflows`,
-  `db_get_task_summary`, `db_list_campaigns`, `db_list_agents`,
-  `db_query_objects`, `db_highlight_lineage`, and `db_fix_query`;
-- DataFrame queries: `run_df_query`, `df_query_tasks`,
-  `df_query_workflows`, `df_query_objects`, `df_get_task_summary`,
-  `df_get_objects_summary`, `df_list_campaigns`, `df_list_agents`,
-  `df_highlight_lineage`, and `df_fix_query`;
-- charts and dashboards: `db_make_chart`, `db_get_dashboard`,
-  `db_update_dashboard`, `df_make_chart`, `df_get_dashboard`, and
-  `df_update_dashboard`;
-- schema and reports: `get_schema_context`, `get_df_schema_context`,
-  `get_workflow_schema_context`, and `generate_workflow_card`;
-- runtime and control: `get_latest`, `check_liveness`, `check_llm`,
-  `record_guidance`, `show_records`, `reset_records`, `reset_context`, and
-  `load_buffer_messages`.
-
-Flowcept's result contract is itself meaningful and must be preserved:
-`ToolResult` carries `code`, `result`, `extra`, and `tool_name`. DB and
-DataFrame modes are different supported query/storage profiles, not concepts
-that Spotter should collapse.
-
-Administrative and mutating tools remain part of the maximum capability
-registry. A read-only Spotter expert may be denied permission to invoke them,
-but policy denial is different from pretending the capability does not exist.
-
-### CMF surface
-
-The inspected CMF MCP registers eight tools:
-
-- `cmf_show_pipelines`;
-- `cmf_show_executions`;
-- `cmf_show_executions_list`;
-- `cmf_execution_lineage`;
-- `cmf_show_artifact_types`;
-- `cmf_show_artifacts`;
-- `cmf_artifact_lineage`;
-- `cmf_show_model_card`.
-
-CMF returns one result per configured CMF client, retaining the client URL and
-either `data` or `error`. The unified MCP must keep those per-instance results.
-CMF pipelines, executions, artifacts, layered lineage trees, and four-part
-model cards remain CMF concepts.
-
-The current upstream client/server snapshot also needs live validation. Some
-client methods still call pipeline-based REST paths that are commented out in
-the current server in favor of stage-based endpoints, and the execution-lineage
-MCP truncates its supplied UUID to four characters. These are review questions
-for HPE, not behavior Spotter should silently patch by inventing different
-semantics.
-
-### Native providers
-
-Native adapters expose the capabilities genuinely supported by their source:
-
-- a JSONL adapter can search, filter, correlate, and summarize fields actually
-  present in its configured record schema;
-- a native artifact graph can expose its recorded nodes, edges, evidence, and
-  custody data;
-- a CLIO-native store adapter can expose that store's real query contract;
-- future formats add their own tools and render projections.
-
-A native adapter must not claim to implement Flowcept workflows, dashboards,
-campaign summaries, or CMF model cards unless those records and semantics are
-actually present in that native format.
-
-The previous temporary Spotter SQLite interface and its invented run-health,
-quarantine, and alert operations are not the canonical provenance interface and
-must be discarded.
-
-## Provider adapter contract
-
-Each Spotter-side adapter declares metadata rather than being hidden behind one
-replacement implementation:
-
-```text
-ProviderAdapter
-  id                         stable provider-instance identity
-  kind                       jsonl | flowcept | cmf | clio-store | extension
-  capabilities()             exact supported tool and feature set
-  register_tools(registry)   provider-native MCP tools
-  invoke(tool, arguments)    lossless provider invocation
-  ui_projection(tool, data)  optional render model; never the evidence record
-  health()                   connectivity and configuration state
-  close()                    provider-owned cleanup
+```yaml
+provenance:
+  agentic:
+    providers: [flowcept]
+    query_default: flowcept
+    flowcept:
+      settings_path: /runtime/flowcept.yaml
+  artifacts:
+    provider: cmf
+    cmf:
+      server_url: http://127.0.0.1:8380
+      pipeline_name: clio-agent
 ```
 
-The plugin contract permits multiple instances of one provider. Flowcept and
-CMF retain their own instance-selection arguments where their MCPs provide
-them.
+Flowcept endpoint and database settings come from its referenced settings file. CMF endpoint and
+pipeline come from CLIO's artifact-provider configuration. Credentials remain in deployment
+configuration and are never accepted as MCP arguments or returned in results.
 
-## Capability behavior
+When native is selected, the journal and workspace must be explicit:
 
-The MCP exposes a discovery tool that reports every configured provider,
-instance, upstream tool, read/write classification, UI projections, health, and
-policy state.
+```yaml
+provenance:
+  agentic:
+    providers: [jsonl]
+    query_default: jsonl
+    jsonl:
+      path: /runtime/provenance
+  artifacts:
+    provider: native
+    native:
+      workspace_root: /workspace
+```
 
-Invoking a tool follows these rules:
+There is no silent fallback. If Flowcept is selected and unreachable, the request fails as a
+provider error. If native is selected and cannot answer a Flowcept- or CMF-level semantic, the
+operation fails with `capability_unavailable`; it does not manufacture an approximation.
 
-1. Route only to an adapter that natively advertises that tool.
-2. Preserve the upstream arguments and semantics.
-3. Preserve the complete upstream result as evidence.
-4. Add UI metadata only as a separate, non-destructive projection.
-5. If no configured provider supports the tool, return
-   `capability_unavailable`.
-6. If the provider is configured but unreachable, return
-   `provider_unavailable`.
-7. If policy forbids a mutating tool, return `permission_denied`.
-8. Never retry the request against a semantically different provider.
+## Tool design
 
-For example, `db_query_tasks` without a queryable Flowcept DB profile is a
-capability error. Spotter must not manufacture a Flowcept task response from
-CLIO JSONL merely because both contain timestamps.
+Spotter exposes a deliberately designed union of useful investigation operations. It does not
+copy every administrative, dashboard, prompt, repair, or arbitrary-code tool from the upstream
+MCPs. The tools are purpose-specific rather than a generic query language:
 
-## Lossless result and UI contract
+### Discovery and correlation
 
-The MCP result wrapper adds routing and rendering metadata while retaining the
-provider result intact:
+- `capabilities`
+- `trace_correlation`
+
+### Agentic execution
+
+- `list_campaigns`
+- `list_workflows`
+- `list_agents`
+- `query_tasks`
+- `summarize_tasks`
+- `get_timeline`
+
+### Artifact provenance
+
+- `list_pipelines`
+- `list_executions`
+- `list_artifact_types`
+- `list_artifacts`
+- `get_execution_lineage`
+- `get_artifact_lineage`
+- `get_model_card`
+
+This surface is richer than a minimum-common-denominator API. A provider advertises only the
+operations it can support honestly. Native support is additive convenience over genuine native
+records, not a reinterpretation of weaker evidence as Flowcept or CMF state.
+
+## Result and error contract
+
+Normalized top-level fields let an agent correlate providers and let a renderer consume stable
+timeline/graph shapes. Source evidence remains under a namespaced extension:
 
 ```json
 {
-  "schema_version": "spotter.provenance.v1",
-  "provider": "flowcept",
-  "provider_instance": "flowcept-primary",
-  "upstream_tool": "db_query_tasks",
-  "status": "ok",
-  "data": {
-    "upstream_result_is_preserved_here": true
-  },
-  "ui": {
-    "component": "timeline",
-    "available_views": ["table", "timeline", "gantt"],
-    "model": {}
-  },
-  "warnings": [],
-  "error": null
-}
-```
-
-`data` is the authoritative provider result. `ui.model` is a projection for a
-renderer. Thus a CMF layered lineage tree can be projected to generic graph
-nodes and edges without deleting the original CMF tree, while Flowcept task
-records can drive a timeline/Gantt view without discarding Flowcept-specific
-fields.
-
-Provider-specific UI capabilities may add modes such as Flowcept dashboards,
-workflow cards, charts, and CMF model cards. The UI chooses from
-`available_views`; it does not infer provider support from an empty response.
-
-An error has a stable outer shape and retains safe diagnostics:
-
-```json
-{
-  "code": "capability_unavailable",
-  "message": "No configured provenance provider supports db_query_tasks.",
-  "provider": null,
-  "tool": "db_query_tasks",
-  "recoverable": true,
-  "details": {
-    "configured_providers": ["jsonl", "cmf"]
+  "workflow_id": "workflow-1",
+  "status": "completed",
+  "started_at": 1787385600.0,
+  "ended_at": 1787385612.5,
+  "extensions": {
+    "flowcept": {
+      "custom_metadata": {
+        "clio": {"session_id": "session-1"}
+      }
+    }
   }
 }
 ```
 
-Empty evidence is a successful empty query, never a claim that a run is healthy
-or anomaly-free.
+The projection removes large Flowcept runtime configuration fields and recursively strips common
+credential-like keys before returning provider evidence. Binary payloads and Flowcept `data`
+payloads are not exposed.
 
-## Configuration and deployment
+Stable typed errors distinguish:
 
-Provider configuration belongs to the Spotter MCP process. It contains storage
-mounts and upstream MCP connection details, not a GACT URL.
+- `capability_unavailable`: the selected provider cannot answer the operation;
+- `provider_unavailable`: its store or service cannot be reached;
+- `invalid_request`: arguments or identifiers are invalid;
+- `not_found`: the requested recorded entity does not exist.
 
-Representative profiles are:
+An empty successful query is only empty evidence. It is never reported as proof that a run was
+healthy, complete, or anomaly-free.
 
-- local JSONL: mount one or more provenance roots read-only and register the
-  JSONL adapter;
-- queryable single-agent Flowcept: configure the official Flowcept MCP against
-  its supported online Redis/MongoDB profile;
-- distributed Flowcept: configure the same official MCP against the shared
-  Flowcept infrastructure used by the producing nodes;
-- CMF: configure the official CMF MCP with one or more CMF client/server
-  instances;
-- mixed: enable Flowcept and CMF together, exposing the union of both MCPs;
-- extension: install another adapter without changing producer runtimes.
+## Native JSONL contract
 
-JSONL does not require a container. Where containers are used, the Spotter MCP
-talks to those provider containers or mounts their durable volumes. It does not
-talk back to the producer.
+Native support accepts CLIO semantic events carrying `event_type` and a portable Spotter dialect:
 
-## Spotter expert behavior
+```json
+{"schema_version":"spotter.provenance.v1","record_type":"workflow","workflow_id":"wf-1","data":{"status":"completed"}}
+```
 
-The Spotter expert receives this unified MCP. Its prompt must:
+Portable record types are `workflow`, `agent`, `task`, `pipeline`, `execution`, `artifact`, and
+`model_card`. Pipeline and model-card operations are advertised only when those record types are
+actually present. Unknown JSON objects fail validation instead of becoming provenance by accident.
 
-- inspect capabilities before planning queries;
-- use provider-native tools and fields;
-- distinguish absence of evidence from evidence of absence;
-- surface partial results and per-instance errors;
-- never assume CLIO produced the records;
-- never request a fallback that changes provenance semantics;
-- use only read-authorized tools unless the user explicitly authorizes a
-  control-plane mutation.
+## UI contract is separate
 
-The temporary SQLite-specific Spotter prompt and tool vocabulary must be
-removed.
+gact-tui asks clio-agent for concrete REST response shapes. clio-agent obtains the requested view
+from the configured provider and returns a provider-neutral render model.
+
+- Observability owns `log`, `timeline`, `gantt`, and execution-graph modes. Flowcept can back those
+  modes, but Flowcept-specific data remains annotations rather than UI routing logic.
+- Artifact Provenance is a separate tab and graph. It can be backed by native CLIO provenance or
+  CMF without changing how the UI requests or draws the graph.
+
+The Spotter MCP can return compatible timeline and graph structures for agent reasoning, but the UI
+does not call MCP. These two consumers may share schema concepts; they do not share a transport.
+
+## Live qualification
+
+The final homelab qualification used Flowcept `full-online` (Redis plus MongoDB), a CMF
+server/PostgreSQL deployment with local DVC-compatible custody, and CLIO configured with Flowcept
+as its only downstream agentic provider and CMF as its artifact provider/store. Native JSONL and
+the native artifact CAS were absent; ARC remained the required live context/event source.
+
+A real Codex Luna Spotter expert in session `sess_72b9686f6177` made eight successful Spotter MCP
+calls across both domains. It reported Flowcept and CMF ready, summarized a 126-record Flowcept
+workflow, found artifact `artifact_0bb8c80d22be41dda2264446453484bf` at
+`cmf+dvc://local/files/md5/9b/e69deba6ddd9e264bb38801512b813`, and returned a lineage graph
+rooted at that stable artifact id with four nodes and zero edges.
+
+The exact CLIO listener was then stopped. A bounded standalone Spotter process still exposed all
+15 tools and queried the same durable Flowcept and CMF state, including a completed 134-record
+workflow and correlation counts from both provider domains. This proves that Spotter does not call
+back into CLIO.
+
+All tools declare standard MCP read-only and idempotent annotations. CLIO now adds the installed
+blueprint checksum to declared MCP cache identity, so an updated pack refreshes tool metadata even
+when its launcher is unchanged. A clean post-fix Luna session made capabilities and artifact-
+lineage calls with zero permission rows and returned the same four-node graph.
+
+The implemented UI path remains separate. No gact-tui source change was required: its focused
+Observability and artifact-provenance suites, TypeScript checks, and production build passed over
+the existing REST/provider-neutral rendering boundary.
+
+## Repository ownership
+
+### clio-agent
+
+- ARC-derived event emission;
+- agentic/artifact provider selection;
+- Flowcept and CMF write mapping;
+- bounded delivery, receipts, filtering, health, and shutdown;
+- stable REST read models for gact-tui.
+
+### clio-agent-marketplace / Spotter
+
+- standalone MCP server and tool vocabulary;
+- explicit CLIO YAML loading;
+- direct Flowcept, CMF, and native provider clients;
+- capability routing and typed errors;
+- safe normalized results with namespaced provider evidence;
+- the Spotter expert prompt and MCP declaration.
+
+### gact-tui
+
+- Observability log/timeline/Gantt/execution graph;
+- separate artifact-provenance graph;
+- provider-independent rendering over CLIO REST contracts;
+- no provider credentials, provider database clients, or MCP server.
 
 ## Acceptance gates
 
-The architecture is not verified until all of the following use the same
-Spotter MCP build:
+The implementation is qualified only when all relevant gates are recorded separately:
 
-1. A non-CLIO producer writes supported JSONL and Spotter queries it after the
-   producer exits.
-2. A real CLIO run publishes to Flowcept; the official Flowcept MCP tools query
-   the recorded run through Spotter.
-3. A real CLIO run publishes artifact provenance to CMF; the official CMF MCP
-   tools query the recorded artifacts and lineage through Spotter.
-4. Flowcept and CMF are enabled together and their complete capability union is
-   visible without collapsing workflow and artifact concepts.
-5. With Flowcept disabled, a Flowcept-only tool returns
-   `capability_unavailable` and does not query JSONL.
-6. With CMF unreachable, a CMF tool returns `provider_unavailable` and does not
-   substitute native lineage.
-7. Flowcept timeline/Gantt data and CMF lineage/model-card data produce valid UI
-   projections while preserving raw upstream results.
-8. CLIO is stopped before a query, proving that the MCP depends on durable
-   provenance infrastructure rather than the producing process.
-9. The same setup is exercised by the Spotter expert using a real agent run;
-   mocks are limited to unit tests.
-
-Until these gates pass, CMF and Flowcept support must be described as under
-implementation rather than live-verified.
+1. Unit tests cover config selection, direct provider queries, normalization, credential pruning,
+   capability errors, and no-fallback behavior.
+2. A real Luna-driven CLIO run publishes agentic records to Flowcept.
+3. The same run publishes artifact provenance and custody records to a real CMF server/store.
+4. That run uses Flowcept plus CMF with native JSONL/CAS downstream persistence disabled.
+5. The standalone Spotter MCP queries the exact Flowcept and CMF records without calling CLIO.
+6. The real Spotter expert invokes that MCP and explains the recorded run.
+7. Spotter queries still work after the producing CLIO process is stopped.
+8. The UI's focused timeline/Gantt/execution-graph and artifact-graph suites pass independently.
+9. Repository-wide tests, lint, and type checks are reported honestly; a timeout, skip, or
+   environment failure is not a green gate.
 
 ## Explicitly rejected designs
 
-- A CLIO `/v1/provenance/query/{tool}` federation endpoint.
-- A `NativeProvenanceQuery` that impersonates Flowcept or CMF concepts.
-- Flowcept or CMF query code inside CLIO's write providers.
-- A unified MCP that calls GACT or requires a live CLIO process.
-- A minimal generic tool list that hides richer upstream capabilities.
-- Silent provider fallback when the requested semantics are unavailable.
-- Treating Flowcept objects as authoritative CMF/native artifact identity.
-- Treating a Flowcept workflow and a CMF pipeline as the same entity.
+- Putting query federation or native query emulation in clio-agent.
+- Routing gact-tui through Spotter MCP.
+- Having Spotter call GACT or require a running producer.
+- Running or proxying the upstream Flowcept and CMF MCPs.
+- Copying the union of all upstream administrative tools without designing our own interface.
+- A tiny generic interface that erases useful Flowcept or CMF semantics.
+- Provider arguments chosen ad hoc by the model.
+- Silent fallback to another provider when a semantic is unavailable.
+- Treating Flowcept and CMF as interchangeable provenance backends.
+- Treating Flowcept's MongoDB/GridFS internals as CLIO artifact custody.
 
-The correct invariant is simple: producers write provenance to configured
-systems; Spotter queries those systems directly and reports exactly what each
-system can prove.
+The invariant is: producers write to configured provenance systems; the UI asks CLIO for stable
+REST render models; agents ask Spotter for purpose-specific provenance operations; Spotter reads
+the configured durable systems directly and reports only what they can prove.

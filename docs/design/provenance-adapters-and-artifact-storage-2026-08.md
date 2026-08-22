@@ -1,6 +1,7 @@
 # Optional Provenance Providers and Artifact Storage
 
-- **Status:** Implemented CLIO write-side slice; unified Spotter MCP remains unimplemented
+- **Status:** CLIO write-side providers and standalone Spotter query plane implemented;
+  end-to-end live qualification recorded below
 - **Date:** 2026-08-21
 - **Scope:** `clio-agent` provenance semantics, optional downstream provenance providers,
   artifact identity and custody, and the proposed CMF integration boundary
@@ -11,11 +12,12 @@ and open questions from the provenance-integration work. It distinguishes the fi
 implemented slice from later storage and distributed-provider extensions.
 
 > **Query-plane correction:** This document primarily records CLIO's producer/write-side
-> integration. The temporary SQLite Spotter demonstration in section 14 is not the canonical
-> provenance MCP. The corrected standalone, producer-independent query architecture is defined
-> in [Unified Spotter provenance MCP](unified-spotter-provenance-mcp-2026-08.md). That design
-> supersedes any suggestion here that CLIO should federate, emulate, or normalize Flowcept and
-> CMF query semantics for Spotter.
+> integration. The temporary SQLite Spotter demonstration was discarded. The implemented,
+> standalone, producer-independent query architecture is defined in
+> [Unified Spotter provenance MCP](unified-spotter-provenance-mcp-2026-08.md). Spotter reads the
+> explicit CLIO YAML to discover selected providers and endpoints, then connects directly to
+> Flowcept MongoDB, CMF REST, or documented native JSONL/workspace evidence. It neither calls
+> clio-agent nor runs/proxies the upstream MCP servers.
 
 External source snapshots inspected during the discussion:
 
@@ -24,10 +26,9 @@ External source snapshots inspected during the discussion:
 - IOWarp Core: `a02bc8e7813b09f81b616a96283d02626ecf1c22`
 
 The external repositories were inspected but not modified. A real Flowcept full-online
-Redis/MongoDB profile was deployed on the `homelab` SSH host. A real CMF 0.1.0 and
-ML Metadata 1.15.0 runtime was also installed there in an isolated Python 3.9 environment
-and exercised against the CLIO CMF worker. Section 14 records the exact implementation and
-live-verification boundary.
+Redis/MongoDB profile and a loopback-only CMF server/PostgreSQL/UI profile were deployed on the
+`homelab` SSH host. The CLIO CMF worker uses real CMF 0.1.0 and ML Metadata 1.15.0 from an isolated
+Python 3.9 environment. Section 14 records the exact implementation and live-verification boundary.
 
 ## Contents
 
@@ -783,14 +784,18 @@ access control, and backup quality come from the selected DVC backend.
 
 ### 6.8 CMF infrastructure decision
 
-The final scope decisions are:
+The infrastructure requirement depends on the selected capability:
 
-- Shared CMF metadata is not a goal.
-- CMF's web lineage UI is not required; lineage belongs in the CLIO UI.
-- CMF's MCP server is not required; Spotter-AI can expose CLIO provenance query tools.
-- CMF artifact custody is optional and can use a local DVC CAS without a service.
+- A local CMF worker plus local MLMD/DVC-compatible custody needs no shared service.
+- Shared CMF metadata is not a CLIO product requirement.
+- gact-tui does not need CMF's UI; it asks CLIO for the stable artifact graph REST shape.
+- The standalone Spotter MCP does not run CMF's MCP, but its CMF client needs a queryable CMF REST
+  endpoint when CMF is selected as the artifact query provider.
+- CMF's own web UI is useful for inspection and review, but is not the product UI contract.
 
-Consequently, the initial CMF integration requires **no homelab infrastructure**.
+The homelab qualification therefore deploys a lean loopback CMF server, PostgreSQL, and UI profile.
+It does not deploy TensorBoard, Nginx, MinIO, or the upstream CMF MCP. CMF artifact custody remains
+provider-owned and may use a local DVC-compatible CAS or an explicitly configured remote.
 
 For completeness, a read-only homelab inspection on 2026-08-21 found Docker 29.2.0,
 Compose 5.0.2, 48 GiB free disk, about 3.3 GiB available RAM, all 9 GiB swap occupied, and
@@ -799,34 +804,35 @@ UI, TensorBoard, MCP, and Nginx. It has no resource limits; builds a TensorBoard
 `tensorflow/tensorflow:latest`; exposes an API with permissive CORS and no observed
 application authentication; and maps port 443 although its supplied Nginx configuration
 listens only on HTTP port 80. The example MinIO stack uses an old 2021 image and default
-credentials. If collaborative CMF services are ever requested, use a lean, pinned,
-authenticated deployment rather than the examples unchanged.
+credentials. The qualification deployment follows the reduced boundary above and keeps service
+ports on loopback. Production or multi-user deployment still requires authentication, backup, and
+resource limits.
 
 ## 7. Spotter-AI MCP and the CLIO UI
 
-Agent-side provenance queries should operate over the configured agentic and artifact
-provider interfaces. A Spotter-AI MCP integration can expose tools such as:
+These are separate consumers with separate transports:
 
-- `provenance_get_lineage`
-- `provenance_find_artifacts`
-- `provenance_get_execution`
-- `provenance_explain_derivation`
-- `provenance_get_provider_receipts`
-- `provenance_verify_artifact`
+```text
+gact-tui -> a small set of stable REST resources -> clio-agent -> configured provider
 
-This avoids requiring CMF's MCP service and gives every agent a consistent CLIO interface
-regardless of which optional providers are selected.
+agent -> many purpose-specific MCP tools -> standalone Spotter MCP -> stores/services
+```
 
-The CLIO UI should likewise render through those provider interfaces:
+The Spotter MCP is implemented in the marketplace. It reads an explicit CLIO YAML file only to
+discover provider selection and endpoints. It then queries Flowcept MongoDB, CMF REST, or documented
+native JSONL/workspace evidence directly. It does not call CLIO, import GACT state, or run/proxy the
+upstream MCP servers. Its tool vocabulary is designed from the useful Flowcept and CMF concepts:
+campaigns, workflows, agents, tasks, summaries, timelines, pipelines, executions, artifacts,
+lineage, model cards, and cross-provider correlation.
 
-- artifact, activity, revision, used, generated, and gap nodes/edges from ARC;
-- identity and custody evidence;
-- provider projection status and external ids as annotations; and
-- storage availability and verification receipts.
+The MCP is not a minimum-common-denominator abstraction. Each provider advertises honest
+capabilities; an unavailable semantic raises a typed `capability_unavailable` or provider error.
+Native support is best-effort over native evidence, never silent emulation of Flowcept or CMF.
 
-It must not depend on CMF's own UI. When CMF is the selected artifact provider, CLIO may
-query it through `ArtifactProvenanceProvider`; when native is selected, no CMF query is
-needed.
+gact-tui never invokes Spotter. Its Observability surface owns log/timeline/Gantt/execution-graph
+modes. The artifact Provenance tab owns a separate lineage graph. Both call CLIO REST resources;
+CLIO obtains the selected provider's data and returns stable render models. Provider-specific ids,
+receipts, and evidence can be annotations without leaking provider routing into the UI.
 
 ## 8. Flowcept analysis and final role
 
@@ -1041,8 +1047,8 @@ and provider-neutral query surface are implemented and were proved against that 
   are explicit.
 - CLIO owns CLIO artifact version history and algorithm-qualified identity evidence.
 - Provider-native hashes are additional evidence recorded in storage receipts.
-- CLIO UI and Spotter-AI MCP query common provider interfaces rather than provider-specific
-  UIs or storage layouts.
+- CLIO's UI REST read models and Spotter's MCP tools are separate query planes: gact-tui asks CLIO,
+  while Spotter reads configured provider stores/services directly.
 - CMF native entities/edges should be used where they fit; namespaced properties preserve
   residual CLIO semantics.
 - CMF can be a local DVC-backed artifact store without CMF server infrastructure.
@@ -1052,7 +1058,8 @@ and provider-neutral query surface are implemented and were proved against that 
 - The initial Flowcept gold deployment is the `full-online` Redis-plus-MongoDB profile because
   it provides live persistent queries; its first acceptance workload is one local CLIO agent.
 - Flowcept's MongoDB/GridFS blob API is not a CLIO artifact-storage provider in this design.
-- No homelab deployment is required for the first CMF integration.
+- Local CMF custody requires no server, but queryable CMF qualification uses a lean loopback
+  server/PostgreSQL/UI deployment; the upstream CMF MCP is not required.
 
 ### 9.2 Rejected
 
@@ -1068,7 +1075,9 @@ and provider-neutral query surface are implemented and were proved against that 
 - Permanently duplicating every artifact into both CLIO CAS and CMF by default.
 - Allowing CMF to independently rewrite CLIO's version history.
 - Presenting CLIO SHA-256 as a CMF/DVC MD5.
-- Requiring CMF's UI, Neo4j, MCP server, PostgreSQL, or metadata server for CLIO lineage.
+- Requiring CMF's UI, Neo4j, MCP server, PostgreSQL, or metadata server for gact-tui lineage.
+- Putting Spotter query federation in clio-agent or routing gact-tui through MCP.
+- Having Spotter run or proxy the upstream Flowcept and CMF MCP servers.
 - Making a Python 3.11 bridge the primary long-term CMF design.
 - Deploying the stock CMF or MinIO examples to the homelab unchanged.
 - Treating a successful Python source compile as CMF Python 3.12 compatibility proof.
@@ -1110,8 +1119,9 @@ work.
    environment.
 8. **Select CMF metadata and storage seams with HPE.** Prefer a side-effect-free Python or
    supported HTTP interface; begin with local MLMD plus local DVC, then add explicit remotes.
-9. **Expose provider evidence.** Add CLIO API/UI and Spotter-AI MCP surfaces over the common
-   agentic/artifact provider contracts and their receipts.
+9. **Expose provider evidence through two query planes.** CLIO owns stable REST read models for the
+   UI. The standalone marketplace Spotter MCP reads the explicit CLIO YAML and queries selected
+   stores/services directly, with purpose-specific tools and typed capability errors.
 
 ## 11. Acceptance criteria
 
@@ -1175,7 +1185,11 @@ work.
 
 - CLIO lineage renders through the selected artifact provider.
 - Native and CMF providers return a normalized CLIO lineage/query shape.
-- Spotter-AI can query normalized provenance without CMF's MCP server.
+- gact-tui obtains Observability and artifact-lineage render models through CLIO REST only.
+- Spotter queries selected stores/services directly and exposes purpose-specific MCP tools.
+- Spotter can query CMF REST without running CMF's MCP server and can query Flowcept MongoDB
+  without running Flowcept's MCP server.
+- Unsupported native semantics fail explicitly; no provider fallback changes meaning.
 
 ## 12. Questions for the HPE CMF team
 
@@ -1276,73 +1290,115 @@ current dependency range is incompatible with CLIO's Python 3.12 environment.
 
 ### 14.2 Real CMF qualification
 
-On 2026-08-21 the worker was exercised on `ssh homelab` using Python 3.9.2, real
-`cmflib==0.1.0`, and real `ml-metadata==1.15.0`. A fresh SQLite/MLMD database received two
-artifact records and one transform execution. Querying the output artifact returned three
-nodes and the expected edges:
+On 2026-08-22 the complete CMF path was exercised on `ssh homelab`, not merely imported or
+unit-tested. The deployment used:
+
+- a loopback CMF server on port 8380 backed by PostgreSQL;
+- the CMF web UI on loopback port 8381;
+- an isolated Python 3.9.2 worker with CMF's full dependency set, including real
+  `cmflib==0.1.0` and `ml-metadata==1.15.0`; and
+- pipeline `clio-live-20260822` with CMF local DVC-compatible custody.
+
+CLIO created artifact `artifact_0bb8c80d22be41dda2264446453484bf` from
+`provenance-custody-verified.txt`. CLIO's SHA-256 identity was
+`a8071f3baea7f99ab7c4ae2ae7092074babb10a62c444f855b4b844e1a9274d2`. CMF took custody
+under its native MD5 object identity `9be69deba6ddd9e264bb38801512b813`; the stored 36-byte
+object existed at `files/md5/9b/e69deba6ddd9e264bb38801512b813` and matched that digest.
+The query-plane URI is:
 
 ```text
-artifact_cmf_input --used--> activity:call_cmf_live
-activity:call_cmf_live --generated--> artifact_cmf_output
+cmf+dvc://local/files/md5/9b/e69deba6ddd9e264bb38801512b813
 ```
 
-The response preserved CLIO artifact ids, SHA-256 identities, session/turn ids, tool, status,
-and ARC event correlations in namespaced CMF properties. The fresh MLMD SQLite file was 245760
-bytes. The two local custody objects were also present under `files/md5/<xx>/<rest>` and their
-computed MD5 values matched their object names.
+The CMF server returned the same stable CLIO artifact id and a lineage graph rooted at that id
+with four nodes and zero edges. Zero edges is honest evidence for this artifact: it was recorded
+without an input/output transform relationship. The isolated worker avoids importing CMF into
+CLIO's Python 3.12 environment and avoids invoking the ordinary `Cmf` client lifecycle in the
+user's workspace. CMF remotes other than the qualified local backend and a Windows-native MLMD
+runtime remain unqualified.
 
-This qualifies the implemented mapping and local object layout against the real packages. It
-does not yet qualify a CMF remote, the CMF server, or a Windows-native MLMD wheel. The current
-worker uses CMF's lower-level SQLite/metadata helpers specifically to avoid the `Cmf` client's
-cwd/Git/DVC side effects; that seam is intentionally isolated for HPE review.
+### 14.3 Flowcept plus CMF with native downstream persistence disabled
 
-### 14.3 Real Flowcept, NDP, and Spotter qualification
+The combined live CLIO deployment selected the two provider axes independently:
 
-The homelab Flowcept profile ran Redis 7 and MongoDB 8 with loopback-only ports reached through
-an SSH tunnel. CLIO ran from the feature worktree with JSONL plus Flowcept and used the Codex
-provider with `gpt-5.6-luna`; Claude was not used.
+```text
+agentic provider: Flowcept full-online -> Redis + MongoDB
+artifact provider/store: CMF -> CMF server/PostgreSQL + local DVC-compatible custody
+```
 
-A terminal NDP run invoked the real `ndp_search_datasets` tool and returned the EarthScope
-Stations Dataset (`811f0bcc-99e5-455c-bcf6-7c63c2634f41`) and resource
-`a420cc30-2262-423a-8c63-3ad8d91f2a8f`. Under `spotter-ai`, a second terminal NDP run invoked
-the same live tool, then woke the standing Spotter watcher. The watcher itself ran with an
-explicit session overlay selecting Codex Luna, invoked the real `spotter_campaign_health` MCP
-tool, and completed. Leaving `spotter-ai` transitioned its standing task to
-`status=cancelled, live_state=cancelled`, which is the intended terminal disarm state.
+`CLIO_PROVENANCE_PROVIDERS=flowcept` omitted the native JSONL sink, and
+`CLIO_ARTIFACT_PROVENANCE_PROVIDER=cmf` omitted the native CLIO CAS. After the custody run there
+was no runtime `provenance.jsonl` and no workspace artifact CAS. ARC still existed as CLIO's live
+context/event source; that is not a native downstream provenance provider. The run reported zero
+Flowcept or CMF dispatcher failures and overflows. The custody turn's provider receipts recorded
+273 accepted Flowcept events and five accepted CMF artifact-substream events.
 
-CLIO's provider-neutral query returned the same three terminal turns and the same three
-completed tool spans from native JSONL and Flowcept for the combined parent/child session.
-Direct Flowcept Mongo queries returned 103 records for the NDP parent and 54 for the Spotter
-child; Flowcept reported its KV, MongoDB, and MQ services healthy, with zero CLIO dispatcher
-failures or overflows.
+Flowcept used its supported `full-online` profile. Redis provided Flowcept's MQ/KV path and
+MongoDB provided persistent query state; CLIO did not write either store directly. A fresh
+session-scope workflow now starts or reopens on `turn.started`, becomes `FINISHED` on
+`turn.completed`, becomes `ERROR` on `turn.failed`, and clears a stale `ended_at` when reopened.
+The completed Spotter qualification session `sess_72b9686f6177` mapped to Flowcept workflow
+`e5d63171-ccdd-5d53-a122-364d8ffc72d0`, which was read back as `FINISHED` with both start and end
+times.
 
-Two failed probes remain useful negative evidence rather than acceptance results: the generic
-NDP benchmark runner did not activate the EarthScope blueprint and therefore lacked the NDP
-tool, and a simple built-in-main Spotter trigger produced streamed text but the blueprint
-wrapper classified the answer as empty. The corrected blueprint-aware NDP plus Spotter run is
-the terminal green path described above.
+### 14.4 Standalone Spotter MCP and real Luna expert
 
-The first live query exposed a provider-neutral normalization defect: one-shot running token
-samples were treated as open lifecycle spans, while expert and LLM start/end records use
-different event names. The read model now opens spans from lifecycle event types, pairs the
-expert and LLM families explicitly, and coalesces duplicate starts with the same correlation.
-Replaying the combined parent/child JSONL through the corrected normalizer reports
-`complete=true`, three terminal turns, and no truncation. The same normalizer is used for
-Flowcept records.
+The temporary SQLite Spotter interface and its old tool vocabulary were removed. The implemented
+Spotter MCP lives in `clio-agent-marketplace`, exposes 15 purpose-specific read-only tools, reads
+the explicit CLIO YAML to select providers and endpoints, and then queries Flowcept MongoDB, CMF
+REST, or documented native evidence directly. It does not call CLIO and does not proxy either
+upstream MCP.
 
-### 14.4 Verification gates and boundary
+A real `gpt-5.6-luna` Spotter expert ran in CLIO session `sess_72b9686f6177` and made eight
+successful MCP calls: capabilities, Flowcept task summary/query/timeline, CMF pipeline/artifact
+queries, cross-provider correlation, and artifact lineage. Its terminal report found:
 
-The no-infrastructure provider tests passed 21/21. The broader artifact, export, semantic-
-event, and session-export selection passed 360 tests; its two environment-skipped relay shape
-checks were then rerun against the real sibling `clio-relay` models and both passed. Ruff passed
-for every changed Python file, and Mypy reported no issues in the 16 selected provider, mint,
-export, route, and event modules. The UI's focused Vitest suites passed 2 core-client and 3 web-observability tests, and
-both TypeScript projects passed `tsc --noEmit`.
+- Flowcept and CMF both ready;
+- workflow `2b7c9a46-840b-5089-9164-a0cdcf2a4460`: 126 records, 121 `FINISHED`, five `ERROR`;
+- exact CMF custody URI `cmf+dvc://local/files/md5/9b/e69deba6ddd9e264bb38801512b813`;
+- lineage root `artifact_0bb8c80d22be41dda2264446453484bf`, four nodes, zero edges; and
+- correlation `sess_a0427509092b`: 100 returned Flowcept records at the requested cap and zero
+  CMF matches for that older session.
 
-The repository-wide non-integration command was also attempted, but it is not recorded as
-green: on managed Windows it reached roughly 65 percent and timed out after 20 minutes with
-unrelated failures and environment-gated skips. One failure was reproduced independently:
-`test_set_app_arc_sets_and_wires` hardcodes `/tmp/_arc_set_app_arc_test` and fails with
-`WinError 5` before exercising its ARC wiring assertion. The focused gates above are the
-acceptance evidence for this slice; the incomplete broad command is retained as non-green
-evidence rather than being silently omitted.
+That first full expert run exposed a stale MCP listing-cache entry created before Spotter declared
+its tools read-only. The calls were completed through CLIO's public permission API, so they are
+valid provider-query evidence but not the final permission-semantics proof. Spotter now declares
+the standard MCP read-only/idempotent annotations, and CLIO includes the installed blueprint
+checksum in a declared MCP server's cache identity. Updating a blueprint therefore forces a fresh
+tool listing even when the launcher command did not change.
+
+A clean post-fix Luna session, `sess_493974fbe646`, called `spotter_capabilities` and
+`spotter_get_artifact_lineage`; both succeeded and the session's complete permission ledger had
+zero rows. Luna returned Flowcept/CMF as the providers and the same four-node, zero-edge graph.
+
+Finally, the exact CLIO listener was stopped and the bounded standalone MCP verifier was run while
+port 8180 was unavailable. It still exposed all 15 tools and queried both stores. It returned the
+completed Flowcept workflow above with 134 `FINISHED` records, the exact CMF artifact URI and
+four-node graph, and correlation counts of 100 agentic plus eight artifact-side records. This is
+the producer-independence gate: Spotter reads durable provider state and does not require CLIO to
+be running.
+
+### 14.5 Verification gates and remaining boundary
+
+Final focused gates were:
+
+- CLIO provider, Flowcept, artifact-provider, and lazy-blueprint-MCP tests: 46 passed;
+- changed CLIO Python files: Ruff checks clean and Ruff formatting clean after the final formatting
+  correction;
+- Spotter MCP locally: 16 passed, Ruff clean, formatting clean, Pyright zero errors;
+- Spotter MCP in the deployed Linux environment: 16 passed, Ruff clean, formatting clean,
+  Pyright zero errors;
+- gact-tui focused suites: two core-client and three web-observability tests passed;
+- both gact-tui TypeScript projects passed `tsc --noEmit`, and the Vite production build passed
+  with only existing CSS/chunk warnings.
+
+No gact-tui source change was required: Observability already has independent log, Gantt, and
+execution-graph modes, while Artifact Provenance remains a separate provider-neutral graph.
+
+The CLIO focused Pyright command is not green in this managed Windows checkout because its
+environment cannot resolve installed `dspy` and `pytest` imports. The repository-wide
+non-integration command is also not recorded as green: the earlier attempt reached roughly 65
+percent and timed out with unrelated environment failures and skips. Those results are explicit
+limitations, not silently converted into passing gates. The homelab CLIO service also uses the
+documented degraded local ARC substrate for this qualification; that affects live context
+quality, not the proof that native JSONL/CAS downstream persistence was disabled.
