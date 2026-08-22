@@ -27,7 +27,7 @@ from clio_agent.tools.execution import (
 from clio_agent.tools.gateway import namespace_specs
 
 
-def _blueprint(bp_id: str, servers: dict[str, str]) -> AgentBlueprintDefinition:
+def _blueprint(bp_id: str, servers: dict[str, object]) -> AgentBlueprintDefinition:
     root = Path(f"/fake/{bp_id}")
     return AgentBlueprintDefinition(
         id=bp_id,
@@ -83,6 +83,32 @@ class TestDiscoverPackServers:
         assert "a-server" in servers["pack-a"]
         # The OTHER installed blueprint's servers never leak in.
         assert "pack-b" not in servers
+
+    def test_installed_blueprint_checksum_invalidates_mcp_listing_cache(
+        self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        blueprint = _blueprint(
+            "spotter-ai",
+            {
+                "spotter": {
+                    "command": "uv",
+                    "args": ["run", "spotter-mcp"],
+                    "env": {"EXISTING": "preserved"},
+                }
+            },
+        )
+        blueprint.metadata["install"] = {"checksum": "pack-checksum-v2"}
+        monkeypatch.setattr(
+            "clio_agent.gact.agent_blueprints.discover_agent_blueprints", lambda: [blueprint]
+        )
+
+        servers = agent._discover_pack_servers("spotter-ai")
+
+        spec = servers["spotter-ai"]["spotter"]
+        assert spec["env"] == {
+            "EXISTING": "preserved",
+            "CLIO_BLUEPRINT_INSTALL_CHECKSUM": "pack-checksum-v2",
+        }
 
     def test_unknown_blueprint_id_returns_nothing(
         self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch
@@ -165,9 +191,7 @@ experts: [watcher.md]
 """,
             encoding="utf-8",
         )
-        session = SimpleNamespace(
-            metadata={"active_agent_blueprint_path": str(blueprint)}
-        )
+        session = SimpleNamespace(metadata={"active_agent_blueprint_path": str(blueprint)})
         app = SimpleNamespace(state=SimpleNamespace(sessions={"session-1": session}))
         from clio_agent.gact import context as gact_context
 

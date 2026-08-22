@@ -350,9 +350,9 @@ class ClioAgent(dspy.Module):
                 return {}
             if blueprint.id != blueprint_id or not blueprint.enabled:
                 return {}
-            servers = blueprint.metadata.get("mcp_servers")
-            if isinstance(servers, Mapping) and servers:
-                return {blueprint.id: {str(key): value for key, value in servers.items()}}
+            servers = self._blueprint_server_map(blueprint)
+            if servers:
+                return {blueprint.id: servers}
             return {}
         try:
             blueprints = discover_agent_blueprints()
@@ -363,11 +363,36 @@ class ClioAgent(dspy.Module):
         for blueprint in blueprints:
             if blueprint.id != blueprint_id:
                 continue
-            servers = blueprint.metadata.get("mcp_servers")
-            if isinstance(servers, Mapping) and servers:
-                return {blueprint.id: {str(k): v for k, v in servers.items()}}
+            servers = self._blueprint_server_map(blueprint)
+            if servers:
+                return {blueprint.id: servers}
             return {}
         return {}
+
+    @staticmethod
+    def _blueprint_server_map(blueprint: Any) -> dict[str, Any]:
+        """Return one blueprint's MCP declarations with install-aware cache identity."""
+
+        raw_servers = blueprint.metadata.get("mcp_servers")
+        if not isinstance(raw_servers, Mapping):
+            return {}
+        install = blueprint.metadata.get("install")
+        checksum = str(install.get("checksum") or "") if isinstance(install, Mapping) else ""
+        servers: dict[str, Any] = {}
+        for name, raw_spec in raw_servers.items():
+            if not checksum or not isinstance(raw_spec, Mapping):
+                servers[str(name)] = raw_spec
+                continue
+            spec = dict(raw_spec)
+            raw_env = spec.get("env")
+            env = dict(raw_env) if isinstance(raw_env, Mapping) else {}
+            # Listing-cache keys include the declared environment. An installed blueprint
+            # update can change tool schemas or annotations without changing its launcher;
+            # this non-secret identity forces the first post-update listing to refresh.
+            env["CLIO_BLUEPRINT_INSTALL_CHECKSUM"] = checksum
+            spec["env"] = env
+            servers[str(name)] = spec
+        return servers
 
     def _build_tool_gateway(
         self, *, cwd: str | None = None, set_catalog: bool = False, blueprint_id: str = ""
