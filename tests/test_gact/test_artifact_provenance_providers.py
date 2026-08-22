@@ -17,6 +17,7 @@ from clio_agent.gact.artifacts.provenance.cmf import (
     CMFArtifactProvenanceProvider,
     CMFArtifactStore,
     CMFProviderConfig,
+    _resolve_python,
 )
 from clio_agent.gact.artifacts.provenance.selector import ArtifactProvenanceDispatcher
 from clio_agent.gact.artifacts.records import (
@@ -47,6 +48,23 @@ def _config(tmp_path: Path, *, artifact_store: str = "local") -> CMFProviderConf
 def test_cmf_store_mode_is_validated_at_configuration_time(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="must be 'reference' or 'local'"):
         _config(tmp_path, artifact_store="unsupported")
+
+
+def test_cmf_python_keeps_virtualenv_launcher_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The configured launcher must not be dereferenced out of its virtualenv."""
+    launcher = tmp_path / "venv" / "bin" / "python"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_bytes(b"")
+
+    def _unexpected_resolve(_path: Path) -> Path:
+        raise AssertionError("virtualenv launcher path was dereferenced")
+
+    monkeypatch.setattr(Path, "resolve", _unexpected_resolve)
+
+    assert _resolve_python(str(launcher)) == str(launcher.absolute())
 
 
 def _version(identity: Any) -> ArtifactVersion:

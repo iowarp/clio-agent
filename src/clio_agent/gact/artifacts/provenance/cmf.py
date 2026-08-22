@@ -175,7 +175,11 @@ def _resolve_python(configured: str) -> str:
         return ""
     path = Path(value).expanduser()
     if path.is_file():
-        return str(path.resolve())
+        # A POSIX virtualenv's ``bin/python`` is normally a symlink to the base
+        # interpreter.  Resolving that symlink discards the virtualenv launch
+        # context and therefore its site-packages (including cmflib).  Keep the
+        # configured executable path while still making a relative path absolute.
+        return str(path.absolute())
     return shutil.which(value) or ""
 
 
