@@ -13,6 +13,7 @@ Blueprint AGENT.md ``mcp_servers`` must mount on blueprint ACTIVATION
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -143,6 +144,41 @@ tools: [spotter_capabilities]
 
         with tool_blueprint_context("spotter-ai", blueprint):
             servers = agent._discover_pack_servers("spotter-ai")
+
+        assert set(servers["spotter-ai"]) == {"spotter"}
+
+    def test_session_metadata_recovers_path_when_tool_context_has_no_path(
+        self, agent: ClioAgent, tmp_path: Path
+    ) -> None:
+        blueprint = tmp_path / "AGENT.md"
+        blueprint.write_text(
+            """---
+id: spotter-ai
+title: Spotter
+version: 1.0.0
+root_expert: watcher
+blueprint: {format: agent-blueprint-v1}
+mcp_servers:
+  spotter: uv run spotter-mcp
+experts: [watcher.md]
+---
+""",
+            encoding="utf-8",
+        )
+        session = SimpleNamespace(
+            metadata={"active_agent_blueprint_path": str(blueprint)}
+        )
+        app = SimpleNamespace(state=SimpleNamespace(sessions={"session-1": session}))
+        from clio_agent.gact import context as gact_context
+
+        app_token = gact_context.set_app(app)
+        session_token = gact_context.set_session_id("session-1")
+        try:
+            with tool_blueprint_context("spotter-ai"):
+                servers = agent._discover_pack_servers("spotter-ai")
+        finally:
+            gact_context.reset(session_token)
+            gact_context.reset(app_token)
 
         assert set(servers["spotter-ai"]) == {"spotter"}
 

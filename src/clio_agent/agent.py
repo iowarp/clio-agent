@@ -323,6 +323,24 @@ class ClioAgent(dspy.Module):
         )
 
         blueprint_path = get_active_tool_blueprint_path().strip()
+        if not blueprint_path:
+            try:
+                from clio_agent.gact import context as gact_context  # noqa: PLC0415
+                from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+                    _runtime_active_agent_blueprint_path,
+                )
+
+                app = gact_context.active_app()
+                session_id = gact_context.active_session_id()
+                active_path = (
+                    _runtime_active_agent_blueprint_path(app, session_id)
+                    if app is not None and session_id
+                    else None
+                )
+                blueprint_path = str(active_path or "").strip()
+            except Exception as exc:  # noqa: BLE001 - installed discovery remains available
+                if self.verbose:
+                    print(f"[ClioAgent] active session blueprint path lookup failed: {exc}")
         if blueprint_path:
             try:
                 blueprint = parse_agent_blueprint_root(Path(blueprint_path), scope="session")
