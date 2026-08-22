@@ -17,6 +17,7 @@ See docs/ARC_MEMORY_LAYER.md for architecture details.
 """
 
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -88,16 +89,20 @@ def _durable_trace_backend() -> str:
     destructive erase of the ``_events`` log on this: when the durable trace keeps
     no copy, the log is the ONLY record of the session's events (#762).
     """
-    return (
-        conf.resolve(
-            "trace.backend",
-            env="CLIO_SEMANTIC_TRACE_BACKEND",
-            default="none",
-            cast=conf.as_str,
-        )
-        .strip()
-        .lower()
-    )
+    # Keep ``arc/`` free of a gact import while mirroring the provider-factory
+    # precedence: an explicitly configured native JSONL/factory provider is a
+    # replayable copy; Flowcept alone is not permission to erase ARC history.
+    providers_file = conf.store().file_value("provenance.agentic.providers")
+    providers_env = os.environ.get("CLIO_PROVENANCE_PROVIDERS", "").strip()
+    if providers_file is not conf.UNSET or providers_env:
+        raw = providers_file if providers_file is not conf.UNSET else providers_env
+        names = {name.strip().lower() for name in conf.as_csv(raw)}
+        return "file" if names.intersection({"jsonl", "file", "native", "factory"}) else "none"
+    legacy_file = conf.store().file_value("trace.backend")
+    legacy_env = os.environ.get("CLIO_SEMANTIC_TRACE_BACKEND", "").strip()
+    if legacy_file is not conf.UNSET or legacy_env:
+        return str(legacy_file if legacy_file is not conf.UNSET else legacy_env).strip().lower()
+    return "file"
 
 
 class ARCMemory:

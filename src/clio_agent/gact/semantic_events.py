@@ -654,68 +654,15 @@ class FileSemanticTraceBackend:
 
 
 def build_trace_backend(default_root: Path) -> SemanticTraceBackend:
-    """Build the configured durable trace backend.
+    """Build the configured downstream provenance dispatcher.
 
-    ``CLIO_SEMANTIC_TRACE_BACKEND`` accepts ``file``, ``factory``, or ``none``.
-    ``CLIO_SEMANTIC_TRACE_PATH`` may point at either a JSONL file or a
-    directory. The durable file backend (``FileSemanticTraceBackend``) writes
-    OFF the turn event loop via a shared writer thread, so it is cheap and safe
-    to enable. It is the single canonical record the memory underbelly stands on
-    (ARC live view, re-extract repair, agent-to-agent handoff, error detection,
-    research replay) and the grind/research runs enable it (``=file``).
-
-    DEFAULT is still ``none`` (opt-in): flipping it on surfaced a separate, real
-    turn-lifecycle fragility -- a turn runs as a request-loop background task
-    (app.py create_task), and the extra writer-thread GIL load + mid-turn tool
-    observer emits push it past the request-loop teardown window, cancelling the
-    turn under the test harness. Making the durable trace the DEFAULT is gated on
-    a turn-task-robustness fix (run turns off the request loop). Until then,
-    enable explicitly. Live semantic SSE is independent and always on.
+    The legacy ``trace.backend`` surface remains supported when the new
+    provider list is absent.  JSONL is now the default provider and Flowcept is
+    imported only when explicitly selected.
     """
+    from clio_agent.gact.provenance.factory import build_provenance_backend
 
-    from clio_agent import conf
-
-    backend = (
-        conf.resolve(
-            "trace.backend",
-            env="CLIO_SEMANTIC_TRACE_BACKEND",
-            default="none",
-            cast=conf.as_str,
-        )
-        .strip()
-        .lower()
-    )
-    if backend in {"", "none", "off", "disabled"}:
-        return NoopSemanticTraceBackend()
-    if backend == "file":
-        raw_path = conf.resolve(
-            "trace.path", env="CLIO_SEMANTIC_TRACE_PATH", default="", cast=conf.as_str
-        ).strip()
-        path = Path(raw_path).expanduser() if raw_path else default_root
-        return FileSemanticTraceBackend(path)
-    if backend in {"factory", "python_factory", "custom"}:
-        factory_path = conf.resolve(
-            "trace.semantic_factory",
-            env="CLIO_SEMANTIC_TRACE_FACTORY",
-            default="",
-            cast=conf.as_str,
-        ).strip()
-        if not factory_path:
-            raise ValueError(
-                "CLIO_SEMANTIC_TRACE_FACTORY is required when CLIO_SEMANTIC_TRACE_BACKEND=factory"
-            )
-        factory = _load_factory(factory_path)
-        raw_config = conf.resolve(
-            "trace.semantic_config", env="CLIO_SEMANTIC_TRACE_CONFIG", default="", cast=conf.as_str
-        ).strip()
-        config = json.loads(raw_config) if raw_config else {}
-        result = factory(default_root=default_root, config=config)
-        if not callable(getattr(result, "emit", None)):
-            raise TypeError("semantic trace factory must return an object with emit(event)")
-        if not getattr(result, "name", ""):
-            result.name = "factory"
-        return result
-    raise ValueError(f"unsupported semantic trace backend: {backend}")
+    return build_provenance_backend(default_root)
 
 
 def _load_factory(path: str) -> Any:

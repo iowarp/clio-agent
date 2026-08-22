@@ -4,7 +4,7 @@ CLIO emits semantic execution events so a run can be inspected as a research
 workflow, not only as text deltas or token metrics. The same event spine feeds:
 
 - live GACT SSE events with type `semantic.event`,
-- optional durable JSONL traces,
+- configured agentic provenance providers (durable JSONL by default),
 - Python runtime hooks named `semantic_event(event)`.
 
 ## Event Schema
@@ -72,28 +72,34 @@ Configure with `CLIO_SEMANTIC_TRACE_DETAIL`.
   responses, user text, tool arguments, command input, and file contents, so it
   should be enabled only for trusted debugging or benchmark capture.
 
-Durable tracing is off by default. Live semantic SSE is available by default at
-the configured detail level.
+Durable JSONL provenance is on by default. Live semantic SSE is also available
+at the configured detail level.
 
 ## Durable JSONL Backend
 
 Configure with:
 
 ```bash
-CLIO_SEMANTIC_TRACE_BACKEND=file
-CLIO_SEMANTIC_TRACE_PATH=/path/to/traces
+CLIO_PROVENANCE_PROVIDERS=jsonl
+CLIO_PROVENANCE_JSONL_PATH=/path/to/traces
 CLIO_SEMANTIC_TRACE_DETAIL=semantic
 ```
 
-`CLIO_SEMANTIC_TRACE_BACKEND` accepts:
+`provenance.agentic.providers` (or `CLIO_PROVENANCE_PROVIDERS`) is the
+authoritative provider list. The committed default is `jsonl`. Selecting
+`none` or an empty list disables downstream providers but does not replace ARC,
+which remains the live context substrate and semantic-event source.
 
-- `none`: default, no durable trace writes.
+The old `CLIO_SEMANTIC_TRACE_BACKEND` surface remains a compatibility input
+only when the new provider list is not configured. It accepts:
+
+- `none`: no downstream trace writes.
 - `file`: append JSONL traces locally.
 - `factory`: call a custom Python factory configured by
   `CLIO_SEMANTIC_TRACE_FACTORY=module:function`.
 
-`CLIO_SEMANTIC_TRACE_PATH` can be either a file path or a directory. Directory
-mode writes one file per session:
+`CLIO_PROVENANCE_JSONL_PATH` and the legacy `CLIO_SEMANTIC_TRACE_PATH` can be
+either a file path or a directory. Directory mode writes one file per session:
 
 ```text
 <session_id>.semantic.jsonl
@@ -109,6 +115,43 @@ factory(default_root=Path(...), config={...})
 The returned object must expose `emit(event)` and may expose `name`. This keeps
 OTEL, database, or user-provided sinks behind the same event sink as the local
 file backend.
+
+## Optional Flowcept Provider
+
+Install the optional dependency and select it explicitly:
+
+```bash
+uv sync --extra flowcept
+CLIO_PROVENANCE_PROVIDERS=jsonl,flowcept
+FLOWCEPT_SETTINGS_PATH=/path/to/flowcept-settings.yaml
+CLIO_FLOWCEPT_PRIVACY=metadata
+```
+
+Flowcept is never imported when it is not selected. CLIO gives Flowcept mapped
+workflow, agent, and task records after ARC has recorded each semantic event;
+Flowcept owns its configured buffering, MQ, persistence, and query services.
+Provider-local filters default to excluding token/thinking event classes. The
+privacy modes are `metadata` (default), `redacted`, and `full`.
+
+Useful optional settings are:
+
+- `CLIO_FLOWCEPT_WORKFLOW_SCOPE=session|process`
+- `CLIO_FLOWCEPT_CAMPAIGN_SCOPE=session|workspace|agent`
+- `CLIO_FLOWCEPT_CAMPAIGN_ID=<explicit-id>`
+- `CLIO_FLOWCEPT_INCLUDE_EVENTS=<comma-separated patterns>`
+- `CLIO_FLOWCEPT_EXCLUDE_EVENTS=<comma-separated patterns>`
+
+The query surface is provider-neutral:
+
+```text
+GET /v1/provenance/providers
+GET /v1/sessions/{sid}/provenance/execution?provider=native&include_children=true
+GET /v1/sessions/{sid}/provenance/execution?provider=flowcept&include_children=true
+```
+
+Both execution queries return `clio.execution_provenance.v1`; clients do not
+need Flowcept database or schema knowledge. Artifact lineage remains on the
+separate CLIO artifact API.
 
 ## Hooks
 

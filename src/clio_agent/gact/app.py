@@ -519,6 +519,7 @@ from clio_agent.gact.routes.permissions import (  # noqa: E402
 from clio_agent.gact.routes.prompts import (  # noqa: E402
     register_prompts_routes,
 )
+from clio_agent.gact.routes.provenance import register_provenance_routes  # noqa: E402
 from clio_agent.gact.routes.provider_models_refresh import (
     register_provider_models_refresh_routes,  # noqa: E402
 )
@@ -1290,6 +1291,30 @@ def build_app(
         detail_level=app.state.semantic_trace_detail_level,
         live_consumers=None,
     )
+
+    # Centralized session lifecycle bridge: every root, forked, imported, and
+    # child-agent session created through SessionStore reaches the same ARC-first
+    # semantic highway. Session deletion is the only terminal workflow signal;
+    # process shutdown deliberately leaves persistent sessions open.
+    def _observe_session_lifecycle(event_type: str, session: Any) -> None:
+        _emit_semantic_event(
+            app,
+            str(session.id),
+            event_type,
+            trace_id=f"session:{session.id}",
+            status="completed",
+            summary=f"session {session.id} {event_type.rsplit('.', 1)[-1]}",
+            actor={"role": "system"},
+            subject={"session_id": session.id},
+            payload={
+                "workspace_id": session.workspace_id,
+                "parent_session_id": session.parent_session_id,
+                "agent": dict(session.agent),
+                "started_at": session.created_at,
+            },
+        )
+
+    app.state.sessions.set_lifecycle_observer(_observe_session_lifecycle)
     # (ARC's arc.op op-logger AND highway-derive sink are wired via _set_app_arc
     # whenever app.state.arc is assigned — see _set_app_arc; the highway closure reads
     # app.state.semantic_event_sink at fire-time, so this construction order is fine.)
@@ -2260,6 +2285,7 @@ def build_app(
     # state-assembly + ARC-unavailable helpers they share live there.
     register_context_routes(app, deps)
     register_trace_routes(app, deps)
+    register_provenance_routes(app, deps)
 
     # ---- /v1/sessions/{sid}/diffs/* + /context/files + /context/frames ---
     # Pending/applied file-diff list/apply/reject plus the context-file

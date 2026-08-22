@@ -141,6 +141,12 @@ claude-code = [
     "claude-agent-sdk>=0.2.110",
 ]
 
+flowcept = [
+    # Optional queryable agentic-provenance provider. CLIO imports it only
+    # when provenance.agentic.providers includes "flowcept".
+    "flowcept[redis,mongo]>=1.0.3,<2",
+]
+
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
@@ -154,7 +160,7 @@ dev = [
 ]
 
 all = [
-    "clio-agent[optimizers,adios,argonne,claude-code,dev]",
+    "clio-agent[optimizers,adios,argonne,claude-code,flowcept,dev]",
 ]
 
 [project.urls]
