@@ -282,6 +282,10 @@ class Part(DocumentPartFields):
     body: str = ""
     actions: list[dict[str, Any]] = Field(default_factory=list)
 
+    # A2UI 0.9.1 surface reference. The ordered protocol messages live in the
+    # persistent surface ledger; transcript parts carry only its stable id.
+    surface_id: str = ""
+
     def to_wire(self) -> dict[str, Any]:
         """Project this part to its wire dict via ``exclude_defaults`` (omitempty:
         a part populates only its own ``type``'s fields; the rest sit at

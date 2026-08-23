@@ -374,6 +374,12 @@ class Workspace(BaseModel):
     id: str
     name: str
     root_path: str = ""
+    # GACT 0.3 canonical identity. ``display_name`` is the primary user-facing
+    # label; ``path`` remains secondary metadata. ``root_path`` is retained for
+    # 0.2 clients until that compatibility contract is retired.
+    display_name: str = ""
+    path: str = ""
+    connection_id: str = "local"
     storage_root: str = ""
     created_at: str
     updated_at: str

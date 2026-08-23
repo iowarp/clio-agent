@@ -41,12 +41,12 @@ from clio_agent.gact.diagnostics import (  # noqa: E402,F401
 
 _install_sigusr1_diagnostic()
 
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional, cast
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -145,6 +145,8 @@ def _gact_cors_origins() -> list[str]:
         "http://127.0.0.1:4173",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
     ]
     try:
         raw_value: Any = conf.resolve(
@@ -476,6 +478,7 @@ from clio_agent.gact.providers.lmstudio import (  # noqa: E402,F401
     _release_owned_lm_studio_instance,
 )
 from clio_agent.gact.routes import artifact_workspace  # noqa: E402
+from clio_agent.gact.routes.a2ui import register_a2ui_routes  # noqa: E402
 from clio_agent.gact.routes.agent_tasks import (  # noqa: E402
     register_agent_task_routes,
 )
@@ -526,6 +529,9 @@ from clio_agent.gact.routes.providers import register_providers_routes  # noqa: 
 from clio_agent.gact.routes.relay import register_relay_routes  # noqa: E402
 from clio_agent.gact.routes.schedules import (  # noqa: E402
     register_schedules_routes,
+)
+from clio_agent.gact.routes.session_defaults import (  # noqa: E402
+    register_session_defaults_routes,
 )
 from clio_agent.gact.routes.sessions import register_sessions_routes  # noqa: E402
 from clio_agent.gact.routes.system import register_system_routes  # noqa: E402
@@ -1236,6 +1242,41 @@ def build_app(
         lifespan=_lifespan,
     )
 
+    @app.middleware("http")
+    async def negotiate_protocol(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """Reject explicitly requested protocol versions this server cannot honor."""
+
+        gact_version = request.headers.get("x-gact-version", "").strip()
+        a2ui_version = request.headers.get("x-a2ui-version", "").strip()
+        if gact_version and gact_version not in {"0.2", "0.3"}:
+            return JSONResponse(
+                status_code=406,
+                content={
+                    "error": {
+                        "error": "unsupported_protocol",
+                        "message": f"Unsupported GACT version: {gact_version}",
+                        "details": {"supported": ["0.3", "0.2"]},
+                        "recoverable": False,
+                    }
+                },
+            )
+        if a2ui_version and a2ui_version != "0.9.1":
+            return JSONResponse(
+                status_code=406,
+                content={
+                    "error": {
+                        "error": "unsupported_protocol",
+                        "message": f"Unsupported A2UI version: {a2ui_version}",
+                        "details": {"supported": ["0.9.1"]},
+                        "recoverable": False,
+                    }
+                },
+            )
+        return await call_next(request)
+
     configure_bearer_auth(app)
 
     # Browser/WebView origins are explicit: trust_socket must not grant arbitrary
@@ -1274,6 +1315,12 @@ def build_app(
     # per-session pub/sub. POST /messages
     # publishes; /v1/sessions/{sid}/events subscribers consume.
     app.state.bus = EventBus()
+    from clio_agent.gact.a2ui import A2UIStore  # noqa: PLC0415
+
+    app.state.a2ui_store = A2UIStore(
+        path=session_store_path.parent / "a2ui-surfaces.json",
+        bus=app.state.bus,
+    )
     app.state.semantic_trace_detail_level = _semantic_trace_detail_level()
     app.state.semantic_trace_backend = build_trace_backend(
         session_store_path.parent / "semantic_traces"
@@ -1552,6 +1599,13 @@ def build_app(
 
     app.state.schedules = _SchedStore(
         path=(sessions_path.parent / "schedules.json") if sessions_path is not None else None
+    )
+    from clio_agent.gact.session_defaults import SessionDefaultsStore
+
+    app.state.session_defaults = SessionDefaultsStore(
+        path=(sessions_path.parent / "session-defaults.json")
+        if sessions_path is not None
+        else None
     )
     app.state.scheduler_task = None
     # iowarp/clio-agent#22: shared session tokens.
@@ -2188,6 +2242,7 @@ def build_app(
     # replace + delete cascade, model-ref errors, evidence
     # index and resume text travel on ``deps``.
     register_sessions_routes(app, deps)
+    register_session_defaults_routes(app)
 
     # ---- /v1/sessions/{sid}/messages + /v1/messages (BBB9/BBB10/BBB27) ---
     # The session message ledger -- the turn-entry POST, the list/get reads,
@@ -2197,6 +2252,7 @@ def build_app(
     # replace, active-model ref + override error and the agent-not-available
     # error travel on ``deps``.
     register_messages_routes(app, deps)
+    register_a2ui_routes(app, deps)
 
     # ---- /v1/agent-tasks + /v1/sessions/{sid}/agent-tasks (#948 S2 / #950) ----
     # The AgentTask projection read + cancel routes, over

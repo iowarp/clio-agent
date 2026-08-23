@@ -455,6 +455,12 @@ class EventBus:
 
         return len(self._subs.get(session_id, []))
 
+    @property
+    def history_capacity(self) -> int:
+        """Maximum replay events retained for each session scope."""
+
+        return self._history_cap
+
     def session_events_since(self, session_id: str, *, cursor: int = 1) -> list["Event"]:
         """Return ``session_id``'s recorded events with ``id >= cursor``, ordered by id.
 

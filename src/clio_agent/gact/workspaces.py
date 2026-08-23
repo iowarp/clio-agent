@@ -26,6 +26,41 @@ from clio_agent.gact.workspace_scope import resolve_workspace_storage_root
 _WORKSPACE_ID_PREFIX = "ws_"
 
 
+def workspace_display_name(
+    *,
+    workspace_id: str,
+    name: str,
+    root_path: str,
+    metadata: Optional[dict[str, Any]] = None,
+    configured_display_name: str = "",
+) -> str:
+    """Return the server-authoritative short label for a workspace.
+
+    Explicit display metadata wins, followed by an already-short configured
+    name and finally the filesystem basename.  Full paths are deliberately not
+    promoted into the primary label; clients can read them from ``path``.
+    """
+
+    candidates = [
+        configured_display_name,
+        str((metadata or {}).get("display_name") or ""),
+        name,
+    ]
+    for candidate in candidates:
+        label = candidate.strip()
+        if label and "/" not in label and "\\" not in label:
+            return label
+    if root_path.strip():
+        basename = Path(root_path.strip()).name
+        if basename:
+            return basename
+    for candidate in candidates:
+        label = Path(candidate.strip()).name if candidate.strip() else ""
+        if label:
+            return label
+    return workspace_id
+
+
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -53,6 +88,8 @@ class Workspace:
     id: str
     name: str
     root_path: str = ""
+    display_name: str = ""
+    connection_id: str = "local"
     created_at: str = field(default_factory=_utcnow_iso)
     updated_at: str = field(default_factory=_utcnow_iso)
     config: dict[str, Any] = field(default_factory=dict)
@@ -60,6 +97,14 @@ class Workspace:
 
     def to_wire(self) -> dict[str, Any]:
         row = asdict(self)
+        row["display_name"] = workspace_display_name(
+            workspace_id=self.id,
+            name=self.name,
+            root_path=self.root_path,
+            metadata=self.metadata,
+            configured_display_name=self.display_name,
+        )
+        row["path"] = self.root_path
         row["storage_root"] = str(resolve_workspace_storage_root(self))
         return row
 
@@ -103,7 +148,11 @@ class WorkspaceStore:
         for row in data.get("workspaces", []):
             try:
                 if isinstance(row, dict):
-                    row = {key: value for key, value in row.items() if key != "storage_root"}
+                    row = {
+                        key: value
+                        for key, value in row.items()
+                        if key not in {"path", "storage_root"}
+                    }
                 ws = Workspace(**row)
                 self._workspaces[ws.id] = ws
             except Exception:  # noqa: BLE001 - malformed workspace row skipped

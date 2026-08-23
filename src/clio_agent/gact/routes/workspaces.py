@@ -28,8 +28,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
+from clio_agent.gact.protocol_v3 import requests_gact_v3, workspace_to_v3
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.types import (
     CreateWorkspaceRequest,
@@ -300,14 +301,18 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
     # ---- /v1/workspaces -------------------------
 
     @app.get("/v1/workspaces", response_model=ListWorkspacesResponse)
-    async def list_workspaces() -> ListWorkspacesResponse:
+    async def list_workspaces(request: Request) -> ListWorkspacesResponse | JSONResponse:
         """SPEC §6.1 — list workspaces."""
 
         rows = app.state.workspaces.list()
+        if requests_gact_v3(request):
+            return JSONResponse(content={"workspaces": [workspace_to_v3(row) for row in rows]})
         return ListWorkspacesResponse(workspaces=[Workspace(**w.to_wire()) for w in rows])
 
     @app.post("/v1/workspaces", response_model=Workspace, status_code=201)
-    async def create_workspace(req: CreateWorkspaceRequest) -> Workspace:
+    async def create_workspace(
+        req: CreateWorkspaceRequest, request: Request
+    ) -> Workspace | JSONResponse:
         """SPEC §6.1 — create a workspace pinned to ``root_path``."""
 
         ws = app.state.workspaces.create(
@@ -321,10 +326,12 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         # store leaf-pure. ``grantor=user`` (a direct user action, never a clio decision, ⚑).
         if ws.root_path:
             _emit_boundary_root(app, ws.id, ws.root_path, grantor=_GRANTOR_USER)
+        if requests_gact_v3(request):
+            return JSONResponse(content=workspace_to_v3(ws), status_code=201)
         return Workspace(**ws.to_wire())
 
     @app.get("/v1/workspaces/{wid}", response_model=Workspace)
-    async def get_workspace(wid: str) -> Workspace:
+    async def get_workspace(wid: str, request: Request) -> Workspace | JSONResponse:
         ws = app.state.workspaces.get(wid)
         if ws is None:
             raise HTTPException(
@@ -338,10 +345,12 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
+        if requests_gact_v3(request):
+            return JSONResponse(content=workspace_to_v3(ws))
         return Workspace(**ws.to_wire())
 
     @app.patch("/v1/workspaces/{wid}", response_model=Workspace)
-    async def patch_workspace(wid: str, request: Request) -> Workspace:
+    async def patch_workspace(wid: str, request: Request) -> Workspace | JSONResponse:
         """iowarp/gact-tui §audit/E-18: the desktop's Rename action
         on the Workspaces page posts PATCH /v1/workspaces/{wid} with
         {name?, metadata?, root_path?}. Without this endpoint clio
@@ -388,6 +397,8 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             if prior_root:
                 _emit_boundary_root(app, wid, prior_root, grantor=_GRANTOR_USER, revoked=True)
             _emit_boundary_root(app, wid, new_root, grantor=_GRANTOR_USER)
+        if requests_gact_v3(request):
+            return JSONResponse(content=workspace_to_v3(ws))
         return Workspace(**ws.to_wire())
 
     # ---- /v1/workspaces/{wid}/grants (B5 #979.3 — mid-session grants) ----
@@ -469,6 +480,47 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
         return result
+
+    @app.delete("/v1/workspaces/{wid}/grants")
+    async def delete_workspace_grant(wid: str, request: Request) -> dict[str, Any]:
+        """Remove one user-granted additional workspace folder.
+
+        The primary workspace root remains owned by ``PATCH /v1/workspaces``;
+        this endpoint only revokes an additive ``fs_root`` grant.
+        """
+
+        ws = app.state.workspaces.get(wid)
+        if ws is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"workspace not found: {wid}",
+                        details={"workspace_id": wid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        kind = str(request.query_params.get("kind") or "fs_root")
+        pattern = str(request.query_params.get("pattern") or "").strip()
+        if kind not in {"root", "fs_root"} or not pattern:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="invalid_request",
+                        message="grant removal requires kind=fs_root and a non-empty pattern",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        from clio_agent.gact.runtime import grants  # noqa: PLC0415
+
+        return {
+            "workspace_id": wid,
+            "grant": grants.revoke_root_grant(app, wid, pattern),
+        }
 
     @app.delete("/v1/workspaces/{wid}")
     async def delete_workspace(wid: str) -> Response:

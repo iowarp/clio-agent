@@ -417,6 +417,53 @@ def apply_root_grant(
     }
 
 
+def revoke_root_grant(
+    app: "FastAPI",
+    workspace_id: str,
+    path: str,
+    *,
+    grantor: str = GRANTOR_USER,
+) -> dict[str, Any]:
+    """Revoke one persisted additional workspace root and its live projection.
+
+    The primary workspace root is not a grant and cannot be removed here. A
+    changed grant set restarts or drains the resident fleet using the same
+    safety boundary as grant application so an already-running child never
+    silently keeps broader access.
+    """
+
+    from clio_agent.runtime.sandbox_roots import revoke_write_root_grant  # noqa: PLC0415
+
+    ws = app.state.workspaces.get(workspace_id)
+    if ws is None:
+        return {"revoked": False, "pattern": path, "reason": "workspace_not_found"}
+    workspace_root = str(getattr(ws, "root_path", "") or "")
+    pattern = str(revoke_write_root_grant(workspace_root, path))
+    existing = [str(item) for item in ws.config.get(GRANTED_ROOTS_CONFIG_KEY, []) or []]
+    remaining = [item for item in existing if item != pattern]
+    changed = len(remaining) != len(existing)
+    if changed:
+        ws.config[GRANTED_ROOTS_CONFIG_KEY] = remaining
+        app.state.workspaces.update(workspace_id, metadata_patch=None)
+        restart = _request_fleet_restart(app, workspace_root, widened=True)
+        emit_boundary_revoked(
+            app,
+            kind=KIND_ROOT,
+            scope=SCOPE_WORKSPACE,
+            grantor=grantor,
+            pattern=pattern,
+            workspace_id=workspace_id,
+        )
+    else:
+        restart = "not_granted"
+    return {
+        "revoked": changed,
+        "pattern": pattern,
+        "reason": restart,
+        "restart_deferred": restart == "restart_deferred_busy",
+    }
+
+
 def replay_persisted_root_grants(app: "FastAPI") -> None:
     """Replay each workspace's persisted root grants into the live registry (boot, guarded).
 
@@ -790,6 +837,7 @@ __all__ = [
     "SCOPE_SESSION",
     "SCOPE_WORKSPACE",
     "apply_root_grant",
+    "revoke_root_grant",
     "emit_boundary_for_derived_policy",
     "emit_boundary_granted",
     "emit_boundary_revoked",

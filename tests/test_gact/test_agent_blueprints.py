@@ -2661,6 +2661,15 @@ A helper.
         assert resp.status_code == 201, resp.text
         kinds = {r["id"]: r["kind"] for r in resp.json()["installed"]}
         assert kinds.get("toolkit") == "pack", kinds
+        listed = client.get("/v1/expert-packs", params={"workspace_id": wid})
+        assert listed.status_code == 200, listed.text
+        listed_rows = {row["id"]: row for row in listed.json()["expert_packs"]}
+        assert listed_rows["toolkit"]["kind"] == "pack"
+
+        detail = client.get("/v1/expert-packs/toolkit", params={"workspace_id": wid})
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["expert_pack"]["kind"] == "pack"
+        assert [row["id"] for row in detail.json()["agents"]] == ["helper"]
 
 
 def test_active_agent_blueprint_drives_turn_runtime_and_overrides_builtin_ids(

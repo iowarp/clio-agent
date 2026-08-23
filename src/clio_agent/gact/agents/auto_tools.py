@@ -41,6 +41,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from clio_agent.gact.a2ui_tools import build_create_a2ui_surface_tool
 from clio_agent.gact.action_cards import build_raise_alert_card_tool
 from clio_agent.gact.artifacts.proposals import build_create_artifact_tool
 from clio_agent.gact.autonomous_loop import build_loop_wakeup_tool
@@ -71,5 +72,6 @@ def build_auto_react_tools(agent_def: Any) -> list[Any]:
         build_raise_alert_card_tool(agent_def),
     ]
     if not (getattr(agent_def, "parent_id", "") or ""):
+        tools.append(build_create_a2ui_surface_tool())
         tools.append(build_refresh_provider_models_tool())
     return tools

@@ -110,6 +110,7 @@ def _agent_blueprint_candidates(root: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for candidate in candidates:
         parsed = parse_agent_blueprint_root(candidate, scope="marketplace")
+        parsed_wire = parsed.to_wire()
         rows.append(
             {
                 "id": parsed.id,
@@ -118,6 +119,7 @@ def _agent_blueprint_candidates(root: Path) -> list[dict[str, Any]]:
                 "enabled": parsed.enabled,
                 "validation_errors": list(parsed.validation_errors),
                 "definition_path": str(parsed.root_path),
+                "kind": parsed_wire["kind"],
             }
         )
     return rows

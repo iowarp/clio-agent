@@ -34,6 +34,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from clio_agent.gact.events import Event, heartbeat_event
+from clio_agent.gact.protocol_v3 import format_sse_v3, requests_gact_v3
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.constants import GACT_BACKEND_VERSION
 from clio_agent.gact.runtime.globals import _format_sse
@@ -92,6 +93,7 @@ def _sse_wire_tap(sid: str, frame: bytes, event: Event | None = None) -> None:
         except OSError:
             pass
     stream_audit("sse.write", **row)
+
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -389,6 +391,17 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
 
+        use_v3 = requests_gact_v3(request)
+
+        def _format_event(event: Event, session: Any) -> bytes:
+            if use_v3:
+                return format_sse_v3(
+                    event,
+                    session=session,
+                    workspace_id=str(getattr(session, "workspace_id", "") or ""),
+                )
+            return _format_sse(event)
+
         async def event_stream() -> AsyncIterator[bytes]:
             sess_snapshot = app.state.sessions.get(sid)
             # Initial server.connected event so clients can flip
@@ -409,7 +422,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 payload={"server_version": GACT_BACKEND_VERSION},
             )
             connected.id = _PREAMBLE_EVENT_ID
-            _frame = _format_sse(connected)
+            _frame = _format_event(connected, sess_snapshot)
             _sse_wire_tap(sid, _frame, connected)
             yield _frame
             if sess_snapshot is not None:
@@ -424,7 +437,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                     },
                 )
                 snapshot.id = _PREAMBLE_EVENT_ID
-                _frame = _format_sse(snapshot)
+                _frame = _format_event(snapshot, sess_snapshot)
                 _sse_wire_tap(sid, _frame, snapshot)
                 yield _frame
 
@@ -448,7 +461,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 heartbeat_task = asyncio.create_task(_heartbeat())
 
                 async for event in sub:
-                    _frame = _format_sse(event)
+                    _frame = _format_event(event, app.state.sessions.get(sid))
                     _sse_wire_tap(sid, _frame, event)
                     yield _frame
             except asyncio.CancelledError:

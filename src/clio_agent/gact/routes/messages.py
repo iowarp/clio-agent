@@ -32,12 +32,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 
+from clio_agent.gact.agent_tasks import display_run_name
 from clio_agent.gact.events import Event
 from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.message_wire import normalize_thought_ownership
 from clio_agent.gact.messaging import _user_message_parts, raise_on_reserved_metadata
+from clio_agent.gact.protocol_v3 import requests_gact_v3, transcript_entities
 from clio_agent.gact.providers.config import (
     _active_lm_supports_vision,
     _effective_lm_config,
@@ -404,6 +407,7 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
     @app.get("/v1/sessions/{sid}/messages")
     async def list_messages(
         sid: str,
+        request: Request,
         include_system: bool = True,
         limit: int | None = None,
         before: str | None = None,
@@ -511,6 +515,22 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         # pre-S2 message carrying BOTH a next_thought text row and a populated
         # tool_call.thought reloads with the redundant copy cleared (op-identity,
         # never a string compare); a no-op for post-S2 rows.
+        if requests_gact_v3(request):
+            task_registry = getattr(app.state, "agent_task_registry", None)
+            subagent_links: dict[str, dict[str, str]] = {}
+            if task_registry is not None:
+                for task in task_registry.for_parent(sid):
+                    agent_id = str(task.agent_ref.get("expert_id") or "")
+                    subagent_links[task.task_id] = {
+                        "child_session_id": str(task.child_session_id or ""),
+                        "agent_id": agent_id,
+                        "title": display_run_name(agent_id, task.run_index, task.run_label),
+                    }
+            snapshot = transcript_entities(rows, sid, subagent_links=subagent_links)
+            a2ui_store = getattr(app.state, "a2ui_store", None)
+            if a2ui_store is not None:
+                snapshot["surfaces"] = a2ui_store.list_wire(sid)
+            return JSONResponse(content=snapshot)
         return {
             "messages": [normalize_thought_ownership(m).to_wire() for m in rows],
             "next_cursor": next_cursor,
