@@ -223,6 +223,7 @@ def test_unified_tools_endpoint_includes_preloaded_agent_runtime_mcps(
 
     relay_tool = SimpleNamespace(
         name="relay_jarvis_run",
+        title="Run distributed workflow",
         description="Run a durable JARVIS pipeline.",
         inputSchema={"type": "object", "required": ["pipeline_id"]},
         outputSchema={"type": "object"},
@@ -244,6 +245,7 @@ def test_unified_tools_endpoint_includes_preloaded_agent_runtime_mcps(
     tools = response.json()["tools"]
     runtime = next(row for row in tools if row["name"] == "relay_jarvis_run")
     assert runtime["id"] == "relay_jarvis_run"
+    assert runtime["title"] == "Run distributed workflow"
     assert runtime["description"] == "Run a durable JARVIS pipeline."
     assert runtime["server_id"] == "mcp_relay"
     assert runtime["source"] == "agent_runtime_mcp"

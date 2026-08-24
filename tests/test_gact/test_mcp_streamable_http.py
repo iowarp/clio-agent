@@ -32,6 +32,7 @@ from clio_agent.gact.app import build_app
 class _FakeTool:
     def __init__(self, name: str) -> None:
         self.name = name
+        self.title = "Inspect stream"
         self.description = f"{name} description"
         self.inputSchema: dict[str, object] = {}
         self.outputSchema: dict[str, object] = {}
@@ -103,6 +104,8 @@ def test_streamable_http_tool_visible_in_catalog(
     assert resp.status_code == 200, resp.text
     tool_ids = {row.get("id") for row in resp.json()["tools"]}
     assert "sh_tool" in tool_ids, resp.json()["tools"]
+    tool = next(row for row in resp.json()["tools"] if row.get("id") == "sh_tool")
+    assert tool["title"] == "Inspect stream"
 
     # The streamable-http branch was actually taken (not skipped).
     from fastmcp.client.transports import StreamableHttpTransport

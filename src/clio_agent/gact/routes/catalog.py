@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
 from clio_agent.gact.catalog import (
     _builtin_tools,
     _tool_owner_for_catalog,
@@ -108,6 +109,7 @@ def _agent_runtime_tool_rows(app: FastAPI) -> list[dict[str, Any]]:
             {
                 "id": tool_name,
                 "name": tool_name,
+                "title": mcp_tool_title(tool),
                 "description": str(_runtime_tool_value(tool, "description") or ""),
                 "server_id": f"mcp_{namespace}" if separator else "",
                 "source": "agent_runtime_mcp",
@@ -162,6 +164,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                     {
                         "id": tool_name,
                         "name": tool_name,
+                        "title": mcp_tool_title(tool),
                         "description": tool.get("description") or "",
                         "server_id": f"mcp_{srv}" if srv else "",
                         "source": "mcp",
@@ -200,6 +203,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                         {
                             "id": tool_name,
                             "name": tool_name,
+                            "title": str(declared.get("title") or ""),
                             "description": declared.get("description") or "",
                             "server_id": sid,
                             "source": "agent_blueprint_mcp_descriptor",
@@ -241,6 +245,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                             {
                                 "id": tool_name,
                                 "name": tool_name,
+                                "title": mcp_tool_title(t),
                                 "description": getattr(t, "description", "") or "",
                                 "server_id": sid,
                                 "source": "mcp",
@@ -292,6 +297,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                     return {
                         "id": tool_id,
                         "name": tool_id,
+                        "title": mcp_tool_title(tool),
                         "description": tool.get("description") or "",
                         "server_id": f"mcp_{srv}" if srv else "",
                         "source": "mcp",
@@ -325,6 +331,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                         return {
                             "id": tool_id,
                             "name": tool_id,
+                            "title": str(declared.get("title") or ""),
                             "description": declared.get("description") or "",
                             "server_id": sid,
                             "source": "agent_blueprint_mcp_descriptor",
@@ -351,6 +358,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                             return {
                                 "id": tool_id,
                                 "name": tool_id,
+                                "title": mcp_tool_title(tt),
                                 "description": getattr(tt, "description", "") or "",
                                 "server_id": sid,
                                 "source": "mcp",
@@ -856,12 +864,15 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         elif cmd_id == "/loop":  # P4.1 #1079: start an autonomous loop (owner module)
             from clio_agent.gact.autonomous_loop import run_loop_command  # noqa: PLC0415
+
             body_text = run_loop_command(app, sid, request_body)
         elif cmd_id == "/goal":  # P4.2 #1080: arm/clear a run-until goal (owner module)
             from clio_agent.gact.goal import run_goal_command  # noqa: PLC0415
+
             body_text = run_goal_command(app, sid, request_body)
         elif cmd_id in ("/cron", "/schedule"):  # P4.3 #1081: cron triad (owner module)
             from clio_agent.gact.cron_tools import run_cron_command  # noqa: PLC0415
+
             body_text = run_cron_command(app, sid, request_body)
         elif cmd_id == "/dump-trace":
             log = app.state.messages.get(sid, [])

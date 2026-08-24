@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal
 
+from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
 from clio_agent.gact.permission_gate import _normalize_mcp_tool_annotations
 from clio_agent.tools.mcp_runtime import wire_value
 
@@ -71,6 +72,7 @@ def bundled_server_tool_rows(short_name: str) -> list[dict[str, Any]]:
         {
             "id": tool.get("name", ""),
             "name": tool.get("name", ""),
+            "title": mcp_tool_title(tool),
             "description": tool.get("description") or "",
         }
         for tool in capabilities
@@ -88,6 +90,7 @@ def mcp_inventory_row(
         return {
             "id": item.name,
             "name": item.name,
+            "title": mcp_tool_title(item),
             "description": getattr(item, "description", "") or "",
             "annotations": _normalize_mcp_tool_annotations(item),
         }
