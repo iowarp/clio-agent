@@ -135,6 +135,7 @@ class Session:
     status: str = "idle"
     created_at: str = field(default_factory=_utcnow_iso)
     updated_at: str = field(default_factory=_utcnow_iso)
+    last_interaction_at: str = ""
     message_count: int = 0
     parent_session_id: str = ""
     model: dict[str, str] = field(default_factory=dict)
@@ -247,7 +248,10 @@ class SessionStore:
             if not isinstance(payload, dict):
                 continue
             try:
-                self._sessions[sid] = Session(**payload)
+                session = Session(**payload)
+                if not session.last_interaction_at:
+                    session.last_interaction_at = self._legacy_interaction_at(sid, session)
+                self._sessions[sid] = session
             except TypeError:
                 # Schema drift (e.g. a field was renamed between
                 # releases). Skip that one row and keep going.
@@ -307,6 +311,7 @@ class SessionStore:
             status="idle",
             created_at=now,
             updated_at=now,
+            last_interaction_at=now,
             metadata=dict(metadata or {}),
             parent_session_id=parent_session_id,
             model=dict(model or {}),
@@ -457,9 +462,25 @@ class SessionStore:
                 sess.metadata.update(metadata_patch)
             if archived is not None:
                 sess.archived = bool(archived)
-            sess.updated_at = _utcnow_iso()
+            now = _utcnow_iso()
+            if message_count is not None:
+                sess.last_interaction_at = now
+            sess.updated_at = now
             self._flush()
             return sess
+
+    def _legacy_interaction_at(self, sid: str, session: Session) -> str:
+        """Recover old rows from the sibling message ledger's modification time."""
+
+        if self._path is None:
+            return session.created_at
+        safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in sid)
+        ledger_path = self._path.parent / "messages" / f"{safe}.json"
+        try:
+            modified = ledger_path.stat().st_mtime
+        except OSError:
+            return session.created_at
+        return datetime.fromtimestamp(modified, tz=timezone.utc).isoformat()
 
     # ---- introspection hooks (for /v1/memory/stats + tests) ----------
 

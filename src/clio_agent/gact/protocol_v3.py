@@ -126,6 +126,11 @@ def session_to_v3(session: Any) -> dict[str, Any]:
         "state": _SESSION_STATE.get(status, "interrupted"),
         "created_at": str(getattr(session, "created_at", "") or utcnow_iso()),
         "updated_at": str(getattr(session, "updated_at", "") or utcnow_iso()),
+        "last_interaction_at": str(
+            getattr(session, "last_interaction_at", "")
+            or getattr(session, "created_at", "")
+            or utcnow_iso()
+        ),
         "pinned": bool(metadata.get("pinned", False)),
         "archived": bool(getattr(session, "archived", False)),
     }

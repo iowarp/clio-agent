@@ -123,6 +123,7 @@ def test_v3_lifecycle_mutations_return_canonical_workspace_and_session_rows(
     assert session["title"] == "Evidence review"
     assert session["pinned"] is True
     assert session["archived"] is False
+    assert session["last_interaction_at"] == session["created_at"]
     assert "status" not in session
 
     updated_session = client.patch(
@@ -133,6 +134,7 @@ def test_v3_lifecycle_mutations_return_canonical_workspace_and_session_rows(
     assert updated_session["title"] == "Reviewed evidence"
     assert updated_session["pinned"] is True
     assert updated_session["archived"] is True
+    assert updated_session["last_interaction_at"] == session["last_interaction_at"]
 
 
 def test_v3_session_and_transcript_are_normalized(tmp_path: Path) -> None:

@@ -435,6 +435,7 @@ class Session(BaseModel):
     ] = "idle"
     created_at: str
     updated_at: str
+    last_interaction_at: str = ""
     message_count: int = 0
     parent_session_id: str = ""
     model: ModelRef = Field(default_factory=ModelRef)
