@@ -445,6 +445,28 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 last_event_id = int(request.headers.get("last-event-id", "0"))
             except (TypeError, ValueError):
                 last_event_id = 0
+            if use_v3 and last_event_id > app.state.bus.highest_event_id:
+                # A process restart resets the in-memory timeline. Waiting for
+                # the new process to count past an old Last-Event-ID leaves the
+                # client live-looking but permanently stale. GACT 0.3 makes the
+                # epoch mismatch explicit so the client can reconcile from REST
+                # and then resume this new timeline from its beginning. Keep the
+                # connection-local marker at id 0 like the other preamble frames;
+                # it is a state transition, not a durable session event.
+                gap = Event(
+                    type="stream.gap",
+                    session_id=sid,
+                    payload={
+                        "reason": "cursor_epoch_reset",
+                        "requested_cursor": str(last_event_id),
+                        "new_timeline_head": str(app.state.bus.highest_event_id),
+                    },
+                )
+                gap.id = _PREAMBLE_EVENT_ID
+                _frame = _format_event(gap, app.state.sessions.get(sid))
+                _sse_wire_tap(sid, _frame, gap)
+                yield _frame
+                last_event_id = 0
             sub = app.state.bus.subscribe(sid, last_event_id=last_event_id)
             heartbeat_task: Optional[asyncio.Task] = None
             try:

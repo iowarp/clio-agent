@@ -272,6 +272,35 @@ async def test_beyond_head_replays_nothing(tmp_path: Any) -> None:
         await conn.assert_no_frame()
 
 
+async def test_v3_beyond_process_head_emits_gap_and_restarts_replay(tmp_path: Any) -> None:
+    """GACT 0.3 identifies a cursor from a previous process timeline."""
+
+    app, sid = _make_app_with_session(tmp_path)
+    events = _seed_history(app, sid, 3)
+    beyond = events[-1].id + 10_000
+
+    async with _SSEConnection(
+        app,
+        sid,
+        last_event_id=str(beyond),
+        gact_version="0.3",
+    ) as conn:
+        preamble = await conn.read_frames(2)
+        gap = await conn.read_frame()
+        replayed = await conn.read_frames(len(events))
+
+    assert [frame["type"] for frame in preamble] == ["stream.live", "session.upserted"]
+    assert gap["id"] == 0
+    assert gap["type"] == "stream.gap"
+    assert gap["data"]["payload"] == {
+        "reason": "cursor_epoch_reset",
+        "requested_cursor": str(beyond),
+        "new_timeline_head": str(events[-1].id),
+    }
+    assert [frame["id"] for frame in replayed] == [event.id for event in events]
+    assert all(frame["data"]["replay"] is True for frame in replayed)
+
+
 async def test_head_resume_replays_nothing_but_keeps_live(tmp_path: Any) -> None:
     """Last-Event-ID == head → no stale replay, fresh live event delivered.
 

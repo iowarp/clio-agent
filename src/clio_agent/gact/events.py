@@ -150,6 +150,11 @@ class EventBus:
         # ``history[last_event_id + 1:]`` on connect so they don't
         # miss events published before they arrived (SPEC §7.3 replay).
         self._history: dict[str, list[Event]] = defaultdict(list)
+        # Highest non-transient timeline id accepted by this bus instance.
+        # Unlike the module-global id generator this starts at zero with every
+        # service instance, allowing the SSE route to recognize a resume cursor
+        # that belongs to a process which has restarted.
+        self._highest_event_id = 0
         # session_id -> last publish wall (time.monotonic) timestamp. Every
         # progress signal a turn makes (semantic events, message deltas, tool
         # parts) flows through ``publish``, so this doubles as a per-session
@@ -258,6 +263,7 @@ class EventBus:
     def _record_history(self, event: Event) -> None:
         """Append to the bounded per-session replay log."""
 
+        self._highest_event_id = max(self._highest_event_id, event.id)
         log = self._history[event.session_id]
         log.append(event)
         if len(log) > self._history_cap:
@@ -460,6 +466,12 @@ class EventBus:
         """Maximum replay events retained for each session scope."""
 
         return self._history_cap
+
+    @property
+    def highest_event_id(self) -> int:
+        """Highest timeline cursor published by this service instance."""
+
+        return self._highest_event_id
 
     def session_events_since(self, session_id: str, *, cursor: int = 1) -> list["Event"]:
         """Return ``session_id``'s recorded events with ``id >= cursor``, ordered by id.
