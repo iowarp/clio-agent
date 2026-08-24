@@ -418,6 +418,21 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
         if entry is not None:
             self._total_bytes -= entry.nbytes
 
+    def get_if_resident(self, sid: str) -> Optional[list["Message"]]:
+        """Return a resident ledger without attempting durable materialization.
+
+        This is the read seam for a session whose persisted ``message_count`` is
+        still zero while its first user turn is already staged in memory. A
+        cache miss returns ``None`` and never performs a native store call.
+        """
+
+        entry = self._resident.get(sid)
+        if entry is None:
+            return None
+        self._resident.move_to_end(sid)
+        entry.last_access = self._clock()
+        return entry.messages
+
     def clear(self) -> None:
         """Drop every resident (in-memory) ledger; on-disk copies are untouched.
 

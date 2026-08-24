@@ -459,7 +459,22 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         # at read time. Apply filters against the chronological list
         # first, then reverse, then truncate — see the docstring for
         # the exact ordering contract.
-        chronological_rows = list(app.state.messages.get(sid, []))
+        # A newly created session has no ledger blob yet. Native stores may
+        # surface that missing blob as a transport failure instead of applying
+        # the mapping default. Preserve a first turn already staged in the
+        # resident set, but never materialize an absent durable ledger while the
+        # authoritative session count is still zero.
+        messages = app.state.messages
+        if sess.message_count == 0:
+            get_if_resident = getattr(messages, "get_if_resident", None)
+            if callable(get_if_resident):
+                chronological_rows = list(get_if_resident(sid) or [])
+            elif isinstance(messages, dict):
+                chronological_rows = list(messages.get(sid, []))
+            else:
+                chronological_rows = []
+        else:
+            chronological_rows = list(messages.get(sid, []))
 
         # (1) Resolve ``before`` against the chronological list. The cursor names
         # a real stored message; return only rows strictly older than it. The

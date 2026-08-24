@@ -81,6 +81,30 @@ def test_empty_session_unchanged(client: TestClient) -> None:
     assert body["next_cursor"] is None
 
 
+def test_empty_session_does_not_fetch_a_missing_persistent_blob(client: TestClient) -> None:
+    sid = _create_session(client)
+
+    class MissingBlobStore:
+        def get(self, _key: str, _default: object = None) -> object:
+            raise RuntimeError("GetBlob operation failed")
+
+    client.app.state.messages = MissingBlobStore()  # type: ignore[attr-defined]
+
+    response = client.get(
+        f"/v1/sessions/{sid}/messages",
+        headers={"X-GACT-Version": "0.3"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "messages": [],
+        "tools": [],
+        "tasks": [],
+        "subagents": [],
+        "artifacts": [],
+        "surfaces": [],
+    }
+
+
 # ---- messages: include_system ----------------------------------------------
 
 
