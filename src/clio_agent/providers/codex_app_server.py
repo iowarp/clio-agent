@@ -484,9 +484,7 @@ class CodexAppServerProcess:
                 f"the pool evicts it on the next call"
             )
         self._ensure_initialized(max(0.1, deadline - time.monotonic()))
-        result = self._request(
-            "model/list", {}, timeout=max(0.1, deadline - time.monotonic())
-        )
+        result = self._request("model/list", {}, timeout=max(0.1, deadline - time.monotonic()))
         data = result.get("data")
         return data if isinstance(data, list) else []
 
@@ -625,6 +623,7 @@ class CodexAppServerProcess:
         final_text_parts: list[str] = []
         item_message_text = ""
         last_usage: dict[str, int] = {}
+        reasoning_summary_parts: set[tuple[str, int]] = set()
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -652,6 +651,19 @@ class CodexAppServerProcess:
                 rtext = str(params.get("delta") or params.get("text") or "")
                 if rtext:
                     yield TurnEvent("reasoning", text=rtext)
+            elif method == "item/reasoning/summaryPartAdded":
+                item_id = str(params.get("itemId") or "")
+                try:
+                    summary_index = int(params.get("summaryIndex", -1))
+                except (TypeError, ValueError):
+                    summary_index = -1
+                part_key = (item_id, summary_index)
+                if part_key not in reasoning_summary_parts:
+                    if reasoning_summary_parts:
+                        # Codex summary parts are separate readable thoughts. Preserve
+                        # that protocol boundary instead of persisting `****` joins.
+                        yield TurnEvent("reasoning", text="\n\n")
+                    reasoning_summary_parts.add(part_key)
             elif method == "thread/tokenUsage/updated":
                 last = (params.get("tokenUsage") or {}).get("last") or {}
                 last_usage = normalize_usage(last)

@@ -97,8 +97,18 @@ class FakeAppServer:
         #: #1211: the model/list RPC result; defaults to a small fixed catalog.
         self.model_list_response = model_list_response or {
             "data": [
-                {"id": "gpt-5.6-sol", "displayName": "GPT-5.6-Sol", "description": "d", "isDefault": True},
-                {"id": "gpt-5.6-terra", "displayName": "GPT-5.6-Terra", "description": "d", "isDefault": False},
+                {
+                    "id": "gpt-5.6-sol",
+                    "displayName": "GPT-5.6-Sol",
+                    "description": "d",
+                    "isDefault": True,
+                },
+                {
+                    "id": "gpt-5.6-terra",
+                    "displayName": "GPT-5.6-Terra",
+                    "description": "d",
+                    "isDefault": False,
+                },
             ]
         }
         self.stdout = _FakeStdout()
@@ -249,6 +259,42 @@ def test_run_turn_streams_deltas_usage_and_final() -> None:
     assert final[0].text == "The sky is blue."
     assert final[0].usage["input_tokens"] == 18360
     assert final[0].reason == "completed"
+
+
+def test_run_turn_preserves_reasoning_summary_part_boundaries() -> None:
+    """Codex summary parts remain individually readable on the thinking wire."""
+    script = [
+        ("turn/started", {}),
+        (
+            "item/reasoning/summaryPartAdded",
+            {"itemId": "reasoning-1", "summaryIndex": 0},
+        ),
+        (
+            "item/reasoning/summaryTextDelta",
+            {"itemId": "reasoning-1", "summaryIndex": 0, "delta": "**Inspecting**"},
+        ),
+        (
+            "item/reasoning/summaryPartAdded",
+            {"itemId": "reasoning-1", "summaryIndex": 1},
+        ),
+        (
+            "item/reasoning/summaryTextDelta",
+            {"itemId": "reasoning-1", "summaryIndex": 1, "delta": "**Planning**"},
+        ),
+        ("turn/completed", {"turn": {"status": "completed"}}),
+    ]
+    fake = FakeAppServer(turn_script=script)
+    proc = _make_process(fake)
+    try:
+        events = list(proc.run_turn(prompt="inspect", effort="medium", timeout=10.0))
+    finally:
+        proc.close()
+
+    assert [event.text for event in events if event.kind == "reasoning"] == [
+        "**Inspecting**",
+        "\n\n",
+        "**Planning**",
+    ]
 
 
 def test_run_turn_pins_effort_on_turn_start() -> None:
