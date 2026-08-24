@@ -15,6 +15,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# The workspace UI may attach or detach a relay for the lifetime of the serving
+# process.  Assignment is atomic under CPython and readers only ever receive an
+# immutable value, so a turn sees either the complete old or complete new
+# configuration.  Secrets remain process-local and are never projected on the
+# GACT wire or written to the shared config store.
+_runtime_relay_override: RelayTransportConfig | RelayTransportUnavailable | None = None
+
 
 @dataclass(frozen=True)
 class RelayTransportUnavailable:
@@ -84,8 +91,91 @@ class RelayToolSurfaces:
     status: dict[str, Any]
 
 
+def configure_runtime_relay(
+    *, mcp_url: str, http_url: str, api_token: str | None = None
+) -> RelayTransportConfig:
+    """Apply a complete process-local relay connection.
+
+    An omitted token reuses the currently resolved credential when one exists;
+    a first-time connection must provide it.  The returned object is intended
+    for internal wiring only and must never be serialized because it contains
+    the bearer credential.
+
+    Args:
+        mcp_url: Authenticated relay control endpoint.
+        http_url: Relay job and artifact endpoint.
+        api_token: New bearer credential, or ``None`` to retain the current one.
+
+    Returns:
+        The immutable process-local transport configuration.
+
+    Raises:
+        ValueError: The connection is incomplete.
+    """
+
+    global _runtime_relay_override
+    current = resolve_relay_transport_config()
+    credential = (api_token or "").strip()
+    if not credential and isinstance(current, RelayTransportConfig):
+        credential = current.api_token
+    values = {
+        "mcp_url": mcp_url.strip(),
+        "http_url": http_url.strip(),
+        "api_token": credential,
+    }
+    missing = sorted(key for key, value in values.items() if not value)
+    if missing:
+        raise ValueError(f"relay connection is incomplete: missing {', '.join(missing)}")
+    configured = RelayTransportConfig(**values)
+    _runtime_relay_override = configured
+    return configured
+
+
+def disconnect_runtime_relay() -> None:
+    """Disable relay access until the current agent process restarts."""
+
+    global _runtime_relay_override
+    _runtime_relay_override = RelayTransportUnavailable(
+        reason="relay_not_configured",
+        details={"missing": ["api_token", "http_url", "mcp_url"]},
+    )
+
+
+def reset_runtime_relay_override() -> None:
+    """Restore server-managed resolution, primarily during app construction."""
+
+    global _runtime_relay_override
+    _runtime_relay_override = None
+
+
+def relay_connection_metadata() -> dict[str, Any]:
+    """Return non-secret connection fields for the management surface."""
+
+    resolved = resolve_relay_transport_config()
+    if isinstance(resolved, RelayTransportConfig):
+        return {
+            "mcp_url": resolved.mcp_url,
+            "http_url": resolved.http_url,
+            "credential_configured": True,
+            "configuration_scope": (
+                "agent_run" if _runtime_relay_override is not None else "server"
+            ),
+            "can_manage": True,
+        }
+    return {
+        "mcp_url": None,
+        "http_url": None,
+        "credential_configured": False,
+        "configuration_scope": ("agent_run" if _runtime_relay_override is not None else "none"),
+        "can_manage": True,
+    }
+
+
 def resolve_relay_transport_config() -> RelayTransportConfig | RelayTransportUnavailable:
     """Resolve the relay factory through config file, environment, then defaults."""
+
+    if _runtime_relay_override is not None:
+        return _runtime_relay_override
 
     from clio_agent import conf  # noqa: PLC0415 - keep transport import-light
 

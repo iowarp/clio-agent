@@ -68,6 +68,32 @@ async def relay_tool_surfaces_for_app(app: FastAPI) -> Any:
     return surfaces
 
 
+def invalidate_relay_tool_surfaces(app: FastAPI, *, status: dict[str, Any]) -> None:
+    """Remove stale relay owners after a runtime connection change.
+
+    The next configured turn performs normal lazy discovery.  The live agent is
+    rebuilt immediately without the old tools so disconnect never leaves a
+    previously authenticated relay usable through a resident gateway.
+
+    Args:
+        app: The serving GACT application.
+        status: Non-secret transitional status applied to the live agent.
+    """
+
+    from clio_agent.tools.relay_factory import RelayToolSurfaces  # noqa: PLC0415
+
+    app.state.relay_tool_surfaces = None
+    app.state.relay_tool_status = dict(status)
+    app.state.relay_tool_surfaces_discovered_at = None
+    agent = getattr(app.state, "agent", None)
+    if agent is not None:
+        _refresh_agent_relay_tool_surfaces(
+            agent,
+            RelayToolSurfaces(None, None, dict(status)),
+            force=True,
+        )
+
+
 async def refresh_relay_tool_surfaces_if_stale(app: FastAPI) -> Any:
     """Re-discover the relay catalog once its TTL has elapsed (#1227 D2).
 
@@ -151,7 +177,7 @@ async def refresh_relay_tool_surfaces_if_stale(app: FastAPI) -> Any:
     return surfaces
 
 
-def _refresh_agent_relay_tool_surfaces(agent: Any, surfaces: Any) -> None:
+def _refresh_agent_relay_tool_surfaces(agent: Any, surfaces: Any, *, force: bool = False) -> None:
     """Rebuild the singleton agent's default gateway from a fresh catalog.
 
     agent.py stays a pure runtime HOST with no relay-refresh method of its
@@ -172,9 +198,11 @@ def _refresh_agent_relay_tool_surfaces(agent: Any, surfaces: Any) -> None:
     # agent's LIVE state (no stored marker to seed or drift).
     old_federation = getattr(agent, "_remote_mcp_federation", None)
     new_definitions = list_relay_tool_definitions(surfaces.remote_mcp_federation)
-    if (old_federation is None) == (surfaces.remote_mcp_federation is None) and frozenset(
-        list_relay_tool_definitions(old_federation)
-    ) == frozenset(new_definitions):
+    if (
+        not force
+        and (old_federation is None) == (surfaces.remote_mcp_federation is None)
+        and frozenset(list_relay_tool_definitions(old_federation)) == frozenset(new_definitions)
+    ):
         return
     agent._remote_mcp_federation = surfaces.remote_mcp_federation  # noqa: SLF001
     agent._jarvis_jobs = surfaces.jarvis_jobs  # noqa: SLF001
@@ -186,7 +214,11 @@ def _refresh_agent_relay_tool_surfaces(agent: Any, surfaces: Any) -> None:
     # pushed the federation onto the agent while its executor kept offering
     # four builtins, and every custom-agent ACL still bricked
     # (federation=present in the diagnostics, tools absent). Re-seed from the
-    # same projection the construction path uses.
+    # same projection the construction path uses. Remove the previous
+    # federation's names first: otherwise a disconnect can rebuild the gateway
+    # with stale preloaded definitions after its authenticated owners are gone.
+    for tool_name in list_relay_tool_definitions(old_federation):
+        agent._tool_definitions.pop(tool_name, None)  # noqa: SLF001
     agent._tool_definitions.update(new_definitions)  # noqa: SLF001
     # #1236: bump the federation epoch so RESIDENT per-workspace executors
     # (minted under the previous — possibly ABSENT — federation) evict on

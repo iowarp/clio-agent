@@ -149,6 +149,11 @@ def test_relay_status_unconfigured_is_not_probed(
         "detail": "relay_tools_not_configured: relay transport configuration is incomplete",
         "reason": "relay_tools_not_configured",
         "details": {"missing": ["api_token", "http_url", "mcp_url"]},
+        "mcp_url": None,
+        "http_url": None,
+        "credential_configured": False,
+        "configuration_scope": "none",
+        "can_manage": True,
     }
 
 
@@ -175,6 +180,73 @@ def test_relay_status_reports_mocked_tcp_reachability(
     assert body["reachable"] is True
     assert datetime.fromisoformat(body["checked_at"])
     assert body["detail"] == "TCP connect to relay.example:18783 succeeded"
+    assert body["mcp_url"] == "http://relay.example:18783/mcp"
+    assert body["http_url"] == "http://relay.example:8765"
+    assert body["credential_configured"] is True
+    assert body["configuration_scope"] == "server"
+    assert "relay-secret" not in response.text
+
+
+def test_relay_runtime_connection_can_be_attached_and_detached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The management route applies a non-persistent connection without echoing its secret."""
+    monkeypatch.delenv("CLIO_RELAY_MCP_URL", raising=False)
+    monkeypatch.delenv("CLIO_RELAY_HTTP_URL", raising=False)
+    monkeypatch.delenv("CLIO_RELAY_API_TOKEN", raising=False)
+
+    async def _reachable(host: str, port: int, timeout_seconds: float) -> None:
+        assert (host, port, timeout_seconds) == ("relay.lan", 18783, 3.0)
+
+    monkeypatch.setattr("clio_agent.gact.relay_status._tcp_connect", _reachable)
+    client, _state = _client(tmp_path)
+
+    attached = client.put(
+        "/v1/relay/configuration",
+        json={
+            "mcp_url": "http://relay.lan:18783/mcp",
+            "http_url": "http://relay.lan:8765",
+            "access_token": "runtime-secret",
+        },
+    )
+
+    assert attached.status_code == 200, attached.text
+    assert attached.json()["reachable"] is True
+    assert attached.json()["configuration_scope"] == "agent_run"
+    assert attached.json()["credential_configured"] is True
+    assert "runtime-secret" not in attached.text
+
+    detached = client.delete("/v1/relay/configuration")
+
+    assert detached.status_code == 200, detached.text
+    assert detached.json()["configured"] is False
+    assert detached.json()["configuration_scope"] == "agent_run"
+    assert detached.json()["credential_configured"] is False
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("mcp_url", "file:///relay.sock"),
+        ("http_url", "http://user:secret@relay.lan:8765"),
+    ],
+)
+def test_relay_runtime_connection_rejects_unsafe_addresses(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    """Relay management accepts network URLs and refuses embedded credentials."""
+    client, _state = _client(tmp_path)
+    payload = {
+        "mcp_url": "http://relay.lan:18783/mcp",
+        "http_url": "http://relay.lan:8765",
+        "access_token": "runtime-secret",
+    }
+    payload[field] = value
+
+    response = client.put("/v1/relay/configuration", json=payload)
+
+    assert response.status_code == 422
+    assert "runtime-secret" not in response.text
 
 
 def test_blueprint_tools_validate_against_serve_runtime_catalog(tmp_path):
