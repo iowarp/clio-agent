@@ -328,6 +328,40 @@ def _validate_map_component(component: Mapping[str, Any]) -> None:
             raise A2UIValidationError(f"A2UI map {key} is invalid or exceeds the size limit")
 
 
+def _validate_accessibility(component: Mapping[str, Any], component_name: str) -> None:
+    """Mirror the official renderer's accessibility object at the server boundary.
+
+    ``@a2ui/web_core`` defines ``accessibility`` as an object containing optional
+    dynamic ``label`` and ``description`` strings.  Accept literal strings and
+    JSON-Pointer bindings; client function calls remain prohibited by CLIO's
+    trusted-catalog policy.  Keeping this check server-side prevents a producer
+    from receiving a false success for a surface the renderer must reject.
+    """
+
+    if "accessibility" not in component:
+        return
+    accessibility = component.get("accessibility")
+    if not isinstance(accessibility, Mapping):
+        raise A2UIValidationError(f"A2UI {component_name} accessibility must be an object")
+    unknown = set(accessibility) - {"label", "description"}
+    if unknown:
+        raise A2UIValidationError(
+            f"A2UI {component_name} accessibility contains unknown properties: {sorted(unknown)}"
+        )
+    for key, value in accessibility.items():
+        if isinstance(value, str):
+            continue
+        if (
+            not isinstance(value, Mapping)
+            or set(value) != {"path"}
+            or not isinstance(value.get("path"), str)
+            or not value["path"].startswith("/")
+        ):
+            raise A2UIValidationError(
+                f'A2UI {component_name} accessibility.{key} must be a string or {{"path": "/..."}}'
+            )
+
+
 def validate_server_message(message: Mapping[str, Any]) -> tuple[str, str]:
     """Validate an official server-to-client message and return operation/id."""
 
@@ -368,6 +402,7 @@ def validate_server_message(message: Mapping[str, Any]) -> tuple[str, str]:
                 raise A2UIValidationError(
                     f"A2UI {component_name} contains unknown properties: {sorted(unknown_props)}"
                 )
+            _validate_accessibility(component, component_name)
             if component_name == "clio.mermaid.v1":
                 source = component.get("source")
                 if isinstance(source, str) and re.search(

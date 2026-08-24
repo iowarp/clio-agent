@@ -281,6 +281,69 @@ def test_root_agent_tool_documents_the_valid_button_action_envelope() -> None:
     assert "Do not nest a second ``action`` object" in tool.desc
     assert "``agent.submit`` needs\n        ``text`` or ``prompt``" in tool.desc
     assert 'a server action has the shape ``{"event"' not in tool.desc
+    assert "Accessibility is always an object, never a string" in tool.desc
+
+
+def test_server_and_tool_reject_string_accessibility_before_persisting(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    app = client.app
+    monkeypatch.setattr(gact_context, "active_app", lambda: app)
+    monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
+
+    with raises(A2UIValidationError, match="accessibility must be an object"):
+        build_create_a2ui_surface_tool()(
+            surface_id="invalid-accessibility",
+            components=[
+                {
+                    "id": "root",
+                    "component": "Column",
+                    "children": ["diagram"],
+                    "accessibility": "Scientific workflow",
+                },
+                {
+                    "id": "diagram",
+                    "component": "clio.mermaid.v1",
+                    "source": "flowchart LR\nA --> B",
+                },
+            ],
+        )
+
+    assert app.state.a2ui_store.get(sid, "invalid-accessibility") is None
+
+
+def test_server_accepts_accessibility_object_and_data_binding(tmp_path: Path) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={
+            "messages": [
+                _create_message("accessible-surface"),
+                {
+                    "version": "v0.9.1",
+                    "updateComponents": {
+                        "surfaceId": "accessible-surface",
+                        "components": [
+                            {
+                                "id": "root",
+                                "component": "Column",
+                                "children": ["label"],
+                                "accessibility": {
+                                    "label": "Scientific workflow",
+                                    "description": {"path": "/description"},
+                                },
+                            },
+                            {"id": "label", "component": "Text", "text": "Ready"},
+                        ],
+                    },
+                },
+            ]
+        },
+    )
+
+    assert response.status_code == 200
 
 
 def test_server_rejects_a_double_wrapped_component_action(tmp_path: Path) -> None:

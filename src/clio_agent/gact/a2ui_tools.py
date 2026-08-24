@@ -93,6 +93,10 @@ def build_create_a2ui_surface_tool() -> Any:
         click handlers, and links are rejected. For code, pass ``code``,
         ``language``, and an optional ``title``. These components render visually;
         do not wrap their payloads in Text or JSON blocks.
+        Accessibility is always an object, never a string: use
+        ``"accessibility": {"label": "Readable label", "description":
+        "Optional extra context"}``. Either value may instead be a data binding
+        such as ``{"path": "/accessibleLabel"}``.
         Only registered actions are accepted; never send HTML, CSS, scripts,
         imports, commands, executable URLs, or event handlers.
         """
@@ -188,7 +192,14 @@ def build_create_a2ui_surface_tool() -> Any:
             },
             "components": {
                 "type": "array",
-                "items": {"type": "object"},
+                "items": {
+                    "type": "object",
+                    "description": (
+                        "A flat component with string id and component fields. "
+                        "If present, accessibility is an object with label and/or "
+                        "description; it is never a string."
+                    ),
+                },
                 "description": "Official A2UI 0.9 component definitions in root-first order.",
             },
             "data_model": {
