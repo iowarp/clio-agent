@@ -275,15 +275,48 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
 
     part_id = str(part.get("id") or "")
     part_type = str(part.get("type") or "unknown")
+    metadata = part.get("metadata") if isinstance(part.get("metadata"), Mapping) else {}
+    common: dict[str, Any] = {}
+    if part.get("agent_id"):
+        common["agent_id"] = str(part["agent_id"])
+    if isinstance(part.get("sequence"), int) and part["sequence"] > 0:
+        common["sequence"] = int(part["sequence"])
+    if metadata.get("stream_source"):
+        common["stream_source"] = str(metadata["stream_source"])
+    if metadata.get("signature_field_name"):
+        common["channel"] = str(metadata["signature_field_name"])
     if part_type == "text":
-        return {"id": part_id, "type": "text", "text": str(part.get("text") or "")}
+        return {
+            "id": part_id,
+            "type": "text",
+            "text": str(part.get("text") or ""),
+            **common,
+        }
     if part_type == "thinking":
-        return {"id": part_id, "type": "reasoning", "text": str(part.get("text") or "")}
+        return {
+            "id": part_id,
+            "type": "reasoning",
+            "text": str(part.get("text") or ""),
+            "source": str(metadata.get("thinking_source") or "provider"),
+            **(
+                {"provider_source": str(metadata["provider_source"])}
+                if metadata.get("provider_source")
+                else {}
+            ),
+            **(
+                {"default_collapsed": metadata["default_collapsed"]}
+                if isinstance(metadata.get("default_collapsed"), bool)
+                else {}
+            ),
+            **common,
+        }
     if part_type in {"tool_call", "tool_result"}:
         return {
             "id": part_id,
             "type": "tool",
             "tool_id": str(part.get("call_id") or part_id),
+            **({"thought": str(part["thought"])} if part.get("thought") else {}),
+            **common,
         }
     if part_type in {"plan", "compaction"}:
         return {
@@ -291,18 +324,21 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "type": "plan",
             "title": str(part.get("title") or "Plan"),
             "detail": str(part.get("summary") or part.get("text") or ""),
+            **common,
         }
     if part_type in {"task", "session_task", "task_notification"}:
         return {
             "id": part_id,
             "type": "task",
             "task_id": str(part.get("task_id") or part.get("handle_id") or part_id),
+            **common,
         }
     if part_type == "expert_handoff":
         return {
             "id": part_id,
             "type": "subagent",
             "subagent_id": str(part.get("handle_id") or part_id),
+            **common,
         }
     if part_type == "resource_link":
         metadata = part.get("metadata") if isinstance(part.get("metadata"), Mapping) else {}
@@ -310,6 +346,7 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "id": part_id,
             "type": "artifact",
             "artifact_id": str(metadata.get("artifact_id") or part.get("uri") or part_id),
+            **common,
         }
     if part_type == "action_card":
         return {
@@ -321,12 +358,14 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "severity": str(part.get("severity") or "info"),
             "status": str(part.get("status") or "active"),
             "actions": _action_cards(part),
+            **common,
         }
     if part_type == "a2ui":
         return {
             "id": part_id,
             "type": "a2ui",
             "surface_id": str(part.get("surface_id") or part_id),
+            **common,
         }
     if part_type == "file_diff":
         return {
@@ -334,6 +373,7 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "type": "diff",
             "path": str(part.get("path") or "Unavailable"),
             "unified_diff": str(part.get("unified_diff") or ""),
+            **common,
         }
     if part_type == "error":
         metadata = part.get("metadata") if isinstance(part.get("metadata"), Mapping) else {}
@@ -343,6 +383,7 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "code": str(metadata.get("code") or "agent_error"),
             "message": str(part.get("text") or "CLIO reported an error"),
             "recoverable": bool(metadata.get("recoverable", False)),
+            **common,
         }
     if part_type == "routing_decision":
         return {
@@ -350,6 +391,7 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "type": "routing",
             "label": str(part.get("selected_agent") or "Routing decision"),
             "detail": str(part.get("rationale") or ""),
+            **common,
         }
     text = str(part.get("text") or "")
     return {
@@ -357,7 +399,37 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
         "type": "routing",
         "label": part_type.replace("_", " ").title(),
         **({"detail": text} if text else {}),
+        **common,
     }
+
+
+def _reasoning_calls(metadata: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Project the server-captured per-model-call reasoning ledger without inventing parts."""
+
+    raw_rows = metadata.get("reasoning_log")
+    if not isinstance(raw_rows, list):
+        return []
+    calls: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_rows):
+        if not isinstance(raw, Mapping) or not raw.get("reasoning"):
+            continue
+        reasoning = str(raw["reasoning"])
+        calls.append(
+            {
+                "id": f"reasoning_call_{index + 1}",
+                "reasoning": reasoning,
+                "reasoning_chars": (
+                    int(raw["reasoning_chars"])
+                    if isinstance(raw.get("reasoning_chars"), int)
+                    else len(reasoning)
+                ),
+                **({"model": str(raw["model"])} if raw.get("model") else {}),
+                **({"question": str(raw["question"])} if raw.get("question") else {}),
+                **({"response": str(raw["response"])} if raw.get("response") else {}),
+                **({"timestamp": str(raw["timestamp"])} if raw.get("timestamp") else {}),
+            }
+        )
+    return calls
 
 
 def message_to_v3(message: Any) -> dict[str, Any]:
@@ -391,6 +463,21 @@ def message_to_v3(message: Any) -> dict[str, Any]:
     if turn_id:
         row["run_id"] = turn_id
     metadata = wire.get("metadata") if isinstance(wire.get("metadata"), Mapping) else {}
+    tokens = wire.get("tokens") if isinstance(wire.get("tokens"), Mapping) else {}
+    reasoning_calls = _reasoning_calls(metadata)
+    row["usage"] = {
+        "input": int(tokens.get("input") or 0),
+        "output": int(tokens.get("output") or 0),
+        "cache_read": int(tokens.get("cache_read") or 0),
+        "cache_write": int(tokens.get("cache_write") or 0),
+    }
+    row["cost_usd"] = float(wire.get("cost_usd") or 0.0)
+    if wire.get("stop_reason"):
+        row["stop_reason"] = str(wire["stop_reason"])
+    if reasoning_calls:
+        row["reasoning_calls"] = reasoning_calls
+    if isinstance(wire.get("error_info"), Mapping):
+        row["error_info"] = dict(wire["error_info"])
     if metadata.get("status") != "running" and wire.get("updated_at"):
         row["completed_at"] = str(wire["updated_at"])
     return row
@@ -429,6 +516,16 @@ def transcript_entities(
                     if failed
                     else ("succeeded" if part_type == "tool_result" else "running")
                 )
+                output = current.get("output")
+                if part_type == "tool_result":
+                    if part.get("structured_content") is not None:
+                        output = part.get("structured_content")
+                    elif part.get("content_blocks") is not None:
+                        output = part.get("content_blocks")
+                    elif part.get("content"):
+                        output = part.get("content")
+                    elif part.get("text"):
+                        output = part.get("text")
                 tools[tool_id] = {
                     "id": tool_id,
                     "session_id": session_id,
@@ -441,7 +538,7 @@ def transcript_entities(
                     ),
                     "state": state,
                     "input": current.get("input", part.get("input")),
-                    "output": part.get("structured_content") or part.get("content_blocks"),
+                    "output": output,
                     "duration_ms": part.get("duration_ms") or current.get("duration_ms"),
                     **({"error": str(part.get("text") or "Tool failed")} if failed else {}),
                 }
@@ -595,12 +692,21 @@ def event_to_v3(event: Event, *, session: Any = None, workspace_id: str = "") ->
         }
         entity_id = payload["block_id"]
     elif event_type == "message.completed":
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+        reasoning_calls = _reasoning_calls(metadata)
+        tokens = payload.get("tokens") if isinstance(payload.get("tokens"), Mapping) else {}
         payload = {
             "message_id": str(payload.get("message_id") or ""),
             "completed_at": event.occurred_at,
             "stop_reason": str(payload.get("stop_reason") or "end_turn"),
-            "tokens": payload.get("tokens") or {},
+            "tokens": {
+                "input": int(tokens.get("input") or 0),
+                "output": int(tokens.get("output") or 0),
+                "cache_read": int(tokens.get("cache_read") or 0),
+                "cache_write": int(tokens.get("cache_write") or 0),
+            },
             "cost_usd": payload.get("cost_usd"),
+            **({"reasoning_calls": reasoning_calls} if reasoning_calls else {}),
             **({"error_info": payload["error_info"]} if payload.get("error_info") else {}),
         }
         entity_id = payload["message_id"]

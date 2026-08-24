@@ -10,8 +10,8 @@ from clio_agent.gact.agent_tasks import seed_agent_task
 from clio_agent.gact.app import build_app
 from clio_agent.gact.events import Event
 from clio_agent.gact.parts import Part
-from clio_agent.gact.protocol_v3 import event_to_v3
-from clio_agent.gact.types import Message
+from clio_agent.gact.protocol_v3 import event_to_v3, part_to_v3_block
+from clio_agent.gact.types import Message, Tokens
 
 V3_HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
 
@@ -146,7 +146,31 @@ def test_v3_session_and_transcript_are_normalized(tmp_path: Path) -> None:
         created_at="2026-08-22T00:00:00+00:00",
         updated_at="2026-08-22T00:00:01+00:00",
         parts=[
-            Part(id="part_text", type="text", text="Watching campaign evidence."),
+            Part(
+                id="part_reasoning",
+                type="thinking",
+                text="Comparing the observed campaigns before choosing an action.",
+                agent_id="main",
+                sequence=1,
+                metadata={
+                    "stream_source": "live",
+                    "signature_field_name": "provider_thinking:codex_app_server",
+                    "thinking_source": "provider",
+                    "provider_source": "codex_app_server",
+                    "default_collapsed": True,
+                },
+            ),
+            Part(
+                id="part_text",
+                type="text",
+                text="Watching campaign evidence.",
+                agent_id="spotter",
+                sequence=2,
+                metadata={
+                    "stream_source": "live",
+                    "signature_field_name": "next_thought",
+                },
+            ),
             Part(
                 id="part_call",
                 type="tool_call",
@@ -154,6 +178,8 @@ def test_v3_session_and_transcript_are_normalized(tmp_path: Path) -> None:
                 tool_name="spotter_campaign_health",
                 tool_title="Check campaign health",
                 input={"campaign": "phenotype-2026"},
+                agent_id="spotter",
+                sequence=3,
             ),
             Part(
                 id="part_result",
@@ -161,8 +187,25 @@ def test_v3_session_and_transcript_are_normalized(tmp_path: Path) -> None:
                 call_id="call_1",
                 tool_name="spotter_campaign_health",
                 structured_content={"runs_checked": 4, "anomalous": []},
+                agent_id="spotter",
+                sequence=4,
             ),
         ],
+        tokens=Tokens(input=120, output=45, cache_read=30),
+        cost_usd=0.0125,
+        stop_reason="end_turn",
+        metadata={
+            "reasoning_log": [
+                {
+                    "model": "openai/gpt-5.6-luna",
+                    "question": "Inspect campaign state.",
+                    "reasoning": "Full model-call reasoning retained by the provider bridge.",
+                    "response": "Watching campaign evidence.",
+                    "reasoning_chars": 58,
+                    "timestamp": "2026-08-22T00:00:00.500000+00:00",
+                }
+            ]
+        },
     )
     app.state.messages[session.id] = [message]
     client = TestClient(app)
@@ -175,7 +218,41 @@ def test_v3_session_and_transcript_are_normalized(tmp_path: Path) -> None:
     session_row = next(row for row in sessions if row["id"] == session.id)
     assert session_row["state"] == "completed"
     assert session_row["agent_id"] == "main"
-    assert [block["type"] for block in transcript["messages"][0]["blocks"]] == ["text", "tool"]
+    projected = transcript["messages"][0]
+    assert [block["type"] for block in projected["blocks"]] == ["reasoning", "text", "tool"]
+    assert projected["blocks"][0] == {
+        "id": "part_reasoning",
+        "type": "reasoning",
+        "text": "Comparing the observed campaigns before choosing an action.",
+        "source": "provider",
+        "provider_source": "codex_app_server",
+        "default_collapsed": True,
+        "agent_id": "main",
+        "sequence": 1,
+        "stream_source": "live",
+        "channel": "provider_thinking:codex_app_server",
+    }
+    assert projected["blocks"][1]["channel"] == "next_thought"
+    assert projected["blocks"][1]["agent_id"] == "spotter"
+    assert projected["usage"] == {
+        "input": 120,
+        "output": 45,
+        "cache_read": 30,
+        "cache_write": 0,
+    }
+    assert projected["cost_usd"] == 0.0125
+    assert projected["stop_reason"] == "end_turn"
+    assert projected["reasoning_calls"] == [
+        {
+            "id": "reasoning_call_1",
+            "model": "openai/gpt-5.6-luna",
+            "question": "Inspect campaign state.",
+            "reasoning": "Full model-call reasoning retained by the provider bridge.",
+            "response": "Watching campaign evidence.",
+            "reasoning_chars": 58,
+            "timestamp": "2026-08-22T00:00:00.500000+00:00",
+        }
+    ]
     assert transcript["tools"] == [
         {
             "id": "call_1",
@@ -189,6 +266,30 @@ def test_v3_session_and_transcript_are_normalized(tmp_path: Path) -> None:
             "duration_ms": None,
         }
     ]
+
+
+def test_v3_preserves_rowless_tool_thought_fallback() -> None:
+    block = part_to_v3_block(
+        Part(
+            id="part_call",
+            type="tool_call",
+            call_id="call_1",
+            tool_name="geo_geocode",
+            thought="Resolve the place name before searching the station catalog.",
+            input={"query": "Chicago"},
+            agent_id="geospatial",
+            sequence=5,
+        ).to_wire()
+    )
+
+    assert block == {
+        "id": "part_call",
+        "type": "tool",
+        "tool_id": "call_1",
+        "thought": "Resolve the place name before searching the station catalog.",
+        "agent_id": "geospatial",
+        "sequence": 5,
+    }
 
 
 def test_v3_transcript_preserves_navigable_child_agent_semantics(tmp_path: Path) -> None:
