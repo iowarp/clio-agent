@@ -325,12 +325,39 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                         )
                     ).model_dump(exclude_none=True),
                 )
+            if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+                raise HTTPException(
+                    status_code=422,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="bad_request",
+                            message="stdio transport 'args' must be a list of strings",
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
+            if not isinstance(env, dict) or not all(
+                isinstance(key, str) and isinstance(value, str) for key, value in env.items()
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="bad_request",
+                            message="stdio transport 'env' must map names to string values",
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                )
             # Build via the single canonical helper (pdeathsig-wrapped on Linux);
             # store the same normalized spec shape callers already expect.
-            transport = transport_from_spec(
-                {"transport": "stdio", "command": command, "args": list(args), "env": dict(env)}
-            )
-            spec = {"transport": "stdio", "command": command, "args": list(args)}
+            spec = {
+                "transport": "stdio",
+                "command": command,
+                "args": list(args),
+                "env": dict(env),
+            }
+            transport = transport_from_spec(spec)
         elif transport_kind in {"http", "streamable-http"}:
             url = body.get("url")
             if not url:
