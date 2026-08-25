@@ -140,6 +140,42 @@ _COMPONENT_PROPS: dict[str, frozenset[str]] = {
     ),
 }
 
+# Keep the server acceptance boundary aligned with the renderer's required
+# fields.  Allow-listing property names alone can otherwise persist a surface as
+# ``ready`` even though the browser must reject it during schema validation.
+_COMPONENT_REQUIRED_PROPS: dict[str, frozenset[str]] = {
+    "Text": frozenset({"text"}),
+    "Icon": frozenset({"name"}),
+    "Image": frozenset({"url"}),
+    "Row": frozenset({"children"}),
+    "Column": frozenset({"children"}),
+    "Grid": frozenset({"children", "columns"}),
+    "List": frozenset({"children"}),
+    "Frame": frozenset({"child"}),
+    "Tabs": frozenset({"tabs"}),
+    "Modal": frozenset({"trigger", "content"}),
+    "Divider": frozenset(),
+    "Button": frozenset({"child"}),
+    "CheckBox": frozenset({"label", "value"}),
+    "TextField": frozenset({"label", "value"}),
+    "ChoicePicker": frozenset({"label", "options", "value"}),
+    "Slider": frozenset({"label", "min", "max", "value"}),
+    "clio.status.v1": frozenset({"label", "state"}),
+    "clio.metric.v1": frozenset({"label", "value"}),
+    "clio.progress.v1": frozenset({"label"}),
+    "clio.callout.v1": frozenset({"title", "body", "severity"}),
+    "clio.data-table.v1": frozenset({"columns", "rows"}),
+    "clio.time-series.v1": frozenset({"series", "xKey", "yKeys"}),
+    "clio.mermaid.v1": frozenset({"source"}),
+    "clio.map.v1": frozenset({"points"}),
+    "clio.workflow.v1": frozenset({"nodes", "edges"}),
+    "clio.artifact.v1": frozenset({"name", "uri", "mediaType"}),
+    "clio.code.v1": frozenset({"code", "language"}),
+    "clio.diff.v1": frozenset({"path", "diff"}),
+    "clio.action-card.v1": frozenset({"title", "body", "severity", "actions"}),
+    "clio.approval.v1": frozenset({"title", "reason", "risk", "actions"}),
+}
+
 _FORBIDDEN_KEYS = frozenset(
     {
         "css",
@@ -402,6 +438,11 @@ def validate_server_message(message: Mapping[str, Any]) -> tuple[str, str]:
                 raise A2UIValidationError(
                     f"A2UI {component_name} contains unknown properties: {sorted(unknown_props)}"
                 )
+            missing_props = _COMPONENT_REQUIRED_PROPS[component_name] - set(component)
+            if missing_props:
+                raise A2UIValidationError(
+                    f"A2UI {component_name} is missing required properties: {sorted(missing_props)}"
+                )
             _validate_accessibility(component, component_name)
             if component_name == "clio.mermaid.v1":
                 source = component.get("source")
@@ -523,6 +564,16 @@ class A2UIStore:
                 self._surfaces[key] = surface
             elif surface is None:
                 raise A2UIValidationError("A2UI surface does not exist in this session")
+            if operation == "updateComponents":
+                # updateComponents carries the complete authoritative component
+                # set for a surface revision. Retaining superseded definitions
+                # makes one historical renderer-invalid revision poison every
+                # later valid update during replay, and needlessly grows the
+                # durable snapshot. Keep the lifecycle and data-model messages,
+                # but compact component state to the newest complete revision.
+                surface.messages = [
+                    existing for existing in surface.messages if "updateComponents" not in existing
+                ]
             if len(surface.messages) >= MAX_A2UI_MESSAGES:
                 surface.messages = surface.messages[-(MAX_A2UI_MESSAGES - 1) :]
             surface.messages.append(dict(message))

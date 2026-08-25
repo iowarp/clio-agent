@@ -89,6 +89,18 @@ def build_create_a2ui_surface_tool() -> Any:
         ``id``, ``label``, numeric ``latitude`` and ``longitude``, plus optional
         ``detail`` and ``category``. The renderer owns its trusted basemap; never
         provide tile, style, image, script, or geocoding URLs.
+        A ``clio.callout.v1`` requires ``title``, ``body``, and ``severity``;
+        it never accepts ``text`` or ``level``. An ``Image`` uses ``url`` (not
+        ``src``), and that URL must use ``https:``, ``artifact:``, or
+        ``resource:``. A ``clio.artifact.v1`` requires ``name``, ``uri``, and
+        ``mediaType``. Use the exact URI returned by artifact registration, or
+        an ``artifact://<artifact-id>`` URI when the registration result only
+        supplies an id; never pass ``artifact_id``, ``kind``, ``path``, or a
+        bare filesystem path as component properties.
+        A ``clio.metric.v1`` represents exactly one metric and requires
+        ``label`` and ``value``. To show several metrics, declare one metric
+        component per value and reference their ids from a Row or Grid. It does
+        not accept a ``metrics`` aggregate property.
         For Mermaid, pass declarative source in ``source``; HTML, init directives,
         click handlers, and links are rejected. For code, pass ``code``,
         ``language``, and an optional ``title``. These components render visually;
@@ -126,6 +138,9 @@ def build_create_a2ui_surface_tool() -> Any:
         )
         messages: list[dict[str, Any]] = []
         existing = app.state.a2ui_store.get(session_id, surface_id)
+        has_transcript_reference = bool(
+            existing is not None and existing.state != "deleted" and existing.part_id
+        )
         if existing is None or existing.state == "deleted":
             messages.append(
                 {
@@ -169,12 +184,20 @@ def build_create_a2ui_surface_tool() -> Any:
                 part_id=part.id,
             )
         assert surface is not None
-        emitted = _emit_surface_part(app, session_id, part)
+        if has_transcript_reference:
+            # The surface event updates every consumer of this stable id. A new
+            # transcript reference would render the same evolving surface again
+            # after every revision, producing duplicate cards instead of one
+            # in-place interactive view.
+            emitted = True
+            part.id = surface.part_id
+        else:
+            emitted = _emit_surface_part(app, session_id, part)
         return {
             "rendered": emitted,
             "session_id": session_id,
             "surface_id": surface.id,
-            "part_id": part.id,
+            "part_id": surface.part_id or part.id,
             "revision": surface.revision,
             "state": surface.state,
             **({} if emitted else {"reason": "transcript_frozen"}),

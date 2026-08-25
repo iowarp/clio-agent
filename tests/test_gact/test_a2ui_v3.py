@@ -71,6 +71,35 @@ def test_surface_lifecycle_persists_and_reconciles(tmp_path: Path) -> None:
     assert persisted.messages == [_create_message(), update]
 
 
+def test_complete_component_update_compacts_the_superseded_snapshot(tmp_path: Path) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    first = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [{"id": "root", "component": "Text", "text": "First"}],
+        },
+    }
+    corrected = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [{"id": "root", "component": "Text", "text": "Corrected"}],
+        },
+    }
+
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message(), first, corrected]},
+    )
+
+    assert response.status_code == 200
+    surface = response.json()["surfaces"][-1]
+    assert surface["revision"] == 3
+    assert surface["messages"] == [_create_message(), corrected]
+
+
 def test_surface_ids_are_scoped_to_each_session(tmp_path: Path) -> None:
     client, first_sid, _ = _session_client(tmp_path)
     second = client.app.state.sessions.create(workspace_id="ws_default", title="Second A2UI")
@@ -128,6 +157,37 @@ def test_unknown_component_and_executable_url_are_rejected(tmp_path: Path) -> No
     assert unknown_response.status_code == 422
     assert unknown_response.json()["error"]["error"] == "a2ui_validation_failed"
     assert executable_response.status_code == 422
+
+
+def test_renderer_required_component_properties_are_rejected_before_persistence(
+    tmp_path: Path,
+) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    invalid_artifact = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [
+                {
+                    "id": "root",
+                    "component": "clio.artifact.v1",
+                    "name": "station-plot.png",
+                }
+            ],
+        },
+    }
+
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message(), invalid_artifact]},
+    )
+
+    assert response.status_code == 422
+    assert (
+        "missing required properties: ['mediaType', 'uri']" in response.json()["error"]["message"]
+    )
+    assert client.app.state.a2ui_store.get(sid, "surface_1") is None
 
 
 def test_mermaid_component_is_trusted_but_executable_directives_are_rejected(
@@ -264,6 +324,36 @@ def test_root_agent_tool_produces_surface_and_transcript_reference(
     assert surface is not None and surface.part_id == result["part_id"]
     parts = app.state.live_assistant_parts[sid]
     assert any(part.type == "a2ui" and part.surface_id == "luna-status" for part in parts)
+
+
+def test_root_agent_tool_updates_one_stable_transcript_reference(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    app = client.app
+    monkeypatch.setattr(gact_context, "active_app", lambda: app)
+    monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
+    tool = build_create_a2ui_surface_tool()
+
+    first = tool(
+        surface_id="stable-view",
+        components=[{"id": "root", "component": "Text", "text": "First"}],
+    )
+    updated = tool(
+        surface_id="stable-view",
+        components=[{"id": "root", "component": "Text", "text": "Updated"}],
+    )
+
+    references = [
+        part
+        for part in app.state.live_assistant_parts[sid]
+        if part.type == "a2ui" and part.surface_id == "stable-view"
+    ]
+    assert len(references) == 1
+    assert updated["part_id"] == first["part_id"] == references[0].id
+    surface = app.state.a2ui_store.get(sid, "stable-view")
+    assert surface is not None
+    assert surface.messages[-1]["updateComponents"]["components"][0]["text"] == "Updated"
 
 
 def test_root_agent_tool_documents_the_valid_button_action_envelope() -> None:
