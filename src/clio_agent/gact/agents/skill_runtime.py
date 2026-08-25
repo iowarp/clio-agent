@@ -69,6 +69,27 @@ class SkillRuntime:
         }
 
 
+def skill_runtime_spawns_subagents(runtime: SkillRuntime) -> bool:
+    """Return whether any resolved skill can create a temporary child task.
+
+    Effect parsing remains authoritative and typed. A malformed effect therefore
+    fails module construction instead of quietly producing a launch-only runtime
+    that cannot collect the child it creates.
+    """
+
+    from clio_agent.gact.agents.skill_effects import (  # noqa: PLC0415
+        EFFECT_SPAWN_SUBAGENT,
+        parse_skill_effect,
+    )
+
+    for resolution in runtime.resolved.values():
+        assert resolution.skill is not None
+        effect = parse_skill_effect(resolution.skill.meta)
+        if effect is not None and effect.kind == EFFECT_SPAWN_SUBAGENT:
+            return True
+    return False
+
+
 def agent_pack_root(agent_def: "AgentDef") -> Path | None:
     """The declaring expert's pack/blueprint root (for pack-local skills)."""
 
@@ -180,15 +201,26 @@ def skills_prompt_block(runtime: SkillRuntime) -> str:
         return ""
     lines = [
         "## Skills available to you",
-        "These are procedures/rubrics you are expected to FOLLOW for the tasks "
-        "they cover. BEFORE doing such a task, call the load_skill tool with the "
-        "skill's id and apply the loaded procedure.",
+        "These are procedures/rubrics you are expected to FOLLOW for the tasks they cover. "
+        "Call load_skill for ordinary skills before applying them. Skills marked child-task "
+        "must be run with spawn_skill_task so delegation remains explicit and observable.",
     ]
-    lines.extend(
-        f"- {skill_id}: {res.skill.description}" if res.skill.description else f"- {skill_id}"
-        for skill_id, res in resolved.items()
-        if res.skill is not None
+    from clio_agent.gact.agents.skill_effects import (  # noqa: PLC0415
+        EFFECT_SPAWN_SUBAGENT,
+        parse_skill_effect,
     )
+
+    for skill_id, res in resolved.items():
+        if res.skill is None:
+            continue
+        effect = parse_skill_effect(res.skill.meta)
+        marker = (
+            " [child-task: use spawn_skill_task]"
+            if effect is not None and effect.kind == EFFECT_SPAWN_SUBAGENT
+            else ""
+        )
+        description = f": {res.skill.description}" if res.skill.description else ""
+        lines.append(f"- {skill_id}{marker}{description}")
     return "\n".join(lines)
 
 
@@ -388,5 +420,67 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                 "type": "string",
                 "description": "Optional bundled file path inside the skill directory.",
             },
+        },
+    )
+
+
+def build_spawn_skill_task_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
+    """Build the explicit child-task launcher for spawn-effect skills."""
+
+    from clio_agent.gact.agents.skill_effects import (  # noqa: PLC0415
+        EFFECT_SPAWN_SUBAGENT,
+        apply_spawn_skill_effect,
+        parse_skill_effect,
+    )
+    from clio_agent.gact.agents.spawn_runtime import emit_spawn_started  # noqa: PLC0415
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
+
+    spawnable: dict[str, Any] = {}
+    for skill_id, resolution in runtime.resolved.items():
+        ref = resolution.skill
+        if ref is None:
+            continue
+        effect = parse_skill_effect(ref.meta)
+        if effect is not None and effect.kind == EFFECT_SPAWN_SUBAGENT:
+            spawnable[skill_id] = ref
+    agent_id = str(getattr(agent_def, "id", "") or "")
+
+    def spawn_skill_task(skill_id: str, task: str) -> str:
+        wanted = str(skill_id or "").strip()
+        ref = spawnable.get(wanted)
+        if ref is None:
+            raise ValueError(
+                f"skill {wanted!r} is not a declared child-task skill; "
+                f"available: {sorted(spawnable)}"
+            )
+        output, spawned, child_id = apply_spawn_skill_effect(
+            ref, agent_id=agent_id, task=str(task or "")
+        )
+        app = _ctx.active_app()
+        session_id = _ctx.active_session_id()
+        assert app is not None and session_id
+        emit_spawn_started(
+            app,
+            session_id,
+            agent_def,
+            child_id,
+            str(task or "").strip(),
+            int(getattr(spawned, "depth", 0) or 0),
+            spawned,
+        )
+        return output
+
+    return native_tool(
+        spawn_skill_task,
+        name="spawn_skill_task",
+        title="Start child agent",
+        representation="handoff",
+        desc=(
+            "Run one declared child-task skill in a fresh background agent. "
+            "Provide a concrete assignment; collect the returned task with wait_agent_tasks."
+        ),
+        args={
+            "skill_id": {"type": "string", "description": "Declared child-task skill id."},
+            "task": {"type": "string", "description": "Concrete assignment for the child."},
         },
     )

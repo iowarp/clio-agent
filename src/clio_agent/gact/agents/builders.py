@@ -761,6 +761,14 @@ def _recorded_load_skill_tool(agent_def: "AgentDef", skill_rt: Any) -> Any:
     return _recording_blueprint_tool(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
 
 
+def _recorded_spawn_skill_task_tool(agent_def: "AgentDef", skill_rt: Any) -> Any:
+    """The explicit, causally visible launcher for skill-seeded child turns."""
+
+    return _recording_blueprint_tool(
+        _skill_runtime.build_spawn_skill_task_tool(agent_def, skill_rt)
+    )
+
+
 def _recording_blueprint_tool(tool: Any) -> Any:
     """Wrap a DSPy tool so blueprint ReAct predictions retain tool evidence."""
 
@@ -1428,7 +1436,13 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 _declared_tools = _dynamic_agent_tools(
                     base_agent, agent_def, (_sources := cast(dict[str, str], {}))
                 )
-                _spawn_tools = build_spawn_runtime_tools(base_agent, agent_def)
+                _spawn_tools = build_spawn_runtime_tools(
+                    base_agent,
+                    agent_def,
+                    enable_skill_task_collection=_skill_runtime.skill_runtime_spawns_subagents(
+                        skill_rt
+                    ),
+                )
                 toolset_inventory.register_tool_sources(_sources, _spawn_tools, "spawn-runtime")
                 tools = [
                     *_declared_tools,
@@ -1440,6 +1454,12 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     _skill_tool = _recorded_load_skill_tool(agent_def, skill_rt)
                     toolset_inventory.register_tool_sources(_sources, [_skill_tool], "native")
                     tools.append(_skill_tool)
+                    if _skill_runtime.skill_runtime_spawns_subagents(skill_rt):
+                        _spawn_skill_tool = _recorded_spawn_skill_task_tool(agent_def, skill_rt)
+                        toolset_inventory.register_tool_sources(
+                            _sources, [_spawn_skill_tool], "spawn-runtime"
+                        )
+                        tools.append(_spawn_skill_tool)
                 # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
                 _auto_tools = build_auto_react_tools(agent_def)
                 toolset_inventory.register_tool_sources(_sources, _auto_tools, "native")

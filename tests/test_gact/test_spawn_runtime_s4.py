@@ -100,7 +100,14 @@ class _ProtocolSpy(_InvokeSpy):
         raise AssertionError("spawn-runtime tools do not own workflow cancellation")
 
 
-def _tool_names(app, agent_id: str, declared: set[str], monkeypatch) -> list[str]:
+def _tool_names(
+    app,
+    agent_id: str,
+    declared: set[str],
+    monkeypatch,
+    *,
+    enable_skill_task_collection: bool = False,
+) -> list[str]:
     from clio_agent.gact.agents import spawn_runtime
 
     monkeypatch.setattr(
@@ -108,7 +115,11 @@ def _tool_names(app, agent_id: str, declared: set[str], monkeypatch) -> list[str
         lambda a, pid, session_id="": set(declared),
     )
     with _gact_app_context(app), _tool_session_context("sess_x"):
-        tools = spawn_runtime.build_spawn_runtime_tools(_Agent(), _Def(agent_id))
+        tools = spawn_runtime.build_spawn_runtime_tools(
+            _Agent(),
+            _Def(agent_id),
+            enable_skill_task_collection=enable_skill_task_collection,
+        )
     return [getattr(t, "name", "") for t in tools]
 
 
@@ -130,6 +141,30 @@ def test_leaf_expert_without_children_gets_no_spawn_tools(tmp_path: Path, monkey
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app):
         assert _tool_names(app, "leaf_expert", set(), monkeypatch) == []
+
+
+def test_spawn_effect_leaf_gets_collectors_not_declared_child_spawners(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A skill-created child is collectable without inventing static children."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        names = _tool_names(
+            app,
+            "dynamic_parent",
+            set(),
+            monkeypatch,
+            enable_skill_task_collection=True,
+        )
+        assert set(names) == {
+            "wait_agent_tasks",
+            "check_agent_tasks",
+            "message_agent",
+            "observe_agent_tasks",
+        }
+        assert "spawn_agent_task" not in names
+        assert "spawn_agents_parallel" not in names
 
 
 # ---------------------------------------------------------------------------
