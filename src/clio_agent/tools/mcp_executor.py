@@ -631,6 +631,13 @@ class AsyncMCPToolExecutor:
 #: ``reason=%s`` degrade logs).
 MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON = "mcp_result_to_text_repr_fallback"
 
+#: A tool may legitimately return a large structured result for the UI/trace,
+#: but the ReAct model lane must not replay that whole payload on every later
+#: iteration.  The observer still receives ``raw_result`` unchanged; this cap
+#: applies only to the model-facing text projection.
+MAX_MODEL_TOOL_RESULT_CHARS = 12_000
+MODEL_TOOL_RESULT_TRUNCATED_REASON = "model_tool_result_oversize"
+
 
 def _content_block_field(block: Any, *names: str) -> Any:
     """Read the first present field from a content block (mapping or SDK model)."""
@@ -646,6 +653,35 @@ def _content_block_field(block: Any, *names: str) -> Any:
         if value is not None:
             return value
     return None
+
+
+def _bounded_model_tool_result(text: str) -> str:
+    """Bound one model-facing tool observation without changing durable evidence.
+
+    Large MCP results remain complete on the raw observer/trace path.  The model
+    receives a typed head-and-tail projection so it can see that content was
+    omitted, retain leading summaries and trailing status fields, and avoid
+    multiplying a multi-megabyte observation across every ReAct prompt.
+    """
+
+    if len(text) <= MAX_MODEL_TOOL_RESULT_CHARS:
+        return text
+    marker_budget = 640
+    preview_budget = MAX_MODEL_TOOL_RESULT_CHARS - marker_budget
+    head_chars = int(preview_budget * 0.75)
+    tail_chars = preview_budget - head_chars
+    bounded = {
+        "_clio": {
+            "status": "truncated",
+            "reason": MODEL_TOOL_RESULT_TRUNCATED_REASON,
+            "original_chars": len(text),
+            "head_chars": head_chars,
+            "tail_chars": tail_chars,
+        },
+        "head": text[:head_chars],
+        "tail": text[-tail_chars:],
+    }
+    return json.dumps(bounded, ensure_ascii=False)
 
 
 def _base64_decoded_length(data: str) -> int:
@@ -780,7 +816,7 @@ def _result_to_text(result: Any) -> str:
     """
     data = getattr(result, "data", result)
     if isinstance(data, str):
-        return data
+        return _bounded_model_tool_result(data)
     if data is None:
         content = getattr(result, "content", None)
         if (
@@ -792,9 +828,9 @@ def _result_to_text(result: Any) -> str:
                 piece for piece in (_content_block_model_text(block) for block in content) if piece
             )
             if placeholder:
-                return placeholder
+                return _bounded_model_tool_result(placeholder)
     try:
-        return json.dumps(data, allow_nan=False)
+        return _bounded_model_tool_result(json.dumps(data, allow_nan=False))
     except (TypeError, ValueError, RecursionError, OverflowError) as exc:
         logger.warning(
             "mcp result to text degraded to repr fallback reason=%s type=%s error=%s",
@@ -802,7 +838,7 @@ def _result_to_text(result: Any) -> str:
             type(data).__name__,
             exc,
         )
-        return str(data)
+        return _bounded_model_tool_result(str(data))
 
 
 def _tool_ui_metadata(tool: Any) -> Mapping[str, Any]:

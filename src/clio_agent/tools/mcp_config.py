@@ -612,6 +612,15 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
         # would give the child ONLY the spec vars and drop PATH -> anything it execs by
         # name fails with ``os error 2``.
         env: dict[str, str] = {**os.environ, **dict(spec.env)}
+        # A stdio MCP server may run from its own virtual environment. Ambient
+        # Python import overrides from the CLIO service must not leak into that
+        # environment: ``PYTHONPATH`` can otherwise make the child import CLIO's
+        # pydantic/fastmcp packages beside the child's incompatible native
+        # extensions. A server that genuinely needs either override can declare
+        # it explicitly in its MCP spec.
+        for python_override in ("PYTHONHOME", "PYTHONPATH"):
+            if python_override not in spec.env:
+                env.pop(python_override, None)
         if cwd:
             # Pin clio-kit's artifacts root to the workspace so staged resources
             # and generated artifacts land in the workspace even when the

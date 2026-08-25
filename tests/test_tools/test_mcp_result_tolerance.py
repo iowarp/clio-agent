@@ -295,6 +295,37 @@ def test_result_to_text_still_prefers_json_for_encodable_values() -> None:
     assert _result_to_text([{"a": 1}, {"b": 2}]) == json.dumps([{"a": 1}, {"b": 2}])
 
 
+def test_result_to_text_bounds_only_the_model_lane_with_typed_head_and_tail() -> None:
+    """A huge tabular result cannot multiply across every later ReAct prompt."""
+
+    from clio_agent.tools.mcp_executor import (
+        MAX_MODEL_TOOL_RESULT_CHARS,
+        MODEL_TOOL_RESULT_TRUNCATED_REASON,
+        _result_to_text,
+    )
+
+    payload = {
+        "summary": {"rows": 1101, "status": "success"},
+        "rows": [f"row-{index:05d}-{'x' * 80}" for index in range(1101)],
+        "completion": {"output_file": "earthscope_stations_clean.csv"},
+    }
+
+    text = _result_to_text(payload)
+    bounded = json.loads(text)
+
+    assert len(text) <= MAX_MODEL_TOOL_RESULT_CHARS
+    assert bounded["_clio"]["reason"] == MODEL_TOOL_RESULT_TRUNCATED_REASON
+    assert bounded["_clio"]["original_chars"] > MAX_MODEL_TOOL_RESULT_CHARS
+    assert '"rows": 1101' in bounded["head"]
+    assert "earthscope_stations_clean.csv" in bounded["tail"]
+
+
+def test_result_to_text_leaves_small_string_results_verbatim() -> None:
+    from clio_agent.tools.mcp_executor import _result_to_text
+
+    assert _result_to_text("complete: 12 rows") == "complete: 12 rows"
+
+
 @pytest.mark.asyncio
 async def test_missing_required_client_capability_is_typed() -> None:
     """JSON-RPC -32021 maps by numeric code to the capability-refused type."""

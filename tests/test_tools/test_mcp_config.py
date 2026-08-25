@@ -327,6 +327,36 @@ def test_transport_for_no_cwd_env_keeps_path():
     assert stdio.env.get("PATH") == os.environ.get("PATH")
 
 
+def test_transport_for_scrubs_ambient_python_import_overrides(monkeypatch):
+    """An isolated MCP virtual environment must not import CLIO's Python packages."""
+    monkeypatch.setenv("PYTHONHOME", "/ambient/clio/python")
+    monkeypatch.setenv("PYTHONPATH", "/ambient/clio/site-packages")
+
+    stdio = transport_for(
+        spec_from_declaration("ndp", {"command": sys.executable, "args": ["-c", "pass"]})
+    )
+
+    assert "PYTHONHOME" not in stdio.env
+    assert "PYTHONPATH" not in stdio.env
+
+
+def test_transport_for_preserves_declared_python_import_overrides(monkeypatch):
+    """A server declaration may intentionally opt back into Python import overrides."""
+    monkeypatch.setenv("PYTHONPATH", "/ambient/clio/site-packages")
+    spec = spec_from_declaration(
+        "ndp",
+        {
+            "command": sys.executable,
+            "args": ["-c", "true"],
+            "env": {"PYTHONPATH": "/server/owned/site-packages"},
+        },
+    )
+
+    stdio = transport_for(spec)
+
+    assert stdio.env["PYTHONPATH"] == "/server/owned/site-packages"
+
+
 # --- transport_from_spec: ONE canonical accepted set (#770 C2) -------------
 
 
