@@ -120,7 +120,13 @@ def test_v3_lifecycle_mutations_return_canonical_workspace_and_session_rows(
         json={
             "workspace_id": workspace["id"],
             "title": "Evidence review",
-            "metadata": {"pinned": True},
+            "metadata": {
+                "pinned": True,
+                "active_agent_blueprint_id": "earthscope-flat",
+                "active_agent_blueprint_name": "EarthScope (Flat / Haiku)",
+                "active_agent_blueprint_version": "0.1.0",
+                "active_agent_blueprint_scope": "global",
+            },
         },
     )
     assert session_response.status_code == 201
@@ -129,6 +135,10 @@ def test_v3_lifecycle_mutations_return_canonical_workspace_and_session_rows(
     assert session["pinned"] is True
     assert session["archived"] is False
     assert session["last_interaction_at"] == session["created_at"]
+    assert session["active_blueprint_id"] == "earthscope-flat"
+    assert session["active_blueprint_name"] == "EarthScope (Flat / Haiku)"
+    assert session["active_blueprint_version"] == "0.1.0"
+    assert session["active_blueprint_scope"] == "global"
     assert "status" not in session
 
     updated_session = client.patch(

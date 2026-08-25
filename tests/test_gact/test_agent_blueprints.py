@@ -3605,6 +3605,40 @@ def test_agent_blueprint_files_session_scoped_path_activation_resolves(
         assert mismatched.status_code == 404, mismatched.text
 
 
+def test_agent_blueprint_files_historical_definition_snapshot_resolves(
+    tmp_path: Path,
+) -> None:
+    """A persisted activation remains inspectable after its transient path is cleared."""
+
+    external_root = tmp_path / "external" / "earthscope-flat"
+    _write_blueprint(external_root, blueprint_id="earthscope-flat")
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="historical demo")
+    app.state.sessions.update(
+        session.id,
+        metadata_patch={
+            "active_agent_blueprint_id": "earthscope-flat",
+            "active_agent_blueprint_name": "EarthScope (Flat / Haiku)",
+            "active_agent_blueprint_path": "",
+            "active_agent_blueprint_definition_path": str(external_root / "AGENT.md"),
+        },
+    )
+
+    with TestClient(app) as client:
+        listed = client.get(
+            "/v1/agent-blueprints/earthscope-flat/files",
+            params={"session_id": session.id},
+        )
+        mismatched = client.get(
+            "/v1/agent-blueprints/genomics/files",
+            params={"session_id": session.id},
+        )
+
+    assert listed.status_code == 200, listed.text
+    assert "AGENT.md" in {row["path"] for row in listed.json()["entries"]}
+    assert mismatched.status_code == 404, mismatched.text
+
+
 # --------------------------------------------------------------------------- #
 # Install-ALL registry semantics (owner ruling 2026-08-13): the marketplace is #
 # the shipped standard library — every valid pack on main installs, first-run  #

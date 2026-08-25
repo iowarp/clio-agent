@@ -143,6 +143,9 @@ def session_to_v3(session: Any) -> dict[str, Any]:
         "parent_session_id": getattr(session, "parent_session_id", ""),
         "agent_id": agent_id,
         "active_blueprint_id": metadata.get("active_agent_blueprint_id"),
+        "active_blueprint_name": metadata.get("active_agent_blueprint_name"),
+        "active_blueprint_version": metadata.get("active_agent_blueprint_version"),
+        "active_blueprint_scope": metadata.get("active_agent_blueprint_scope"),
     }
     row.update({key: str(value) for key, value in optional.items() if value})
     row.update(

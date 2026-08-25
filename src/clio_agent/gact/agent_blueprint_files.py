@@ -24,7 +24,7 @@ import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping
 
 from clio_agent.gact.agent_blueprints import (
     discover_agent_blueprints,
@@ -87,9 +87,11 @@ def resolve_agent_blueprint_root(
     """Resolve ``blueprint_id`` to its on-disk root directory, or ``None``.
 
     Session-scoped resolution is tried FIRST: when ``session_id`` names a
-    session whose active blueprint was PATH-activated
-    (``metadata.active_agent_blueprint_path``) and that active blueprint's own
-    id matches ``blueprint_id``, its root directory wins --
+    session whose active blueprint was PATH-activated and that active
+    blueprint's own id matches ``blueprint_id``, its root directory wins. Live
+    activations expose ``metadata.active_agent_blueprint_path``; persisted
+    historical activations retain the authoritative
+    ``metadata.active_agent_blueprint_definition_path`` snapshot instead.
     :func:`~clio_agent.gact.agent_blueprints.parse_agent_blueprint_root`
     normalizes both an ``AGENT.md`` file path and a directory path to the
     same ``.root`` (the directory containing ``AGENT.md``), so this resolves
@@ -100,6 +102,17 @@ def resolve_agent_blueprint_root(
 
     if session_id:
         active_path = _runtime_active_agent_blueprint_path(app, session_id)
+        if active_path is None:
+            session = app.state.sessions.get(session_id)
+            metadata = getattr(session, "metadata", {}) if session is not None else {}
+            if isinstance(metadata, Mapping) and str(
+                metadata.get("active_agent_blueprint_id") or ""
+            ) == str(blueprint_id):
+                definition_path = str(
+                    metadata.get("active_agent_blueprint_definition_path") or ""
+                ).strip()
+                if definition_path:
+                    active_path = Path(definition_path).expanduser()
         if active_path is not None:
             parsed = parse_agent_blueprint_root(active_path, scope="session")
             if parsed.id == blueprint_id:
