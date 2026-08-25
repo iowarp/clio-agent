@@ -2413,6 +2413,27 @@ def test_child_rollup_includes_grandchild_mints(tmp_path: Path) -> None:
     assert parts[0].metadata["artifact_id"] == grand.artifact_id
 
 
+def test_child_rollup_keeps_latest_version_of_repeated_logical_artifact(tmp_path: Path) -> None:
+    """Parallel children preparing one shared artifact yield one latest-version chip."""
+
+    from clio_agent.gact.artifacts.wire import append_turn_child_resource_links
+
+    app = _rollup_app(tmp_path)
+    _rollup_task(app, parent_sid="sess_p", child_sid="sess_a", parent_turn_id="T1")
+    _rollup_task(app, parent_sid="sess_p", child_sid="sess_b", parent_turn_id="T1")
+    _rollup_mint(app, "sess_a", "shared_catalog.csv", "a" * 64, call_id="c1")
+    latest = _rollup_mint(app, "sess_b", "shared_catalog.csv", "b" * 64, call_id="c2")
+
+    transcript = _FakeTranscript()
+    append_turn_child_resource_links(app, "sess_p", "T1", transcript, agent_id="main")
+
+    parts = transcript.snapshot()
+    assert len(parts) == 1
+    assert parts[0].name == "shared_catalog.csv"
+    assert parts[0].metadata["version"] == 2
+    assert parts[0].metadata["artifact_id"] == latest.artifact_id
+
+
 def test_child_rollup_skips_artifact_id_already_on_the_message(tmp_path: Path) -> None:
     """The exactly-once guard: an artifact_id already riding a ``resource_link``
     part on this message (the parent's own live-chipped mint) is never re-added."""

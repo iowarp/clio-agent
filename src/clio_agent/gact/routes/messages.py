@@ -377,6 +377,15 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
                 accepted_at=created_at,
             )
 
+        # Cancellation belongs to the turn that was active when /cancel was
+        # requested.  An idle cancellation (including recovery after a server
+        # restart, where the persisted session may still say ``running`` but no
+        # executor exists) must not poison the next user-authored turn.  The busy
+        # branch above preserves genuine mid-turn cancellation/steering races;
+        # once it reports idle, this POST is an explicit request to begin fresh.
+        app.state.cancel_flags.discard(sid)
+        app.state.cancel_events.pop(sid, None)
+
         # Persist + publish the user message synchronously so by the
         # time the ack returns, GET /messages reflects it. Then mark
         # the session running, then schedule the turn in the

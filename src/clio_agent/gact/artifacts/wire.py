@@ -294,6 +294,18 @@ def append_turn_child_resource_links(
                 if producer_sid not in session_ids or version.artifact_id in already:
                     continue
                 rows.append((record.workspace_id, record.name, version))
+        # Several parallel children can prepare the same logical artifact (for
+        # example, a shared station catalog).  Preserve every distinct artifact,
+        # but roll up only the newest version of a repeated ``workspace/name``
+        # identity.  Version history remains available through the registry; the
+        # parent conversation should not receive a stack of obsolete copies.
+        latest_by_logical_name: dict[tuple[str, str], tuple[str, str, ArtifactVersion]] = {}
+        for row in rows:
+            key = (row[0], row[1])
+            current = latest_by_logical_name.get(key)
+            if current is None or row[2].version > current[2].version:
+                latest_by_logical_name[key] = row
+        rows = list(latest_by_logical_name.values())
         rows.sort(key=lambda row: row[2].created_at or "")
 
         for workspace_id, name, version in rows:
