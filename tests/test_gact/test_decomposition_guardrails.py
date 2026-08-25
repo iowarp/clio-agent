@@ -80,7 +80,10 @@ from clio_agent.gact.app import build_app
 # 190 -> 191 (#1211): +1 POST /v1/providers/models/refresh, owned by the new
 # routes/provider_models_refresh.py (registered alongside routes/providers.py,
 # not inline in app.py).
-EXPECTED_ROUTE_METHOD_PAIRS = 191
+# 191 -> 192: +1 PUT /v1/agent-blueprints/{blueprint_id}/files/write, owned by
+# routes/blueprints.py with path confinement and atomic persistence in
+# agent_blueprint_files.py.
+EXPECTED_ROUTE_METHOD_PAIRS = 192
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

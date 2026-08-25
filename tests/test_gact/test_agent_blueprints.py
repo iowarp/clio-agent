@@ -3298,9 +3298,7 @@ def test_dynamic_agent_tools_never_falls_back_when_workspace_fleet_build_fails()
 
     assert raised.value.reason == "custom_agent_tool_executor_unavailable"
     assert raised.value.tools == ["geo_geocode"]
-    assert raised.value.mount_failures == {
-        "workspace_fleet": "mcp_namespace_discovery_unreachable"
-    }
+    assert raised.value.mount_failures == {"workspace_fleet": "mcp_namespace_discovery_unreachable"}
 
 
 def test_active_base_agent_tool_executor_prefers_per_workspace() -> None:
@@ -3371,9 +3369,7 @@ def test_active_base_agent_tool_executor_recovers_workspace_from_child_session()
             sessions=SimpleNamespace(get=lambda sid: session if sid == "sess_child" else None),
             workspaces=SimpleNamespace(
                 get=lambda wid: (
-                    SimpleNamespace(root_path="C:/workspace/ndp")
-                    if wid == "ws_ndp"
-                    else None
+                    SimpleNamespace(root_path="C:/workspace/ndp") if wid == "ws_ndp" else None
                 )
             ),
         )
@@ -3454,6 +3450,45 @@ def test_agent_blueprint_files_read_returns_raw_markdown(tmp_path: Path) -> None
     assert read.headers["content-type"].startswith("text/plain")
     assert "Coordinate genomics work." in read.text
     assert "id: root" in read.text
+
+
+def test_agent_blueprint_files_write_persists_text_and_returns_validation(tmp_path: Path) -> None:
+    """The editor atomically persists a real blueprint file and reports runtime validation."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid, _ = _install_genomics_blueprint(tmp_path, client)
+        replacement = "---\nid: root\ntitle: Root\n---\n\nCoordinate updated genomics work.\n"
+        written = client.put(
+            "/v1/agent-blueprints/genomics/files/write",
+            params={"workspace_id": wid, "path": "experts/root.md"},
+            json={"content": replacement},
+        )
+        reread = client.get(
+            "/v1/agent-blueprints/genomics/files/read",
+            params={"workspace_id": wid, "path": "experts/root.md"},
+        )
+
+    assert written.status_code == 200, written.text
+    assert written.json()["entry"]["size"] == len(replacement.encode("utf-8"))
+    assert "validation" in written.json()
+    assert reread.text == replacement
+
+
+def test_agent_blueprint_files_write_rejects_path_traversal(tmp_path: Path) -> None:
+    """The mutation endpoint carries the same blueprint-root confinement as reads."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid, _ = _install_genomics_blueprint(tmp_path, client)
+        escaped = client.put(
+            "/v1/agent-blueprints/genomics/files/write",
+            params={"workspace_id": wid, "path": "../../outside.md"},
+            json={"content": "forbidden"},
+        )
+
+    assert escaped.status_code == 400, escaped.text
+    assert escaped.json()["error"]["error"] == "path_outside_blueprint"
 
 
 def test_agent_blueprint_files_read_rejects_path_traversal(tmp_path: Path) -> None:
