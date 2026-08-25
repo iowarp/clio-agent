@@ -74,13 +74,23 @@ def test_patch_workspace_bumps_updated_at_and_applies_name(tmp_path: Path) -> No
     assert resp.status_code == 200
     patched = resp.json()
     assert patched["name"] == "after"
+    assert patched["display_name"] == "after"
     # update() bumps updated_at; the buggy direct-mutation path never did.
     assert patched["updated_at"] != before
 
     # Persisted view agrees (flush happened under the lock).
     fetched = c.get(f"/v1/workspaces/{wid}").json()
     assert fetched["name"] == "after"
+    assert fetched["display_name"] == "after"
     assert fetched["updated_at"] == patched["updated_at"]
+
+    custom = c.patch(
+        f"/v1/workspaces/{wid}",
+        json={"name": "internal-name", "display_name": "Human label"},
+    )
+    assert custom.status_code == 200
+    assert custom.json()["name"] == "internal-name"
+    assert custom.json()["display_name"] == "Human label"
 
 
 def test_patch_unknown_workspace_404s_not_found(tmp_path: Path) -> None:

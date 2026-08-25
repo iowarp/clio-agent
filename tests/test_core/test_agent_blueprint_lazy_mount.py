@@ -88,6 +88,27 @@ class TestDiscoverPackServers:
         )
         assert agent._discover_pack_servers("not-installed") == {}
 
+    def test_workspace_blueprint_is_discovered_from_gateway_cwd(
+        self, agent: ClioAgent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The activated workspace copy, not the server process cwd, owns MCPs."""
+
+        root = tmp_path / ".clio" / "agent-blueprints" / "workspace-pack"
+        root.mkdir(parents=True)
+        (root / "AGENT.md").write_text(
+            "---\nid: workspace-pack\ntitle: Workspace\n"
+            "mcp_servers:\n  geo: clio-kit mcp-server geo\n---\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "clio_agent.gact.agent_blueprint_refresh.ensure_default_registry_bootstrap",
+            lambda **_kwargs: "",
+        )
+
+        servers = agent._discover_pack_servers("workspace-pack", cwd=str(tmp_path))
+
+        assert servers == {"workspace-pack": {"geo": "clio-kit mcp-server geo"}}
+
     def test_discovery_failure_degrades_to_no_pack_servers(
         self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch
     ) -> None:

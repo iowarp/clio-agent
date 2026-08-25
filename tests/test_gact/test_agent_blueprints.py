@@ -3274,6 +3274,35 @@ def test_dynamic_agent_tools_still_bricks_when_nothing_resolves(tmp_path: Path) 
     assert raised.value.tools == ["fs_read_file"]
 
 
+def test_dynamic_agent_tools_never_falls_back_when_workspace_fleet_build_fails() -> None:
+    """A broken workspace fleet is typed, never replaced by the default executor."""
+
+    fallback = SimpleNamespace(to_dspy_tools=lambda: [])
+
+    def _broken_workspace_fleet() -> None:
+        raise RuntimeError("workspace fleet failed")
+
+    base_agent = SimpleNamespace(
+        _active_tool_executor=_broken_workspace_fleet,
+        tool_executor=fallback,
+    )
+    agent_def = AgentDef(
+        id="geospatial",
+        source="expert_pack",
+        title="Geospatial",
+        tools=["geo_geocode"],
+    )
+
+    with pytest.raises(_UnsupportedSessionAgent) as raised:
+        _dynamic_agent_tools(base_agent, agent_def, {})
+
+    assert raised.value.reason == "custom_agent_tool_executor_unavailable"
+    assert raised.value.tools == ["geo_geocode"]
+    assert raised.value.mount_failures == {
+        "workspace_fleet": "mcp_namespace_discovery_unreachable"
+    }
+
+
 def test_active_base_agent_tool_executor_prefers_per_workspace() -> None:
     """A bound workspace routes dynamic-agent tools to the per-workspace executor.
 
@@ -3312,6 +3341,50 @@ def test_active_base_agent_tool_executor_falls_back_without_seam() -> None:
     default_executor = object()
     base_agent = SimpleNamespace(tool_executor=default_executor)
     assert _active_base_agent_tool_executor(base_agent) is default_executor
+
+
+def test_active_base_agent_tool_executor_recovers_workspace_from_child_session() -> None:
+    """A child module rebuild uses its session territory after a fleet reap."""
+    from clio_agent.gact import context as runtime_context
+    from clio_agent.gact.runtime.globals import _gact_app_context
+
+    default_executor = object()
+    workspace_executor = object()
+    base_agent = SimpleNamespace(
+        tool_executor=default_executor,
+        _active_tool_executor=lambda: (
+            workspace_executor
+            if __import__(
+                "clio_agent.tools.execution",
+                fromlist=["get_active_tool_workspace_root"],
+            ).get_active_tool_workspace_root()
+            == "C:/workspace/ndp"
+            else default_executor
+        ),
+    )
+    session = SimpleNamespace(
+        workspace_id="ws_ndp",
+        metadata={"active_agent_blueprint_id": "earthscope-flat"},
+    )
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            sessions=SimpleNamespace(get=lambda sid: session if sid == "sess_child" else None),
+            workspaces=SimpleNamespace(
+                get=lambda wid: (
+                    SimpleNamespace(root_path="C:/workspace/ndp")
+                    if wid == "ws_ndp"
+                    else None
+                )
+            ),
+        )
+    )
+
+    with _gact_app_context(app):
+        token = runtime_context.set_session_id("sess_child")
+        try:
+            assert _active_base_agent_tool_executor(base_agent) is workspace_executor
+        finally:
+            runtime_context.reset(token)
 
 
 # --------------------------------------------------------------------------- #

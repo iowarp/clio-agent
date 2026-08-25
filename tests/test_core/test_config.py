@@ -123,3 +123,29 @@ def test_lenient_chat_adapter_is_streamable() -> None:
     inst = cls(use_json_adapter_fallback=False)
     assert inst.__class__.__name__ in {"ChatAdapter", "XMLAdapter", "JSONAdapter"}
     assert isinstance(inst, dspy.ChatAdapter)
+
+
+def test_lenient_chat_adapter_restores_escaped_section_boundary() -> None:
+    """A format-only encoded separator still reaches DSPy's typed field parser."""
+
+    import dspy
+
+    from clio_agent.config import _lenient_chat_adapter_cls
+
+    class Signature(dspy.Signature):
+        next_thought: str = dspy.OutputField()
+        tool_calls: str = dspy.OutputField()
+
+    completion = (
+        "[[ ## next_thought ## ]]\nCreate the plot."
+        r"\n[[ ## tool_calls ## ]]\n"
+        '[{"name":"plot_plot_timeseries"}]'
+    )
+    parsed = _lenient_chat_adapter_cls()(use_json_adapter_fallback=False).parse(
+        Signature, completion
+    )
+
+    assert parsed == {
+        "next_thought": "Create the plot.",
+        "tool_calls": '[{"name":"plot_plot_timeseries"}]',
+    }

@@ -488,7 +488,9 @@ class UpdateSessionRequest(BaseModel):
     # asks the planner to prefer tool/expert reasoning over deterministic
     # shortcuts.
     routing_mode: Optional[Literal["auto", "chat", "experts", "reasoning_only"]] = None
-    approval_mode: Optional[Literal["ask", "auto-edits", "bypass", "ai-review", "spotter-ai"]] = None  # #1034
+    approval_mode: Optional[Literal["ask", "auto-edits", "bypass", "ai-review", "spotter-ai"]] = (
+        None  # #1034
+    )
     # iowarp/gact-tui §audit/E-14: the desktop needs to push pin state
     # (`metadata.pinned: bool`) and archive state. Without these the
     # desktop's controls flip the UI optimistically but the changes are
@@ -650,7 +652,7 @@ class AgentDef(BaseModel):
     # empty value means "inherit the default profile" (today's behaviour).
     api_base: str = ""  # explicit endpoint override for this expert's provider
     credential_ref: str = ""  # KEY into a credential source (e.g. "openai:acctB"), never a secret
-    transport: str = ""  # transport hint: codex "app_server" / claude_code "sdk"
+    transport: str = ""  # transport hint: Codex/Claude Code both use their SDK
     parameters: dict[str, Any] = Field(default_factory=dict)
     module: dict[str, Any] = Field(default_factory=dict)
     signature: dict[str, Any] = Field(default_factory=dict)
@@ -868,7 +870,7 @@ class LMProviderInfo(BaseModel):
     thinking_level: Optional[str] = None
     thinking_effective: str = ""
     thinking_budget: int = 0
-    transport: Optional[Literal["app_server", "sdk"]] = None
+    transport: Optional[Literal["sdk"]] = None
     state: Literal["idle", "configuring", "ready", "error"] = "idle"
     status_message: str = ""
     error: str = ""
@@ -953,8 +955,8 @@ class LMProviderRequest(BaseModel):
     # CLIO_GACT_TURN_TIMEOUT_S / 900s default. Slow reasoning models over a long
     # multi-stage pipeline need ~1800.
     turn_timeout_s: float = 0.0
-    # Transport (codex app_server / cc sdk); deleted values kept -> typed 400 not 422.
-    transport: Optional[Literal["app_server", "exec", "sdk"]] = None
+    # Subscription-backed CLI providers are SDK-only.
+    transport: Optional[Literal["sdk"]] = None
     # Reasoning knobs, mapped per-provider in providers.thinking (#895).
     # thinking_level (off|low|medium|high, null=unset → shipped per-model default)
     # is the provider-generic control (budget_tokens for anthropic/claude_code,

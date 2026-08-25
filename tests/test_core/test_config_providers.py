@@ -153,9 +153,9 @@ class TestLMProviderConfig:
         assert config.environment == "dev"
 
     def test_default_codex_transport(self):
-        """Codex transport defaults to app_server (native JSON-RPC/stdio, #896)."""
+        """Codex transport defaults to the official Python SDK."""
         config = LMProviderConfig(provider="codex")
-        assert config.codex_transport == "app_server"
+        assert config.codex_transport == "sdk"
 
     def test_invalid_codex_transport_rejected(self):
         """Invalid Codex transport should fail during config construction."""
@@ -321,17 +321,17 @@ class TestLoadConfigFromEnv:
             assert config.api_key == "sk-native"
 
     def test_codex_transport_from_env(self):
-        """CLIO_CODEX_TRANSPORT accepts only app_server (v0.8.0 single transport)."""
-        env = {"CLIO_LM_PROVIDER": "codex", "CLIO_CODEX_TRANSPORT": "app_server"}
+        """CLIO_CODEX_TRANSPORT accepts only the official SDK."""
+        env = {"CLIO_LM_PROVIDER": "codex", "CLIO_CODEX_TRANSPORT": "sdk"}
         with isolated_environ(env):
             config = load_config_from_env()
-            assert config.codex_transport == "app_server"
+            assert config.codex_transport == "sdk"
 
     def test_codex_removed_transport_from_env_raises(self):
         """A deleted transport in the env is a loud config error, not a downgrade."""
         env = {"CLIO_LM_PROVIDER": "codex", "CLIO_CODEX_TRANSPORT": "exec"}
         with isolated_environ(env):
-            with pytest.raises(ValueError, match="removed in the v0.8.0 cleanup"):
+            with pytest.raises(ValueError, match="official Python SDK"):
                 load_config_from_env()
 
     def test_claude_code_transport_from_env(self):
@@ -551,7 +551,7 @@ class TestCreateLM:
         config = LMProviderConfig(provider="codex", model="gpt-5.5")
         lm = create_lm(config)
         assert lm.model == "codex/cdx-gpt-5.5"
-        assert lm.kwargs["codex_transport"] == "app_server"
+        assert lm.kwargs["codex_transport"] == "sdk"
 
     def test_codex_model_marker_is_not_doubled(self):
         """Codex should accept already-prefixed config values idempotently."""
@@ -564,10 +564,10 @@ class TestCreateLM:
         config = LMProviderConfig(
             provider="codex",
             model="gpt-5.5",
-            codex_transport="app_server",
+            codex_transport="sdk",
         )
         lm = create_lm(config)
-        assert lm.kwargs["codex_transport"] == "app_server"
+        assert lm.kwargs["codex_transport"] == "sdk"
 
     def test_codex_thinking_level_passes_codex_reasoning_effort_kwarg(self):
         """SEAM (#896): the #895 thinking level survives the factory into the LM

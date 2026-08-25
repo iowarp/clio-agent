@@ -287,19 +287,15 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         if not _model_ref_is_empty(sess.model) and not _model_ref_matches_active(sess.model, app):
             active_model = deps.active_lm_model_ref(app)
-            if active_model.get("model_id"):
-                app.state.sessions.update(sid, model={})
-                sess = app.state.sessions.get(sid) or sess
-            else:
-                raise HTTPException(
-                    status_code=501,
-                    detail=deps.unsupported_model_ref_error(
-                        session_id=sid,
-                        source="session",
-                        model_ref=sess.model,
-                        active_model=active_model,
-                    ).model_dump(exclude_none=True),
-                )
+            raise HTTPException(
+                status_code=501,
+                detail=deps.unsupported_model_ref_error(
+                    session_id=sid,
+                    source="session",
+                    model_ref=sess.model,
+                    active_model=active_model,
+                ).model_dump(exclude_none=True),
+            )
 
         user_text = req.extract_text()
         turn_agent_id = req.extract_agent_id().strip()
@@ -542,6 +538,7 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
                         "title": display_run_name(agent_id, task.run_index, task.run_label),
                     }
             snapshot = transcript_entities(rows, sid, subagent_links=subagent_links)
+            snapshot["cursor"] = str(app.state.bus.latest_event_id(sid))
             a2ui_store = getattr(app.state, "a2ui_store", None)
             if a2ui_store is not None:
                 snapshot["surfaces"] = a2ui_store.list_wire(sid)

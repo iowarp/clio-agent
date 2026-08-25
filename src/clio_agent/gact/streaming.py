@@ -37,6 +37,7 @@ keeps intercepting the turn path unchanged.
 from __future__ import annotations
 
 import inspect
+import logging
 import time
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -46,6 +47,8 @@ from clio_agent.gact.providers.config import _provider_runtime_kind
 from clio_agent.gact.runtime.capabilities import _STREAM_FALLBACK_REASON_DEFINITIONS
 from clio_agent.runtime import trace
 from clio_agent.runtime.stream_audit import stream_audit
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -196,7 +199,20 @@ def _record_stream_fallback(
     reason: str,
     message: str = "",
 ) -> None:
-    _stream_fallback_reasons(app)[sid] = _stream_fallback_payload(reason, message)
+    payload = _stream_fallback_payload(reason, message)
+    _stream_fallback_reasons(app)[sid] = payload
+    logger.warning(
+        "live delivery degraded session_id=%s reason=%s message=%s",
+        sid,
+        reason,
+        message or payload.get("description", ""),
+    )
+
+
+def _peek_stream_fallback(app: "FastAPI", sid: str) -> dict[str, Any]:
+    """Read a turn's live-delivery degradation without consuming final metadata."""
+
+    return dict(_stream_fallback_reasons(app).get(sid, {}))
 
 
 def _pop_stream_fallback(app: "FastAPI", sid: str) -> dict[str, Any]:
@@ -450,23 +466,17 @@ def _build_stream_listeners(agent: Any, stream_listener_cls: Any) -> list[Any]:
 def _agent_streaming_unsupported_reason(agent: Any) -> str:
     """Return a fallback reason when the active provider cannot stream live.
 
-    Only the CLI-backed custom transports (``codex`` JSON-RPC, ``claude_code``
-    exec) are genuinely non-streaming. Argonne/ALCF (Sophia + Metis) is a plain
-    OpenAI-compatible SSE endpoint: it streams at the provider AND through LiteLLM
-    (verified: multi-chunk incremental deltas), so it must NOT be force-classified
-    as batch. Hardcoding it here bypassed the streamify pump for EVERY ALCF run
-    (iowarp/clio-agent#160). The streamify path below has its own graceful
-    try/except fallback to sync, so letting argonne attempt streaming can only
-    improve on the previous always-batch behaviour.
+    Codex and Claude Code both have real SDK streaming transports. Codex's SDK
+    produces text and reasoning notifications through ``astreaming``;
+    force-classifying it as batch bypassed that path and left the UI silent for an
+    entire model call. Argonne/ALCF (Sophia + Metis) is also a plain
+    OpenAI-compatible SSE endpoint and must not be force-classified as batch.
     """
 
     provider_config = getattr(agent, "_provider_config", None)
     provider = str(getattr(provider_config, "provider", "") or "")
     provider_kind = _provider_runtime_kind(provider)
-    # claude_code always streams: the sdk transport is the only one since the
-    # v0.8.0 cleanup (the batch `claude -p` exec transport was deleted).
-    if provider_kind == "codex":
-        return "provider_streaming_unsupported"
+    # claude_code and codex always stream through their SDK transports.
     # iowarp/clio-agent#639: normalize the preset id (argonne_sophia/_metis) to
     # the provider kind (argonne) BEFORE the capability check. Reasoning models on
     # the ALCF gateways stream their answer on the reasoning_content channel,

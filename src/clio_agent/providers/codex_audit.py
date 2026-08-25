@@ -1,13 +1,13 @@
-"""Stream-audit instrumentation for the Codex app-server transport (#896).
+"""Stream-audit instrumentation for the official Codex Python SDK transport.
 
 Emits the SAME ``provider.call_started`` / ``provider.call_usage`` /
 ``provider.raw_event`` / ``provider.normalized`` rows the Claude Code provider
-does, with a ``codex_app_server`` label, so ``scripts/analyze_turn_waterfall.py``
+does, with a ``codex_sdk`` label, so ``scripts/analyze_turn_waterfall.py``
 works unchanged for codex. The shared fingerprint + gact-id helpers are reused
 from :mod:`clio_agent.providers.claude_code_audit` (one owner, no duplication);
 only the provider label and the codex usage normalization differ.
 
-Codex usage is normalized upstream (:func:`clio_agent.providers.codex_app_server.normalize_usage`)
+Codex usage is normalized from the SDK's typed token-usage notification
 to the snake-case keys the analyzer joins on (``cache_read_input_tokens`` for
 codex's ``cachedInputTokens``, ``reasoning_output_tokens`` for
 ``reasoningOutputTokens``), so the flattened ``usage_<key>`` fields land in the
@@ -25,7 +25,7 @@ from clio_agent.providers.claude_code_audit import (
 )
 from clio_agent.runtime.stream_audit import stream_audit, stream_audit_enabled
 
-_PROVIDER = "codex_app_server"
+_PROVIDER = "codex_sdk"
 
 
 def emit_call_started(*, call_id: str, call_index: int, model: str, prompt: str) -> None:
@@ -43,7 +43,7 @@ def emit_call_started(*, call_id: str, call_index: int, model: str, prompt: str)
         turn_id=turn_id,
         trace_id=trace_id,
         model=model,
-        transport="app_server",
+        transport="sdk",
         prompt_chars=len(prompt),
         prefix_2k_sha256=prefix_small,
         prefix_16k_sha256=prefix_large,
@@ -71,7 +71,7 @@ def emit_call_usage(
         "turn_id": turn_id,
         "trace_id": trace_id,
         "model": model,
-        "transport": "app_server",
+        "transport": "sdk",
         "output_chars": output_chars,
         "usage_keys": sorted(str(key) for key in usage),
         "usage_raw": dict(usage),
@@ -98,7 +98,7 @@ def emit_raw_event(
         event_index=event_index,
         raw_event_type=raw_event_type,
         source_channel=source_channel,
-        transport="app_server",
+        transport="sdk",
         chunk_len=len(text),
         text_len=len(text),
         head=text[:120],

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from clio_agent.runtime.lm_stream import AnswerFieldExtractor, extract_delta
+from clio_agent.runtime.lm_stream import (
+    AnswerFieldExtractor,
+    extract_delta,
+    normalize_escaped_section_boundaries,
+)
 
 
 def _chunked(text: str, sizes: list[int]) -> list[str]:
@@ -84,6 +88,32 @@ def test_field_quoting_its_own_marker_inline_is_not_a_boundary():
         assert "`[[ ## next_thought ## ]]`" in out
         # the real trailing tool-name marker is NOT leaked into the field
         assert "pandas_profile_csv" not in out
+
+
+def test_escaped_section_boundary_does_not_leak_into_visible_field() -> None:
+    """A provider-escaped structural separator ends the visible thought field."""
+
+    full = (
+        "[[ ## next_thought ## ]]\nCreate the plot now."
+        r"\n[[ ## tool_calls ## ]]\n"
+        '{"tool_calls":[{"name":"plot_plot_timeseries","args":{}}]}'
+    )
+    extractor = AnswerFieldExtractor("next_thought")
+    out = "".join(extractor.feed(chunk) for chunk in _chunked(full, [1, 3, 8, 2]))
+    out += extractor.flush()
+
+    assert out.strip() == "Create the plot now."
+    assert "tool_calls" not in out
+
+
+def test_only_framed_escaped_section_markers_are_normalized() -> None:
+    quoted = r"Explain `[[ ## tool_calls ## ]]` and preserve this\nordinary newline."
+    assert normalize_escaped_section_boundaries(quoted) == quoted
+
+    encoded = r"thought\n[[ ## tool_calls ## ]]\n{\"tool_calls\": []}"
+    assert normalize_escaped_section_boundaries(encoded) == (
+        'thought\n[[ ## tool_calls ## ]]\n{\\"tool_calls\\": []}'
+    )
 
 
 def test_extractor_flags_structured_answer_vs_prose():

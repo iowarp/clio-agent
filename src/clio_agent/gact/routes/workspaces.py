@@ -353,13 +353,14 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def patch_workspace(wid: str, request: Request) -> Workspace | JSONResponse:
         """iowarp/gact-tui §audit/E-18: the desktop's Rename action
         on the Workspaces page posts PATCH /v1/workspaces/{wid} with
-        {name?, metadata?, root_path?}. Without this endpoint clio
+        {name?, display_name?, metadata?, root_path?}. Without this endpoint clio
         returned 405 and the user saw 'Method Not Allowed' in a toast.
         Accept partial updates of any of those fields.
         """
 
         body = await json_body(request, route="PATCH /v1/workspaces/{wid}")
         name = body.get("name")
+        display_name = body.get("display_name")
         root_path = body.get("root_path")
         metadata = body.get("metadata")
         # The desktop sends `config` as an alias for metadata.
@@ -376,6 +377,11 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         ws = app.state.workspaces.update(
             wid,
             name=name.strip() if isinstance(name, str) and name.strip() else None,
+            display_name=(
+                display_name.strip()
+                if isinstance(display_name, str) and display_name.strip()
+                else None
+            ),
             root_path=new_root,
             metadata_patch=metadata if isinstance(metadata, dict) else None,
         )

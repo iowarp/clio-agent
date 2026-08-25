@@ -27,6 +27,7 @@ import threading
 import time
 from collections.abc import Mapping
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List
 
 import dspy
@@ -297,7 +298,9 @@ class ClioAgent(dspy.Module):
         self._planner_lm = create_planner_lm(provider_config)
         self._dspy_adapter = create_chat_adapter(provider_config)
 
-    def _discover_pack_servers(self, blueprint_id: str = "") -> dict[str, dict[str, Any]]:
+    def _discover_pack_servers(
+        self, blueprint_id: str = "", *, cwd: str | None = None
+    ) -> dict[str, dict[str, Any]]:
         """Return declared ``mcp_servers`` for ONE ACTIVATED blueprint (#1232 pt 1).
 
         Reads a SINGLE blueprint's ``AGENT.md`` frontmatter ``mcp_servers`` map —
@@ -320,7 +323,9 @@ class ClioAgent(dspy.Module):
         )
 
         try:
-            blueprints = discover_agent_blueprints()
+            blueprints = (
+                discover_agent_blueprints(cwd=Path(cwd)) if cwd else discover_agent_blueprints()
+            )
         except Exception as exc:  # noqa: BLE001 - discovery is best-effort
             if self.verbose:
                 print(f"[ClioAgent] blueprint discovery failed: {exc}")
@@ -360,7 +365,11 @@ class ClioAgent(dspy.Module):
                 always passes ``""`` — see ``__init__``).
         """
 
-        pack_servers = self._discover_pack_servers(blueprint_id)
+        # Workspace-scoped blueprints live under ``<workspace>/.clio``. Discovery
+        # must therefore use the same cwd as the per-workspace gateway; using the
+        # server process cwd silently found no blueprint, minted a toolless fleet,
+        # and rejected every declared child before inference.
+        pack_servers = self._discover_pack_servers(blueprint_id, cwd=cwd)
         specs = load_mcp_servers(pack_servers=pack_servers)
         # #1113: wire the receive-loop elicitation handler onto every declared-server
         # backend so a mid-tool-call elicitation reaches the HITL surface. The hook is

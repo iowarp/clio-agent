@@ -313,7 +313,7 @@ def child_reaper_status() -> ChildReaperResult | None:
 
 
 def teardown_pooled_sdk_transports() -> dict[str, str]:
-    """Close the pooled Claude SDK transports on clean shutdown (#900).
+    """Close the pooled Claude and Codex SDK transports on clean shutdown (#900).
 
     The blocking SDK session pool and the streaming client pool each hold persistent
     ``claude`` CLI connections + a loop thread. They register ``atexit`` best-effort
@@ -354,15 +354,15 @@ def teardown_pooled_sdk_transports() -> dict[str, str]:
         results["sdk_session_pool"] = f"error:{exc!r}"
 
     try:
-        from clio_agent.providers.codex_app_server import _APP_SERVER_POOL  # noqa: PLC0415
+        from clio_agent.providers.codex_stream import _SDK_CLIENT  # noqa: PLC0415
 
-        _APP_SERVER_POOL.close_blocking()
-        results["codex_app_server_pool"] = "closed"
+        _SDK_CLIENT.close_blocking()
+        results["codex_sdk_client"] = "closed"
     except Exception as exc:  # noqa: BLE001 - teardown must not raise; reason logged + recorded
         logger.warning(
-            "sdk transport teardown failed reason=codex_app_server_pool_close_failed error=%r", exc
+            "sdk transport teardown failed reason=codex_sdk_client_close_failed error=%r", exc
         )
-        results["codex_app_server_pool"] = f"error:{exc!r}"
+        results["codex_sdk_client"] = f"error:{exc!r}"
 
     logger.info(
         "pooled SDK transports torn down on shutdown reason=sdk_pools_closed outcome=%s", results

@@ -558,7 +558,7 @@ def test_put_lm_provider_omitted_model_binds_the_overlay_default(
     with TestClient(app) as c:
         resp = c.put(
             "/v1/providers/lm",
-            json={"provider": "codex", "api_base": "codex://app-server", "model": ""},
+            json={"provider": "codex", "api_base": "codex://sdk", "model": ""},
         )
     assert resp.status_code == 200, resp.text
     assert resp.json()["model"] == "gpt-5.6-sol"
@@ -625,7 +625,7 @@ def test_get_lm_provider_when_configured_from_boot_agent(tmp_path: Path, monkeyp
             max_tokens=4096,
             context_length=32768,
             thinking_budget=0,
-            codex_transport="app_server",
+            codex_transport="sdk",
         )
     )
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
@@ -953,8 +953,7 @@ def test_argonne_runtime_refresh_updates_live_lm_kwargs(monkeypatch) -> None:
 
 
 def test_put_lm_provider_rejects_removed_codex_transport(tmp_path: Path, monkeypatch) -> None:
-    """v0.8.0: a codex bind naming a deleted transport 400s typed; the default
-    bind (no transport) lands on app_server — the only transport."""
+    """A manual app-server bind 400s; the default uses the official SDK."""
     captured: dict[str, Any] = {}
     monkeypatch.delenv("CLIO_CODEX_TRANSPORT", raising=False)
 
@@ -992,17 +991,17 @@ def test_put_lm_provider_rejects_removed_codex_transport(tmp_path: Path, monkeyp
                 "provider": "codex",
                 "api_base": "codex://app-server",
                 "model": "gpt-5.5",
-                "transport": "sdk",
+                "transport": "app_server",
             },
         )
-        assert rejected.status_code == 400, rejected.text
-        assert "removed in the v0.8.0 cleanup" in rejected.json()["error"]["message"]
+        assert rejected.status_code == 422, rejected.text
+        assert rejected.json()["error"]["details"]["errors"][0]["msg"] == "Input should be 'sdk'"
 
         resp = c.put(
             "/v1/providers/lm",
             json={
                 "provider": "codex",
-                "api_base": "codex://app-server",
+                "api_base": "codex://sdk",
                 "model": "gpt-5.5",
             },
         )
@@ -1010,16 +1009,16 @@ def test_put_lm_provider_rejects_removed_codex_transport(tmp_path: Path, monkeyp
         get_body = c.get("/v1/providers/lm").json()
 
     assert resp.status_code == 200, resp.text
-    assert body["transport"] == "app_server"
-    assert get_body["transport"] == "app_server"
+    assert body["transport"] == "sdk"
+    assert get_body["transport"] == "sdk"
     assert captured["cfg"].provider == "codex"
     assert captured["cfg"].api_key == "x"
-    assert captured["cfg"].codex_transport == "app_server"
-    assert app.state.lm_config["transport"] == "app_server"
+    assert captured["cfg"].codex_transport == "sdk"
+    assert app.state.lm_config["transport"] == "sdk"
     # Demoted bind (design §5): transport travels on the config / store default,
     # NOT process-global env. The bind must not stamp CLIO_CODEX_TRANSPORT.
     assert "CLIO_CODEX_TRANSPORT" not in os.environ
-    assert app.state.provider_profiles.default.transport == "app_server"
+    assert app.state.provider_profiles.default.transport == "sdk"
 
 
 def test_put_lm_provider_rejects_removed_claude_code_transport(tmp_path: Path, monkeypatch) -> None:

@@ -52,9 +52,8 @@ class ClaudeCodeCLIUnavailableError(RuntimeError):
 def _resolve_claude_binary() -> str:
     """Return an absolute path to the ``claude`` binary or raise, Windows-shim-aware.
 
-    Mirrors :func:`clio_agent.providers.codex_litellm._resolve_codex_binary`'s
-    ``.cmd``-preference reasoning (a bare ``shutil.which`` can return an
-    un-exec-able wrapper on Windows).
+    Prefers the Windows ``.cmd`` shim because a bare ``shutil.which`` can return
+    an un-executable wrapper on Windows.
     """
     if os.name == "nt":
         cmd_path = shutil.which("claude.cmd") or shutil.which("claude.exe")

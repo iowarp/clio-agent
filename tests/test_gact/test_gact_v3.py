@@ -156,9 +156,9 @@ def test_v3_session_and_transcript_are_normalized(tmp_path: Path) -> None:
                 sequence=1,
                 metadata={
                     "stream_source": "live",
-                    "signature_field_name": "provider_thinking:codex_app_server",
+                    "signature_field_name": "provider_thinking:codex_sdk_reasoning",
                     "thinking_source": "provider",
-                    "provider_source": "codex_app_server",
+                    "provider_source": "codex_sdk_reasoning",
                     "default_collapsed": True,
                 },
             ),
@@ -218,6 +218,7 @@ def test_v3_session_and_transcript_are_normalized(tmp_path: Path) -> None:
     transcript = client.get(f"/v1/sessions/{session.id}/messages", headers=V3_HEADERS).json()
 
     session_row = next(row for row in sessions if row["id"] == session.id)
+    assert transcript["cursor"].isdigit()
     assert session_row["state"] == "completed"
     assert session_row["agent_id"] == "main"
     projected = transcript["messages"][0]
@@ -227,12 +228,12 @@ def test_v3_session_and_transcript_are_normalized(tmp_path: Path) -> None:
         "type": "reasoning",
         "text": "Comparing the observed campaigns before choosing an action.",
         "source": "provider",
-        "provider_source": "codex_app_server",
+        "provider_source": "codex_sdk_reasoning",
         "default_collapsed": True,
         "agent_id": "main",
         "sequence": 1,
         "stream_source": "live",
-        "channel": "provider_thinking:codex_app_server",
+        "channel": "provider_thinking:codex_sdk_reasoning",
     }
     assert projected["blocks"][1]["channel"] == "next_thought"
     assert projected["blocks"][1]["agent_id"] == "spotter"

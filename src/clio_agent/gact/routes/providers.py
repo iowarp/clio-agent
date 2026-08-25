@@ -604,23 +604,25 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 return preset.model_copy(update=update)
             update["is_authenticated"] = True
         if preset.provider == "codex":
-            if _which_cli("codex"):
+            if importlib.util.find_spec("openai_codex") is not None:
                 update["status"] = "ready"
-                update["status_message"] = "codex CLI available"
+                update["status_message"] = "Codex SDK installed; authentication checked on use"
                 update["is_authenticated"] = True
             else:
                 update["status"] = "unavailable"
-                update["status_message"] = "codex CLI not found on PATH"
+                update["status_message"] = "official openai-codex Python SDK is not installed"
                 update["is_authenticated"] = False
             return preset.model_copy(update=update)
         if preset.provider == "claude_code":
             if _which_cli("claude"):
                 update["status"] = "ready"
-                update["status_message"] = "claude CLI available"
+                update["status_message"] = (
+                    "Claude Agent SDK ready; subscription authentication checked on use"
+                )
                 update["is_authenticated"] = True
             else:
                 update["status"] = "unavailable"
-                update["status_message"] = "claude CLI not found on PATH"
+                update["status_message"] = "Claude Code runtime not found on PATH"
                 update["is_authenticated"] = False
             return preset.model_copy(update=update)
         if not preset.supports_live_catalog:
@@ -932,7 +934,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 # Per-provider transport (v0.8.0): only the bound provider's field
                 # reads req.transport — cross-feeding once let non-codex binds
                 # inherit the deleted codex "exec" default and 400 on validation.
-                codex_transport=(req.transport or "app_server") if is_codex else "app_server",  # type: ignore[arg-type]  # LMProviderConfig validates; deleted values 400 typed
+                codex_transport=(req.transport or "sdk") if is_codex else "sdk",  # type: ignore[arg-type]  # LMProviderConfig validates
                 claude_code_transport=(req.transport or "sdk") if is_cc else "sdk",  # type: ignore[arg-type]  # LMProviderConfig validates; deleted values 400 typed
             )
             # Per-provider handshake: discover connectivity + per-model config and

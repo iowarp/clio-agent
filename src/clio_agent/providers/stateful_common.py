@@ -1,13 +1,8 @@
-"""Provider-agnostic core of the stateful session-delta transport (#901 / #891).
+"""Core of the Claude SDK stateful session-delta transport (#901 / #891).
 
-The TTFT closer's shared heart, extracted so BOTH the ``claude_code`` SDK
-transport (:mod:`clio_agent.providers.claude_code_stateful`) and the native
-``codex app-server`` transport (:mod:`clio_agent.providers.codex_stateful`) reuse
-ONE detector + ONE bounded per-loop session registry + ONE per-forward scope. Only
-the *send side* differs between providers (a Claude SDK ``query`` under a stable
-``session_id`` vs. a codex ``turn/start`` on a persistent thread); the
-prefix-classification and the registry lifecycle are identical, so they live here
-(no duplication — #775 no-accretion).
+The TTFT closer holds one detector, one bounded per-loop session registry, and
+one per-forward scope for the ``claude_code`` SDK transport. Codex no longer
+uses this layer: its official Python SDK is the sole Codex provider boundary.
 
 **The problem (measured, #901/#891).** dspy/litellm is stateless: every LM call
 re-sends the FULL rendered prompt and the provider must re-ingest it (cache reads
@@ -37,11 +32,10 @@ loop binds).
 
 **Handle lifecycle is pluggable (the one provider difference).** A ``full`` send
 needs a fresh session HANDLE. Claude mints its own client-side (a uuid); codex must
-ask its app-server (``thread/start`` I/O that can fail). So
-:meth:`StatefulSessionRegistry.plan` takes an ``open_handle`` factory called ONLY
-on a full send; if it raises, the popped forced reason is restored so the retried
-call reclassifies with the correct typed reason (never a silent downgrade to
-``first_call``).
+create a handle. :meth:`StatefulSessionRegistry.plan` therefore accepts an
+``open_handle`` factory called only on a full send; if it raises, the popped
+forced reason is restored so the retried call reclassifies with the correct typed
+reason (never a silent downgrade to ``first_call``).
 """
 
 from __future__ import annotations
@@ -373,9 +367,8 @@ def classify_delta(
 class _Entry:
     """One live stateful session: its opaque handle + the last FULL list it sent.
 
-    ``extra`` is an opaque per-provider payload (unused by claude; the codex leg
-    stores the pooled ``CodexAppServerProcess`` so a respawn can be detected and
-    force a ``session_evicted`` reset).
+    ``extra`` is an opaque per-provider payload retained for provider-specific
+    session metadata.
     """
 
     handle: str
@@ -534,9 +527,7 @@ class StatefulSessionRegistry:
     def release(self, scope_token: str) -> None:
         """Drop every entry + pending flag for ``scope_token`` (loop-end teardown)."""
         with self._lock:
-            dead = [
-                key for key, entry in self._entries.items() if entry.scope_token == scope_token
-            ]
+            dead = [key for key, entry in self._entries.items() if entry.scope_token == scope_token]
             for key in dead:
                 self._entries.pop(key, None)
             self._pending.pop(scope_token, None)

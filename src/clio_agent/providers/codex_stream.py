@@ -1,40 +1,39 @@
-"""App-server streaming glue for the Codex bridge (#896, #775 no-accretion).
+"""Official Python Codex SDK transport for the subscription provider.
 
-Owner module for the pieces that translate a warm ``codex app-server`` turn
-(:mod:`clio_agent.providers.codex_app_server`) into LiteLLM completion/streaming
-outputs with instrumentation parity (:mod:`clio_agent.providers.codex_audit`).
-Split out of :mod:`clio_agent.providers.codex_litellm` so that provider module
-stays under its file-size ratchet as the app-server transport lands.
+CLIO imports :mod:`openai_codex` and consumes its typed turn stream. The SDK
+owns the pinned runtime and JSON-RPC lifecycle; CLIO never shells out to
+``codex``, speaks app-server JSON-RPC, or falls back to a CLI transport.
 
-``_resolve_codex_binary`` and the LiteLLM-facing ``CodexExecError`` are imported
-lazily from :mod:`clio_agent.providers.codex_litellm` to keep the import graph
-acyclic (that module imports THIS one at load time).
-
-**Executor note (known trade-off, not an accident).** :func:`astream_app_server`
-bridges the blocking pool driver onto the caller's loop via
-``loop.run_in_executor(None, ...)`` — the process-wide default
-``ThreadPoolExecutor``. Codex turns queued behind the per-process turn lock hold
-an executor worker each while they wait, so a burst of same-key codex calls can
-transiently starve unrelated ``run_in_executor`` work. The lock wait itself is
-BOUNDED (typed timeout in ``CodexAppServerProcess.run_turn``), which caps the
-hold time. The clean fix is a dedicated executor / owner loop-thread per pooled
-process (the ``claude_code_sessions`` dedicated-loop pattern); that is a
-follow-up, not this pass.
+Provider-exposed reasoning text and reasoning summaries remain distinct. A
+summary is never relabelled as full provider reasoning.
 """
 
 from __future__ import annotations
 
 import asyncio
+import atexit
 import contextlib
+import hashlib
+import logging
+import os
 import queue
 import re
+import shutil
+import tempfile
 import threading
+import time
 import uuid
-from collections.abc import AsyncIterator, Generator, Mapping
-from typing import TYPE_CHECKING, Any
+from collections.abc import AsyncIterator, Mapping
+from pathlib import Path
+from typing import Any
+
+from openai_codex import ApprovalMode, AsyncCodex, CodexConfig, CodexError, Sandbox
 
 from clio_agent.providers._cli_provider import raise_model_rejected
-from clio_agent.providers.codex_app_server import _APP_SERVER_POOL, CodexAppServerError
+from clio_agent.providers.claude_code_cancel import (
+    register_sdk_stream,
+    unregister_sdk_stream,
+)
 from clio_agent.providers.codex_audit import (
     emit_call_started,
     emit_call_usage,
@@ -42,68 +41,188 @@ from clio_agent.providers.codex_audit import (
     emit_raw_event,
 )
 
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from litellm.types.utils import ChatCompletionUsageBlock
+logger = logging.getLogger(__name__)
 
-    from clio_agent.providers.codex_stateful import CodexStatefulSend
+FIRST_MODEL_ACTIVITY_TIMEOUT_S = 120.0
+DEFAULT_TURN_TIMEOUT_S = 180.0
 
+BARE_LM_BASE_INSTRUCTIONS = """You are a language-model completion backend inside Clio.
+Answer only the serialized prompt supplied by Clio. Do not inspect the workspace,
+invoke Codex tools, delegate to agents, browse, use plugins, or perform work outside
+the prompt. Clio owns the agent loop and all tool execution. Follow the response
+contract in the prompt and return its requested assistant content directly."""
+
+BARE_LM_FEATURES: dict[str, bool] = {
+    "apps": False,
+    "browser_use": False,
+    "computer_use": False,
+    "image_generation": False,
+    "memories": False,
+    "multi_agent": False,
+    "shell_tool": False,
+    "view_image": False,
+    "workspace_dependencies": False,
+}
+BARE_LM_CONFIG_OVERRIDES = (
+    "mcp_servers={}",
+    "plugins={}",
+    *(f"features.{name}=false" for name in BARE_LM_FEATURES),
+)
+BARE_LM_THREAD_CONFIG: dict[str, Any] = {
+    "mcp_servers": {},
+    "plugins": {},
+    "features": BARE_LM_FEATURES,
+}
+
+_ALLOWED_ITEM_TYPES = frozenset({"agentMessage", "reasoning", "userMessage"})
+_MODEL_ACTIVITY_METHODS = frozenset(
+    {
+        "item/agentMessage/delta",
+        "item/reasoning/textDelta",
+        "item/reasoning/summaryTextDelta",
+        "item/reasoning/summaryPartAdded",
+    }
+)
+_STREAM_END = object()
 _CALL_COUNTER_LOCK = threading.Lock()
 _CALL_COUNTER = 0
-
-#: Codex exposes no structured status code for a rejected model (unlike
-#: claude_code's ``api_error_status``) -- this is the only signal (#1184,
-#: #1211 review A3/B1). Anchored TIGHTLY to the ONE verified live phrase
-#: family: "The 'X' model is not supported when using Codex with a ChatGPT
-#: account." An EARLIER, broader pattern (``model.{0,80}(not supported|does
-#: not exist|is invalid|not available|unknown model)``) was a real bug: it
-#: also matched genuinely TRANSIENT shapes that happen to mention "model" --
-#: "model ... is not available due to high demand" (capacity), an echoed
-#: "model" key within 80 chars of an unrelated "is invalid", "... temporarily
-#: not available" + a 503 -- silently flipping those from retryable
-#: (CodexExecError) to non-retryable (BadRequestError). :func:`_is_codex_model_rejection`
-#: additionally requires the CONFIGURED model id to appear verbatim in the
-#: text (the CLI quotes it) so an unrelated message that happens to satisfy
-#: the phrase pattern for a DIFFERENT model can never misclassify.
 _CODEX_MODEL_REJECTION_PATTERN = re.compile(
     r"is not supported when using codex with (a|an)\b[^.]{0,40}account",
     re.IGNORECASE,
 )
 
 
-def _is_codex_model_rejection(text: str, *, model: str) -> bool:
-    """Whether a codex app-server error TEXT is a DEFINITIVE rejection of ``model``.
+class CodexSDKError(RuntimeError):
+    """Typed failure raised by the sole Codex SDK provider transport."""
 
-    Both conditions must hold: the verified live phrase family matches, AND
-    the configured model id appears verbatim in the text. A transient/capacity
-    message that merely mentions "model" elsewhere must never match (#1211
-    review B1) -- see the module-level pattern comment for the concrete
-    shapes this was verified against.
+
+class IsolatedCodexHome:
+    """Give the SDK authentication without personal Codex capabilities.
+
+    Empty config overrides do not erase configuration contributed by personal
+    plugins. The SDK runtime therefore receives a private ``CODEX_HOME`` seeded
+    with only ``auth.json``. If the runtime rotates credentials, the refreshed
+    file is copied back only when the source has not changed concurrently.
     """
-    if not text or not model:
-        return False
-    if not _CODEX_MODEL_REJECTION_PATTERN.search(text):
-        return False
-    return model in text
+
+    def __init__(self) -> None:
+        configured_home = os.environ.get("CODEX_HOME", "").strip()
+        source_home = Path(configured_home) if configured_home else Path.home() / ".codex"
+        self._source_auth = source_home / "auth.json"
+        self._temporary_home: Path | None = None
+        self._seed_digest = ""
+
+    def start(self) -> dict[str, str]:
+        """Create the private home and return environment overrides for the SDK."""
+        if self._temporary_home is not None:
+            return self._environment(self._temporary_home)
+
+        home = Path(tempfile.mkdtemp(prefix="clio-codex-sdk-"))
+        auth_target = home / "auth.json"
+        try:
+            if self._source_auth.is_file():
+                auth_bytes = self._source_auth.read_bytes()
+                auth_target.write_bytes(auth_bytes)
+                with contextlib.suppress(OSError):
+                    auth_target.chmod(0o600)
+                self._seed_digest = hashlib.sha256(auth_bytes).hexdigest()
+            (home / "sqlite").mkdir(exist_ok=True)
+        except Exception:
+            shutil.rmtree(home, ignore_errors=True)
+            raise
+        self._temporary_home = home
+        return self._environment(home)
+
+    @staticmethod
+    def _environment(home: Path) -> dict[str, str]:
+        return {
+            "CODEX_HOME": str(home),
+            "CODEX_SQLITE_HOME": str(home / "sqlite"),
+        }
+
+    def close(self) -> None:
+        """Persist an uncontended auth rotation, then remove the private home."""
+        home, self._temporary_home = self._temporary_home, None
+        if home is None:
+            return
+        try:
+            isolated_auth = home / "auth.json"
+            if isolated_auth.is_file() and self._seed_digest:
+                updated = isolated_auth.read_bytes()
+                updated_digest = hashlib.sha256(updated).hexdigest()
+                if updated_digest != self._seed_digest:
+                    current = self._source_auth.read_bytes()
+                    current_digest = hashlib.sha256(current).hexdigest()
+                    if current_digest == self._seed_digest:
+                        staged = self._source_auth.with_name(
+                            f".{self._source_auth.name}.clio-{uuid.uuid4().hex}.tmp"
+                        )
+                        try:
+                            staged.write_bytes(updated)
+                            with contextlib.suppress(OSError):
+                                staged.chmod(0o600)
+                            os.replace(staged, self._source_auth)
+                        finally:
+                            with contextlib.suppress(OSError):
+                                staged.unlink()
+                    else:
+                        logger.warning(
+                            "Codex SDK refreshed auth was not copied back because the "
+                            "source changed concurrently reason=auth_source_changed"
+                        )
+        except Exception:  # noqa: BLE001 - teardown reports but still removes secrets
+            logger.warning(
+                "Codex SDK isolated auth reconciliation failed reason=auth_reconcile_failed",
+                exc_info=True,
+            )
+        finally:
+            self._remove_private_home(home)
+
+    @staticmethod
+    def _remove_private_home(home: Path) -> None:
+        """Remove the SDK home after Windows releases its SQLite handles."""
+        last_error: OSError | None = None
+        for _attempt in range(20):
+            try:
+                shutil.rmtree(home)
+                return
+            except FileNotFoundError:
+                return
+            except OSError as exc:
+                last_error = exc
+                time.sleep(0.1)
+        logger.error(
+            "Codex SDK private home cleanup failed reason=private_home_cleanup_failed "
+            "path=%s error=%r",
+            home,
+            last_error,
+        )
 
 
 def _next_call_index() -> int:
-    """Return a process-local Codex provider call index for the audit rows."""
+    """Return a process-local Codex provider call index for audit correlation."""
     global _CALL_COUNTER  # noqa: PLW0603
     with _CALL_COUNTER_LOCK:
         _CALL_COUNTER += 1
         return _CALL_COUNTER
 
 
-def usage_chunk(usage: dict[str, int] | None) -> ChatCompletionUsageBlock | None:
-    """Map a normalized codex usage dict to the LiteLLM streaming-chunk usage."""
+def _is_codex_model_rejection(text: str, *, model: str) -> bool:
+    """Return whether ``text`` is the verified account/model rejection shape."""
+    return bool(text and model and model in text and _CODEX_MODEL_REJECTION_PATTERN.search(text))
+
+
+def usage_chunk(usage: dict[str, int] | None) -> dict[str, int] | None:
+    """Map normalized SDK usage to the LiteLLM streaming usage shape."""
     if not usage:
         return None
     prompt_tokens = int(usage.get("input_tokens", 0) or 0)
     completion_tokens = int(usage.get("output_tokens", 0) or 0)
-    total = int(usage.get("total_tokens", 0) or 0) or (prompt_tokens + completion_tokens)
+    total = int(usage.get("total_tokens", 0) or 0) or prompt_tokens + completion_tokens
     return {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
+        "reasoning_output_tokens": int(usage.get("reasoning_output_tokens", 0) or 0),
         "total_tokens": total,
     }
 
@@ -115,7 +234,7 @@ def _stream_chunk(
     finish_reason: str | None = None,
     usage: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build a LiteLLM-compatible streaming chunk (same shape as claude_code)."""
+    """Build one LiteLLM-compatible streaming chunk."""
     return {
         "text": text,
         "is_finished": is_finished,
@@ -126,104 +245,274 @@ def _stream_chunk(
     }
 
 
-def _app_server_events(
-    *,
-    prompt: str,
-    model: str,
-    cwd: str | None,
-    effort: str | None,
-    timeout: float,
-    send: CodexStatefulSend | None = None,
-) -> Generator[Any, None, None]:
-    """Yield ``TurnEvent``s for one app-server turn on the warm pool.
+def _item_root(payload: Any) -> Any:
+    item = getattr(payload, "item", None)
+    return getattr(item, "root", item)
 
-    When ``send`` is engaged (#891 stateful delta), the turn CONTINUES the send's
-    persistent thread (:meth:`CodexAppServerProcess.run_turn_on_thread`) so codex
-    sees only the new content in ``prompt``. Otherwise (inert / flag OFF) a fresh
-    ``ephemeral`` thread is run per call (:meth:`CodexAppServerProcess.run_turn`) —
-    byte-identical to the pre-slice path.
-    """
-    if send is not None and send.engaged and send.process is not None:
-        yield from send.process.run_turn_on_thread(
-            thread_id=send.thread_id, prompt=prompt, effort=effort, timeout=timeout
-        )
+
+def _item_type(payload: Any) -> str:
+    return str(getattr(_item_root(payload), "type", "") or "")
+
+
+def _is_model_activity(event: Any) -> bool:
+    if str(getattr(event, "method", "")) in _MODEL_ACTIVITY_METHODS:
+        return True
+    return str(getattr(event, "method", "")) == "item/started" and _item_type(event.payload) in {
+        "agentMessage",
+        "reasoning",
+    }
+
+
+def _validate_bare_lm_event(event: Any) -> None:
+    """Reject any SDK item proving Codex started an invisible inner agent action."""
+    method = str(getattr(event, "method", ""))
+    if method not in {"item/started", "item/completed"}:
         return
-    from clio_agent.providers.codex_litellm import _resolve_codex_binary  # noqa: PLC0415
-
-    binary = _resolve_codex_binary()
-    process = _APP_SERVER_POOL.process_for(binary=binary, model=model, cwd=cwd)
-    yield from process.run_turn(prompt=prompt, effort=effort, timeout=timeout)
-
-
-def run_app_server(
-    *,
-    prompt: str,
-    model: str,
-    cwd: str | None = None,
-    effort: str | None = None,
-    timeout: float = 180.0,
-    call_index: int = 0,
-    send: CodexStatefulSend | None = None,
-) -> tuple[str, dict[str, int]]:
-    """Blocking app-server turn → ``(text, normalized_usage)`` (completion path).
-
-    ``send`` (#891 stateful delta) carries the actual turn bytes (the delta tail or
-    the full prompt) + the persistent thread to continue + the call_id that joins the
-    ``provider.stateful`` audit row to this call's TTFT markers. ``None`` / not-engaged
-    ⇒ the full ``prompt`` on a fresh ephemeral thread (byte-identical pre-slice path).
-    ``emit_call_started`` always fingerprints the FULL ``prompt`` (cache-prefix
-    stability), while the turn runs ``send.prompt`` when engaged.
-    """
-    from clio_agent.providers.codex_litellm import CodexExecError  # noqa: PLC0415
-
-    call_id = (send.call_id if send is not None else "") or uuid.uuid4().hex
-    emit_call_started(call_id=call_id, call_index=call_index, model=model, prompt=prompt)
-    turn_prompt = send.prompt if (send is not None and send.engaged) else prompt
-    final_text = ""
-    usage: dict[str, int] = {}
-    try:
-        # closing() guarantees the turn generator's GeneratorExit path runs
-        # deterministically (turn lock released, sink invalidated) even when this
-        # loop exits early via an exception raised in the body.
-        with contextlib.closing(
-            _app_server_events(
-                prompt=turn_prompt, model=model, cwd=cwd, effort=effort, timeout=timeout, send=send
-            )
-        ) as events:
-            for event in events:
-                if event.kind == "usage":
-                    usage = event.usage
-                elif event.kind == "final":
-                    final_text = event.text
-                    usage = event.usage or usage
-    except CodexAppServerError as exc:
-        if send is not None:
-            send.note_error()  # drop the poisoned thread → next call resets (provider_error)
-        text = str(exc)
-        if _is_codex_model_rejection(text, model=model):
-            # #1184 / #1211 review A3: a definitive rejection, never retried as
-            # transient -- see raise_model_rejected's docstring.
-            raise_model_rejected(
-                message=f"codex rejected model {model!r}: {text}",
-                model=f"codex/{model}",
-                llm_provider="codex",
-                cause=exc,
-            )
-        raise CodexExecError(f"codex app-server turn failed (model={model}): {exc}") from exc
-    finally:
-        emit_call_usage(
-            call_id=call_id,
-            call_index=call_index,
-            model=model,
-            usage=usage,
-            output_chars=len(final_text),
+    item_type = _item_type(event.payload) or "unknown"
+    if item_type not in _ALLOWED_ITEM_TYPES:
+        raise CodexSDKError(
+            "bare Codex SDK LM attempted a hidden internal action "
+            f"({item_type}); Clio owns tools and orchestration"
         )
-    if not final_text:
-        raise CodexExecError(f"codex app-server returned empty content (model={model})")
-    return final_text, usage
 
 
-async def astream_app_server(
+def _normalize_usage(payload: Any) -> dict[str, int]:
+    last = getattr(getattr(payload, "token_usage", None), "last", None)
+    if last is None:
+        return {}
+    return {
+        "input_tokens": int(getattr(last, "input_tokens", 0) or 0),
+        "cached_input_tokens": int(getattr(last, "cached_input_tokens", 0) or 0),
+        "cache_write_input_tokens": int(getattr(last, "cache_write_input_tokens", 0) or 0),
+        "output_tokens": int(getattr(last, "output_tokens", 0) or 0),
+        "reasoning_output_tokens": int(getattr(last, "reasoning_output_tokens", 0) or 0),
+        "total_tokens": int(getattr(last, "total_tokens", 0) or 0),
+    }
+
+
+def _raise_failed_turn(event: Any) -> None:
+    if str(getattr(event, "method", "")) != "turn/completed":
+        return
+    turn = getattr(event.payload, "turn", None)
+    status = getattr(getattr(turn, "status", None), "value", getattr(turn, "status", ""))
+    if str(status) != "failed":
+        return
+    error = getattr(turn, "error", None)
+    message = str(getattr(error, "message", "") or "Codex SDK turn failed")
+    raise CodexSDKError(message)
+
+
+class CodexSDKClient:
+    """Persistent official SDK client hosted on a private event-loop thread."""
+
+    def __init__(self) -> None:
+        self._guard = threading.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._client: AsyncCodex | None = None
+        self._client_lock: asyncio.Lock | None = None
+        self._sdk_home: IsolatedCodexHome | None = None
+
+    def _ensure_loop(self) -> asyncio.AbstractEventLoop:
+        with self._guard:
+            if self._loop is not None:
+                return self._loop
+            loop = asyncio.new_event_loop()
+            thread = threading.Thread(target=loop.run_forever, name="codex-sdk-loop", daemon=True)
+            thread.start()
+            self._loop, self._thread = loop, thread
+            return loop
+
+    async def _ensure_client(self) -> AsyncCodex:
+        if self._client_lock is None:
+            self._client_lock = asyncio.Lock()
+        async with self._client_lock:
+            if self._client is None:
+                sdk_home = IsolatedCodexHome()
+                try:
+                    client = AsyncCodex(
+                        CodexConfig(
+                            cwd=tempfile.gettempdir(),
+                            config_overrides=BARE_LM_CONFIG_OVERRIDES,
+                            env=sdk_home.start(),
+                            client_name="clio_agent",
+                            client_title="CLIO Agent",
+                        )
+                    )
+                    await client.__aenter__()
+                except Exception:
+                    sdk_home.close()
+                    raise
+                self._client = client
+                self._sdk_home = sdk_home
+        assert self._client is not None
+        return self._client
+
+    async def _reset_client(self) -> None:
+        client, self._client = self._client, None
+        sdk_home, self._sdk_home = self._sdk_home, None
+        try:
+            if client is not None:
+                with contextlib.suppress(Exception):
+                    await client.close()
+        finally:
+            if sdk_home is not None:
+                sdk_home.close()
+
+    async def stream(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        cwd: str | None,
+        effort: str | None,
+        timeout: float,
+    ) -> AsyncIterator[Any]:
+        """Bridge one typed SDK turn stream from the owner loop to the caller loop."""
+        owner_loop = self._ensure_loop()
+        caller_loop = asyncio.get_running_loop()
+        chunks: queue.SimpleQueue[tuple[Any, Any]] = queue.SimpleQueue()
+
+        async def _pump() -> None:
+            turn = None
+            stream = None
+            clean = False
+            cancelled = False
+            model_activity_seen = False
+            try:
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + timeout
+                first_activity_deadline = min(
+                    deadline,
+                    loop.time() + FIRST_MODEL_ACTIVITY_TIMEOUT_S,
+                )
+
+                def _record(event: Any) -> None:
+                    nonlocal model_activity_seen
+                    _validate_bare_lm_event(event)
+                    _raise_failed_turn(event)
+                    model_activity_seen = model_activity_seen or _is_model_activity(event)
+                    chunks.put(("event", event))
+
+                # Startup, thread creation, turn creation, and all pre-model
+                # notifications share one absolute no-activity deadline. None
+                # of those operations may silently consume a fresh timeout.
+                try:
+                    async with asyncio.timeout_at(first_activity_deadline):
+                        client = await self._ensure_client()
+                        thread = await client.thread_start(
+                            approval_mode=ApprovalMode.deny_all,
+                            base_instructions=BARE_LM_BASE_INSTRUCTIONS,
+                            config=BARE_LM_THREAD_CONFIG,
+                            cwd=cwd or tempfile.gettempdir(),
+                            developer_instructions=BARE_LM_BASE_INSTRUCTIONS,
+                            ephemeral=True,
+                            model=model,
+                            sandbox=Sandbox.read_only,
+                        )
+                        turn = await thread.turn(prompt, effort=effort, summary="detailed")
+                        stream = turn.stream()
+                        while not model_activity_seen:
+                            try:
+                                _record(await anext(stream))
+                            except StopAsyncIteration:
+                                break
+                except TimeoutError as exc:
+                    raise CodexSDKError(
+                        "Codex SDK produced no model activity within "
+                        f"{FIRST_MODEL_ACTIVITY_TIMEOUT_S:.0f}s"
+                    ) from exc
+
+                while True:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        raise CodexSDKError(f"Codex SDK turn timed out after {timeout:.0f}s")
+                    try:
+                        assert stream is not None
+                        event = await asyncio.wait_for(anext(stream), timeout=remaining)
+                    except StopAsyncIteration:
+                        break
+                    except TimeoutError as exc:
+                        raise CodexSDKError(
+                            f"Codex SDK turn timed out after {timeout:.0f}s"
+                        ) from exc
+                    _record(event)
+                clean = True
+            except asyncio.CancelledError:
+                cancelled = True
+                if turn is not None:
+                    with contextlib.suppress(Exception):
+                        await turn.interrupt()
+                raise
+            except BaseException as exc:  # noqa: BLE001 - delivered to caller loop
+                if turn is not None:
+                    with contextlib.suppress(Exception):
+                        await turn.interrupt()
+                chunks.put(("exc", exc))
+            finally:
+                if stream is not None:
+                    with contextlib.suppress(Exception):
+                        await stream.aclose()
+                if not clean and not cancelled:
+                    await self._reset_client()
+                chunks.put((_STREAM_END, None))
+
+        future = asyncio.run_coroutine_threadsafe(_pump(), owner_loop)
+        try:
+            from clio_agent.gact.context import active_session_id  # noqa: PLC0415
+
+            gact_sid = active_session_id() or ""
+        except Exception:  # noqa: BLE001 - off-turn SDK calls are not cancellable by session
+            gact_sid = ""
+        handle = register_sdk_stream(gact_sid, future.cancel)
+        try:
+            while True:
+                kind, value = await caller_loop.run_in_executor(None, chunks.get)
+                if kind is _STREAM_END:
+                    break
+                if kind == "exc":
+                    raise value
+                yield value
+        finally:
+            unregister_sdk_stream(handle)
+            if not future.done():
+                future.cancel()
+
+    def close_blocking(self) -> None:
+        """Close the SDK-owned runtime and stop the owner loop."""
+        with self._guard:
+            loop, thread = self._loop, self._thread
+            self._loop, self._thread = None, None
+        if loop is None:
+            return
+        try:
+            if loop.is_running():
+                asyncio.run_coroutine_threadsafe(self._reset_client(), loop).result(timeout=15)
+        except Exception:  # noqa: BLE001 - teardown is best effort and logged
+            logger.warning("Codex SDK client teardown failed", exc_info=True)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            if thread is not None:
+                thread.join(timeout=15)
+
+
+_SDK_CLIENT = CodexSDKClient()
+atexit.register(_SDK_CLIENT.close_blocking)
+
+
+def _note_provider_thinking(text: str, *, summary: bool) -> None:
+    if not text:
+        return
+    try:
+        from clio_agent.runtime.lm_activity import note_lm_provider_thinking_delta
+
+        provider = "codex_sdk_summary" if summary else "codex_sdk_reasoning"
+        note_lm_provider_thinking_delta(text, provider=provider)
+    except Exception:  # noqa: BLE001,S110 - observability must not break the turn
+        pass
+
+
+async def astream_sdk(
     *,
     prompt: str,
     model: str,
@@ -231,150 +520,147 @@ async def astream_app_server(
     effort: str | None,
     timeout: float,
     call_index: int,
-    send: CodexStatefulSend | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Stream one app-server turn as LiteLLM chunks (the #896 streaming lane).
-
-    ``item/agentMessage/delta`` events flow verbatim into the frozen streamed-chunk
-    pipeline (the contract arrives whole inside the agent message — no #877 marker
-    split applies on this transport). Reasoning-summary deltas, when present, go to
-    the provider-thinking lane ONLY (never promoted to contract content); they are
-    typed-absent on the subscription backend.
-
-    The blocking pool driver runs on ONE pump worker that owns the sync turn
-    generator end-to-end (the claude_code_sessions pump shape): events bridge to
-    the caller's loop over a thread-safe queue, and on caller abandonment the
-    pump — not the caller's thread — closes the generator, which fires the
-    ``GeneratorExit`` path in ``run_turn`` (best-effort ``turn/interrupt``, sink
-    invalidated, turn lock released). A cross-thread ``gen.close()`` from the
-    caller would race the executing frame ("generator already executing"), which
-    is why abandonment is signalled via an event the pump checks between items.
-    """
-    from clio_agent.providers.codex_litellm import CodexExecError  # noqa: PLC0415
-
-    # ``send`` (#891 stateful delta) carries the actual turn bytes + persistent thread
-    # + the call_id that joins the provider.stateful row to this call's TTFT markers.
-    # emit_call_started always fingerprints the FULL ``prompt`` (cache-prefix
-    # stability); the turn runs ``send.prompt`` when engaged.
-    call_id = (send.call_id if send is not None else "") or uuid.uuid4().hex
+    """Stream one official SDK turn into LiteLLM chunks and CLIO thinking lanes."""
+    call_id = uuid.uuid4().hex
     emit_call_started(call_id=call_id, call_index=call_index, model=model, prompt=prompt)
-    turn_prompt = send.prompt if (send is not None and send.engaged) else prompt
-    loop = asyncio.get_running_loop()
-    gen = _app_server_events(
-        prompt=turn_prompt, model=model, cwd=cwd, effort=effort, timeout=timeout, send=send
-    )
-    events_q: queue.SimpleQueue[tuple[str, Any]] = queue.SimpleQueue()
-    abandoned = threading.Event()
-
-    def _pump() -> None:
-        """Drive the sync generator on this worker; it alone opens/closes it."""
-        try:
-            with contextlib.closing(gen) as source:
-                for ev in source:
-                    if abandoned.is_set():
-                        # closing() fires GeneratorExit inside run_turn →
-                        # turn/interrupt + sink invalidation + lock release.
-                        break
-                    events_q.put(("event", ev))
-        except BaseException as exc:  # noqa: BLE001 - surfaced onto the caller loop
-            events_q.put(("exc", exc))
-        finally:
-            events_q.put(("end", None))
-
-    pump_future = loop.run_in_executor(None, _pump)
-
     final_text = ""
-    final_usage: dict[str, int] = {}
-    final_reason = "stop"
+    fallback_text = ""
+    usage: dict[str, int] = {}
     event_index = 0
     try:
-        while True:
-            kind, payload = await loop.run_in_executor(None, events_q.get)
-            if kind == "end":
-                break
-            if kind == "exc":
-                if isinstance(payload, CodexAppServerError):
-                    if send is not None:
-                        # Drop the poisoned thread → next call resets (provider_error).
-                        send.note_error()
-                    stream_text = str(payload)
-                    if _is_codex_model_rejection(stream_text, model=model):
-                        # #1184 / #1211 review A3: a definitive rejection, never
-                        # retried as transient -- see raise_model_rejected's docstring.
-                        raise_model_rejected(
-                            message=f"codex rejected model {model!r}: {stream_text}",
-                            model=f"codex/{model}",
-                            llm_provider="codex",
-                            cause=payload,
-                        )
-                    raise CodexExecError(
-                        f"codex app-server stream failed (model={model}): {payload}"
-                    ) from payload
-                raise payload
-            event = payload
+        async for event in _SDK_CLIENT.stream(
+            prompt=prompt,
+            model=model,
+            cwd=cwd,
+            effort=effort,
+            timeout=timeout,
+        ):
             event_index += 1
-            if event.kind == "text":
+            method = str(getattr(event, "method", ""))
+            payload = event.payload
+            if method == "item/agentMessage/delta":
+                text = str(getattr(payload, "delta", "") or "")
+                if not text:
+                    continue
+                final_text += text
                 emit_raw_event(
                     call_index=call_index,
                     event_index=event_index,
                     source_channel="text_delta",
-                    text=event.text,
-                    raw_event_type="item/agentMessage/delta",
+                    text=text,
+                    raw_event_type=method,
                 )
                 emit_normalized(
                     call_index=call_index,
                     event_index=event_index,
                     source_channel="text_delta",
                     normalized_event="contract.content",
-                    text=event.text,
+                    text=text,
                 )
-                yield _stream_chunk(text=event.text, is_finished=False)
-            elif event.kind == "reasoning":
+                yield _stream_chunk(text=text, is_finished=False)
+            elif method in {
+                "item/reasoning/textDelta",
+                "item/reasoning/summaryTextDelta",
+            }:
+                text = str(getattr(payload, "delta", "") or "")
+                is_summary = method.endswith("summaryTextDelta")
+                source = "reasoning_summary" if is_summary else "reasoning_text"
                 emit_raw_event(
                     call_index=call_index,
                     event_index=event_index,
-                    source_channel="thinking_delta",
-                    text=event.text,
-                    raw_event_type="item/reasoning/delta",
+                    source_channel=source,
+                    text=text,
+                    raw_event_type=method,
                 )
-                try:
-                    from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
-                        note_lm_provider_thinking_delta,
-                    )
-
-                    note_lm_provider_thinking_delta(event.text, provider="codex_app_server")
-                except Exception:  # noqa: BLE001,S110 - debug lane must not break the turn
-                    pass
-            elif event.kind == "usage":
-                final_usage = event.usage or final_usage
-            elif event.kind == "final":
-                final_text = event.text
-                final_usage = event.usage or final_usage
-                final_reason = event.reason
+                _note_provider_thinking(text, summary=is_summary)
+            elif method == "thread/tokenUsage/updated":
+                usage = _normalize_usage(payload) or usage
+            elif method == "item/completed":
+                item = _item_root(payload)
+                if str(getattr(item, "type", "")) == "agentMessage":
+                    phase_value = getattr(item, "phase", None)
+                    phase = getattr(phase_value, "value", phase_value)
+                    text = str(getattr(item, "text", "") or "")
+                    if phase == "final_answer" or not fallback_text:
+                        fallback_text = text
+    except CodexError as exc:
+        message = str(exc)
+        if _is_codex_model_rejection(message, model=model):
+            raise_model_rejected(
+                message=f"codex rejected model {model!r}: {message}",
+                model=f"codex/{model}",
+                llm_provider="codex",
+                cause=exc,
+            )
+        raise CodexSDKError(f"Codex SDK stream failed (model={model}): {exc}") from exc
     finally:
-        # Abandonment (or any exit): tell the pump to close the generator on ITS
-        # thread; it wakes on the next event or the bounded turn timeout.
-        abandoned.set()
-        pump_future.cancel()  # no-op once running; prevents a never-started pump
         emit_call_usage(
             call_id=call_id,
             call_index=call_index,
             model=model,
-            usage=final_usage,
-            output_chars=len(final_text),
+            usage=usage,
+            output_chars=len(final_text or fallback_text),
         )
+    if not final_text and fallback_text:
+        final_text = fallback_text
+        yield _stream_chunk(text=fallback_text, is_finished=False)
+    if not final_text:
+        raise CodexSDKError(f"Codex SDK returned empty content (model={model})")
     yield _stream_chunk(
         text="",
         is_finished=True,
-        finish_reason=final_reason,
-        usage=usage_chunk(final_usage),
+        finish_reason="stop",
+        usage=usage_chunk(usage),
     )
 
 
+def run_sdk(
+    *,
+    prompt: str,
+    model: str,
+    cwd: str | None = None,
+    effort: str | None = None,
+    timeout: float = DEFAULT_TURN_TIMEOUT_S,
+    call_index: int = 0,
+) -> tuple[str, dict[str, int]]:
+    """Collect one official SDK stream for LiteLLM's blocking completion path."""
+
+    async def _collect() -> tuple[str, dict[str, int]]:
+        parts: list[str] = []
+        final_usage: dict[str, int] = {}
+        async for chunk in astream_sdk(
+            prompt=prompt,
+            model=model,
+            cwd=cwd,
+            effort=effort,
+            timeout=timeout,
+            call_index=call_index,
+        ):
+            parts.append(str(chunk.get("text") or ""))
+            raw_usage = chunk.get("usage")
+            if isinstance(raw_usage, dict):
+                final_usage = {
+                    "input_tokens": int(raw_usage.get("prompt_tokens", 0) or 0),
+                    "output_tokens": int(raw_usage.get("completion_tokens", 0) or 0),
+                    "reasoning_output_tokens": int(
+                        raw_usage.get("reasoning_output_tokens", 0) or 0
+                    ),
+                    "total_tokens": int(raw_usage.get("total_tokens", 0) or 0),
+                }
+        return "".join(parts), final_usage
+
+    return asyncio.run(_collect())
+
+
 __all__ = [
-    "astream_app_server",
-    "run_app_server",
-    "usage_chunk",
-    "_app_server_events",
+    "CodexSDKClient",
+    "CodexSDKError",
+    "FIRST_MODEL_ACTIVITY_TIMEOUT_S",
+    "IsolatedCodexHome",
+    "_SDK_CLIENT",
     "_next_call_index",
+    "astream_sdk",
+    "run_sdk",
+    "usage_chunk",
 ]

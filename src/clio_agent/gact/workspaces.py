@@ -241,6 +241,7 @@ class WorkspaceStore:
         wid: str,
         *,
         name: Optional[str] = None,
+        display_name: Optional[str] = None,
         root_path: Optional[str] = None,
         storage_root: Optional[str] = None,
         metadata_patch: Optional[dict[str, Any]] = None,
@@ -250,7 +251,15 @@ class WorkspaceStore:
             if ws is None:
                 return None
             if name is not None:
+                # A default/derived display label follows a rename. Preserve a
+                # deliberately distinct display name, but never leave the old
+                # generated label (for example "default") as the primary UI
+                # identity after the workspace itself was renamed.
+                if not ws.display_name or ws.display_name == ws.name:
+                    ws.display_name = name
                 ws.name = name
+            if display_name is not None:
+                ws.display_name = display_name
             if root_path is not None:
                 ws.root_path = root_path
             if storage_root is not None:

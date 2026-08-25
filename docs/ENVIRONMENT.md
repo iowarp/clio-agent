@@ -52,7 +52,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CLAUDE_CODE_STATEFUL_CAPACITY` | `providers.claude_code.stateful_capacity` | float | `128.0` | `src/clio_agent/providers/claude_code_stateful.py` |
 | `CLIO_CLAUDE_CODE_STREAM_IDLE_TTL_S` | `providers.claude_code.stream_idle_ttl_s` | float | `15.0` | `src/clio_agent/providers/claude_code_stream_bounds.py` |
 | `CLIO_CLAUDE_CODE_TRANSPORT` | `lm.claude_code_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
-| `CLIO_CODEX_STATEFUL_CAPACITY` | `providers.codex.stateful_capacity` | float | `128.0` | `src/clio_agent/providers/codex_stateful.py` |
 | `CLIO_CODEX_TRANSPORT` | `lm.codex_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_CORE_PORT` | `arc.core_port` | str | _(unset)_ | `src/clio_agent/arc/clio_core_liveness.py` |
 | `CLIO_CTX_MAX_BYTES` | `limits.context_inline_bytes` | int | `32768` | `src/clio_agent/gact/runtime/constants.py` |

@@ -16,7 +16,7 @@ Claude-shaped (design constraint from #896):
   ``thinking_budget`` alone cannot express it (0 = "unset / let the provider
   default govern"). That is exactly why the external level is a sibling knob to
   ``thinking_budget``.
-* **codex** (``codex app-server`` transport): ``model_reasoning_effort`` bucketed
+* **codex** (official Python SDK): reasoning effort bucketed
   to the level, carried under ``codex_reasoning_effort`` so the bridge pins it on
   ``turn/start`` (LiteLLM ignores ``reasoning_effort`` on the CustomLLM, which is
   why the old ``reasoning_effort`` mapping was a silent no-op there — #896). Codex
@@ -56,7 +56,7 @@ _EFFORT_PROVIDERS: frozenset[str] = frozenset({"openai", "lm_studio", "ollama", 
 
 #: Codex effort vocabulary. ``off`` → codex's explicit ``none`` (disable), not omit
 #: (omit would inherit the ambient ``config.toml`` effort — #896). low/medium/high
-#: pass through; all four are accepted by gpt-5.x via ``codex app-server``.
+#: pass through; all four are accepted by gpt-5.x through the Codex SDK.
 _CODEX_EFFORT: dict[str, str] = {"off": "none", "low": "low", "medium": "medium", "high": "high"}
 
 

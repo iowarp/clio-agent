@@ -245,8 +245,8 @@ def test_argonne_streaming_is_not_force_classified_as_batch() -> None:
     """iowarp/clio-agent#160: ALCF (Sophia + Metis) is a plain OpenAI-compatible
     SSE endpoint that streams at the provider AND through LiteLLM (verified with a
     live multi-chunk probe). CLIO must NOT force-classify it as batch -- doing so
-    bypassed the streamify pump for every ALCF run. Only the CLI-backed custom
-    transport (codex JSON-RPC) stays force-classified as batch."""
+    bypassed the streamify pump for every ALCF run. Codex's official SDK is also
+    a real streaming transport."""
 
     from clio_agent.gact.app import _agent_streaming_unsupported_reason
 
@@ -271,30 +271,24 @@ def test_argonne_streaming_is_not_force_classified_as_batch() -> None:
         == ""
     )
 
-    # Codex JSON-RPC remains force-classified as batch.
-    assert _agent_streaming_unsupported_reason(_agent("codex")) == "provider_streaming_unsupported"
+    # Codex SDK emits text/reasoning notifications and must use the stream pump.
+    assert _agent_streaming_unsupported_reason(_agent("codex")) == ""
 
 
 @pytest.mark.asyncio
-async def test_dynamic_agent_module_carries_non_streaming_provider_config(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_dynamic_agent_module_carries_streaming_codex_provider_config(
     tmp_path: Path,
 ) -> None:
-    def fail_streamify(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        raise AssertionError("streamify should not be called for Codex dynamic agents")
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-    monkeypatch.setattr(streamify_module, "streamify", fail_streamify)
     from clio_agent.config import LMProviderConfig
+    from clio_agent.gact.app import _agent_streaming_unsupported_reason
 
     base_agent = SimpleNamespace(
         _provider_config=LMProviderConfig(
             provider="codex",
-            api_base="codex://app-server",
+            api_base="codex://sdk",
             model="gpt-5.5",
             api_key="x",
-            codex_transport="app_server",
+            codex_transport="sdk",
         )
     )
     module = _build_prompt_user_agent_module(
@@ -306,19 +300,9 @@ async def test_dynamic_agent_module_carries_non_streaming_provider_config(
             system_prompt="Review reference evidence.",
         ),
     )
-    app = build_app(sessions_path=tmp_path / "s.json", agent=base_agent)
-
-    result = await _try_streamed_forward(
-        app,
-        "review the file",
-        "sid",
-        lambda text: None,
-        agent_override=module,
-    )
-
-    assert result is None
-    fallback = _pop_stream_fallback(app, "sid")
-    assert fallback["reason"] == "provider_streaming_unsupported"
+    assert module._provider_config.provider == "codex"
+    assert module._provider_config.codex_transport == "sdk"
+    assert _agent_streaming_unsupported_reason(module) == ""
 
 
 def test_dynamic_agent_lm_config_preserves_claude_code_transport() -> None:

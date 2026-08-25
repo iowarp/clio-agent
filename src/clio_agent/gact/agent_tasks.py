@@ -69,6 +69,7 @@ QUEUED_REASONS = frozenset({"concurrency_cap", "session_cap", "memory_pressure"}
 ERROR_REASONS = frozenset(
     {
         "agent_error",
+        "custom_agent_tools_unavailable",
         "spawn_depth_exceeded",
         # #1113: an unattended child that pauses for input no longer FAILS with
         # ``child_requires_user_input`` — its question is forwarded to the parent's

@@ -554,10 +554,39 @@ def _active_base_agent_tool_executor(base_agent: Any) -> Any:
 
     resolver = getattr(base_agent, "_active_tool_executor", None)
     if callable(resolver):
-        try:
+        # A child turn can build its DSPy module on a worker after the resident
+        # workspace fleet was reaped.  Derive the execution territory from the
+        # authoritative session as well as the ambient tool ContextVars so a
+        # missing copied layer rebuilds the workspace fleet instead of silently
+        # returning the process-global fs/shell executor.
+        app = _ctx.active_app()
+        sid = _ctx.active_session_id() or _ctx.active_tool_session_id()
+        app_state = getattr(app, "state", None) if app is not None else None
+        sessions = getattr(app_state, "sessions", None) if app_state is not None else None
+        workspaces = getattr(app_state, "workspaces", None) if app_state is not None else None
+        session = sessions.get(sid) if sessions is not None and sid else None
+        workspace_id = str(getattr(session, "workspace_id", "") or "")
+        workspace = (
+            workspaces.get(workspace_id) if workspaces is not None and workspace_id else None
+        )
+        workspace_root = str(getattr(workspace, "root_path", "") or "")
+        if workspace_root:
+            from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+                _runtime_active_agent_blueprint_id,
+            )
+            from clio_agent.tools.execution import (  # noqa: PLC0415
+                tool_blueprint_context,
+                tool_workspace_context,
+            )
+
+            blueprint_id = _runtime_active_agent_blueprint_id(app, sid)
+            with (
+                tool_workspace_context(workspace_root),
+                tool_blueprint_context(blueprint_id),
+            ):
+                executor = resolver()
+        else:
             executor = resolver()
-        except Exception:  # noqa: BLE001 - degrade to default executor
-            executor = None
         if executor is not None:
             _emit_mcp_downgrade_events(executor)
             return executor
@@ -658,7 +687,21 @@ def _dynamic_agent_tools(
     """Resolve the exact DSPy tools a tool-declaring dynamic agent may use."""
 
     requested_tools = [str(t).strip() for t in agent_def.tools if str(t).strip()]
-    tool_executor = _active_base_agent_tool_executor(base_agent)
+    try:
+        tool_executor = _active_base_agent_tool_executor(base_agent)
+    except Exception as exc:  # noqa: BLE001 - preserve the typed agent boundary
+        mount_failures = {"workspace_fleet": _mount_failure_reason(exc)}
+        logger.exception(
+            "custom_agent_tool_executor_unavailable agent=%s tools=%s",
+            agent_def.id,
+            requested_tools,
+        )
+        raise _UnsupportedSessionAgent(
+            agent_def.id,
+            reason="custom_agent_tool_executor_unavailable",
+            tools=requested_tools,
+            mount_failures=mount_failures,
+        ) from exc
     mount_failures: dict[str, str] = {}
     if tool_executor is None or not hasattr(tool_executor, "to_dspy_tools"):
         if requested_tools:

@@ -46,9 +46,7 @@ def test_get_models_overlay_absent_falls_back_to_static(client: TestClient) -> N
     assert {"gpt-5.5", "gpt-5.5-codex", "gpt-5.1"} <= ids
 
 
-def test_get_models_overlay_present_is_served_verbatim(
-    client: TestClient, tmp_path: Path
-) -> None:
+def test_get_models_overlay_present_is_served_verbatim(client: TestClient, tmp_path: Path) -> None:
     """The core overlay-first contract: a refreshed list overrides the static one."""
     _write_overlay(
         tmp_path,
@@ -58,14 +56,14 @@ def test_get_models_overlay_present_is_served_verbatim(
                     {"id": "gpt-5.6-sol", "name": "GPT-5.6-Sol", "description": "live"},
                     {"id": "gpt-5.6-terra", "name": "GPT-5.6-Terra", "description": "live"},
                 ],
-                "source": "codex_app_server",
+                "source": "codex_sdk",
                 "default_model": "gpt-5.6-sol",
                 "generated_at": "2026-08-14T00:00:00+00:00",
             }
         },
     )
     body = client.get("/v1/providers/codex/models").json()
-    assert body["source"] == "codex_app_server"
+    assert body["source"] == "codex_sdk"
     ids = {m["id"] for m in body["models"]}
     assert ids == {"gpt-5.6-sol", "gpt-5.6-terra"}
     # SABOTAGE-sensitive: none of the STALE static ids leak through once an
@@ -85,9 +83,7 @@ def test_get_models_malformed_overlay_is_typed_500_not_silent_fallback(
     assert body["error"]["error"] == "overlay_malformed"
 
 
-def test_get_models_overlay_serves_for_claude_code_too(
-    client: TestClient, tmp_path: Path
-) -> None:
+def test_get_models_overlay_serves_for_claude_code_too(client: TestClient, tmp_path: Path) -> None:
     _write_overlay(
         tmp_path,
         {
@@ -117,7 +113,12 @@ def test_get_models_http_provider_overlay_is_never_served_ahead_of_live_handshak
     monkeypatch.delenv("CLIO_LM_API_KEY", raising=False)
     _write_overlay(
         tmp_path,
-        {"openai": {"models": [{"id": "gpt-5", "name": "gpt-5", "description": ""}], "source": "live_handshake"}},
+        {
+            "openai": {
+                "models": [{"id": "gpt-5", "name": "gpt-5", "description": ""}],
+                "source": "live_handshake",
+            }
+        },
     )
     body = client.get("/v1/providers/openai/models").json()
     # SABOTAGE-sensitive: if overlay-first serving were mistakenly widened back
@@ -138,7 +139,7 @@ def test_post_refresh_returns_the_discovery_results_verbatim(
         {
             "provider": "codex",
             "discovered": [{"id": "gpt-5.6-sol", "name": "Sol", "description": ""}],
-            "source": "codex_app_server",
+            "source": "codex_sdk",
             "default_model": "gpt-5.6-sol",
             "generated_at": "2026-08-14T00:00:00+00:00",
             "added": ["gpt-5.6-sol"],
@@ -158,9 +159,7 @@ def test_post_refresh_returns_the_discovery_results_verbatim(
         },
     ]
     mock_refresh = AsyncMock(return_value=fake_results)
-    monkeypatch.setattr(
-        "clio_agent.providers.model_discovery.refresh_all", mock_refresh
-    )
+    monkeypatch.setattr("clio_agent.providers.model_discovery.refresh_all", mock_refresh)
     resp = client.post("/v1/providers/models/refresh")
     assert resp.status_code == 200
     assert resp.json() == {"results": fake_results}

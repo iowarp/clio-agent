@@ -365,8 +365,6 @@ providers.claude_code.stateful_capacity: 128.0
 # CLIO_CLAUDE_CODE_STREAM_IDLE_TTL_S  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
 providers.claude_code.stream_idle_ttl_s: 15.0
 
-# CLIO_CODEX_STATEFUL_CAPACITY  (float)  <- src/clio_agent/providers/codex_stateful.py
-providers.codex.stateful_capacity: 128.0
 
 # CLIO_RELAY_CLUSTER  (str)  <- src/clio_agent/tools/relay_factory.py
 # relay.cluster:  # default unset; resolved in code

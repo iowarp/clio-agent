@@ -239,6 +239,11 @@ def test_late_tool_completion_after_cancel_is_not_reported_as_success(
 
         app.state.agent = _Agent()
         next_assistant = complete_turn(c, sid, "next turn")
+        assert next_assistant.get("error_info") is None
+        assert any(
+            part.get("type") == "text" and part.get("text") == "ok"
+            for part in next_assistant["parts"]
+        )
         assert "tools_called" not in next_assistant.get("metadata", {})
 
 

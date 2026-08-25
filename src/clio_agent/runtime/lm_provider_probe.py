@@ -8,7 +8,7 @@ transport handling has a single owner:
 * :func:`extract_models` / :class:`ModelDiscoverySchemaError` -- parse an
   OpenAI-compatible ``/models`` HTTP response (the HTTP-transport path).
 * :func:`probe_cli_transport` -- the **transport-aware** probe for the CLI/SDK
-  pseudo-schemes (``codex://app-server``, ``claude-code://sdk``). These providers have
+  pseudo-schemes (``codex://sdk``, ``claude-code://sdk``). These providers have
   no HTTP ``/models`` endpoint; an HTTP GET against the pseudo-scheme yields
   ``requests``' ``No connection adapters were found`` and reports the provider
   UNAVAILABLE while turns actually run fine (#899). The real dependency is the
@@ -115,7 +115,7 @@ def probe_cli_transport(
 ) -> IntegrationStatus:
     """Transport-aware doctor probe for CLI/SDK pseudo-scheme providers (#899).
 
-    The ``api_base`` (e.g. ``claude-code://sdk``, ``codex://app-server``) has no HTTP
+    The ``api_base`` (e.g. ``claude-code://sdk``, ``codex://sdk``) has no HTTP
     ``/models`` endpoint; this probes the local CLI the transport spawns rather
     than issuing an HTTP GET that would always report the provider unreachable.
 

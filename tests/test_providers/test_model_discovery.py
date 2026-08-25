@@ -24,7 +24,6 @@ import pytest
 
 from clio_agent.providers import model_discovery
 from clio_agent.providers.catalog import get_provider
-from clio_agent.providers.codex_app_server import CodexAppServerError
 from clio_agent.providers.model_discovery import claude_code as md_claude_code
 
 
@@ -137,7 +136,7 @@ def test_overlay_models_wire_present_serves_verbatim(
             {
                 "codex": {
                     "models": [{"id": "gpt-5.6-sol", "name": "GPT-5.6-Sol", "description": ""}],
-                    "source": "codex_app_server",
+                    "source": "codex_sdk",
                     "default_model": "gpt-5.6-sol",
                     "generated_at": "2026-08-14T00:00:00+00:00",
                 }
@@ -149,7 +148,7 @@ def test_overlay_models_wire_present_serves_verbatim(
     wire = model_discovery.overlay_models_wire("codex", "codex")
     assert wire is not None
     assert wire["models"] == [{"id": "gpt-5.6-sol", "name": "GPT-5.6-Sol", "description": ""}]
-    assert wire["source"] == "codex_app_server"
+    assert wire["source"] == "codex_sdk"
     assert wire["default_model"] == "gpt-5.6-sol"
 
 
@@ -214,7 +213,7 @@ def test_record_refresh_first_success_reports_everything_added(
             {"id": "gpt-5.6-sol", "name": "Sol", "description": ""},
             {"id": "gpt-5.6-terra", "name": "Terra", "description": ""},
         ],
-        source="codex_app_server",
+        source="codex_sdk",
         default_model="gpt-5.6-sol",
     )
     wire = model_discovery.record_refresh(result)
@@ -241,7 +240,7 @@ def test_record_refresh_second_success_computes_delta_against_previous(
                 {"id": "gpt-5.5", "name": "5.5", "description": ""},
                 {"id": "gpt-5.5-codex", "name": "5.5-codex", "description": ""},
             ],
-            source="codex_app_server",
+            source="codex_sdk",
         )
     )
     wire = model_discovery.record_refresh(
@@ -251,7 +250,7 @@ def test_record_refresh_second_success_computes_delta_against_previous(
                 {"id": "gpt-5.5", "name": "5.5", "description": ""},
                 {"id": "gpt-5.6-sol", "name": "Sol", "description": ""},
             ],
-            source="codex_app_server",
+            source="codex_sdk",
         )
     )
     assert wire["added"] == ["gpt-5.6-sol"]
@@ -320,7 +319,7 @@ def test_record_refresh_never_silently_clobbers_a_malformed_overlay(
     result = model_discovery.ProviderDiscoveryResult(
         provider="codex",
         discovered=[{"id": "x", "name": "x", "description": ""}],
-        source="codex_app_server",
+        source="codex_sdk",
     )
     with pytest.raises(model_discovery.OverlayMalformedError):
         model_discovery.record_refresh(result)
@@ -336,7 +335,7 @@ def test_record_refresh_refuses_claimed_success_with_empty_discovered(
     silently narrowing the overlay to nothing."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     bad = model_discovery.ProviderDiscoveryResult(
-        provider="codex", discovered=[], source="codex_app_server"
+        provider="codex", discovered=[], source="codex_sdk"
     )
     with pytest.raises(ValueError, match="refusing to write an empty models list"):
         model_discovery.record_refresh(bad)
@@ -510,136 +509,74 @@ def test_resolve_cloud_api_key_unknown_kind_is_empty(monkeypatch: pytest.MonkeyP
 
 
 # --------------------------------------------------------------------------- #
-# discover_codex -- mocked at the CLI boundary (the app-server pool + binary).
+# discover_codex -- mocked at the official Python SDK boundary.
 # --------------------------------------------------------------------------- #
 
 
-class _StubCodexProcess:
-    def __init__(
-        self, rows: list[dict[str, Any]] | None = None, error: Exception | None = None
-    ) -> None:
+class _StubCodex:
+    def __init__(self, rows: list[Any] | None = None, error: Exception | None = None) -> None:
         self._rows = rows or []
         self._error = error
         self.closed = False
 
-    def list_models(self, *, timeout: float) -> list[dict[str, Any]]:
+    async def __aenter__(self) -> _StubCodex:
+        return self
+
+    async def __aexit__(self, *_args: Any) -> None:
+        self.closed = True
+
+    async def models(self) -> Any:
         if self._error is not None:
             raise self._error
-        return self._rows
+        return SimpleNamespace(data=self._rows)
 
-    def close(self) -> None:
-        self.closed = True
+
+def _codex_model(
+    model_id: str, *, name: str = "", description: str = "", is_default: bool = False
+) -> Any:
+    return SimpleNamespace(
+        id=model_id,
+        display_name=name or model_id,
+        description=description,
+        is_default=is_default,
+    )
 
 
 def test_discover_codex_success_reports_default_and_source(monkeypatch: pytest.MonkeyPatch) -> None:
-    from clio_agent.providers import codex_app_server, codex_litellm
+    from clio_agent.providers.model_discovery import codex as md_codex
 
-    monkeypatch.setattr(codex_litellm, "_resolve_codex_binary", lambda: "codex")
-    stub = _StubCodexProcess(
+    stub = _StubCodex(
         rows=[
-            {
-                "id": "gpt-5.6-sol",
-                "displayName": "GPT-5.6-Sol",
-                "description": "d1",
-                "isDefault": True,
-            },
-            {
-                "id": "gpt-5.6-terra",
-                "displayName": "GPT-5.6-Terra",
-                "description": "d2",
-                "isDefault": False,
-            },
+            _codex_model("gpt-5.6-sol", name="GPT-5.6-Sol", description="d1", is_default=True),
+            _codex_model("gpt-5.6-terra", name="GPT-5.6-Terra", description="d2"),
         ]
     )
-    monkeypatch.setattr(codex_app_server, "CodexAppServerProcess", lambda **_kw: stub)
+    monkeypatch.setattr(md_codex, "AsyncCodex", lambda *_args, **_kwargs: stub)
 
     result = model_discovery.discover_codex()
     assert result.failed_reason is None
     assert result.source == model_discovery.CODEX_SOURCE
     assert {m["id"] for m in result.discovered} == {"gpt-5.6-sol", "gpt-5.6-terra"}
     assert result.default_model == "gpt-5.6-sol"
-
-
-def test_discover_codex_never_touches_the_shared_pool(monkeypatch: pytest.MonkeyPatch) -> None:
-    """#1211 review S1: discovery constructs a STANDALONE CodexAppServerProcess,
-    never through _APP_SERVER_POOL.process_for -- a shared pool key is an
-    aliasing hazard (closing it could tear down a live turn's process); a
-    standalone instance can never alias with anything the pool serves real
-    turns from. Proven by NOT stubbing process_for at all and asserting the
-    pool has zero entries both before and after."""
-    from clio_agent.providers import codex_app_server, codex_litellm
-
-    codex_app_server._APP_SERVER_POOL.reset_for_tests()
-    monkeypatch.setattr(codex_litellm, "_resolve_codex_binary", lambda: "codex")
-    stub = _StubCodexProcess(rows=[{"id": "gpt-5.6-sol", "displayName": "Sol", "isDefault": True}])
-    monkeypatch.setattr(codex_app_server, "CodexAppServerProcess", lambda **_kw: stub)
-
-    assert codex_app_server._APP_SERVER_POOL.spawn_count == 0
-    model_discovery.discover_codex()
-    # No pool residue: discovery never called process_for, so the shared pool
-    # spawned nothing and holds no entries for this call.
-    assert codex_app_server._APP_SERVER_POOL.spawn_count == 0
-
-
-def test_discover_codex_closes_the_one_off_process_after_listing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#1211 review R4: a one-off discovery process is never left warm."""
-    from clio_agent.providers import codex_app_server, codex_litellm
-
-    monkeypatch.setattr(codex_litellm, "_resolve_codex_binary", lambda: "codex")
-    stub = _StubCodexProcess(rows=[{"id": "gpt-5.6-sol", "displayName": "Sol", "isDefault": True}])
-    monkeypatch.setattr(codex_app_server, "CodexAppServerProcess", lambda **_kw: stub)
-
-    model_discovery.discover_codex()
+    assert result.source == "codex_sdk"
     assert stub.closed is True
 
 
-def test_discover_codex_closes_the_process_even_on_rpc_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from clio_agent.providers import codex_app_server, codex_litellm
+def test_discover_codex_sdk_error_is_typed_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    from clio_agent.providers.model_discovery import codex as md_codex
 
-    monkeypatch.setattr(codex_litellm, "_resolve_codex_binary", lambda: "codex")
-    stub = _StubCodexProcess(error=CodexAppServerError("boom"))
-    monkeypatch.setattr(codex_app_server, "CodexAppServerProcess", lambda **_kw: stub)
-
-    model_discovery.discover_codex()
+    stub = _StubCodex(error=RuntimeError("SDK transport closed"))
+    monkeypatch.setattr(md_codex, "AsyncCodex", lambda *_args, **_kwargs: stub)
+    result = model_discovery.discover_codex()
+    assert result.discovered == []
+    assert "SDK transport closed" in (result.failed_reason or "")
     assert stub.closed is True
-
-
-def test_discover_codex_cli_unavailable_is_typed_reason(monkeypatch: pytest.MonkeyPatch) -> None:
-    from clio_agent.providers import codex_litellm
-
-    def _boom() -> str:
-        raise codex_litellm.CodexCLIUnavailableError("codex not on PATH")
-
-    monkeypatch.setattr(codex_litellm, "_resolve_codex_binary", _boom)
-    result = model_discovery.discover_codex()
-    assert result.discovered == []
-    assert result.failed_reason is not None
-    assert "codex not on PATH" in result.failed_reason
-
-
-def test_discover_codex_rpc_error_is_typed_reason(monkeypatch: pytest.MonkeyPatch) -> None:
-    from clio_agent.providers import codex_app_server, codex_litellm
-
-    monkeypatch.setattr(codex_litellm, "_resolve_codex_binary", lambda: "codex")
-    stub = _StubCodexProcess(error=CodexAppServerError("app-server closed mid-request"))
-    monkeypatch.setattr(codex_app_server, "CodexAppServerProcess", lambda **_kw: stub)
-
-    result = model_discovery.discover_codex()
-    assert result.discovered == []
-    assert "app-server closed mid-request" in (result.failed_reason or "")
 
 
 def test_discover_codex_zero_models_is_typed_reason(monkeypatch: pytest.MonkeyPatch) -> None:
-    from clio_agent.providers import codex_app_server, codex_litellm
+    from clio_agent.providers.model_discovery import codex as md_codex
 
-    monkeypatch.setattr(codex_litellm, "_resolve_codex_binary", lambda: "codex")
-    monkeypatch.setattr(
-        codex_app_server, "CodexAppServerProcess", lambda **_kw: _StubCodexProcess(rows=[])
-    )
+    monkeypatch.setattr(md_codex, "AsyncCodex", lambda *_args, **_kwargs: _StubCodex(rows=[]))
 
     result = model_discovery.discover_codex()
     assert result.discovered == []
@@ -950,19 +887,10 @@ async def test_discover_http_no_models_is_typed_reason(monkeypatch: pytest.Monke
 # --------------------------------------------------------------------------- #
 
 
-def test_is_provider_configured_codex_needs_binary(monkeypatch: pytest.MonkeyPatch) -> None:
-    from clio_agent.providers import codex_litellm
-
+def test_is_provider_configured_codex_uses_required_sdk() -> None:
     preset = get_provider("codex")
     assert preset is not None
-    monkeypatch.setattr(codex_litellm, "_resolve_codex_binary", lambda: "codex")
     assert model_discovery.is_provider_configured(preset) is True
-
-    def _boom() -> str:
-        raise codex_litellm.CodexCLIUnavailableError("no codex")
-
-    monkeypatch.setattr(codex_litellm, "_resolve_codex_binary", _boom)
-    assert model_discovery.is_provider_configured(preset) is False
 
 
 def test_is_provider_configured_cloud_needs_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1056,15 +984,10 @@ async def test_refresh_all_default_scan_filters_to_configured_providers(
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("CLIO_LM_API_KEY", raising=False)
-    from clio_agent.providers import codex_litellm
-
-    def _codex_boom() -> str:
-        raise codex_litellm.CodexCLIUnavailableError("no codex")
 
     def _claude_boom() -> str:
         raise model_discovery.ClaudeCodeCLIUnavailableError("no claude")
 
-    monkeypatch.setattr(codex_litellm, "_resolve_codex_binary", _codex_boom)
     monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", _claude_boom)
 
     seen: list[str] = []
@@ -1082,11 +1005,23 @@ async def test_refresh_all_default_scan_filters_to_configured_providers(
     monkeypatch.setattr(
         "clio_agent.providers.model_discovery.refresh.discover_http", _fake_discover_http
     )
+    monkeypatch.setattr(
+        "clio_agent.providers.model_discovery.refresh.discover_codex",
+        lambda **_kwargs: (
+            seen.append("codex")
+            or model_discovery.ProviderDiscoveryResult(
+                provider="codex",
+                discovered=[{"id": "gpt-5.6-luna", "name": "Luna", "description": ""}],
+                source=model_discovery.CODEX_SOURCE,
+                default_model="gpt-5.6-luna",
+            )
+        ),
+    )
 
     await model_discovery.refresh_all()
 
-    # Neither codex nor claude_code nor any api-key-requiring provider was probed.
-    assert "codex" not in seen
+    # The required Codex SDK is configured; Claude Code and API-key providers are not.
+    assert "codex" in seen
     assert "claude_code" not in seen
     assert "openai" not in seen
     assert "anthropic" not in seen
@@ -1269,17 +1204,17 @@ def test_refresh_provider_models_tool_calls_refresh_all(monkeypatch: pytest.Monk
 
 
 # --------------------------------------------------------------------------- #
-# live: actually invoke the installed CLIs (CLIO_RUN_LIVE=1 only).
+# live: actually invoke the configured provider SDK/CLI (CLIO_RUN_LIVE=1 only).
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.live
 @pytest.mark.skipif(
     os.environ.get("CLIO_RUN_LIVE") != "1",
-    reason="live codex CLI probe: set CLIO_RUN_LIVE=1 (needs `codex` on PATH + `codex login`)",
+    reason="live Codex SDK probe: set CLIO_RUN_LIVE=1 (needs existing Codex authentication)",
 )
 def test_discover_codex_live() -> None:
-    """Real ``codex app-server`` ``model/list`` call -- no LM cost, cheap+fast."""
+    """Real official Codex Python SDK model-list call -- no LM cost."""
     result = model_discovery.discover_codex(timeout=30.0)
     assert result.failed_reason is None, result.failed_reason
     assert result.discovered, "codex model/list returned zero models"

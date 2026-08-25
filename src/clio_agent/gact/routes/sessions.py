@@ -116,6 +116,12 @@ def cancel_session_state(app: FastAPI, deps: "GactDeps", sid: str) -> dict[str, 
     from clio_agent.gact.turn_spawn import cancel_children_of  # noqa: PLC0415
 
     cancel_children_of(app, sid)
+    # The parent itself may be blocked in an SDK-backed model call.  Cancelling its
+    # asyncio task cannot stop executor-thread provider I/O, so terminate the SDK
+    # stream bound to this exact session as well as the child cascade above.
+    from clio_agent.providers.claude_code_cancel import abort_session_streams  # noqa: PLC0415
+
+    abort_session_streams(sid)
     stop_session_loop(app, sid)
     stop_session_goal(app, sid)
     in_flight = app.state.in_flight_turns.get(sid)

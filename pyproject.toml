@@ -45,6 +45,9 @@ dependencies = [
     # DSPy permits a broad LiteLLM range. Pin the tested stable wheel so a global
     # prerelease policy can never select a LiteLLM dev sdist on Windows.
     "litellm==1.91.3",
+    # Subscription-authenticated Codex provider. CLIO imports the official Python
+    # SDK directly; the SDK owns its pinned runtime and JSON-RPC lifecycle.
+    "openai-codex>=0.147.0,<0.148.0",
     "fastmcp==4.0.0b1",  # 2026-07-28 line (#1107); re-lock needs --prerelease=allow (beta).
     "fastmcp-tasks==4.0.0b1",
     "clio-schemas==0.2.1",
@@ -111,12 +114,6 @@ adios = [
     # variable reads.
     "adios2>=2.10.0; platform_system != 'Windows'",
 ]
-
-# NOTE: the optional Codex SDK transport (CLIO_CODEX_TRANSPORT=sdk) needs
-# `openai-codex` from git (not on PyPI). A direct URL dependency cannot ship in
-# PyPI package metadata (upload is rejected with "Can't have direct dependency"),
-# so it is intentionally NOT a declared extra. Install it manually when needed:
-#   uv pip install "openai-codex @ git+https://github.com/openai/codex.git@79f044ed34c60af815feef12e8e665f35d54871e#subdirectory=sdk/python"
 
 argonne = [
     # Globus Auth bridge for the ALCF inference gateway (Sophia/Polaris vLLM).

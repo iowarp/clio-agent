@@ -1460,17 +1460,11 @@ def test_post_message_session_model_mismatch_returns_structured_501(
     assert fake_agent.calls == []
 
 
-def test_post_message_clears_stale_session_model_when_global_lm_active(
+def test_post_message_preserves_mismatched_session_model_when_global_lm_active(
     client: TestClient,
     fake_agent: FakeClioAgent,
 ) -> None:
-    """Old TUI sessions may carry stale per-session model refs.
-
-    CLIO runs one global LM, so once that global LM is active those
-    stale refs should be healed instead of blocking the next send.
-    """
-
-    from .conftest import complete_turn
+    """A provider mismatch is explicit and never silently falls back."""
 
     fake_agent._provider_config = SimpleNamespace(
         provider="lm_studio",
@@ -1489,12 +1483,20 @@ def test_post_message_clears_stale_session_model_when_global_lm_active(
         },
     ).json()["id"]
 
-    assistant = complete_turn(client, sid, "hi")
+    response = client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={"parts": [{"type": "text", "text": "hi"}]},
+    )
     refreshed = client.get(f"/v1/sessions/{sid}").json()
 
-    assert assistant["parts"][-1]["text"] == "hello from fake"
-    assert refreshed["model"] == {"provider_id": "", "model_id": "", "variant": ""}
-    assert fake_agent.calls == [("hi", sid)]
+    assert response.status_code == 501
+    assert response.json()["error"]["details"]["source"] == "session"
+    assert refreshed["model"] == {
+        "provider_id": "anthropic",
+        "model_id": "claude-opus-4-7",
+        "variant": "",
+    }
+    assert fake_agent.calls == []
 
 
 def test_post_message_turn_timeout_surfaces_error(

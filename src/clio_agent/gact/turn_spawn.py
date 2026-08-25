@@ -54,6 +54,38 @@ def _err_code(error_info: Any) -> str:
     return str(getattr(error_info, "error", "") or "")
 
 
+def _err_field(error_info: Any, field: str, default: Any = None) -> Any:
+    """Read one field from an in-memory or wire-form child error."""
+
+    if not error_info:
+        return default
+    if isinstance(error_info, dict):
+        return error_info.get(field, default)
+    return getattr(error_info, field, default)
+
+
+def _child_task_error_reason(error_info: Any) -> str:
+    """Project a child turn's typed cause onto the bounded AgentTask vocabulary."""
+
+    from clio_agent.gact.agent_tasks import ERROR_REASONS  # noqa: PLC0415
+
+    details = _err_field(error_info, "details", {})
+    declared = str(details.get("reason") or "") if isinstance(details, dict) else ""
+    return declared if declared in ERROR_REASONS else "agent_error"
+
+
+def _child_task_failure_result(app: "FastAPI", child_sid: str, final: Any) -> dict[str, Any]:
+    """Retain the child's typed failure detail for parent and UI observability."""
+
+    error_info = getattr(final, "error_info", None)
+    message = str(_err_field(error_info, "message", "") or "").strip()
+    return {
+        "message_ref": str(getattr(final, "id", "") or ""),
+        "answer_excerpt": message[:_ANSWER_EXCERPT_MAX],
+        "workflow_state": _child_workflow_state(app, child_sid, final),
+    }
+
+
 # Runaway backstop (NOT a 3-tier rule): ``tier`` is semantic weight, not depth —
 # deep chains (tier-1 → tier-2 → tier-2 → tier-2 → tier-3s) are legitimate. This
 # only refuses a spawn whose computed depth would exceed the backstop, bounding
@@ -291,6 +323,23 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
 
     # ---- structural guards -------------------------------------------------
     workspace_id, parent_mode, session_scope_metadata = validate_task_spec(app, spec)
+    parent = app.state.sessions.get(spec.parent_session_id)
+    if (
+        spec.start_turn
+        and parent is not None
+        and (
+            getattr(parent, "status", "") == "cancelled"
+            or spec.parent_session_id in app.state.cancel_flags
+        )
+    ):
+        # A provider/tool call can finish on an executor thread after the parent
+        # cancellation cascade took its registry snapshot.  Refuse that late spawn
+        # before minting a child session; otherwise the cancelled parent grows a new
+        # live child seconds after the user pressed Stop.
+        raise SpawnError(
+            f"parent session was cancelled before child {spec.child_expert_id!r} could start",
+            reason="parent_turn_cancelled",
+        )
 
     # ---- backpressure: queue (never fail) at the cap ----------------------
     # PER-DEPTH admission: each depth has its own pool, so the cap is counted
@@ -676,11 +725,13 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
                 app, task_id, STATUS_CANCELLED, notify_pending=False, updated_at=now
             )
         elif code:
+            error_info = getattr(final, "error_info", None)
             outcome = fold_agent_task_transition(
                 app,
                 task_id,
                 STATUS_FAILED,
-                error_reason="agent_error",
+                error_reason=_child_task_error_reason(error_info),
+                result=_child_task_failure_result(app, child_sid, final),
                 notify_pending=(mode == "async"),
                 updated_at=now,
             )

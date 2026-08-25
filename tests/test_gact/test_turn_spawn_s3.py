@@ -168,6 +168,31 @@ def test_cancel_cascade_from_parent(tmp_path: Path, monkeypatch) -> None:
         assert _bus(app, parent, "agent.task.cancelled"), "no cascade cancel event on parent"
 
 
+def test_late_child_spawn_after_parent_cancel_is_refused(tmp_path: Path, monkeypatch) -> None:
+    """A late executor result cannot create a child after the cancel snapshot."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        assert client.post(f"/v1/sessions/{parent}/cancel").status_code == 204
+        before = len(app.state.agent_task_registry.snapshot())
+
+        with pytest.raises(SpawnError) as exc:
+            spawn_child_turn_threadsafe(
+                app,
+                TaskSpec(
+                    child_expert_id="main",
+                    task_text="late",
+                    parent_session_id=parent,
+                    parent_turn_id="msg_cancelled",
+                ),
+            )
+
+        assert exc.value.reason == "parent_turn_cancelled"
+        assert len(app.state.agent_task_registry.snapshot()) == before
+
+
 def test_cancel_frees_slot_and_admits_queued(tmp_path: Path, monkeypatch) -> None:
     """Cancelling a parent frees its child's concurrency slot and admits a QUEUED
     task of ANOTHER parent — it must not strand forever (the completion hook won't

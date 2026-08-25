@@ -473,6 +473,11 @@ class EventBus:
 
         return self._highest_event_id
 
+    def latest_event_id(self, session_id: str) -> int:
+        """Return the newest cursor visible on a session-scoped SSE feed."""
+
+        return max((event.id for event in self._history_snapshot(session_id)), default=0)
+
     def session_events_since(self, session_id: str, *, cursor: int = 1) -> list["Event"]:
         """Return ``session_id``'s recorded events with ``id >= cursor``, ordered by id.
 

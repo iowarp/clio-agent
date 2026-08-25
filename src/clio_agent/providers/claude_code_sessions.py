@@ -311,7 +311,10 @@ class _StreamClientEntry:
     """
 
     def __init__(
-        self, options_factory: Any, connect_slots: threading.Semaphore | None = None
+        self,
+        options_factory: Any,
+        connect_slots: threading.Semaphore | None = None,
+        reclaim_idle_slot: Any | None = None,
     ) -> None:
         self._options_factory = options_factory
         self._lock = threading.Lock()  # guards loop/thread construction
@@ -325,6 +328,13 @@ class _StreamClientEntry:
         # disconnect, bounding total resident CLI subprocesses regardless of
         # how many scope-keyed entries exist. ``None`` (test default) = uncapped.
         self._connect_slots = connect_slots
+        # A one-slot pool can otherwise deadlock when a child asks for its
+        # connection during the final milliseconds of the parent's query: the
+        # allocation-time sweep sees the parent as busy, then the parent becomes
+        # idle while the child is already queued and no later entry_for() call
+        # exists to trigger another sweep.  The queued waiter re-checks for an
+        # idle scoped sibling between bounded semaphore polls.
+        self._reclaim_idle_slot = reclaim_idle_slot
         # Idle-reap bookkeeping (plain threading.Lock — read/written from both
         # the caller's loop, in :meth:`stream`, and the sweep in
         # :meth:`ClaudeStreamClientPool._sweep_idle_scoped_entries`, which runs
@@ -385,7 +395,8 @@ class _StreamClientEntry:
             return
         loop = asyncio.get_running_loop()
         while not await loop.run_in_executor(None, self._connect_slots.acquire, True, 0.2):
-            continue
+            if self._reclaim_idle_slot is not None:
+                self._reclaim_idle_slot()
 
     async def _ensure_client(self, on_construct: Any) -> Any:
         """Connect the client once (runs on the owner loop, double-checked).
@@ -611,9 +622,25 @@ class ClaudeStreamClientPool:
                 entry = _StreamClientEntry(
                     lambda: build_sdk_options(model=model, cwd=cwd, stream=True, thinking=thinking),
                     connect_slots=self._connect_slots,
+                    reclaim_idle_slot=self._reclaim_idle_scoped_connections_for_slot,
                 )
                 self._entries[key] = entry
             return entry
+
+    def _reclaim_idle_scoped_connections_for_slot(self) -> int:
+        """Reap idle scoped siblings when a connect is queued behind the cap.
+
+        ``entry_for`` performs the normal TTL-based sweep before allocating a
+        child entry.  This second seam closes the narrow race where the current
+        slot holder was still busy during that sweep but becomes idle while the
+        child is waiting.  Busy entries and the shared base entry remain
+        protected by :func:`sweep_idle_scoped_entries`; ``ttl_s=0`` is deliberate
+        because an actual queued caller needs the slot now.
+        """
+        evicted = sweep_idle_scoped_entries(self, ttl_s=0.0)
+        for key, entry in evicted:
+            reap_idle_stream_entry(key, entry)
+        return len(evicted)
 
     def release(self, scope: str) -> None:
         """Close and drop every entry keyed to ``scope`` (stateful_scope teardown).
