@@ -93,6 +93,11 @@ REACT_SUBMIT_REPAIR_ATTEMPTED = "react_submit_repair_attempted"
 # fields stay absent (a declared Pydantic default is honored by ``_make_submit_tool``,
 # which is author intent, not fabrication).
 REACT_SUBMIT_REPAIR_EXHAUSTED = "react_submit_repair_exhausted"
+# A forced-finalization response returned no ``submit`` call (or attempted another
+# tool). Stock DSPy silently filters those calls. CLIO records the rejection and
+# exposes only the submit schema on the forced turn so a transport that cannot honor
+# native ``tool_choice`` cannot be invited to call an unrelated tool.
+REACT_FORCED_SUBMIT_REJECTED = "react_forced_submit_rejected"
 
 
 class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
@@ -155,6 +160,79 @@ class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
             args=args,
             arg_types=arg_types,
         )
+
+    def _forced_submit(
+        self,
+        history: dspy.History,
+        pending_inputs: dict[str, Any],
+        break_reason: str,
+        turn_index: int,
+    ) -> Any:
+        """Finalize with a submit-only tool contract and audit rejected responses.
+
+        DSPy's implementation advertises every ReAct tool and relies on the provider's
+        native ``tool_choice`` support to force ``submit``. CLIO also supports bare-model
+        SDK transports, where that provider hint may be unavailable even though the
+        structured DSPy response contract is supported. Advertising unrelated tools in
+        that state caused the model to request them, after which stock DSPy silently
+        discarded the calls while their streamed reasoning remained on the canonical
+        message ledger.
+
+        The forced turn has exactly one legal operation, so expose exactly one tool:
+        ``submit``. Keep ``tool_choice`` for transports that honor it, then explicitly
+        audit an empty or non-submit response before returning the typed failed
+        prediction. No provider-specific reasoning semantics or transcript rewriting is
+        involved.
+        """
+        from dspy.predict.react_v2 import (  # noqa: PLC0415
+            _append_history_event,
+            _coerce_tool_calls,
+            _ensure_tool_call_ids,
+        )
+        from dspy.primitives.prediction import Prediction  # noqa: PLC0415
+        from dspy.utils.exceptions import (  # noqa: PLC0415
+            AdapterParseError,
+            ContextWindowExceededError,
+        )
+
+        try:
+            pred = self.react(
+                history=history,
+                tools=[self.tools["submit"]],
+                config={
+                    "tool_choice": {"type": "function", "function": {"name": "submit"}},
+                    "reasoning_effort": None,
+                },
+                **pending_inputs,
+            )
+            tool_calls = _ensure_tool_call_ids(
+                _coerce_tool_calls(getattr(pred, "tool_calls", None)), turn_index
+            )
+        except (AdapterParseError, ValueError, ContextWindowExceededError) as exc:
+            _record_forced_submit_rejection(type(exc).__name__)
+            return Prediction(history=history, termination_reason=break_reason or "failed")
+
+        submit_calls = ToolCalls(
+            tool_calls=[call for call in tool_calls.tool_calls if call.name == "submit"]
+        )
+        if not submit_calls.tool_calls:
+            attempted = [call.name for call in tool_calls.tool_calls]
+            _record_forced_submit_rejection(", ".join(attempted) or "<empty>")
+            return Prediction(history=history, termination_reason=break_reason or "failed")
+
+        tool_call_results, final_outputs = self._execute_tool_calls(submit_calls)
+        event = self._history_event(pending_inputs, pred, submit_calls, tool_call_results)
+        if final_outputs is not None:
+            event.update(final_outputs)
+        _append_history_event(history, event)
+
+        if final_outputs is not None:
+            return Prediction(
+                **final_outputs,
+                history=history,
+                termination_reason="forced_submit",
+            )
+        return Prediction(history=history, termination_reason=break_reason or "failed")
 
     def forward(self, **input_args: Any) -> Any:
         """Run the V2 loop, retain the History, and bounded-repair a missing submit (#901 S4/S6).
@@ -807,4 +885,15 @@ def _record_submit_audit(
         duplicate_reason=reason,
         head=text[:120],
         full_text=text[:12000],
+    )
+
+
+def _record_forced_submit_rejection(attempted: str) -> None:
+    """Record a forced-finalization response that did not produce ``submit``."""
+    _record_submit_audit(
+        REACT_FORCED_SUBMIT_REJECTED,
+        agent_id=_active_react_scope_safe(),
+        field="submit",
+        text=attempted,
+        suppressed=False,
     )

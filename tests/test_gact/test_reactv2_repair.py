@@ -320,6 +320,58 @@ def test_no_repair_when_outputs_present(monkeypatch) -> None:
     assert reactv2.REACT_SUBMIT_REPAIR_ATTEMPTED not in _reasons(records)
 
 
+def test_forced_submit_exposes_only_submit_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The forced turn cannot advertise unrelated tools to a bare-model transport."""
+    agent = _build(_WsSig)
+    observed: dict[str, Any] = {}
+
+    def _react(**kwargs: Any) -> dspy.Prediction:
+        observed.update(kwargs)
+        return dspy.Prediction(
+            next_thought="done",
+            tool_calls={
+                "tool_calls": [
+                    {
+                        "name": "submit",
+                        "args": {"answer": "A", "workflow_state": {"k": 1}},
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(agent, "react", _react)
+    pred = agent._forced_submit(dspy.History(messages=[]), {"question": "q"}, "max_iters", 1)
+
+    assert [tool.name for tool in observed["tools"]] == ["submit"]
+    assert observed["config"]["tool_choice"]["function"]["name"] == "submit"
+    assert pred.answer == "A"
+    assert pred.termination_reason == "forced_submit"
+
+
+def test_forced_submit_non_submit_is_audited(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A provider ignoring the submit-only contract is recorded, never silently filtered."""
+    records = _capture_reasons(monkeypatch)
+    agent = _build(_WsSig)
+
+    def _react(**_kwargs: Any) -> dspy.Prediction:
+        return dspy.Prediction(
+            next_thought="make another artifact",
+            tool_calls={"tool_calls": [{"name": "create_artifact", "args": {}}]},
+        )
+
+    monkeypatch.setattr(agent, "react", _react)
+    pred = agent._forced_submit(dspy.History(messages=[]), {}, "empty_tool_calls", 1)
+
+    assert pred.termination_reason == "empty_tool_calls"
+    assert reactv2.REACT_FORCED_SUBMIT_REJECTED in _reasons(records)
+    row = next(
+        record
+        for record in records
+        if record.get("duplicate_reason") == reactv2.REACT_FORCED_SUBMIT_REJECTED
+    )
+    assert row["full_text"] == "create_artifact"
+
+
 # --- 4. reforce_submit_over_retained_history (the repair entry, tested directly) --
 
 
