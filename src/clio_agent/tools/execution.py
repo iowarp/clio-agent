@@ -495,12 +495,9 @@ def create_sync_tool_executor(
     server_id: str = "",
 ) -> SyncToolExecutor:
     """Create a sync executor for CLI and deterministic expert call sites."""
-    # #1186 follow-on: the per-call ceiling is config-resolved like setup_timeout.
-    # The default is a RUNAWAY BACKSTOP, not an operational clock (#1244 run-3
-    # kill: a 30s default starved every legitimately-paced batch tool). The
-    # precise clocks are the tool's own declared budget (#1230 timeout_seconds
-    # schema default), the caller's explicit arg, and #1225's unbounded
-    # wait_for_terminal commitment — this global only catches a hung server.
+    # #1186/#1244: config-resolved per-call ceiling. The default is a RUNAWAY
+    # BACKSTOP, not an operational clock — the precise clocks are the tool's
+    # declared #1230 budget, the caller's arg, or #1225 wait_for_terminal.
     effective_timeout = (
         conf.resolve(
             "tools.mcp.call_timeout_s",
