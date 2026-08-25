@@ -1,6 +1,6 @@
-"""HPC Cluster Operator (case07) - real case acceptance test.
+"""HPC Cluster Operator (case13) - real case acceptance test.
 
-Encodes the contract from ``benchmark/case07-hpc-cluster-operator/GOAL.md``:
+Encodes the contract from ``benchmark/case13-hpc-cluster-operator/GOAL.md``:
 can the agent operate the LIVE ares cluster (through clio-relay's MCP v2 task
 surface) from a human-level scientific intent, driving async jobs to a real
 terminal state and answering only from evidence it can point at?
@@ -26,7 +26,7 @@ docstring):
 * ``run.extra["artifact_records"]`` -- the full artifact-registry rows
   (path/kind/sha256/custody), re-fetched from
   ``GET /v1/sessions/{id}/artifacts`` because ``clio_sut.ClioAgent`` only
-  keeps bare paths in ``run.extra["artifacts"]`` (S7 #973); case07 needs the
+  keeps bare paths in ``run.extra["artifacts"]`` (S7 #973); case13 needs the
   lineage (sha256) column the shared SUT does not carry.
 * ``run.extra["serve_log_text"]`` -- the isolated gact server's own stdout log
   text (``gact_server.server_log``), grepped for the v2 suppression reason.
@@ -35,12 +35,12 @@ Run live (isolated instance, port 17970 -- see ENV.md + bring_up_isolated_serve.
 never touches the :17900 ares-mission serve)::
 
     CLIO_GACT_FIXTURE_PORT=17970 CLIO_RUN_LIVE=1 uv run pytest \\
-        tests/test_real_cases/test_case07_cluster_operator.py \\
+        tests/test_real_cases/test_case13_cluster_operator.py \\
         -k s1_capability --provider claude_code --model sonnet \\
         -o addopts="" -p no:cacheprovider -q
 
 Tamper-proofs for every matcher below (offline, no live anything) live in
-``test_case07_matchers_tamper.py``.
+``test_case13_matchers_tamper.py``.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ import httpx
 import pytest
 from agent_test import matcher
 
-CASE_DIR = "benchmark/case07-hpc-cluster-operator"
+CASE_DIR = "benchmark/case13-hpc-cluster-operator"
 BLUEPRINT_ID = "cluster-operator"
 
 # Guardrail cell (GOAL.md "Case-specific deviations"): claude_code / sonnet only.
@@ -68,7 +68,7 @@ GUARDRAIL_MODEL = "sonnet"
 
 # ``timeout_s`` is generous: cluster builds (spack install, jarvis pipelines) can
 # run long. >=1200s per GOAL's harness instructions; default well above that.
-TIMEOUT_S = float(os.environ.get("CLIO_CASE07_TIMEOUT_S", "3600"))
+TIMEOUT_S = float(os.environ.get("CLIO_CASE13_TIMEOUT_S", "3600"))
 
 # The p5local door's `clio-relay` CLI binary and the cluster it is bound to
 # (see ENV.md / bring_up_isolated_serve.sh). Overridable for a different box.
@@ -137,7 +137,7 @@ _LISTING_PAYLOAD_KEYS = ("jobs", "items", "results", "records", "artifacts", "ro
 
 @dataclass(frozen=True)
 class Scenario:
-    """One case07 grind scenario (see ``scenarios.md``)."""
+    """One case13 grind scenario (see ``scenarios.md``)."""
 
     label: str
     prompt_file: str
@@ -352,7 +352,7 @@ def _fetch_artifact_records(base_url: str, session_id: str) -> list[dict[str, An
 
     Mirrors ``clio_sut.ClioAgent._registry_artifacts`` (S7 #973's designation
     truth) but keeps the ``sha256``/``custody`` lineage columns the shared SUT
-    discards -- case07's S3 matcher needs lineage, not just a bare path list.
+    discards -- case13's S3 matcher needs lineage, not just a bare path list.
     """
     items: list[dict[str, Any]] = []
     cursor: str | None = None
@@ -386,8 +386,8 @@ def _fetch_artifact_records(base_url: str, session_id: str) -> list[dict[str, An
     return items
 
 
-def _augment_with_case07_evidence(run, gact_server, run_spec: dict[str, Any]) -> None:
-    """Populate the case07-specific evidence seams onto ``run.extra`` in place.
+def _augment_with_case13_evidence(run, gact_server, run_spec: dict[str, Any]) -> None:
+    """Populate the case13-specific evidence seams onto ``run.extra`` in place.
 
     ``Run`` is a frozen dataclass, but ``extra`` is a plain mutable dict (the
     documented escape hatch -- ``agent_test.run.Run`` docstring), so mutating
@@ -618,7 +618,7 @@ def no_force_fed_tool_args(run) -> bool:
 @pytest.mark.real_case
 @pytest.mark.live
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=[s.label for s in SCENARIOS])
-def test_case07_cluster_operator(agent, gact_server, scenario: Scenario, tmp_path):
+def test_case13_cluster_operator(agent, gact_server, scenario: Scenario, tmp_path):
     prompt = _load_prompt(scenario.prompt_file)
 
     # Durable, worktree-local workspace (GOAL isolation: "artifacts root under
@@ -626,7 +626,7 @@ def test_case07_cluster_operator(agent, gact_server, scenario: Scenario, tmp_pat
     # and never auto-cleaned pytest tmp_path so a grinder can inspect it after).
     workspace_root = Path(
         os.environ.get(
-            "CLIO_CASE07_WORKSPACE_ROOT",
+            "CLIO_CASE13_WORKSPACE_ROOT",
             str(Path(CASE_DIR).resolve() / "runs" / "workspace"),
         )
     )
@@ -642,7 +642,7 @@ def test_case07_cluster_operator(agent, gact_server, scenario: Scenario, tmp_pat
         "timeout_s": TIMEOUT_S,
     }
     run = agent.run(run_spec)
-    _augment_with_case07_evidence(run, gact_server, run_spec)
+    _augment_with_case13_evidence(run, gact_server, run_spec)
 
     # Runtime/harness invariants (same shape as earthscope/wildfire).
     assert run.error is None, run.error

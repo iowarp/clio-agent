@@ -1,4 +1,4 @@
-# case07 scenario family
+# case13 scenario family
 
 Each scenario is a natural scientific intent. None names an expert, a tool,
 a relay concept, or a contract. The SAME pack must pass all of them.
@@ -39,7 +39,7 @@ references/presents them.
 > results on the cluster? If there's anything there, summarize it; if not,
 > just say so."
 
-Against a deployment with no prior case07 runs, the correct answer is
+Against a deployment with no prior case13 runs, the correct answer is
 "nothing found" — verifiable against the cluster's job/artifact listing. No
 forced artifact, no invented history. (When prior runs DO exist from earlier
 scenarios, the correct answer flips to a real summary — the matcher checks
