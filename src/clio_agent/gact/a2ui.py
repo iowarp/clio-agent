@@ -110,7 +110,7 @@ _COMPONENT_PROPS: dict[str, frozenset[str]] = {
         {"columns", "rows", "selection", "action", "accessibility", "weight"}
     ),
     "clio.time-series.v1": frozenset(
-        {"series", "xKey", "yKeys", "title", "accessibility", "weight"}
+        {"series", "dataUri", "xKey", "yKeys", "title", "accessibility", "weight"}
     ),
     "clio.mermaid.v1": frozenset({"source", "title", "accessibility", "weight"}),
     "clio.map.v1": frozenset(
@@ -165,7 +165,7 @@ _COMPONENT_REQUIRED_PROPS: dict[str, frozenset[str]] = {
     "clio.progress.v1": frozenset({"label"}),
     "clio.callout.v1": frozenset({"title", "body", "severity"}),
     "clio.data-table.v1": frozenset({"columns", "rows"}),
-    "clio.time-series.v1": frozenset({"series", "xKey", "yKeys"}),
+    "clio.time-series.v1": frozenset({"xKey", "yKeys"}),
     "clio.mermaid.v1": frozenset({"source"}),
     "clio.map.v1": frozenset({"points"}),
     "clio.workflow.v1": frozenset({"nodes", "edges"}),
@@ -297,7 +297,7 @@ def _validate_value(value: Any, *, key: str = "", depth: int = 0) -> None:
     if isinstance(value, str):
         if len(value) > MAX_A2UI_STRING:
             raise A2UIValidationError("A2UI string exceeds the size limit")
-        if key.lower() in {"url", "uri"}:
+        if key.lower() in {"url", "uri", "datauri"}:
             _validate_url(value)
         return
     if isinstance(value, list):
@@ -362,6 +362,48 @@ def _validate_map_component(component: Mapping[str, Any]) -> None:
         value = component.get(key)
         if value is not None and (not isinstance(value, (str, Mapping)) or len(value) > limit):
             raise A2UIValidationError(f"A2UI map {key} is invalid or exceeds the size limit")
+
+
+def _validate_time_series_component(component: Mapping[str, Any]) -> None:
+    """Validate the mutually exclusive inline and registered-artifact data paths."""
+
+    has_series = "series" in component
+    has_data_uri = "dataUri" in component
+    if has_series == has_data_uri:
+        raise A2UIValidationError(
+            "A2UI clio.time-series.v1 requires exactly one of series or dataUri"
+        )
+    x_key = component.get("xKey")
+    y_keys = component.get("yKeys")
+    if not isinstance(x_key, str) or not x_key.strip():
+        raise A2UIValidationError("A2UI time-series xKey must be a non-empty string")
+    if (
+        not isinstance(y_keys, list)
+        or not 1 <= len(y_keys) <= 5
+        or len(set(y_keys)) != len(y_keys)
+        or not all(isinstance(key, str) and key.strip() for key in y_keys)
+    ):
+        raise A2UIValidationError(
+            "A2UI time-series yKeys must contain one to five distinct column names"
+        )
+    if has_series:
+        series = component.get("series")
+        if (
+            not isinstance(series, list)
+            or not 1 <= len(series) <= 10_000
+            or not all(isinstance(row, Mapping) for row in series)
+        ):
+            raise A2UIValidationError(
+                "A2UI time-series series must be a non-empty list bounded to 10000 rows"
+            )
+        return
+    data_uri = component.get("dataUri")
+    if not isinstance(data_uri, str) or re.fullmatch(
+        r"artifact://artifact_[A-Za-z0-9_-]+", data_uri
+    ) is None:
+        raise A2UIValidationError(
+            "A2UI time-series dataUri must be artifact:// followed by a registered artifact id"
+        )
 
 
 def _validate_accessibility(component: Mapping[str, Any], component_name: str) -> None:
@@ -456,6 +498,8 @@ def validate_server_message(message: Mapping[str, Any]) -> tuple[str, str]:
                     )
             if component_name == "clio.map.v1":
                 _validate_map_component(component)
+            if component_name == "clio.time-series.v1":
+                _validate_time_series_component(component)
     _validate_value(payload)
     return operation, surface_id
 

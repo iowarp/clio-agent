@@ -78,8 +78,13 @@ def build_create_a2ui_surface_tool() -> Any:
         ``text`` or ``prompt``; ``approval.respond`` needs ``permission_id``
         and ``action``; ``run.retry`` needs ``message_id``; ``run.cancel``
         needs no context; and ``form.submit`` accepts the submitted form fields.
-        For plots, ``clio.time-series.v1.series`` is an array of row objects;
-        ``xKey`` names the x field and ``yKeys`` names one to five numeric fields.
+        For small plots, ``clio.time-series.v1.series`` is an array of row
+        objects. For a registered CSV artifact, omit ``series`` and use
+        ``dataUri: artifact://<artifact-id>`` instead; the renderer requests an
+        integrity-checked bounded preview rather than loading the entire file.
+        Exactly one of ``series`` or ``dataUri`` is allowed. ``xKey`` names the
+        x column and ``yKeys`` names one to five numeric columns. The rendered
+        chart provides hover values, series visibility, zoom, and pan.
         For tables, ``columns`` may be string field names or objects like
         ``{"key": "displacement_mm", "label": "Displacement (mm)"}``, and
         ``rows`` is an array of objects keyed by those fields. A

@@ -567,6 +567,64 @@ def test_server_rejects_out_of_range_map_coordinates(tmp_path: Path) -> None:
     assert client.app.state.a2ui_store.get(sid, "surface_1") is None
 
 
+def test_server_accepts_registered_csv_time_series(tmp_path: Path) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    chart = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [
+                {
+                    "id": "root",
+                    "component": "clio.time-series.v1",
+                    "dataUri": "artifact://artifact_series_1",
+                    "xKey": "time",
+                    "yKeys": ["east", "north", "up"],
+                }
+            ],
+        },
+    }
+
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message(), chart]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["surfaces"][-1]["state"] == "ready"
+
+
+def test_server_rejects_ambiguous_time_series_sources(tmp_path: Path) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    invalid = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [
+                {
+                    "id": "root",
+                    "component": "clio.time-series.v1",
+                    "series": [{"time": 1, "east": 2}],
+                    "dataUri": "artifact://artifact_series_1",
+                    "xKey": "time",
+                    "yKeys": ["east"],
+                }
+            ],
+        },
+    }
+
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message(), invalid]},
+    )
+
+    assert response.status_code == 422
+    assert "exactly one of series or dataUri" in response.json()["error"]["message"]
+    assert client.app.state.a2ui_store.get(sid, "surface_1") is None
+
+
 def test_root_agent_tool_rejects_batch_atomically(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     client, sid, _ = _session_client(tmp_path)
     app = client.app

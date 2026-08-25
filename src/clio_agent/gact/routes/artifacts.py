@@ -509,12 +509,16 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
     from clio_agent.gact.routes.artifact_lineage import (
         register_artifact_lineage_routes,  # noqa: E501,PLC0415
     )
+    from clio_agent.gact.routes.artifact_table_preview import (
+        register_artifact_table_preview_routes,  # noqa: PLC0415
+    )
 
     # S5 (#971) lineage/transform + S7 (#973) RO-Crate export routes ride the same
     # ``x_clio_artifacts`` surface (assembled in one place, no-accretion).
     register_artifact_alias_routes(app)
     register_artifact_lineage_routes(app)
     register_artifact_export_routes(app)
+    register_artifact_table_preview_routes(app)
 
     @app.get("/v1/artifacts/{artifact_id}")
     async def get_artifact(artifact_id: str) -> dict[str, Any]:
