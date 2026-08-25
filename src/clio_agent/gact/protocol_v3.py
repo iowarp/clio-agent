@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 from fastapi import Request
 
+from clio_agent import __version__ as clio_agent_version
 from clio_agent.gact.events import Event
 from clio_agent.gact.providers.config import _effective_lm_config
 from clio_agent.gact.workspaces import workspace_display_name
@@ -217,6 +218,7 @@ def capabilities_to_v3(app: Any, flags: Any, *, replay_retention: int) -> dict[s
             }
         )
     return {
+        "service": {"name": "clio-agent", "version": clio_agent_version},
         "gact_versions": [GACT_V3, "0.2"],
         "a2ui_versions": [A2UI_V091],
         "replay": {"supported": True, "retention": replay_retention},

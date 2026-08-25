@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from clio_agent import __version__ as clio_agent_version
 from clio_agent.gact.agent_tasks import seed_agent_task
 from clio_agent.gact.app import build_app
 from clio_agent.gact.events import Event
@@ -25,6 +26,10 @@ def test_capabilities_negotiate_v3_without_changing_v2(tmp_path: Path) -> None:
     assert legacy.status_code == 200
     assert legacy.json()["contract_version"] == "0.2"
     assert v3.status_code == 200
+    assert v3.json()["service"] == {
+        "name": "clio-agent",
+        "version": clio_agent_version,
+    }
     assert v3.json()["gact_versions"] == ["0.3", "0.2"]
     assert v3.json()["a2ui_versions"] == ["0.9.1"]
     assert v3.json()["replay"] == {"supported": True, "retention": 256}
