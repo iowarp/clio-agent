@@ -260,17 +260,7 @@ def test_v3_session_and_transcript_are_normalized(tmp_path: Path) -> None:
     }
     assert projected["cost_usd"] == 0.0125
     assert projected["stop_reason"] == "end_turn"
-    assert projected["reasoning_calls"] == [
-        {
-            "id": "reasoning_call_1",
-            "model": "openai/gpt-5.6-luna",
-            "question": "Inspect campaign state.",
-            "reasoning": "Full model-call reasoning retained by the provider bridge.",
-            "response": "Watching campaign evidence.",
-            "reasoning_chars": 58,
-            "timestamp": "2026-08-22T00:00:00.500000+00:00",
-        }
-    ]
+    assert "reasoning_calls" not in projected
     assert transcript["tools"] == [
         {
             "id": "call_1",

@@ -413,35 +413,6 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _reasoning_calls(metadata: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Project the server-captured per-model-call reasoning ledger without inventing parts."""
-
-    raw_rows = metadata.get("reasoning_log")
-    if not isinstance(raw_rows, list):
-        return []
-    calls: list[dict[str, Any]] = []
-    for index, raw in enumerate(raw_rows):
-        if not isinstance(raw, Mapping) or not raw.get("reasoning"):
-            continue
-        reasoning = str(raw["reasoning"])
-        calls.append(
-            {
-                "id": f"reasoning_call_{index + 1}",
-                "reasoning": reasoning,
-                "reasoning_chars": (
-                    int(raw["reasoning_chars"])
-                    if isinstance(raw.get("reasoning_chars"), int)
-                    else len(reasoning)
-                ),
-                **({"model": str(raw["model"])} if raw.get("model") else {}),
-                **({"question": str(raw["question"])} if raw.get("question") else {}),
-                **({"response": str(raw["response"])} if raw.get("response") else {}),
-                **({"timestamp": str(raw["timestamp"])} if raw.get("timestamp") else {}),
-            }
-        )
-    return calls
-
-
 def message_to_v3(message: Any) -> dict[str, Any]:
     """Project a persisted or live message into ordered CLIO blocks."""
 
@@ -474,7 +445,6 @@ def message_to_v3(message: Any) -> dict[str, Any]:
         row["run_id"] = turn_id
     metadata = wire.get("metadata") if isinstance(wire.get("metadata"), Mapping) else {}
     tokens = wire.get("tokens") if isinstance(wire.get("tokens"), Mapping) else {}
-    reasoning_calls = _reasoning_calls(metadata)
     row["usage"] = {
         "input": int(tokens.get("input") or 0),
         "output": int(tokens.get("output") or 0),
@@ -484,8 +454,6 @@ def message_to_v3(message: Any) -> dict[str, Any]:
     row["cost_usd"] = float(wire.get("cost_usd") or 0.0)
     if wire.get("stop_reason"):
         row["stop_reason"] = str(wire["stop_reason"])
-    if reasoning_calls:
-        row["reasoning_calls"] = reasoning_calls
     if isinstance(wire.get("error_info"), Mapping):
         row["error_info"] = dict(wire["error_info"])
     if metadata.get("status") != "running" and wire.get("updated_at"):
@@ -702,8 +670,6 @@ def event_to_v3(event: Event, *, session: Any = None, workspace_id: str = "") ->
         }
         entity_id = payload["block_id"]
     elif event_type == "message.completed":
-        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
-        reasoning_calls = _reasoning_calls(metadata)
         tokens = payload.get("tokens") if isinstance(payload.get("tokens"), Mapping) else {}
         payload = {
             "message_id": str(payload.get("message_id") or ""),
@@ -716,7 +682,6 @@ def event_to_v3(event: Event, *, session: Any = None, workspace_id: str = "") ->
                 "cache_write": int(tokens.get("cache_write") or 0),
             },
             "cost_usd": payload.get("cost_usd"),
-            **({"reasoning_calls": reasoning_calls} if reasoning_calls else {}),
             **({"error_info": payload["error_info"]} if payload.get("error_info") else {}),
         }
         entity_id = payload["message_id"]
