@@ -54,10 +54,14 @@ def live_plane_context(
     session: str = "s1",
     scope: str = "agentA",
     window: int = 0,
+    session_metadata: dict[str, Any] | None = None,
 ) -> Iterator[None]:
     """Set the runtime context the live plane reads (app handle, scope, session,
     and the context window that drives auto-compaction)."""
-    fake_app = types.SimpleNamespace(state=types.SimpleNamespace(arc=arc_memory))
+    fake_session = types.SimpleNamespace(metadata=session_metadata or {})
+    fake_app = types.SimpleNamespace(
+        state=types.SimpleNamespace(arc=arc_memory, sessions={session: fake_session})
+    )
     # Layer the turn app, then scope/session/window on the single runtime var.
     # Reset in strict reverse-LIFO of the sets (window -> session -> scope -> app)
     # so the single-var stack unwinds cleanly. (#714)

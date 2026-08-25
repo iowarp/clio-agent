@@ -62,9 +62,45 @@ def test_context_state_categories_and_autocompact(tmp_path):
     body = client.get(f"/v1/sessions/{sid}/context/state", params={"scope": SCOPE}).json()
     assert body["categories"] == {"reasoning": 5, "observations": 10, "tools": 3}
     assert body["autocompact_pct"] == 0.85  # default trigger fraction
+    assert body["autocompact_enabled"] is True
     # No LM call in-test -> model-grounded reading is unavailable (no framing entry).
     assert body["used_tokens"] is None
     assert "framing" not in body["categories"]
+
+
+def test_context_preferences_are_session_owned_and_reflected_in_state(tmp_path):
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    client = _client(tmp_path, arc)
+    sid = _session(client)
+
+    response = client.patch(
+        f"/v1/sessions/{sid}/context/preferences",
+        json={"automatic_compaction": False, "autocompact_pct": 0.72},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "session_id": sid,
+        "automatic_compaction": False,
+        "autocompact_pct": 0.72,
+    }
+    persisted = client.get(f"/v1/sessions/{sid}/context/preferences").json()
+    assert persisted == response.json()
+    state = client.get(f"/v1/sessions/{sid}/context/state", params={"scope": SCOPE}).json()
+    assert state["autocompact_enabled"] is False
+    assert state["autocompact_pct"] == 0.72
+
+
+def test_context_preferences_reject_invalid_threshold(tmp_path):
+    client = _client(tmp_path, ARCMemory(data_dir=str(tmp_path / "arc")))
+    sid = _session(client)
+
+    response = client.patch(
+        f"/v1/sessions/{sid}/context/preferences",
+        json={"autocompact_pct": 1.25},
+    )
+
+    assert response.status_code == 422
 
 
 def test_post_context_compact_nothing_409(tmp_path):
@@ -242,7 +278,5 @@ def test_context_op_append_does_not_publish_arc_op_frame(tmp_path, monkeypatch):
     # ...and no segment content leaks onto the bus at all.
     assert all("SECRET_CONTENT" not in str(getattr(e, "payload", "")) for e in published)
     # The op still actually landed (visible via the on-demand context state).
-    state = client.get(
-        f"/v1/sessions/{sid}/context/state", params={"scope": SCOPE}
-    ).json()
+    state = client.get(f"/v1/sessions/{sid}/context/state", params={"scope": SCOPE}).json()
     assert any(seg.get("kind") == "observation" for seg in state["segments"])

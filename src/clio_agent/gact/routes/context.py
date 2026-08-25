@@ -40,21 +40,23 @@ from fastapi import FastAPI, HTTPException
 
 from clio_agent.gact.agents import runtime as agents_runtime
 from clio_agent.gact.runtime.context_tokens import (
-    _autocompact_threshold,
     _bucket_context_categories,
     _estimate_text_tokens,
     _last_prompt_tokens,
     _resolve_expert_context_window,
+    _session_autocompact_preferences,
 )
 from clio_agent.gact.types import (
     ContextOpRequest,
     ContextOpResponse,
+    ContextPreferences,
     ContextSearchHit,
     ContextSearchResponse,
     ContextStateResponse,
     ErrorEnvelope,
     ErrorInfo,
     SessionContextPolicy,
+    UpdateContextPreferencesRequest,
 )
 from clio_agent.gact.workspace_scope import workspace_scope
 
@@ -118,6 +120,10 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
         live_tokens = sum(tokens_by_kind.values())
         window = _context_window_for_state()
         used = _last_prompt_tokens()  # model-grounded: last LM call's real prompt tokens
+        session = app.state.sessions.get(sid)
+        autocompact_enabled, autocompact_pct = _session_autocompact_preferences(
+            getattr(session, "metadata", None)
+        )
         return ContextStateResponse(
             session_id=sid,
             scope=scope,
@@ -127,13 +133,25 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
             pct_used=(live_tokens / window) if window else None,
             used_tokens=used or None,
             used_pct=(used / window) if (window and used) else None,
-            autocompact_pct=_autocompact_threshold(),
+            autocompact_enabled=autocompact_enabled,
+            autocompact_pct=autocompact_pct,
             live_block_count=len(segments),
             tokens_by_kind=tokens_by_kind,
             categories=_bucket_context_categories(tokens_by_kind, used, live_tokens),
             segments=[msgspec.to_builtins(s) for s in segments],
             render_text=arc.render_segment_text(sid, scope, as_of=as_of),
             render_keys=arc.render_segments_keys(sid, scope, as_of=as_of),
+        )
+
+    def _context_preferences(sid: str) -> ContextPreferences:
+        session = app.state.sessions.get(sid)
+        if session is None:
+            raise _session_not_found(sid)
+        enabled, threshold = _session_autocompact_preferences(session.metadata)
+        return ContextPreferences(
+            session_id=sid,
+            automatic_compaction=enabled,
+            autocompact_pct=threshold,
         )
 
     @app.get("/v1/sessions/{sid}/context/policy", response_model=SessionContextPolicy)
@@ -189,6 +207,36 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
         if app.state.arc is None:
             raise _arc_unavailable(sid)
         return _build_context_state(sid, scope, as_of)
+
+    @app.get("/v1/sessions/{sid}/context/preferences", response_model=ContextPreferences)
+    async def get_context_preferences(sid: str) -> ContextPreferences:
+        """Return the durable automatic-compaction controls for one session."""
+
+        return _context_preferences(sid)
+
+    @app.patch("/v1/sessions/{sid}/context/preferences", response_model=ContextPreferences)
+    async def patch_context_preferences(
+        sid: str, req: UpdateContextPreferencesRequest
+    ) -> ContextPreferences:
+        """Update automatic compaction without changing deployment-wide defaults."""
+
+        current = _context_preferences(sid)
+        preferences = {
+            "automatic_compaction": (
+                current.automatic_compaction
+                if req.automatic_compaction is None
+                else req.automatic_compaction
+            ),
+            "autocompact_pct": (
+                current.autocompact_pct if req.autocompact_pct is None else req.autocompact_pct
+            ),
+        }
+        updated = app.state.sessions.update(
+            sid, metadata_patch={"context_preferences": preferences}
+        )
+        if updated is None:
+            raise _session_not_found(sid)
+        return _context_preferences(sid)
 
     @app.post("/v1/sessions/{sid}/context/ops", response_model=ContextOpResponse)
     async def post_context_op(sid: str, req: ContextOpRequest) -> ContextOpResponse:

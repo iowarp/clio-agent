@@ -74,6 +74,30 @@ def _autocompact_threshold() -> float:
     return v if 0.0 < v <= 1.0 else 0.85
 
 
+def _session_autocompact_preferences(
+    metadata: Mapping[str, Any] | None,
+) -> tuple[bool, float]:
+    """Resolve the effective automatic-compaction controls for one session.
+
+    Session metadata is the durable override plane; deployments still retain the
+    configured global threshold as the fallback. Invalid persisted values are ignored
+    defensively so an older or manually edited session record cannot wedge a turn.
+    """
+
+    preferences = metadata.get("context_preferences") if isinstance(metadata, Mapping) else None
+    if not isinstance(preferences, Mapping):
+        return True, _autocompact_threshold()
+    enabled = preferences.get("automatic_compaction", True)
+    enabled = enabled if isinstance(enabled, bool) else True
+    try:
+        threshold = conf.as_float(preferences.get("autocompact_pct"))
+    except (ValueError, TypeError):
+        threshold = _autocompact_threshold()
+    if not 0.0 < threshold <= 1.0:
+        threshold = _autocompact_threshold()
+    return enabled, threshold
+
+
 # OpenAI/tiktoken-native model markers. For these, ``litellm.token_counter`` uses a
 # tiktoken encoding that is EXACT and the correct tokenizer, so we spend it. For every
 # other model litellm falls back to the SAME ~40 MB OpenAI ``cl100k_base`` vocab to
@@ -122,7 +146,9 @@ def _heuristic_message_tokens(messages: Any) -> int:
     total = 0
     try:
         for msg in messages or []:
-            content = msg.get("content") if isinstance(msg, Mapping) else getattr(msg, "content", "")
+            content = (
+                msg.get("content") if isinstance(msg, Mapping) else getattr(msg, "content", "")
+            )
             if isinstance(content, str):
                 total += len(content)
             elif isinstance(content, (list, tuple)):

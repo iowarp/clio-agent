@@ -203,6 +203,7 @@ class ContextStateResponse(BaseModel):
     pct_used: Optional[float] = None
     used_tokens: Optional[int] = None
     used_pct: Optional[float] = None
+    autocompact_enabled: bool = True
     autocompact_pct: Optional[float] = None
     live_block_count: int = 0
     tokens_by_kind: dict[str, int] = Field(default_factory=dict)
@@ -210,6 +211,21 @@ class ContextStateResponse(BaseModel):
     segments: list[dict[str, Any]] = Field(default_factory=list)
     render_text: str = ""
     render_keys: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContextPreferences(BaseModel):
+    """Durable automatic-compaction controls for one session."""
+
+    session_id: str
+    automatic_compaction: bool = True
+    autocompact_pct: float = Field(default=0.85, gt=0.0, le=1.0)
+
+
+class UpdateContextPreferencesRequest(BaseModel):
+    """Partial update for a session's context controls."""
+
+    automatic_compaction: Optional[bool] = None
+    autocompact_pct: Optional[float] = Field(default=None, gt=0.0, le=1.0)
 
 
 class ContextOpRequest(BaseModel):

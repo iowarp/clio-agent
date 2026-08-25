@@ -205,7 +205,9 @@ class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
         from clio_agent.gact.agents import runtime as _rt  # noqa: PLC0415
         from clio_agent.gact.agents.reactv2_events import _arc_scope  # noqa: PLC0415
-        from clio_agent.gact.runtime.context_tokens import _autocompact_threshold  # noqa: PLC0415
+        from clio_agent.gact.runtime.context_tokens import (  # noqa: PLC0415
+            _session_autocompact_preferences,
+        )
         from clio_agent.providers.stateful_common import (
             note_prefix_reset_for_active_scope,  # noqa: PLC0415, E501
         )
@@ -213,11 +215,19 @@ class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
         arc, session, scope = _arc_scope()
         if arc is None:
             return
+        app = _ctx.active_app()
+        sessions = getattr(getattr(app, "state", None), "sessions", None)
+        session_row = sessions.get(session) if sessions is not None else None
+        enabled, threshold = _session_autocompact_preferences(
+            getattr(session_row, "metadata", None)
+        )
+        if not enabled:
+            return
         window = _ctx.active_react_context_window()
         last = _rt._last_prompt_tokens()
         if not window or not last:
             return
-        if (last / window) < _autocompact_threshold():
+        if (last / window) < threshold:
             return
         live = arc.render_working_set(session, scope)
         if len(live) <= 1:

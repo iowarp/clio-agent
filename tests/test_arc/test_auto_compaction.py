@@ -53,6 +53,54 @@ def test_does_not_fire_under_threshold(arc, monkeypatch):
     assert arc.render_segments_keys(SID, SCOPE) == before  # untouched
 
 
+def test_session_can_disable_automatic_compaction(arc, monkeypatch):
+    _patch(monkeypatch, prompt_tokens=900)
+    _populate(arc)
+    agent = make_react_agent()
+    before = arc.render_segments_keys(SID, SCOPE)
+    metadata = {
+        "context_preferences": {
+            "automatic_compaction": False,
+            "autocompact_pct": 0.50,
+        }
+    }
+
+    with live_plane_context(
+        arc,
+        session=SID,
+        scope=SCOPE,
+        window=1000,
+        session_metadata=metadata,
+    ):
+        agent._maybe_autocompact()
+
+    assert arc.render_segments_keys(SID, SCOPE) == before
+
+
+def test_session_threshold_overrides_deployment_default(arc, monkeypatch):
+    monkeypatch.setenv("CLIO_AUTOCOMPACT_PCT", "0.95")
+    _patch(monkeypatch, prompt_tokens=600)
+    _populate(arc)
+    agent = make_react_agent()
+    metadata = {
+        "context_preferences": {
+            "automatic_compaction": True,
+            "autocompact_pct": 0.50,
+        }
+    }
+
+    with live_plane_context(
+        arc,
+        session=SID,
+        scope=SCOPE,
+        window=1000,
+        session_metadata=metadata,
+    ):
+        agent._maybe_autocompact()
+
+    assert arc.render_segments_keys(SID, SCOPE) == {"observation_0": "COMPACT_SUMMARY"}
+
+
 def test_threshold_is_env_configurable(arc, monkeypatch):
     monkeypatch.setenv("CLIO_AUTOCOMPACT_PCT", "0.50")
     _patch(monkeypatch, prompt_tokens=600)  # 0.60 >= 0.50 (would NOT fire at 0.85)
