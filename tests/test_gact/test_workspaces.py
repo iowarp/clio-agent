@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from pytest import MonkeyPatch
 
 from clio_agent.gact.app import build_app
+from clio_agent.gact.routes import workspaces as workspace_routes
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -134,6 +136,30 @@ def test_workspace_file_read_returns_plain_text_not_json(tmp_path: Path) -> None
     assert resp.headers["content-type"].startswith("text/plain")
     assert resp.text == "hello picker\n"
     assert resp.content == b"hello picker\n"
+
+
+def test_workspace_file_listing_skips_service_storage_before_applying_cap(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    c = _client(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    c.app.state.workspaces.update("ws_default", root_path=str(project))
+    for internal_root in (project / ".clio", project / ".clio-child-cache"):
+        internal_root.mkdir()
+        for index in range(8):
+            (internal_root / f"internal-{index}.json").write_text("{}", encoding="utf-8")
+    (project / "report.md").write_text("visible", encoding="utf-8")
+    monkeypatch.setattr(workspace_routes, "_FILE_PICKER_LIMIT", 3)
+
+    response = c.get("/v1/workspaces/ws_default/files")
+
+    assert response.status_code == 200
+    entries = response.json()["entries"]
+    assert [(entry["path"], entry["type"], entry.get("size")) for entry in entries] == [
+        ("report.md", "file", 7)
+    ]
 
 
 def test_workspace_file_read_serves_png_as_raw_bytes(tmp_path: Path) -> None:

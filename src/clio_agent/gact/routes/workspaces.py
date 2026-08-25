@@ -78,8 +78,13 @@ _FILE_PICKER_SKIP_DIRS = {
     "build",
     "dist",
     ".egg-info",
-    ".clio/agent",  # ARC's local persistence
 }
+
+
+def _skip_workspace_file_directory(name: str) -> bool:
+    """Return whether a directory is service-owned or too costly to browse."""
+
+    return name in _FILE_PICKER_SKIP_DIRS or name == ".clio" or name.startswith(".clio-")
 
 
 _GRANTOR_USER = "user"
@@ -642,7 +647,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                 if cap <= 0:
                     return
                 name = child.name
-                if name in _FILE_PICKER_SKIP_DIRS:
+                if _skip_workspace_file_directory(name):
                     continue
                 try:
                     if child.is_symlink() and not allow_symlinks:
