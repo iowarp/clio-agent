@@ -1,12 +1,12 @@
-"""Offline tamper-proofs for the case07 (HPC cluster operator) matchers.
+"""Offline tamper-proofs for the case13 (HPC cluster operator) matchers.
 
-Proves each structured matcher in ``test_case07_cluster_operator.py`` PASSES a
+Proves each structured matcher in ``test_case13_cluster_operator.py`` PASSES a
 genuine result and FAILS the specific tampering/failure mode it guards --
 without a live run, a live ares cluster, or a live gact server. Satisfies
 GOAL.md done-criterion 4: "every matcher proven offline to FAIL a tampered
 run." Mirrors the ``test_wildfire_matchers.py`` precedent's shape.
 
-Run offline: ``uv run pytest tests/test_real_cases/test_case07_matchers_tamper.py``
+Run offline: ``uv run pytest tests/test_real_cases/test_case13_matchers_tamper.py``
 (no ``CLIO_RUN_LIVE``, no markers -- this file is plain unit tests).
 """
 
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from agent_test import Run, ToolCall
 
-from tests.test_real_cases.test_case07_cluster_operator import (
+from tests.test_real_cases.test_case13_cluster_operator import (
     answer_numbers_grounded_in_artifact,
     door_confirmed_terminal_success,
     durable_task_record_or_typed_degradation,
@@ -71,7 +71,7 @@ def _s1_genuine_run(tmp_path) -> Run:
             "run_spec": {
                 "task": "run a lammps melt",
                 "blueprint_id": "cluster-operator",
-                "case_dir": "benchmark/case07-hpc-cluster-operator",
+                "case_dir": "benchmark/case13-hpc-cluster-operator",
                 "run_label": "s1_capability",
                 "workdir": str(tmp_path),
                 "timeout_s": 3600.0,
