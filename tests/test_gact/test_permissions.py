@@ -187,19 +187,19 @@ def test_sticky_permission_policy_survives_restart(tmp_path: Path) -> None:
 def test_permission_list_metadata_reports_truncation_and_recent_first(
     tmp_path: Path,
 ) -> None:
-    client = _client(tmp_path, perms=[{"tool_call": {"tool_name": "x"}}])
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    _turn(client, sid)
-    _turn(client, sid)
+    with _client(tmp_path, perms=[{"tool_call": {"tool_name": "x"}}]) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        _turn(client, sid)
+        _turn(client, sid)
 
-    body = client.get("/v1/permissions?status=all&limit=1").json()
+        body = client.get("/v1/permissions?status=all&limit=1").json()
 
-    assert len(body["permissions"]) == 1
-    assert body["metadata"]["limit"] == 1
-    assert body["metadata"]["total"] == 2
-    assert body["metadata"]["returned"] == 1
-    assert body["metadata"]["truncated"] is True
+        assert len(body["permissions"]) == 1
+        assert body["metadata"]["limit"] == 1
+        assert body["metadata"]["total"] == 2
+        assert body["metadata"]["returned"] == 1
+        assert body["metadata"]["truncated"] is True
 
-    recent = client.get("/v1/permissions?status=all&limit=2").json()["permissions"]
-    assert len(recent) == 2
-    assert recent[0]["created_at"] >= recent[1]["created_at"]
+        recent = client.get("/v1/permissions?status=all&limit=2").json()["permissions"]
+        assert len(recent) == 2
+        assert recent[0]["created_at"] >= recent[1]["created_at"]

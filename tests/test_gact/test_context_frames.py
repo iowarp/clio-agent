@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -40,8 +41,11 @@ def fake_agent() -> FakeAgent:
 
 
 @pytest.fixture()
-def client(tmp_path: Path, fake_agent: FakeAgent) -> TestClient:
-    return TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent))
+def client(tmp_path: Path, fake_agent: FakeAgent) -> Iterator[TestClient]:
+    with TestClient(
+        build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent)
+    ) as test_client:
+        yield test_client
 
 
 def _create_session(client: TestClient) -> str:
@@ -123,15 +127,17 @@ def test_context_frame_records_turn_error(tmp_path: Path) -> None:
             "recoverable": True,
         }
     )
-    client = TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent))
     from .conftest import complete_turn
 
-    sid = _create_session(client)
-    complete_turn(client, sid, "fail with metadata")
+    with TestClient(
+        build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
+    ) as client:
+        sid = _create_session(client)
+        complete_turn(client, sid, "fail with metadata")
 
-    frame = client.get(f"/v1/sessions/{sid}/context/frames").json()["frames"][0]
-    assert frame["status"] == "error"
-    assert frame["metadata"]["turn_error"]["error"] == "tool_error"
+        frame = client.get(f"/v1/sessions/{sid}/context/frames").json()["frames"][0]
+        assert frame["status"] == "error"
+        assert frame["metadata"]["turn_error"]["error"] == "tool_error"
 
 
 def test_context_frames_unknown_session_404s(client: TestClient) -> None:

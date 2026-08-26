@@ -14,6 +14,7 @@ Drives the app with a FakeClioAgent so no LM is needed. Covers:
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -145,8 +146,11 @@ def fake_agent() -> FakeClioAgent:
 
 
 @pytest.fixture()
-def client(tmp_path: Path, fake_agent: FakeClioAgent) -> TestClient:
-    return TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent))
+def client(tmp_path: Path, fake_agent: FakeClioAgent) -> Iterator[TestClient]:
+    with TestClient(
+        build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent)
+    ) as test_client:
+        yield test_client
 
 
 def _create_session(client: TestClient, title: str = "t") -> str:
