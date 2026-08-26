@@ -588,12 +588,14 @@ class RelayInstallSurface:
             return_exceptions=True,
         )
         kinds = ("relay_doctor", "relay_installation_info", "relay_proxy_status")
-        rendered = [
-            _refusal_job_dict(result, kind=kind)
-            if isinstance(result, Exception)
-            else result.to_wire()
-            for result, kind in zip(results, kinds, strict=True)
-        ]
+        rendered = []
+        for result, kind in zip(results, kinds, strict=True):
+            if isinstance(result, BaseException):
+                if not isinstance(result, Exception):
+                    raise result
+                rendered.append(_refusal_job_dict(result, kind=kind))
+                continue
+            rendered.append(result.to_wire())
         doctor, info, proxy = rendered
         return {
             "cluster": cluster,

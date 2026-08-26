@@ -11,6 +11,7 @@ duplicate-run guard, and ``relay_cluster_status``'s three-way composition.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import textwrap
@@ -20,6 +21,7 @@ from typing import Any, Callable
 
 import pytest
 
+import clio_agent.tools.relay_install_surface as relay_install_surface_module
 from clio_agent.tools.relay_cli_runner import STATE_COMPLETED, STATE_FAILED, STATE_HANDLE_ONLY
 from clio_agent.tools.relay_install_surface import RelayInstallSurface
 
@@ -445,6 +447,22 @@ async def test_cluster_status_missing_cluster_is_typed_envelope(
     assert result["doctor"]["error_reason"] == "relay_install_arguments_invalid"
     assert result["installation_info"]["error_reason"] == "relay_install_arguments_invalid"
     assert result["proxy_status"]["error_reason"] == "relay_install_arguments_invalid"
+
+
+@pytest.mark.asyncio
+async def test_cluster_status_does_not_convert_cancellation_to_a_probe_failure(
+    surface: RelayInstallSurface,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation remains control flow instead of becoming a typed CLI refusal."""
+
+    def cancel_probe(*args: object, **kwargs: object) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(relay_install_surface_module, "run_bounded_relay_cli", cancel_probe)
+
+    with pytest.raises(asyncio.CancelledError):
+        await surface.cluster_status({"cluster": "demo"})
 
 
 # --------------------------------------------------------------------------- #
