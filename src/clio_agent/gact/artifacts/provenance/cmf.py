@@ -11,9 +11,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import sys
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 from collections import deque
