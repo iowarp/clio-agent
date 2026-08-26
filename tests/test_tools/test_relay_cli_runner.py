@@ -20,10 +20,10 @@ from pathlib import Path
 import pytest
 
 from clio_agent.tools.relay_cli_runner import (
-    REASON_SESSION_START_EXIT2_UNDOCUMENTED,
-    RelayCliUnavailableError,
     _BASE_CHILD_ENV_NAMES,
     _RELAY_CREDENTIAL_ENV_NAMES,
+    REASON_SESSION_START_EXIT2_UNDOCUMENTED,
+    RelayCliUnavailableError,
     _classify_exit_state,
     _detect_actionable_refusal,
     _is_unrecognized_framed_line,
