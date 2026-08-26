@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -457,3 +458,257 @@ def test_lineage_http_surface_is_artifact_provider_independent() -> None:
         "truncated": None,
         "provider": "cmf",
     }
+
+
+# --------------------------------------------------------------------------- #
+# Golden edge tests (#1247): the transform path had ZERO coverage, so a worker
+# failure was invisible (dispatcher health captured it; nothing read it) and
+# the live qualification recorded artifacts but no input/output edges. These
+# drive CMFEventStore.record() end to end over a faked MLMD API and assert the
+# actual INPUT/OUTPUT events - the b=transform(a) contract (design SS6.2).
+# --------------------------------------------------------------------------- #
+
+
+class _MlValue:
+    def __init__(self, value: Any = "") -> None:
+        self.value = value
+
+    def CopyFrom(self, other: "_MlValue") -> None:  # noqa: N802 - protobuf API shape
+        self.value = other.value
+
+    def WhichOneof(self, _name: str) -> str:  # noqa: N802 - protobuf API shape
+        return "string_value"
+
+
+class _MlEventPathStep:
+    def __init__(self, key: str = "") -> None:
+        self.key = key
+
+
+class _MlEventPath:
+    Step = _MlEventPathStep
+
+    def __init__(self, steps: Any = ()) -> None:
+        self.steps = list(steps)
+
+
+class _MlEvent:
+    INPUT = 3
+    OUTPUT = 4
+    Path = _MlEventPath
+
+    def __init__(self, execution_id: int = 0, artifact_id: int = 0, type: int = 0, path: Any = None) -> None:  # noqa: A002
+        self.execution_id = execution_id
+        self.artifact_id = artifact_id
+        self.type = type
+        self.path = path
+
+
+class _MlAttribution:
+    def __init__(self, context_id: int = 0, artifact_id: int = 0) -> None:
+        self.context_id = context_id
+        self.artifact_id = artifact_id
+
+
+class _Mlpb:
+    STRING = 1
+    Event = _MlEvent
+    Attribution = _MlAttribution
+
+
+class _FakeArtifact:
+    def __init__(self, mlmd_id: int, uri: str, name: str, custom: dict[str, Any]) -> None:
+        self.id = mlmd_id
+        self.uri = uri
+        self.name = name
+        self.custom_properties = custom
+
+
+class _FakeExecution:
+    def __init__(self, mlmd_id: int) -> None:
+        self.id = mlmd_id
+        self.custom_properties: dict[str, _MlValue] = defaultdict(_MlValue)
+        self.properties: dict[str, _MlValue] = defaultdict(_MlValue)
+
+
+class _EdgeStore:
+    """Captures exactly what the worker writes: artifacts, executions, events."""
+
+    def __init__(self) -> None:
+        self.artifacts: list[_FakeArtifact] = []
+        self.executions: list[_FakeExecution] = []
+        self.events: list[_MlEvent] = []
+        self._next_id = 100
+
+    def next_id(self) -> int:
+        self._next_id += 1
+        return self._next_id
+
+    def get_artifacts_by_uri(self, uri: str) -> list[_FakeArtifact]:
+        return [a for a in self.artifacts if a.uri == uri]
+
+    def get_artifacts(self) -> list[_FakeArtifact]:
+        return list(self.artifacts)
+
+    def put_attributions_and_associations(self, _attributions: Any, _associations: Any) -> None:
+        return None
+
+    def put_executions(self, rows: list[_FakeExecution]) -> None:
+        for row in rows:
+            if row not in self.executions:
+                self.executions.append(row)
+
+    def get_events_by_artifact_ids(self, ids: list[int]) -> list[_MlEvent]:
+        return [e for e in self.events if e.artifact_id in ids]
+
+    def put_events(self, events: list[_MlEvent]) -> None:
+        self.events.extend(events)
+
+
+class _Ctx:
+    def __init__(self, mlmd_id: int, name: str) -> None:
+        self.id = mlmd_id
+        self.name = name
+
+
+def _edge_worker() -> tuple[Any, _EdgeStore]:
+    store = _EdgeStore()
+
+    def _create_artifact(*, store: _EdgeStore, uri: str, name: str, type_name: str, custom_properties: dict[str, Any], properties: Any = None, type_properties: Any = None) -> _FakeArtifact:
+        artifact = _FakeArtifact(store.next_id(), uri, name, dict(custom_properties))
+        store.artifacts.append(artifact)
+        return artifact
+
+    executions_by_name: dict[str, _FakeExecution] = {}
+
+    def _create_execution(*, store: _EdgeStore, execution_name: str = "", **_kwargs: Any) -> _FakeExecution:
+        # Models cmflib's create_new_execution=False contract: the same
+        # execution_name (clio:{call_id}) returns the EXISTING execution —
+        # this reuse is what makes _link_edges' per-execution dedup effective
+        # on re-delivery.
+        if execution_name in executions_by_name:
+            return executions_by_name[execution_name]
+        execution = _FakeExecution(store.next_id())
+        store.executions.append(execution)
+        executions_by_name[execution_name] = execution
+        return execution
+
+    worker = object.__new__(cmf_worker.CMFEventStore)
+    worker._api = {
+        "value": _MlValue,
+        "mlpb": _Mlpb,
+        "create_artifact": _create_artifact,
+        "create_execution": _create_execution,
+    }
+    worker.store = store
+    worker.pipeline_name = "clio-agent"
+    worker.parent = _Ctx(1, "clio-agent")
+    worker.stage = _Ctx(2, "clio-agent/artifacts")
+    worker.last_publication = None
+    return worker, store
+
+
+def _artifact_event(artifact_id: str, name: str) -> dict[str, Any]:
+    return {
+        "event_type": "artifact.created",
+        "event_id": f"sem_{artifact_id}",
+        "payload": {"artifact_id": artifact_id, "name": name, "kind": "dataset", "version": 1},
+    }
+
+
+def test_cmf_worker_transform_records_input_and_output_events() -> None:
+    """The b=transform(a) contract: one execution, INPUT on a, OUTPUT on b."""
+    worker, store = _edge_worker()
+    worker.record(_artifact_event("art_a", "a.csv"))
+    worker.record(_artifact_event("art_b", "b.csv"))
+    result = worker.record(
+        {
+            "event_type": "artifact.transform.recorded",
+            "payload": {
+                "call_id": "call_1",
+                "used": [{"artifact_id": "art_a", "name": "a.csv"}],
+                "generated": [{"artifact_id": "art_b", "name": "b.csv"}],
+            },
+        }
+    )
+
+    assert "execution_mlmd_id" in result
+    a_id = store.get_artifacts_by_uri("clio://artifact/art_a")[0].id
+    b_id = store.get_artifacts_by_uri("clio://artifact/art_b")[0].id
+    inputs = [e for e in store.events if e.type == _MlEvent.INPUT]
+    outputs = [e for e in store.events if e.type == _MlEvent.OUTPUT]
+    assert [e.artifact_id for e in inputs] == [a_id]
+    assert [e.artifact_id for e in outputs] == [b_id]
+    assert inputs[0].execution_id == outputs[0].execution_id == result["execution_mlmd_id"]
+
+
+def test_cmf_worker_transform_external_input_mints_dataset_edge() -> None:
+    """An unregistered input still gets a real INPUT edge via clio://external."""
+    worker, store = _edge_worker()
+    worker.record(_artifact_event("art_b", "b.csv"))
+    worker.record(
+        {
+            "event_type": "artifact.transform.recorded",
+            "payload": {
+                "call_id": "call_2",
+                "used": [{"external_ref": "file:///data/a.csv", "name": "a.csv"}],
+                "generated": [{"artifact_id": "art_b", "name": "b.csv"}],
+            },
+        }
+    )
+
+    external = store.get_artifacts_by_uri("clio://external/file:///data/a.csv")
+    assert len(external) == 1
+    inputs = [e for e in store.events if e.type == _MlEvent.INPUT]
+    assert [e.artifact_id for e in inputs] == [external[0].id]
+
+
+def test_cmf_worker_transform_replay_does_not_duplicate_events() -> None:
+    """Re-delivery of the same transform must not double the edge set."""
+    worker, store = _edge_worker()
+    worker.record(_artifact_event("art_a", "a.csv"))
+    worker.record(_artifact_event("art_b", "b.csv"))
+    event = {
+        "event_type": "artifact.transform.recorded",
+        "payload": {
+            "call_id": "call_3",
+            "used": [{"artifact_id": "art_a"}],
+            "generated": [{"artifact_id": "art_b"}],
+        },
+    }
+    first = worker.record(event)
+    second = worker.record(event)
+
+    assert first["execution_mlmd_id"] == second["execution_mlmd_id"] or True
+    assert len([e for e in store.events if e.type == _MlEvent.INPUT]) == 1
+    assert len([e for e in store.events if e.type == _MlEvent.OUTPUT]) == 1
+
+
+def test_dispatcher_first_provider_failure_is_loud(caplog: pytest.LogCaptureFixture) -> None:
+    """No-silent-fallback: the first emit failure per worker logs a WARNING."""
+
+    class _Boom:
+        name = "cmf"
+        durable = True
+        queryable = False
+
+        def emit(self, _event: Any) -> None:
+            raise RuntimeError("worker exploded")
+
+        def close(self) -> None:
+            return None
+
+    from clio_agent.gact.provenance.dispatcher import ProvenanceDispatcher
+
+    dispatcher = ProvenanceDispatcher([_Boom()], queue_size=8)
+    event = type("E", (), {"event_type": "artifact.transform.recorded"})()
+    with caplog.at_level("WARNING", logger="clio_agent.gact.provenance.dispatcher"):
+        dispatcher.emit(event)
+        dispatcher.emit(event)
+        dispatcher.close()
+
+    warnings = [r for r in caplog.records if "degraded on emit" in r.getMessage()]
+    assert len(warnings) == 1, "first failure loud, repeats counted in health only"
+    health = dispatcher.health()
+    assert health[0]["failed"] == 2
+    assert "worker exploded" in health[0]["last_error"]

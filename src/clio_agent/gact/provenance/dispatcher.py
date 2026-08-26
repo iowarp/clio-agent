@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 from dataclasses import replace
@@ -16,6 +17,8 @@ from clio_agent.gact.provenance.protocol import (
 
 if TYPE_CHECKING:
     from clio_agent.gact.semantic_events import SemanticEvent
+
+logger = logging.getLogger(__name__)
 
 
 class _ProviderWorker:
@@ -77,8 +80,23 @@ class _ProviderWorker:
                 except Exception as exc:  # noqa: BLE001 - downstream cannot kill the worker
                     with self._lock:
                         self.health.failed += 1
+                        first_failure = self.health.failed == 1
                         self.health.status = "degraded"
                         self.health.last_error = f"{type(exc).__name__}: {exc}"
+                    if first_failure:
+                        # No-silent-fallback: health captured this, but nothing
+                        # read health during the CMF qualification and the
+                        # zero-edges outcome went unnoticed (#1247). First
+                        # failure per worker is LOUD; the rest stay counters.
+                        logger.warning(
+                            "provenance provider %s degraded on emit "
+                            "(event_type=%s): %s: %s -- further failures are "
+                            "counted in health only",
+                            getattr(self.provider, "name", "?"),
+                            getattr(event, "event_type", "?"),
+                            type(exc).__name__,
+                            exc,
+                        )
             finally:
                 self.queue.task_done()
 
