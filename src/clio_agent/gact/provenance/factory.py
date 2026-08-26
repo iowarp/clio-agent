@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +12,13 @@ from clio_agent.gact.provenance.flowcept import FlowceptProviderConfig
 from clio_agent.gact.provenance.jsonl import JsonlProvenanceProvider
 from clio_agent.gact.provenance.protocol import ProviderReceipt
 
-_DISABLED = {"", "none", "off", "disabled"}
+# The provider precedence ladder + default live in the neutral top-level module
+# (arc/ reads the same decision without a gact import); re-exported here so
+# this module's public surface is unchanged (#1247).
+from clio_agent.provenance_config import (  # noqa: F401 - re-exported public API
+    configured_provider_names,
+    native_durable_provenance_enabled,
+)
 
 
 class _LegacyFactoryProvider:
@@ -40,54 +45,6 @@ class _LegacyFactoryProvider:
         close = getattr(self._backend, "close", None)
         if callable(close):
             close()
-
-
-def configured_provider_names() -> list[str]:
-    """Resolve new configuration, translating explicit legacy settings only."""
-    file_value = conf.store().file_value("provenance.agentic.providers")
-    env_value = os.environ.get("CLIO_PROVENANCE_PROVIDERS", "").strip()
-    if file_value is not conf.UNSET or env_value:
-        raw = file_value if file_value is not conf.UNSET else env_value
-        return _normalize_provider_names(conf.as_csv(raw))
-
-    legacy_file = conf.store().file_value("trace.backend")
-    legacy_env = os.environ.get("CLIO_SEMANTIC_TRACE_BACKEND", "").strip()
-    if legacy_file is not conf.UNSET or legacy_env:
-        legacy = str(legacy_file if legacy_file is not conf.UNSET else legacy_env).strip().lower()
-        if legacy in _DISABLED:
-            return []
-        if legacy == "file":
-            return ["jsonl"]
-        if legacy in {"factory", "python_factory", "custom"}:
-            return ["factory"]
-        raise ValueError(f"unsupported semantic trace backend: {legacy}")
-
-    return _normalize_provider_names(
-        conf.resolve(
-            "provenance.agentic.providers",
-            env="CLIO_PROVENANCE_PROVIDERS",
-            default=["jsonl"],
-            cast=conf.as_csv,
-        )
-    )
-
-
-def _normalize_provider_names(names: list[str]) -> list[str]:
-    aliases = {"file": "jsonl", "native": "jsonl"}
-    result: list[str] = []
-    for raw_name in names:
-        name = aliases.get(raw_name.strip().lower(), raw_name.strip().lower())
-        if name in _DISABLED or name in result:
-            continue
-        if name not in {"jsonl", "flowcept", "factory"}:
-            raise ValueError(f"unsupported agentic provenance provider: {name}")
-        result.append(name)
-    return result
-
-
-def native_durable_provenance_enabled() -> bool:
-    """Whether ARC may release its event log after native persistence."""
-    return "jsonl" in configured_provider_names() or "factory" in configured_provider_names()
 
 
 def build_provenance_backend(default_root: Path) -> Any:

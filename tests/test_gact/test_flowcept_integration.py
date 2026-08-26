@@ -1,4 +1,12 @@
-"""Integration with the installed Flowcept runtime, isolated in a subprocess."""
+"""Integration with the installed Flowcept runtime, isolated in a subprocess.
+
+Guarded twice (#1247): ``importorskip`` skips cleanly for local devs without
+the ``flowcept`` extra (the subprocess would otherwise FAIL at runtime, not
+error at collection, because the import lives inside the script string), and
+the ``integration`` marker keeps it out of the main CI leg's
+``-m "not integration"`` run — the dedicated ``flowcept-integration`` CI job
+installs the extra and actually exercises it.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +14,12 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
+
+pytest.importorskip("flowcept")
+
+pytestmark = pytest.mark.integration
 
 
 def test_real_flowcept_offline_runtime_captures_clio_records(tmp_path: Path) -> None:

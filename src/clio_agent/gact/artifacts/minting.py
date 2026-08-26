@@ -304,6 +304,7 @@ def mint_artifact_outcome(
     producing: bool = True,
     lease_clean: bool = False,
     not_ingested_size: int | None = None,
+    ingested: Any = None,
 ) -> Optional[MintOutcome]:
     """Mint one artifact version: atomic decide-and-append, then emit + index.
 
@@ -332,6 +333,10 @@ def mint_artifact_outcome(
     from clio_agent.gact.semantic_events import _event_id  # noqa: PLC0415
 
     event_id = _event_id()
+    # The storage owner's receipt is stamped at the ONE funnel, never per site.
+    producer_map = dict(producer or {})
+    if ingested is not None and getattr(ingested, "storage_receipt", None):
+        producer_map["storage_receipt"] = dict(ingested.storage_receipt)
     # Atomic decide-and-append under ONE registry lock (findings [1/6] + [3/10]); the
     # version decision itself is the single decision point (versions.decide_version).
     outcome = registry.mint(
@@ -342,7 +347,7 @@ def mint_artifact_outcome(
         custody=custody,
         mechanism=mechanism,
         evidence=evidence,
-        producer=dict(producer or {}),
+        producer=producer_map,
         path=path,
         created_at=_now_iso(),
         annotation=annotation,
@@ -455,6 +460,7 @@ def mint_artifact(
     turn_id: str = "",
     trace_id: str = "",
     not_ingested_size: int | None = None,
+    ingested: Any = None,
 ) -> Optional[ArtifactVersion]:
     """Back-compat projection over :func:`mint_artifact_outcome`.
 
@@ -478,6 +484,7 @@ def mint_artifact(
         turn_id=turn_id,
         trace_id=trace_id,
         not_ingested_size=not_ingested_size,
+        ingested=ingested,
     )
     return outcome.version if outcome is not None else None
 
@@ -518,10 +525,7 @@ def mint_tool_declared_outputs(
         kind_for_path,
         result_declared_paths,
     )
-    from clio_agent.gact.artifacts.storage import (  # noqa: PLC0415
-        ingest_artifact_identity,
-        producer_with_storage_receipt,
-    )
+    from clio_agent.gact.artifacts.storage import ingest_artifact_identity  # noqa: PLC0415
 
     root = _workspace_root(app, workspace_id)
     minted: list[ArtifactVersion] = []
@@ -567,8 +571,7 @@ def mint_tool_declared_outputs(
             )
             continue
         try:
-            # Route identity and custody through the selected artifact store. The
-            # native store retains the S6 single-pass CAS/threshold semantics.
+            # Selected store owns identity+custody (native keeps S6 semantics).
             ingested = ingest_artifact_identity(app, path, workspace_root=root)
         except OSError:
             logger.warning(
@@ -611,7 +614,6 @@ def mint_tool_declared_outputs(
             "designation": f"tool-{channel}",
             ("result_key" if channel == "result" else "arg"): label,
         }
-        producer = producer_with_storage_receipt(producer, ingested)
         version = mint_artifact(
             app,
             sid,
@@ -626,6 +628,7 @@ def mint_tool_declared_outputs(
             turn_id=turn_id,
             trace_id=trace_id,
             not_ingested_size=ingested.not_ingested_size,
+            ingested=ingested,
         )
         if version is not None:
             minted.append(version)
@@ -658,10 +661,7 @@ def mint_pack_declared_paths(
         kind_for_path,
         pack_declared_paths,
     )
-    from clio_agent.gact.artifacts.storage import (  # noqa: PLC0415
-        ingest_artifact_identity,
-        producer_with_storage_receipt,
-    )
+    from clio_agent.gact.artifacts.storage import ingest_artifact_identity  # noqa: PLC0415
 
     root = _workspace_root(app, workspace_id)
     minted: list[ArtifactVersion] = []
@@ -714,16 +714,14 @@ def mint_pack_declared_paths(
             evidence=evidence,
             kind=kind_for_path(path),
             mechanism=Mechanism.HARNESS,
-            producer=producer_with_storage_receipt(
-                {
-                    "designation": "pack-declared",
-                    "session_id": sid,
-                    "turn_id": turn_id,
-                },
-                ingested,
-            ),
+            producer={
+                "designation": "pack-declared",
+                "session_id": sid,
+                "turn_id": turn_id,
+            },
             custody=ingested.custody,
             path=str(path),
+            ingested=ingested,
             turn_id=turn_id,
             trace_id=trace_id,
             not_ingested_size=ingested.not_ingested_size,
@@ -792,8 +790,7 @@ def mint_harness_write(
 
     Finding [3]: the just-written bytes are handed to the selected artifact store
     (falling back to the writer's in-hand ``sha256`` on a stat/hash failure). The
-    ACTIVE turn id is threaded from the
-    turn-identity contextvar so a write DURING a turn buffers its version and drains to
+    ACTIVE turn id is threaded from the turn-identity contextvar so a write DURING a turn buffers its version and drains to
     a ``resource_link`` part at finalize — parity with seams (a)/(c). Fully guarded: an
     artifact mint must never break the approved write.
     """
@@ -801,8 +798,7 @@ def mint_harness_write(
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
         from clio_agent.gact.artifacts.designation import kind_for_path  # noqa: PLC0415
         from clio_agent.gact.artifacts.storage import (  # noqa: PLC0415
-            harness_write_artifact_identity,
-            producer_with_storage_receipt,
+            harness_write_artifact_identity,  # the selected store's write-path identity
         )
 
         workspace_id = str(getattr(session, "workspace_id", "") or "")
@@ -827,16 +823,14 @@ def mint_harness_write(
             evidence=ingested.evidence,
             kind=kind_for_path(target),
             mechanism=Mechanism.HARNESS,
-            producer=producer_with_storage_receipt(
-                {
-                    "session_id": str(getattr(session, "id", "") or ""),
-                    "tool": "fs_apply_edit_write",
-                    "turn_id": _ctx.active_turn_id(),
-                },
-                ingested,
-            ),
+            producer={
+                "session_id": str(getattr(session, "id", "") or ""),
+                "tool": "fs_apply_edit_write",
+                "turn_id": _ctx.active_turn_id(),
+            },
             custody=ingested.custody,
             path=target,
+            ingested=ingested,
             turn_id=_ctx.active_turn_id(),
             trace_id=_ctx.active_trace_id(),
             not_ingested_size=ingested.not_ingested_size,

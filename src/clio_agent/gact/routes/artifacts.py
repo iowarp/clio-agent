@@ -665,42 +665,27 @@ def _available_refs(record: ArtifactRecord) -> list[str]:
 def _serve_bytes(app: FastAPI, record: ArtifactRecord, version: ArtifactVersion) -> Response:
     """Serve a version's bytes through ONE typed resolution ladder (S6 #972).
 
-    The single ladder — no second byte-serving path (review guard):
-
-    1. **Selected provider-owned object** — native resolves its SHA-256 CAS and CMF
-       resolves its receipt-addressed local object. The object is verified before serve.
-    2. **Native CAS compatibility rung** — for a ``cas`` version the bytes
-       live in ``<root>/.clio/agent/artifacts/cas/<sha[:2]>/<sha>``, so they survive
-       a deleted/overwritten workspace file. Self-validating: the blob is re-hashed
-       on read and a mismatch is a 409 ``integrity_violation``.
-    3. **Referenced workspace path** — the fallback when a ``cas`` blob was evicted
-       (the workspace copy, still verified, is served) AND the source for a
-       ``workspace-referenced`` version (which 409s ``custody_not_cas`` after the
-       integrity re-hash, pointing the client at the workspace file route).
-
-    Detection (the re-hash) is the universal guarantee (design §7). Runs on a worker
-    thread; :func:`_artifact_error` HTTPExceptions propagate to FastAPI unchanged.
+    The single ladder — no second byte-serving path (review guard): (1) the
+    selected provider's OWNED object (native SHA-256 CAS / CMF receipt-addressed
+    local object; a CMF receipt with no resolvable object is a typed 409
+    ``artifact_store_unavailable``, raised by the storage owner); (2) the native
+    ``cas`` compatibility rung (self-validating blob under
+    ``<root>/.clio/agent/artifacts/cas/``); (3) the referenced workspace path
+    (verified fallback; plain ``workspace-referenced`` 409s ``custody_not_cas``
+    after the re-hash). Detection (the re-hash) is the universal guarantee
+    (design §7). Runs on a worker thread; :func:`_artifact_error` HTTPExceptions
+    propagate to FastAPI unchanged.
     """
     from clio_agent.gact.artifacts.storage import (  # noqa: PLC0415
-        resolve_owned_artifact_path,
+        resolve_owned_artifact_or_raise,
     )
 
     root = _workspace_root(app, record.workspace_id)
-    owned = resolve_owned_artifact_path(app, version, workspace_root=root)
+    owned = resolve_owned_artifact_or_raise(
+        app, version, workspace_root=root, error=_artifact_error
+    )
     if owned is not None:
         return _open_verify_stream(owned, version.sha256, version, record.name)
-    receipt = (version.producer or {}).get("storage_receipt")
-    if isinstance(receipt, dict) and receipt.get("provider") == "cmf":
-        raise _artifact_error(
-            status_code=409,
-            error="artifact_store_unavailable",
-            message="CMF has custody but its recorded artifact object is unavailable",
-            details={
-                "artifact_id": version.artifact_id,
-                "provider": "cmf",
-                "object_uri": str(receipt.get("object_uri") or ""),
-            },
-        )
 
     # Defence in depth: never read outside the workspace root (owner decision 10).
     # An UNRESOLVABLE root REFUSES the serve (typed ``containment_unresolved``) —
@@ -861,10 +846,7 @@ def _pin_mint(
     ``to_thread``).
     """
     from clio_agent.gact.artifacts.designation import kind_for_path  # noqa: PLC0415
-    from clio_agent.gact.artifacts.storage import (  # noqa: PLC0415
-        ingest_artifact_identity,
-        producer_with_storage_receipt,
-    )
+    from clio_agent.gact.artifacts.storage import ingest_artifact_identity  # noqa: PLC0415
     from clio_agent.tools.file_policy import _is_relative_to  # noqa: PLC0415
 
     root = _workspace_root(app, workspace_id)
@@ -927,15 +909,13 @@ def _pin_mint(
             evidence=evidence,
             kind=kind,
             mechanism=Mechanism.HARNESS,
-            producer=producer_with_storage_receipt(
-                {
-                    "designation": "user-pinned",
-                    "session_id": sid,
-                },
-                ingested,
-            ),
+            producer={
+                "designation": "user-pinned",
+                "session_id": sid,
+            },
             custody=ingested.custody,
             path=str(resolved),
+            ingested=ingested,
             annotation=annotation,
             not_ingested_size=ingested.not_ingested_size,
         )

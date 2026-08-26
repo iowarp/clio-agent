@@ -60,16 +60,6 @@ def harness_write_artifact_identity(
         )
 
 
-def producer_with_storage_receipt(
-    producer: dict[str, Any], identity: IngestedIdentity | None
-) -> dict[str, Any]:
-    """Attach an immutable provider receipt without mutating the caller's dict."""
-    result = dict(producer)
-    if identity is not None and identity.storage_receipt:
-        result["storage_receipt"] = dict(identity.storage_receipt)
-    return result
-
-
 def resolve_owned_artifact_path(
     app: "FastAPI",
     version: "ArtifactVersion",
@@ -80,10 +70,44 @@ def resolve_owned_artifact_path(
     return artifact_store(app).resolve_owned_path(version, workspace_root=workspace_root)
 
 
+def resolve_owned_artifact_or_raise(
+    app: "FastAPI",
+    version: "ArtifactVersion",
+    *,
+    workspace_root: Path | None,
+    error: Any,
+) -> Path | None:
+    """Provider-owned bytes, or a typed refusal when custody is broken.
+
+    ``None`` means "no provider-owned object — fall through to the workspace
+    reference ladder". But a version whose producer carries a CMF
+    ``storage_receipt`` with NO resolvable object is a broken custody chain,
+    not a fall-through: raise the caller-built typed 409
+    ``artifact_store_unavailable`` (``error`` is the route's HTTPException
+    factory — kept a seam so this module never imports route machinery).
+    """
+
+    owned = resolve_owned_artifact_path(app, version, workspace_root=workspace_root)
+    if owned is not None:
+        return owned
+    receipt = (version.producer or {}).get("storage_receipt")
+    if isinstance(receipt, dict) and receipt.get("provider") == "cmf":
+        raise error(
+            status_code=409,
+            error="artifact_store_unavailable",
+            message="CMF has custody but its recorded artifact object is unavailable",
+            details={
+                "artifact_id": version.artifact_id,
+                "provider": "cmf",
+                "object_uri": str(receipt.get("object_uri") or ""),
+            },
+        )
+    return None
+
+
 __all__ = [
     "artifact_store",
     "harness_write_artifact_identity",
     "ingest_artifact_identity",
-    "producer_with_storage_receipt",
     "resolve_owned_artifact_path",
 ]

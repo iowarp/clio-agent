@@ -327,7 +327,7 @@ def _enrich_cancellation_error_info(
 # (behavior-preserving extraction)                                              #
 # --------------------------------------------------------------------------- #
 # gact/_params.py -- user-agent generation-parameter parsing.
-from clio_agent.gact import relay_wiring  # noqa: E402
+from clio_agent.gact import provenance_wiring, relay_wiring  # noqa: E402
 from clio_agent.gact._params import (  # noqa: E402,F401
     _gact_turn_timeout_s,
     _semantic_trace_detail_level,
@@ -1040,13 +1040,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             _trace_close()
         except Exception:  # pragma: no cover - defensive shutdown cleanup  # noqa: BLE001,S110 - defensive shutdown cleanup
             pass
-    _artifact_backend = getattr(app.state, "artifact_provenance_backend", None)
-    _artifact_close = getattr(_artifact_backend, "close", None)
-    if callable(_artifact_close):
-        try:
-            _artifact_close()
-        except Exception:  # pragma: no cover - defensive shutdown cleanup  # noqa: BLE001,S110
-            pass
+    provenance_wiring.close_artifact_backend(app)
     # #900: explicit clean-shutdown teardown (promoted from atexit best-effort) — close
     # the agent's MCP stdio executors + pooled SDK CLI transports now, with typed logging,
     # off the event loop (thread joins). A HARD kill skips this; the Job Object / pdeathsig
@@ -1286,9 +1280,7 @@ def build_app(
     app.state.semantic_trace_backend = build_trace_backend(
         session_store_path.parent / "semantic_traces"
     )
-    from clio_agent.gact.artifacts.provenance import build_artifact_provenance_backend
-
-    app.state.artifact_provenance_backend = build_artifact_provenance_backend(
+    provenance_wiring.wire_artifact_provenance(
         app, session_store_path.parent / "artifact_provenance"
     )
     # ARC-as-source: the sink has NO arc live_consumer. ARC is the SOURCE now —
@@ -1304,30 +1296,7 @@ def build_app(
         detail_level=app.state.semantic_trace_detail_level,
         live_consumers=None,
     )
-
-    # Centralized session lifecycle bridge: every root, forked, imported, and
-    # child-agent session created through SessionStore reaches the same ARC-first
-    # semantic highway. Session deletion is the only terminal workflow signal;
-    # process shutdown deliberately leaves persistent sessions open.
-    def _observe_session_lifecycle(event_type: str, session: Any) -> None:
-        _emit_semantic_event(
-            app,
-            str(session.id),
-            event_type,
-            trace_id=f"session:{session.id}",
-            status="completed",
-            summary=f"session {session.id} {event_type.rsplit('.', 1)[-1]}",
-            actor={"role": "system"},
-            subject={"session_id": session.id},
-            payload={
-                "workspace_id": session.workspace_id,
-                "parent_session_id": session.parent_session_id,
-                "agent": dict(session.agent),
-                "started_at": session.created_at,
-            },
-        )
-
-    app.state.sessions.set_lifecycle_observer(_observe_session_lifecycle)
+    provenance_wiring.install_session_lifecycle_observer(app)
     # (ARC's arc.op op-logger AND highway-derive sink are wired via _set_app_arc
     # whenever app.state.arc is assigned — see _set_app_arc; the highway closure reads
     # app.state.semantic_event_sink at fire-time, so this construction order is fine.)

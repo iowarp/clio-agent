@@ -27,7 +27,6 @@ import threading
 import time
 from collections.abc import Mapping
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List
 
 import dspy
@@ -60,7 +59,6 @@ from clio_agent.tools.catalog import (
 from clio_agent.tools.execution import (
     create_sync_tool_executor,
     get_active_tool_blueprint_id,
-    get_active_tool_blueprint_path,
     get_active_tool_workspace_root,
 )
 from clio_agent.tools.gateway import (
@@ -308,91 +306,14 @@ class ClioAgent(dspy.Module):
         ``gact.runtime.globals._tool_session_context``). ``blueprint_id`` empty
         (the boot-time default gateway, or a session with no blueprint activated)
         returns ``{}`` — an INSTALLED-but-inactive blueprint's declared servers
-        never mount. Before this, EVERY installed blueprint's declared servers —
-        including heavy, unrelated scientific-pack servers — mounted into the
-        boot-time default gateway regardless of activation, gating boot on
-        namespaces a session might never touch. Discovery failures degrade to
-        "no pack servers" (pure reasoning / built-ins only).
+        never mount. Discovery failures degrade to "no pack servers" (pure
+        reasoning / built-ins only); path-activated packs decide outright via
+        ``gact.blueprint_activation`` (``None`` -> installed discovery).
         """
 
-        if not blueprint_id:
-            return {}
-        from clio_agent.gact.agent_blueprints import (  # noqa: PLC0415
-            discover_agent_blueprints,
-            parse_agent_blueprint_root,
-        )
+        from clio_agent.gact.blueprint_activation import blueprint_mcp_servers  # noqa: PLC0415
 
-        blueprint_path = get_active_tool_blueprint_path().strip()
-        if not blueprint_path:
-            try:
-                from clio_agent.gact import context as gact_context  # noqa: PLC0415
-                from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
-                    _runtime_active_agent_blueprint_path,
-                )
-
-                app = gact_context.active_app()
-                session_id = gact_context.active_session_id()
-                active_path = (
-                    _runtime_active_agent_blueprint_path(app, session_id)
-                    if app is not None and session_id
-                    else None
-                )
-                blueprint_path = str(active_path or "").strip()
-            except Exception as exc:  # noqa: BLE001 - installed discovery remains available
-                if self.verbose:
-                    print(f"[ClioAgent] active session blueprint path lookup failed: {exc}")
-        if blueprint_path:
-            try:
-                blueprint = parse_agent_blueprint_root(Path(blueprint_path), scope="session")
-            except Exception as exc:  # noqa: BLE001 - explicit path degrades to no servers
-                if self.verbose:
-                    print(f"[ClioAgent] active blueprint path parse failed: {exc}")
-                return {}
-            if blueprint.id != blueprint_id or not blueprint.enabled:
-                return {}
-            servers = self._blueprint_server_map(blueprint)
-            if servers:
-                return {blueprint.id: servers}
-            return {}
-        try:
-            blueprints = discover_agent_blueprints()
-        except Exception as exc:  # noqa: BLE001 - discovery is best-effort
-            if self.verbose:
-                print(f"[ClioAgent] blueprint discovery failed: {exc}")
-            return {}
-        for blueprint in blueprints:
-            if blueprint.id != blueprint_id:
-                continue
-            servers = self._blueprint_server_map(blueprint)
-            if servers:
-                return {blueprint.id: servers}
-            return {}
-        return {}
-
-    @staticmethod
-    def _blueprint_server_map(blueprint: Any) -> dict[str, Any]:
-        """Return one blueprint's MCP declarations with install-aware cache identity."""
-
-        raw_servers = blueprint.metadata.get("mcp_servers")
-        if not isinstance(raw_servers, Mapping):
-            return {}
-        install = blueprint.metadata.get("install")
-        checksum = str(install.get("checksum") or "") if isinstance(install, Mapping) else ""
-        servers: dict[str, Any] = {}
-        for name, raw_spec in raw_servers.items():
-            if not checksum or not isinstance(raw_spec, Mapping):
-                servers[str(name)] = raw_spec
-                continue
-            spec = dict(raw_spec)
-            raw_env = spec.get("env")
-            env = dict(raw_env) if isinstance(raw_env, Mapping) else {}
-            # Listing-cache keys include the declared environment. An installed blueprint
-            # update can change tool schemas or annotations without changing its launcher;
-            # this non-secret identity forces the first post-update listing to refresh.
-            env["CLIO_BLUEPRINT_INSTALL_CHECKSUM"] = checksum
-            spec["env"] = env
-            servers[str(name)] = spec
-        return servers
+        return blueprint_mcp_servers(blueprint_id, verbose=self.verbose)
 
     def _build_tool_gateway(
         self, *, cwd: str | None = None, set_catalog: bool = False, blueprint_id: str = ""

@@ -59,7 +59,6 @@ from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.artifacts.storage import (
     harness_write_artifact_identity,
     ingest_artifact_identity,
-    producer_with_storage_receipt,
 )
 from clio_agent.gact.artifacts.wire import declare_create_artifact_structured_content
 
@@ -545,9 +544,10 @@ def promote_proposal(
         evidence=evidence,
         kind=kind,
         mechanism=Mechanism.MODEL,
-        producer=producer_with_storage_receipt(_mint_producer(sid, turn_id, agent_id), path_ingest),
+        producer=_mint_producer(sid, turn_id, agent_id),
         custody=path_ingest.custody if path_ingest is not None else Custody.WORKSPACE_REFERENCED,
         path=str(path),
+        ingested=path_ingest,
         annotation=proposal.annotation,
         turn_id=turn_id,
         trace_id=trace_id,
