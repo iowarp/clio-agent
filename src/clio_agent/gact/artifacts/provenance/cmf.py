@@ -342,6 +342,14 @@ class CMFArtifactProvenanceProvider:
             self._publish()
         return ProviderReceipt.ACCEPTED
 
+    def flush(self) -> None:
+        """No-op, and honestly a complete barrier: :meth:`emit` already
+        blocks on ``CMFBridge.request``'s synchronous line-delimited
+        request/response protocol with the isolated CMF worker (writes
+        stdin, reads one response line before returning), so there is
+        nothing further to drain by the time emit() has returned."""
+        return
+
     def _publish(self) -> dict[str, Any]:
         """Publish cumulative local MLMD through CMF's server ingestion protocol."""
         return self._bridge.request(

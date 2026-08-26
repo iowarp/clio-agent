@@ -391,9 +391,13 @@ class _ArtifactCapture:
 
     def __init__(self) -> None:
         self.events: list[SemanticEvent] = []
+        self.flushed = False
 
     def emit(self, event: SemanticEvent) -> None:
         self.events.append(event)
+
+    def flush(self) -> None:
+        self.flushed = True
 
     def lineage(self, artifact_id: str, **kwargs: Any) -> None:
         del artifact_id, kwargs
@@ -421,6 +425,10 @@ def test_artifact_substream_overlaps_parent_without_becoming_parallel_provider()
 
     assert [event.event_type for event in parent.events] == ["turn.started", "artifact.created"]
     assert [event.event_type for event in provider.events] == ["artifact.created"]
+    # ArtifactProvenanceDispatcher.flush() -> ProvenanceDispatcher.flush()
+    # -> _ProviderWorker.flush() -> provider.flush() (required by the
+    # Protocol, no longer duck-typed away when absent).
+    assert provider.flushed is True
 
 
 class _LineageProvider:

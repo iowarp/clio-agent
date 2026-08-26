@@ -62,6 +62,17 @@ class ArtifactProvenanceProvider(Protocol):
     def emit(self, event: "SemanticEvent") -> ProviderReceipt | None:
         """Record one already-ARC-accepted artifact event."""
 
+    def flush(self) -> None:
+        """Block until every already-accepted event is genuinely persisted,
+        or honestly return without one.
+
+        This provider is wrapped by the same ``ProvenanceDispatcher`` as
+        every agentic provider (via ``ArtifactProvenanceDispatcher``), so the
+        REQUIRED contract is identical — see
+        :meth:`clio_agent.gact.provenance.protocol.ProvenanceProvider.flush`
+        for the three honest shapes a provider may take.
+        """
+
     def lineage(
         self,
         artifact_id: str,

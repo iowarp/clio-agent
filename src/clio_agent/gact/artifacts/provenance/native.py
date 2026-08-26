@@ -57,6 +57,13 @@ class NativeArtifactProvenanceProvider:
         del event
         return ProviderReceipt.ACCEPTED
 
+    def flush(self) -> None:
+        """No-op, and honestly a complete barrier: :meth:`emit` only
+        acknowledges an event ARC already folded SYNCHRONOUSLY (see its
+        docstring) -- there is no further async write behind this provider
+        for flush() to drain."""
+        return
+
     def lineage(
         self,
         artifact_id: str,

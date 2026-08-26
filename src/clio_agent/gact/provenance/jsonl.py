@@ -17,6 +17,11 @@ class JsonlProvenanceProvider:
     name = "jsonl"
     durable = True
     queryable = True
+    # Explicit (not just the Protocol default): flush() genuinely proxies
+    # through to FileSemanticTraceBackend's real drain below, so a
+    # returning flush() IS a synchronous-persistence barrier.
+    flush_durable = True
+    flush_note = ""
 
     def __init__(self, path: Path) -> None:
         self.path = path

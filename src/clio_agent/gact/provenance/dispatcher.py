@@ -27,10 +27,23 @@ class _ProviderWorker:
     def __init__(self, provider: ProvenanceProvider, *, queue_size: int) -> None:
         self.provider = provider
         self.queue: queue.Queue[SemanticEvent | None] = queue.Queue(maxsize=queue_size)
+        # flush_durable/flush_note are OPTIONAL provider instance attributes
+        # (not part of the required Protocol surface -- only the flush()
+        # METHOD is required) read ONCE here, at construction, since they are
+        # a static property of the provider instance, not something that
+        # changes call to call. Default True/"" is the honest stance for a
+        # provider that does not set them (its emit() is already
+        # synchronous, so an unstated flush() returning immediately IS a
+        # real barrier); a provider with a genuine gap (Flowcept, a
+        # factory-wrapped backend with no flush) sets flush_durable=False
+        # with a flush_note explaining why, surfaced verbatim via
+        # ProviderHealth/GET /v1/provenance/providers.
         self.health = ProviderHealth(
             name=provider.name,
             queryable=provider.queryable,
             durable=provider.durable,
+            flush_durable=bool(getattr(provider, "flush_durable", True)),
+            flush_note=str(getattr(provider, "flush_note", "") or ""),
         )
         self._lock = threading.Lock()
         self._closed = False
@@ -100,6 +113,43 @@ class _ProviderWorker:
             finally:
                 self.queue.task_done()
 
+    def flush(self) -> None:
+        """Block until every accepted event is processed AND, per this
+        provider's own stated guarantee, actually persisted.
+
+        ``queue.join()`` alone only proves ``provider.emit()`` returned for
+        every accepted event — it says nothing about that provider's OWN
+        downstream persistence. ``provider.flush()`` (REQUIRED by the
+        Protocol) is the second, provider-owned half of the guarantee.
+        Contained exactly like :meth:`_run` contains a raising ``emit``: a
+        raising ``flush()`` is recorded in health, logged loudly on first
+        occurrence, and never aborts a SIBLING provider's join/flush (an
+        arbitrary user-supplied ``CLIO_SEMANTIC_TRACE_FACTORY`` backend is
+        reachable here, so this must not be allowed to propagate into an API
+        response or skip the rest of ``ProvenanceDispatcher.flush()``'s
+        loop).
+        """
+        self.queue.join()
+        try:
+            self.provider.flush()
+        except Exception as exc:  # noqa: BLE001 - a raising flush must not crash the caller or skip siblings
+            with self._lock:
+                self.health.failed += 1
+                first_failure = self.health.failed == 1
+                self.health.status = "degraded"
+                self.health.last_error = f"{type(exc).__name__}: {exc}"
+            if first_failure:
+                # Mirrors _run's loud-first-failure posture (#1247): health
+                # captures every occurrence, but nothing reads health unless
+                # asked, so the FIRST failure per worker is also logged.
+                logger.warning(
+                    "provenance provider %s degraded on flush: %s: %s -- "
+                    "further failures are counted in health only",
+                    getattr(self.provider, "name", "?"),
+                    type(exc).__name__,
+                    exc,
+                )
+
     def close(self) -> None:
         """Drain accepted events and close the provider exactly once."""
         if self._closed:
@@ -152,26 +202,33 @@ class ProvenanceDispatcher:
             worker.submit(event)
 
     def flush(self) -> None:
-        """Wait until every accepted provider event has actually been persisted.
+        """Wait until every accepted event is processed and, PER PROVIDER, as
+        durably persisted as that provider can honestly promise.
 
-        ``worker.queue.join()`` alone only proves the event reached
-        ``provider.emit()`` and that call RETURNED — for a provider that is
-        itself an off-loop async writer (e.g. ``JsonlProvenanceProvider``,
-        which just hands the event to a further shared writer-thread queue
-        and returns immediately), that is NOT the same as "on disk." Without
-        the second step below, a caller doing ``flush()`` then reading the
-        durable trace races the provider's own writer and can observe an
-        empty/partial read (#1247 CI regression: ``ProvenanceDispatcher``
-        wraps an already-async backend without cascading the drain). Proxy
-        into each provider's own ``flush`` (duck-typed — not every provider
-        needs one) so this call is a genuine synchronous-persistence
-        barrier.
+        This is NOT a uniform hard barrier across every configured
+        provider — check ``health()[...]["flush_durable"]`` (surfaced at
+        ``GET /v1/provenance/providers``) to know which providers this call
+        actually guarantees:
+
+        * ``flush_durable=True`` (jsonl; native/CMF artifact providers): a
+          returning ``flush()`` IS a real synchronous-persistence barrier
+          for that provider — the #1247 CI regression this fixed (jsonl's
+          own writer is async behind ``emit()``; the old ``queue.join()``-only
+          implementation only proved hand-off, not persistence).
+        * ``flush_durable=False`` (Flowcept; a factory backend with no
+          ``flush``): this call still RUNS that provider's ``flush()`` (an
+          honest no-op) but does NOT guarantee its buffered delivery has
+          landed — a caller reading through that provider's own query path
+          right after ``flush()`` can still race it (see
+          ``routes/provenance.py``'s execution-provenance read).
+
+        A provider whose ``flush()`` raises is CONTAINED per-provider
+        (:meth:`_ProviderWorker.flush`) so one bad provider's failure never
+        escapes into a caller (e.g. an API response) and never skips the
+        join/flush of the OTHER configured providers.
         """
         for worker in self._workers.values():
-            worker.queue.join()
-            provider_flush = getattr(worker.provider, "flush", None)
-            if callable(provider_flush):
-                provider_flush()
+            worker.flush()
 
     def close(self) -> None:
         """Drain and close every provider."""

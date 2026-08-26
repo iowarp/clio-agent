@@ -36,6 +36,25 @@ class _LegacyFactoryProvider:
         # configuration and the default trace root reached their factory.
         self.config = getattr(backend, "config", None)
         self.default_root = getattr(backend, "default_root", None)
+        # The wrapped backend is an ARBITRARY user-supplied object
+        # (CLIO_SEMANTIC_TRACE_FACTORY) -- whether it can make flush() a
+        # real persistence barrier is only knowable at construction, not
+        # something to silently re-derive on every flush() call. Recorded
+        # ONCE here and surfaced via ProviderHealth (GET
+        # /v1/provenance/providers) so a factory backend with no flush hook
+        # is a DISCOVERABLE gap, never a silently assumed one.
+        backend_flush = getattr(backend, "flush", None)
+        self._backend_flush = backend_flush if callable(backend_flush) else None
+        self.flush_durable = self._backend_flush is not None
+        self.flush_note = (
+            ""
+            if self._backend_flush is not None
+            else (
+                "the configured CLIO_SEMANTIC_TRACE_FACTORY backend has no "
+                "flush(); this provider's flush() is a no-op and cannot "
+                "guarantee pending writes have reached the backend's storage"
+            )
+        )
 
     def emit(self, event: Any) -> ProviderReceipt:
         self._backend.emit(event)
@@ -45,12 +64,15 @@ class _LegacyFactoryProvider:
         """Proxy to the wrapped factory backend's flush, when it has one.
 
         Mirrors :class:`JsonlProvenanceProvider.flush` — a custom factory
-        backend may itself be an off-loop async writer, so a no-op here
-        would silently reintroduce the same incomplete-flush gap.
+        backend may itself be an off-loop async writer, so silently no-op'ing
+        here would reintroduce the same incomplete-flush gap this class
+        exists to avoid. When the backend has no ``flush``, this IS an
+        intentional no-op — not a bare, unexplained ``pass`` — because the
+        gap is already declared once, at construction, via
+        ``flush_durable``/``flush_note`` above.
         """
-        flush = getattr(self._backend, "flush", None)
-        if callable(flush):
-            flush()
+        if self._backend_flush is not None:
+            self._backend_flush()
 
     def close(self) -> None:
         close = getattr(self._backend, "close", None)

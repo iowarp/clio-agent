@@ -14,15 +14,16 @@ from clio_agent.arc.live import _MemoryStore
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact.app import build_app
 from clio_agent.gact.provenance.dispatcher import ProvenanceDispatcher
-from clio_agent.gact.provenance.factory import configured_provider_names
+from clio_agent.gact.provenance.factory import _LegacyFactoryProvider, configured_provider_names
 from clio_agent.gact.provenance.flowcept import (
     FlowceptProvenanceProvider,
     FlowceptProviderConfig,
     _normalize_flowcept_records,
     _safe_value,
 )
+from clio_agent.gact.provenance.jsonl import JsonlProvenanceProvider
 from clio_agent.gact.provenance.normalization import normalize_semantic_events
-from clio_agent.gact.provenance.protocol import ProviderReceipt
+from clio_agent.gact.provenance.protocol import ProvenanceProvider, ProviderReceipt
 from clio_agent.gact.semantic_events import SemanticEvent
 from tests._config_layer import set_config
 
@@ -32,16 +33,41 @@ class _RecordingProvider:
     durable = False
     queryable = False
 
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail: bool = False,
+        flush_fail: bool = False,
+        emit_delay: float = 0.0,
+        calls: list[str] | None = None,
+    ) -> None:
         self.events: list[SemanticEvent] = []
         self.fail = fail
+        self.flush_fail = flush_fail
+        self.emit_delay = emit_delay
         self.closed = False
+        self.flushed = False
+        # Shared, order-sensitive call log -- distinct from ``events``
+        # (which only records ACCEPTED emits) so a slow/failing emit still
+        # shows up in the ordering a caller cares about (D3a/D3b).
+        self.calls: list[str] = calls if calls is not None else []
 
     def emit(self, event: SemanticEvent) -> ProviderReceipt:
+        if self.emit_delay:
+            time.sleep(self.emit_delay)
         if self.fail:
+            self.calls.append("emit-failed")
             raise RuntimeError("downstream unavailable")
         self.events.append(event)
+        self.calls.append("emit")
         return ProviderReceipt.ACCEPTED
+
+    def flush(self) -> None:
+        self.flushed = True
+        if self.flush_fail:
+            self.calls.append("flush-failed")
+            raise RuntimeError("flush unavailable")
+        self.calls.append("flush")
 
     def close(self) -> None:
         self.closed = True
@@ -109,6 +135,155 @@ def test_dispatcher_isolates_provider_failure() -> None:
     assert health["bad"]["failed"] == 1
     assert health["bad"]["status"] == "degraded"
     assert good.closed and bad.closed
+
+
+def test_dispatcher_flush_waits_for_a_slow_emit_before_calling_provider_flush() -> None:
+    """D3(a): flush() must not call provider.flush() until the worker's OWN
+    queue has actually drained -- a slow emit proves the ordering, not just
+    the eventual outcome (the #1247 CI regression was exactly a caller
+    observing flush() as complete before the provider had finished its own
+    work)."""
+
+    calls: list[str] = []
+    provider = _RecordingProvider(emit_delay=0.2, calls=calls)
+    dispatcher = ProvenanceDispatcher([provider], queue_size=4)
+
+    dispatcher.emit(_event())
+    dispatcher.flush()
+    dispatcher.close()
+
+    assert calls == ["emit", "flush"]
+    assert provider.flushed is True
+
+
+def test_dispatcher_flush_contains_a_raising_provider_and_still_flushes_the_next() -> None:
+    """D3(b): a provider whose flush() raises must not escape ProvenanceDispatcher.flush()
+    (it would otherwise become an unhandled 500 from
+    GET /v1/sessions/{sid}/provenance/execution, which calls flush() inline)
+    and must not skip the NEXT provider's join+flush."""
+
+    bad_calls: list[str] = []
+    bad = _RecordingProvider(flush_fail=True, calls=bad_calls)
+    bad.name = "bad"
+    good_calls: list[str] = []
+    good = _RecordingProvider(calls=good_calls)
+    good.name = "good"
+    dispatcher = ProvenanceDispatcher([bad, good], queue_size=4)
+
+    dispatcher.emit(_event())
+    dispatcher.flush()  # must not raise
+    dispatcher.close()
+
+    assert bad.flushed is True
+    assert "flush-failed" in bad_calls
+    assert good.flushed is True
+    assert "flush" in good_calls
+
+    health = {row["name"]: row for row in dispatcher.health()}
+    assert health["bad"]["failed"] == 1
+    assert health["bad"]["status"] == "degraded"
+    assert "flush unavailable" in health["bad"]["last_error"]
+    # The good provider's own health is untouched by its sibling's failure.
+    assert health["good"]["failed"] == 0
+    assert health["good"]["status"] == "ready"
+
+
+def test_dispatcher_flush_first_failure_is_loud(caplog: pytest.LogCaptureFixture) -> None:
+    """Mirrors the existing emit-side loud-first-failure contract
+    (test_dispatcher_first_provider_failure_is_loud in
+    test_artifact_provenance_providers.py) for the flush side added here."""
+
+    provider = _RecordingProvider(flush_fail=True)
+    dispatcher = ProvenanceDispatcher([provider], queue_size=4)
+    with caplog.at_level("WARNING", logger="clio_agent.gact.provenance.dispatcher"):
+        dispatcher.emit(_event())
+        dispatcher.flush()
+        dispatcher.emit(_event())
+        dispatcher.flush()
+        dispatcher.close()
+
+    warnings = [r for r in caplog.records if "degraded on flush" in r.getMessage()]
+    assert len(warnings) == 1, "first flush failure loud, repeats counted in health only"
+    health = dispatcher.health()
+    assert health[0]["failed"] == 2
+
+
+def test_synchronous_providers_satisfy_the_provenance_protocol(tmp_path: Path) -> None:
+    """D3(c): flush() is REQUIRED (protocol.py), not duck-typed -- exercise
+    it on a provider with a genuine async writer behind it (jsonl) and one
+    whose emit() is already synchronous (the recording double), proving
+    both conform and neither's flush() raises."""
+
+    jsonl_provider = JsonlProvenanceProvider(tmp_path / "trace")
+    assert isinstance(jsonl_provider, ProvenanceProvider)
+    jsonl_provider.flush()  # nothing enqueued; must not raise
+
+    recording = _RecordingProvider()
+    assert isinstance(recording, ProvenanceProvider)
+    recording.flush()
+    assert recording.flushed is True
+
+
+def test_legacy_factory_provider_flush_proxies_when_backend_has_one() -> None:
+    """D2: a factory backend that DOES expose flush() gets a real barrier,
+    declared explicitly (flush_durable=True, no note)."""
+
+    class _FlushableBackend:
+        name = "custom"
+
+        def __init__(self) -> None:
+            self.flushed = False
+
+        def emit(self, event: Any) -> None:
+            return None
+
+        def flush(self) -> None:
+            self.flushed = True
+
+        def close(self) -> None:
+            return None
+
+    backend = _FlushableBackend()
+    provider = _LegacyFactoryProvider(backend)
+
+    assert provider.flush_durable is True
+    assert provider.flush_note == ""
+    provider.flush()
+    assert backend.flushed is True
+
+
+def test_legacy_factory_provider_flush_is_a_declared_gap_without_a_backend_flush() -> None:
+    """D2: a factory backend with NO flush() gets an honest no-op that never
+    raises, with the gap declared (never a bare pass) via flush_durable/
+    flush_note so GET /v1/provenance/providers can surface it."""
+
+    class _NoFlushBackend:
+        name = "custom"
+
+        def emit(self, event: Any) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    provider = _LegacyFactoryProvider(_NoFlushBackend())
+
+    assert provider.flush_durable is False
+    assert provider.flush_note  # non-empty, structured
+    provider.flush()  # must not raise
+
+
+def test_flowcept_provider_declares_flush_as_a_non_durable_no_op() -> None:
+    """D2: Flowcept has no repeatable drain API (verified against the
+    installed flowcept 1.0.3 source: only a one-time terminal stop()), so
+    it must declare flush_durable=False with a note rather than faking a
+    barrier, and flush() itself must be a safe no-op."""
+
+    assert FlowceptProvenanceProvider.flush_durable is False
+    assert FlowceptProvenanceProvider.flush_note
+
+    provider = object.__new__(FlowceptProvenanceProvider)  # bypass __init__
+    provider.flush()  # must not raise even without a real Flowcept runtime
 
 
 def test_flowcept_privacy_removes_content_fields() -> None:

@@ -167,6 +167,23 @@ class FlowceptProvenanceProvider:
     name = "flowcept"
     durable = False
     queryable = True
+    # Flowcept buffers records asynchronously (AutoflushBuffer +
+    # interceptor/MQ pipeline: flowcept/commons/autoflush_buffer.py) and
+    # exposes NO repeatable drain primitive -- only
+    # Flowcept.stop()/BaseInterceptor.stop(), a one-time TERMINAL teardown
+    # (closes the MQ/DocDB DAOs, sets Flowcept.buffer = None) that would
+    # permanently kill this provider if flush() called it. flush() is
+    # therefore an honest no-op below, not a fake barrier: a caller relying
+    # on flush() as a synchronous-persistence barrier for Flowcept-only
+    # delivery can still observe a read-after-write race (e.g.
+    # routes/provenance.py's execution-provenance read, right after
+    # flush(), against query_execution() below).
+    flush_durable = False
+    flush_note = (
+        "Flowcept has no repeatable flush/drain API (only the one-time "
+        "terminal Flowcept.stop()); flush() is a no-op and does not "
+        "guarantee pending records have reached Flowcept's own storage"
+    )
 
     def __init__(self, config: FlowceptProviderConfig) -> None:
         self.config = config
@@ -450,6 +467,12 @@ class FlowceptProvenanceProvider:
     def services_status(self) -> dict[str, str]:
         """Delegate liveness checks to Flowcept."""
         return dict(self._flowcept_class.services_status())
+
+    def flush(self) -> None:
+        """No-op: see the class-level ``flush_durable``/``flush_note``
+        comment above for why Flowcept has no safe, repeatable drain to
+        proxy through to (only a one-time, terminal ``stop()``)."""
+        return
 
     def close(self) -> None:
         """Drain Flowcept transport and persistence services."""
