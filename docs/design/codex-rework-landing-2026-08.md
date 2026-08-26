@@ -16,7 +16,7 @@ Separately, `feat/flowcept-provenance` (14 commits, live-qualified, Flowcept/CMF
 
 ## How this campaign runs
 
-This document is the campaign's source of truth. Codex's first act is Phase 0: file the GitHub issue set (one umbrella per repo + one issue per workstream, each carrying its full spec — file:line, failure scenario, acceptance — copied from this doc; issues are the loop's grounding, never bare bodies) and open the four draft PRs so CI becomes the verification loop. After Phase 0, edit this doc to record the umbrella issue numbers here: clio-agent #__, gact-tui #__, marketplace #__, clio-kit #__.
+This document is the campaign's source of truth. Codex's first act is Phase 0: file the GitHub issue set (one umbrella per repo + one issue per workstream, each carrying its full spec — file:line, failure scenario, acceptance — copied from this doc; issues are the loop's grounding, never bare bodies) and open the four draft PRs so CI becomes the verification loop. Phase 0 umbrellas: clio-agent [#1249](https://github.com/iowarp/clio-agent/issues/1249), gact-tui [#371](https://github.com/iowarp/gact-tui/issues/371), marketplace [#54](https://github.com/iowarp/clio-agent-marketplace/issues/54), clio-kit [#381](https://github.com/iowarp/clio-kit/issues/381).
 
 **All owner decisions are resolved in this document — there are none left to ask mid-campaign.** (See the final section.)
 
@@ -35,6 +35,15 @@ This document is the campaign's source of truth. Codex's first act is Phase 0: f
 1. Stop feature work on all four branches (done — tips above are final inputs).
 2. **Open draft PRs immediately** for all four branches against their targets (clio-agent→develop, gact-tui→develop, marketplace→main, clio-kit→main). CI only triggers on PRs/develop/main — this is the verification loop for everything below. Record the red baseline of the first runs.
 3. File GitHub issues from this plan: one umbrella per repo + one issue per workstream below, **with the full spec (file:line, failure scenario, acceptance) copied in** — never bare issue bodies. Link all to the umbrella.
+
+### Phase 0 record — 2026-08-26 06:54Z
+
+- **Issue set:** 19 issues filed: four umbrellas plus all 15 workstream issues. The umbrella issues link their workstreams, and every workstream body carries the source file/line anchors, failure scenario, acceptance contract, and binding campaign rules from this document.
+- **clio-agent:** draft PR [#1255](https://github.com/iowarp/clio-agent/pull/1255), `codex/gact-a2ui-v091-producer` → `develop`, first observed at `2ea8bf9d`. **RED / unverified:** GitHub created no check suite or `pull_request` workflow run, and the PR is merge-conflicted (`DIRTY` / `CONFLICTING`). Absence of checks is not green.
+- **gact-tui:** draft PR [#380](https://github.com/iowarp/gact-tui/pull/380), `codex/gact-tui-node-revamp` → `develop`, first run at `b070eb6c`. **RED:** [workspace/apps](https://github.com/iowarp/gact-tui/actions/runs/32939690319) failed the component-reuse ratchet because `a2ui-catalog.tsx` no longer imports the sourced AI Elements artifact component; [CI](https://github.com/iowarp/gact-tui/actions/runs/32939690213) failed the tracked-media policy (two Playwright snapshots and `web/src/assets/hero.png`) and the dev-install revision check (`dev` versus the PR merge SHA); [docker](https://github.com/iowarp/gact-tui/actions/runs/32939690356) failed `clio-web` on TypeScript errors in `time-series-plot.tsx`. `python-adapter`, `clio-api`, and `clio-tui` passed; the Tauri matrix was skipped after the React gate failed.
+- **marketplace:** draft PR [#56](https://github.com/iowarp/clio-agent-marketplace/pull/56), `codex/earthscope-inherit-session-model` → `main`, first observed at `8c0e4a20`. **RED / unverified:** GitHub created no check suite or `pull_request` workflow run. The branch is mergeable, but absence of checks is not green.
+- **clio-kit:** draft PR [#383](https://github.com/iowarp/clio-kit/pull/383), `codex/mcp-launcher-nonblocking-budget` → `main`, first run at `d301bf7a`. **RED:** [Quality Control](https://github.com/iowarp/clio-kit/actions/runs/32939688034) and [Publish Python Package](https://github.com/iowarp/clio-kit/actions/runs/32939688370) both failed the file-size ratchet because `src/clio_kit/env_cache.py` is 790 lines against the recorded 770-line baseline. The baseline-diff guard passed; downstream quality and publication jobs were skipped by the failed prerequisite and therefore are not accepted as verified.
+- No local test suite was run during Phase 0. This is the immutable first GitHub-run baseline; all failures and missing/skipped checks remain campaign work, and no ratchet baseline may be raised to clear them.
 
 ## Phase 1 — Flowcept/CMF absorption (UNBLOCKED — dependency already satisfied)
 
