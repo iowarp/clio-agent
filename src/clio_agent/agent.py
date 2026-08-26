@@ -148,6 +148,7 @@ class ClioAgent(dspy.Module):
         provider_config: LMProviderConfig | None = None,
         remote_mcp_federation: RemoteMcpFederation | None = None,
         jarvis_jobs: JarvisJobs | None = None,
+        relay_install: Any | None = None,
         relay_status: Mapping[str, Any] | None = None,
     ):
         """Initialize the ClioAgent host: chat, tool execution, ARC, and runtime storage.
@@ -175,12 +176,16 @@ class ClioAgent(dspy.Module):
                 default and per-workspace execution gateway.
             jarvis_jobs: Optional durable JARVIS application surface added to every
                 default and per-workspace execution gateway.
+            relay_install: Optional curated cluster-lifecycle tool surface
+                (clio-relay#209 A2) added to every default and per-workspace
+                execution gateway.
             relay_status: Typed production wiring status retained by every gateway.
         """
         super().__init__()
         self.verbose = verbose
         self._remote_mcp_federation = remote_mcp_federation
         self._jarvis_jobs = jarvis_jobs
+        self._relay_install = relay_install
         self._relay_status = dict(relay_status or {})
 
         # ARC Memory: reuse the injected one (the gact server owns the single per-process
@@ -361,6 +366,7 @@ class ClioAgent(dspy.Module):
             capabilities=correlated_capabilities(),
             remote_mcp_federation=getattr(self, "_remote_mcp_federation", None),
             jarvis_jobs=getattr(self, "_jarvis_jobs", None),
+            relay_install=getattr(self, "_relay_install", None),
             relay_status=getattr(self, "_relay_status", None),
         )
         if not set_catalog:

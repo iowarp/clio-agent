@@ -82,6 +82,14 @@ class RelayToolSurfaces:
     remote_mcp_federation: Any | None
     jarvis_jobs: Any | None
     status: dict[str, Any]
+    #: clio-relay#209 A2: the local-CLI-subprocess cluster-lifecycle tool surface
+    #: (register/bootstrap/status/session/proxy). Unlike ``jarvis_jobs`` /
+    #: ``remote_mcp_federation`` this never depends on a reachable relay MCP/HTTP
+    #: door -- it drives the DEPLOYED ``clio-relay`` executable directly, so it is
+    #: built unconditionally in :func:`discover_relay_tool_surfaces` (never gated on
+    #: ``resolve_relay_transport_config``). ``None`` only when the tool surface
+    #: itself could not be constructed (never observed in practice today).
+    relay_install: Any | None = None
 
 
 def resolve_relay_transport_config() -> RelayTransportConfig | RelayTransportUnavailable:
@@ -207,8 +215,36 @@ def relay_transport_from_env(
     )
 
 
+def _build_relay_install_surface() -> Any:
+    """Build the local-CLI cluster-lifecycle tool surface (clio-relay#209 A2).
+
+    Independent of the relay MCP/HTTP transport: this surface drives the DEPLOYED
+    ``clio-relay`` executable directly (subprocess, not the MCP door), so it is
+    built even when ``resolve_relay_transport_config`` reports
+    ``relay_not_configured``. Never raises: an unresolvable executable degrades to
+    a typed ``relay_cli_unavailable`` status retained on the surface for
+    diagnostics -- each tool call re-resolves the executable itself and fails
+    typed at CALL time, so the executable appearing on PATH later needs no restart.
+    """
+
+    from clio_agent.tools.relay_cli_runner import (  # noqa: PLC0415
+        RelayCliUnavailableError,
+        resolve_relay_cli_executable,
+    )
+    from clio_agent.tools.relay_install_surface import RelayInstallSurface  # noqa: PLC0415
+
+    try:
+        executable = resolve_relay_cli_executable()
+        status: dict[str, Any] = {"configured": True, "reason": None, "executable": executable}
+    except RelayCliUnavailableError as exc:
+        status = {"configured": False, "reason": exc.reason, "details": exc.details}
+    return RelayInstallSurface(cli_status=status)
+
+
 async def discover_relay_tool_surfaces() -> RelayToolSurfaces:
     """Build the production JARVIS owner and discover the remote MCP catalog once."""
+
+    relay_install = _build_relay_install_surface()
 
     resolved = resolve_relay_transport_config()
     if isinstance(resolved, RelayTransportUnavailable):
@@ -216,6 +252,7 @@ async def discover_relay_tool_surfaces() -> RelayToolSurfaces:
             None,
             None,
             {**resolved.to_wire(), "reason": "relay_tools_not_configured"},
+            relay_install=relay_install,
         )
 
     from clio_agent.tools.jarvis_jobs import JarvisJobs  # noqa: PLC0415
@@ -237,5 +274,7 @@ async def discover_relay_tool_surfaces() -> RelayToolSurfaces:
             "relay catalog discovery degraded reason=relay_catalog_discovery_failed error=%r",
             exc,
         )
-        return RelayToolSurfaces(None, jarvis_jobs, status)
-    return RelayToolSurfaces(federation, jarvis_jobs, {"configured": True, "reason": None})
+        return RelayToolSurfaces(None, jarvis_jobs, status, relay_install=relay_install)
+    return RelayToolSurfaces(
+        federation, jarvis_jobs, {"configured": True, "reason": None}, relay_install=relay_install
+    )
