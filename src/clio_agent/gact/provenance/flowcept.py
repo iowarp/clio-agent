@@ -114,6 +114,8 @@ def _record_timestamp(value: Any) -> float:
 
 def _windows_uname() -> tuple[str, str, str, str, str]:
     """Return the five-field POSIX uname shape expected by Flowcept/Numpy."""
+    if sys.platform != "win32":  # pragma: no cover - Windows-only shim
+        raise RuntimeError("_windows_uname is Windows-only")
     version = sys.getwindowsversion()
     machine = os.environ.get("PROCESSOR_ARCHITECTURE", "unknown")
     return (

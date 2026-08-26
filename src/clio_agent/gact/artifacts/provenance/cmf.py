@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import shutil
 import subprocess
 import tempfile
@@ -131,7 +132,8 @@ class CMFBridge:
         worker = Path(__file__).with_name("cmf_worker.py")
         self.config.metadata_path.parent.mkdir(parents=True, exist_ok=True)
         self.config.artifact_root.mkdir(parents=True, exist_ok=True)
-        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        # sys.platform narrowing (not os.name) so Linux mypy skips the branch.
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         process = subprocess.Popen(  # noqa: S603 - fixed worker with configured interpreter
             [
                 executable,
