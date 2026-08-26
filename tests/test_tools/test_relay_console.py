@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -35,18 +36,75 @@ from clio_agent.tools.relay_console import (
 )
 
 
+class _FakeConsoleStreamRegistry:
+    """Records dispatch decisions WITHOUT actually running an SSE reader --
+    keeps this file's tests scoped to ``relay_console.py``'s own dispatch
+    logic (pull vs. ensure-a-reader), never ``relay_console_stream.py``'s real
+    reader mechanics (covered in ``test_relay_console_stream.py``)."""
+
+    def __init__(self, *, fallen_back: bool = False, stopped: bool = False) -> None:
+        self._fallen_back = fallen_back
+        self._stopped = stopped
+        self.ensure_calls: list[tuple[str, str]] = []
+        self.cancel_calls: list[tuple[str, str]] = []
+
+    def has_fallen_back(self, job_id: str, stream: str) -> bool:
+        return self._fallen_back
+
+    def has_stopped(self, job_id: str, stream: str) -> bool:
+        return self._stopped
+
+    def is_sse_exhausted(self, job_id: str, stream: str) -> bool:
+        return self._fallen_back or self._stopped
+
+    def ensure_reader(self, job_id: str, stream: str, factory: Any) -> None:
+        self.ensure_calls.append((job_id, stream))
+
+    async def cancel_one(self, job_id: str, stream: str) -> None:
+        self.cancel_calls.append((job_id, stream))
+
+
 class _FakeRelayHttpClient:
     """Minimal ``RelayTransportClient`` stand-in exposing only what this module
     needs: ``_require_http_client()`` returning a real ``httpx.AsyncClient``
     wired to a FAKE HTTP handler (``httpx.MockTransport``) standing in for
-    relay's ``GET /jobs/{job_id}/logs/stdout`` door."""
+    relay's ``GET /jobs/{job_id}/logs/stdout`` door. ``sse_supported``/
+    ``registry`` default to the pull-path's exact pre-#221/#259 shape (no
+    capability) so every EXISTING test below keeps exercising that path
+    byte-for-byte, unchanged."""
+
+    def __init__(
+        self,
+        handler: Callable[[httpx.Request], httpx.Response],
+        *,
+        sse_supported: bool = False,
+        registry: _FakeConsoleStreamRegistry | None = None,
+    ) -> None:
+        self._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="http://relay.invalid"
+        )
+        self._sse_supported = sse_supported
+        self._console_stream_registry = registry or _FakeConsoleStreamRegistry()
+
+    def _require_http_client(self) -> httpx.AsyncClient:  # noqa: SLF001 - mirrors the real client's own name
+        return self._client
+
+    def console_sse_supported(self) -> bool:
+        return self._sse_supported
+
+
+class _BareFakeRelayHttpClient:
+    """A client with NO ``console_sse_supported``/``_console_stream_registry``
+    attributes at all -- proves ``make_console_on_poll``'s ``getattr`` guard
+    treats absence as "no capability" rather than crashing (a minimal test
+    double, exactly as the module's own docstring anticipates)."""
 
     def __init__(self, handler: Callable[[httpx.Request], httpx.Response]) -> None:
         self._client = httpx.AsyncClient(
             transport=httpx.MockTransport(handler), base_url="http://relay.invalid"
         )
 
-    def _require_http_client(self) -> httpx.AsyncClient:  # noqa: SLF001 - mirrors the real client's own name
+    def _require_http_client(self) -> httpx.AsyncClient:  # noqa: SLF001
         return self._client
 
 
@@ -489,3 +547,170 @@ async def test_on_poll_console_listener_channel_follows_the_configured_stream(
     await _drive(on_poll, store, key, rounds=1)
 
     assert notified == ["stderr"]
+
+
+# --------------------------------------------------------------------------- #
+# clio-relay#221/#259: the SSE-vs-pull dispatch decision. The reader's own    #
+# mechanics live in test_relay_console_stream.py -- this file only proves     #
+# _on_poll picks the right path and never pulls when SSE owns the tail.       #
+# --------------------------------------------------------------------------- #
+
+
+async def test_on_poll_ensures_an_sse_reader_and_never_pulls_when_supported() -> None:
+    key = _key()
+    store = InMemoryTaskRecordStore()
+    store.put(TaskRecord(key=key, tool="relay_run", status="working"))
+    calls: list[httpx.Request] = []
+    registry = _FakeConsoleStreamRegistry()
+    client = _FakeRelayHttpClient(
+        _scripted_log_handler([("x", 1)], calls), sse_supported=True, registry=registry
+    )
+    on_poll = make_console_on_poll(client, "job-1")
+
+    await _drive(on_poll, store, key, rounds=3)
+
+    assert calls == [], "SSE mode must never fall back to a pull request"
+    assert registry.ensure_calls == [("job-1", "console")] * 3
+    assert registry.cancel_calls == []
+    # The pull path never ran, so the record is untouched by _on_poll itself --
+    # the (fake) SSE reader owns folding when it actually runs.
+    assert "console" not in store.get(key).backend  # type: ignore[union-attr]
+
+
+async def test_on_poll_terminal_tick_cancels_the_sse_reader_and_drains_via_pull() -> None:
+    """Adversarial review D1 (BLOCKER): a terminal tick must NEVER ensure a
+    reader -- it stops whatever reader IS running (cancel_one) and falls
+    through to ONE final bounded pull, so the tail already in flight is never
+    silently dropped (the pre-fix bug: PULL 'hello from the job' vs. PUSH '').
+    This replaces the old (bug-enshrining) test that asserted ensure_calls
+    non-empty on a terminal tick."""
+
+    key = _key()
+    store = InMemoryTaskRecordStore()
+    store.put(TaskRecord(key=key, tool="relay_run", status="working"))
+    calls: list[httpx.Request] = []
+    registry = _FakeConsoleStreamRegistry()
+    client = _FakeRelayHttpClient(
+        _scripted_log_handler([("hello from the job", 19)], calls),
+        sse_supported=True,
+        registry=registry,
+    )
+    on_poll = make_console_on_poll(client, "job-1")
+    assert on_poll is not None
+
+    # A non-terminal tick first -- ensures the SSE reader (never a pull).
+    await on_poll(SimpleNamespace(status="working"), key, store)
+    assert registry.ensure_calls == [("job-1", "console")]
+    assert calls == []
+
+    # The terminal tick: cancel the (now-running) reader, then drain via ONE
+    # final bounded pull -- never a second ensure_reader call.
+    await on_poll(SimpleNamespace(status="completed"), key, store)
+
+    assert registry.ensure_calls == [("job-1", "console")]  # unchanged -- never re-ensured
+    assert registry.cancel_calls == [("job-1", "console")]
+    assert len(calls) == 1
+    record = store.get(key)
+    assert record is not None
+    assert record.backend["console"]["tail"] == "hello from the job"
+
+
+async def test_on_poll_fast_job_terminal_at_first_lookup_still_folds_via_pull() -> None:
+    """#1231's fast-job/observe-peek guarantee (relay_transport.py's poll()):
+    a job already terminal on the FIRST (and only) on_poll call -- no prior
+    tick ever ran -- must still fold its tail via the pull path. The pre-fix
+    bug spawned-then-cancelled a reader that read nothing, losing the tail
+    entirely."""
+
+    key = _key()
+    store = InMemoryTaskRecordStore()
+    store.put(TaskRecord(key=key, tool="relay_run", status="working"))
+    calls: list[httpx.Request] = []
+    registry = _FakeConsoleStreamRegistry()
+    client = _FakeRelayHttpClient(
+        _scripted_log_handler([("hello from the job", 19)], calls),
+        sse_supported=True,
+        registry=registry,
+    )
+    on_poll = make_console_on_poll(client, "job-1")
+    assert on_poll is not None
+
+    await on_poll(
+        SimpleNamespace(status="completed"), key, store
+    )  # ONE call, terminal from the start
+
+    assert registry.ensure_calls == []  # never spawned
+    assert len(calls) == 1
+    record = store.get(key)
+    assert record is not None
+    assert record.backend["console"]["tail"] == "hello from the job"
+
+
+async def test_on_poll_falls_through_to_pull_once_sse_has_fallen_back() -> None:
+    """Even with ``console_sse_supported() == True``, a (job, stream) the
+    registry already marked fallen-back must route straight to the pull path
+    -- never a repeated SSE attempt for the rest of this client's lifetime."""
+
+    key = _key()
+    store = InMemoryTaskRecordStore()
+    store.put(TaskRecord(key=key, tool="relay_run", status="working"))
+    calls: list[httpx.Request] = []
+    registry = _FakeConsoleStreamRegistry(fallen_back=True)
+    client = _FakeRelayHttpClient(
+        _scripted_log_handler([("first line\n", 11)], calls), sse_supported=True, registry=registry
+    )
+    on_poll = make_console_on_poll(client, "job-1")
+
+    await _drive(on_poll, store, key, rounds=1)
+
+    assert len(calls) == 1
+    assert registry.ensure_calls == []
+    record = store.get(key)
+    assert record is not None
+    assert record.backend["console"]["tail"] == "first line\n"
+
+
+async def test_on_poll_falls_through_to_pull_once_sse_has_stopped() -> None:
+    """Adversarial review D2's dispatch-layer half: a (job, stream) the
+    registry marked STOPPED (relay reported it gone or cleanly finished --
+    distinct from a connectivity fallback) must also route straight to the
+    pull path, never re-ensure a reader."""
+
+    key = _key()
+    store = InMemoryTaskRecordStore()
+    store.put(TaskRecord(key=key, tool="relay_run", status="working"))
+    calls: list[httpx.Request] = []
+    registry = _FakeConsoleStreamRegistry(stopped=True)
+    client = _FakeRelayHttpClient(
+        _scripted_log_handler([("first line\n", 11)], calls), sse_supported=True, registry=registry
+    )
+    on_poll = make_console_on_poll(client, "job-1")
+
+    await _drive(on_poll, store, key, rounds=1)
+
+    assert len(calls) == 1
+    assert registry.ensure_calls == []
+    record = store.get(key)
+    assert record is not None
+    assert record.backend["console"]["tail"] == "first line\n"
+
+
+async def test_on_poll_treats_missing_sse_attributes_as_no_capability() -> None:
+    """A client exposing neither ``console_sse_supported`` nor
+    ``_console_stream_registry`` (a bare test double, or a probe that never
+    ran) must drive the SAME pull path as an explicit ``sse_supported=False``
+    -- design point 2: no capability, no behavior change, byte-for-byte."""
+
+    key = _key()
+    store = InMemoryTaskRecordStore()
+    store.put(TaskRecord(key=key, tool="relay_run", status="working"))
+    calls: list[httpx.Request] = []
+    client = _BareFakeRelayHttpClient(_scripted_log_handler([("data\n", 5)], calls))
+    on_poll = make_console_on_poll(client, "job-1")
+
+    await _drive(on_poll, store, key, rounds=1)  # must not raise
+
+    assert len(calls) == 1
+    record = store.get(key)
+    assert record is not None
+    assert record.backend["console"]["tail"] == "data\n"

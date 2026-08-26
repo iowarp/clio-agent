@@ -212,6 +212,18 @@ async def test_relay_transport_client_classifies_under_relay_server_id(monkeypat
 
     monkeypatch.setattr("clio_agent.tools.relay_transport.make_mcp_client", fake_make_mcp_client)
 
+    async def fake_probe_console_sse_capability(http_client):
+        # clio-relay#221/#259: __aenter__ now also probes GET /healthz for the
+        # console-SSE capability flag -- faked here too so this test's "no real
+        # request" invariant (see the class docstring above) still holds against
+        # the unreachable https://relay.example host below.
+        return False
+
+    monkeypatch.setattr(
+        "clio_agent.tools.relay_transport.probe_console_sse_capability",
+        fake_probe_console_sse_capability,
+    )
+
     client = RelayTransportClient(
         mcp_url="https://relay.example/mcp",
         http_base_url="https://relay.example",

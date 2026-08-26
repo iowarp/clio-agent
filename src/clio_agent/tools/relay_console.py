@@ -38,6 +38,18 @@ the new bytes whenever a fold actually grows the tail, so
 :mod:`clio_agent.gact.mcp_task_events` can publish a small, dedicated
 ``mcp_task.console`` delta event alongside the existing snapshot one -- the
 record remains the sole source of truth for the full tail.
+
+clio-relay#221/#259 (the live-console PUSH half): once the door's ``GET
+/healthz`` document advertises ``console_sse: true`` (negotiated once per
+:class:`~clio_agent.tools.relay_transport.RelayTransportClient` connection --
+never by timing/probing the SSE route itself), ``make_console_on_poll``'s
+returned hook stops pulling on every tick and instead ensures a background SSE
+reader is running for this ``(job_id, stream)`` -- the PUSH half itself lives
+in the owner module :mod:`clio_agent.tools.relay_console_stream` (kept out of
+this file per #774's anti-accretion rule). This module still owns the fold/tail
+-cap/truncation-marker/listener-notify contract (:func:`fold_console_increment`),
+shared by both the pull path below and the SSE reader, so the two paths can
+never drift apart on tail semantics.
 """
 
 from __future__ import annotations
@@ -49,12 +61,12 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from clio_agent import conf
-from clio_agent.tools.mcp_task_records import task_console_listener
+from clio_agent.tools.mcp_task_records import TERMINAL_TASK_STATES, task_console_listener
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from fastmcp_tasks.client_models import ClientGetTaskResult
 
-    from clio_agent.tools.mcp_task_records import TaskKey, TaskRecordStore
+    from clio_agent.tools.mcp_task_records import TaskKey, TaskRecord, TaskRecordStore
     from clio_agent.tools.relay_transport import RelayTransportClient
 
 logger = logging.getLogger(__name__)
@@ -64,9 +76,12 @@ __all__ = [
     "CONSOLE_TAIL_TRUNCATED_REASON",
     "RELAY_LOG_PULL_HARD_CAP_BYTES",
     "console_enabled",
+    "console_offset",
     "console_pull_limit_bytes",
     "console_stream",
+    "console_tail",
     "console_tail_cap_bytes",
+    "fold_console_increment",
     "make_console_on_poll",
 ]
 
@@ -190,6 +205,82 @@ def _fold_tail(existing: str, chunk: str, cap: int) -> tuple[str, bool]:
     return marker + kept.decode("utf-8", errors="ignore"), True
 
 
+def console_offset(record: "TaskRecord") -> int:
+    """Read the last folded console byte offset off a record (0 if none yet).
+
+    Shared seed logic for both the pull path (:func:`make_console_on_poll`)
+    and the SSE reader (:mod:`clio_agent.tools.relay_console_stream`) so a
+    fresh watcher of an already-progressed job resumes from the SAME place
+    either path would.
+    """
+
+    console = record.backend.get(CONSOLE_BACKEND_KEY)
+    if isinstance(console, Mapping) and isinstance(console.get("offset"), int):
+        return int(console["offset"])
+    return 0
+
+
+def console_tail(record: "TaskRecord") -> str:
+    """Read the currently-stored rolling tail text off a record ("" if none yet)."""
+
+    console = record.backend.get(CONSOLE_BACKEND_KEY)
+    if isinstance(console, Mapping):
+        return str(console.get("tail", ""))
+    return ""
+
+
+def fold_console_increment(
+    store: "TaskRecordStore",
+    key: "TaskKey",
+    fallback: "TaskRecord",
+    tail: str,
+    chunk: str,
+    next_offset: int,
+) -> tuple[str, bool]:
+    """Fold one console increment into the durable record and notify listeners.
+
+    ``tail`` is the PRE-fetch snapshot the caller read before doing any I/O
+    (network pull or SSE frame wait) -- never re-derived from a fresh
+    ``store.get`` here, so a status/lease write racing the I/O cannot silently
+    substitute a different tail than the one the caller's ``chunk`` was
+    computed to extend. ``fallback`` is merged onto only when a concurrent
+    write dropped the record between the caller's read and this call (matches
+    the pre-extraction behavior of the ``on_poll`` pull path).
+
+    Shared by :func:`make_console_on_poll`'s pull-path hook (#1231 Part 2) and
+    :mod:`clio_agent.tools.relay_console_stream`'s SSE reader (clio-relay#221/
+    #259's push half) -- the ONE place tail-cap/truncation-marker/listener-
+    notify semantics live, so the two paths can never drift apart.
+
+    Returns:
+        The new rolling tail and whether this fold truncated it -- the SSE
+        reader carries these forward across many chunks in one connection
+        without re-reading the store on every single one.
+    """
+
+    new_tail, truncated = _fold_tail(tail, chunk, console_tail_cap_bytes())
+    latest = store.get(key) or fallback
+    new_backend: dict[str, Any] = dict(latest.backend)
+    new_backend[CONSOLE_BACKEND_KEY] = {
+        "tail": new_tail,
+        "offset": next_offset,
+        "truncated": truncated,
+    }
+    store.put(replace(latest, backend=new_backend))
+    listener = task_console_listener()
+    if listener is not None:
+        try:
+            listener(key, console_stream(), chunk, next_offset, truncated)
+        except Exception as exc:  # noqa: BLE001 - a broken listener must never break the wait
+            logger.warning(
+                "relay console delta listener failed reason=relay_console_delta_listener_failed "
+                "task_id=%s: %r",
+                key.task_id,
+                exc,
+            )
+    return new_tail, truncated
+
+
 async def _pull_increment(
     client: "RelayTransportClient", job_id: str, offset: int
 ) -> tuple[str, int]:
@@ -250,6 +341,34 @@ def make_console_on_poll(
     delta (never the whole tail) -- #1236's lean live-stream event, so a UI
     watching the session sees new console lines without waiting for a reload
     or re-consuming a growing snapshot on every poll.
+
+    clio-relay#221/#259: when ``client.console_sse_supported()`` reports the
+    door advertised ``console_sse: true`` at connect (see
+    :class:`~clio_agent.tools.relay_transport.RelayTransportClient`), a
+    NON-terminal tick instead ENSURES a background SSE reader is running for
+    this ``(job_id, stream)`` (idempotent -- a reader already running is left
+    alone) and returns immediately; the reader itself
+    (:mod:`clio_agent.tools.relay_console_stream`) folds chunks as they
+    arrive, decoupled from this tick's ~1s cadence.
+
+    A TERMINAL tick (adversarial review D1) never ensures a reader -- it
+    stops whatever IS running (:meth:`~clio_agent.tools.relay_console_stream.
+    ConsoleStreamRegistry.cancel_one`, a no-op if nothing was) and falls
+    through to ONE final bounded pull below, exactly matching the
+    pre-#221/#259 pull-only path's own terminal-tick drain. This also covers
+    #1231's fast-job/one-shot ``poll()`` guarantee: a job already terminal on
+    the FIRST (and only) ``on_poll`` call still folds its tail via that pull
+    -- never spawn-then-cancel a reader that read nothing.
+
+    A ``(job_id, stream)`` the registry has already exhausted (fallen back
+    after real failures, or stopped because relay reported the stream
+    ``gone``/cleanly finished) is never re-ensured either -- it falls straight
+    to the pull path.
+
+    A client with no ``console_sse_supported``/``_console_stream_registry``
+    attributes at all (a minimal test double, or a capability probe that
+    never ran) is read as "no capability" -- the pull path below runs
+    unchanged, byte-for-byte.
     """
 
     if not console_enabled():
@@ -258,19 +377,43 @@ def make_console_on_poll(
     warned = False
 
     async def _on_poll(
-        _current: "ClientGetTaskResult", key: "TaskKey", store: "TaskRecordStore"
+        current: "ClientGetTaskResult", key: "TaskKey", store: "TaskRecordStore"
     ) -> None:
         nonlocal warned
         record = store.get(key)
         if record is None:
             return
-        console = record.backend.get(CONSOLE_BACKEND_KEY)
-        offset = (
-            int(console["offset"])
-            if isinstance(console, Mapping) and isinstance(console.get("offset"), int)
-            else 0
-        )
-        tail = str(console.get("tail", "")) if isinstance(console, Mapping) else ""
+        stream = console_stream()
+        sse_supported = getattr(client, "console_sse_supported", None)
+        registry = getattr(client, "_console_stream_registry", None)
+        is_terminal = current is not None and current.status in TERMINAL_TASK_STATES
+        if callable(sse_supported) and registry is not None and sse_supported():
+            if is_terminal:
+                # Adversarial review D1 (BLOCKER): a terminal tick must NEVER
+                # ensure_reader -- spawning a reader only to cancel it a line
+                # later reads nothing. Stop whatever IS running (a no-op if
+                # nothing was, e.g. #1231's fast-job/one-shot poll() case where
+                # this is the FIRST and only on_poll call) and fall through to
+                # the pull path below for one final bounded drain from the
+                # last durably-folded offset -- mirrors exactly what the
+                # pre-#221/#259 pull-only path always did on its terminal
+                # tick, so the tail is never silently dropped.
+                await registry.cancel_one(job_id, stream)
+            elif not registry.is_sse_exhausted(job_id, stream):
+                from clio_agent.tools.relay_console_stream import (  # noqa: PLC0415
+                    drive_console_stream,
+                )
+
+                registry.ensure_reader(
+                    job_id,
+                    stream,
+                    lambda: drive_console_stream(client, job_id, stream, key, store, registry),
+                )
+                return
+            # Exhausted (fallen back or stopped) and not terminal, OR terminal
+            # (handled above) -- fall through to the pull path below.
+        offset = console_offset(record)
+        tail = console_tail(record)
         try:
             chunk, next_offset = await _pull_increment(client, job_id, offset)
         except Exception as exc:  # noqa: BLE001 - a log-pull failure must never break the wait
@@ -286,36 +429,6 @@ def make_console_on_poll(
             return
         if not chunk and next_offset == offset:
             return
-        new_tail, truncated = _fold_tail(tail, chunk, console_tail_cap_bytes())
-        latest = store.get(key) or record
-        new_backend: dict[str, Any] = dict(latest.backend)
-        new_backend[CONSOLE_BACKEND_KEY] = {
-            "tail": new_tail,
-            "offset": next_offset,
-            "truncated": truncated,
-        }
-        store.put(replace(latest, backend=new_backend))
-        # #1236: tell the LEAN delta listener too (if the gact layer installed
-        # one) -- separate from the full-record store.put above, which already
-        # fans out through TaskRecordStore's own change-listener carrying the
-        # WHOLE (up to console_tail_cap_bytes) rolling tail on every fold. That
-        # full-snapshot event stays for reload/catch-up honesty, but repeating it
-        # on every poll of a long drive is exactly the kind of stream bloat #832
-        # ("server owns the clean stream") warns against -- this hook carries
-        # just the NEW bytes so a live subscriber never has to re-consume a
-        # growing snapshot to render an append. Never allowed to break the wait:
-        # a broken listener is caught and warned, same contract as the pull
-        # above.
-        listener = task_console_listener()
-        if listener is not None:
-            try:
-                listener(key, console_stream(), chunk, next_offset, truncated)
-            except Exception as exc:  # noqa: BLE001 - a broken listener must never break the wait
-                logger.warning(
-                    "relay console delta listener failed reason=relay_console_delta_listener_failed "
-                    "job_id=%s: %r",
-                    job_id,
-                    exc,
-                )
+        fold_console_increment(store, key, record, tail, chunk, next_offset)
 
     return _on_poll

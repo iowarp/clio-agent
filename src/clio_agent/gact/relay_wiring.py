@@ -206,6 +206,10 @@ def _refresh_agent_relay_tool_surfaces(agent: Any, surfaces: Any, *, force: bool
         return
     agent._remote_mcp_federation = surfaces.remote_mcp_federation  # noqa: SLF001
     agent._jarvis_jobs = surfaces.jarvis_jobs  # noqa: SLF001
+    # getattr: pre-#209 callers (and existing test doubles) may construct a
+    # surfaces object with no relay_install field at all -- absent is treated
+    # exactly like an explicit None, never an AttributeError.
+    agent._relay_install = getattr(surfaces, "relay_install", None)  # noqa: SLF001
     agent._relay_status = dict(surfaces.status)  # noqa: SLF001
     # Late-arrival seed (L3 run-14 brick): construction seeded
     # ``_tool_definitions`` while the federation was still ABSENT, and this
@@ -246,6 +250,7 @@ async def relay_agent_kwargs(app: FastAPI) -> dict[str, Any]:
     return {
         "remote_mcp_federation": surfaces.remote_mcp_federation,
         "jarvis_jobs": surfaces.jarvis_jobs,
+        "relay_install": surfaces.relay_install,
         "relay_status": surfaces.status,
     }
 
