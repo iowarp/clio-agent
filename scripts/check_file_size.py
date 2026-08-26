@@ -761,7 +761,16 @@ RATCHET_BASELINE: dict[str, int] = {
     # land here, so a task resolved through this explicit path (not the transparent
     # #1115 extension) does not read a delivered-error result as bare "completed"
     # either (clio-relay#265's "completed is a terrible status indicator" ruling).
-    "src/clio_agent/tools/relay_transport.py": 868,
+    # +26 (868->894, clio-relay#221/#259 consumer half): the console-SSE
+    # capability negotiation + reader-registry lifecycle call sites -- the
+    # ``console_sse_supported`` field/accessor, the one ``probe_console_sse_
+    # capability`` await at __aenter__, the ``_console_stream_registry`` field,
+    # and its ``cancel_all()`` safety-net await at __aexit__ (before the http
+    # client that owns the readers' connections closes). All SSE reading/
+    # parsing/fallback logic lives in the new owner module
+    # tools/relay_console_stream.py; only these thin construction/probe/cleanup
+    # call sites land here, since this class is the sole owner of both doors.
+    "src/clio_agent/tools/relay_transport.py": 894,
     # #1232 pt 2: not previously baselined (under the 800 cap). +28 for
     # list_builtin_tool_definitions -- the boot path needs a FAST,
     # synchronous, no-I/O tool-definitions seed (built-ins only) so

@@ -51,6 +51,10 @@ from clio_agent.tools.mcp_tasks import (
     send_task_update,
 )
 from clio_agent.tools.relay_console import make_console_on_poll
+from clio_agent.tools.relay_console_stream import (
+    ConsoleStreamRegistry,
+    probe_console_sse_capability,
+)
 from clio_agent.tools.relay_contract import (
     RELAY_EVENT_NEXT_CURSOR_FIELD,
     RELAY_INLINE_LIMIT_CODE,
@@ -231,6 +235,14 @@ class RelayTransportClient:
         # under, so __aexit__ unregisters the SAME id -- set only once __aenter__
         # actually registers one, never guessed from ``self._mcp_client`` alone.
         self._observer_server_id: str | None = None
+        # clio-relay#221/#259 (live-console PUSH half): negotiated ONCE at
+        # __aenter__ from the door's own GET /healthz document (never by
+        # timing/probing the SSE route) -- relay_console.py's on_poll hook reads
+        # this to decide pull vs. push. ``_console_stream_registry`` is this
+        # client's OWN lifecycle owner for any background SSE readers it starts;
+        # see tools/relay_console_stream.py for both.
+        self._console_sse_supported = False
+        self._console_stream_registry = ConsoleStreamRegistry()
 
     async def __aenter__(self) -> "RelayTransportClient":
         """Open both authenticated doors."""
@@ -252,6 +264,10 @@ class RelayTransportClient:
             headers=dict(self._headers),
             timeout=self._timeout,
         )
+        # clio-relay#221/#259: negotiate the push capability once, up front --
+        # a failed/absent probe reads as "no capability" (never raises), so the
+        # pull path below stays byte-for-byte unchanged on an older relay.
+        self._console_sse_supported = await probe_console_sse_capability(self._http_client)
         # #1231: this is the ONE construction site for the client whose auto-claimed
         # tasks travel the transparent #1115 extension path (mcp_task_extension.py's
         # _resolve_task) -- submit()/poll()/wait() drive their OWN tasks manually and
@@ -282,10 +298,20 @@ class RelayTransportClient:
         if self._observer_server_id is not None:
             unregister_task_observer_factory(self._observer_server_id)
             self._observer_server_id = None
+        # clio-relay#221/#259: cancel every still-running console SSE reader
+        # BEFORE the http client that owns their connections closes -- the
+        # safety net for a caller that detaches before a watched job settles
+        # (no orphaned reader outlives this client).
+        await self._console_stream_registry.cancel_all()
         if http_client is not None:
             await http_client.aclose()
         if mcp_client is not None:
             await mcp_client.__aexit__(exc_type, exc, tb)
+
+    def console_sse_supported(self) -> bool:
+        """Whether the connected door advertised ``console_sse: true`` at connect."""
+
+        return self._console_sse_supported
 
     async def submit(
         self,
