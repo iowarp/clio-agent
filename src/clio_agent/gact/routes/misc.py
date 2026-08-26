@@ -34,7 +34,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from clio_agent.gact.events import Event, heartbeat_event
-from clio_agent.gact.protocol_v3 import format_sse_v3, requests_gact_v3
+from clio_agent.gact.protocol_v3 import format_sse_v3, project_for_request
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.constants import GACT_BACKEND_VERSION
 from clio_agent.gact.runtime.globals import _format_sse
@@ -391,16 +391,19 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
 
-        use_v3 = requests_gact_v3(request)
+        use_v3 = project_for_request(request, v3=lambda: True, v2=lambda: False)
 
         def _format_event(event: Event, session: Any) -> bytes:
-            if use_v3:
-                return format_sse_v3(
+            formatter = project_for_request(
+                request,
+                v3=lambda: format_sse_v3(
                     event,
                     session=session,
                     workspace_id=str(getattr(session, "workspace_id", "") or ""),
-                )
-            return _format_sse(event)
+                ),
+                v2=lambda: _format_sse(event),
+            )
+            return formatter
 
         async def event_stream() -> AsyncIterator[bytes]:
             sess_snapshot = app.state.sessions.get(sid)

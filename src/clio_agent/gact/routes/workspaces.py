@@ -15,9 +15,8 @@ browsing surface the gact-tui ``@``-picker and desktop file tree consume:
 All handlers read the live ``WorkspaceStore`` via ``app.state.workspaces`` and
 reach the shared direct-destructive-action permission guard through
 :class:`~clio_agent.gact.routes.deps.GactDeps`. Concern-private helpers
-(:data:`_TEXTUAL_WORKSPACE_MIME_TYPES`, :func:`_is_textual_workspace_file`) live
-here; the module imports only leaf packages (types, file-policy, stdlib) and
-never loads :mod:`clio_agent.gact.app`.
+File-serving policy lives in the leaf ``workspace_file_policy`` module; this
+module never loads :mod:`clio_agent.gact.app`.
 """
 
 from __future__ import annotations
@@ -30,9 +29,12 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from clio_agent.gact.protocol_v3 import requests_gact_v3, workspace_to_v3
+from clio_agent.gact.protocol_v3 import project_for_request, workspace_to_v3
 from clio_agent.gact.routes._body import json_body
-from clio_agent.gact.routes.workspace_file_policy import skip_workspace_file_directory
+from clio_agent.gact.routes.workspace_file_policy import (
+    is_textual_workspace_file,
+    skip_workspace_file_directory,
+)
 from clio_agent.gact.routes.workspace_grant_delete import register_workspace_grant_delete_route
 from clio_agent.gact.types import (
     CreateWorkspaceRequest,
@@ -45,20 +47,6 @@ from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
-
-# Files served as decoded text/plain even though their MIME type is not under
-# the ``text/`` tree (JSON/YAML/shell/TOML). Everything else unknown is sniffed.
-_TEXTUAL_WORKSPACE_MIME_TYPES = frozenset(
-    {
-        "application/json",
-        "application/xml",
-        "application/javascript",
-        "application/x-yaml",
-        "application/yaml",
-        "application/x-sh",
-        "application/toml",
-    }
-)
 
 # gact-tui's ``@``-trigger file picker walks the workspace root; cap the number
 # of entries so a giant repo cannot lock the picker for seconds, and skip
@@ -245,32 +233,6 @@ def _apply_root_kind_grant(app: FastAPI, workspace_id: str, pattern: str) -> dic
     return grants.apply_root_grant(app, workspace_id, pattern)
 
 
-def _is_textual_workspace_file(name: str, raw: bytes) -> bool:
-    """Whether a workspace file should be served as decoded ``text/plain``
-    (code preview) vs. raw bytes with its real content type (binary, e.g. PNG).
-
-    Binary files (images, archives, ...) MUST be served as raw bytes with the
-    correct content type -- decoding them as UTF-8 with ``errors="replace"``
-    corrupts the bytes (replacement characters) and mislabels them text/plain,
-    so a TUI/web preview can never recover the image
-    (iowarp/clio-agent#673, #676).
-    """
-    import mimetypes  # noqa: PLC0415
-
-    guessed, _ = mimetypes.guess_type(name)
-    if guessed is not None:
-        return guessed.startswith("text/") or guessed in _TEXTUAL_WORKSPACE_MIME_TYPES
-    # Unknown extension: sniff a sample. A NUL byte or invalid UTF-8 => binary.
-    sample = raw[:8192]
-    if b"\x00" in sample:
-        return False
-    try:
-        sample.decode("utf-8")
-    except UnicodeDecodeError:
-        return False
-    return True
-
-
 def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register the workspace store + file-browsing routes on ``app``.
 
@@ -287,9 +249,13 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         """SPEC §6.1 — list workspaces."""
 
         rows = app.state.workspaces.list()
-        if requests_gact_v3(request):
-            return JSONResponse(content={"workspaces": [workspace_to_v3(row) for row in rows]})
-        return ListWorkspacesResponse(workspaces=[Workspace(**w.to_wire()) for w in rows])
+        return project_for_request(
+            request,
+            v3=lambda: JSONResponse(content={"workspaces": [workspace_to_v3(row) for row in rows]}),
+            v2=lambda: ListWorkspacesResponse(
+                workspaces=[Workspace(**row.to_wire()) for row in rows]
+            ),
+        )
 
     @app.post("/v1/workspaces", response_model=Workspace, status_code=201)
     async def create_workspace(
@@ -308,9 +274,11 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         # store leaf-pure. ``grantor=user`` (a direct user action, never a clio decision, ⚑).
         if ws.root_path:
             _emit_boundary_root(app, ws.id, ws.root_path, grantor=_GRANTOR_USER)
-        if requests_gact_v3(request):
-            return JSONResponse(content=workspace_to_v3(ws), status_code=201)
-        return Workspace(**ws.to_wire())
+        return project_for_request(
+            request,
+            v3=lambda: JSONResponse(content=workspace_to_v3(ws), status_code=201),
+            v2=lambda: Workspace(**ws.to_wire()),
+        )
 
     @app.get("/v1/workspaces/{wid}", response_model=Workspace)
     async def get_workspace(wid: str, request: Request) -> Workspace | JSONResponse:
@@ -327,9 +295,11 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        if requests_gact_v3(request):
-            return JSONResponse(content=workspace_to_v3(ws))
-        return Workspace(**ws.to_wire())
+        return project_for_request(
+            request,
+            v3=lambda: JSONResponse(content=workspace_to_v3(ws)),
+            v2=lambda: Workspace(**ws.to_wire()),
+        )
 
     @app.patch("/v1/workspaces/{wid}", response_model=Workspace)
     async def patch_workspace(wid: str, request: Request) -> Workspace | JSONResponse:
@@ -385,9 +355,11 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             if prior_root:
                 _emit_boundary_root(app, wid, prior_root, grantor=_GRANTOR_USER, revoked=True)
             _emit_boundary_root(app, wid, new_root, grantor=_GRANTOR_USER)
-        if requests_gact_v3(request):
-            return JSONResponse(content=workspace_to_v3(ws))
-        return Workspace(**ws.to_wire())
+        return project_for_request(
+            request,
+            v3=lambda: JSONResponse(content=workspace_to_v3(ws)),
+            v2=lambda: Workspace(**ws.to_wire()),
+        )
 
     # ---- /v1/workspaces/{wid}/grants (B5 #979.3 — mid-session grants) ----
 
@@ -781,7 +753,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             ) from exc
-        if _is_textual_workspace_file(target.name, data):
+        if is_textual_workspace_file(target.name, data):
             return Response(
                 content=data.decode("utf-8", errors="replace"),
                 media_type="text/plain; charset=utf-8",

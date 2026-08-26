@@ -54,7 +54,7 @@ from clio_agent.gact.goal import stop_session_goal
 from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
 from clio_agent.gact.messaging import raise_on_reserved_metadata
-from clio_agent.gact.protocol_v3 import requests_gact_v3, session_to_v3
+from clio_agent.gact.protocol_v3 import project_for_request, session_to_v3
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
 from clio_agent.gact.routes.compaction import build_compact_summary_message
 from clio_agent.gact.routes.session_cancellation import cancel_session_state
@@ -121,7 +121,6 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
 
     # ---- /v1/sessions CRUD -----------------------------------------
-
     @app.post("/v1/sessions", response_model=Session)
     async def create_session(req: CreateSessionRequest, request: Request) -> Session | JSONResponse:
         wid = req.workspace_id or "ws_default"
@@ -168,18 +167,15 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 req.approval_mode if "approval_mode" in supplied else defaults.approval_mode
             ),
         )
-        # #1215 S5: first-turn bring-up timing starts here (the session did not
-        # exist to key a timer on before this point; SessionStore.create()'s own
-        # cost is a fast local write, not separately measured).
         bringup_timing.timer_for_session(app, sess.id).start_phase("session.create")
-        # B5 #979.2 (⚑): session-create INHERITS existing territory — no grant made, so it
-        # emits NO boundary event (a fabricated grantor=user would violate ⚑ + precede
-        # turn.started; workspace-create / PATCH root_path / explicit grants record it).
+        # Session creation inherits territory and emits no fabricated grant (#979.2).
         sync_watcher_for_mode(app, sess)
         bringup_timing.timer_for_session(app, sess.id).end_phase("session.create")
-        if requests_gact_v3(request):
-            return JSONResponse(content=session_to_v3(sess), status_code=201)
-        return Session(**sess.to_wire())
+        return project_for_request(
+            request,
+            v3=lambda: JSONResponse(content=session_to_v3(sess), status_code=201),
+            v2=lambda: Session(**sess.to_wire()),
+        )
 
     @app.patch("/v1/sessions/{sid}", response_model=Session)
     async def patch_session(
@@ -226,9 +222,11 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 payload=Session(**sess.to_wire()).model_dump(exclude_none=True),
             )
         )
-        if requests_gact_v3(request):
-            return JSONResponse(content=session_to_v3(sess))
-        return Session(**sess.to_wire())
+        return project_for_request(
+            request,
+            v3=lambda: JSONResponse(content=session_to_v3(sess)),
+            v2=lambda: Session(**sess.to_wire()),
+        )
 
     @app.get("/v1/sessions", response_model=ListSessionsResponse)
     async def list_sessions(
@@ -245,9 +243,11 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         effective_workspace_id = workspace_id or (None if include_all_workspaces else "ws_default")
         rows = app.state.sessions.list(workspace_id=effective_workspace_id)
         rows = filter_session_rows(rows, archived=archived, parent_session_id=parent_session_id)
-        if requests_gact_v3(request):
-            return JSONResponse(content={"sessions": [session_to_v3(row) for row in rows]})
-        return ListSessionsResponse(sessions=rows_to_wire(rows))
+        return project_for_request(
+            request,
+            v3=lambda: JSONResponse(content={"sessions": [session_to_v3(row) for row in rows]}),
+            v2=lambda: ListSessionsResponse(sessions=rows_to_wire(rows)),
+        )
 
     @app.get("/v1/sessions/{sid}", response_model=Session)
     async def get_session(sid: str, workspace_id: Optional[str] = None) -> Session:

@@ -33,6 +33,15 @@ def test_capabilities_negotiate_v3_without_changing_v2(tmp_path: Path) -> None:
     assert v3.json()["gact_versions"] == ["0.3", "0.2"]
     assert v3.json()["a2ui_versions"] == ["0.9.1"]
     assert v3.json()["replay"] == {"supported": True, "retention": 256}
+    assert v3.json()["capabilities"]["a2ui"] is True
+    assert v3.json()["capabilities"]["replay"] is True
+    assert v3.json()["capabilities"]["workspace_display_names"] is True
+    assert v3.json()["capabilities"]["scoped_events"] is True
+    assert v3.json()["capabilities"]["x_clio_semantic_events"] is True
+    assert v3.json()["capabilities"]["x_clio_document_artifacts"]["review_parts"] is True
+    assert not any(
+        row["code"] == "capability_projection_dropped" for row in v3.json()["degradations"]
+    )
     assert v3.json()["model_catalog"]["source"] == "unavailable"
     assert v3.json()["model_catalog"]["reason"]
 

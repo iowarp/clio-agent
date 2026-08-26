@@ -35,7 +35,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from clio_agent.errors import MCP_TASK_RECORD_STORE_ABSENT
-from clio_agent.gact.protocol_v3 import capabilities_to_v3, requests_gact_v3
+from clio_agent.gact.protocol_v3 import capabilities_to_v3, project_for_request
 from clio_agent.gact.relay_status import relay_capabilities
 from clio_agent.gact.runtime.capabilities import (
     _capability_gap_metadata,
@@ -568,15 +568,17 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 or getattr(app.state, "relay_runtime_status", None)
             ),
         )
-        if requests_gact_v3(request):
-            return JSONResponse(
+        return project_for_request(
+            request,
+            v3=lambda: JSONResponse(
                 content=capabilities_to_v3(
                     app,
                     response.capabilities,
                     replay_retention=app.state.bus.history_capacity,
                 )
-            )
-        return response
+            ),
+            v2=lambda: response,
+        )
 
     @app.get("/v1/hooks")
     async def hooks_inspect() -> dict[str, Any]:

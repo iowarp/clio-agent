@@ -678,21 +678,11 @@ def _run_tool_user_agent(
 
 
 def _clear_session_model_refs(app: "FastAPI") -> None:
-    """Clear per-session model refs after a global LM provider swap.
+    """Clear stale default/session model refs after a global LM provider swap."""
 
-    CLIO executes every turn through the active global LM. Existing
-    sessions may still carry stale GACT ModelRefs from older TUI
-    versions or emulator-compatible defaults; leaving those refs in
-    place makes the next send fail with a per-session override error
-    even though the user just changed the global provider correctly.
-    """
-
-    defaults = getattr(app.state, "session_defaults", None)
-    if defaults is not None:
+    if (defaults := getattr(app.state, "session_defaults", None)) is not None:
         defaults.clear_model_ref()
-
-    sessions = getattr(app.state, "sessions", None)
-    if sessions is not None:
+    if (sessions := getattr(app.state, "sessions", None)) is not None:
         for sess in sessions.list():
             if not _model_ref_is_empty(sess.model):
                 sessions.update(sess.id, model={})

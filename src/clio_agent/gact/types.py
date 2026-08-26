@@ -930,10 +930,7 @@ class LMProviderRequest(BaseModel):
     # CLIO_GACT_TURN_TIMEOUT_S / 900s default. Slow reasoning models over a long
     # multi-stage pipeline need ~1800.
     turn_timeout_s: float = 0.0
-    # Subscription-backed CLI providers are SDK-only. Keep this as a string at
-    # the request boundary so deleted transports reach the provider-domain
-    # validator and produce its typed 400 response instead of a generic
-    # Pydantic 422.
+    # A string lets the provider validator return a typed 400 for deleted transports.
     transport: Optional[str] = None
     # Reasoning knobs, mapped per-provider in providers.thinking (#895).
     # thinking_level (off|low|medium|high, null=unset → shipped per-model default)

@@ -102,6 +102,8 @@ def test_empty_session_does_not_fetch_a_missing_persistent_blob(client: TestClie
         "subagents": [],
         "artifacts": [],
         "surfaces": [],
+        "a2ui_degradations": [],
+        "cursor": "0",
     }
 
 

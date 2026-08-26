@@ -6,10 +6,10 @@ import uuid
 from typing import Any, Optional
 
 from clio_agent.gact import context as _ctx
-from clio_agent.gact.a2ui import A2UIValidationError, validate_server_message
+from clio_agent.gact.a2ui import A2UIValidationError, trusted_component_names
 from clio_agent.gact.agents.tool_instrumentation import native_tool
 from clio_agent.gact.parts import Part
-from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
+from clio_agent.gact.protocol_v3 import A2UI_V091_WIRE, CLIO_A2UI_CATALOG_ID
 
 
 def _emit_surface_part(app: Any, session_id: str, part: Part) -> bool:
@@ -47,13 +47,8 @@ def build_create_a2ui_surface_tool() -> Any:
         and forms when those representations answer
         the user's question more clearly than prose. ``components`` uses the A2UI
         0.9 component array: each item needs ``id`` and ``component``; containers
-        reference child ids. Trusted names include Text, Icon, Image, Row, Column,
-        Grid, List, Frame, Tabs, Modal, Divider, Button, Checkbox, TextField,
-        ChoicePicker, Slider, clio.status.v1, clio.metric.v1, clio.progress.v1,
-        clio.callout.v1, clio.data-table.v1, clio.time-series.v1,
-        clio.mermaid.v1, clio.map.v1, clio.workflow.v1, clio.artifact.v1,
-        clio.code.v1, clio.diff.v1,
-        clio.action-card.v1, and clio.approval.v1. Bind values with
+        reference child ids. Trusted component names: {trusted_component_names}.
+        Bind values with
         ``{"path": "/field"}`` and supply those values in ``data_model``. The
         shape is flat and must contain exactly one top-level component whose id is
         the literal ``"root"`` because the official renderer mounts that id. For
@@ -136,20 +131,13 @@ def build_create_a2ui_surface_tool() -> Any:
             raise A2UIValidationError(
                 'A2UI surface components must contain exactly one id="root" component'
             )
-        part = Part(
-            id=f"live_a2ui_{uuid.uuid4().hex[:12]}",
-            type="a2ui",
-            surface_id=surface_id,
-        )
+        part_id = f"live_a2ui_{uuid.uuid4().hex[:12]}"
         messages: list[dict[str, Any]] = []
         existing = app.state.a2ui_store.get(session_id, surface_id)
-        has_transcript_reference = bool(
-            existing is not None and existing.state != "deleted" and existing.part_id
-        )
         if existing is None or existing.state == "deleted":
             messages.append(
                 {
-                    "version": "v0.9.1",
+                    "version": A2UI_V091_WIRE,
                     "createSurface": {
                         "surfaceId": surface_id,
                         "catalogId": CLIO_A2UI_CATALOG_ID,
@@ -158,7 +146,7 @@ def build_create_a2ui_surface_tool() -> Any:
             )
         messages.append(
             {
-                "version": "v0.9.1",
+                "version": A2UI_V091_WIRE,
                 "updateComponents": {
                     "surfaceId": surface_id,
                     "components": components,
@@ -168,7 +156,7 @@ def build_create_a2ui_surface_tool() -> Any:
         if data_model is not None:
             messages.append(
                 {
-                    "version": "v0.9.1",
+                    "version": A2UI_V091_WIRE,
                     "updateDataModel": {
                         "surfaceId": surface_id,
                         "path": "/",
@@ -176,38 +164,36 @@ def build_create_a2ui_surface_tool() -> Any:
                     },
                 }
             )
-        # Validate the entire batch before the first persistent mutation. A bad
-        # component must never leave behind a half-created, permanently loading
-        # surface. Raising also makes native tool telemetry truthfully failed.
-        for message in messages:
-            validate_server_message(message)
-        surface = None
-        for message in messages:
-            surface = app.state.a2ui_store.apply(
-                session_id,
-                message,
-                part_id=part.id,
-            )
-        assert surface is not None
-        if has_transcript_reference:
-            # The surface event updates every consumer of this stable id. A new
-            # transcript reference would render the same evolving surface again
-            # after every revision, producing duplicate cards instead of one
-            # in-place interactive view.
-            emitted = True
-            part.id = surface.part_id
-        else:
-            emitted = _emit_surface_part(app, session_id, part)
+        # Both the HTTP producer and this model tool cross the same atomic
+        # validate-then-append service. Updates still write a projection-only
+        # A2UI part, so replay remains complete without rendering duplicate cards.
+        emitted = False
+
+        def persist_part(candidate: Part) -> bool:
+            nonlocal emitted
+            emitted = _emit_surface_part(app, session_id, candidate)
+            return emitted
+
+        surfaces = app.state.a2ui_store.apply_batch(
+            session_id,
+            messages,
+            part_id=part_id,
+            persist_part=persist_part,
+        )
+        surface = surfaces[-1]
         return {
             "rendered": emitted,
             "session_id": session_id,
             "surface_id": surface.id,
-            "part_id": surface.part_id or part.id,
+            "part_id": surface.part_id or part_id,
             "revision": surface.revision,
             "state": surface.state,
             **({} if emitted else {"reason": "transcript_frozen"}),
         }
 
+    create_a2ui_surface.__doc__ = (create_a2ui_surface.__doc__ or "").replace(
+        "{trusted_component_names}", ", ".join(trusted_component_names())
+    )
     return native_tool(
         create_a2ui_surface,
         name="create_a2ui_surface",

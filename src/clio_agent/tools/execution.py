@@ -6,7 +6,6 @@ import asyncio
 import concurrent.futures
 import contextvars
 import inspect
-import json
 import logging
 import os
 import threading
@@ -37,6 +36,7 @@ from clio_agent.tools.mcp_executor import (
     _tool_visible_to_model,
 )
 from clio_agent.tools.mcp_results import call_tool_result_to_observer
+from clio_agent.tools.result_errors import structured_tool_result_error
 from clio_agent.tools.tool_hooks import InterceptDecision, PostToolHook, apply_post_tool_hook
 
 logger = logging.getLogger(__name__)
@@ -319,58 +319,6 @@ def notify_global_tool_observer(
     """
 
     notify_tool_observer(current_tool_runtime().tool_observer, name, args, phase, error, result)
-
-
-def _structured_tool_result_error(result: Any) -> str | None:
-    """Return an error string when a tool returns a structured error payload."""
-
-    decoded = result
-    if isinstance(result, str):
-        stripped = result.strip()
-        if stripped.startswith("{") and '"error"' in stripped:
-            with suppress(json.JSONDecodeError, TypeError):
-                decoded = json.loads(stripped)
-    if isinstance(decoded, Mapping):
-        error = decoded.get("error")
-        if error:
-            if isinstance(error, Mapping):
-                code = str(error.get("code") or error.get("type") or "tool_error")
-                message = str(error.get("message") or "").strip()
-                return f"{code}: {message}" if message else code
-            return str(error)
-        status = str(decoded.get("status") or "").strip().lower()
-        if status in {"error", "failed", "failure"}:
-            message = str(decoded.get("message") or decoded.get("detail") or "").strip()
-            return f"status={status}: {message}" if message else f"status={status}"
-        if decoded.get("ok") is False:
-            message = str(decoded.get("message") or decoded.get("detail") or "").strip()
-            return f"ok=false: {message}" if message else "ok=false"
-    elif isinstance(decoded, str):
-        normalized = decoded.strip().casefold()
-        if normalized.startswith("error:"):
-            return decoded.strip()
-
-    result_map = result if isinstance(result, Mapping) else {}
-    for candidate in (
-        getattr(result, "structured_content", None),
-        getattr(result, "structuredContent", None),
-        result_map.get("structuredContent"),
-        result_map.get("structured_content"),
-        getattr(result, "data", None),
-        result_map.get("data"),
-    ):
-        if candidate is not None and candidate is not result:
-            nested_error = _structured_tool_result_error(candidate)
-            if nested_error is not None:
-                return nested_error
-    explicitly_failed = getattr(
-        result,
-        "is_error",
-        getattr(result, "isError", result_map.get("isError", result_map.get("is_error"))),
-    )
-    if explicitly_failed is True:
-        return "tool_result_is_error"
-    return None
 
 
 class AsyncToolExecutor(Protocol):
@@ -835,10 +783,12 @@ class SyncMCPToolExecutor:
                     timeout=(None if timeout is None else timeout + SYNC_TOOL_RESULT_GRACE_SECONDS),
                     action=f"MCP tool {name!r}",
                     cancellation_checker=cancellation_checker,
-                    cancellation_error=lambda wire_settled: foreground_cancel._tool_cancellation_error(
-                        name,
-                        "tool_call_in_flight",
-                        wire_settled=wire_settled,
+                    cancellation_error=lambda wire_settled: (
+                        foreground_cancel._tool_cancellation_error(
+                            name,
+                            "tool_call_in_flight",
+                            wire_settled=wire_settled,
+                        )
                     ),
                 )
         except Exception as exc:
@@ -867,7 +817,7 @@ class SyncMCPToolExecutor:
             raise
         result = outcome.model_text
         observer_result = call_tool_result_to_observer(outcome.raw_result)
-        structured_error = _structured_tool_result_error(outcome.raw_result)
+        structured_error = structured_tool_result_error(outcome.raw_result)
         if structured_error:
             self._record_tool_failure(name, structured_error)
             notify_tool_observer(

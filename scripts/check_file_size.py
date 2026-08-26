@@ -274,7 +274,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # days" bug). All reap logic lives in the owner module
     # runtime/process_census.py (reap_orphaned_processes/boot_reap_off_loop);
     # only the sequencing wrapper + its one call site land here.
-    "src/clio_agent/gact/app.py": 2553,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
+    "src/clio_agent/gact/app.py": 2547,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -694,7 +694,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # thin sync delegate to AsyncMCPToolExecutor.merge_namespace_tools
     # (mcp_executor.py), the actual live-tool-table merge target for an
     # on-demand mount (gact/agents/builders.py).
-    "src/clio_agent/tools/execution.py": 1245,  # _ACTIVE_TOOL_BLUEPRINT_PATH contextvar trio - this IS the owner module (#1247)
+    "src/clio_agent/tools/execution.py": 1216,  # structured result parsing moved to tools/result_errors.py
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.

@@ -14,6 +14,7 @@ from clio_agent.gact.a2ui import (
 )
 from clio_agent.gact.events import Event
 from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
+from clio_agent.gact.protocol_v3 import A2UI_V091, A2UI_V091_WIRE
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.routes.sessions import cancel_session_state
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, RetryTurnRequest
@@ -45,15 +46,25 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
         """Return compacted surface snapshots for reconnect reconciliation."""
 
         require_session(sid)
-        return {"surfaces": app.state.a2ui_store.list_wire(sid)}
+        degradations = app.state.a2ui_store.projection_degradations(sid)
+        if app.state.a2ui_store.load_degradation is not None:
+            degradations.insert(0, app.state.a2ui_store.load_degradation)
+        return {
+            "surfaces": app.state.a2ui_store.list_wire(sid),
+            "degradations": degradations,
+        }
 
     @app.post("/v1/sessions/{sid}/a2ui/messages")
     async def produce_messages(sid: str, request: Request) -> dict[str, Any]:
         """Persist and publish ordered official A2UI 0.9.1 messages."""
 
         require_session(sid)
-        if request.headers.get("x-a2ui-version", "").strip() != "0.9.1":
-            raise _error(406, "unsupported_protocol", "A2UI 0.9.1 must be negotiated")
+        if getattr(request.state, "a2ui_protocol_version", None) != A2UI_V091:
+            raise _error(
+                406,
+                "unsupported_protocol",
+                f"A2UI {A2UI_V091} must be negotiated",
+            )
         body = await json_body(request, route="POST /v1/sessions/{sid}/a2ui/messages")
         if set(body) - {"messages", "correlation"}:
             raise _error(422, "validation_error", "A2UI production body contains unknown fields")
@@ -159,7 +170,7 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
             assert name in SERVER_ACTIONS
 
         ack = {
-            "version": "v0.9.1",
+            "version": A2UI_V091_WIRE,
             "updateDataModel": {
                 "surfaceId": surface_id,
                 "path": "/lastAction",

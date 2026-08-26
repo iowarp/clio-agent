@@ -1,21 +1,30 @@
-"""Persistent, bounded A2UI 0.9.1 surface state for GACT 0.3."""
+"""Validated, transcript-projected A2UI surface state for GACT 0.3."""
 
 from __future__ import annotations
 
 import json
 import math
 import re
-import threading
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Mapping
+from datetime import datetime, timezone
+from typing import Any, Literal, Mapping
 from urllib.parse import urlsplit
-from uuid import uuid4
 
-from clio_agent.gact.events import Event, EventBus
-from clio_agent.gact.protocol_v3 import A2UI_V091, CLIO_A2UI_CATALOG_ID, utcnow_iso
+from pydantic import BaseModel, ConfigDict, ValidationError, create_model
+
+from clio_agent.gact.protocol.constants import (
+    A2UI_V091,
+    A2UI_V091_WIRE,
+    CLIO_A2UI_CATALOG_ID,
+)
+
+
+def utcnow_iso() -> str:
+    """Return a stable UTC timestamp for projection records."""
+
+    return datetime.now(timezone.utc).isoformat()
+
 
 MAX_A2UI_MESSAGE_BYTES = 256 * 1024
 MAX_A2UI_COMPONENTS = 256
@@ -178,6 +187,36 @@ _COMPONENT_REQUIRED_PROPS: dict[str, frozenset[str]] = {
     "clio.approval.v1": frozenset({"title", "reason", "risk", "actions"}),
 }
 
+
+def _build_component_models() -> dict[str, type[BaseModel]]:
+    """Generate strict Pydantic component models from the interim catalog."""
+
+    models: dict[str, type[BaseModel]] = {}
+    for component_name, props in _COMPONENT_PROPS.items():
+        required = _COMPONENT_REQUIRED_PROPS[component_name]
+        fields: dict[str, Any] = {
+            "id": (str, ...),
+            "component": (Literal[component_name], ...),
+        }
+        for prop in props:
+            fields[prop] = (Any, ... if prop in required else None)
+        models[component_name] = create_model(
+            f"A2UI{re.sub(r'[^A-Za-z0-9]', '', component_name).title()}Component",
+            __config__=ConfigDict(extra="forbid"),
+            **fields,
+        )
+    return models
+
+
+_COMPONENT_MODELS = _build_component_models()
+
+
+def trusted_component_names() -> tuple[str, ...]:
+    """Return the interim trusted catalog used to generate producer guidance."""
+
+    return tuple(_COMPONENT_MODELS)
+
+
 _FORBIDDEN_KEYS = frozenset(
     {
         "css",
@@ -230,8 +269,8 @@ class A2UISurfaceRecord:
 
 
 def _message_operation(message: Mapping[str, Any]) -> tuple[str, Mapping[str, Any]]:
-    if message.get("version") != "v0.9.1":
-        raise A2UIValidationError("A2UI message version must be v0.9.1")
+    if message.get("version") != A2UI_V091_WIRE:
+        raise A2UIValidationError(f"A2UI message version must be {A2UI_V091_WIRE}")
     operations = [
         key
         for key in ("createSurface", "updateComponents", "updateDataModel", "deleteSurface")
@@ -310,6 +349,10 @@ def _validate_value(value: Any, *, key: str = "", depth: int = 0) -> None:
         return
     if not isinstance(value, Mapping):
         return
+    if set(value) == {"path"}:
+        binding_path = value.get("path")
+        if not isinstance(binding_path, str) or not binding_path.startswith("/"):
+            raise A2UIValidationError("A2UI data bindings must use JSON Pointer paths")
     for child_key, child_value in value.items():
         if not isinstance(child_key, str):
             raise A2UIValidationError("A2UI object keys must be strings")
@@ -319,8 +362,6 @@ def _validate_value(value: Any, *, key: str = "", depth: int = 0) -> None:
             raise A2UIValidationError("A2UI client function calls are not trusted")
         if child_key == "action":
             _validate_action(child_value)
-        if child_key == "path" and isinstance(child_value, str) and not child_value.startswith("/"):
-            raise A2UIValidationError("A2UI data bindings must use JSON Pointer paths")
         if child_key == "event" and isinstance(child_value, Mapping):
             action = str(child_value.get("name") or "")
             if action not in SERVER_ACTIONS | CLIENT_ACTIONS:
@@ -477,19 +518,15 @@ def validate_server_message(message: Mapping[str, Any]) -> tuple[str, str]:
             if not isinstance(component, Mapping):
                 raise A2UIValidationError("A2UI component must be an object")
             component_name = str(component.get("component") or "")
-            allowed_props = _COMPONENT_PROPS.get(component_name)
-            if allowed_props is None:
+            component_model = _COMPONENT_MODELS.get(component_name)
+            if component_model is None:
                 raise A2UIValidationError(f"A2UI component is not trusted: {component_name}")
-            unknown_props = set(component) - {"id", "component"} - allowed_props
-            if unknown_props:
+            try:
+                component_model.model_validate(component)
+            except ValidationError as exc:
                 raise A2UIValidationError(
-                    f"A2UI {component_name} contains unknown properties: {sorted(unknown_props)}"
-                )
-            missing_props = _COMPONENT_REQUIRED_PROPS[component_name] - set(component)
-            if missing_props:
-                raise A2UIValidationError(
-                    f"A2UI {component_name} is missing required properties: {sorted(missing_props)}"
-                )
+                    f"A2UI {component_name} component shape is invalid: {exc.errors()}"
+                ) from exc
             _validate_accessibility(component, component_name)
             if component_name == "clio.mermaid.v1":
                 source = component.get("source")
@@ -505,6 +542,10 @@ def validate_server_message(message: Mapping[str, Any]) -> tuple[str, str]:
                 _validate_map_component(component)
             if component_name == "clio.time-series.v1":
                 _validate_time_series_component(component)
+    if operation == "updateDataModel":
+        path = payload.get("path")
+        if not isinstance(path, str) or not path.startswith("/"):
+            raise A2UIValidationError("A2UI updateDataModel path must be a JSON Pointer")
     _validate_value(payload)
     return operation, surface_id
 
@@ -512,8 +553,8 @@ def validate_server_message(message: Mapping[str, Any]) -> tuple[str, str]:
 def validate_client_action(message: Mapping[str, Any], *, surface_id: str) -> dict[str, Any]:
     """Validate the official 0.9.1 client action envelope."""
 
-    if message.get("version") != "v0.9.1" or set(message) != {"version", "action"}:
-        raise A2UIValidationError("A2UI client message must be a v0.9.1 action")
+    if message.get("version") != A2UI_V091_WIRE or set(message) != {"version", "action"}:
+        raise A2UIValidationError(f"A2UI client message must be a {A2UI_V091_WIRE} action")
     action = message.get("action")
     if not isinstance(action, Mapping):
         raise A2UIValidationError("A2UI action payload must be an object")
@@ -537,201 +578,177 @@ def validate_client_action(message: Mapping[str, Any], *, surface_id: str) -> di
     return dict(action)
 
 
-class A2UIStore:
-    """Thread-safe persistent surface ledger with event publication."""
+def _apply_staged_message(
+    surfaces: dict[tuple[str, str], A2UISurfaceRecord],
+    session_id: str,
+    message: Mapping[str, Any],
+    *,
+    deleted_in_batch: set[str],
+    run_id: str,
+    message_id: str,
+    part_id: str,
+    observed_at: str,
+) -> tuple[str, str, A2UISurfaceRecord]:
+    """Apply one validated message to an uncommitted projection."""
 
-    def __init__(self, *, path: Path, bus: EventBus) -> None:
-        self._path = path
-        self._bus = bus
-        self._lock = threading.Lock()
-        self._surfaces: dict[tuple[str, str], A2UISurfaceRecord] = {}
-        self._load_degradation: dict[str, str] | None = None
-        self._load()
-
-    def _load(self) -> None:
-        if not self._path.exists():
-            return
-        try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-            if not isinstance(data, Mapping) or not isinstance(data.get("surfaces"), list):
-                raise ValueError("A2UI ledger root must contain a surfaces list")
-            loaded: dict[tuple[str, str], A2UISurfaceRecord] = {}
-            for raw in data["surfaces"]:
-                if not isinstance(raw, Mapping):
-                    raise ValueError("A2UI ledger surface must be an object")
-                surface = A2UISurfaceRecord(**raw)
-                loaded[(surface.session_id, surface.id)] = surface
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            quarantine_path = self._quarantine_corrupt_file()
-            self._load_degradation = {
-                "reason": "a2ui_ledger_corrupt",
-                "source_path": str(self._path),
-                "quarantine_path": str(quarantine_path) if quarantine_path else "",
-            }
-            return
-        self._surfaces = loaded
-
-    def _quarantine_corrupt_file(self) -> Path | None:
-        """Move a corrupt ledger aside without overwriting earlier evidence."""
-
-        if not self._path.exists():
-            return None
-        quarantine = self._path.with_name(f"{self._path.name}.corrupt-{uuid4().hex}")
-        try:
-            self._path.replace(quarantine)
-        except OSError:
-            return None
-        return quarantine
-
-    @property
-    def load_degradation(self) -> dict[str, str] | None:
-        """Return typed evidence when the durable ledger was quarantined."""
-
-        return dict(self._load_degradation) if self._load_degradation is not None else None
-
-    def _flush(self, surfaces: Mapping[tuple[str, str], A2UISurfaceRecord]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-        tmp.write_text(
-            json.dumps({"surfaces": [asdict(row) for row in surfaces.values()]}, indent=2),
-            encoding="utf-8",
-        )
-        tmp.replace(self._path)
-
-    def get(self, session_id: str, surface_id: str) -> A2UISurfaceRecord | None:
-        """Return a session-scoped surface if present."""
-
-        with self._lock:
-            return self._surfaces.get((session_id, surface_id))
-
-    def list_wire(self, session_id: str) -> list[dict[str, Any]]:
-        """Return surfaces for a session ordered by creation time."""
-
-        with self._lock:
-            rows = [row for row in self._surfaces.values() if row.session_id == session_id]
-            rows.sort(key=lambda row: row.created_at)
-            return [row.to_wire() for row in rows]
-
-    def apply(
-        self,
-        session_id: str,
-        message: Mapping[str, Any],
-        *,
-        run_id: str = "",
-        message_id: str = "",
-        part_id: str = "",
-    ) -> A2UISurfaceRecord:
-        """Validate, persist, and publish one ordered server message."""
-
-        return self.apply_batch(
-            session_id,
-            [message],
+    operation, surface_id = validate_server_message(message)
+    if surface_id in deleted_in_batch:
+        raise A2UIValidationError("A2UI deleteSurface is terminal within a message batch")
+    key = (session_id, surface_id)
+    surface = surfaces.get(key)
+    if operation == "createSurface":
+        if surface is not None and surface.state != "deleted":
+            raise A2UIValidationError("A2UI surface already exists")
+        surface = A2UISurfaceRecord(
+            id=surface_id,
+            session_id=session_id,
+            catalog_id=CLIO_A2UI_CATALOG_ID,
             run_id=run_id,
             message_id=message_id,
             part_id=part_id,
-        )[0]
+            created_at=observed_at,
+            updated_at=observed_at,
+        )
+        surfaces[key] = surface
+    elif surface is None:
+        raise A2UIValidationError("A2UI surface does not exist in this session")
+    elif surface.state == "deleted":
+        raise A2UIValidationError("A2UI deleteSurface is terminal until a new createSurface")
+    if operation == "updateComponents":
+        surface.messages = [
+            existing for existing in surface.messages if "updateComponents" not in existing
+        ]
+    if len(surface.messages) >= MAX_A2UI_MESSAGES:
+        removable = next(
+            (
+                index
+                for index, existing in enumerate(surface.messages)
+                if "createSurface" not in existing
+            ),
+            None,
+        )
+        if removable is None:
+            raise A2UIValidationError("A2UI message limit cannot preserve createSurface")
+        surface.messages.pop(removable)
+        surface.eviction_reason = "a2ui_message_limit"
+        surface.evicted_messages += 1
+    surface.messages.append(dict(message))
+    surface.revision += 1
+    surface.updated_at = observed_at
+    if operation == "deleteSurface":
+        surface.state = "deleted"
+        deleted_in_batch.add(surface_id)
+    elif operation == "createSurface":
+        surface.state = "creating"
+    else:
+        surface.state = "ready"
+    return operation, surface_id, surface
 
-    @staticmethod
-    def _apply_staged_message(
-        surfaces: dict[tuple[str, str], A2UISurfaceRecord],
-        session_id: str,
-        message: Mapping[str, Any],
-        *,
-        deleted_in_batch: set[str],
-        run_id: str,
-        message_id: str,
-        part_id: str,
-    ) -> tuple[str, str, A2UISurfaceRecord]:
-        """Apply one validated message to an uncommitted surface map."""
 
-        operation, surface_id = validate_server_message(message)
-        if surface_id in deleted_in_batch:
-            raise A2UIValidationError("A2UI deleteSurface is terminal within a message batch")
-        key = (session_id, surface_id)
-        surface = surfaces.get(key)
-        if operation == "createSurface":
-            if surface is not None and surface.state != "deleted":
-                raise A2UIValidationError("A2UI surface already exists")
-            surface = A2UISurfaceRecord(
-                id=surface_id,
-                session_id=session_id,
-                catalog_id=CLIO_A2UI_CATALOG_ID,
-                run_id=run_id,
-                message_id=message_id,
+def apply_batch(
+    surfaces: Mapping[tuple[str, str], A2UISurfaceRecord],
+    session_id: str,
+    messages: list[Mapping[str, Any]],
+    *,
+    run_id: str = "",
+    message_id: str = "",
+    part_id: str = "",
+    observed_at: str | None = None,
+) -> tuple[
+    dict[tuple[str, str], A2UISurfaceRecord],
+    list[tuple[str, str, A2UISurfaceRecord]],
+]:
+    """Validate and atomically fold one ordered batch into surface state."""
+
+    if not messages:
+        raise A2UIValidationError("A2UI message batch must not be empty")
+    staged = deepcopy(dict(surfaces))
+    deleted_in_batch: set[str] = set()
+    applied: list[tuple[str, str, A2UISurfaceRecord]] = []
+    timestamp = observed_at or utcnow_iso()
+    for message in messages:
+        result = _apply_staged_message(
+            staged,
+            session_id,
+            message,
+            deleted_in_batch=deleted_in_batch,
+            run_id=run_id,
+            message_id=message_id,
+            part_id=part_id,
+            observed_at=timestamp,
+        )
+        applied.append((result[0], result[1], deepcopy(result[2])))
+    return staged, applied
+
+
+def project_a2ui_parts(
+    parts: list[Any],
+    session_id: str,
+) -> tuple[dict[tuple[str, str], A2UISurfaceRecord], list[dict[str, str]]]:
+    """Fold persisted A2UI parts and quarantine unknown or invalid records."""
+
+    surfaces: dict[tuple[str, str], A2UISurfaceRecord] = {}
+    degradations: list[dict[str, str]] = []
+    for raw_part in parts:
+        part = raw_part.to_wire() if hasattr(raw_part, "to_wire") else raw_part
+        if not isinstance(part, Mapping) or part.get("type") != "a2ui":
+            continue
+        part_id = str(part.get("id") or "")
+        protocol_version = str(part.get("a2ui_protocol_version") or "")
+        if protocol_version != A2UI_V091:
+            degradations.append(
+                {
+                    "code": "a2ui_persisted_version_unsupported",
+                    "reason": f"A2UI part {part_id or '<unknown>'} uses {protocol_version or '<missing>'}.",
+                    "part_id": part_id,
+                    "protocol_version": protocol_version,
+                }
+            )
+            continue
+        messages = part.get("a2ui_messages")
+        if not isinstance(messages, list) or not all(isinstance(row, Mapping) for row in messages):
+            degradations.append(
+                {
+                    "code": "a2ui_persisted_payload_invalid",
+                    "reason": f"A2UI part {part_id or '<unknown>'} has no valid message batch.",
+                    "part_id": part_id,
+                    "protocol_version": protocol_version,
+                }
+            )
+            continue
+        raw_metadata = part.get("metadata")
+        metadata: Mapping[str, Any] = raw_metadata if isinstance(raw_metadata, Mapping) else {}
+        try:
+            surfaces, _ = apply_batch(
+                surfaces,
+                session_id,
+                messages,
+                run_id=str(metadata.get("run_id") or ""),
+                message_id=str(metadata.get("message_id") or ""),
                 part_id=part_id,
+                observed_at=str(metadata.get("recorded_at") or utcnow_iso()),
             )
-            surfaces[key] = surface
-        elif surface is None:
-            raise A2UIValidationError("A2UI surface does not exist in this session")
-        elif surface.state == "deleted":
-            raise A2UIValidationError("A2UI deleteSurface is terminal until a new createSurface")
-        if operation == "updateComponents":
-            surface.messages = [
-                existing for existing in surface.messages if "updateComponents" not in existing
-            ]
-        if len(surface.messages) >= MAX_A2UI_MESSAGES:
-            removable = next(
-                (index for index, existing in enumerate(surface.messages) if "createSurface" not in existing),
-                None,
+        except A2UIValidationError as exc:
+            degradations.append(
+                {
+                    "code": "a2ui_persisted_payload_invalid",
+                    "reason": str(exc),
+                    "part_id": part_id,
+                    "protocol_version": protocol_version,
+                }
             )
-            if removable is None:
-                raise A2UIValidationError("A2UI message limit cannot preserve createSurface")
-            surface.messages.pop(removable)
-            surface.eviction_reason = "a2ui_message_limit"
-            surface.evicted_messages += 1
-        surface.messages.append(dict(message))
-        surface.revision += 1
-        surface.updated_at = utcnow_iso()
-        if operation == "deleteSurface":
-            surface.state = "deleted"
-            deleted_in_batch.add(surface_id)
-        elif operation == "createSurface":
-            surface.state = "creating"
-        else:
-            surface.state = "ready"
-        return operation, surface_id, surface
+    return surfaces, degradations
 
-    def apply_batch(
-        self,
-        session_id: str,
-        messages: list[Mapping[str, Any]],
-        *,
-        run_id: str = "",
-        message_id: str = "",
-        part_id: str = "",
-    ) -> list[A2UISurfaceRecord]:
-        """Atomically validate, persist, and publish an ordered message batch."""
 
-        with self._lock:
-            staged = deepcopy(self._surfaces)
-            deleted_in_batch: set[str] = set()
-            applied: list[tuple[str, str, A2UISurfaceRecord]] = []
-            snapshots: list[A2UISurfaceRecord] = []
-            for message in messages:
-                result = self._apply_staged_message(
-                    staged,
-                    session_id,
-                    message,
-                    deleted_in_batch=deleted_in_batch,
-                    run_id=run_id,
-                    message_id=message_id,
-                    part_id=part_id,
-                )
-                snapshot = deepcopy(result[2])
-                applied.append((result[0], result[1], snapshot))
-                snapshots.append(snapshot)
-            self._flush(staged)
-            self._surfaces = staged
-        for operation, surface_id, surface in applied:
-            event_type = (
-                "a2ui.surface.deleted"
-                if operation == "deleteSurface"
-                else "a2ui.surface.upserted"
-            )
-            payload = (
-                {"surface_id": surface_id}
-                if operation == "deleteSurface"
-                else surface.to_wire()
-            )
-            self._bus.publish(Event(type=event_type, session_id=session_id, payload=payload))
-        return snapshots
+__all__ = [
+    "CLIENT_ACTIONS",
+    "MAX_A2UI_MESSAGES",
+    "SERVER_ACTIONS",
+    "A2UISurfaceRecord",
+    "A2UIValidationError",
+    "apply_batch",
+    "project_a2ui_parts",
+    "trusted_component_names",
+    "validate_client_action",
+    "validate_server_message",
+]

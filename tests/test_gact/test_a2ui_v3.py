@@ -8,11 +8,20 @@ from fastapi.testclient import TestClient
 from pytest import MonkeyPatch, raises
 
 from clio_agent.gact import context as gact_context
-from clio_agent.gact.a2ui import MAX_A2UI_MESSAGES, A2UIStore, A2UIValidationError
+from clio_agent.gact.a2ui import (
+    MAX_A2UI_MESSAGES,
+    A2UIValidationError,
+    apply_batch,
+    trusted_component_names,
+    validate_server_message,
+)
 from clio_agent.gact.a2ui_tools import build_create_a2ui_surface_tool
 from clio_agent.gact.app import build_app
-from clio_agent.gact.events import EventBus
+from clio_agent.gact.parts import Part
+from clio_agent.gact.protocol.constants import A2UI_V091
+from clio_agent.gact.protocol.v3.message import transcript_entities
 from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
+from clio_agent.gact.types import Message
 
 HEADERS = {
     "X-GACT-Version": "0.3",
@@ -72,23 +81,29 @@ def test_surface_lifecycle_persists_and_reconciles(tmp_path: Path) -> None:
     assert persisted.messages == [_create_message(), update]
 
 
-def test_corrupt_a2ui_ledger_is_quarantined_without_overwrite(tmp_path: Path) -> None:
+def test_legacy_a2ui_ledger_is_retained_and_reported_as_superseded(tmp_path: Path) -> None:
     path = tmp_path / "a2ui-surfaces.json"
     original = '{"surfaces": [broken]}'
     path.write_text(original, encoding="utf-8")
 
-    store = A2UIStore(path=path, bus=EventBus())
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    store = app.state.a2ui_store
 
     assert store.list_wire("sess_any") == []
-    assert not path.exists()
-    quarantined = list(tmp_path.glob("a2ui-surfaces.json.corrupt-*"))
-    assert len(quarantined) == 1
-    assert quarantined[0].read_text(encoding="utf-8") == original
+    assert path.read_text(encoding="utf-8") == original
     assert store.load_degradation == {
-        "reason": "a2ui_ledger_corrupt",
+        "reason": "a2ui_ledger_superseded",
         "source_path": str(path),
-        "quarantine_path": str(quarantined[0]),
+        "replacement": "session_message_log",
     }
+
+    session = app.state.sessions.create(workspace_id="ws_default", title="A2UI")
+    response = TestClient(app).get(
+        f"/v1/sessions/{session.id}/a2ui/surfaces",
+        headers=HEADERS,
+    )
+    assert response.status_code == 200
+    assert response.json()["degradations"] == [store.load_degradation]
 
 
 def test_message_batch_rejects_delete_followed_by_update_atomically(tmp_path: Path) -> None:
@@ -117,24 +132,23 @@ def test_message_batch_rejects_delete_followed_by_update_atomically(tmp_path: Pa
     assert client.app.state.a2ui_store.get(sid, "surface_1") is None
 
 
-def test_a2ui_message_eviction_preserves_create_and_reports_typed_count(tmp_path: Path) -> None:
-    store = A2UIStore(path=tmp_path / "a2ui-surfaces.json", bus=EventBus())
-    store.apply("sess_1", _create_message())
-    for index in range(MAX_A2UI_MESSAGES + 3):
-        store.apply(
-            "sess_1",
-            {
-                "version": "v0.9.1",
-                "updateDataModel": {
-                    "surfaceId": "surface_1",
-                    "path": "/counter",
-                    "value": index,
-                },
+def test_a2ui_message_eviction_preserves_create_and_reports_typed_count() -> None:
+    messages = [_create_message()]
+    messages.extend(
+        {
+            "version": "v0.9.1",
+            "updateDataModel": {
+                "surfaceId": "surface_1",
+                "path": "/counter",
+                "value": index,
             },
-        )
+        }
+        for index in range(MAX_A2UI_MESSAGES + 3)
+    )
 
-    surface = store.get("sess_1", "surface_1")
-    assert surface is not None
+    surfaces, _ = apply_batch({}, "sess_1", messages)
+
+    surface = surfaces[("sess_1", "surface_1")]
     assert len(surface.messages) == MAX_A2UI_MESSAGES
     assert "createSurface" in surface.messages[0]
     assert surface.eviction_reason == "a2ui_message_limit"
@@ -254,10 +268,112 @@ def test_renderer_required_component_properties_are_rejected_before_persistence(
     )
 
     assert response.status_code == 422
-    assert (
-        "missing required properties: ['mediaType', 'uri']" in response.json()["error"]["message"]
-    )
+    assert "component shape is invalid" in response.json()["error"]["message"]
     assert client.app.state.a2ui_store.get(sid, "surface_1") is None
+
+
+def test_catalog_models_and_generated_tool_guidance_share_one_allowlist() -> None:
+    tool = build_create_a2ui_surface_tool()
+
+    generated_allowlist = ", ".join(trusted_component_names())
+    assert f"Trusted component names: {generated_allowlist}." in tool.desc
+    assert "Checkbox" not in generated_allowlist
+    assert "CheckBox" in generated_allowlist
+
+
+def test_diff_paths_are_content_while_binding_paths_remain_json_pointers() -> None:
+    for path in ("src/analysis.py", r"D:\\science\\analysis.py"):
+        validate_server_message(
+            {
+                "version": "v0.9.1",
+                "updateComponents": {
+                    "surfaceId": "diff-surface",
+                    "components": [
+                        {
+                            "id": "diff",
+                            "component": "clio.diff.v1",
+                            "path": path,
+                            "diff": "@@ -1 +1 @@",
+                        }
+                    ],
+                },
+            }
+        )
+
+    with raises(A2UIValidationError, match="data bindings must use JSON Pointer paths"):
+        validate_server_message(
+            {
+                "version": "v0.9.1",
+                "updateComponents": {
+                    "surfaceId": "binding-surface",
+                    "components": [
+                        {
+                            "id": "field",
+                            "component": "TextField",
+                            "label": "Station",
+                            "value": {"path": "station/name"},
+                        }
+                    ],
+                },
+            }
+        )
+
+
+def test_unknown_persisted_a2ui_version_is_quarantined_with_typed_reason() -> None:
+    message = Message(
+        id="msg_unknown_a2ui",
+        session_id="sess_versioned",
+        role="assistant",
+        created_at="2026-08-26T12:00:00Z",
+        updated_at="2026-08-26T12:00:00Z",
+        parts=[
+            Part(
+                id="part_unknown_a2ui",
+                type="a2ui",
+                surface_id="surface_unknown",
+                a2ui_protocol_version="9.9",
+                a2ui_messages=[_create_message("surface_unknown")],
+            )
+        ],
+    )
+
+    projection = transcript_entities([message], "sess_versioned")
+
+    assert projection["surfaces"] == []
+    assert projection["a2ui_degradations"] == [
+        {
+            "code": "a2ui_persisted_version_unsupported",
+            "reason": "A2UI part part_unknown_a2ui uses 9.9.",
+            "part_id": "part_unknown_a2ui",
+            "protocol_version": "9.9",
+        }
+    ]
+
+
+def test_persisted_a2ui_part_carries_protocol_and_ordered_payload(tmp_path: Path) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    messages = [
+        _create_message("persisted-surface"),
+        {
+            "version": "v0.9.1",
+            "updateComponents": {
+                "surfaceId": "persisted-surface",
+                "components": [{"id": "root", "component": "Text", "text": "Ready"}],
+            },
+        },
+    ]
+
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": messages},
+    )
+
+    assert response.status_code == 200
+    persisted = client.app.state.messages[sid][-1].parts[0]
+    assert persisted.a2ui_protocol_version == A2UI_V091
+    assert persisted.a2ui_messages == messages
+    assert not (tmp_path / "a2ui-surfaces.json").exists()
 
 
 def test_mermaid_component_is_trusted_but_executable_directives_are_rejected(
@@ -419,8 +535,9 @@ def test_root_agent_tool_updates_one_stable_transcript_reference(
         for part in app.state.live_assistant_parts[sid]
         if part.type == "a2ui" and part.surface_id == "stable-view"
     ]
-    assert len(references) == 1
+    assert len(references) == 2
     assert updated["part_id"] == first["part_id"] == references[0].id
+    assert references[1].metadata["projection_only"] is True
     surface = app.state.a2ui_store.get(sid, "stable-view")
     assert surface is not None
     assert surface.messages[-1]["updateComponents"]["components"][0]["text"] == "Updated"

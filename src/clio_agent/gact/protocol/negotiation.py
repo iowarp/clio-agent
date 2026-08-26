@@ -7,8 +7,7 @@ from collections.abc import Awaitable, Callable
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
-GACT_V3 = "0.3"
-A2UI_V091 = "0.9.1"
+from clio_agent.gact.protocol.constants import A2UI_V091, GACT_V2, GACT_V3
 
 
 def install_protocol_negotiation(app: FastAPI) -> None:
@@ -21,9 +20,10 @@ def install_protocol_negotiation(app: FastAPI) -> None:
     ) -> Response:
         gact_version = request.headers.get("x-gact-version", "").strip()
         a2ui_version = request.headers.get("x-a2ui-version", "").strip()
-        request.state.protocol_version = gact_version or "0.2"
-        if gact_version and gact_version not in {"0.2", GACT_V3}:
-            return _unsupported("GACT", gact_version, [GACT_V3, "0.2"])
+        request.state.protocol_version = gact_version or GACT_V2
+        request.state.a2ui_protocol_version = a2ui_version or None
+        if gact_version and gact_version not in {GACT_V2, GACT_V3}:
+            return _unsupported("GACT", gact_version, [GACT_V3, GACT_V2])
         if a2ui_version and a2ui_version != A2UI_V091:
             return _unsupported("A2UI", a2ui_version, [A2UI_V091])
         return await call_next(request)

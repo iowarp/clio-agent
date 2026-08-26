@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from clio_agent.gact.a2ui import project_a2ui_parts
 from clio_agent.gact.protocol.v3 import utcnow_iso
 
 
@@ -201,6 +202,9 @@ def message_to_v3(message: Any) -> dict[str, Any]:
     for part in raw_parts:
         if not isinstance(part, Mapping):
             continue
+        metadata = _mapping(part.get("metadata"))
+        if part.get("type") == "a2ui" and metadata.get("projection_only") is True:
+            continue
         block = part_to_v3_block(part)
         if block["type"] == "tool":
             tool_id = str(block["tool_id"])
@@ -371,6 +375,7 @@ def transcript_entities(
     tasks: dict[str, dict[str, Any]] = {}
     subagents: dict[str, dict[str, Any]] = {}
     artifacts: dict[str, dict[str, Any]] = {}
+    transcript_parts: list[Any] = []
 
     for message in messages:
         projected = message_to_v3(message)
@@ -382,6 +387,7 @@ def transcript_entities(
             subagent_links=subagent_links or {},
         )
         raw_parts = _list(wire.get("parts"))
+        transcript_parts.extend(raw_parts)
         for part in raw_parts:
             if not isinstance(part, Mapping):
                 continue
@@ -396,11 +402,16 @@ def transcript_entities(
         subagents.update(context.subagents)
         artifacts.update(context.artifacts)
 
+    surface_records, a2ui_degradations = project_a2ui_parts(transcript_parts, session_id)
+    surfaces = list(surface_records.values())
+    surfaces.sort(key=lambda row: row.created_at)
+
     return {
         "messages": projected_messages,
         "tools": list(tools.values()),
         "tasks": list(tasks.values()),
         "subagents": list(subagents.values()),
         "artifacts": list(artifacts.values()),
-        "surfaces": [],
+        "surfaces": [surface.to_wire() for surface in surfaces],
+        "a2ui_degradations": a2ui_degradations,
     }
