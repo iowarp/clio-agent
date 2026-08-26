@@ -47,6 +47,7 @@ from clio_agent.gact.catalog import (
 )
 from clio_agent.gact.events import Event
 from clio_agent.gact.routes._body import json_body
+from clio_agent.gact.routes.catalog_runtime_tools import agent_runtime_tool_rows
 from clio_agent.gact.runtime.commands import (
     agent_allowed_command_ids,
     all_command_rows,
@@ -69,58 +70,6 @@ from clio_agent.tools.mcp_config import MCPTransportError, transport_from_spec
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
-
-
-def _runtime_tool_value(tool: Any, *names: str) -> Any:
-    """Read one field from either an MCP model object or mapping."""
-
-    for name in names:
-        if isinstance(tool, Mapping) and name in tool:
-            return tool[name]
-        value = getattr(tool, name, None)
-        if value is not None:
-            return value
-    return None
-
-
-def _agent_runtime_tool_rows(app: FastAPI) -> list[dict[str, Any]]:
-    """Project the live model executor's preloaded MCP definitions into catalog rows.
-
-    The agent's gateway owns workspace ``mcp.yaml`` and blueprint-declared MCP
-    servers. Those tools are preloaded once during agent construction, so reading
-    them here is side-effect free and does not spawn or reconnect the MCP fleet.
-    """
-
-    agent = getattr(app.state, "agent", None)
-    executor = getattr(agent, "tool_executor", None)
-    get_definitions = getattr(executor, "get_all_tool_definitions", None)
-    if not callable(get_definitions):
-        return []
-    definitions = get_definitions()
-    if not isinstance(definitions, Mapping):
-        return []
-    rows: list[dict[str, Any]] = []
-    for key, tool in definitions.items():
-        tool_name = str(_runtime_tool_value(tool, "name") or key).strip()
-        if not tool_name:
-            continue
-        namespace, separator, _bare_name = tool_name.partition("_")
-        rows.append(
-            {
-                "id": tool_name,
-                "name": tool_name,
-                "title": mcp_tool_title(tool),
-                "description": str(_runtime_tool_value(tool, "description") or ""),
-                "server_id": f"mcp_{namespace}" if separator else "",
-                "source": "agent_runtime_mcp",
-                "input_schema": _runtime_tool_value(tool, "input_schema", "inputSchema") or {},
-                "output_schema": _runtime_tool_value(tool, "output_schema", "outputSchema") or {},
-                "owner": _tool_owner_for_catalog(tool_name),
-                "tags": _tool_tags_for_catalog(tool_name),
-                "visible_to": _tool_visible_to_for_catalog(tool_name),
-            }
-        )
-    return rows
 
 
 def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
@@ -276,7 +225,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
         # are live model-callable tools and belong in this unified catalog.
         # Prefer the richer row already collected when registrations overlap.
         known_names = {str(row.get("name") or "") for row in rows if isinstance(row, Mapping)}
-        rows.extend(row for row in _agent_runtime_tool_rows(app) if row["name"] not in known_names)
+        rows.extend(row for row in agent_runtime_tool_rows(app) if row["name"] not in known_names)
         return {"tools": rows}
 
     @app.get("/v1/tools/{tool_id}")
@@ -310,7 +259,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
         except Exception:  # noqa: BLE001,S110 - catalog enrichment best-effort; partial rows returned
             pass
 
-        for row in _agent_runtime_tool_rows(app):
+        for row in agent_runtime_tool_rows(app):
             if row["name"] == tool_id:
                 return row
 

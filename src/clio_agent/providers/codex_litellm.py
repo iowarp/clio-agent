@@ -36,7 +36,9 @@ import tempfile
 import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from typing import Any
+from typing import Any, cast
+
+from openai_codex.types import ReasoningEffort
 
 from clio_agent.providers._cli_provider import (
     messages_to_prompt,
@@ -55,6 +57,7 @@ logger = logging.getLogger(__name__)
 try:
     from litellm import CustomLLM
     from litellm.types.utils import (
+        ChatCompletionUsageBlock,
         Choices,
         GenericStreamingChunk,
         Message,
@@ -141,7 +144,7 @@ def _build_model_response(
     )
 
 
-def _resolve_effort(params: dict[str, Any]) -> str | None:
+def _resolve_effort(params: dict[str, Any]) -> ReasoningEffort | None:
     """Resolve the codex reasoning effort from the #895 thinking plan.
 
     ``codex_reasoning_effort`` is set by ``providers.thinking.resolve_thinking``
@@ -150,7 +153,7 @@ def _resolve_effort(params: dict[str, Any]) -> str | None:
     for the silent no-op: a requested level now reaches ``turn/start``.
     """
     effort = params.get("codex_reasoning_effort")
-    return str(effort) if effort else None
+    return ReasoningEffort(str(effort)) if effort else None
 
 
 class CodexLLM(CustomLLM):
@@ -284,8 +287,11 @@ class CodexLLM(CustomLLM):
             tool_use=None,
             is_finished=True,
             finish_reason="stop",
-            usage=usage_chunk(usage)
-            or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            usage=cast(
+                ChatCompletionUsageBlock,
+                usage_chunk(usage)
+                or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            ),
             index=0,
         )
 

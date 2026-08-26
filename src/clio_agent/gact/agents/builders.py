@@ -36,6 +36,15 @@ from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import skill_runtime as _skill_runtime
 from clio_agent.gact.agents import toolset_inventory
 from clio_agent.gact.agents.auto_tools import build_auto_react_tools
+from clio_agent.gact.agents.blueprint_tool_recording import (
+    recorded_load_skill_tool as _recorded_load_skill_tool,
+)
+from clio_agent.gact.agents.blueprint_tool_recording import (
+    recorded_spawn_skill_task_tool as _recorded_spawn_skill_task_tool,
+)
+from clio_agent.gact.agents.blueprint_tool_recording import (
+    recording_blueprint_tool as _recording_blueprint_tool,
+)
 from clio_agent.gact.agents.composition import (
     _runtime_active_workspace_context,
     _runtime_dynamic_agent_children_context,
@@ -43,6 +52,9 @@ from clio_agent.gact.agents.composition import (
 from clio_agent.gact.agents.resolution import _active_workflow_state_schema
 from clio_agent.gact.agents.runtime import (
     _retaining_react_cls,
+)
+from clio_agent.gact.agents.tool_executor_resolution import (
+    resolve_active_base_agent_tool_executor,
 )
 from clio_agent.gact.events import Event
 from clio_agent.gact.permission_gate import (
@@ -552,47 +564,12 @@ def _active_base_agent_tool_executor(base_agent: Any) -> Any:
     when no workspace is active or the per-workspace seam is unavailable.
     """
 
-    resolver = getattr(base_agent, "_active_tool_executor", None)
-    if callable(resolver):
-        # A child turn can build its DSPy module on a worker after the resident
-        # workspace fleet was reaped.  Derive the execution territory from the
-        # authoritative session as well as the ambient tool ContextVars so a
-        # missing copied layer rebuilds the workspace fleet instead of silently
-        # returning the process-global fs/shell executor.
-        app = _ctx.active_app()
-        sid = _ctx.active_session_id() or _ctx.active_tool_session_id()
-        app_state = getattr(app, "state", None) if app is not None else None
-        sessions = getattr(app_state, "sessions", None) if app_state is not None else None
-        workspaces = getattr(app_state, "workspaces", None) if app_state is not None else None
-        session = sessions.get(sid) if sessions is not None and sid else None
-        workspace_id = str(getattr(session, "workspace_id", "") or "")
-        workspace = (
-            workspaces.get(workspace_id) if workspaces is not None and workspace_id else None
-        )
-        workspace_root = str(getattr(workspace, "root_path", "") or "")
-        if workspace_root:
-            from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
-                _runtime_active_agent_blueprint_id,
-            )
-            from clio_agent.tools.execution import (  # noqa: PLC0415
-                tool_blueprint_context,
-                tool_workspace_context,
-            )
-
-            blueprint_id = _runtime_active_agent_blueprint_id(app, sid)
-            with (
-                tool_workspace_context(workspace_root),
-                tool_blueprint_context(blueprint_id),
-            ):
-                executor = resolver()
-        else:
-            executor = resolver()
-        if executor is not None:
-            _emit_mcp_downgrade_events(executor)
-            return executor
-    executor = getattr(base_agent, "tool_executor", None)
-    _emit_mcp_downgrade_events(executor)
-    return executor
+    return resolve_active_base_agent_tool_executor(
+        base_agent,
+        app=_ctx.active_app(),
+        session_id=_ctx.active_session_id() or _ctx.active_tool_session_id(),
+        emit_downgrade=_emit_mcp_downgrade_events,
+    )
 
 
 def _emit_mcp_downgrade_events(executor: Any) -> None:
@@ -690,7 +667,7 @@ def _dynamic_agent_tools(
     try:
         tool_executor = _active_base_agent_tool_executor(base_agent)
     except Exception as exc:  # noqa: BLE001 - preserve the typed agent boundary
-        mount_failures = {"workspace_fleet": _mount_failure_reason(exc)}
+        resolution_failures = {"workspace_fleet": _mount_failure_reason(exc)}
         logger.exception(
             "custom_agent_tool_executor_unavailable agent=%s tools=%s",
             agent_def.id,
@@ -700,7 +677,7 @@ def _dynamic_agent_tools(
             agent_def.id,
             reason="custom_agent_tool_executor_unavailable",
             tools=requested_tools,
-            mount_failures=mount_failures,
+            mount_failures=resolution_failures,
         ) from exc
     mount_failures: dict[str, str] = {}
     if tool_executor is None or not hasattr(tool_executor, "to_dspy_tools"):
@@ -749,78 +726,6 @@ def _dynamic_agent_tools(
             app, agent_def.id, missing_tools, mount_failures=mount_failures
         )
     return [_recording_blueprint_tool(available_tools[name]) for name in resolved_tools]
-
-
-def _recorded_load_skill_tool(agent_def: "AgentDef", skill_rt: Any) -> Any:
-    """The auto-attached ``load_skill`` tool, recorded like a declared tool.
-
-    A skill load is loop evidence: the tool_call must reach the blueprint
-    tool rows (and through them the transcript wire), not just the trace log.
-    """
-
-    return _recording_blueprint_tool(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
-
-
-def _recorded_spawn_skill_task_tool(agent_def: "AgentDef", skill_rt: Any) -> Any:
-    """The explicit, causally visible launcher for skill-seeded child turns."""
-
-    return _recording_blueprint_tool(
-        _skill_runtime.build_spawn_skill_task_tool(agent_def, skill_rt)
-    )
-
-
-def _recording_blueprint_tool(tool: Any) -> Any:
-    """Wrap a DSPy tool so blueprint ReAct predictions retain tool evidence."""
-
-    from clio_agent.gact.agents.tool_instrumentation import rebuilt_tool  # noqa: PLC0415
-    from clio_agent.gact.app import (  # noqa: PLC0415
-        _bounded_tool_call_result,
-        _tool_result_is_error,
-    )
-
-    name = str(getattr(tool, "name", "") or "").strip()
-    desc = str(getattr(tool, "desc", "") or getattr(tool, "__doc__", "") or name)
-    args = getattr(tool, "args", None) or {}
-
-    def call_tool(**kwargs: Any) -> Any:
-        started_at = time.perf_counter()
-        rows = _ctx.active_blueprint_tool_rows()
-        try:
-            result = tool(**kwargs)
-        except BaseException as exc:  # noqa: BLE001
-            if isinstance(exc, _BlueprintTerminalWorkflowState):
-                raise
-            if rows is not None:
-                rows.append(
-                    {
-                        "name": name,
-                        "args": dict(kwargs),
-                        "ok": False,
-                        "duration_ms": (time.perf_counter() - started_at) * 1000,
-                        "error": str(exc),
-                        "telemetry_source": "blueprint_react_tool_wrapper",
-                    }
-                )
-            raise
-        row_result = _bounded_tool_call_result(result)
-        if rows is not None:
-            rows.append(
-                {
-                    "name": name,
-                    "args": dict(kwargs),
-                    "ok": not _tool_result_is_error(result),
-                    "duration_ms": (time.perf_counter() - started_at) * 1000,
-                    "result": row_result,
-                    "telemetry_source": "blueprint_react_tool_wrapper",
-                }
-            )
-        return result
-
-    call_tool.__name__ = name
-    call_tool.__doc__ = desc
-    # Re-construction around a new callable: propagate the inner callable's
-    # instrumentation markers (a re-wrapped boundary tool stays exactly-once).
-    return rebuilt_tool(tool, call_tool, name=name, desc=desc, args=args)
 
 
 def _tool_names(tools: Iterable[Any]) -> list[str]:

@@ -1,17 +1,9 @@
-"""Child-turn substrate (#948 S3, #951): spawn a declared child expert as a REAL
-turn in a REAL child session, projected as an :class:`AgentTask`.
+"""Spawn a child expert in a real child session projected as an AgentTask.
 
-``spawn_child_turn(app, TaskSpec) -> AgentTask`` mints a child session (created
-BEFORE the run, with ``parent_session_id`` lineage,
-``agent={"id": <child expert>}``, ``session_type=="agent_task"`` metadata),
-stages a real turn through the same ``_start_background_user_turn`` a user POST uses
-(so status / SSE / cancellation behave identically), and drives the task lifecycle
-to a terminal record via a completion hook on the child turn task.
-
-This is the #671 federation seam: :class:`TaskSpec` / the returned record are
-serializable from day one, so a remote executor can later swap in behind it.
-Child forwards run on a DEDICATED executor (never the default pool) so a parent
-blocked in a future wait (#948 S6) can never starve its own children.
+``spawn_child_turn(app, TaskSpec) -> AgentTask`` mints a child session with
+``parent_session_id`` lineage and ``session_type=="agent_task"``, stages the
+same background turn as a user POST, and records its terminal lifecycle. Child
+forwards use a dedicated executor so a waiting parent cannot starve them.
 """
 
 from __future__ import annotations
@@ -36,6 +28,10 @@ from clio_agent.gact.agent_tasks import (
 )
 from clio_agent.gact.spawn_context import validate_task_spec
 from clio_agent.gact.task_fold import finish_agent_task_transition, fold_agent_task_transition
+from clio_agent.gact.turn_spawn_failures import (
+    child_task_error_reason,
+    child_task_failure_result,
+)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -52,38 +48,6 @@ def _err_code(error_info: Any) -> str:
     if isinstance(error_info, dict):
         return str(error_info.get("error") or "")
     return str(getattr(error_info, "error", "") or "")
-
-
-def _err_field(error_info: Any, field: str, default: Any = None) -> Any:
-    """Read one field from an in-memory or wire-form child error."""
-
-    if not error_info:
-        return default
-    if isinstance(error_info, dict):
-        return error_info.get(field, default)
-    return getattr(error_info, field, default)
-
-
-def _child_task_error_reason(error_info: Any) -> str:
-    """Project a child turn's typed cause onto the bounded AgentTask vocabulary."""
-
-    from clio_agent.gact.agent_tasks import ERROR_REASONS  # noqa: PLC0415
-
-    details = _err_field(error_info, "details", {})
-    declared = str(details.get("reason") or "") if isinstance(details, dict) else ""
-    return declared if declared in ERROR_REASONS else "agent_error"
-
-
-def _child_task_failure_result(app: "FastAPI", child_sid: str, final: Any) -> dict[str, Any]:
-    """Retain the child's typed failure detail for parent and UI observability."""
-
-    error_info = getattr(final, "error_info", None)
-    message = str(_err_field(error_info, "message", "") or "").strip()
-    return {
-        "message_ref": str(getattr(final, "id", "") or ""),
-        "answer_excerpt": message[:_ANSWER_EXCERPT_MAX],
-        "workflow_state": _child_workflow_state(app, child_sid, final),
-    }
 
 
 # Runaway backstop (NOT a 3-tier rule): ``tier`` is semantic weight, not depth —
@@ -730,8 +694,14 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
                 app,
                 task_id,
                 STATUS_FAILED,
-                error_reason=_child_task_error_reason(error_info),
-                result=_child_task_failure_result(app, child_sid, final),
+                error_reason=child_task_error_reason(error_info),
+                result=child_task_failure_result(
+                    app,
+                    child_sid,
+                    final,
+                    workflow_state=_child_workflow_state,
+                    excerpt_limit=_ANSWER_EXCERPT_MAX,
+                ),
                 notify_pending=(mode == "async"),
                 updated_at=now,
             )

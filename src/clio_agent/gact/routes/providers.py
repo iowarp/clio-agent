@@ -616,9 +616,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         if preset.provider == "claude_code":
             if _which_cli("claude"):
                 update["status"] = "ready"
-                update["status_message"] = (
-                    "Claude Agent SDK ready; subscription authentication checked on use"
-                )
+                update["status_message"] = "Claude Agent SDK ready; authentication checked on use"
                 update["is_authenticated"] = True
             else:
                 update["status"] = "unavailable"

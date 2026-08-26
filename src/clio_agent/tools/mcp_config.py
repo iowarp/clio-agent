@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import yaml
 
 from clio_agent.errors import MCP_YAML_DECLARATION_UNREADABLE
+from clio_agent.tools.mcp_environment import stdio_environment
 
 if TYPE_CHECKING:
     from mcp.client.auth.oauth2 import TokenStorage
@@ -606,21 +607,8 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
                 f"PATH for the clio-agent process. source={spec.source or 'unknown'}"
             )
 
-        # Merge ``os.environ`` under the spec vars: we always hand the subprocess an
-        # explicit env (so the UV_CACHE_DIR isolation below can apply), and PATH plus
-        # the rest of the parent environment must survive. A bare ``dict(spec.env)``
-        # would give the child ONLY the spec vars and drop PATH -> anything it execs by
-        # name fails with ``os error 2``.
-        env: dict[str, str] = {**os.environ, **dict(spec.env)}
-        # A stdio MCP server may run from its own virtual environment. Ambient
-        # Python import overrides from the CLIO service must not leak into that
-        # environment: ``PYTHONPATH`` can otherwise make the child import CLIO's
-        # pydantic/fastmcp packages beside the child's incompatible native
-        # extensions. A server that genuinely needs either override can declare
-        # it explicitly in its MCP spec.
-        for python_override in ("PYTHONHOME", "PYTHONPATH"):
-            if python_override not in spec.env:
-                env.pop(python_override, None)
+        # Preserve the host environment beneath explicit server overrides.
+        env = stdio_environment(spec.env)
         if cwd:
             # Pin clio-kit's artifacts root to the workspace so staged resources
             # and generated artifacts land in the workspace even when the

@@ -201,7 +201,9 @@ class WorkspaceStore:
             root_path=root_path,
             created_at=now,
             updated_at=now,
-            config={"storage_root": storage_root} if storage_root else _config_with_storage_root(root_path, metadata),
+            config={"storage_root": storage_root}
+            if storage_root
+            else _config_with_storage_root(root_path, metadata),
             metadata=dict(metadata or {}),
         )
         with self._lock:

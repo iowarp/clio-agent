@@ -4,8 +4,6 @@ Every effective-boundary change is a recorded DECISION by a user or the model, n
 deterministic clio choice (⚑ #974.8). This module is the owner of that record layer, built
 entirely on the EXISTING permission gate + policy store — a new request KIND, not a new gate:
 
-* :func:`emit_boundary_granted` / :func:`emit_boundary_revoked` — the ``boundary.*`` semantic
-  events (SSE-listed) that make a write-root or domain grant/revoke observable live + durable.
 * :func:`apply_root_grant` — a mid-session workspace root grant: register the root into the
   ONE grant registry (:mod:`clio_agent.runtime.sandbox_roots`) so the fence + advisory twin
   widen LIVE on the next spawn, persist it on the workspace record, restart the workspace's
@@ -34,6 +32,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact.events import Event
+from clio_agent.gact.runtime.grant_revocation import revoke_root_grant
 from clio_agent.gact.runtime.permission_policies import (
     NETWORK_EGRESS_REQUEST_KIND,
     _host_action_for,
@@ -414,53 +413,6 @@ def apply_root_grant(
         "pattern": pattern,
         "reason": reason,
         "restart_deferred": reason == REASON_GRANT_DEFERRED_BUSY,
-    }
-
-
-def revoke_root_grant(
-    app: "FastAPI",
-    workspace_id: str,
-    path: str,
-    *,
-    grantor: str = GRANTOR_USER,
-) -> dict[str, Any]:
-    """Revoke one persisted additional workspace root and its live projection.
-
-    The primary workspace root is not a grant and cannot be removed here. A
-    changed grant set restarts or drains the resident fleet using the same
-    safety boundary as grant application so an already-running child never
-    silently keeps broader access.
-    """
-
-    from clio_agent.runtime.sandbox_roots import revoke_write_root_grant  # noqa: PLC0415
-
-    ws = app.state.workspaces.get(workspace_id)
-    if ws is None:
-        return {"revoked": False, "pattern": path, "reason": "workspace_not_found"}
-    workspace_root = str(getattr(ws, "root_path", "") or "")
-    pattern = str(revoke_write_root_grant(workspace_root, path))
-    existing = [str(item) for item in ws.config.get(GRANTED_ROOTS_CONFIG_KEY, []) or []]
-    remaining = [item for item in existing if item != pattern]
-    changed = len(remaining) != len(existing)
-    if changed:
-        ws.config[GRANTED_ROOTS_CONFIG_KEY] = remaining
-        app.state.workspaces.update(workspace_id, metadata_patch=None)
-        restart = _request_fleet_restart(app, workspace_root, widened=True)
-        emit_boundary_revoked(
-            app,
-            kind=KIND_ROOT,
-            scope=SCOPE_WORKSPACE,
-            grantor=grantor,
-            pattern=pattern,
-            workspace_id=workspace_id,
-        )
-    else:
-        restart = "not_granted"
-    return {
-        "revoked": changed,
-        "pattern": pattern,
-        "reason": restart,
-        "restart_deferred": restart == "restart_deferred_busy",
     }
 
 

@@ -65,6 +65,7 @@ from clio_agent.gact.routes.mcp_rows import (
     mcp_inventory_row,
     mcp_prompt_result_row,
 )
+from clio_agent.gact.routes.mcp_server_specs import stdio_server_spec
 from clio_agent.gact.runtime.globals import _tool_session_context
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.execution import notify_tool_observer
@@ -311,52 +312,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             ) from None
 
         if transport_kind == "stdio":
-            command = body.get("command")
-            args = body.get("args") or []
-            env = body.get("env") or {}
-            if not command:
-                raise HTTPException(
-                    status_code=422,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="bad_request",
-                            message="stdio transport requires 'command'",
-                            recoverable=True,
-                        )
-                    ).model_dump(exclude_none=True),
-                )
-            if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
-                raise HTTPException(
-                    status_code=422,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="bad_request",
-                            message="stdio transport 'args' must be a list of strings",
-                            recoverable=True,
-                        )
-                    ).model_dump(exclude_none=True),
-                )
-            if not isinstance(env, dict) or not all(
-                isinstance(key, str) and isinstance(value, str) for key, value in env.items()
-            ):
-                raise HTTPException(
-                    status_code=422,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="bad_request",
-                            message="stdio transport 'env' must map names to string values",
-                            recoverable=True,
-                        )
-                    ).model_dump(exclude_none=True),
-                )
-            # Build via the single canonical helper (pdeathsig-wrapped on Linux);
-            # store the same normalized spec shape callers already expect.
-            spec = {
-                "transport": "stdio",
-                "command": command,
-                "args": list(args),
-                "env": dict(env),
-            }
+            spec = stdio_server_spec(body)
             transport = transport_from_spec(spec)
         elif transport_kind in {"http", "streamable-http"}:
             url = body.get("url")

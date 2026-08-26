@@ -1,9 +1,4 @@
-"""Async MCP tool execution boundary.
-
-This module owns the event-loop-native FastMCP executor, its narrow client
-protocol, and the timeout and result-projection helpers required by that
-executor.
-"""
+"""Event-loop-native MCP execution, timeouts, and result projection."""
 
 from __future__ import annotations
 
@@ -31,31 +26,34 @@ from clio_agent.tools.mcp_connection_era import (
     resolved_connect_mode,
 )
 from clio_agent.tools.mcp_errors import typed_mcp_call_error, typed_mcp_protocol_error
+from clio_agent.tools.mcp_result_projection import (
+    MAX_MODEL_TOOL_RESULT_CHARS as MAX_MODEL_TOOL_RESULT_CHARS,
+)
+from clio_agent.tools.mcp_result_projection import (
+    MODEL_TOOL_RESULT_TRUNCATED_REASON as MODEL_TOOL_RESULT_TRUNCATED_REASON,
+)
+from clio_agent.tools.mcp_result_projection import (
+    bounded_model_tool_result as _bounded_model_tool_result,
+)
 from clio_agent.tools.mcp_runtime import make_mcp_client
 from clio_agent.tools.mcp_timeout_budget import component_declared_timeout_seconds
 
 logger = logging.getLogger(__name__)
-
-
 class MCPClientProtocol(Protocol):
     """Subset of FastMCP client methods used by the bridge."""
 
     async def __aenter__(self) -> "MCPClientProtocol":
         """Enter the client context."""
         ...
-
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool | None:
         """Exit the client context."""
         ...
-
     async def list_tools(self) -> list[Any]:
         """List tools exposed by the backing server."""
         ...
-
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         """Call a named tool on the backing server."""
         ...
-
     async def read_resource(self, uri: str) -> Any:
         """Read a resource from the backing server."""
         ...
@@ -77,8 +75,6 @@ class _MCPCallOutcome:
     model_text: str
     raw_result: Any
     source_namespace: str | None
-
-
 # Per-tool wall-clock timeouts are domain-specific and now come from MCP
 # server declarations (a server's ``timeout`` maps into ``tool_timeouts``),
 # not from a hardcoded core table. Core ships no default overrides.
@@ -631,13 +627,6 @@ class AsyncMCPToolExecutor:
 #: ``reason=%s`` degrade logs).
 MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON = "mcp_result_to_text_repr_fallback"
 
-#: A tool may legitimately return a large structured result for the UI/trace,
-#: but the ReAct model lane must not replay that whole payload on every later
-#: iteration.  The observer still receives ``raw_result`` unchanged; this cap
-#: applies only to the model-facing text projection.
-MAX_MODEL_TOOL_RESULT_CHARS = 12_000
-MODEL_TOOL_RESULT_TRUNCATED_REASON = "model_tool_result_oversize"
-
 
 def _content_block_field(block: Any, *names: str) -> Any:
     """Read the first present field from a content block (mapping or SDK model)."""
@@ -653,35 +642,6 @@ def _content_block_field(block: Any, *names: str) -> Any:
         if value is not None:
             return value
     return None
-
-
-def _bounded_model_tool_result(text: str) -> str:
-    """Bound one model-facing tool observation without changing durable evidence.
-
-    Large MCP results remain complete on the raw observer/trace path.  The model
-    receives a typed head-and-tail projection so it can see that content was
-    omitted, retain leading summaries and trailing status fields, and avoid
-    multiplying a multi-megabyte observation across every ReAct prompt.
-    """
-
-    if len(text) <= MAX_MODEL_TOOL_RESULT_CHARS:
-        return text
-    marker_budget = 640
-    preview_budget = MAX_MODEL_TOOL_RESULT_CHARS - marker_budget
-    head_chars = int(preview_budget * 0.75)
-    tail_chars = preview_budget - head_chars
-    bounded = {
-        "_clio": {
-            "status": "truncated",
-            "reason": MODEL_TOOL_RESULT_TRUNCATED_REASON,
-            "original_chars": len(text),
-            "head_chars": head_chars,
-            "tail_chars": tail_chars,
-        },
-        "head": text[:head_chars],
-        "tail": text[-tail_chars:],
-    }
-    return json.dumps(bounded, ensure_ascii=False)
 
 
 def _base64_decoded_length(data: str) -> int:

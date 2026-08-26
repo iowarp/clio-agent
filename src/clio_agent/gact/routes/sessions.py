@@ -57,6 +57,7 @@ from clio_agent.gact.messaging import raise_on_reserved_metadata
 from clio_agent.gact.protocol_v3 import requests_gact_v3, session_to_v3
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
 from clio_agent.gact.routes.compaction import build_compact_summary_message
+from clio_agent.gact.routes.session_cancellation import cancel_session_state
 from clio_agent.gact.routes.session_rows import filter_session_rows, rows_to_wire
 from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.constants import _installed_clio_agent_version
@@ -64,7 +65,6 @@ from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
     _emit_semantic_event,
     _new_attempt_id,
-    _new_cancellation_attempt_id,
     _new_memory_event_id,
     _new_question_id,
 )
@@ -91,77 +91,6 @@ if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
 
 logger = logging.getLogger(__name__)
-
-
-def cancel_session_state(app: FastAPI, deps: "GactDeps", sid: str) -> dict[str, Any]:
-    """Apply the canonical best-effort cancellation transition for a session."""
-
-    sess = app.state.sessions.get(sid)
-    if sess is None:
-        raise HTTPException(
-            status_code=404,
-            detail=ErrorEnvelope(
-                error=ErrorInfo(
-                    error="not_found",
-                    message=f"session not found: {sid}",
-                    details={"session_id": sid},
-                    recoverable=False,
-                )
-            ).model_dump(exclude_none=True),
-        )
-    app.state.cancel_flags.add(sid)
-    event = app.state.cancel_events.get(sid)
-    if event is not None:
-        event.set()
-    from clio_agent.gact.turn_spawn import cancel_children_of  # noqa: PLC0415
-
-    cancel_children_of(app, sid)
-    # The parent itself may be blocked in an SDK-backed model call.  Cancelling its
-    # asyncio task cannot stop executor-thread provider I/O, so terminate the SDK
-    # stream bound to this exact session as well as the child cascade above.
-    from clio_agent.providers.claude_code_cancel import abort_session_streams  # noqa: PLC0415
-
-    abort_session_streams(sid)
-    stop_session_loop(app, sid)
-    stop_session_goal(app, sid)
-    in_flight = app.state.in_flight_turns.get(sid)
-    cancellation_pending = in_flight is not None and not in_flight.done()
-    attempt = {
-        "id": _new_cancellation_attempt_id(),
-        "session_id": sid,
-        "requested_at": datetime.now(timezone.utc).isoformat(),
-        "in_flight": cancellation_pending,
-        "cooperative_signal_sent": event is not None,
-        "asyncio_task_cancel_scheduled": cancellation_pending,
-        "asyncio_task_cancel_sent": False,
-        "hard_abort_supported": False,
-        "upstream_abort": "not_supported",
-        "executor_work_may_continue": cancellation_pending,
-    }
-    app.state.cancel_attempts[sid] = attempt
-    if cancellation_pending:
-
-        async def _cancel_after_grace(task: asyncio.Task, session_id: str) -> None:
-            await asyncio.sleep(0.1)
-            if session_id in app.state.cancel_flags and not task.done():
-                latest_attempt = app.state.cancel_attempts.get(session_id)
-                if latest_attempt is attempt:
-                    attempt["asyncio_task_cancel_sent"] = True
-                    attempt["asyncio_task_cancelled_at"] = datetime.now(timezone.utc).isoformat()
-                task.cancel()
-
-        asyncio.create_task(_cancel_after_grace(in_flight, sid))
-    app.state.sessions.update(sid, status="cancelled")
-    payload = {
-        "session_id": sid,
-        "status": "cancelled",
-        "prev_status": sess.status,
-        "execution_cancellation": "cooperative_pending" if cancellation_pending else "none",
-        "executor_work_may_continue": cancellation_pending,
-        "cancellation_attempt": deps.cancellation_attempt_summary(attempt),
-    }
-    app.state.bus.publish(Event(type="session.status_changed", session_id=sid, payload=payload))
-    return payload
 
 
 def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:

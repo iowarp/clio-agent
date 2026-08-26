@@ -366,9 +366,7 @@ def sweep_stale_handoff_parts(app: "FastAPI", session_id: str, messages: list["M
         return 0
 
 
-def _sweep_stale_handoff_parts(
-    app: "FastAPI", session_id: str, messages: list["Message"]
-) -> int:
+def _sweep_stale_handoff_parts(app: "FastAPI", session_id: str, messages: list["Message"]) -> int:
     registry = getattr(app.state, "agent_task_registry", None)
     if registry is None:
         return 0

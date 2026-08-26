@@ -95,14 +95,14 @@ def register_expert_packs_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "expert_pack": wire,
                     "agents": [row.model_dump(exclude_none=True) for row in agents],
                 }
-        for pack in discover_agent_blueprints(cwd=cwd):
-            wire = pack.to_wire()
-            if pack.id != pack_id or wire.get("kind") != "pack":
+        for blueprint in discover_agent_blueprints(cwd=cwd):
+            wire = blueprint.to_wire()
+            if blueprint.id != pack_id or wire.get("kind") != "pack":
                 continue
             wire["metadata"] = {**dict(wire.get("metadata") or {}), "lifecycle": "service"}
             agents = validate_agent_hierarchy(
                 load_agent_blueprints(cwd=cwd, blueprint_id=pack_id),
-                blueprint=pack,
+                blueprint=blueprint,
             )
             return {
                 "expert_pack": wire,

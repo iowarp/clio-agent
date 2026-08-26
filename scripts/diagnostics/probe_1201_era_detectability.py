@@ -199,7 +199,7 @@ async def main() -> None:
           f"({'modern' if direct_is_modern else 'LEGACY -- race reproduced'})")
     print(f"B) gateway front leg (executor.connection_era)      : {front_version!r}")
     print(f"B) gateway namespace leg (namespace_connection_era) : {namespace_version!r}")
-    print(f"B) REAL backend leg(s), read directly off the")
+    print("B) REAL backend leg(s), read directly off the")
     print(f"   proxy's OWN ProxyClient (the actual connection to the real subprocess): "
           f"{backend_leg_versions}")
     print(f"B) _route() (era capture) elapsed  : {route_elapsed:.2f}s")

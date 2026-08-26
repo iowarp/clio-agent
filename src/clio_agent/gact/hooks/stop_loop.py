@@ -155,9 +155,7 @@ def evaluate_stop_loop(
 
     count = int(prior_state.get("count", 0) or 0)
     per_hook_raw = prior_state.get("per_hook", {})
-    per_hook: dict[str, int] = {
-        str(k): int(v or 0) for k, v in (per_hook_raw or {}).items()
-    }
+    per_hook: dict[str, int] = {str(k): int(v or 0) for k, v in (per_hook_raw or {}).items()}
     blocking = _blocking_hook_ids(outcome)
 
     if not outcome.denied or not blocking:
@@ -227,7 +225,11 @@ def _enqueue_redrive(app: "FastAPI", session_id: str, result: StopLoopResult) ->
 
     text = (result.reason or "").strip()
     if result.additional_context.strip():
-        text = f"{text}\n\n{result.additional_context.strip()}" if text else result.additional_context.strip()
+        text = (
+            f"{text}\n\n{result.additional_context.strip()}"
+            if text
+            else result.additional_context.strip()
+        )
     if not text:
         text = "A Stop hook reported the task is not complete; continue working."
     inbox_for(app, session_id).put(
@@ -298,7 +300,8 @@ def run_stop_hooks(
             sid=session_id,
             hook_event=STOP,
             reason=outcome.reason or "A Stop hook deferred completion for approval.",
-            resume_text=feedback or "A Stop hook reported the task is not complete; continue working.",
+            resume_text=feedback
+            or "A Stop hook reported the task is not complete; continue working.",
             prev_status="running",
         )
         # A defer leaves the stop-sequence counters untouched (it neither redrove nor

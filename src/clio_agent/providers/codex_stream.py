@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from openai_codex import ApprovalMode, AsyncCodex, CodexConfig, CodexError, Sandbox
+from openai_codex.types import ReasoningEffort, ReasoningSummary
 
 from clio_agent.providers._cli_provider import raise_model_rejected
 from clio_agent.providers.claude_code_cancel import (
@@ -365,7 +366,7 @@ class CodexSDKClient:
         prompt: str,
         model: str,
         cwd: str | None,
-        effort: str | None,
+        effort: ReasoningEffort | None,
         timeout: float,
     ) -> AsyncIterator[Any]:
         """Bridge one typed SDK turn stream from the owner loop to the caller loop."""
@@ -410,7 +411,11 @@ class CodexSDKClient:
                             model=model,
                             sandbox=Sandbox.read_only,
                         )
-                        turn = await thread.turn(prompt, effort=effort, summary="detailed")
+                        turn = await thread.turn(
+                            prompt,
+                            effort=effort,
+                            summary=ReasoningSummary.model_validate("detailed"),
+                        )
                         stream = turn.stream()
                         while not model_activity_seen:
                             try:
@@ -452,7 +457,9 @@ class CodexSDKClient:
             finally:
                 if stream is not None:
                     with contextlib.suppress(Exception):
-                        await stream.aclose()
+                        close_stream = getattr(stream, "aclose", None)
+                        if callable(close_stream):
+                            await close_stream()
                 if not clean and not cancelled:
                     await self._reset_client()
                 chunks.put((_STREAM_END, None))
@@ -464,7 +471,10 @@ class CodexSDKClient:
             gact_sid = active_session_id() or ""
         except Exception:  # noqa: BLE001 - off-turn SDK calls are not cancellable by session
             gact_sid = ""
-        handle = register_sdk_stream(gact_sid, future.cancel)
+        def _cancel_future() -> None:
+            future.cancel()
+
+        handle = register_sdk_stream(gact_sid, _cancel_future)
         try:
             while True:
                 kind, value = await caller_loop.run_in_executor(None, chunks.get)
@@ -517,7 +527,7 @@ async def astream_sdk(
     prompt: str,
     model: str,
     cwd: str | None,
-    effort: str | None,
+    effort: ReasoningEffort | None,
     timeout: float,
     call_index: int,
 ) -> AsyncIterator[dict[str, Any]]:
@@ -620,7 +630,7 @@ def run_sdk(
     prompt: str,
     model: str,
     cwd: str | None = None,
-    effort: str | None = None,
+    effort: ReasoningEffort | None = None,
     timeout: float = DEFAULT_TURN_TIMEOUT_S,
     call_index: int = 0,
 ) -> tuple[str, dict[str, int]]:

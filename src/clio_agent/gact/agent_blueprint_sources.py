@@ -107,9 +107,7 @@ def save_agent_blueprint_sources(rows: list[dict[str, Any]]) -> None:
     path = sources_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps({"sources": rows}, indent=2, sort_keys=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=path.name + ".", suffix=".tmp", dir=str(path.parent)
-    )
+    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(payload)

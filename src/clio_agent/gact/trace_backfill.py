@@ -223,7 +223,9 @@ def backfill_events_from_trace(trace_path: Path) -> BackfillResult:
             continue
         if not isinstance(obj, dict):
             result.reasons.append(
-                BackfillReason("not_an_object", idx, f"line is a {type(obj).__name__}, not an object")
+                BackfillReason(
+                    "not_an_object", idx, f"line is a {type(obj).__name__}, not an object"
+                )
             )
             continue
         event = semantic_event_from_trace_dict(obj)

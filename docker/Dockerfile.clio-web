@@ -3,6 +3,7 @@ ARG PNPM_VERSION=9.15.9
 RUN corepack enable && corepack prepare "pnpm@${PNPM_VERSION}" --activate
 WORKDIR /build
 COPY external/gact-tui/apps ./apps
+COPY external/gact-tui/contract ./contract
 COPY branding ./branding
 WORKDIR /build/apps
 RUN pnpm install --frozen-lockfile=false --filter "@clio/web..."

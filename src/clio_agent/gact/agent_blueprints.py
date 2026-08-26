@@ -1,5 +1,4 @@
 """Markdown Agent Blueprint discovery and installation.
-
 Agent Blueprints are the file-backed definition of a complete CLIO Agent. The
 canonical root file is ``AGENT.md`` with Markdown frontmatter. Legacy
 ``clio-pack.yaml`` Expert Packs remain supported by the older loader and are
@@ -463,6 +462,7 @@ _MEMORY_TOOL_NAMES = {
     "memory_read_session_summary",
     "memory_read_context_frame",
 }
+
 
 def _mapping_field(meta: dict[str, Any], *keys: str) -> dict[str, Any]:
     for key in keys:

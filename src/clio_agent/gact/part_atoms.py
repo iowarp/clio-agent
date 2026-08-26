@@ -308,6 +308,7 @@ def load_message_part_atoms(arc: Any, session_id: str) -> dict[str, list[dict[st
         atoms.sort(key=lambda a: a.get("part_index", 0))
     return groups
 
+
 # NOTE (#737 S5): the persist-seam hook that dual-wrote atoms in S4
 # (``record_message_parts_for_message``) is superseded by
 # :func:`clio_agent.gact.transcript_projection.on_message_appended`, which pins the

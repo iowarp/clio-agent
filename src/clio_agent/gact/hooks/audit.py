@@ -135,8 +135,7 @@ def _emit_on_highway(record: HookAuditRecord) -> None:
         )
     except Exception as exc:  # noqa: BLE001 - observability, never fatal to a dispatch
         logger.warning(
-            "hook audit highway emit skipped reason=hook_audit_emit_failed "
-            "hook_id=%s event=%s: %r",
+            "hook audit highway emit skipped reason=hook_audit_emit_failed hook_id=%s event=%s: %r",
             hook_id,
             event,
             exc,

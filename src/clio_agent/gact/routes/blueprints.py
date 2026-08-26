@@ -57,14 +57,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 
 from clio_agent.gact.agent_blueprint_files import (
-    BlueprintFileNotTextError,
-    BlueprintFileTooLargeError,
     BlueprintPathEscapesRootError,
     is_textual_blueprint_file,
     list_blueprint_files,
     resolve_agent_blueprint_root,
     resolve_blueprint_file_path,
-    write_blueprint_text_file,
 )
 from clio_agent.gact.agent_blueprint_sources import (
     load_agent_blueprint_sources as _load_agent_blueprint_sources,
@@ -81,7 +78,6 @@ from clio_agent.gact.agent_blueprints import (
     install_agent_blueprint,
     load_agent_blueprints,
     load_mcp_descriptors,
-    parse_agent_blueprint_root,
     runtime_tool_names_for_validation,
     uninstall_agent_blueprint,
     update_installed_agent_blueprint,
@@ -95,38 +91,14 @@ from clio_agent.gact.agents.resolution import (
 )
 from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
 from clio_agent.gact.permission_gate import _normalize_mcp_tool_annotations
+from clio_agent.gact.routes.blueprint_candidates import agent_blueprint_candidates
+from clio_agent.gact.routes.blueprint_file_write import register_blueprint_file_write_route
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
-
-
-def _agent_blueprint_candidates(root: Path) -> list[dict[str, Any]]:
-    """Enumerate installable blueprint roots discovered under ``root``."""
-
-    candidates: list[Path] = []
-    if (root / "AGENT.md").exists():
-        candidates.append(root)
-    if root.is_dir():
-        candidates.extend(sorted(path for path in root.iterdir() if (path / "AGENT.md").exists()))
-    rows: list[dict[str, Any]] = []
-    for candidate in candidates:
-        parsed = parse_agent_blueprint_root(candidate, scope="marketplace")
-        parsed_wire = parsed.to_wire()
-        rows.append(
-            {
-                "id": parsed.id,
-                "title": parsed.title,
-                "version": parsed.version,
-                "enabled": parsed.enabled,
-                "validation_errors": list(parsed.validation_errors),
-                "definition_path": str(parsed.root_path),
-                "kind": parsed_wire["kind"],
-            }
-        )
-    return rows
 
 
 def _refresh_agent_blueprint_source(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -153,7 +125,7 @@ def _refresh_agent_blueprint_source(row: Mapping[str, Any]) -> dict[str, Any]:
                 ).strip()
             except Exception:  # noqa: BLE001 - display commit left blank when git rev-parse unavailable
                 refreshed["commit"] = ""
-            refreshed["available_blueprints"] = _agent_blueprint_candidates(source_path)
+            refreshed["available_blueprints"] = agent_blueprint_candidates(source_path)
             return refreshed
         with tempfile.TemporaryDirectory(prefix="clio-agent-blueprint-source-") as tmp:
             clone_target = Path(tmp) / "repo"
@@ -179,7 +151,7 @@ def _refresh_agent_blueprint_source(row: Mapping[str, Any]) -> dict[str, Any]:
                 ["git", "-C", str(clone_target), "rev-parse", "HEAD"],
                 text=True,
             ).strip()
-            refreshed["available_blueprints"] = _agent_blueprint_candidates(clone_target)
+            refreshed["available_blueprints"] = agent_blueprint_candidates(clone_target)
             return refreshed
     except Exception as exc:  # noqa: BLE001
         refreshed["status"] = "error"
@@ -398,106 +370,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
         guessed, _ = mimetypes.guess_type(target.name)
         return Response(content=data, media_type=guessed or "application/octet-stream")
 
-    @app.put("/v1/agent-blueprints/{blueprint_id}/files/write")
-    async def write_agent_blueprint_file(
-        blueprint_id: str,
-        path: str,
-        req: dict[str, Any],
-        workspace_id: Optional[str] = None,
-        session_id: Optional[str] = None,
-    ) -> dict[str, Any]:
-        """Persist one explicit text edit inside the resolved blueprint root."""
-
-        root = resolve_agent_blueprint_root(
-            app, blueprint_id, workspace_id=workspace_id or "", session_id=session_id or ""
-        )
-        if root is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"agent blueprint not found: {blueprint_id}",
-                        details={"agent_blueprint_id": blueprint_id},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        content = req.get("content")
-        if not isinstance(content, str):
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="validation_error",
-                        message="content must be a string",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        try:
-            entry = write_blueprint_text_file(root, path, content)
-        except BlueprintPathEscapesRootError:
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="path_outside_blueprint",
-                        message=f"path escapes blueprint root: {path}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from None
-        except FileNotFoundError:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"file not found: {path}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from None
-        except BlueprintFileNotTextError:
-            raise HTTPException(
-                status_code=415,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="unsupported_media_type",
-                        message=f"blueprint file is not editable text: {path}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from None
-        except BlueprintFileTooLargeError:
-            raise HTTPException(
-                status_code=413,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="content_too_large",
-                        message="blueprint text files are limited to 2 MiB",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from None
-        except OSError as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="write_failed",
-                        message=f"could not write file: {exc}",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-        validation = validate_agent_blueprint_path(
-            root,
-            scope="session" if session_id else "workspace" if workspace_id else "global",
-            runtime_tool_names=runtime_tool_names_for_validation(app),
-        )
-        return {"entry": entry, "validation": validation}
+    register_blueprint_file_write_route(app)
 
     @app.get("/v1/agent-blueprints/{blueprint_id:path}")
     async def get_agent_blueprint(

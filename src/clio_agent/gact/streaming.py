@@ -37,18 +37,29 @@ keeps intercepting the turn path unchanged.
 from __future__ import annotations
 
 import inspect
-import logging
 import time
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact.events import Event
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.providers.config import _provider_runtime_kind
-from clio_agent.gact.runtime.capabilities import _STREAM_FALLBACK_REASON_DEFINITIONS
+from clio_agent.gact.stream_fallbacks import (
+    peek_stream_fallback as _peek_stream_fallback,  # noqa: F401
+)
+from clio_agent.gact.stream_fallbacks import (
+    pop_stream_fallback as _pop_stream_fallback,  # noqa: F401
+)
+from clio_agent.gact.stream_fallbacks import (
+    record_stream_fallback as _record_stream_fallback,
+)
+from clio_agent.gact.stream_fallbacks import (
+    stream_fallback_payload as _stream_fallback_payload,  # noqa: F401
+)
+from clio_agent.gact.stream_fallbacks import (
+    stream_fallback_reasons as _stream_fallback_reasons,  # noqa: F401
+)
 from clio_agent.runtime import trace
 from clio_agent.runtime.stream_audit import stream_audit
-
-logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -165,58 +176,6 @@ def _run_dynamic_agent_compat(
 
 class _StreamingOutputError(RuntimeError):
     """Raised when live streaming fails after user-visible output was emitted."""
-
-
-def _stream_fallback_payload(reason: str, message: str = "") -> dict[str, Any]:
-    """Build structured metadata for a batch text delivery path."""
-
-    definition = _STREAM_FALLBACK_REASON_DEFINITIONS.get(reason)
-    if definition is None:
-        raise ValueError(f"Unknown stream fallback reason: {reason}")
-    payload: dict[str, Any] = {
-        "reason": reason,
-        **{
-            key: list(value) if isinstance(value, list) else value
-            for key, value in definition.items()
-        },
-    }
-    if message:
-        payload["message"] = message
-    return payload
-
-
-def _stream_fallback_reasons(app: "FastAPI") -> dict[str, dict[str, Any]]:
-    reasons = getattr(app.state, "stream_fallback_reasons", None)
-    if not isinstance(reasons, dict):
-        reasons = {}
-        app.state.stream_fallback_reasons = reasons
-    return reasons
-
-
-def _record_stream_fallback(
-    app: "FastAPI",
-    sid: str,
-    reason: str,
-    message: str = "",
-) -> None:
-    payload = _stream_fallback_payload(reason, message)
-    _stream_fallback_reasons(app)[sid] = payload
-    logger.warning(
-        "live delivery degraded session_id=%s reason=%s message=%s",
-        sid,
-        reason,
-        message or payload.get("description", ""),
-    )
-
-
-def _peek_stream_fallback(app: "FastAPI", sid: str) -> dict[str, Any]:
-    """Read a turn's live-delivery degradation without consuming final metadata."""
-
-    return dict(_stream_fallback_reasons(app).get(sid, {}))
-
-
-def _pop_stream_fallback(app: "FastAPI", sid: str) -> dict[str, Any]:
-    return _stream_fallback_reasons(app).pop(sid, {})
 
 
 # --- ambient-LM fallback reason catalog (per-expert-provider sweep, #818) ----

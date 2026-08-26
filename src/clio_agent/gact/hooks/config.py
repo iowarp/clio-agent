@@ -143,10 +143,7 @@ class HookEntry:
         """
 
         return (
-            self.enabled
-            and self.is_trusted
-            and event in self.on
-            and self.match.matches(envelope)
+            self.enabled and self.is_trusted and event in self.on and self.match.matches(envelope)
         )
 
 
@@ -174,7 +171,9 @@ def _parse_entry(raw: Mapping[str, Any], *, source: str, scope: str = "") -> Hoo
         raise HookConfigError("hook entry is missing a required stable 'id'")
     on_raw = raw.get("on")
     if not isinstance(on_raw, Sequence) or isinstance(on_raw, (str, bytes)):
-        raise HookConfigError(f"hook {hook_id!r}: 'on' must be a list of event names", hook_id=hook_id)
+        raise HookConfigError(
+            f"hook {hook_id!r}: 'on' must be a list of event names", hook_id=hook_id
+        )
     events = {str(name) for name in on_raw}
     unknown = events - KNOWN_EVENTS
     if unknown:
@@ -185,9 +184,7 @@ def _parse_entry(raw: Mapping[str, Any], *, source: str, scope: str = "") -> Hoo
         )
     events &= KNOWN_EVENTS
     if not events:
-        raise HookConfigError(
-            f"hook {hook_id!r}: no known event in 'on'", hook_id=hook_id
-        )
+        raise HookConfigError(f"hook {hook_id!r}: no known event in 'on'", hook_id=hook_id)
 
     match_raw = raw.get("match") or {}
     if not isinstance(match_raw, Mapping):
@@ -196,8 +193,7 @@ def _parse_entry(raw: Mapping[str, Any], *, source: str, scope: str = "") -> Hoo
     if match_raw.get("tool"):
         tool_pat = _compile_anchored(str(match_raw["tool"]), hook_id=hook_id)
     annotations = {
-        str(key): bool(value)
-        for key, value in (match_raw.get("annotations") or {}).items()
+        str(key): bool(value) for key, value in (match_raw.get("annotations") or {}).items()
     }
     args_pat = None
     if match_raw.get("argsPattern"):

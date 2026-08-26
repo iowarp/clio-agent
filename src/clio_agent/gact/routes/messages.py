@@ -409,14 +409,14 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
             accepted_at=user_msg.created_at,
         )
 
-    @app.get("/v1/sessions/{sid}/messages")
+    @app.get("/v1/sessions/{sid}/messages", response_model=None)
     async def list_messages(
         sid: str,
         request: Request,
         include_system: bool = True,
         limit: int | None = None,
         before: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | JSONResponse:
         """List messages in a session, newest-first, with optional paging (#232).
 
         Today: in-memory log populated by POST /messages; returns

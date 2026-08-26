@@ -202,6 +202,7 @@ def write_uninstalled_tombstones(ids: set[str], *, home: Path, cwd: Path) -> Non
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_json.dumps({"uninstalled": sorted(ids)}, indent=2), encoding="utf-8")
 
+
 # The per-boot registry sync is boot semantics, not per-request semantics: the
 # result cannot change within one process (the submodule does not move under a
 # running serve), and discovery calls it on every request. Gate it to once per
@@ -254,9 +255,7 @@ def sync_local_registry_packs(*, source: str, home: Path, cwd: Path, pinned: str
             if not parsed.enabled:
                 continue
             if parsed.id in tombstones:
-                logger.info(
-                    "registry_pack_skipped reason=user_uninstalled id=%s", parsed.id
-                )
+                logger.info("registry_pack_skipped reason=user_uninstalled id=%s", parsed.id)
                 continue
             if (install_root / parsed.id / _BLUEPRINT_ROOT_NAME).exists():
                 continue

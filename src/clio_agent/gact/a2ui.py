@@ -398,9 +398,10 @@ def _validate_time_series_component(component: Mapping[str, Any]) -> None:
             )
         return
     data_uri = component.get("dataUri")
-    if not isinstance(data_uri, str) or re.fullmatch(
-        r"artifact://artifact_[A-Za-z0-9_-]+", data_uri
-    ) is None:
+    if (
+        not isinstance(data_uri, str)
+        or re.fullmatch(r"artifact://artifact_[A-Za-z0-9_-]+", data_uri) is None
+    ):
         raise A2UIValidationError(
             "A2UI time-series dataUri must be artifact:// followed by a registered artifact id"
         )

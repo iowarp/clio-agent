@@ -146,7 +146,7 @@ debug.memprof_frames: 20
 # CLIO_BLUEPRINT_REGISTRY_URL  (str)  <- src/clio_agent/gact/agent_blueprints.py
 gact.blueprint_registry.url: "https://github.com/iowarp/clio-agent-marketplace.git"
 
-# CLIO_GACT_CORS_ORIGINS  (str)  <- src/clio_agent/gact/app.py
+# CLIO_GACT_CORS_ORIGINS  (str)  <- src/clio_agent/gact/cors.py
 # gact.cors.origins:  # default unset; resolved in code
 
 # CLIO_LEDGER_COMMAND_AUDIT_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py

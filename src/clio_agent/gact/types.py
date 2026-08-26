@@ -16,7 +16,22 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 from clio_agent.arc.schema import SegmentKind
+from clio_agent.gact.context_preferences_types import (
+    ContextPreferences as ContextPreferences,
+)
+from clio_agent.gact.context_preferences_types import (
+    UpdateContextPreferencesRequest as UpdateContextPreferencesRequest,
+)
 from clio_agent.gact.parts import CapabilityFlags, Part
+from clio_agent.gact.workspace_types import (
+    CreateWorkspaceRequest as CreateWorkspaceRequest,
+)
+from clio_agent.gact.workspace_types import (
+    ListWorkspacesResponse as ListWorkspacesResponse,
+)
+from clio_agent.gact.workspace_types import (
+    Workspace as Workspace,
+)
 
 # ---------------------------------------------------------------------------
 # §3 — health + capabilities
@@ -213,21 +228,6 @@ class ContextStateResponse(BaseModel):
     render_keys: dict[str, Any] = Field(default_factory=dict)
 
 
-class ContextPreferences(BaseModel):
-    """Durable automatic-compaction controls for one session."""
-
-    session_id: str
-    automatic_compaction: bool = True
-    autocompact_pct: float = Field(default=0.85, gt=0.0, le=1.0)
-
-
-class UpdateContextPreferencesRequest(BaseModel):
-    """Partial update for a session's context controls."""
-
-    automatic_compaction: Optional[bool] = None
-    autocompact_pct: Optional[float] = Field(default=None, gt=0.0, le=1.0)
-
-
 class ContextOpRequest(BaseModel):
     """POST /v1/sessions/{sid}/context/ops — apply one live-context operation.
 
@@ -375,47 +375,6 @@ class ContextFrame(BaseModel):
 # ---------------------------------------------------------------------------
 # §4 — data model (populated incrementally)
 # ---------------------------------------------------------------------------
-
-
-class Workspace(BaseModel):
-    """SPEC §4.1 — a workspace groups related sessions and pins
-    a filesystem root the agent's tools are allowed to touch.
-
-    For CLIO each workspace maps to a directory the user has
-    explicitly added (think "git project root"). The agent's
-    file-policy receives ``root_path`` as part of CLIO_ALLOWED_ROOTS;
-    the ARC namespace + session bucket are scoped to ``id``.
-    """
-
-    id: str
-    name: str
-    root_path: str = ""
-    # GACT 0.3 canonical identity. ``display_name`` is the primary user-facing
-    # label; ``path`` remains secondary metadata. ``root_path`` is retained for
-    # 0.2 clients until that compatibility contract is retired.
-    display_name: str = ""
-    path: str = ""
-    connection_id: str = "local"
-    storage_root: str = ""
-    created_at: str
-    updated_at: str
-    config: dict[str, Any] = Field(default_factory=dict)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class CreateWorkspaceRequest(BaseModel):
-    """POST /v1/workspaces body."""
-
-    name: str
-    root_path: str = ""
-    storage_root: str = ""
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class ListWorkspacesResponse(BaseModel):
-    """GET /v1/workspaces body."""
-
-    workspaces: list[Workspace]
 
 
 class ModelRef(BaseModel):

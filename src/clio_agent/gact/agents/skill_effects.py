@@ -636,77 +636,6 @@ def _execute_schedule(
     )
 
 
-def _spawned_skill_run_label(ref: "SkillRef", assignment: str) -> str:
-    """Derive a concise, useful label for a skill-created child conversation."""
-
-    first_line = " ".join(assignment.split()).strip()
-    if not first_line:
-        first_line = str(ref.title or ref.id).strip()
-    first_sentence = first_line.split(". ", maxsplit=1)[0].rstrip(".")
-    if len(first_sentence) <= 72:
-        return first_sentence
-    return f"{first_sentence[:69].rstrip()}..."
-
-
-def _execute_spawn(
-    effect: SkillEffect,
-    ref: "SkillRef",
-    app: Any,
-    session_id: str,
-    agent_id: str,
-    task: str,
-) -> tuple[SkillEffectOutcome, Any]:
-    """Perform the ``spawn_subagent_with_skill`` effect: spawn a child turn seeded with the
-    skill body (the body is NOT inlined into the caller). Returns the task handle."""
-
-    from clio_agent.gact.spawn_context import bind_task_spec_to_parent  # noqa: PLC0415
-    from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
-        SpawnError,
-        TaskSpec,
-        spawn_child_turn_threadsafe,
-    )
-
-    body = read_skill_body(ref)  # fresh read at invocation time
-    seed = f"# Skill: {ref.id}\n\n{body}"
-    # A missing agent is a self-directed fresh context, not a routing decision;
-    # the depth/resolution guards still apply.
-    child_expert = effect.agent or agent_id
-    assignment = task.strip()
-    if not assignment:
-        raise SkillEffectError(
-            "spawn_skill_task requires a specific child assignment",
-            reason="spawn_task_missing",
-        )
-    spec = TaskSpec(
-        child_expert_id=child_expert,
-        task_text=assignment,
-        parent_session_id=session_id,
-        requesting_expert_id=agent_id,
-        seed_context=seed,
-        run_label=_spawned_skill_run_label(ref, assignment),
-        skip_declared_check=not effect.agent,
-        mode="async",
-    )
-    spec = bind_task_spec_to_parent(app, spec)
-    try:
-        spawned = spawn_child_turn_threadsafe(app, spec)
-    except SpawnError as exc:
-        raise SkillEffectError(
-            f"spawn_subagent_with_skill refused for skill {ref.id!r}: {exc}",
-            reason=exc.reason,
-        ) from exc
-    return (
-        SkillEffectOutcome(
-            kind=EFFECT_SPAWN_SUBAGENT,
-            detail=f"spawned subagent {child_expert!r} seeded with skill {ref.id!r}",
-            replaces_body=True,
-            task_id=spawned.task_id,
-            child_session_id=spawned.child_session_id,
-        ),
-        spawned,
-    )
-
-
 def _emit_skill_effect(
     app: Any, session_id: str, ref: "SkillRef", outcome: SkillEffectOutcome, agent_id: str
 ) -> None:
@@ -832,46 +761,9 @@ def maybe_apply_skill_effect(ref: "SkillRef", *, agent_id: str) -> str | None:
 
 
 def apply_spawn_skill_effect(ref: "SkillRef", *, agent_id: str, task: str) -> tuple[str, Any, str]:
-    """Spawn one skill-seeded child through the explicit spawn tool contract.
-
-    Returns the model-facing handle JSON, the real task handle, and the child
-    expert id so the caller can publish the canonical handoff at the call site.
-    """
-
-    effect = parse_skill_effect(ref.meta)
-    if effect is None or effect.kind != EFFECT_SPAWN_SUBAGENT:
-        raise SkillEffectError(
-            f"skill {ref.id!r} does not declare spawn_subagent_with_skill",
-            reason="skill_not_spawnable",
-        )
-    app = _ctx.active_app()
-    session_id = _ctx.active_session_id()
-    if app is None or not session_id:
-        raise SkillEffectError(
-            f"skill {ref.id!r} cannot spawn without an active session context",
-            reason="no_active_session",
-        )
-    outcome, spawned = _execute_spawn(effect, ref, app, session_id, agent_id, task)
-    _emit_skill_effect(app, session_id, ref, outcome, agent_id)
-    trace.event(
-        "SKILLS",
-        "agent %s skill %s effect %s (%s)",
-        agent_id,
-        ref.id,
-        outcome.kind,
-        outcome.detail,
+    """Delegate the explicit child launch to the skill-spawn effect owner."""
+    from clio_agent.gact.agents.skill_spawn_effect import (  # noqa: PLC0415
+        apply_spawn_skill_effect as apply_effect,
     )
-    return (
-        json.dumps(
-            {
-                "skill_effect": outcome.kind,
-                "status": "spawned",
-                "task_id": outcome.task_id,
-                "child_session_id": outcome.child_session_id,
-                "detail": outcome.detail,
-            },
-            sort_keys=True,
-        ),
-        spawned,
-        effect.agent or agent_id,
-    )
+
+    return apply_effect(ref, agent_id=agent_id, task=task)

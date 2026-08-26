@@ -65,6 +65,15 @@ import dspy
 from dspy.adapters.types.tool import Tool, ToolCallResults, ToolCalls
 from dspy.predict.react_v2 import _json_schema_for_annotation
 
+from clio_agent.gact.agents.reactv2_submit import (
+    REACT_FORCED_SUBMIT_REJECTED as REACT_FORCED_SUBMIT_REJECTED,
+)
+from clio_agent.gact.agents.reactv2_submit import (
+    active_react_scope_safe as _active_react_scope_safe,
+)
+from clio_agent.gact.agents.reactv2_submit import forced_submit
+from clio_agent.gact.agents.reactv2_submit import record_submit_audit as _record_submit_audit
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from clio_agent.arc.schema import Segment
 
@@ -93,11 +102,6 @@ REACT_SUBMIT_REPAIR_ATTEMPTED = "react_submit_repair_attempted"
 # fields stay absent (a declared Pydantic default is honored by ``_make_submit_tool``,
 # which is author intent, not fabrication).
 REACT_SUBMIT_REPAIR_EXHAUSTED = "react_submit_repair_exhausted"
-# A forced-finalization response returned no ``submit`` call (or attempted another
-# tool). Stock DSPy silently filters those calls. CLIO records the rejection and
-# exposes only the submit schema on the forced turn so a transport that cannot honor
-# native ``tool_choice`` cannot be invited to call an unrelated tool.
-REACT_FORCED_SUBMIT_REJECTED = "react_forced_submit_rejected"
 
 
 class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
@@ -168,71 +172,12 @@ class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
         break_reason: str,
         turn_index: int,
     ) -> Any:
-        """Finalize with a submit-only tool contract and audit rejected responses.
+        """Finalize through the sole legal ``submit`` operation.
 
-        DSPy's implementation advertises every ReAct tool and relies on the provider's
-        native ``tool_choice`` support to force ``submit``. CLIO also supports bare-model
-        SDK transports, where that provider hint may be unavailable even though the
-        structured DSPy response contract is supported. Advertising unrelated tools in
-        that state caused the model to request them, after which stock DSPy silently
-        discarded the calls while their streamed reasoning remained on the canonical
-        message ledger.
-
-        The forced turn has exactly one legal operation, so expose exactly one tool:
-        ``submit``. Keep ``tool_choice`` for transports that honor it, then explicitly
-        audit an empty or non-submit response before returning the typed failed
-        prediction. No provider-specific reasoning semantics or transcript rewriting is
-        involved.
+        The extracted owner keeps provider tool-choice differences from inviting an
+        unrelated operation and audits every rejected finalization.
         """
-        from dspy.predict.react_v2 import (  # noqa: PLC0415
-            _append_history_event,
-            _coerce_tool_calls,
-            _ensure_tool_call_ids,
-        )
-        from dspy.primitives.prediction import Prediction  # noqa: PLC0415
-        from dspy.utils.exceptions import (  # noqa: PLC0415
-            AdapterParseError,
-            ContextWindowExceededError,
-        )
-
-        try:
-            pred = self.react(
-                history=history,
-                tools=[self.tools["submit"]],
-                config={
-                    "tool_choice": {"type": "function", "function": {"name": "submit"}},
-                    "reasoning_effort": None,
-                },
-                **pending_inputs,
-            )
-            tool_calls = _ensure_tool_call_ids(
-                _coerce_tool_calls(getattr(pred, "tool_calls", None)), turn_index
-            )
-        except (AdapterParseError, ValueError, ContextWindowExceededError) as exc:
-            _record_forced_submit_rejection(type(exc).__name__)
-            return Prediction(history=history, termination_reason=break_reason or "failed")
-
-        submit_calls = ToolCalls(
-            tool_calls=[call for call in tool_calls.tool_calls if call.name == "submit"]
-        )
-        if not submit_calls.tool_calls:
-            attempted = [call.name for call in tool_calls.tool_calls]
-            _record_forced_submit_rejection(", ".join(attempted) or "<empty>")
-            return Prediction(history=history, termination_reason=break_reason or "failed")
-
-        tool_call_results, final_outputs = self._execute_tool_calls(submit_calls)
-        event = self._history_event(pending_inputs, pred, submit_calls, tool_call_results)
-        if final_outputs is not None:
-            event.update(final_outputs)
-        _append_history_event(history, event)
-
-        if final_outputs is not None:
-            return Prediction(
-                **final_outputs,
-                history=history,
-                termination_reason="forced_submit",
-            )
-        return Prediction(history=history, termination_reason=break_reason or "failed")
+        return forced_submit(self, history, pending_inputs, break_reason, turn_index)
 
     def forward(self, **input_args: Any) -> Any:
         """Run the V2 loop, retain the History, and bounded-repair a missing submit (#901 S4/S6).
@@ -847,53 +792,3 @@ def _stringify_value(value: Any) -> str:
         return json.dumps(value, default=str)
     except Exception:  # noqa: BLE001 - audit text only; never fail a turn on formatting
         return str(value)
-
-
-def _active_react_scope_safe() -> str:
-    """The active react scope for audit attribution, or ``""`` off-turn."""
-    try:
-        from clio_agent.gact import context as _ctx  # noqa: PLC0415
-
-        return _ctx.active_react_scope()
-    except Exception:  # noqa: BLE001 - scope unavailable off-turn (CLI / optimizer / unit test)
-        return ""
-
-
-def _record_submit_audit(
-    reason: str,
-    *,
-    agent_id: str,
-    field: str,
-    text: str,
-    suppressed: bool,
-) -> None:
-    """Emit one V2-path stream-audit record (the no-silent-fallback house style).
-
-    Mirrors ``lm_activity.note_suppressed_extract_field`` (the classic #878 record) so
-    the V2 submit-turn reasons are queryable in the same ``bridge.contract_field``
-    lane. The sink is a no-op unless ``CLIO_STREAM_AUDIT_LOG`` is configured.
-    """
-    from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
-
-    stream_audit(
-        "bridge.contract_field",
-        agent_id=agent_id or "",
-        field=field,
-        chunk_len=len(text),
-        visible=False,
-        duplicate_suppressed=suppressed,
-        duplicate_reason=reason,
-        head=text[:120],
-        full_text=text[:12000],
-    )
-
-
-def _record_forced_submit_rejection(attempted: str) -> None:
-    """Record a forced-finalization response that did not produce ``submit``."""
-    _record_submit_audit(
-        REACT_FORCED_SUBMIT_REJECTED,
-        agent_id=_active_react_scope_safe(),
-        field="submit",
-        text=attempted,
-        suppressed=False,
-    )

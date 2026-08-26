@@ -240,7 +240,7 @@ def _lenient_chat_adapter_cls() -> Any:
         def parse(self, signature: Any, completion: str) -> dict:
             try:
                 return super().parse(signature, completion)
-            except Exception as primary_exc:
+            except (AdapterParseError, TypeError, ValueError) as primary_exc:
                 from clio_agent.runtime.lm_stream import (  # noqa: PLC0415
                     normalize_escaped_section_boundaries,
                 )
@@ -249,8 +249,11 @@ def _lenient_chat_adapter_cls() -> Any:
                 if normalized_completion != completion:
                     try:
                         parsed = super().parse(signature, normalized_completion)
-                    except Exception:
-                        pass
+                    except (AdapterParseError, TypeError, ValueError):
+                        logger.debug(
+                            "normalized adapter parse did not recover output; "
+                            "continuing with structured-value repair"
+                        )
                     else:
                         from clio_agent.runtime import trace  # noqa: PLC0415
 

@@ -27,7 +27,6 @@ import threading
 import time
 from collections.abc import Mapping
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List
 
 import dspy
@@ -37,6 +36,7 @@ from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.retrieval import ContextRetriever
 from clio_agent.arc.schema import Conversation
 from clio_agent.arc.storage import make_arc_store
+from clio_agent.blueprint_server_resolution import discover_blueprint_servers
 from clio_agent.config import (
     LMProviderConfig,
     create_chat_adapter,
@@ -301,26 +301,9 @@ class ClioAgent(dspy.Module):
     def _discover_pack_servers(
         self, blueprint_id: str = "", *, cwd: str | None = None
     ) -> dict[str, dict[str, Any]]:
-        """Return declared ``mcp_servers`` for ONE ACTIVATED blueprint (#1232 pt 1).
+        """Return declared MCP servers for one activated blueprint."""
 
-        Reads a SINGLE blueprint's ``AGENT.md`` frontmatter ``mcp_servers`` map —
-        the blueprint currently activated for the calling session/workspace (see
-        ``tools.execution.tool_blueprint_context``, bound per turn by
-        ``gact.runtime.globals._tool_session_context``). ``blueprint_id`` empty
-        (the boot-time default gateway, or a session with no blueprint activated)
-        returns ``{}`` — an INSTALLED-but-inactive blueprint's declared servers
-        never mount. Discovery failures degrade to "no pack servers" (pure
-        reasoning / built-ins only); path-activated packs decide outright via
-        ``gact.blueprint_activation`` (``None`` -> installed discovery).
-        """
-
-        from clio_agent.gact.blueprint_activation import blueprint_mcp_servers  # noqa: PLC0415
-
-        return blueprint_mcp_servers(
-            blueprint_id,
-            cwd=Path(cwd) if cwd else None,
-            verbose=self.verbose,
-        )
+        return discover_blueprint_servers(blueprint_id, cwd=cwd, verbose=self.verbose)
 
     def _build_tool_gateway(
         self, *, cwd: str | None = None, set_catalog: bool = False, blueprint_id: str = ""

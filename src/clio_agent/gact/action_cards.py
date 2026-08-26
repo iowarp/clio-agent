@@ -353,8 +353,7 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
         # (e.g. a bare/loose expert running without one).
         caller_session = app.state.sessions.get(sid)
         blueprint_id = str(
-            (getattr(caller_session, "metadata", None) or {}).get("active_agent_blueprint_id")
-            or ""
+            (getattr(caller_session, "metadata", None) or {}).get("active_agent_blueprint_id") or ""
         )
         source = blueprint_id or caller_expert_id
 

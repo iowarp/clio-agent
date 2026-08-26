@@ -36,6 +36,8 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.agents.spawn_events import _started_handoff_part as _started_handoff_part
+from clio_agent.gact.agents.spawn_events import emit_spawn_started as _emit_spawn_started
 from clio_agent.gact.agents.spawn_group import (
     failed_spawn_metadata_row,
     spawn_group_fields,
@@ -55,6 +57,29 @@ if TYPE_CHECKING:
     from clio_agent.gact.agents.types import AgentDef
 
 logger = logging.getLogger(__name__)
+
+
+def emit_spawn_started(
+    app: Any,
+    session_id: str,
+    agent_def: "AgentDef",
+    child_id: str,
+    task_text: str,
+    depth: int,
+    spawned: Any,
+) -> None:
+    """Publish a child launch through the patchable runtime event seams."""
+    _emit_spawn_started(
+        app,
+        session_id,
+        agent_def,
+        child_id,
+        task_text,
+        depth,
+        spawned,
+        emit_semantic_event=_emit_semantic_event,
+        append_live_part=_append_live_assistant_part,
+    )
 
 
 def _fanout_batch_bound(agent_def: "AgentDef") -> int:
@@ -210,80 +235,6 @@ def _completion_payload(app: Any, task: Any) -> dict[str, Any]:
     }
     payload.update(markers)
     return payload
-
-
-def _started_handoff_part(
-    agent_def: "AgentDef", child_id: str, task_text: str, depth: int, spawned: Any
-) -> Part:
-    """The ``delegate.started`` expert_handoff Part appended to the PARENT transcript
-    when a child is spawned (#948 S4 finding [7]). The transcript renderer drives the
-    delegation header/depth/nesting off ``type=='expert_handoff'`` Parts — NOT the
-    semantic events — so without this Part a spawned child renders nothing."""
-
-    started_row = {
-        "agent_id": child_id,
-        "parent_id": agent_def.id,
-        "status": "running",
-        "stage": "delegate.started",
-        "question": task_text,
-        "depth": depth,
-        "run_index": spawned.run_index,
-    }
-    started_row.update(spawn_group_fields(spawned))
-    handle_fields = run_handle_fields(spawned, child_id)
-    return Part(
-        id=f"live_handoff_{uuid.uuid4().hex[:12]}",
-        type="expert_handoff",
-        agent_id=agent_def.id,
-        parent_agent=agent_def.id,
-        child_agent=child_id,
-        stage="delegate.started",
-        handle_id=handle_fields["handle_id"],
-        run_label=handle_fields["run_label"],
-        live_state=handle_fields["live_state"],
-        host=handle_fields["host"],
-        placement=handle_fields["placement"],
-        status="running",
-        text=f"{agent_def.id} -> {child_id}",
-        metadata={**_handoff_part_metadata(started_row), "stream_source": "live"},
-    )
-
-
-def emit_spawn_started(
-    app: Any,
-    session_id: str,
-    agent_def: "AgentDef",
-    child_id: str,
-    task_text: str,
-    depth: int,
-    spawned: Any,
-) -> None:
-    """Publish one canonical started handoff for any real child-task spawn.
-
-    Both declared-blueprint spawns and skill-seeded dynamic spawns use this
-    seam so the parent transcript records the child exactly where it was
-    launched. The handoff part is the presentation; a generic tool row would
-    duplicate the same action.
-    """
-
-    _emit_semantic_event(
-        app,
-        session_id,
-        "blueprint.delegation.started",
-        turn_id=_active_semantic_turn_id(),
-        trace_id=_active_semantic_trace_id(),
-        status="running",
-        summary=f"{agent_def.id} spawned {child_id}",
-        actor={"agent_id": agent_def.id, "role": "parent_expert"},
-        subject={"agent_id": child_id, "role": "child_expert"},
-        blueprint=_blueprint_block(agent_def, child_id),
-        payload={"run_index": spawned.run_index},
-    )
-    _append_live_assistant_part(
-        app,
-        session_id,
-        _started_handoff_part(agent_def, child_id, task_text, depth, spawned),
-    )
 
 
 def _failed_spawn_handoff_part(

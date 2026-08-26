@@ -32,6 +32,8 @@ from fastapi.responses import JSONResponse, Response
 
 from clio_agent.gact.protocol_v3 import requests_gact_v3, workspace_to_v3
 from clio_agent.gact.routes._body import json_body
+from clio_agent.gact.routes.workspace_file_policy import skip_workspace_file_directory
+from clio_agent.gact.routes.workspace_grant_delete import register_workspace_grant_delete_route
 from clio_agent.gact.types import (
     CreateWorkspaceRequest,
     ErrorEnvelope,
@@ -62,31 +64,6 @@ _TEXTUAL_WORKSPACE_MIME_TYPES = frozenset(
 # of entries so a giant repo cannot lock the picker for seconds, and skip
 # cost-walking dirs (VCS metadata, caches, build output, vendored deps).
 _FILE_PICKER_LIMIT = 5000
-_FILE_PICKER_SKIP_DIRS = {
-    ".git",
-    ".hg",
-    ".svn",
-    "__pycache__",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    "node_modules",
-    ".npm",
-    ".venv",
-    "venv",
-    ".tox",
-    "build",
-    "dist",
-    ".egg-info",
-}
-
-
-def _skip_workspace_file_directory(name: str) -> bool:
-    """Return whether a directory is service-owned or too costly to browse."""
-
-    return name in _FILE_PICKER_SKIP_DIRS or name == ".clio" or name.startswith(".clio-")
-
-
 _GRANTOR_USER = "user"
 
 
@@ -492,46 +469,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         return result
 
-    @app.delete("/v1/workspaces/{wid}/grants")
-    async def delete_workspace_grant(wid: str, request: Request) -> dict[str, Any]:
-        """Remove one user-granted additional workspace folder.
-
-        The primary workspace root remains owned by ``PATCH /v1/workspaces``;
-        this endpoint only revokes an additive ``fs_root`` grant.
-        """
-
-        ws = app.state.workspaces.get(wid)
-        if ws is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"workspace not found: {wid}",
-                        details={"workspace_id": wid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        kind = str(request.query_params.get("kind") or "fs_root")
-        pattern = str(request.query_params.get("pattern") or "").strip()
-        if kind not in {"root", "fs_root"} or not pattern:
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="invalid_request",
-                        message="grant removal requires kind=fs_root and a non-empty pattern",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        from clio_agent.gact.runtime import grants  # noqa: PLC0415
-
-        return {
-            "workspace_id": wid,
-            "grant": grants.revoke_root_grant(app, wid, pattern),
-        }
+    register_workspace_grant_delete_route(app)
 
     @app.delete("/v1/workspaces/{wid}")
     async def delete_workspace(wid: str) -> Response:
@@ -647,7 +585,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                 if cap <= 0:
                     return
                 name = child.name
-                if _skip_workspace_file_directory(name):
+                if skip_workspace_file_directory(name):
                     continue
                 try:
                     if child.is_symlink() and not allow_symlinks:

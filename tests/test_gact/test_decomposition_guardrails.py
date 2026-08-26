@@ -80,10 +80,13 @@ from clio_agent.gact.app import build_app
 # 190 -> 191 (#1211): +1 POST /v1/providers/models/refresh, owned by the new
 # routes/provider_models_refresh.py (registered alongside routes/providers.py,
 # not inline in app.py).
-# 191 -> 192: +1 PUT /v1/agent-blueprints/{blueprint_id}/files/write, owned by
-# routes/blueprints.py with path confinement and atomic persistence in
-# agent_blueprint_files.py.
-EXPECTED_ROUTE_METHOD_PAIRS = 192
+# 191 -> 193 (feat/flowcept-provenance): +2 provider-neutral provenance read
+# routes owned by routes/provenance.py.
+# 193 -> 205 (codex rework landing): +12 routes, all in concern modules: A2UI
+# surface/message/action (3), artifact table preview (1), blueprint file write
+# (1), context preferences (2), relay configuration (2), session defaults (2),
+# and workspace grant removal (1). No route is registered inline in app.py.
+EXPECTED_ROUTE_METHOD_PAIRS = 205
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

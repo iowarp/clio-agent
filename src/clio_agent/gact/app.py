@@ -41,12 +41,12 @@ from clio_agent.gact.diagnostics import (  # noqa: E402,F401
 
 _install_sigusr1_diagnostic()
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional, cast
+from typing import Any, AsyncIterator, Optional
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -55,7 +55,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from clio_agent import conf
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.auth import configure_bearer_auth
+from clio_agent.gact.cors import gact_cors_origins as _gact_cors_origins
 from clio_agent.gact.error_middleware import install_error_envelope
+from clio_agent.gact.protocol.negotiation import install_protocol_negotiation
+from clio_agent.gact.runtime.rework_state import initialize_a2ui_store, initialize_session_defaults
 from clio_agent.gact.semantic_events import (
     SemanticEventSink,
     build_trace_backend,
@@ -129,42 +132,6 @@ _EXECUTABLE_SESSION_AGENT_IDS = {
     "main",
     "default",
 }
-
-
-def _gact_cors_origins() -> list[str]:
-    """Return trusted browser origins for the GACT API.
-
-    The config file is the primary surface; the environment variable remains a
-    compatibility fallback for older launch scripts.
-    """
-
-    default_origins = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:4173",
-        "http://127.0.0.1:4173",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-    ]
-    try:
-        raw_value: Any = conf.resolve(
-            "gact.cors.origins",
-            env="CLIO_GACT_CORS_ORIGINS",
-            default=None,
-        )
-    except (TypeError, ValueError):
-        return default_origins
-    if raw_value in (None, "", []):
-        return default_origins
-    try:
-        raw = cast(Callable[[Any], list[str]], conf.as_csv)(raw_value)
-    except (TypeError, ValueError):
-        return default_origins
-    if raw == ["*"]:
-        return ["*"]
-    return [origin for origin in raw if origin]
 
 
 def _web_dir() -> str:
@@ -1244,40 +1211,7 @@ def build_app(
         lifespan=_lifespan,
     )
 
-    @app.middleware("http")
-    async def negotiate_protocol(
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
-        """Reject explicitly requested protocol versions this server cannot honor."""
-
-        gact_version = request.headers.get("x-gact-version", "").strip()
-        a2ui_version = request.headers.get("x-a2ui-version", "").strip()
-        if gact_version and gact_version not in {"0.2", "0.3"}:
-            return JSONResponse(
-                status_code=406,
-                content={
-                    "error": {
-                        "error": "unsupported_protocol",
-                        "message": f"Unsupported GACT version: {gact_version}",
-                        "details": {"supported": ["0.3", "0.2"]},
-                        "recoverable": False,
-                    }
-                },
-            )
-        if a2ui_version and a2ui_version != "0.9.1":
-            return JSONResponse(
-                status_code=406,
-                content={
-                    "error": {
-                        "error": "unsupported_protocol",
-                        "message": f"Unsupported A2UI version: {a2ui_version}",
-                        "details": {"supported": ["0.9.1"]},
-                        "recoverable": False,
-                    }
-                },
-            )
-        return await call_next(request)
+    install_protocol_negotiation(app)
 
     configure_bearer_auth(app)
 
@@ -1317,12 +1251,7 @@ def build_app(
     # per-session pub/sub. POST /messages
     # publishes; /v1/sessions/{sid}/events subscribers consume.
     app.state.bus = EventBus()
-    from clio_agent.gact.a2ui import A2UIStore  # noqa: PLC0415
-
-    app.state.a2ui_store = A2UIStore(
-        path=session_store_path.parent / "a2ui-surfaces.json",
-        bus=app.state.bus,
-    )
+    initialize_a2ui_store(app, session_store_path.parent)
     app.state.semantic_trace_detail_level = _semantic_trace_detail_level()
     app.state.semantic_trace_backend = build_trace_backend(
         session_store_path.parent / "semantic_traces"
@@ -1607,13 +1536,7 @@ def build_app(
     app.state.schedules = _SchedStore(
         path=(sessions_path.parent / "schedules.json") if sessions_path is not None else None
     )
-    from clio_agent.gact.session_defaults import SessionDefaultsStore
-
-    app.state.session_defaults = SessionDefaultsStore(
-        path=(sessions_path.parent / "session-defaults.json")
-        if sessions_path is not None
-        else None
-    )
+    initialize_session_defaults(app, sessions_path)
     app.state.scheduler_task = None
     # iowarp/clio-agent#22: shared session tokens.
     app.state.shared_tokens = {}

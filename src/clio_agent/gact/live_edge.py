@@ -460,9 +460,7 @@ def feed_delta(
         return
     try:
         registry = registry_for(app)
-        registry.open_slot(
-            session_id, part_id=part_id, agent_id=agent_id, field=field, kind=kind
-        )
+        registry.open_slot(session_id, part_id=part_id, agent_id=agent_id, field=field, kind=kind)
         registry.append_delta(session_id, part_id, chunk, store=arc._segments)
     except Exception:  # noqa: BLE001 - a read-model overlay must never break a turn
         logger.warning(

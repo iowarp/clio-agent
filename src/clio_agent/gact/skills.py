@@ -72,9 +72,7 @@ class SkillBodyUnreadableError(RuntimeError):
     """A resolved skill's SKILL.md could not be read back for loading."""
 
     def __init__(self, skill_id: str, path: str, cause: str) -> None:
-        super().__init__(
-            f"skill {skill_id!r} body at {path} is unreadable: {cause}"
-        )
+        super().__init__(f"skill {skill_id!r} body at {path} is unreadable: {cause}")
         self.skill_id = skill_id
         self.path = path
         self.cause = cause
@@ -287,9 +285,7 @@ class SkillCatalog:
                     # ref (layout="unreadable") so resolution of its id reports
                     # `unreadable` instead of `missing`, and the scan error is
                     # queryable on the catalog instance.
-                    self.scan_errors.append(
-                        {"path": str(md), "scope": scope, "error": str(exc)}
-                    )
+                    self.scan_errors.append({"path": str(md), "scope": scope, "error": str(exc)})
                     refs.append(
                         SkillRef(
                             id=_default_skill_id(md),
@@ -462,5 +458,3 @@ def _parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
             cur_key = None
     body = "\n".join(lines[end + 1 :]).strip()
     return meta, body
-
-
