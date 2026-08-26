@@ -309,35 +309,18 @@ class ClioAgent(dspy.Module):
         ``gact.runtime.globals._tool_session_context``). ``blueprint_id`` empty
         (the boot-time default gateway, or a session with no blueprint activated)
         returns ``{}`` — an INSTALLED-but-inactive blueprint's declared servers
-        never mount. Before this, EVERY installed blueprint's declared servers —
-        including heavy, unrelated scientific-pack servers — mounted into the
-        boot-time default gateway regardless of activation, gating boot on
-        namespaces a session might never touch. Discovery failures degrade to
-        "no pack servers" (pure reasoning / built-ins only).
+        never mount. Discovery failures degrade to "no pack servers" (pure
+        reasoning / built-ins only); path-activated packs decide outright via
+        ``gact.blueprint_activation`` (``None`` -> installed discovery).
         """
 
-        if not blueprint_id:
-            return {}
-        from clio_agent.gact.agent_blueprints import (  # noqa: PLC0415
-            discover_agent_blueprints,
-        )
+        from clio_agent.gact.blueprint_activation import blueprint_mcp_servers  # noqa: PLC0415
 
-        try:
-            blueprints = (
-                discover_agent_blueprints(cwd=Path(cwd)) if cwd else discover_agent_blueprints()
-            )
-        except Exception as exc:  # noqa: BLE001 - discovery is best-effort
-            if self.verbose:
-                print(f"[ClioAgent] blueprint discovery failed: {exc}")
-            return {}
-        for blueprint in blueprints:
-            if blueprint.id != blueprint_id:
-                continue
-            servers = blueprint.metadata.get("mcp_servers")
-            if isinstance(servers, Mapping) and servers:
-                return {blueprint.id: {str(k): v for k, v in servers.items()}}
-            return {}
-        return {}
+        return blueprint_mcp_servers(
+            blueprint_id,
+            cwd=Path(cwd) if cwd else None,
+            verbose=self.verbose,
+        )
 
     def _build_tool_gateway(
         self, *, cwd: str | None = None, set_catalog: bool = False, blueprint_id: str = ""

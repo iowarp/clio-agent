@@ -1,4 +1,4 @@
-# Goal: HPC Cluster Operator (case07)
+# Goal: HPC Cluster Operator (case13)
 
 ## Objective
 
@@ -95,7 +95,7 @@ Matcher plan (structured evidence only, each proven to FAIL a tampered run):
    workspace-scoped in the isolated instance. Topology: domain-grouped,
    re-entrant (main re-decides on typed state after cluster/pipeline
    returns) — not a linear chain.
-2. **Harness**: `tests/test_real_cases/test_case07_cluster_operator.py`
+2. **Harness**: `tests/test_real_cases/test_case13_cluster_operator.py`
    mirroring the earthscope case; SUT drives the isolated serve.
 3. **Wiring validation fast, then ONE live S1 run** on the guardrail cell;
    trace to `runs/`; hand review.
@@ -128,7 +128,7 @@ the grinder with a one-line verdict recorded.
    tampered run.
 5. **Suite grew from review**: every trace-read failure is encoded.
 6. **No regressions**: existing case suites still pass; changes additive.
-7. **(case07-specific) v2 discipline held in every accepted run** and every
+7. **(case13-specific) v2 discipline held in every accepted run** and every
    degradation observed was typed and loud (inventory kept for the
    security-phase re-run).
 

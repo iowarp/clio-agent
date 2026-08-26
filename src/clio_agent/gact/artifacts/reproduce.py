@@ -376,7 +376,7 @@ import os
 import shutil
 import sys"""
 
-_SHA_HELPERS = '''
+_SHA_HELPERS = """
 
 def _sha256(path):
     h = hashlib.sha256()
@@ -396,7 +396,7 @@ def _assert_sha(path, expected, name):
             "[reproduce] %s: sha256 MISMATCH expected=%s actual=%s" % (name, expected, actual)
         )
     print("[reproduce] %s: sha256 OK %s" % (name, expected))
-'''
+"""
 
 #: The ``reproduce.py`` preamble: anchor on the SCRIPT's own directory via
 #: ``__file__`` (valid in a run script), then the sha helpers.

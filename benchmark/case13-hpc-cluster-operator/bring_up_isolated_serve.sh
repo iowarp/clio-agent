@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# case07 (HPC cluster operator) ISOLATED serve bring-up.
+# case13 (HPC cluster operator) ISOLATED serve bring-up.
 #
 #   worktree    : D:/clio-cluster-case, branch feat/cluster-operator-case
 #   port        : 17970 (the ares-mission serve on :17900 is NEVER touched)
@@ -16,8 +16,8 @@
 set -u
 
 WORKTREE='/d/clio-cluster-case'
-CASE_DIR="$WORKTREE/benchmark/case07-hpc-cluster-operator"
-PORT="${CLIO_CASE07_PORT:-17970}"
+CASE_DIR="$WORKTREE/benchmark/case13-hpc-cluster-operator"
+PORT="${CLIO_CASE13_PORT:-17970}"
 
 cd "$WORKTREE" || exit 1
 
@@ -41,7 +41,7 @@ export CLIO_RELAY_HTTP_URL="http://127.0.0.1:${CLIO_RELAY_OWNER_SESSION_API_PORT
 # --- isolation: port + file-tool access + durable, worktree-local artifacts ---
 export CLIO_GACT_FIXTURE_PORT="$PORT"
 export CLIO_ALLOWED_ROOTS="D:\\clio-cluster-case;${HOME};/tmp"
-export CLIO_CASE07_WORKSPACE_ROOT="$CASE_DIR/runs/workspace"
+export CLIO_CASE13_WORKSPACE_ROOT="$CASE_DIR/runs/workspace"
 mkdir -p "$CASE_DIR/runs/workspace" "$CASE_DIR/runs"
 
 # --- guardrail cell (per-cell PUT /v1/providers/lm still wins under pytest;
@@ -60,7 +60,7 @@ if command -v curl >/dev/null 2>&1; then
 fi
 
 echo "bring_up_isolated_serve: starting isolated clio-agent serve on 127.0.0.1:$PORT"
-echo "  workspace root : $CLIO_CASE07_WORKSPACE_ROOT"
+echo "  workspace root : $CLIO_CASE13_WORKSPACE_ROOT"
 echo "  relay cluster  : $CLIO_RELAY_CLUSTER (owned session ${CLIO_RELAY_OWNER_SESSION_ID:-<unset>})"
 echo "  provider/model : $CLIO_LM_PROVIDER / $CLIO_LM_MODEL"
 

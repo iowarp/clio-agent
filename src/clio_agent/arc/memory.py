@@ -88,16 +88,11 @@ def _durable_trace_backend() -> str:
     destructive erase of the ``_events`` log on this: when the durable trace keeps
     no copy, the log is the ONLY record of the session's events (#762).
     """
-    return (
-        conf.resolve(
-            "trace.backend",
-            env="CLIO_SEMANTIC_TRACE_BACKEND",
-            default="none",
-            cast=conf.as_str,
-        )
-        .strip()
-        .lower()
-    )
+    # One ladder for both sides (arc stays gact-free): provenance_config owns
+    # the precedence + the Flowcept-is-not-permission-to-erase rule.
+    from clio_agent.provenance_config import durable_trace_backend_name  # noqa: PLC0415
+
+    return durable_trace_backend_name()
 
 
 class ARCMemory:

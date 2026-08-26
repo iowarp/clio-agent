@@ -1,4 +1,4 @@
-# case07 — HPC Cluster Operator
+# case13 — HPC Cluster Operator
 
 **The question family:** can an agent, given only human-level scientific
 intents and a set of skills, operate a real HPC cluster — discover what is
@@ -32,4 +32,28 @@ evidence under D:/relay-p5local/evidence/ and on iowarp/clio-relay#158 and
 #242. The three-workload matrix (LAMMPS; app+Darshan; composed pipeline
 with per-frame images) is the mission's step 4 and maps 1:1 onto S1-S3.
 
-**Status:** grind contract in `GOAL.md`; run logs in `runs/`.
+## Semantics To Prove
+
+- A human-level scientific intent (no tool, expert, or relay vocabulary in
+  the prompt) is enough for the agent to discover installed software, install
+  what is missing through Spack, compose the right JARVIS pipeline, and
+  submit it through the relay's MCP v2 task surface.
+- Async discipline holds end-to-end: submit → wait/poll to a REAL terminal
+  state → retrieve artifacts; the agent reports only states and values it
+  read back from the cluster (thermo tables, Darshan logs, per-frame images
+  through the artifact channel), never fabricated progress.
+- The instrumented (S2) and composed (S3) variants exercise interceptor
+  binding and multi-stage pipelines with provenance-carrying artifacts; the
+  honest negative (S4) returns "nothing ran" truthfully against a clean
+  deployment.
+
+## Current Core Problem
+
+The grind has not yet passed its reliability bar (GOAL.md: ≥0.8 over ≥10
+sampled runs per scenario). The by-hand ares mission proved the substrate
+answers the questions (see Manual solution above), and the 2026-08-20/21
+Darshan mission proved S1/S2 shapes live agent-driven — but the harnessed
+scenario family (S1–S4, story-asserted matchers, tamper-proofs) still needs
+its sampled live runs on the isolated :17970 instance.
+
+**Status:** not passed. Grind contract in `GOAL.md`; run logs in `runs/`.

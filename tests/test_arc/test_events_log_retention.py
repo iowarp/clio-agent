@@ -2,9 +2,8 @@
 
 The erase of the reserved ``_events`` scope on ``release_session`` /
 ``flush_and_release`` is justified by "the durable trace keeps the full history"
-— but the durable semantic-trace backend DEFAULTS to ``none`` (opt-in, see
-``build_trace_backend``). In a default deployment the ``_events`` log is
-therefore the only copy of the session event log, and the erase destroyed it.
+JSONL is default-on now. When downstream persistence is explicitly disabled,
+the ``_events`` log is the only copy and must be retained.
 
 The Phase-0 guard: the destructive erase is GATED on the durable trace backend
 actually being enabled. Trace disabled -> the log is RETAINED (the hot copy is
@@ -50,10 +49,10 @@ def _arc_with_one_event(tmp_path: Any) -> ARCMemory:
 
 
 class TestTraceDisabledRetainsEventsLog:
-    """Default deployment (trace backend "none"): the log is the only copy."""
+    """Explicitly disabled provenance: the ARC log is the only copy."""
 
     def test_release_session_retains_events_log(self, tmp_path, monkeypatch, hermetic_conf):
-        monkeypatch.delenv("CLIO_SEMANTIC_TRACE_BACKEND", raising=False)
+        set_config("provenance.agentic.providers", [])
         arc = _arc_with_one_event(tmp_path)
 
         result = arc.release_session("s1")
@@ -77,7 +76,7 @@ class TestTraceDisabledRetainsEventsLog:
         assert any("reason=durable_trace_disabled" in r.message for r in caplog.records)
 
     def test_flush_and_release_retains_events_log(self, tmp_path, monkeypatch, hermetic_conf):
-        monkeypatch.delenv("CLIO_SEMANTIC_TRACE_BACKEND", raising=False)
+        set_config("provenance.agentic.providers", [])
         arc = _arc_with_one_event(tmp_path)
 
         arc.flush_and_release()
@@ -140,7 +139,7 @@ class TestRetentionSpansTheWholeChunkFamily:
         self, tmp_path, monkeypatch, hermetic_conf
     ):
         arc = self._arc_with_three_chunks(tmp_path, monkeypatch)
-        monkeypatch.delenv("CLIO_SEMANTIC_TRACE_BACKEND", raising=False)
+        set_config("provenance.agentic.providers", [])
 
         result = arc.release_session("s1")
 

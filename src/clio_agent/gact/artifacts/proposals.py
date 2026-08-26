@@ -19,8 +19,8 @@ react (bounded repair), never silently dropped.
 Validation reuses the S1 containment helpers (``minting._workspace_root`` /
 ``minting._contained``) so the tool boundary and the mint seams share one rule: a
 path must exist and resolve inside the bound workspace root before it is hashed.
-CAS ingestion of inline bytes is S6 — this slice writes inline content as a normal
-workspace file (custody ``workspace-referenced``) via the policy-checked writer.
+Inline content is written through the policy-checked writer and then handed to the
+same selected artifact store as an existing-path proposal.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent import conf
-from clio_agent.gact.artifacts.cas import IngestedIdentity, ingest_identity
+from clio_agent.gact.artifacts.cas import IngestedIdentity
 from clio_agent.gact.artifacts.minting import (
     _contained,
     _workspace_root,
@@ -56,6 +56,10 @@ from clio_agent.gact.artifacts.records import (
     Mechanism,
 )
 from clio_agent.gact.artifacts.registry import get_registry
+from clio_agent.gact.artifacts.storage import (
+    harness_write_artifact_identity,
+    ingest_artifact_identity,
+)
 from clio_agent.gact.artifacts.wire import declare_create_artifact_structured_content
 
 if TYPE_CHECKING:
@@ -346,8 +350,7 @@ def promote_proposal(
 
     # Resolve the byte source: inline content (write it) or an existing path.
     source = "inline" if proposal.content else "path"
-    # The CAS ingestion outcome for the path channel (S6 #972); ``None`` for inline
-    # content, which stays workspace-referenced (its bytes were just staged in-place).
+    # The selected store's ingestion outcome for both path and inline channels.
     path_ingest: Optional[IngestedIdentity] = None
     if proposal.content:
         # A content write is destructive — gate it (mode/overwrite/policy) BEFORE
@@ -390,6 +393,14 @@ def promote_proposal(
             else artifact_name_for_path(target)
         )
         path = target
+        path_ingest = harness_write_artifact_identity(
+            app,
+            path,
+            workspace_root=root,
+            in_hand_sha=evidence.sha256 or "",
+            in_hand_size=int(evidence.size_bytes or 0),
+        )
+        evidence = path_ingest.evidence
     elif proposal.path:
         # Ground BOTH channels against the workspace root (finding [4/5/9]): a
         # relative path is root-relative (symmetric with inline content, which
@@ -434,10 +445,9 @@ def promote_proposal(
             )
             return outcome
         try:
-            # S6 (#972): a model-designated small deliverable is ingested into CAS
-            # (custody ``cas``) via the same single streamed read; over threshold →
-            # referenced + typed not_ingested_size.
-            path_ingest = ingest_identity(path, workspace_root=root)
+            # A model-designated deliverable uses the selected provider's store;
+            # native file storage retains its existing CAS/threshold semantics.
+            path_ingest = ingest_artifact_identity(app, path, workspace_root=root)
             evidence = path_ingest.evidence
         except OSError as exc:
             outcome = _rejected(name, RejectionReason.PATH_MISSING, f"stat/hash failed: {exc}")
@@ -537,6 +547,7 @@ def promote_proposal(
         producer=_mint_producer(sid, turn_id, agent_id),
         custody=path_ingest.custody if path_ingest is not None else Custody.WORKSPACE_REFERENCED,
         path=str(path),
+        ingested=path_ingest,
         annotation=proposal.annotation,
         turn_id=turn_id,
         trace_id=trace_id,

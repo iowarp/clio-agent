@@ -45,6 +45,11 @@ def test_trace_reads_semantic_event_from_arc_log(tmp_path: Path) -> None:
 
     assert response.status_code == 200, response.text
     events = response.json()["events"]
+    # #1247: every session mints its lifecycle event onto the same highway —
+    # pin it, then assert the recorded tool event on the non-lifecycle rest.
+    lifecycle = [e for e in events if e["event_type"].startswith("session.")]
+    assert [e["event_type"] for e in lifecycle] == ["session.created"]
+    events = [e for e in events if not e["event_type"].startswith("session.")]
     assert len(events) == 1
     assert events[0]["event_type"] == "tool.call.completed"
     assert events[0]["occurred_at"] == occurred_at
@@ -64,14 +69,19 @@ def test_trace_unknown_session_returns_typed_404(tmp_path: Path) -> None:
 
 
 def test_trace_empty_session_returns_empty_events(tmp_path: Path) -> None:
-    """A known session with no semantic log records has an empty trace."""
+    """A session with no recorded work traces ONLY its own lifecycle event.
+
+    #1247: session creation itself rides the semantic highway, so an
+    otherwise-empty session's trace is exactly ``[session.created]`` — never
+    more, and never zero (which would mean the lifecycle bridge regressed).
+    """
     client, _state = _client(tmp_path)
     sid = _session(client)
 
     response = client.get(f"/v1/sessions/{sid}/trace")
 
     assert response.status_code == 200, response.text
-    assert response.json() == {"events": []}
+    assert [e["event_type"] for e in response.json()["events"]] == ["session.created"]
 
 
 def test_trace_arc_unavailable_returns_typed_503(tmp_path: Path) -> None:

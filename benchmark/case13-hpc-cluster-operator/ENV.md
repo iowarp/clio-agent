@@ -1,4 +1,4 @@
-# case07 isolated-instance environment
+# case13 isolated-instance environment
 
 The GOAL.md "Isolation (parallel-clio)" contract for this case's live serve,
 made concrete. This document is the reference; `bring_up_isolated_serve.sh` is
@@ -40,9 +40,9 @@ What IS isolated, and how:
 
 - **Session/workspace data**: `agent.run({..., "workdir": ...})` roots each
   scenario's session workspace (`.clio/agent`, `.clio/core`) under
-  `D:/clio-cluster-case/benchmark/case07-hpc-cluster-operator/runs/workspace/<scenario>`
-  (see `test_case07_cluster_operator.py`'s `workspace_root`, overridable with
-  `CLIO_CASE07_WORKSPACE_ROOT`) -- durable, worktree-local, never a pytest
+  `D:/clio-cluster-case/benchmark/case13-hpc-cluster-operator/runs/workspace/<scenario>`
+  (see `test_case13_cluster_operator.py`'s `workspace_root`, overridable with
+  `CLIO_CASE13_WORKSPACE_ROOT`) -- durable, worktree-local, never a pytest
   `tmp_path` that gets wiped, never the repo root.
 - **File-tool access**: `CLIO_ALLOWED_ROOTS` must include the worktree so the
   agent's fs tools (and the workspace `.clio` dir) resolve inside it:
@@ -95,7 +95,7 @@ Prepare env + start the isolated serve directly (manual poking, relay-wiring
 smoke checks, NOT required for `pytest`):
 
 ```bash
-. D:/clio-cluster-case/benchmark/case07-hpc-cluster-operator/bring_up_isolated_serve.sh
+. D:/clio-cluster-case/benchmark/case13-hpc-cluster-operator/bring_up_isolated_serve.sh
 ```
 
 Run the live S1 acceptance cell through `pytest` (the fixture manages its own
@@ -109,7 +109,7 @@ export CLIO_RELAY_HTTP_URL="http://127.0.0.1:${CLIO_RELAY_OWNER_SESSION_API_PORT
 export CLIO_RELAY_CLUSTER="${CLIO_RELAY_OWNER_SESSION_CLUSTER:-ares-p5run2}"
 export CLIO_GACT_FIXTURE_PORT=17970
 CLIO_RUN_LIVE=1 uv run pytest \
-    tests/test_real_cases/test_case07_cluster_operator.py \
+    tests/test_real_cases/test_case13_cluster_operator.py \
     -k s1_capability --provider claude_code --model sonnet \
     -o addopts="" -p no:cacheprovider -q
 ```

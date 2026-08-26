@@ -43,6 +43,14 @@ def write_text_with_policy(filepath: str, new_content: str) -> dict[str, Any]:
     on_disk = path.read_bytes()
     return {
         "path": str(path),
+        # #1247: the same value under the RECOGNIZED result-designation key.
+        # The designation vocabulary deliberately excludes bare ``path`` (it
+        # commonly echoes an INPUT), so a DIRECT fs_apply_edit_write tool call
+        # never minted its output — only the /diffs/apply route (seam b) did.
+        # The writer KNOWS it wrote; declaring ``written_path`` makes seam (a)
+        # mint direct writes too, which is what puts the generated edge on the
+        # transform record (live gap: executions with zero OUTPUT events).
+        "written_path": str(path),
         "size_bytes": len(on_disk),
         "sha256": hashlib.sha256(on_disk).hexdigest(),
         "ok": True,

@@ -654,8 +654,20 @@ async def test_submit_returns_a_plain_identity_even_when_create_reports_terminal
     one. So ``submit()`` must never attach a synthesized result to the
     returned identity, terminal-at-birth or not: the identity it returns is
     always the same plain, from-key shape, and a caller resolves the real
-    payload through exactly one follow-up ``relay.poll()`` -- proven below
-    against the real in-process task server, not a hand-built fake."""
+    payload through follow-up ``relay.poll()`` calls -- proven below against
+    the real in-process task server, not a hand-built fake.
+
+    ``delay=0`` only bounds ``relay_run``'s OWN sleep; it is not a promise
+    that the Docket worker has picked up and finished the job by the time
+    this coroutine's very next line runs -- that dispatch is a genuinely
+    separate async hop (enqueue -> worker wakeup -> execute -> persist
+    status), so asserting terminal off a single immediate ``poll()`` races
+    the worker under any scheduling pressure (this WAS a full-suite CI
+    flake: single-observation ``poll()`` legitimately still read ``working``
+    on the fast path). Poll in a bounded loop keyed on the real completion
+    signal (``TERMINAL_TASK_STATES``) instead of a longer fixed sleep --
+    the deterministic wait-shape ``poll()``'s own docstring calls for
+    ("a single observation, not a task driver")."""
 
     async with _client(relay_backend) as relay:
         client = relay._require_mcp_client()
@@ -673,9 +685,21 @@ async def test_submit_returns_a_plain_identity_even_when_create_reports_terminal
         assert not hasattr(identity, "initial_result")
         assert identity == RelayTaskIdentity.from_key(identity.key)
 
-        # The one round trip D1 dropped: the real payload only exists behind
-        # a ``tasks/get``, and it must come back populated, not None.
+        # The round trip D1 dropped: the real payload only exists behind a
+        # ``tasks/get``, and it must come back populated, not None. Drive to
+        # the real terminal observation deterministically -- the worker's
+        # completion is asynchronous even with ``delay=0`` -- rather than
+        # assuming the very first ``poll()`` already lands on it.
         fetched = await relay.poll(identity)
+        deadline = time.monotonic() + 10.0
+        while fetched.status not in TERMINAL_TASK_STATES:
+            if time.monotonic() >= deadline:
+                pytest.fail(
+                    f"relay_run never reached a terminal state within 10s; "
+                    f"last observed status={fetched.status!r}"
+                )
+            await asyncio.sleep(0.01)
+            fetched = await relay.poll(identity)
 
     assert fetched.status == "completed"
     assert fetched.result is not None
