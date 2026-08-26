@@ -4,8 +4,9 @@ Exercises the five curated tools (register/bootstrap/status/session/proxy) throu
 :class:`RelayInstallSurface`, faking the relay CLI at the subprocess seam
 (``CLIO_RELAY_CLI_PATH`` pointed at a locally-generated fake executable) -- no live
 relay, no ssh. Covers: happy-path receipt parsing, nonzero-exit typed errors, the
-exit-78 lingering-gate actionable refusal, argument validation, and
-``relay_cluster_status``'s three-way composition.
+exit-78 lingering-gate actionable refusal, argument validation, the F2 overwrite
+guard, M1's asymmetric wheel/sha rule, M4's raise-to-envelope conversion, M8's
+duplicate-run guard, and ``relay_cluster_status``'s three-way composition.
 """
 
 from __future__ import annotations
@@ -19,11 +20,7 @@ from typing import Any, Callable
 
 import pytest
 
-from clio_agent.tools.relay_cli_runner import (
-    STATE_COMPLETED,
-    STATE_FAILED,
-    RelayCliJobError,
-)
+from clio_agent.tools.relay_cli_runner import STATE_COMPLETED, STATE_FAILED, STATE_HANDLE_ONLY
 from clio_agent.tools.relay_install_surface import RelayInstallSurface
 
 ScenarioSetter = Callable[[dict[str, dict[str, Any]]], None]
@@ -36,19 +33,24 @@ def fake_relay_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ScenarioS
     Scenarios are keyed on the invoked argv's two-token prefix (``"cluster
     bootstrap"``), falling back to the one-token prefix, then ``"default"`` -- so
     ``relay_cluster_status``'s three concurrent sub-probes (doctor/installation-info/
-    relay-host proxy-status) can each be scripted independently in ONE test.
+    relay-host proxy-status) can each be scripted independently in ONE test. The
+    scenario file path travels via a FIXED location next to the fake script, never
+    an env var (F5b proof: the real ``_subprocess_env()`` allowlist filters an
+    unlisted env var exactly like it filters a real secret, which broke an
+    env-var-based config channel here until this fix).
     """
 
     py_path = tmp_path / "fake_relay_cli.py"
     py_path.write_text(
         textwrap.dedent(
             """
-            import json, os, sys, time
+            import json, sys, time
+            from pathlib import Path
 
             def main() -> int:
-                config_path = os.environ.get("FAKE_RELAY_CONFIG_FILE")
+                config_path = Path(__file__).resolve().parent / "scenarios.json"
                 scenarios = {}
-                if config_path and os.path.exists(config_path):
+                if config_path.exists():
                     with open(config_path, "r", encoding="utf-8") as fh:
                         scenarios = json.load(fh)
                 argv = sys.argv[1:]
@@ -88,7 +90,6 @@ def fake_relay_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ScenarioS
         executable.chmod(0o755)
 
     config_path = tmp_path / "scenarios.json"
-    monkeypatch.setenv("FAKE_RELAY_CONFIG_FILE", str(config_path))
     monkeypatch.setenv("CLIO_RELAY_CLI_PATH", str(executable))
     # Keep long-op polling fast in tests without touching the timeout ceiling.
     monkeypatch.setenv("CLIO_RELAY_INSTALL_LONG_OP_TIMEOUT_S", "20")
@@ -125,15 +126,22 @@ async def _wait_terminal(
 
 
 # --------------------------------------------------------------------------- #
-# relay_cluster_register (bounded)
+# relay_cluster_register (bounded) -- F2 overwrite guard
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.asyncio
-async def test_cluster_register_happy_path(
+async def test_cluster_register_new_cluster_happy_path(
     surface: RelayInstallSurface, fake_relay_cli: ScenarioSetter
 ) -> None:
-    fake_relay_cli({"cluster add": {"stdout": "", "exit_code": 0}})
+    """A cluster NOT already in `cluster list` registers without needing replace=true."""
+
+    fake_relay_cli(
+        {
+            "cluster list": {"stdout": "other-cluster ssh=x profile=linux-user\n", "exit_code": 0},
+            "cluster add": {"stdout": "", "exit_code": 0},
+        }
+    )
     result = await surface.invoke(
         "relay_cluster_register", {"cluster": "demo", "ssh_host": "demo.example.org"}
     )
@@ -143,21 +151,107 @@ async def test_cluster_register_happy_path(
 
 
 @pytest.mark.asyncio
+async def test_cluster_register_existing_cluster_refuses_without_replace(
+    surface: RelayInstallSurface, fake_relay_cli: ScenarioSetter
+) -> None:
+    """FAILING-FIRST (F2, the #1244-class bug): re-registering an ALREADY
+    registered cluster without replace=true is a typed refusal -- never a silent
+    full-replace wiping target_identity/frp_transport/worker capacity. Returned
+    as an envelope (M4), never raised."""
+
+    fake_relay_cli(
+        {
+            "cluster list": {
+                "stdout": "demo ssh=demo.example.org profile=linux-user worker_concurrency=3 control_query_concurrency=1\n",
+                "exit_code": 0,
+            },
+            # If the refusal did NOT fire, this scenario would make the (buggy)
+            # overwrite look identical to success -- proving the assertion below
+            # is really catching the refusal, not an absent 'cluster add' call.
+            "cluster add": {"stdout": "", "exit_code": 0},
+        }
+    )
+    result = await surface.invoke(
+        "relay_cluster_register", {"cluster": "demo", "ssh_host": "demo.example.org"}
+    )
+    assert result["state"] == STATE_FAILED
+    assert result["error_reason"] == "relay_cluster_already_registered"
+    assert result["terminal"] is True
+
+
+@pytest.mark.asyncio
+async def test_cluster_register_existing_cluster_replace_true_overwrites(
+    surface: RelayInstallSurface, fake_relay_cli: ScenarioSetter
+) -> None:
+    """A confirmed replace=true proceeds with the overwrite."""
+
+    fake_relay_cli(
+        {
+            "cluster list": {
+                "stdout": "demo ssh=demo.example.org profile=linux-user\n",
+                "exit_code": 0,
+            },
+            "cluster add": {"stdout": "", "exit_code": 0},
+        }
+    )
+    result = await surface.invoke(
+        "relay_cluster_register",
+        {"cluster": "demo", "ssh_host": "demo.example.org", "replace": True},
+    )
+    assert result["state"] == STATE_COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_cluster_register_similar_name_is_not_a_false_positive_match(
+    surface: RelayInstallSurface, fake_relay_cli: ScenarioSetter
+) -> None:
+    """'demo2' being registered must not false-positive-match a query for 'demo'."""
+
+    fake_relay_cli(
+        {
+            "cluster list": {
+                "stdout": "demo2 ssh=demo2.example.org profile=linux-user\n",
+                "exit_code": 0,
+            },
+            "cluster add": {"stdout": "", "exit_code": 0},
+        }
+    )
+    result = await surface.invoke(
+        "relay_cluster_register", {"cluster": "demo", "ssh_host": "demo.example.org"}
+    )
+    assert result["state"] == STATE_COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_cluster_register_dev_mode_argument_removed(surface: RelayInstallSurface) -> None:
+    """FAILING-FIRST (F2c): dev_mode is not merely unused -- it is REJECTED as an
+    unknown argument (additionalProperties: false), so an agent cannot pass it to
+    downgrade the verification chain even by accident."""
+
+    tool = await surface.server.get_tool("cluster_register")
+    assert "dev_mode" not in tool.parameters.get("properties", {})
+    assert tool.parameters.get("additionalProperties") is False
+
+
+@pytest.mark.asyncio
 async def test_cluster_register_nonzero_exit_typed(
     surface: RelayInstallSurface, fake_relay_cli: ScenarioSetter
 ) -> None:
-    """FAILING-FIRST: a rejected registration surfaces as a typed failure carrying
-    the bounded stderr tail, not a bare exception."""
+    """A rejected registration surfaces as a typed failure carrying the bounded
+    stderr tail, not a bare exception."""
 
     fake_relay_cli(
-        {"cluster add": {"stderr": "error: cluster 'demo' already registered", "exit_code": 1}}
+        {
+            "cluster list": {"stdout": "", "exit_code": 0},
+            "cluster add": {"stderr": "error: invalid ssh host", "exit_code": 1},
+        }
     )
     result = await surface.invoke(
         "relay_cluster_register", {"cluster": "demo", "ssh_host": "demo.example.org"}
     )
     assert result["state"] == STATE_FAILED
     assert result["error_reason"] == "relay_cli_nonzero_exit"
-    assert "already registered" in result["stderr_tail"]
+    assert "invalid ssh host" in result["stderr_tail"]
 
 
 # --------------------------------------------------------------------------- #
@@ -201,32 +295,75 @@ async def test_cluster_bootstrap_start_then_status_parses_framed_receipt(
         "bootstrap_target_identity_pinned",
         "bootstrap_receipt_json",
     ]
-    # order preserved (seq matches list position -- "published in order")
     assert [f["seq"] for f in final["receipt_fields"]] == [0, 1, 2]
     pinned = final["receipt_fields"][1]
     assert pinned["value_json"]["trust"] == "first_use"
 
 
 @pytest.mark.asyncio
-async def test_cluster_bootstrap_requires_wheel_and_sha_together(
+async def test_cluster_bootstrap_wheel_without_sha_is_refused(
     surface: RelayInstallSurface,
 ) -> None:
-    """FAILING-FIRST: a half-specified relay_wheel/relay_artifact_sha256 pair is a
-    typed validation refusal raised BEFORE any subprocess is spawned."""
+    """A wheel REQUIRES its sha (M1) -- an unverified custom wheel is refused."""
 
-    with pytest.raises(RelayCliJobError) as excinfo:
-        await surface.invoke(
-            "relay_cluster_bootstrap",
-            {"action": "start", "cluster": "demo", "relay_wheel": "/x/relay.whl"},
-        )
-    assert excinfo.value.reason == "relay_install_arguments_invalid"
+    result = await surface.invoke(
+        "relay_cluster_bootstrap",
+        {"action": "start", "cluster": "demo", "relay_wheel": "/x/relay.whl"},
+    )
+    assert result["state"] == STATE_FAILED
+    assert result["error_reason"] == "relay_install_arguments_invalid"
 
 
 @pytest.mark.asyncio
-async def test_cluster_bootstrap_status_unknown_job_is_typed(surface: RelayInstallSurface) -> None:
-    with pytest.raises(RelayCliJobError) as excinfo:
-        await surface.invoke("relay_cluster_bootstrap", {"action": "status", "job_id": "nope"})
-    assert excinfo.value.reason == "relay_install_job_not_found"
+async def test_cluster_bootstrap_sha_only_is_accepted(
+    surface: RelayInstallSurface, fake_relay_cli: ScenarioSetter
+) -> None:
+    """FAILING-FIRST (M1): clio-relay's real rule is asymmetric -- a sha ALONE
+    (pinning a resolved wheel's verification) is a legitimate, documented
+    release-pinning path and must NOT be blocked the way the prior symmetric
+    wheel<->sha XOR check did."""
+
+    fake_relay_cli({"cluster bootstrap": {"stdout": "", "exit_code": 0}})
+    started = await surface.invoke(
+        "relay_cluster_bootstrap",
+        {"action": "start", "cluster": "demo", "relay_artifact_sha256": "abc123"},
+    )
+    assert started["terminal"] is False
+    assert started["error_reason"] == ""
+
+
+@pytest.mark.asyncio
+async def test_cluster_bootstrap_status_unknown_job_is_typed_envelope(
+    surface: RelayInstallSurface,
+) -> None:
+    """M4: an unknown job id returns a terminal envelope, never a raised exception."""
+
+    result = await surface.invoke("relay_cluster_bootstrap", {"action": "status", "job_id": "nope"})
+    assert result["state"] == STATE_FAILED
+    assert result["error_reason"] == "relay_install_job_not_found"
+    assert result["terminal"] is True
+
+
+@pytest.mark.asyncio
+async def test_cluster_bootstrap_duplicate_run_refused_naming_live_job_id(
+    surface: RelayInstallSurface, fake_relay_cli: ScenarioSetter
+) -> None:
+    """FAILING-FIRST (M8): a second bootstrap for the SAME cluster while one is
+    still running is refused, naming the already-live job_id."""
+
+    fake_relay_cli({"cluster bootstrap": {"sleep_s": 2.0, "exit_code": 0}})
+    first = await surface.invoke("relay_cluster_bootstrap", {"action": "start", "cluster": "demo"})
+    assert first["terminal"] is False
+
+    second = await surface.invoke("relay_cluster_bootstrap", {"action": "start", "cluster": "demo"})
+    assert second["state"] == STATE_FAILED
+    assert second["error_reason"] == "relay_install_job_already_running"
+    assert second["job_id"] == first["job_id"]
+
+    # A DIFFERENT cluster is unaffected by the guard.
+    other = await surface.invoke("relay_cluster_bootstrap", {"action": "start", "cluster": "other"})
+    assert other["terminal"] is False
+    assert other["job_id"] != first["job_id"]
 
 
 # --------------------------------------------------------------------------- #
@@ -238,8 +375,8 @@ async def test_cluster_bootstrap_status_unknown_job_is_typed(surface: RelayInsta
 async def test_cluster_status_composes_three_subprobes_independently(
     surface: RelayInstallSurface, fake_relay_cli: ScenarioSetter
 ) -> None:
-    """FAILING-FIRST: one failing sub-probe (proxy-status) never masks or fails the
-    other two (doctor, installation-info) -- each surfaces its own typed status."""
+    """One failing sub-probe (proxy-status) never masks or fails the other two
+    (doctor, installation-info) -- each surfaces its own typed status."""
 
     fake_relay_cli(
         {
@@ -255,6 +392,19 @@ async def test_cluster_status_composes_three_subprobes_independently(
     assert result["installation_info"]["parsed_document"] == {"version": "1.5.15"}
     assert result["proxy_status"]["state"] == STATE_FAILED
     assert result["proxy_status"]["error_reason"] == "relay_cli_nonzero_exit"
+
+
+@pytest.mark.asyncio
+async def test_cluster_status_missing_cluster_is_typed_envelope(
+    surface: RelayInstallSurface,
+) -> None:
+    """M4: the composed-document shape is preserved even for a refusal -- all
+    three sub-fields carry the SAME typed reason, never a raised exception."""
+
+    result = await surface.invoke("relay_cluster_status", {})
+    assert result["doctor"]["error_reason"] == "relay_install_arguments_invalid"
+    assert result["installation_info"]["error_reason"] == "relay_install_arguments_invalid"
+    assert result["proxy_status"]["error_reason"] == "relay_install_arguments_invalid"
 
 
 # --------------------------------------------------------------------------- #
@@ -285,31 +435,58 @@ async def test_session_lifecycle_start_then_status(
 
 
 @pytest.mark.asyncio
-async def test_session_lifecycle_teardown_scheduler_cancel_requires_cancel_jobs(
-    surface: RelayInstallSurface,
+async def test_session_lifecycle_start_exit_2_is_handle_only(
+    surface: RelayInstallSurface, fake_relay_cli: ScenarioSetter
 ) -> None:
-    """FAILING-FIRST: cancel_scheduler_jobs without cancel_jobs is a typed
-    validation refusal (mirrors clio-relay's own CLI precondition), never silently
-    dropped or forwarded as an invalid flag combination."""
+    """M2, through the curated tool: a durable-but-not-yet-usable start settles
+    handle_only, never failed."""
 
-    with pytest.raises(RelayCliJobError) as excinfo:
-        await surface.invoke(
-            "relay_session_lifecycle",
-            {
-                "action": "teardown",
-                "cluster": "demo",
-                "session_id": "s1",
-                "cancel_scheduler_jobs": True,
-            },
+    fake_relay_cli(
+        {"session start": {"stdout": '{"state": "starting", "usable": false}\n', "exit_code": 2}}
+    )
+    started = await surface.invoke(
+        "relay_session_lifecycle",
+        {"action": "start", "cluster": "demo", "session_id": "s1"},
+    )
+    job_id = started["job_id"]
+
+    async def poll() -> dict[str, Any]:
+        return await surface.invoke(
+            "relay_session_lifecycle", {"action": "status", "job_id": job_id}
         )
-    assert excinfo.value.reason == "relay_install_arguments_invalid"
+
+    final = await _wait_terminal(surface, poll, job_id)
+    assert final["state"] == STATE_HANDLE_ONLY
+    assert final["error_reason"] == ""
 
 
 @pytest.mark.asyncio
-async def test_session_lifecycle_missing_cluster_is_typed(surface: RelayInstallSurface) -> None:
-    with pytest.raises(RelayCliJobError) as excinfo:
-        await surface.invoke("relay_session_lifecycle", {"action": "attach"})
-    assert excinfo.value.reason == "relay_install_arguments_invalid"
+async def test_session_lifecycle_teardown_scheduler_cancel_requires_cancel_jobs(
+    surface: RelayInstallSurface,
+) -> None:
+    """cancel_scheduler_jobs without cancel_jobs is a typed validation refusal
+    (mirrors clio-relay's own CLI precondition)."""
+
+    result = await surface.invoke(
+        "relay_session_lifecycle",
+        {
+            "action": "teardown",
+            "cluster": "demo",
+            "session_id": "s1",
+            "cancel_scheduler_jobs": True,
+        },
+    )
+    assert result["state"] == STATE_FAILED
+    assert result["error_reason"] == "relay_install_arguments_invalid"
+
+
+@pytest.mark.asyncio
+async def test_session_lifecycle_missing_cluster_is_typed_envelope(
+    surface: RelayInstallSurface,
+) -> None:
+    result = await surface.invoke("relay_session_lifecycle", {"action": "attach"})
+    assert result["state"] == STATE_FAILED
+    assert result["error_reason"] == "relay_install_arguments_invalid"
 
 
 # --------------------------------------------------------------------------- #
@@ -321,9 +498,9 @@ async def test_session_lifecycle_missing_cluster_is_typed(surface: RelayInstallS
 async def test_proxy_lifecycle_install_lingering_gate_actionable_refusal(
     surface: RelayInstallSurface, fake_relay_cli: ScenarioSetter
 ) -> None:
-    """FAILING-FIRST: exit-78's lingering gate (surfaced by clio-relay as a bare
-    nonzero exit + a known stderr signature) becomes a typed actionable_refusal
-    naming the enable-linger remediation on the terminal job result."""
+    """exit-78's lingering gate (surfaced by clio-relay as a bare nonzero exit +
+    a known stderr signature) becomes a typed actionable_refusal naming the
+    enable-linger remediation on the terminal job result."""
 
     fake_relay_cli(
         {
@@ -370,14 +547,33 @@ async def test_proxy_lifecycle_teardown_happy_path(
 
 
 @pytest.mark.asyncio
-async def test_proxy_lifecycle_missing_cluster_is_typed(surface: RelayInstallSurface) -> None:
-    with pytest.raises(RelayCliJobError) as excinfo:
-        await surface.invoke("relay_proxy_lifecycle", {"action": "install_proxy"})
-    assert excinfo.value.reason == "relay_install_arguments_invalid"
+async def test_proxy_lifecycle_missing_cluster_is_typed_envelope(
+    surface: RelayInstallSurface,
+) -> None:
+    result = await surface.invoke("relay_proxy_lifecycle", {"action": "install_proxy"})
+    assert result["state"] == STATE_FAILED
+    assert result["error_reason"] == "relay_install_arguments_invalid"
+
+
+@pytest.mark.asyncio
+async def test_proxy_lifecycle_cli_unavailable_is_typed_envelope(
+    surface: RelayInstallSurface, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M4: relay_cli_unavailable is also an envelope, never a raised exception."""
+
+    monkeypatch.delenv("CLIO_RELAY_CLI_PATH", raising=False)
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    result = await surface.invoke(
+        "relay_proxy_lifecycle", {"action": "install_proxy", "cluster": "demo"}
+    )
+    assert result["state"] == STATE_FAILED
+    assert result["error_reason"] == "relay_cli_unavailable"
 
 
 # --------------------------------------------------------------------------- #
-# tool mounting shape
+# tool mounting shape + annotations (F2b)
 # --------------------------------------------------------------------------- #
 
 
@@ -392,3 +588,16 @@ async def test_surface_mounts_exactly_five_curated_tools(surface: RelayInstallSu
         "proxy_lifecycle",
         "session_lifecycle",
     ]
+
+
+@pytest.mark.asyncio
+async def test_register_tool_declares_destructive_and_non_idempotent(
+    surface: RelayInstallSurface,
+) -> None:
+    """FAILING-FIRST (F2b): register can now perform a full destructive replace,
+    so its annotations must say so -- the #1244-class bug was partly that
+    idempotent_hint=True/destructive_hint=False described it as harmless."""
+
+    tool = await surface.server.get_tool("cluster_register")
+    assert tool.annotations.destructive_hint is True
+    assert tool.annotations.idempotent_hint is False
