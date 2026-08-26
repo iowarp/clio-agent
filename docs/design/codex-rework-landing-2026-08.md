@@ -36,15 +36,15 @@ This document is the campaign's source of truth. Codex's first act is Phase 0: f
 2. **Open draft PRs immediately** for all four branches against their targets (clio-agent→develop, gact-tui→develop, marketplace→main, clio-kit→main). CI only triggers on PRs/develop/main — this is the verification loop for everything below. Record the red baseline of the first runs.
 3. File GitHub issues from this plan: one umbrella per repo + one issue per workstream below, **with the full spec (file:line, failure scenario, acceptance) copied in** — never bare issue bodies. Link all to the umbrella.
 
-## Phase 1 — Flowcept/CMF absorption (external dependency first)
+## Phase 1 — Flowcept/CMF absorption (UNBLOCKED — dependency already satisfied)
 
-**Wait for:** the other Claude session merging `feat/flowcept-provenance` → clio-agent develop (their branch; do not merge it yourself; do not rebase its content).
+**Status 2026-08-26:** `feat/flowcept-provenance` is ALREADY on develop (7d1e152f proven an ancestor, zero missing commits; landed via PR #1248 + the edge-close train, CI-gated; the branch is deleted). No waiting — start Phase 1 immediately. Two facts moved since this doc was drafted: the path-activated blueprint resolution now lives in **`gact/blueprint_activation.py`** (refactored out of `agent.py` on develop), and the Flowcept qualification recipe is repo-committed at **`scripts/provenance_qualification/`** (parameterized serve + b=transform(a) driver + qualified homelab env sample, bdae6496).
 
-Then on `codex/gact-a2ui-v091-producer`:
+On `codex/gact-a2ui-v091-producer`:
 1. `git merge origin/develop`. Expected: one textual conflict (`docs/ENVIRONMENT.md` — resolve by running `python scripts/gen_env_reference.py` and committing all three generated artifacts, which W1.5 requires anyway).
-2. **Reconcile the semantic collision in `agent.py` (~line 317-360)**: flowcept added path-activated session-blueprint resolution (`get_active_tool_blueprint_path` → `parse_agent_blueprint_root`) ahead of installed discovery; Codex changed `discover_agent_blueprints(cwd=Path(cwd))`. The merged method must: try the explicit session path first (flowcept semantics), fall through to cwd-aware discovery (Codex semantics), and **replace every swallow with a typed structured reason** (see W2.1 — flowcept's own `except Exception: if verbose: print` hunks get the same treatment).
-3. Run the merged `tests/test_core/test_agent_blueprint_lazy_mount.py` (flowcept added +117 lines; Codex broke 3 existing tests there) — all green is the acceptance for this phase.
-4. Re-verify CMF provenance identity against the reworked artifact custody: flowcept stamps CMF execution identifiers via `gact/routes/artifacts.py` + `gact/sessions.py`; Codex changed artifact identity/minting ("preserve child artifact identities", preview minting). Re-run the flowcept provenance test suite + one live Flowcept qualification run (the branch's own qualification recipe is recorded at its tip commit 7d1e152f).
+2. **Reconcile the semantic collision in blueprint discovery**: develop carries the flowcept path-activated session-blueprint resolution (now in `gact/blueprint_activation.py`: explicit session blueprint path → `parse_agent_blueprint_root`, ahead of installed discovery); the Codex branch changed `discover_agent_blueprints(cwd=Path(cwd))` in `agent.py`. The merged flow must: try the explicit session path first (flowcept semantics), fall through to cwd-aware discovery (Codex semantics), and **replace every swallow with a typed structured reason** (see W2.1 — any surviving `except Exception: if verbose: print` hunks from either side get the same treatment).
+3. Run the merged `tests/test_core/test_agent_blueprint_lazy_mount.py` (develop gained the flowcept acceptance suite, +117 lines; Codex broke 3 pre-existing tests there) — all green is the acceptance for this phase.
+4. Re-verify CMF provenance identity against the reworked artifact custody: the flowcept work stamps CMF execution identifiers via `gact/routes/artifacts.py` + `gact/sessions.py`; Codex changed artifact identity/minting ("preserve child artifact identities", preview minting). Re-run the provenance test suite + one live Flowcept qualification run using the repo-committed recipe at `scripts/provenance_qualification/`.
 
 ## Phase 2 — clio-agent backend workstreams
 
@@ -177,7 +177,7 @@ For each: file the server issue with the review evidence, fix server-side in thi
 
 ## Phase 6 — Merge choreography (strict order)
 
-1. **flowcept → clio-agent develop** (other Claude; Codex waits).
+1. **flowcept → clio-agent develop** — ✅ DONE (already landed via PR #1248 + edge-close train; branch deleted).
 2. **marketplace → main** (green PR). clio-agent re-pins to the main commit.
 3. **clio-kit → main** (green PR); forward-merge main→develop.
 4. **clio-agent `codex/gact-a2ui-v091-producer` → develop**: after Phases 1+2+4 complete on the branch. PR CI must be fully green: pytest (`-m "not integration"`, cov ≥78), ruff, mypy, `check_file_size`, `check_silent_fallbacks`, `check_no_class_in_function`, route-count guardrail, env-reference check. The gact-tui submodule pin stays at v0.9.9 (release pins move only at release time; we stop at develop).
