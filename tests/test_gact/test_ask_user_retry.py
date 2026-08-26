@@ -210,63 +210,64 @@ def test_create_and_answer_user_question_updates_session_state(client: TestClien
 
 def test_orchestrator_ask_user_action_pauses_and_answer_resumes(tmp_path: Path) -> None:
     agent = _AskUserAgent()
-    client = TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent))
-    sid = _create_session(client)
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
+    with TestClient(app) as client:
+        sid = _create_session(client)
 
-    accepted = client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "Inspect the dataset."}]},
-    )
+        accepted = client.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "Inspect the dataset."}]},
+        )
 
-    assert accepted.status_code == 200, accepted.text
-    _wait_for_status(client, sid, "waiting_user")
-    listed = client.get(f"/v1/sessions/{sid}/questions?status=pending").json()
-    assert len(listed["questions"]) == 1
-    question = listed["questions"][0]
-    assert question["source"] == "orchestrator_action"
-    assert question["prompt"] == "Which dataset should I inspect?"
-    assert question["metadata"]["resume_on_answer"] is True
-    assert question["metadata"]["reason"] == "missing_target_dataset"
-    assert question["metadata"]["caller"]["expert_id"] == "planner"
+        assert accepted.status_code == 200, accepted.text
+        _wait_for_status(client, sid, "waiting_user", timeout=6.0)
+        listed = client.get(f"/v1/sessions/{sid}/questions?status=pending").json()
+        assert len(listed["questions"]) == 1
+        question = listed["questions"][0]
+        assert question["source"] == "orchestrator_action"
+        assert question["prompt"] == "Which dataset should I inspect?"
+        assert question["metadata"]["resume_on_answer"] is True
+        assert question["metadata"]["reason"] == "missing_target_dataset"
+        assert question["metadata"]["caller"]["expert_id"] == "planner"
 
-    answered = client.post(
-        f"/v1/sessions/{sid}/questions/{question['id']}/answer",
-        json={
-            "answer": "Use the large run.",
-            "selected_options": ["large"],
-            "metadata": {"answered_from": "test"},
-        },
-    )
+        answered = client.post(
+            f"/v1/sessions/{sid}/questions/{question['id']}/answer",
+            json={
+                "answer": "Use the large run.",
+                "selected_options": ["large"],
+                "metadata": {"answered_from": "test"},
+            },
+        )
 
-    assert answered.status_code == 200, answered.text
-    _wait_for_idle(client, sid)
-    assert agent.questions == [
-        "Inspect the dataset.",
-        "[Answer to agent question]\n"
-        "Question: Which dataset should I inspect?\n"
-        "Selected option(s): large\n"
-        "Answer: Use the large run.",
-    ]
-    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-    resume_user = next(msg for msg in messages if msg["metadata"].get("ask_user_resume"))
-    assert resume_user["metadata"]["ask_user_question_id"] == question["id"]
-    assert resume_user["metadata"]["ask_user_answer"] == "Use the large run."
-    assistant = next(
-        msg
-        for msg in messages
-        if msg["role"] == "assistant"
-        and any("resumed with:" in part.get("text", "") for part in msg["parts"])
-    )
-    assert assistant["role"] == "assistant"
-    # The text answer is the only part — routing decisions are semantic events
-    # (a0e1d9a9), never message parts.
-    assert [part["type"] for part in assistant["parts"]] == ["text"]
-    assert "resumed with:" in assistant["parts"][0]["text"]
-    history = client.app.state.bus._history.get(sid, [])
-    event_types = [event.type for event in history]
-    assert "user_question.created" in event_types
-    assert "user_question.answered" in event_types
-    assert "user_question.resumed" in event_types
+        assert answered.status_code == 200, answered.text
+        _wait_for_idle(client, sid, timeout=6.0)
+        assert agent.questions == [
+            "Inspect the dataset.",
+            "[Answer to agent question]\n"
+            "Question: Which dataset should I inspect?\n"
+            "Selected option(s): large\n"
+            "Answer: Use the large run.",
+        ]
+        messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        resume_user = next(msg for msg in messages if msg["metadata"].get("ask_user_resume"))
+        assert resume_user["metadata"]["ask_user_question_id"] == question["id"]
+        assert resume_user["metadata"]["ask_user_answer"] == "Use the large run."
+        assistant = next(
+            msg
+            for msg in messages
+            if msg["role"] == "assistant"
+            and any("resumed with:" in part.get("text", "") for part in msg["parts"])
+        )
+        assert assistant["role"] == "assistant"
+        # The text answer is the only part — routing decisions are semantic events
+        # (a0e1d9a9), never message parts.
+        assert [part["type"] for part in assistant["parts"]] == ["text"]
+        assert "resumed with:" in assistant["parts"][0]["text"]
+        history = client.app.state.bus._history.get(sid, [])
+        event_types = [event.type for event in history]
+        assert "user_question.created" in event_types
+        assert "user_question.answered" in event_types
+        assert "user_question.resumed" in event_types
 
 
 def test_answer_rejects_invalid_choice(client: TestClient) -> None:

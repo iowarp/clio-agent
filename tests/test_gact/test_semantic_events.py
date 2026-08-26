@@ -340,36 +340,41 @@ def test_artifact_and_builtin_command_semantic_events(tmp_path: Path, monkeypatc
 
     set_config("trace.backend", "none")  # file-layer (file > env); #985 config-first
     app = build_app(sessions_path=tmp_path / "s.json", agent=_DiffAgent())
-    client = TestClient(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    complete_turn(client, sid, "write a result")
-    client.post(f"/v1/sessions/{sid}/commands/cache-stats")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        complete_turn(client, sid, "write a result")
+        client.post(f"/v1/sessions/{sid}/commands/cache-stats")
 
-    history = app.state.bus._history.get(sid, [])
-    # WS1: the artifact reaches the UI as a real ``file_diff`` PART (not a redundant
-    # semantic.event), carrying the proposed content unredacted so the UI renders the
-    # diff; the ``artifact.proposed`` semantic mirror is routed to trace/ARC only.
-    diff_parts = [
-        e.payload["part"]
-        for e in history
-        if e.type == "message.part.added" and e.payload.get("part", {}).get("type") == "file_diff"
-    ]
-    assert any(p.get("path") == "result.txt" for p in diff_parts)
-    assert "[redacted]" not in str(diff_parts)
-    # WS1: the built-in command result reaches the UI as a real assistant
-    # ``message.created`` (so the TUI shows it); the ``command.invocation.completed``
-    # semantic mirror is trace-only, NOT on the bus.
-    command_msgs = [
-        e.payload
-        for e in history
-        if e.type == "message.created"
-        and e.payload.get("metadata", {}).get("synthetic") == "command_result"
-    ]
-    assert command_msgs, "command result must reach the UI as an assistant message"
-    assert any("cache-stats" in str(m.get("metadata", {}).get("command", "")) for m in command_msgs)
-    bus_semantic_types = {e.payload["event_type"] for e in history if e.type == "semantic.event"}
-    assert "artifact.proposed" not in bus_semantic_types
-    assert "command.invocation.completed" not in bus_semantic_types
+        history = app.state.bus._history.get(sid, [])
+        # WS1: the artifact reaches the UI as a real ``file_diff`` PART (not a redundant
+        # semantic.event), carrying the proposed content unredacted so the UI renders the
+        # diff; the ``artifact.proposed`` semantic mirror is routed to trace/ARC only.
+        diff_parts = [
+            e.payload["part"]
+            for e in history
+            if e.type == "message.part.added"
+            and e.payload.get("part", {}).get("type") == "file_diff"
+        ]
+        assert any(p.get("path") == "result.txt" for p in diff_parts)
+        assert "[redacted]" not in str(diff_parts)
+        # WS1: the built-in command result reaches the UI as a real assistant
+        # ``message.created`` (so the TUI shows it); the ``command.invocation.completed``
+        # semantic mirror is trace-only, NOT on the bus.
+        command_msgs = [
+            e.payload
+            for e in history
+            if e.type == "message.created"
+            and e.payload.get("metadata", {}).get("synthetic") == "command_result"
+        ]
+        assert command_msgs, "command result must reach the UI as an assistant message"
+        assert any(
+            "cache-stats" in str(m.get("metadata", {}).get("command", "")) for m in command_msgs
+        )
+        bus_semantic_types = {
+            e.payload["event_type"] for e in history if e.type == "semantic.event"
+        }
+        assert "artifact.proposed" not in bus_semantic_types
+        assert "command.invocation.completed" not in bus_semantic_types
 
 
 def test_lm_token_delta_projection_contract():
