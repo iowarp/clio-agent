@@ -116,6 +116,12 @@ CONSOLE_SSE_PROTOCOL_ERROR_REASON = "relay_console_sse_protocol_error"
 CONSOLE_SSE_FALLBACK_REASON = "relay_console_sse_fallback_to_polling"
 CONSOLE_SSE_GONE_REASON = "relay_console_sse_gone"
 CONSOLE_SSE_CAPABILITY_PROBE_FAILED_REASON = "relay_console_sse_capability_probe_failed"
+#: Adversarial review D4: a bug in OUR OWN code (fold/store/parsing logic
+#: outside the typed :class:`ConsoleStreamError` vocabulary) must never be
+#: misclassified as a relay connectivity problem -- distinct category
+#: (``clio_agent_bug``, not ``relay_connectivity``) so it is never blamed on
+#: the door, and logged with :func:`logging.Logger.exception` for a traceback.
+CONSOLE_SSE_INTERNAL_ERROR_REASON = "relay_console_sse_internal_error"
 
 #: The audited, closed catalog of typed reasons this module ever logs for a
 #: degraded/fallen-back console stream -- styled after ``gact/streaming.py``'s
@@ -146,6 +152,15 @@ CONSOLE_STREAM_FALLBACK_REASONS: dict[str, dict[str, Any]] = {
         "description": (
             "The door's /healthz capability document could not be fetched or "
             "parsed; console tailing runs the polling path as if unadvertised."
+        ),
+    },
+    CONSOLE_SSE_INTERNAL_ERROR_REASON: {
+        "category": "clio_agent_bug",
+        "description": (
+            "The console SSE reader raised an exception outside its own typed "
+            "failure vocabulary -- a bug in clio-agent's own fold/store/parsing "
+            "code, never the relay door. Falls back to polling without "
+            "retrying (retrying would just reproduce the same bug)."
         ),
     },
 }
@@ -204,7 +219,9 @@ async def probe_console_sse_capability(http_client: httpx.AsyncClient) -> bool:
             raise ValueError("healthz response is not an object")
         return bool(payload.get("console_sse", False))
     except Exception as exc:  # noqa: BLE001 - a probe failure must never break connect
-        logger.debug(
+        # Adversarial review nit: a healthz blip must not silently downgrade
+        # the connection -- WARNING, not DEBUG, so it is visible in normal logs.
+        logger.warning(
             "relay console SSE reason=%s: %s (%r)",
             CONSOLE_SSE_CAPABILITY_PROBE_FAILED_REASON,
             _typed_reason(CONSOLE_SSE_CAPABILITY_PROBE_FAILED_REASON)["description"],
@@ -225,9 +242,19 @@ class ConsoleStreamRegistry:
 
     _tasks: dict[tuple[str, str], "asyncio.Task[None]"] = field(default_factory=dict)
     _fallen_back: set[tuple[str, str]] = field(default_factory=set)
+    _stopped: set[tuple[str, str]] = field(default_factory=set)
 
     def has_fallen_back(self, job_id: str, stream: str) -> bool:
-        """Whether ``(job_id, stream)`` already gave up on SSE this client's lifetime."""
+        """Whether ``(job_id, stream)`` exhausted its resume attempt after a
+        genuine connectivity/protocol failure this client's lifetime.
+
+        Distinct from :meth:`has_stopped` (adversarial review D2): this ONE
+        means "we gave up after real failures," kept separate so a future
+        diagnostic can tell that apart from "there was simply nothing more to
+        stream" -- conflating the two let a `gone`/clean-finish stream get
+        re-probed, reproducing a wrong connectivity diagnosis on top of the
+        correct one (D2's proven 3-connect-attempt bug).
+        """
 
         return (job_id, stream) in self._fallen_back
 
@@ -235,6 +262,26 @@ class ConsoleStreamRegistry:
         """Record that ``(job_id, stream)`` exhausted its resume attempt -- never retried again."""
 
         self._fallen_back.add((job_id, stream))
+
+    def has_stopped(self, job_id: str, stream: str) -> bool:
+        """Whether relay itself said there is nothing more to stream for
+        ``(job_id, stream)`` -- a ``gone`` end state or a clean finish. Never
+        re-probed: reconnecting a gone/finished job would only reproduce a
+        connectivity failure and overwrite the accurate diagnosis (D2)."""
+
+        return (job_id, stream) in self._stopped
+
+    def mark_stopped(self, job_id: str, stream: str) -> None:
+        """Record that ``(job_id, stream)`` is done for good (gone or cleanly finished)."""
+
+        self._stopped.add((job_id, stream))
+
+    def is_sse_exhausted(self, job_id: str, stream: str) -> bool:
+        """Whether ``_on_poll`` should skip SSE entirely and just pull --
+        either :meth:`has_fallen_back` or :meth:`has_stopped`, the one
+        combined check the dispatch guard needs."""
+
+        return self.has_fallen_back(job_id, stream) or self.has_stopped(job_id, stream)
 
     def is_active(self, job_id: str, stream: str) -> bool:
         """Whether a reader task for ``(job_id, stream)`` is currently running."""
@@ -254,40 +301,73 @@ class ConsoleStreamRegistry:
         transparently-claimed drive on the same job (:mod:`task_observers`) may
         call it again from a different closure -- only the FIRST live call per
         ``(job_id, stream)`` spawns a connection; the rest reuse it.
+
+        Adversarial review D3: the spawned task's OWN cleanup is an
+        identity-checked ``add_done_callback`` (:meth:`_on_reader_done`), not a
+        discard the reader calls on itself mid-coroutine -- a task that
+        finishes AFTER a newer task has already replaced its registry entry
+        (e.g. raced against :meth:`cancel_one`) must never pop the newer
+        task's handle out from under it. The reader itself (``drive_console_
+        stream``) calls NONE of this module's cleanup methods; only the
+        registry ever mutates ``_tasks``.
         """
 
         if self.is_active(job_id, stream):
             return
-        self._tasks[(job_id, stream)] = asyncio.ensure_future(factory())
+        key = (job_id, stream)
+        task = asyncio.ensure_future(factory())
+        self._tasks[key] = task
+        task.add_done_callback(lambda done: self._on_reader_done(key, done))
 
-    def discard(self, job_id: str, stream: str) -> None:
-        """Drop a finished reader's handle -- called by the reader itself on exit."""
+    def _on_reader_done(self, key: tuple[str, str], task: "asyncio.Task[None]") -> None:
+        """Identity-checked cleanup for one finished reader task (D3).
 
-        self._tasks.pop((job_id, stream), None)
+        Only removes the registry entry if it STILL points at THIS task --
+        never blind-pops by key, since a newer ``ensure_reader`` call may have
+        already installed a different task for the same key in the window
+        between this task finishing and this callback running.
+        """
+
+        if self._tasks.get(key) is task:
+            self._tasks.pop(key, None)
 
     async def cancel_one(self, job_id: str, stream: str) -> None:
         """Cancel and await one ``(job_id, stream)`` reader.
 
         Called from the SAME on_poll tick that observes the task's own terminal
         status -- mirrors exactly how the outer #1115 poll loop stops itself.
+        Never pops preemptively (D3): looks the task up, cancels/awaits it,
+        THEN removes it with the same identity check :meth:`_on_reader_done`
+        uses, so a concurrent ``ensure_reader`` landing mid-cancellation can
+        never be evicted by this call.
         """
 
-        task = self._tasks.pop((job_id, stream), None)
-        if task is not None and not task.done():
+        key = (job_id, stream)
+        task = self._tasks.get(key)
+        if task is None:
+            return
+        if not task.done():
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        if self._tasks.get(key) is task:
+            self._tasks.pop(key, None)
 
     async def cancel_all(self) -> None:
         """Cancel and await every still-active reader.
 
         The owning client's ``__aexit__`` safety net for a caller that detaches
         (cancels, raises, or simply stops driving) before any watched job settles.
+        Identity-checked removal (D3) makes the upfront ``_tasks.clear()`` safe
+        even if a stray concurrent ``ensure_reader`` lands mid-cancel: its
+        entry survives this clear (inserted after), and this method's own
+        loop cancels only the snapshot it took, never a task it does not own.
         """
 
         tasks = list(self._tasks.values())
         self._tasks.clear()
         self._fallen_back.clear()
+        self._stopped.clear()
         for task in tasks:
             if not task.done():
                 task.cancel()
@@ -343,6 +423,14 @@ async def _iter_sse_frames(
     and resets state. Bounds the SUM of one frame's ``data:`` bytes to
     ``max_event_bytes``, separate from :func:`_iter_sse_lines`'s
     per-physical-line bound.
+
+    Adversarial review nit: an UNTERMINATED trailing frame at EOF (the body
+    ended mid-event, with no blank line ever closing it) is DISCARDED, never
+    dispatched -- per the SSE spec, a frame is only complete once a blank line
+    terminates it. A dispatched partial frame here would let a truncated
+    ``log_chunk``/``end`` payload masquerade as a real one instead of the
+    caller correctly seeing this as a plain disconnect (the async iterator
+    exhausting without a terminal ``end`` frame).
     """
 
     event_type = "message"
@@ -373,8 +461,7 @@ async def _iter_sse_frames(
         # ``id:`` and any other field name are ignored: relay's own JSON body
         # carries next_offset too, which is what this reader trusts (matches
         # the pull path's authoritative-server-offset contract).
-    if data_lines:
-        yield event_type, "\n".join(data_lines)
+    # EOF with a still-open (unterminated) frame -- discarded, never yielded.
 
 
 def _parse_log_frame(data: str, *, job_id: str, stream: str) -> dict[str, Any]:
@@ -459,7 +546,6 @@ async def _read_console_sse_once(
                     tail, _truncated = fold_console_increment(
                         store, key, fallback, tail, chunk, next_offset
                     )
-                offset = next_offset
     except httpx.HTTPError as exc:
         raise ConsoleStreamDisconnected(str(exc)) from exc
     raise ConsoleStreamDisconnected("relay console SSE stream closed before a terminal end event")
@@ -479,14 +565,31 @@ async def drive_console_stream(
     on disconnect (``Last-Event-ID`` from the last folded offset), then falls
     back to the existing polling path with a typed, logged reason -- never
     silent (the #775 cleanup-program no-silent-fallback ground rule). Runs as
-    one background ``asyncio.Task`` owned by ``registry``, self-removing on
-    every exit path so :meth:`ConsoleStreamRegistry.is_active` never reports a
-    finished reader as running.
+    one background ``asyncio.Task`` owned by ``registry``.
+
+    Adversarial review D3: this coroutine calls NONE of the registry's
+    cleanup methods on itself -- its OWN handle removal is the registry's
+    identity-checked ``add_done_callback`` (installed by
+    :meth:`ConsoleStreamRegistry.ensure_reader`), so a task that finishes
+    after a newer one has already replaced its registry entry can never pop
+    that newer task out from under it.
+
+    D2: a ``gone`` end state or a clean finish both call
+    :meth:`ConsoleStreamRegistry.mark_stopped` -- relay itself said there is
+    nothing more to stream, so this ``(job_id, stream)`` is never reconnected
+    again this client's lifetime (reconnecting a gone/finished job would only
+    reproduce a connectivity failure and overwrite the accurate diagnosis).
+
+    D4: only the typed :class:`ConsoleStreamError` family retries-then-falls-
+    back as a relay-connectivity problem. Anything else -- a bug in THIS
+    module's own fold/store/parsing code -- is caught separately, logged with
+    a traceback (:meth:`logging.Logger.exception`), and falls back typed as
+    ``relay_console_sse_internal_error`` (category ``clio_agent_bug``),
+    never blamed on the door.
     """
 
     record = store.get(key)
     if record is None:
-        registry.discard(job_id, stream)
         return
     offset = console_offset(record)
     tail = console_tail(record)
@@ -503,12 +606,11 @@ async def drive_console_stream(
                 stream,
                 _typed_reason(CONSOLE_SSE_GONE_REASON)["description"],
             )
-            registry.discard(job_id, stream)
+            registry.mark_stopped(job_id, stream)
             return
         except asyncio.CancelledError:
-            registry.discard(job_id, stream)
             raise
-        except Exception as exc:  # noqa: BLE001 - any disconnect/protocol failure retries once, then falls back typed -- never raised into the caller
+        except ConsoleStreamError as exc:
             latest = store.get(key)
             if latest is not None:
                 offset = console_offset(latest)
@@ -531,7 +633,6 @@ async def drive_console_stream(
                     exc,
                 )
                 registry.mark_fallen_back(job_id, stream)
-                registry.discard(job_id, stream)
                 return
             logger.info(
                 "relay console SSE reason=%s job_id=%s stream=%s: reconnecting after %r",
@@ -541,6 +642,16 @@ async def drive_console_stream(
                 exc,
             )
             continue
+        except Exception:  # noqa: BLE001 - D4: a bug in OUR OWN code must never be blamed on the door
+            logger.exception(
+                "relay console SSE reason=%s job_id=%s stream=%s: %s",
+                CONSOLE_SSE_INTERNAL_ERROR_REASON,
+                job_id,
+                stream,
+                _typed_reason(CONSOLE_SSE_INTERNAL_ERROR_REASON)["description"],
+            )
+            registry.mark_fallen_back(job_id, stream)
+            return
         else:
-            registry.discard(job_id, stream)
+            registry.mark_stopped(job_id, stream)
             return

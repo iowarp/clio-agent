@@ -344,17 +344,31 @@ def make_console_on_poll(
 
     clio-relay#221/#259: when ``client.console_sse_supported()`` reports the
     door advertised ``console_sse: true`` at connect (see
-    :class:`~clio_agent.tools.relay_transport.RelayTransportClient`), each
-    tick instead ENSURES a background SSE reader is running for this
-    ``(job_id, stream)`` (idempotent -- a reader already running is left
+    :class:`~clio_agent.tools.relay_transport.RelayTransportClient`), a
+    NON-terminal tick instead ENSURES a background SSE reader is running for
+    this ``(job_id, stream)`` (idempotent -- a reader already running is left
     alone) and returns immediately; the reader itself
     (:mod:`clio_agent.tools.relay_console_stream`) folds chunks as they
-    arrive, decoupled from this tick's ~1s cadence. The SAME terminal-status
-    check that ends the outer poll loop also tears the reader down here, one
-    tick early, so no reader outlives the drive that started it. A client with
-    no ``console_sse_supported`` attribute at all (a minimal test double, or a
-    capability probe that never ran) is read as "no capability" -- the pull
-    path below runs unchanged, byte-for-byte.
+    arrive, decoupled from this tick's ~1s cadence.
+
+    A TERMINAL tick (adversarial review D1) never ensures a reader -- it
+    stops whatever IS running (:meth:`~clio_agent.tools.relay_console_stream.
+    ConsoleStreamRegistry.cancel_one`, a no-op if nothing was) and falls
+    through to ONE final bounded pull below, exactly matching the
+    pre-#221/#259 pull-only path's own terminal-tick drain. This also covers
+    #1231's fast-job/one-shot ``poll()`` guarantee: a job already terminal on
+    the FIRST (and only) ``on_poll`` call still folds its tail via that pull
+    -- never spawn-then-cancel a reader that read nothing.
+
+    A ``(job_id, stream)`` the registry has already exhausted (fallen back
+    after real failures, or stopped because relay reported the stream
+    ``gone``/cleanly finished) is never re-ensured either -- it falls straight
+    to the pull path.
+
+    A client with no ``console_sse_supported``/``_console_stream_registry``
+    attributes at all (a minimal test double, or a capability probe that
+    never ran) is read as "no capability" -- the pull path below runs
+    unchanged, byte-for-byte.
     """
 
     if not console_enabled():
@@ -372,8 +386,20 @@ def make_console_on_poll(
         stream = console_stream()
         sse_supported = getattr(client, "console_sse_supported", None)
         registry = getattr(client, "_console_stream_registry", None)
+        is_terminal = current is not None and current.status in TERMINAL_TASK_STATES
         if callable(sse_supported) and registry is not None and sse_supported():
-            if not registry.has_fallen_back(job_id, stream):
+            if is_terminal:
+                # Adversarial review D1 (BLOCKER): a terminal tick must NEVER
+                # ensure_reader -- spawning a reader only to cancel it a line
+                # later reads nothing. Stop whatever IS running (a no-op if
+                # nothing was, e.g. #1231's fast-job/one-shot poll() case where
+                # this is the FIRST and only on_poll call) and fall through to
+                # the pull path below for one final bounded drain from the
+                # last durably-folded offset -- mirrors exactly what the
+                # pre-#221/#259 pull-only path always did on its terminal
+                # tick, so the tail is never silently dropped.
+                await registry.cancel_one(job_id, stream)
+            elif not registry.is_sse_exhausted(job_id, stream):
                 from clio_agent.tools.relay_console_stream import (  # noqa: PLC0415
                     drive_console_stream,
                 )
@@ -383,11 +409,9 @@ def make_console_on_poll(
                     stream,
                     lambda: drive_console_stream(client, job_id, stream, key, store, registry),
                 )
-                if current is not None and current.status in TERMINAL_TASK_STATES:
-                    await registry.cancel_one(job_id, stream)
                 return
-            # Fallen back this client's lifetime already -- fall through to the
-            # pull path below, never retry SSE again for this (job, stream).
+            # Exhausted (fallen back or stopped) and not terminal, OR terminal
+            # (handled above) -- fall through to the pull path below.
         offset = console_offset(record)
         tail = console_tail(record)
         try:
