@@ -1317,6 +1317,45 @@ CLIO's Python 3.12 environment and avoids invoking the ordinary `Cmf` client lif
 user's workspace. CMF remotes other than the qualified local backend and a Windows-native MLMD
 runtime remain unqualified.
 
+### 14.x Edge requalification (2026-08-26): input/output events proven live
+
+The zero-edges state above is CLOSED. A live `b=transform(a)` requalification on the same
+homelab stack (fresh serve on merged develop, port 8280; fresh MLMD store
+`mlmd-edges2.sqlite`; pipeline `clio-live-20260826-edges`, published and listed by the CMF
+server's `/api/pipelines`) recorded the full chain. Session `sess_d257760467f8`: turn 1 writes
+`a.csv` (direct `fs_apply_edit_write`), turn 2 reads `a.csv` and writes `b.csv`. Resulting
+MLMD content, read back with the isolated worker runtime:
+
+```text
+artifacts=2   clio://artifact/…  a.csv:v1,  b.csv:v1   (registry-bound, no external fallback)
+events=3      OUTPUT exec=1 -> a.csv   INPUT exec=2 -> a.csv   OUTPUT exec=3 -> b.csv
+```
+
+Three stacked defects had produced the original zero-edges outcome, each exposed by the
+previous fix's honesty (all landed on develop with failing-first tests, #1247):
+
+1. **Silent provider failure.** The dispatcher captured worker exceptions into health and
+   nothing read it. The first failure per worker now logs a WARNING with the full error
+   (`dispatcher.py`); golden edge tests cover `_record_transform`/`_link_edges`, which
+   previously had zero coverage.
+2. **Direct tool writes never minted.** `fs_apply_edit_write`'s result named its file under
+   bare `path`, which the designation vocabulary deliberately ignores; only the
+   `/diffs/apply` route minted. The writer now also declares `written_path` (the recognized
+   key), so seam (a) mints direct writes — this is what puts OUTPUT edges on transform
+   records.
+3. **MLMD type poisoning.** `_external_artifact` created the `Dataset` type without the
+   typed `git_repo/Commit/url` properties; MLMD types are first-writer-wins per name, so an
+   external-first store rejected every later typed mint with `Found unknown property:
+   git_repo` (surfaced verbatim by fix 1's loud warning). Both creation sites now declare
+   the same type schema.
+
+The single-execution used+generated pairing (one call consuming A and producing B) is proven
+by the golden tests through the real worker code path; the live run exercises the two-call
+shape native tools produce (read execution carrying INPUT, write execution carrying OUTPUT).
+Turn 1's session status ended `error` at the LM layer AFTER its write/mint/edge completed
+(provider transient; turn 2 idle) — recorded for honesty, immaterial to the MLMD evidence.
+CMF remotes beyond local and a Windows-native MLMD runtime remain unqualified.
+
 ### 14.3 Flowcept plus CMF with native downstream persistence disabled
 
 The combined live CLIO deployment selected the two provider axes independently:
