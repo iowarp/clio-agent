@@ -18,8 +18,9 @@ from typing import Any, Callable
 
 import pytest
 
-from clio_agent.tools import relay_install_jobs
+from clio_agent.tools import relay_cli_runner, relay_install_jobs
 from clio_agent.tools.relay_cli_runner import (
+    REASON_SESSION_START_EXIT2_UNDOCUMENTED,
     STATE_COMPLETED,
     STATE_FAILED,
     STATE_HANDLE_ONLY,
@@ -30,6 +31,7 @@ from clio_agent.tools.relay_cli_runner import (
 from clio_agent.tools.relay_install_jobs import (
     RelayInstallJob,
     RelayInstallJobRegistry,
+    default_relay_install_job_registry,
     effective_job_state,
     run_bounded_relay_cli,
     start_relay_install_job,
@@ -79,6 +81,11 @@ def fake_relay_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str
                 err = scenario.get("stderr", "")
                 if out:
                     sys.stdout.write(out)
+                # R1 end-to-end proof: echo back exactly which env vars the REAL
+                # child process received (never an assertion about intent).
+                for name in scenario.get("echo_env", []):
+                    sys.stdout.write(f"ENV:{name}={os.environ.get(name, '<unset>')}\\n")
+                if out or scenario.get("echo_env"):
                     sys.stdout.flush()
                 if err:
                     sys.stderr.write(err)
@@ -339,6 +346,184 @@ def test_start_relay_install_job_session_start_exit_2_is_handle_only(
     assert final.state == STATE_HANDLE_ONLY
     assert final.error_reason == ""
     assert final.parsed_document == {"state": "starting", "usable": False}
+
+
+def test_start_relay_install_job_session_start_exit_2_without_document_is_failed(
+    fake_relay_cli: tuple[str, ScenarioSetter],
+) -> None:
+    """FAILING-FIRST (R2, CRITICAL), end to end: click's own UsageError also
+    exits 2 -- a bad argument to 'session start' (empty stdout, a usage message
+    on stderr, exit 2) must settle FAILED with a typed reason, never
+    handle_only with an empty error_reason (which would report a failed start
+    as a durable success)."""
+
+    executable, set_scenarios = fake_relay_cli
+    set_scenarios(
+        {
+            "session start": {
+                "stdout": "",
+                "stderr": "Error: Missing option '--session-id'.\n",
+                "exit_code": 2,
+            }
+        }
+    )
+    registry = RelayInstallJobRegistry()
+    job = start_relay_install_job(
+        registry,
+        kind="relay_session_start",
+        cluster="demo",
+        argv=["session", "start", "--cluster", "demo"],
+        executable=executable,
+        timeout_seconds=10.0,
+    )
+    final = _wait_terminal(registry, job.job_id)
+    assert final.state == STATE_FAILED
+    assert final.error_reason == REASON_SESSION_START_EXIT2_UNDOCUMENTED
+    assert final.parsed_document is None
+    assert "Missing option" in final.stderr_tail
+
+
+def test_start_relay_install_job_parses_document_larger_than_display_tail(
+    fake_relay_cli: tuple[str, ScenarioSetter], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FAILING-FIRST (R3, MUST FIX): a whole JSON document bigger than the SMALL
+    display tail (output_tail_bytes, forced down to 100 here) must still be
+    parsed into parsed_document -- proving the async driver parses off its own
+    separate, larger accumulator, never off the already-clipped display tail."""
+
+    monkeypatch.setattr(relay_cli_runner, "output_tail_bytes", lambda: 100)
+    monkeypatch.setattr(relay_install_jobs, "output_tail_bytes", lambda: 100)
+    big_payload = "x" * 5000
+    document = json.dumps({"state": "ready", "session_id": "s1", "padding": big_payload})
+    assert len(document.encode("utf-8")) > 100  # bigger than the forced-down display tail
+    executable, set_scenarios = fake_relay_cli
+    set_scenarios({"session start": {"stdout": document + "\n", "exit_code": 0}})
+    registry = RelayInstallJobRegistry()
+    job = start_relay_install_job(
+        registry,
+        kind="relay_session_start",
+        cluster="demo",
+        argv=["session", "start", "--cluster", "demo", "--session-id", "s1"],
+        executable=executable,
+        timeout_seconds=10.0,
+    )
+    final = _wait_terminal(registry, job.job_id)
+    assert final.state == STATE_COMPLETED
+    assert final.parsed_document is not None
+    assert final.parsed_document["session_id"] == "s1"
+    assert final.parsed_document["padding"] == big_payload
+    assert final.parsed_document_truncated is False
+    # The display tail stays bounded regardless -- this is NOT what fed the parse.
+    assert len(final.stdout_tail.encode("utf-8")) <= 100
+
+
+def test_start_relay_install_job_document_past_the_parse_bound_is_typed_truncated(
+    fake_relay_cli: tuple[str, ScenarioSetter], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FAILING-FIRST (R3, MUST FIX): a document that ALSO exceeds the larger
+    parse-bound must never be silently dropped -- parsed_document stays None
+    AND parsed_document_truncated is set, a typed, queryable signal instead of
+    the loss being invisible."""
+
+    monkeypatch.setattr(relay_cli_runner, "parsed_document_max_bytes", lambda: 200)
+    monkeypatch.setattr(relay_install_jobs, "parsed_document_max_bytes", lambda: 200)
+    document = json.dumps({"state": "ready", "padding": "x" * 5000})
+    executable, set_scenarios = fake_relay_cli
+    set_scenarios({"session start": {"stdout": document + "\n", "exit_code": 0}})
+    registry = RelayInstallJobRegistry()
+    job = start_relay_install_job(
+        registry,
+        kind="relay_session_start",
+        cluster="demo",
+        argv=["session", "start", "--cluster", "demo", "--session-id", "s1"],
+        executable=executable,
+        timeout_seconds=10.0,
+    )
+    final = _wait_terminal(registry, job.job_id)
+    assert final.state == STATE_COMPLETED
+    assert final.parsed_document is None
+    assert final.parsed_document_truncated is True
+
+
+def test_start_relay_install_job_surfaces_unrecognized_marker_count(
+    fake_relay_cli: tuple[str, ScenarioSetter],
+) -> None:
+    """R4 (small fix): a stdout line matching the key=value framed shape but
+    NOT under a declared marker namespace is still typed-counted (never
+    promoted to a field -- F5a stays intact), so schema drift against a newer
+    clio-relay release is queryable instead of silently invisible."""
+
+    executable, set_scenarios = fake_relay_cli
+    set_scenarios(
+        {
+            "cluster bootstrap": {
+                "stdout": (
+                    'bootstrap_preflight_json={"ok": true}\n'
+                    "SOME_FUTURE_NAMESPACE_marker=unrecognized\n"
+                    "ANOTHER_UNKNOWN=value\n"
+                ),
+                "exit_code": 0,
+            }
+        }
+    )
+    registry = RelayInstallJobRegistry()
+    job = start_relay_install_job(
+        registry,
+        kind="relay_cluster_bootstrap",
+        cluster="demo",
+        argv=["cluster", "bootstrap", "--cluster", "demo"],
+        executable=executable,
+        timeout_seconds=10.0,
+    )
+    final = _wait_terminal(registry, job.job_id)
+    assert final.state == STATE_COMPLETED
+    assert [f.key for f in final.receipt_fields] == ["bootstrap_preflight_json"]
+    assert final.unrecognized_marker_count == 2
+
+
+def test_start_relay_install_job_extra_env_names_reach_the_real_child(
+    fake_relay_cli: tuple[str, ScenarioSetter], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R1's last bullet, end to end: a caller-supplied extra_env_names name
+    (standing in for a cluster's non-default frp_transport.token_env) actually
+    reaches the real spawned subprocess -- proven on the REAL child environment
+    (an echoed ``ENV:...`` line), not just on the dict ``_subprocess_env``
+    builds in isolation."""
+
+    monkeypatch.setenv("MY_CUSTOM_FRP_TOKEN_ENV", "custom-secret-value")
+    executable, set_scenarios = fake_relay_cli
+    set_scenarios(
+        {
+            "relay-host": {
+                "echo_env": ["MY_CUSTOM_FRP_TOKEN_ENV"],
+                "exit_code": 0,
+            }
+        }
+    )
+    registry = RelayInstallJobRegistry()
+    job = start_relay_install_job(
+        registry,
+        kind="relay_proxy_install",
+        cluster="demo",
+        argv=["relay-host", "install-proxy", "--cluster", "demo"],
+        executable=executable,
+        timeout_seconds=10.0,
+        extra_env_names=("MY_CUSTOM_FRP_TOKEN_ENV",),
+    )
+    final = _wait_terminal(registry, job.job_id)
+    assert final.state == STATE_COMPLETED
+    assert "ENV:MY_CUSTOM_FRP_TOKEN_ENV=custom-secret-value" in final.stdout_tail
+
+
+def test_default_relay_install_job_registry_is_a_process_wide_singleton() -> None:
+    """M7's core mechanism: repeated calls return the SAME registry object --
+    this is what lets production surface reconstruction thread one shared
+    ledger through every TTL-triggered rebuild instead of each one minting a
+    fresh, empty registry."""
+
+    first = default_relay_install_job_registry()
+    second = default_relay_install_job_registry()
+    assert first is second
 
 
 def test_start_relay_install_job_timeout_kills_wedged_process(

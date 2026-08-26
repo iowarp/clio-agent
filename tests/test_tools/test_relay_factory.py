@@ -12,6 +12,7 @@ built tool definitions' descriptions, not just an intermediate variable.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -385,3 +386,103 @@ def test_relay_transport_unavailable_short_circuits_without_cluster_read(
     assert surfaces.jarvis_jobs is None
     assert surfaces.remote_mcp_federation is None
     assert surfaces.status["reason"] == "relay_tools_not_configured"
+
+
+# --------------------------------------------------------------------------- #
+# M7 (review round 2, the ledger-wipe bug class): the relay-install job
+# registry survives a #1227 D2 TTL-triggered catalog refresh.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_ttl_refresh_construction_preserves_install_job_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FAILING-FIRST (M7): every #1227 D2 TTL-triggered relay catalog refresh
+    (``gact/relay_wiring.py::refresh_relay_tool_surfaces_if_stale``) calls
+    ``discover_relay_tool_surfaces()`` again, which used to construct a BRAND
+    NEW ``RelayInstallSurface`` with its OWN fresh, empty job registry every
+    time -- so a bootstrap job started against the FIRST-discovered surfaces
+    went unreachable (``relay_install_job_not_found``) through the SECOND set
+    of surfaces, even though its subprocess was still running.
+
+    Proven end to end through the actual production entry point
+    (``discover_relay_tool_surfaces``, not a private helper): start a job
+    through surfaces #1, build surfaces #2 the exact same way the TTL refresh
+    path does, and poll the SAME job_id through surfaces #2 while it is still
+    non-terminal.
+    """
+
+    import asyncio
+    import sys
+    import textwrap
+    import time
+
+    py_path = tmp_path / "fake_relay_cli.py"
+    py_path.write_text(
+        textwrap.dedent(
+            """
+            import sys, time
+            def main() -> int:
+                time.sleep(0.6)
+                sys.stdout.write('{"cluster": "demo", "installed": true}\\n')
+                return 0
+            if __name__ == "__main__":
+                sys.exit(main())
+            """
+        ),
+        encoding="utf-8",
+    )
+    if sys.platform.startswith("win"):
+        executable = tmp_path / "fake_relay_cli.cmd"
+        executable.write_text(
+            f'@echo off\r\n"{sys.executable}" "{py_path}" %*\r\n', encoding="utf-8"
+        )
+    else:
+        executable = tmp_path / "fake_relay_cli"
+        executable.write_text(
+            f'#!/bin/sh\nexec "{sys.executable}" "{py_path}" "$@"\n', encoding="utf-8"
+        )
+        executable.chmod(0o755)
+
+    monkeypatch.setenv("CLIO_RELAY_CLI_PATH", str(executable))
+    monkeypatch.setattr(
+        relay_factory,
+        "resolve_relay_transport_config",
+        lambda: RelayTransportUnavailable(
+            reason="relay_not_configured", details={"missing": ["mcp_url"]}
+        ),
+    )
+
+    # Surfaces #1: the FIRST discovery (boot, or the first configured turn).
+    surfaces1 = await discover_relay_tool_surfaces()
+    assert surfaces1.relay_install is not None
+    started = await surfaces1.relay_install.invoke(
+        "relay_cluster_bootstrap", {"action": "start", "cluster": "demo"}
+    )
+    assert started["terminal"] is False
+    job_id = started["job_id"]
+
+    # Surfaces #2: simulate the TTL refresh path -- the SAME production entry
+    # point, called again, exactly like refresh_relay_tool_surfaces_if_stale
+    # does once the catalog TTL elapses.
+    surfaces2 = await discover_relay_tool_surfaces()
+    assert surfaces2.relay_install is not None
+    assert surfaces2.relay_install is not surfaces1.relay_install  # a genuinely NEW surface
+
+    polled = await surfaces2.relay_install.invoke(
+        "relay_cluster_bootstrap", {"action": "status", "job_id": job_id}
+    )
+    assert polled["job_id"] == job_id
+    assert polled["error_reason"] != "relay_install_job_not_found"
+
+    # Drain to terminal through surfaces #2 so no thread/subprocess dangles
+    # past the test.
+    deadline = time.monotonic() + 10.0
+    while not polled["terminal"] and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+        polled = await surfaces2.relay_install.invoke(
+            "relay_cluster_bootstrap", {"action": "status", "job_id": job_id}
+        )
+    assert polled["terminal"] is True
+    assert polled["state"] == "completed"

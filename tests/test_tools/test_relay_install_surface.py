@@ -44,7 +44,7 @@ def fake_relay_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ScenarioS
     py_path.write_text(
         textwrap.dedent(
             """
-            import json, sys, time
+            import json, os, sys, time
             from pathlib import Path
 
             def main() -> int:
@@ -64,6 +64,11 @@ def fake_relay_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ScenarioS
                 err = scenario.get("stderr", "")
                 if out:
                     sys.stdout.write(out)
+                # R1 end-to-end proof: echo back exactly which env vars the REAL
+                # child process received.
+                for name in scenario.get("echo_env", []):
+                    sys.stdout.write(f"ENV:{name}={os.environ.get(name, '<unset>')}\\n")
+                if out or scenario.get("echo_env"):
                     sys.stdout.flush()
                 if err:
                     sys.stderr.write(err)
@@ -301,6 +306,41 @@ async def test_cluster_bootstrap_start_then_status_parses_framed_receipt(
 
 
 @pytest.mark.asyncio
+async def test_cluster_bootstrap_surfaces_unrecognized_marker_count_and_document_truncation_flag(
+    surface: RelayInstallSurface, fake_relay_cli: ScenarioSetter
+) -> None:
+    """R3/R4 wire-shape proof: unrecognized_marker_count and
+    parsed_document_truncated reach the curated tool's wire output (through
+    RelayInstallJob.to_wire()/_render), not just the underlying dataclass."""
+
+    fake_relay_cli(
+        {
+            "cluster bootstrap": {
+                "stdout": (
+                    'bootstrap_preflight_json={"ok": true}\n'
+                    "SOME_FUTURE_NAMESPACE_marker=unrecognized\n"
+                ),
+                "exit_code": 0,
+            }
+        }
+    )
+    started = await surface.invoke(
+        "relay_cluster_bootstrap", {"action": "start", "cluster": "demo"}
+    )
+    job_id = started["job_id"]
+
+    async def poll() -> dict[str, Any]:
+        return await surface.invoke(
+            "relay_cluster_bootstrap", {"action": "status", "job_id": job_id}
+        )
+
+    final = await _wait_terminal(surface, poll, job_id)
+    assert final["state"] == STATE_COMPLETED
+    assert final["unrecognized_marker_count"] == 1
+    assert final["parsed_document_truncated"] is False
+
+
+@pytest.mark.asyncio
 async def test_cluster_bootstrap_wheel_without_sha_is_refused(
     surface: RelayInstallSurface,
 ) -> None:
@@ -461,6 +501,42 @@ async def test_session_lifecycle_start_exit_2_is_handle_only(
 
 
 @pytest.mark.asyncio
+async def test_session_lifecycle_start_exit_2_without_document_is_failed(
+    surface: RelayInstallSurface, fake_relay_cli: ScenarioSetter
+) -> None:
+    """FAILING-FIRST (R2, CRITICAL), through the curated tool: click's own
+    UsageError also exits 2 -- a bad argument to 'session start' (empty
+    stdout, exit 2) must settle FAILED with a typed reason through the whole
+    curated-tool path, never handle_only with an empty error_reason (a failed
+    start reported as a durable handle)."""
+
+    fake_relay_cli(
+        {
+            "session start": {
+                "stdout": "",
+                "stderr": "Error: Missing option '--session-id'.\n",
+                "exit_code": 2,
+            }
+        }
+    )
+    started = await surface.invoke(
+        "relay_session_lifecycle",
+        {"action": "start", "cluster": "demo", "session_id": "s1"},
+    )
+    job_id = started["job_id"]
+
+    async def poll() -> dict[str, Any]:
+        return await surface.invoke(
+            "relay_session_lifecycle", {"action": "status", "job_id": job_id}
+        )
+
+    final = await _wait_terminal(surface, poll, job_id)
+    assert final["state"] == STATE_FAILED
+    assert final["error_reason"] == "relay_session_start_exit2_undocumented"
+    assert final["parsed_document"] is None
+
+
+@pytest.mark.asyncio
 async def test_session_lifecycle_teardown_scheduler_cancel_requires_cancel_jobs(
     surface: RelayInstallSurface,
 ) -> None:
@@ -544,6 +620,36 @@ async def test_proxy_lifecycle_teardown_happy_path(
     final = await _wait_terminal(surface, poll, job_id)
     assert final["state"] == STATE_COMPLETED
     assert final["parsed_document"] == {"removed": True}
+
+
+@pytest.mark.asyncio
+async def test_proxy_lifecycle_custom_frp_token_env_reaches_the_real_child(
+    surface: RelayInstallSurface,
+    fake_relay_cli: ScenarioSetter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FAILING-FIRST (R1's last bullet), through the curated tool: a cluster
+    whose frp_transport.token_env is non-default is not resolvable by this
+    surface on its own (the cluster definition is not available at this
+    layer), so the CALLER names the env var explicitly via frp_token_env --
+    proven reaching the real child process, not just an intermediate dict."""
+
+    monkeypatch.setenv("MY_CLUSTER_FRP_TOKEN", "custom-secret-value")
+    fake_relay_cli(
+        {"relay-host install-proxy": {"echo_env": ["MY_CLUSTER_FRP_TOKEN"], "exit_code": 0}}
+    )
+    started = await surface.invoke(
+        "relay_proxy_lifecycle",
+        {"action": "install_proxy", "cluster": "demo", "frp_token_env": "MY_CLUSTER_FRP_TOKEN"},
+    )
+    job_id = started["job_id"]
+
+    async def poll() -> dict[str, Any]:
+        return await surface.invoke("relay_proxy_lifecycle", {"action": "status", "job_id": job_id})
+
+    final = await _wait_terminal(surface, poll, job_id)
+    assert final["state"] == STATE_COMPLETED
+    assert "ENV:MY_CLUSTER_FRP_TOKEN=custom-secret-value" in final["stdout_tail"]
 
 
 @pytest.mark.asyncio

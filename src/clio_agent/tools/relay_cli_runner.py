@@ -38,6 +38,7 @@ import logging
 import os
 import re
 import shutil
+from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -101,33 +102,128 @@ _DECLARED_MARKER_PREFIXES: tuple[str, ...] = ("bootstrap_", "FrpcProxy", "endpoi
 #: they still reach the bounded raw stdout tail.
 MAX_RETAINED_RECEIPT_FIELDS = 2000
 
-#: Base OS-plumbing environment forwarded to every relay CLI subprocess call
-#: (F5b): PATH/SystemRoot resolve the interpreter and DLLs, TEMP/TMP are needed
-#: for temp files, HOME/USERPROFILE resolve ``~`` and ``.ssh/config``, and the
-#: SSH_AUTH_SOCK/SSH_AGENT_PID pair lets an operator's already-loaded SSH agent
-#: key authenticate the dial (every long op here SSH-dials). This is an explicit
-#: ALLOWLIST, never the full inherited process environment -- proven live that the
-#: full environment leaks clio-agent's own secrets (an FRP token) into the child,
-#: which neither relay's own doctrine nor this surface's threat model expects.
-_ENV_ALLOWLIST_BASE: tuple[str, ...] = (
+#: R1 (CRITICAL, review round 2): deployment-plumbing environment names
+#: REPLICATED from clio-relay's OWN declared child-process contract. Source of
+#: truth: ``clio_relay.constants._BASE_CHILD_ENV_NAMES``
+#: (clio-relay/src/clio_relay/constants.py) -- clio-agent cannot import
+#: clio_relay (a separate top-level package), so this tuple is a deliberate,
+#: drift-tested replica (see ``test_relay_cli_runner.py``'s
+#: ``test_base_child_env_names_matches_clio_relay_source_of_truth``, which
+#: runs unconditionally whenever ``clio_relay`` happens to be importable in
+#: the dev venv, and is otherwise skipped rather than silently trusting a
+#: stale copy), never an independently-invented list. The OLD 8-name
+#: hand-rolled allowlist here stripped names clio-relay's own
+#: ``process_environment.py::_child_env`` forwards to every subprocess IT
+#: spawns (UV_CACHE_DIR/UV_TOOL_DIR resolve a uv-managed install;
+#: LANG/LC_ALL/LC_CTYPE affect locale-sensitive CLI output; PATHEXT/COMSPEC/
+#: WINDIR/SYSTEMDRIVE are Windows process-creation plumbing) -- gaps that
+#: never showed up against a fake test CLI (which needs none of them), only
+#: against the real deployed executable.
+_BASE_CHILD_ENV_NAMES: tuple[str, ...] = (
+    "APPDATA",
+    "COMSPEC",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LOCALAPPDATA",
+    "LOGNAME",
+    "NoDefaultCurrentDirectoryInExePath",
     "PATH",
-    "SystemRoot",
+    "PATHEXT",
+    "PYTHONIOENCODING",
+    "PYTHONUTF8",
+    "SHELL",
+    "SYSTEMDRIVE",
+    "SYSTEMROOT",
     "TEMP",
     "TMP",
-    "HOME",
+    "TMPDIR",
+    "USER",
     "USERPROFILE",
-    "SSH_AUTH_SOCK",
-    "SSH_AGENT_PID",
+    "UV_CACHE_DIR",
+    "UV_PYTHON_INSTALL_DIR",
+    "UV_TOOL_DIR",
+    "WINDIR",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
 )
 
-#: Per-verb ADDITIONAL env names (F5b: "enumerated per tool"), forwarded on top of
-#: the base allowlist. Only ``relay-host install-proxy``/``teardown-proxy`` sets up
-#: or tears down the frpc transport, so only those two kinds need the frp/stcp
-#: secret env vars clio-relay's own ``FrpTransportConfig.token_env`` /
-#: ``stcp_secret_env`` name (defaults ``CLIO_RELAY_FRP_TOKEN`` /
-#: ``CLIO_RELAY_STCP_SECRET``). Every other verb (register/bootstrap/status/session)
-#: gets the base allowlist only.
+#: clio-agent-SPECIFIC additions beyond relay's own declared base (F5b's
+#: original rationale, kept as-is): every long operation this surface drives
+#: SSH-dials, and an operator's already-loaded SSH agent key is how that dial
+#: authenticates without an interactive password prompt. Not part of
+#: clio-relay's own declared child-env contract (relay itself never spawns an
+#: SSH-dialing child of THIS CLI invocation -- the CLI process IS the SSH
+#: client), so these stay a clio-agent addition rather than folded into the
+#: replicated base list above.
+_ENV_ALLOWLIST_EXTRA: tuple[str, ...] = ("SSH_AUTH_SOCK", "SSH_AGENT_PID")
+
+#: R1: the cluster registry path is NOT part of clio-relay's per-subprocess
+#: child-env contract (that list is about relay forwarding ITS OWN env to
+#: children it spawns) -- it is the ``clio-relay`` CLI's own top-level input,
+#: read directly off ``os.environ`` by every verb
+#: (``clio_relay.cluster_config.default_registry_path`` /
+#: ``CLUSTER_REGISTRY_ENV``). Unset, clio-relay falls back to
+#: ``.clio-relay/clusters.json`` resolved against the SUBPROCESS's own current
+#: working directory -- never clio-agent's, and never any path this surface
+#: configures -- so an operator who registered a cluster against a real
+#: registry file silently loses every cluster the moment this name is missing
+#: from the child environment (every verb here touches the cluster registry,
+#: so this is forwarded unconditionally, not gated per kind).
+_CLUSTER_REGISTRY_ENV_NAME = "CLIO_RELAY_CLUSTER_REGISTRY"
+
+#: R1: REPLICATED from clio-relay's own declared credential-shaped env names.
+#: Source of truth: ``clio_relay.constants._RELAY_CREDENTIAL_ENV_NAMES``
+#: (see the drift test referenced above). Never forwarded wholesale -- a
+#: credential env name is only ever added to a SPECIFIC verb's allowlist in
+#: :data:`_ENV_NAMES_BY_KIND` below, and only when that verb actually consumes
+#: it; this tuple exists so the per-verb subsets and the drift test share one
+#: declared universe instead of re-typing the names independently.
+_RELAY_CREDENTIAL_ENV_NAMES: tuple[str, ...] = (
+    "CLIO_RELAY_API_TOKEN",
+    "CLIO_RELAY_FRP_TOKEN",
+    "CLIO_RELAY_PROGRESS_TOKEN",
+    "CLIO_RELAY_RUNTIME_METADATA_TOKEN",
+    "CLIO_RELAY_STCP_SECRET",
+)
+
+#: Base OS-plumbing + cluster-registry environment forwarded to every relay
+#: CLI subprocess call regardless of verb (F5b): the replicated child-env
+#: contract, clio-agent's own SSH-agent addition, and the cluster registry
+#: path (R1 -- unconditional, not per-kind; see its constant above). This is
+#: an explicit ALLOWLIST, never the full inherited process environment --
+#: proven live that the full environment leaks clio-agent's own secrets (an
+#: FRP token) into the child, which neither relay's own doctrine nor this
+#: surface's threat model expects.
+_ENV_ALLOWLIST_BASE: tuple[str, ...] = (
+    *_BASE_CHILD_ENV_NAMES,
+    *_ENV_ALLOWLIST_EXTRA,
+    _CLUSTER_REGISTRY_ENV_NAME,
+)
+
+#: Per-verb ADDITIONAL env names (F5b: "enumerated per tool"), forwarded on top
+#: of the base allowlist. R1: session start/attach/teardown each construct
+#: ``RelaySettings.from_env()`` locally (clio-relay's ``config.py``), which
+#: reads ``CLIO_RELAY_API_TOKEN`` unconditionally -- ``session start``'s own
+#: CLI raises a typed refusal ("CLIO_RELAY_API_TOKEN is required unless
+#: --no-require-token is explicit") when it is absent and required (verified
+#: against clio-relay's ``cli_session_start.py``). Only
+#: ``relay-host install-proxy``/``teardown-proxy`` sets up or tears down the
+#: frpc transport, so only those two kinds need the frp/stcp secret env vars
+#: clio-relay's own ``FrpTransportConfig.token_env`` / ``.stcp_secret_env``
+#: names (defaults ``CLIO_RELAY_FRP_TOKEN`` / ``CLIO_RELAY_STCP_SECRET`` --
+#: these are PER-CLUSTER configurable in clio-relay; a caller that knows a
+#: cluster's non-default names passes them via ``_subprocess_env``'s
+#: ``extra_env_names``, since the cluster definition itself is not available
+#: at this layer). Every other verb (register/bootstrap/status) gets the base
+#: allowlist only.
 _ENV_NAMES_BY_KIND: dict[str, tuple[str, ...]] = {
+    "relay_session_start": ("CLIO_RELAY_API_TOKEN",),
+    "relay_session_attach": ("CLIO_RELAY_API_TOKEN",),
+    "relay_session_teardown": ("CLIO_RELAY_API_TOKEN",),
     "relay_proxy_install": ("CLIO_RELAY_FRP_TOKEN", "CLIO_RELAY_STCP_SECRET"),
     "relay_proxy_teardown": ("CLIO_RELAY_FRP_TOKEN", "CLIO_RELAY_STCP_SECRET"),
 }
@@ -255,6 +351,34 @@ def output_tail_bytes() -> int:
     )
 
 
+def parsed_document_max_bytes() -> int:
+    """Bound on the buffer used for whole-document JSON parsing on the ASYNC
+    (streamed) execution path (R3, review round 2).
+
+    Deliberately INDEPENDENT of, and much larger than, :func:`output_tail_bytes`:
+    that tail is sized for a short display excerpt (default 4096 bytes), but
+    ``session``/``relay-host`` commands print ONE whole JSON document as their
+    entire output, and that document can legitimately exceed the display tail.
+    Parsing off the already-clipped display tail silently loses
+    ``parsed_document`` for any document bigger than it -- the exact bug this
+    bound exists to prevent (see ``relay_install_jobs.py``'s
+    ``_drive_relay_install_job``, which accumulates a SEPARATE buffer capped at
+    this bound purely for document parsing). When even this larger bound is
+    exceeded, parsing is skipped entirely and the job's
+    ``parsed_document_truncated`` flag is set -- the loss is surfaced, never
+    silent.
+    """
+
+    return int(
+        conf.resolve(
+            "relay.install_surface.parsed_document_max_bytes",
+            env="CLIO_RELAY_INSTALL_PARSED_DOCUMENT_MAX_BYTES",
+            default=262144,
+            cast=conf.as_int,
+        )
+    )
+
+
 def job_retention_max_entries() -> int:
     """Soft bound (F4): past this many tracked jobs, the oldest TERMINAL job is
     evicted first -- mirrors ``gact/runtime/retention.py``'s terminal-first policy
@@ -326,29 +450,77 @@ def _detect_actionable_refusal(stdout: str, stderr: str, *, kind: str) -> dict[s
     return None
 
 
-def _classify_exit_state(kind: str, exit_code: int | None) -> str:
-    """Map a process exit code to a terminal state, honoring per-verb exceptions.
+#: R2 (CRITICAL, review round 2): click's own ``UsageError`` also exits 2 (a bad
+#: CLI argument to ``session start``), so exit code 2 ALONE was never sufficient
+#: to call the outcome a durable handle -- only a SUCCESSFULLY PARSED whole JSON
+#: document (the handle-only receipt clio-relay's own ``cli_session_start.py``
+#: prints on stdout before it exits 2) proves the CLI actually reached ITS OWN
+#: handle-only branch rather than failing argument parsing before printing
+#: anything at all. Exit 2 with no parsed document is now a bare, TYPED failure
+#: -- never silently reported as a durable handle with an empty error_reason.
+REASON_SESSION_START_EXIT2_UNDOCUMENTED = "relay_session_start_exit2_undocumented"
+
+
+def _classify_exit_state(
+    kind: str, exit_code: int | None, *, parsed_document: dict[str, Any] | None = None
+) -> tuple[str, str]:
+    """Map a process exit code (+ whether a whole document parsed) to a terminal state.
 
     M2: ``clio-relay session start`` exits 2 for a genuinely non-failure outcome --
     a durable handle whose API session is not yet usable/attached (verified against
     clio-relay's ``cli_session_start.py``: "a durable operation handle is useful
     for status/retry/cleanup, but must never look like a successfully attached API
     session"). This is a dedicated, per-verb documented wire meaning, not a generic
-    exit-code convention -- ONLY ``kind == "relay_session_start"`` gets it.
+    exit-code convention -- ONLY ``kind == "relay_session_start"`` gets it, and
+    (R2) only when ``parsed_document`` -- the caller's own
+    :func:`parse_relay_cli_stdout` result over the UNCLIPPED stdout -- is not
+    ``None``.
+
+    Returns ``(state, reason_override)``. ``reason_override`` is ``""`` in every
+    case except the R2 exit-2-without-a-parsed-document one, where it names the
+    specific typed reason; a caller building ``error_reason`` for a FAILED state
+    should prefer a non-empty ``reason_override`` over its own generic
+    ``relay_cli_nonzero_exit`` fallback.
     """
 
     if exit_code == 0:
-        return STATE_COMPLETED
+        return STATE_COMPLETED, ""
     if kind == "relay_session_start" and exit_code == 2:
-        return STATE_HANDLE_ONLY
-    return STATE_FAILED
+        if parsed_document is not None:
+            return STATE_HANDLE_ONLY, ""
+        return STATE_FAILED, REASON_SESSION_START_EXIT2_UNDOCUMENTED
+    return STATE_FAILED, ""
 
 
-def _subprocess_env(kind: str) -> dict[str, str]:
-    """Build the explicit allowlisted environment for one relay CLI subprocess (F5b)."""
+def _subprocess_env(kind: str, *, extra_env_names: Sequence[str] = ()) -> dict[str, str]:
+    """Build the explicit allowlisted environment for one relay CLI subprocess (F5b).
 
-    allowed = set(_ENV_ALLOWLIST_BASE) | set(_ENV_NAMES_BY_KIND.get(kind, ()))
-    return {name: value for name, value in os.environ.items() if name in allowed}
+    R1: iterates the ALLOWED NAME list and looks each value up via
+    ``name in os.environ`` / ``os.environ[name]`` -- mirroring clio-relay's own
+    ``process_environment.py::_child_env`` shape -- rather than filtering
+    ``os.environ.items()`` by literal key membership. On Windows, ``os.environ``
+    normalizes ``in`` / ``__getitem__`` lookups case-insensitively, but the RAW
+    casing ``.items()`` yields depends on how the parent process's own
+    environment block happened to be populated (observed live on this box:
+    ``"SYSTEMROOT"``, not ``"SystemRoot"``) -- so the old items()-filtering shape
+    could silently drop a correctly-named allowlist entry whenever the calling
+    shell's casing convention did not match this module's literal spelling. This
+    shape is immune to that: membership and lookup both go through Windows'
+    own case-insensitive ``os.environ``, exactly like clio-relay's own code does.
+
+    ``extra_env_names`` (R1's per-cluster-configurable-name bullet) lets a caller
+    that KNOWS the target cluster's non-default frp/stcp secret env NAMES
+    (``FrpTransportConfig.token_env`` / ``.stcp_secret_env`` are per-cluster
+    configurable in clio-relay) forward those specific names for just this one
+    call -- the cluster definition itself is not available at this layer.
+    """
+
+    allowed = {
+        *_ENV_ALLOWLIST_BASE,
+        *_ENV_NAMES_BY_KIND.get(kind, ()),
+        *extra_env_names,
+    }
+    return {name: os.environ[name] for name in allowed if name in os.environ}
 
 
 @dataclass(frozen=True)
@@ -389,7 +561,29 @@ def _parse_marker_line(line: str) -> RelayCliReceiptField | None:
     )  # seq assigned by caller
 
 
-def parse_relay_cli_stdout(text: str) -> tuple[list[RelayCliReceiptField], dict[str, Any] | None]:
+def _is_unrecognized_framed_line(line: str) -> bool:
+    """True when ``line`` matches the ``key=value`` framed SHAPE but its key is
+    not under any declared clio-relay marker namespace (R4/small fix from the
+    review's R4 note): distinguishes a genuinely unrecognized marker -- likely
+    schema drift against a newer clio-relay release that added a namespace this
+    build does not yet know -- from ordinary prose that never matched the framed
+    shape at all. Never used to promote or retain the line's CONTENT (F5a stays
+    intact); only to COUNT how many were seen (see
+    :data:`RelayInstallJob.unrecognized_marker_count`
+    <clio_agent.tools.relay_install_jobs.RelayInstallJob>`), so the drop is
+    typed/queryable instead of silent, without expanding the declared namespace
+    list.
+    """
+
+    match = _FRAMED_LINE.match(line)
+    if not match:
+        return False
+    return not _is_declared_marker(match.group(1))
+
+
+def parse_relay_cli_stdout(
+    text: str,
+) -> tuple[list[RelayCliReceiptField], dict[str, Any] | None, int]:
     """Parse clio-relay stdout into ordered receipt fields + an optional whole document.
 
     ``session``/``relay-host`` commands print ONE JSON document for their whole
@@ -402,6 +596,13 @@ def parse_relay_cli_stdout(text: str) -> tuple[list[RelayCliReceiptField], dict[
     is not a declared marker is not (F5a). Capped at
     :data:`MAX_RETAINED_RECEIPT_FIELDS`; the caller learns of truncation via the
     returned field count.
+
+    Returns ``(fields, whole_document, unrecognized_marker_count)``. The third
+    element is R4's typed telemetry: a COUNT of lines that matched the framed
+    ``key=value`` shape but were not under a declared marker namespace -- never
+    their content (F5a still never promotes that), just a count so a caller can
+    surface it (mirroring how :data:`RelayInstallJob.receipt_fields_truncated`
+    already surfaces the count-cap drop) instead of the drop being invisible.
     """
 
     stripped = text.strip()
@@ -409,21 +610,25 @@ def parse_relay_cli_stdout(text: str) -> tuple[list[RelayCliReceiptField], dict[
         with suppress(json.JSONDecodeError, ValueError):
             whole = json.loads(stripped)
             if isinstance(whole, dict):
-                return [], whole
+                return [], whole, 0
     fields: list[RelayCliReceiptField] = []
+    unrecognized_marker_count = 0
     for line in text.splitlines():
         parsed = _parse_marker_line(line)
         if parsed is None:
+            if _is_unrecognized_framed_line(line):
+                unrecognized_marker_count += 1
             continue
         if len(fields) >= MAX_RETAINED_RECEIPT_FIELDS:
             break
         fields.append(replace(parsed, seq=len(fields)))
-    return fields, None
+    return fields, None, unrecognized_marker_count
 
 
 __all__ = [
     "MAX_RETAINED_RECEIPT_FIELDS",
     "RELAY_CLI_EXECUTABLE_NAME",
+    "REASON_SESSION_START_EXIT2_UNDOCUMENTED",
     "STATE_COMPLETED",
     "STATE_FAILED",
     "STATE_HANDLE_ONLY",
@@ -440,5 +645,6 @@ __all__ = [
     "long_operation_timeout_seconds",
     "output_tail_bytes",
     "parse_relay_cli_stdout",
+    "parsed_document_max_bytes",
     "resolve_relay_cli_executable",
 ]

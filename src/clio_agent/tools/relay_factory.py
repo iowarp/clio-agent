@@ -225,11 +225,23 @@ def _build_relay_install_surface() -> Any:
     a typed ``relay_cli_unavailable`` status retained on the surface for
     diagnostics -- each tool call re-resolves the executable itself and fails
     typed at CALL time, so the executable appearing on PATH later needs no restart.
+
+    M7 (review round 2, the ledger-wipe bug class): this function is called again
+    every #1227 D2 TTL-triggered relay catalog refresh (``gact/relay_wiring.py``),
+    which used to construct a BRAND NEW ``RelayInstallSurface`` with its OWN
+    fresh, empty job registry each time -- so a bootstrap/session/proxy job
+    started against the previously-discovered surfaces went unreachable
+    (``relay_install_job_not_found``) the moment the catalog refreshed, even
+    though its subprocess was still running. Fixed by threading the SAME
+    process-wide job registry singleton through every rebuild here.
     """
 
     from clio_agent.tools.relay_cli_runner import (  # noqa: PLC0415
         RelayCliUnavailableError,
         resolve_relay_cli_executable,
+    )
+    from clio_agent.tools.relay_install_jobs import (  # noqa: PLC0415
+        default_relay_install_job_registry,
     )
     from clio_agent.tools.relay_install_surface import RelayInstallSurface  # noqa: PLC0415
 
@@ -238,7 +250,7 @@ def _build_relay_install_surface() -> Any:
         status: dict[str, Any] = {"configured": True, "reason": None, "executable": executable}
     except RelayCliUnavailableError as exc:
         status = {"configured": False, "reason": exc.reason, "details": exc.details}
-    return RelayInstallSurface(cli_status=status)
+    return RelayInstallSurface(cli_status=status, job_registry=default_relay_install_job_registry())
 
 
 async def discover_relay_tool_surfaces() -> RelayToolSurfaces:

@@ -29,7 +29,7 @@ is the ONE place that catches and renders them.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import Any
 
@@ -89,7 +89,9 @@ _JOB_HANDLE_OUTPUT_SCHEMA: dict[str, Any] = {
         "exit_code": {"type": ["integer", "null"]},
         "receipt_fields": {"type": "array"},
         "receipt_fields_truncated": {"type": "boolean"},
+        "unrecognized_marker_count": {"type": "integer"},
         "parsed_document": {"type": ["object", "null"]},
+        "parsed_document_truncated": {"type": "boolean"},
         "stdout_tail": {"type": "string"},
         "stderr_tail": {"type": "string"},
         "error_reason": {"type": "string"},
@@ -114,6 +116,13 @@ _STATUS_DOC_OUTPUT_SCHEMA: dict[str, Any] = {
 _IDENTITY = {"type": "string", "minLength": 1, "maxLength": 256}
 _OPTIONAL_IDENTITY = {"anyOf": [_IDENTITY, {"type": "null"}], "default": None}
 _JOB_ID = {"type": "string", "minLength": 1, "maxLength": 64}
+
+
+def _optional_env_name(description: str) -> dict[str, Any]:
+    """R1: an optional env var NAME override field (never a secret value)."""
+
+    return {"anyOf": [_IDENTITY, {"type": "null"}], "default": None, "description": description}
+
 
 _INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "relay_cluster_register": {
@@ -199,6 +208,16 @@ _INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "ssh_host": _OPTIONAL_IDENTITY,
             "remote_port": {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None},
             "require_persistent": {"type": "boolean", "default": True},
+            "frp_token_env": _optional_env_name(
+                "Override the frp token env var NAME (non-default "
+                "frp_transport.token_env) -- names the var holding the secret, "
+                "never the secret value itself."
+            ),
+            "stcp_secret_env": _optional_env_name(
+                "Override the stcp secret env var NAME (non-default "
+                "frp_transport.stcp_secret_env) -- names the var, never the "
+                "secret value itself."
+            ),
             "job_id": {"anyOf": [_JOB_ID, {"type": "null"}], "default": None},
         },
         "required": ["action"],
@@ -253,7 +272,9 @@ _DESCRIPTIONS = {
         "poll with action='status' and the same job_id. A persistent install "
         "refused by the systemd user-lingering gate surfaces as a typed "
         "actionable_refusal naming the 'loginctl enable-linger' remediation, "
-        "never a bare failure."
+        "never a bare failure. Non-default frp_transport token/secret env var "
+        "NAMES: pass frp_token_env/stcp_secret_env (default CLIO_RELAY_FRP_TOKEN/"
+        "CLIO_RELAY_STCP_SECRET)."
     ),
 }
 
@@ -321,7 +342,9 @@ def _refusal_job_dict(exc: Exception, *, kind: str) -> dict[str, Any]:
         "exit_code": None,
         "receipt_fields": [],
         "receipt_fields_truncated": False,
+        "unrecognized_marker_count": 0,
         "parsed_document": None,
+        "parsed_document_truncated": False,
         "stdout_tail": "",
         "stderr_tail": "",
         "error_reason": reason,
@@ -343,6 +366,16 @@ def _cluster_is_registered(cluster_list_stdout: str, cluster: str) -> bool:
     return any(line.strip().startswith(prefix) for line in cluster_list_stdout.splitlines())
 
 
+def _custom_credential_env_names(arguments: Mapping[str, Any]) -> tuple[str, ...]:
+    """R1: forward a cluster's NON-DEFAULT frp/stcp secret env var NAMES --
+    ``FrpTransportConfig.token_env``/``.stcp_secret_env``, not resolvable at
+    this layer, so a caller that knows the NAME passes it explicitly (never
+    the secret value, which must already be set under that name)."""
+
+    values = (arguments.get("frp_token_env"), arguments.get("stcp_secret_env"))
+    return tuple(v.strip() for v in values if isinstance(v, str) and v.strip())
+
+
 class RelayInstallSurface:
     """Five curated clio-relay cluster-lifecycle tools over the local CLI subprocess."""
 
@@ -355,12 +388,15 @@ class RelayInstallSurface:
         """Construct the five curated tools.
 
         Args:
-            job_registry: Injected job ledger (tests supply a fresh one per case);
-                defaults to a process-local instance.
+            job_registry: Injected job ledger (tests supply a fresh one per
+                case, keeping isolation); defaults to a FRESH per-instance
+                registry when omitted. M7: production construction
+                (``relay_factory.py::_build_relay_install_surface``) instead
+                passes the process-wide ``default_relay_install_job_registry()``
+                singleton explicitly, so a job survives a TTL catalog refresh.
             cli_status: Typed boot-time resolution status for the ``clio-relay``
-                executable (``{"configured": bool, "reason": str|None, ...}``),
-                retained for diagnostics only -- every tool call re-resolves the
-                executable itself rather than trusting a cached boot-time result.
+                executable, retained for diagnostics only -- every tool call
+                re-resolves the executable itself rather than trusting it.
         """
 
         self._jobs = job_registry if job_registry is not None else RelayInstallJobRegistry()
@@ -656,6 +692,13 @@ class RelayInstallSurface:
         if action == "status":
             return self._poll(_require_str(arguments, "job_id"))
         cluster = _require_str(arguments, "cluster")
+        extra_env_names = _custom_credential_env_names(arguments)
+
+        def _spawn(kind: str, argv: list[str]) -> dict[str, Any]:
+            return self._start(
+                kind=kind, cluster=cluster, argv=argv, extra_env_names=extra_env_names
+            )
+
         if action == "install_proxy":
             argv = ["relay-host", "install-proxy", "--cluster", cluster]
             if arguments.get("ssh_host"):
@@ -667,12 +710,12 @@ class RelayInstallSurface:
                 true_flag="--require-persistent",
                 false_flag="--allow-login-scoped",
             )
-            return self._start(kind="relay_proxy_install", cluster=cluster, argv=argv)
+            return _spawn("relay_proxy_install", argv)
         if action == "teardown_proxy":
             argv = ["relay-host", "teardown-proxy", "--cluster", cluster]
             if arguments.get("ssh_host"):
                 argv += ["--ssh-host", str(arguments["ssh_host"])]
-            return self._start(kind="relay_proxy_teardown", cluster=cluster, argv=argv)
+            return _spawn("relay_proxy_teardown", argv)
         raise RelayCliJobError(
             f"unsupported relay_proxy_lifecycle action {action!r}",
             reason="relay_install_action_invalid",
@@ -681,12 +724,22 @@ class RelayInstallSurface:
 
     # -- shared job plumbing ------------------------------------------------ #
 
-    def _start(self, *, kind: str, cluster: str, argv: list[str]) -> dict[str, Any]:
+    def _start(
+        self,
+        *,
+        kind: str,
+        cluster: str,
+        argv: list[str],
+        extra_env_names: Sequence[str] = (),
+    ) -> dict[str, Any]:
         """Spawn one long, SSH-dialing operation and return its handle immediately.
 
         M8: refuses a SECOND concurrent run for the same ``(cluster, kind)`` --
         the typed refusal names the ALREADY-live ``job_id`` so the caller polls it
         instead of guessing whether the first call is still in flight.
+        ``extra_env_names`` (R1) threads through caller-known credential env
+        NAMES this surface cannot resolve on its own (the cluster definition is
+        not available at this layer -- see :func:`_custom_credential_env_names`).
         """
 
         existing = self._jobs.find_running(cluster=cluster, kind=kind)
@@ -704,6 +757,7 @@ class RelayInstallSurface:
             argv=argv,
             executable=executable,
             timeout_seconds=long_operation_timeout_seconds(),
+            extra_env_names=extra_env_names,
         )
         return self._render(job)
 

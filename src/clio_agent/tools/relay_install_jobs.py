@@ -15,18 +15,24 @@ a hard cap) mirroring ``gact/runtime/retention.py``'s ``ledger_retention`` polic
 shape -- reimplemented locally rather than imported, since ``tools/`` may not depend
 on ``gact/`` (the reverse dependency direction is the one this codebase allows).
 
-Two known, accepted-for-now scope limits (documented rather than fixed in this
+M7 (review round 2, the ledger-wipe bug class): the registry used to be
+per-``RelayInstallSurface`` instance, so every TTL-triggered relay catalog refresh
+(``discover_relay_tool_surfaces()`` -- boot, and every #1227 D2 TTL window; see
+``gact/relay_wiring.py``) constructed a fresh ``RelayInstallSurface`` with a fresh,
+EMPTY job registry, and an in-flight job started before the refresh became
+unreachable through the new surface mid-poll (``relay_install_job_not_found`` for a
+subprocess that was still running). Fixed via :func:`default_relay_install_job_registry`,
+a process-wide lazily-constructed singleton: production surface construction
+(``tools/relay_factory.py::_build_relay_install_surface``) now threads THIS SAME
+registry through every rebuild, so a job survives a catalog refresh exactly like its
+subprocess does. ``RelayInstallSurface``'s own constructor default is UNCHANGED (a
+fresh registry per instance when no ``job_registry`` is injected) precisely so tests
+constructing it directly keep the isolation they already rely on -- only the
+production factory call site opts into the shared singleton explicitly.
+
+One known, accepted-for-now scope limit (documented rather than fixed in this
 slice):
 
-* **Registry is per-``RelayInstallSurface`` instance, not process-global.** Each
-  ``discover_relay_tool_surfaces()`` call (boot, and every TTL-triggered relay
-  catalog refresh -- see ``gact/relay_wiring.py``) constructs a fresh
-  ``RelayInstallSurface`` with a fresh, EMPTY job registry. A job started before a
-  refresh becomes unreachable through the new surface after one (its subprocess
-  keeps running; only the poll handle is orphaned). Job ids are ``uuid4``-random
-  (unguessable), which is accepted as adequate for now given this gap -- a future
-  slice that needs cross-refresh job continuity should promote the registry to a
-  real process-global singleton.
 * **A daemon-thread driver does NOT die with clio-agent, nor does its child
   subprocess.** Python daemon threads stop being SCHEDULED at interpreter exit --
   they get no chance to run cleanup, and the subprocess they Popen'd is a genuinely
@@ -65,12 +71,14 @@ from clio_agent.tools.relay_cli_runner import (
     _classify_exit_state,
     _clip,
     _detect_actionable_refusal,
+    _is_unrecognized_framed_line,
     _parse_marker_line,
     _subprocess_env,
     job_retention_hard_cap,
     job_retention_max_entries,
     output_tail_bytes,
     parse_relay_cli_stdout,
+    parsed_document_max_bytes,
     resolve_relay_cli_executable,
 )
 
@@ -105,7 +113,21 @@ class RelayInstallJob:
     #: F3: set when more markers arrived than :data:`~clio_agent.tools.relay_cli_runner.
     #: MAX_RETAINED_RECEIPT_FIELDS` retains -- the drop is never silent.
     receipt_fields_truncated: bool = False
+    #: R4 (small fix): count of stdout lines that matched the ``key=value`` framed
+    #: SHAPE but were not under a declared clio-relay marker namespace -- never
+    #: their content (F5a still never promotes that), just a count, so schema
+    #: drift against a newer clio-relay release is queryable rather than silently
+    #: invisible. See :func:`~clio_agent.tools.relay_cli_runner.parse_relay_cli_stdout`
+    #: and :func:`~clio_agent.tools.relay_cli_runner._is_unrecognized_framed_line`.
+    unrecognized_marker_count: int = 0
     parsed_document: dict[str, Any] | None = None
+    #: R3 (MUST FIX, review round 2): set when the async driver's bounded
+    #: whole-document buffer (:func:`~clio_agent.tools.relay_cli_runner.
+    #: parsed_document_max_bytes`) was exceeded before the process exited --
+    #: ``parsed_document`` is then ``None`` even though the job may otherwise be
+    #: COMPLETED, and this flag is the typed signal that the loss happened rather
+    #: than the document simply being absent.
+    parsed_document_truncated: bool = False
     exit_code: int | None = None
     stdout_tail: str = ""
     stderr_tail: str = ""
@@ -127,7 +149,9 @@ class RelayInstallJob:
             "exit_code": self.exit_code,
             "receipt_fields": [f.to_wire() for f in self.receipt_fields],
             "receipt_fields_truncated": self.receipt_fields_truncated,
+            "unrecognized_marker_count": self.unrecognized_marker_count,
             "parsed_document": self.parsed_document,
+            "parsed_document_truncated": self.parsed_document_truncated,
             "stdout_tail": self.stdout_tail,
             "stderr_tail": self.stderr_tail,
             "error_reason": self.error_reason,
@@ -174,12 +198,18 @@ class RelayInstallJobRegistry:
         self._jobs: dict[str, RelayInstallJob] = {}
         self._receipt_fields: dict[str, list[RelayCliReceiptField]] = {}
         self._receipt_truncated: dict[str, bool] = {}
+        #: R4: per-job running count of unrecognized-namespace framed markers
+        #: seen so far, accumulated the same incremental way as receipt fields
+        #: (:meth:`note_unrecognized_marker`) and merged into the snapshot only
+        #: at read time (:meth:`_snapshot_locked`).
+        self._unrecognized_marker_counts: dict[str, int] = {}
 
     def register(self, job: RelayInstallJob) -> None:
         with self._lock:
             self._jobs[job.job_id] = job
             self._receipt_fields.setdefault(job.job_id, [])
             self._receipt_truncated.setdefault(job.job_id, False)
+            self._unrecognized_marker_counts.setdefault(job.job_id, 0)
             self._enforce_retention_locked()
 
     def get(self, job_id: str) -> RelayInstallJob | None:
@@ -192,15 +222,35 @@ class RelayInstallJobRegistry:
             return None
         fields = self._receipt_fields.get(job_id, [])
         truncated = self._receipt_truncated.get(job_id, False)
-        if not fields and not truncated:
+        unrecognized = self._unrecognized_marker_counts.get(job_id, 0)
+        if not fields and not truncated and not unrecognized:
             return current
-        return replace(current, receipt_fields=tuple(fields), receipt_fields_truncated=truncated)
+        return replace(
+            current,
+            receipt_fields=tuple(fields),
+            receipt_fields_truncated=truncated,
+            unrecognized_marker_count=unrecognized,
+        )
 
     def field_count(self, job_id: str) -> int:
         """O(1) live field count -- never materializes the snapshot tuple."""
 
         with self._lock:
             return len(self._receipt_fields.get(job_id, []))
+
+    def note_unrecognized_marker(self, job_id: str) -> None:
+        """R4: bump the per-job unrecognized-framed-marker count by one.
+
+        O(1), never touches the frozen ``RelayInstallJob`` record itself --
+        mirrors :meth:`append_receipt_field`'s decoupled hot-path shape.
+        """
+
+        with self._lock:
+            if job_id not in self._jobs:
+                return
+            self._unrecognized_marker_counts[job_id] = (
+                self._unrecognized_marker_counts.get(job_id, 0) + 1
+            )
 
     def find_running(self, *, cluster: str, kind: str) -> RelayInstallJob | None:
         """Return a live (non-terminal) job for ``(cluster, kind)``, if any (M8)."""
@@ -259,6 +309,7 @@ class RelayInstallJobRegistry:
         exit_code: int | None,
         error_reason: str = "",
         parsed_document: dict[str, Any] | None = None,
+        parsed_document_truncated: bool = False,
         actionable_refusal: dict[str, Any] | None = None,
         stdout_tail: str = "",
         stderr_tail: str = "",
@@ -277,6 +328,7 @@ class RelayInstallJobRegistry:
                 parsed_document=parsed_document
                 if parsed_document is not None
                 else current.parsed_document,
+                parsed_document_truncated=parsed_document_truncated,
                 actionable_refusal=actionable_refusal,
                 stdout_tail=stdout_tail or current.stdout_tail,
                 stderr_tail=stderr_tail or current.stderr_tail,
@@ -311,6 +363,37 @@ class RelayInstallJobRegistry:
         self._jobs.pop(job_id, None)
         self._receipt_fields.pop(job_id, None)
         self._receipt_truncated.pop(job_id, None)
+        self._unrecognized_marker_counts.pop(job_id, None)
+
+
+_default_registry_lock = threading.Lock()
+_default_registry: RelayInstallJobRegistry | None = None
+
+
+def default_relay_install_job_registry() -> RelayInstallJobRegistry:
+    """Return the process-wide job registry singleton (M7, review round 2).
+
+    Lazily constructed on first call, then reused for the lifetime of the
+    process -- this is what lets an in-flight job survive a #1227 D2
+    TTL-triggered relay catalog refresh: ``tools/relay_factory.py::
+    _build_relay_install_surface`` threads THIS SAME registry through every
+    ``RelayInstallSurface`` it (re)builds, rather than each rebuild minting its
+    own fresh, empty one (the ledger-wipe bug this function fixes). Double-checked
+    locking guards the one-time construction; every call after the first is a
+    single ``is None`` check with no lock contention.
+
+    Deliberately NOT the constructor default on :class:`RelayInstallSurface`
+    itself -- tests construct that class directly and rely on getting an
+    ISOLATED fresh registry per instance; only the production factory call site
+    opts into this shared singleton explicitly.
+    """
+
+    global _default_registry
+    if _default_registry is None:
+        with _default_registry_lock:
+            if _default_registry is None:
+                _default_registry = RelayInstallJobRegistry()
+    return _default_registry
 
 
 def _kill_process_tree(proc: "subprocess.Popen[str]") -> None:
@@ -349,6 +432,45 @@ def _popen_kwargs() -> dict[str, Any]:
     return {}
 
 
+class _BoundedTextAccumulator:
+    """Accumulate streamed text up to a byte budget without per-line reclipping.
+
+    R3 (MUST FIX, review round 2): the async driver needs a buffer large enough
+    for whole-document JSON parsing (session/relay-host commands print ONE
+    document at the very end of their output), independent of the small DISPLAY
+    tail (``stdout_tail``, capped at :func:`~clio_agent.tools.relay_cli_runner.
+    output_tail_bytes` -- typically 4096 bytes). Re-clipping a growing string on
+    every line (the ``_clip(current + delta, cap)`` shape :meth:`RelayInstallJobRegistry.
+    note_output` already uses for the SMALL display tail) is O(cap) work per line;
+    at a cap sized for a real document (:func:`~clio_agent.tools.relay_cli_runner.
+    parsed_document_max_bytes`, default 256KB) that would reintroduce the same
+    O(n*cap) shape F3 already fixed for unbounded receipt-field growth. Instead:
+    append each chunk to a list (O(1) amortized per call) and stop retaining
+    further chunks -- setting :attr:`truncated` -- once the running byte total
+    crosses ``cap``. The caller must never attempt to parse a truncated buffer as
+    JSON (a partial document is not valid JSON and silently trying anyway is
+    exactly the kind of quiet failure this fix exists to avoid); it must instead
+    surface :attr:`truncated` as a typed ``parsed_document_truncated`` reason.
+    """
+
+    def __init__(self, cap: int) -> None:
+        self._cap = max(int(cap), 0)
+        self._chunks: list[str] = []
+        self._len = 0
+        self.truncated = False
+
+    def add(self, text: str) -> None:
+        if self.truncated or not text:
+            return
+        self._chunks.append(text)
+        self._len += len(text.encode("utf-8", errors="replace"))
+        if self._len > self._cap:
+            self.truncated = True
+
+    def get(self) -> str:
+        return "".join(self._chunks)
+
+
 def start_relay_install_job(
     registry: RelayInstallJobRegistry,
     *,
@@ -357,6 +479,7 @@ def start_relay_install_job(
     argv: Sequence[str],
     executable: str,
     timeout_seconds: float,
+    extra_env_names: Sequence[str] = (),
 ) -> RelayInstallJob:
     """Spawn ``executable argv`` in a background thread; return the running handle now.
 
@@ -367,6 +490,9 @@ def start_relay_install_job(
     Popen call, not the SSH dial it starts). ``cluster`` is stamped on the record for
     the (cluster, kind) duplicate-run guard (M8); the subprocess environment is an
     explicit allowlist keyed by ``kind`` (F5b), never the full inherited environment.
+    ``extra_env_names`` (R1) forwards additional CALLER-KNOWN env var names on top of
+    the kind-based allowlist -- e.g. a cluster's non-default frp/stcp secret env
+    names, which this layer cannot resolve on its own (see ``_subprocess_env``).
     """
 
     job_id = f"relayjob_{uuid.uuid4().hex[:16]}"
@@ -392,7 +518,7 @@ def start_relay_install_job(
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
-            env=_subprocess_env(kind),
+            env=_subprocess_env(kind, extra_env_names=extra_env_names),
             **_popen_kwargs(),
         )
     except OSError as exc:
@@ -436,13 +562,19 @@ def _drive_relay_install_job(
     registry slot forever, not to bound a normal SSH dial.
     """
 
+    doc_accumulator = _BoundedTextAccumulator(parsed_document_max_bytes())
+
     def read_stdout() -> None:
         assert proc.stdout is not None
         for line in iter(proc.stdout.readline, ""):
             registry.note_output(job_id, stdout_delta=line)
-            parsed = _parse_marker_line(line.rstrip("\n"))
+            doc_accumulator.add(line)
+            stripped = line.rstrip("\n")
+            parsed = _parse_marker_line(stripped)
             if parsed is not None:
                 registry.append_receipt_field(job_id, parsed)
+            elif _is_unrecognized_framed_line(stripped):
+                registry.note_unrecognized_marker(job_id)
         with suppress(Exception):
             proc.stdout.close()
 
@@ -496,22 +628,45 @@ def _drive_relay_install_job(
     except subprocess.TimeoutExpired:
         exit_code = None
 
-    # The whole-document-JSON branch (session/relay-host commands) only ever needs
-    # to see a small document -- parsing off the ALREADY-BOUNDED tail (rather than
-    # an unbounded full-text accumulation) is correct for every real verb and is
-    # what keeps this path O(1) in memory regardless of a bootstrap stream's size.
-    _, whole_doc = parse_relay_cli_stdout(stdout_tail)
-    state = _classify_exit_state(kind, exit_code)
+    # R3 (MUST FIX): parse the whole-document-JSON branch (session/relay-host
+    # commands) off the SEPARATE bounded accumulator, never off ``stdout_tail``
+    # -- that display tail is clipped to output_tail_bytes() (typically 4096
+    # bytes), so any real document bigger than that silently lost
+    # parsed_document before this fix. If even the LARGER accumulator bound was
+    # exceeded, parsing is skipped and the loss is surfaced via
+    # parsed_document_truncated rather than attempted against a truncated,
+    # invalid-JSON buffer.
+    if doc_accumulator.truncated:
+        whole_doc: dict[str, Any] | None = None
+        parsed_document_truncated = True
+        logger.warning(
+            "relay install job stdout exceeded the parsed-document bound; "
+            "parsed_document dropped reason=parsed_document_truncated job=%s kind=%s",
+            job_id,
+            kind,
+        )
+    else:
+        _, whole_doc, _ = parse_relay_cli_stdout(doc_accumulator.get())
+        parsed_document_truncated = False
+
+    # R2 (CRITICAL): classification now requires the ACTUAL parsed document, not
+    # just the exit code -- click's own UsageError also exits 2, and only a
+    # successfully parsed handle-only receipt proves clio-relay reached its own
+    # documented non-failure branch rather than failing argument parsing first.
+    state, reason_override = _classify_exit_state(kind, exit_code, parsed_document=whole_doc)
     actionable = _detect_actionable_refusal(stdout_tail, stderr_tail, kind=kind)
     error_reason = ""
     if state == STATE_FAILED:
-        error_reason = actionable["reason"] if actionable else "relay_cli_nonzero_exit"
+        error_reason = reason_override or (
+            actionable["reason"] if actionable else "relay_cli_nonzero_exit"
+        )
     registry.set_terminal(
         job_id,
         state=state,
         exit_code=exit_code,
         error_reason=error_reason,
         parsed_document=whole_doc,
+        parsed_document_truncated=parsed_document_truncated,
         actionable_refusal=actionable,
         stdout_tail=stdout_tail,
         stderr_tail=stderr_tail,
@@ -519,7 +674,12 @@ def _drive_relay_install_job(
 
 
 def run_bounded_relay_cli(
-    argv: Sequence[str], *, kind: str, timeout_seconds: float, tail_bytes: int | None = None
+    argv: Sequence[str],
+    *,
+    kind: str,
+    timeout_seconds: float,
+    tail_bytes: int | None = None,
+    extra_env_names: Sequence[str] = (),
 ) -> RelayInstallJob:
     """Run one relay CLI invocation to completion within ``timeout_seconds`` (BLOCKING).
 
@@ -536,6 +696,13 @@ def run_bounded_relay_cli(
     tail is sized for a receipt/log excerpt, not for a ``cluster list`` enumeration
     that could plausibly exceed it in a large registry -- silently truncating the
     match away would be the exact overwrite bug this check exists to prevent.
+    ``extra_env_names`` (R1) is the same caller-known-cluster escape hatch
+    :func:`start_relay_install_job` accepts.
+
+    R3 note: this path is unaffected by the async driver's tail-clipping bug --
+    ``parse_relay_cli_stdout`` below runs against ``completed.stdout``, the FULL
+    captured output ``subprocess.run(capture_output=True)`` already buffers, not
+    against the clipped display tail computed further down.
     """
 
     cap = tail_bytes if tail_bytes is not None else output_tail_bytes()
@@ -551,7 +718,7 @@ def run_bounded_relay_cli(
             text=True,
             timeout=timeout_seconds,
             check=False,
-            env=_subprocess_env(kind),
+            env=_subprocess_env(kind, extra_env_names=extra_env_names),
             **_popen_kwargs(),
         )
     except subprocess.TimeoutExpired as exc:
@@ -588,12 +755,16 @@ def run_bounded_relay_cli(
 
     stdout = completed.stdout or ""
     stderr = completed.stderr or ""
-    fields, whole_doc = parse_relay_cli_stdout(stdout)
-    state = _classify_exit_state(kind, completed.returncode)
+    fields, whole_doc, unrecognized_marker_count = parse_relay_cli_stdout(stdout)
+    state, reason_override = _classify_exit_state(
+        kind, completed.returncode, parsed_document=whole_doc
+    )
     actionable = _detect_actionable_refusal(stdout, stderr, kind=kind)
     error_reason = ""
     if state == STATE_FAILED:
-        error_reason = actionable["reason"] if actionable else "relay_cli_nonzero_exit"
+        error_reason = reason_override or (
+            actionable["reason"] if actionable else "relay_cli_nonzero_exit"
+        )
     return RelayInstallJob(
         job_id=job_id,
         kind=kind,
@@ -604,6 +775,7 @@ def run_bounded_relay_cli(
         state=state,
         exit_code=completed.returncode,
         receipt_fields=tuple(fields),
+        unrecognized_marker_count=unrecognized_marker_count,
         parsed_document=whole_doc,
         error_reason=error_reason,
         actionable_refusal=actionable,
@@ -615,6 +787,7 @@ def run_bounded_relay_cli(
 __all__ = [
     "RelayInstallJob",
     "RelayInstallJobRegistry",
+    "default_relay_install_job_registry",
     "effective_job_state",
     "run_bounded_relay_cli",
     "start_relay_install_job",

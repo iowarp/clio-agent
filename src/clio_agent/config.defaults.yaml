@@ -476,6 +476,9 @@ relay.install_surface.long_operation_timeout_seconds: 900.0
 # CLIO_RELAY_INSTALL_OUTPUT_TAIL_BYTES  (int)  <- src/clio_agent/tools/relay_cli_runner.py
 relay.install_surface.output_tail_bytes: 4096
 
+# CLIO_RELAY_INSTALL_PARSED_DOCUMENT_MAX_BYTES  (int)  <- src/clio_agent/tools/relay_cli_runner.py
+relay.install_surface.parsed_document_max_bytes: 262144
+
 # CLIO_RELAY_JARVIS_DOOR_NAMESPACE  (str)  <- src/clio_agent/tools/relay_factory.py
 relay.jarvis_door_namespace: "remote_jarvis"
 
