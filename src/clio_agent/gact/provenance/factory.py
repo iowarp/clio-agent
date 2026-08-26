@@ -41,6 +41,17 @@ class _LegacyFactoryProvider:
         self._backend.emit(event)
         return ProviderReceipt.ACCEPTED
 
+    def flush(self) -> None:
+        """Proxy to the wrapped factory backend's flush, when it has one.
+
+        Mirrors :class:`JsonlProvenanceProvider.flush` — a custom factory
+        backend may itself be an off-loop async writer, so a no-op here
+        would silently reintroduce the same incomplete-flush gap.
+        """
+        flush = getattr(self._backend, "flush", None)
+        if callable(flush):
+            flush()
+
     def close(self) -> None:
         close = getattr(self._backend, "close", None)
         if callable(close):

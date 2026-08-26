@@ -27,6 +27,19 @@ class JsonlProvenanceProvider:
         self._backend.emit(event)
         return ProviderReceipt.ACCEPTED
 
+    def flush(self) -> None:
+        """Block until every enqueued write has actually reached disk.
+
+        :meth:`emit` only hands the event to the shared off-loop
+        ``FileSemanticTraceBackend`` writer queue (near-zero work on the
+        caller); the write itself happens later, on the process-global
+        writer thread. Proxy through so a caller that awaits THIS
+        provider's flush (e.g. :meth:`ProvenanceDispatcher.flush`) gets a
+        real persistence guarantee, not just "handed off to the next
+        queue" (see :class:`FileSemanticTraceBackend`).
+        """
+        self._backend.flush()
+
     def close(self) -> None:
         """Drain pending JSONL writes."""
         self._backend.close()

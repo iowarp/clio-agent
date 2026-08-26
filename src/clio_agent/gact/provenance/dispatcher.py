@@ -152,9 +152,26 @@ class ProvenanceDispatcher:
             worker.submit(event)
 
     def flush(self) -> None:
-        """Wait until every accepted provider event has been processed."""
+        """Wait until every accepted provider event has actually been persisted.
+
+        ``worker.queue.join()`` alone only proves the event reached
+        ``provider.emit()`` and that call RETURNED — for a provider that is
+        itself an off-loop async writer (e.g. ``JsonlProvenanceProvider``,
+        which just hands the event to a further shared writer-thread queue
+        and returns immediately), that is NOT the same as "on disk." Without
+        the second step below, a caller doing ``flush()`` then reading the
+        durable trace races the provider's own writer and can observe an
+        empty/partial read (#1247 CI regression: ``ProvenanceDispatcher``
+        wraps an already-async backend without cascading the drain). Proxy
+        into each provider's own ``flush`` (duck-typed — not every provider
+        needs one) so this call is a genuine synchronous-persistence
+        barrier.
+        """
         for worker in self._workers.values():
             worker.queue.join()
+            provider_flush = getattr(worker.provider, "flush", None)
+            if callable(provider_flush):
+                provider_flush()
 
     def close(self) -> None:
         """Drain and close every provider."""
