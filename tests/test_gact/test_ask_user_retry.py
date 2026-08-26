@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -71,8 +72,9 @@ class _AskUserAgent:
 
 
 @pytest.fixture()
-def client(tmp_path: Path) -> TestClient:
-    return TestClient(build_app(sessions_path=tmp_path / "sessions.json"))
+def client(tmp_path: Path) -> Iterator[TestClient]:
+    with TestClient(build_app(sessions_path=tmp_path / "sessions.json")) as test_client:
+        yield test_client
 
 
 def _create_session(client: TestClient) -> str:
@@ -339,52 +341,52 @@ def test_retry_records_attempt_with_model_change_warning(client: TestClient) -> 
 
 def test_retry_execute_queues_new_turn_with_attempt_provenance(tmp_path: Path) -> None:
     agent = _FakeAgent()
-    client = TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent))
-    sid = _create_session(client)
-    _seed_turn(client, sid, user_text="Inspect the large dataset.")
+    with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent)) as client:
+        sid = _create_session(client)
+        _seed_turn(client, sid, user_text="Inspect the large dataset.")
 
-    resp = client.post(
-        f"/v1/sessions/{sid}/messages/msg_original/retry",
-        json={
-            "execute": True,
-            "notes": "Use the second file and be concise.",
-            "metadata": {"requested_by": "test"},
-        },
-    )
+        resp = client.post(
+            f"/v1/sessions/{sid}/messages/msg_original/retry",
+            json={
+                "execute": True,
+                "notes": "Use the second file and be concise.",
+                "metadata": {"requested_by": "test"},
+            },
+        )
 
-    assert resp.status_code == 202, resp.text
-    attempt = resp.json()
-    assert attempt["status"] == "queued"
-    assert attempt["metadata"]["source_user_message_id"] == "msg_user_original"
-    assert attempt["metadata"]["queued_user_message_id"].startswith("msg_user_")
+        assert resp.status_code == 202, resp.text
+        attempt = resp.json()
+        assert attempt["status"] == "queued"
+        assert attempt["metadata"]["source_user_message_id"] == "msg_user_original"
+        assert attempt["metadata"]["queued_user_message_id"].startswith("msg_user_")
 
-    _wait_for_idle(client, sid)
+        _wait_for_idle(client, sid)
 
-    attempts = client.get(f"/v1/sessions/{sid}/attempts").json()["attempts"]
-    completed = next(row for row in attempts if row["id"] == attempt["id"])
-    assert completed["status"] == "completed"
-    assert (
-        completed["metadata"]["queued_user_message_id"]
-        == attempt["metadata"]["queued_user_message_id"]
-    )
-    assert completed["metadata"]["assistant_message_id"].startswith("msg_asst_")
-    # The queued retry runs exactly one turn whose request carries the retry notes.
-    # (Multi-turn sessions now prepend prior-conversation context before the current
-    # request, so match the tail rather than the whole enriched prompt.)
-    assert len(agent.questions) == 1
-    assert agent.questions[0].endswith(
-        "Inspect the large dataset.\n\n[Retry notes]\nUse the second file and be concise."
-    )
+        attempts = client.get(f"/v1/sessions/{sid}/attempts").json()["attempts"]
+        completed = next(row for row in attempts if row["id"] == attempt["id"])
+        assert completed["status"] == "completed"
+        assert (
+            completed["metadata"]["queued_user_message_id"]
+            == attempt["metadata"]["queued_user_message_id"]
+        )
+        assert completed["metadata"]["assistant_message_id"].startswith("msg_asst_")
+        # The queued retry runs exactly one turn whose request carries the retry notes.
+        # (Multi-turn sessions now prepend prior-conversation context before the current
+        # request, so match the tail rather than the whole enriched prompt.)
+        assert len(agent.questions) == 1
+        assert agent.questions[0].endswith(
+            "Inspect the large dataset.\n\n[Retry notes]\nUse the second file and be concise."
+        )
 
-    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-    retry_user = next(
-        msg for msg in messages if msg["id"] == attempt["metadata"]["queued_user_message_id"]
-    )
-    assert retry_user["metadata"]["retry_attempt_id"] == attempt["id"]
-    history = client.app.state.bus._history.get(sid, [])
-    event_types = [event.type for event in history]
-    assert "turn.retry_running" in event_types
-    assert "turn.retry_completed" in event_types
+        messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        retry_user = next(
+            msg for msg in messages if msg["id"] == attempt["metadata"]["queued_user_message_id"]
+        )
+        assert retry_user["metadata"]["retry_attempt_id"] == attempt["id"]
+        history = client.app.state.bus._history.get(sid, [])
+        event_types = [event.type for event in history]
+        assert "turn.retry_running" in event_types
+        assert "turn.retry_completed" in event_types
 
 
 def test_retry_rejects_reserved_metadata_key(client: TestClient) -> None:

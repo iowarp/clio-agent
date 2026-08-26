@@ -212,11 +212,13 @@ def test_boot_passes_discovered_relay_surfaces_into_clio_agent(monkeypatch, tmp_
 
     remote = object()
     jarvis = object()
+    relay_install = object()
 
     async def fake_discover() -> Any:
         return SimpleNamespace(
             remote_mcp_federation=remote,
             jarvis_jobs=jarvis,
+            relay_install=relay_install,
             status={"configured": True, "reason": None},
         )
 
@@ -247,6 +249,7 @@ def test_boot_passes_discovered_relay_surfaces_into_clio_agent(monkeypatch, tmp_
 
     assert recorded["remote_mcp_federation"] is remote
     assert recorded["jarvis_jobs"] is jarvis
+    assert recorded["relay_install"] is relay_install
     assert app.state.relay_tool_status == {"configured": True, "reason": None}
 
 

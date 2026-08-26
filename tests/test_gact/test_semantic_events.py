@@ -56,10 +56,9 @@ def test_semantic_events_stream_and_trace_file(tmp_path: Path, monkeypatch) -> N
     set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
     set_config("trace.path", str(trace_dir))
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
-    client = TestClient(app)
-
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    complete_turn(client, sid, "analyze this")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        complete_turn(client, sid, "analyze this")
 
     history = app.state.bus._history.get(sid, [])
     semantic_events = [e for e in history if e.type == "semantic.event"]
