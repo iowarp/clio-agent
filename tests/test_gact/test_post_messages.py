@@ -1568,19 +1568,19 @@ def test_post_message_session_model_matching_global_config_runs(
         "provider": "lm_studio",
         "model": "qwopus3.5-9b-v3",
     }
-    client = TestClient(app)
-    sid = client.post(
-        "/v1/sessions",
-        json={
-            "title": "t",
-            "model": {
-                "provider_id": "lm_studio",
-                "model_id": "qwopus3.5-9b-v3",
+    with TestClient(app) as client:
+        sid = client.post(
+            "/v1/sessions",
+            json={
+                "title": "t",
+                "model": {
+                    "provider_id": "lm_studio",
+                    "model_id": "qwopus3.5-9b-v3",
+                },
             },
-        },
-    ).json()["id"]
+        ).json()["id"]
 
-    assistant = complete_turn(client, sid, "hi")
+        assistant = complete_turn(client, sid, "hi")
 
     # The text answer is the only part (routing decisions are semantic events).
     assert [part["type"] for part in assistant["parts"]] == ["text"]
@@ -1591,41 +1591,28 @@ def test_post_message_session_model_matching_global_config_runs(
 def test_post_message_model_matching_global_config_runs(
     tmp_path: Path,
 ) -> None:
+    from .conftest import complete_turn
+
     fake_agent = FakeClioAgent(answer="message model matched")
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent)
     app.state.lm_config = {
         "provider": "lm_studio",
         "model": "qwopus3.5-9b-v3",
     }
-    client = TestClient(app)
-    sid = _create_session(client)
-
-    resp = client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={
-            "parts": [{"type": "text", "text": "hi"}],
-            "model": {
-                "provider_id": "lm_studio",
-                "model_id": "qwopus3.5-9b-v3",
+    with TestClient(app) as client:
+        sid = _create_session(client)
+        assistant = complete_turn(
+            client,
+            sid,
+            "hi",
+            json_override={
+                "model": {
+                    "provider_id": "lm_studio",
+                    "model_id": "qwopus3.5-9b-v3",
+                }
             },
-        },
-    )
+        )
 
-    assert resp.status_code == 200
-    user_id = resp.json()["message_id"]
-    assistant = None
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
-        messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-        for i, msg in enumerate(messages):
-            if msg.get("id") == user_id and i > 0:
-                assistant = messages[i - 1]
-                break
-        if assistant is not None:
-            break
-        time.sleep(0.05)
-
-    assert assistant is not None
     # The text answer is the only part (routing decisions are semantic events).
     assert [part["type"] for part in assistant["parts"]] == ["text"]
     assert assistant["parts"][0]["text"] == "message model matched"
