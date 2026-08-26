@@ -453,8 +453,8 @@ class _ToolRoutingAgent:
 @pytest.fixture()
 def app_client(tmp_path: Path):
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
-    client = TestClient(app)
-    return app, client
+    with TestClient(app) as client:
+        yield app, client
 
 
 def test_bounded_tool_result_is_idempotent_no_nested_preview() -> None:

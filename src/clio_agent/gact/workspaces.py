@@ -18,12 +18,29 @@ import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Optional
 
 from clio_agent.gact.workspace_scope import resolve_workspace_storage_root
 
 _WORKSPACE_ID_PREFIX = "ws_"
+
+
+def workspace_path_basename(value: str) -> str:
+    """Return a path basename using the syntax carried by ``value``.
+
+    Workspace paths describe the connected agent host, which can use a
+    different operating system from the GACT server.  Selecting the pure path
+    parser from the wire value keeps a Windows workspace label stable when the
+    server or CI runner is Linux, and vice versa.
+    """
+
+    path = value.strip()
+    if not path:
+        return ""
+    if "\\" in path or (len(path) >= 2 and path[1] == ":"):
+        return PureWindowsPath(path).name
+    return PurePosixPath(path).name
 
 
 def workspace_display_name(
@@ -51,11 +68,11 @@ def workspace_display_name(
         if label and "/" not in label and "\\" not in label:
             return label
     if root_path.strip():
-        basename = Path(root_path.strip()).name
+        basename = workspace_path_basename(root_path)
         if basename:
             return basename
     for candidate in candidates:
-        label = Path(candidate.strip()).name if candidate.strip() else ""
+        label = workspace_path_basename(candidate)
         if label:
             return label
     return workspace_id

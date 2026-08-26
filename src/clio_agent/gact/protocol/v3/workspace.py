@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from clio_agent.gact.protocol.v3 import CONNECTION_ID
-from clio_agent.gact.workspaces import workspace_display_name
+from clio_agent.gact.workspaces import workspace_display_name, workspace_path_basename
 
 
 def workspace_to_v3(workspace: Any) -> dict[str, Any]:
@@ -34,12 +33,22 @@ def workspace_to_v3(workspace: Any) -> dict[str, Any]:
         if str(value).strip() and str(value) != root_path
     ]
     source_folders = (
-        [{"path": root_path, "name": Path(root_path).name or root_path, "primary": True}]
+        [
+            {
+                "path": root_path,
+                "name": workspace_path_basename(root_path) or root_path,
+                "primary": True,
+            }
+        ]
         if root_path
         else []
     )
     source_folders.extend(
-        {"path": path, "name": Path(path).name or path, "primary": False}
+        {
+            "path": path,
+            "name": workspace_path_basename(path) or path,
+            "primary": False,
+        }
         for path in dict.fromkeys(granted_roots)
     )
     return {

@@ -364,6 +364,7 @@ def reap_orphaned_processes(
     daemon_root_pid: Optional[int] = None,
     _daemon_unset: bool = True,
     kill: Optional[Callable[[int], None]] = None,
+    parent_alive: Optional[Callable[[int], bool]] = None,
 ) -> list[ReapedProcess]:
     """KILL every provably-orphaned CLIO child — the census REAPS, not just reports (#1232 pt 4).
 
@@ -392,6 +393,8 @@ def reap_orphaned_processes(
             :func:`probe_process_parentage` (injectable for tests).
         kill: ``pid -> None`` killer (injected for tests); defaults to
             :func:`_kill_pid` (a real ``psutil.Process(pid).kill()``).
+        parent_alive: ``pid -> bool`` liveness probe (injected for synthetic
+            process tables); defaults to the real :func:`_pid_alive` check.
 
     Returns:
         One :class:`ReapedProcess` per pid actually killed. A typed
@@ -414,6 +417,7 @@ def reap_orphaned_processes(
         snapshot, server_root_pid=server_root_pid, daemon_root_pid=daemon_root_pid
     )
     killer = kill or _kill_pid
+    is_parent_alive = parent_alive or _pid_alive
 
     reaped: list[ReapedProcess] = []
     for row in rows:
@@ -429,7 +433,7 @@ def reap_orphaned_processes(
             continue
         node = by_pid.get(row.pid)
         immediate_parent = node.ppid if node is not None else None
-        if immediate_parent is not None and _pid_alive(immediate_parent):
+        if immediate_parent is not None and is_parent_alive(immediate_parent):
             # The snapshot-to-kill window closed: the parent came back (or a
             # slower scan caught it mid-restart). Never kill a child whose
             # parent is provably alive right now — re-probed next pass.

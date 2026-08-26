@@ -36,10 +36,9 @@ def _client(tmp_path: Path, perms) -> TestClient:
 
 
 def _turn(client: TestClient, sid: str) -> dict:
-    return client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "delete /tmp"}]},
-    ).json()
+    from .conftest import complete_turn
+
+    return complete_turn(client, sid, "delete /tmp")
 
 
 def test_permission_requested_then_allowed(tmp_path: Path) -> None:

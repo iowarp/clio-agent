@@ -51,20 +51,20 @@ SAMPLE_DIFF = """--- a/main.go
 
 
 def test_assistant_emits_file_diff_part(tmp_path: Path) -> None:
-    client = _client(
+    with _client(
         tmp_path,
         diffs=[
             {"path": "main.go", "unified_diff": SAMPLE_DIFF},
         ],
-    )
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    a = _turn(client, sid)
-    parts = a["parts"]
-    diff_parts = [p for p in parts if p["type"] == "file_diff"]
-    assert len(diff_parts) == 1
-    assert diff_parts[0]["path"] == "main.go"
-    assert diff_parts[0]["status"] == "pending"
-    assert "newish" in diff_parts[0]["unified_diff"]
+    ) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        a = _turn(client, sid)
+        parts = a["parts"]
+        diff_parts = [p for p in parts if p["type"] == "file_diff"]
+        assert len(diff_parts) == 1
+        assert diff_parts[0]["path"] == "main.go"
+        assert diff_parts[0]["status"] == "pending"
+        assert "newish" in diff_parts[0]["unified_diff"]
 
 
 def test_apply_flips_status_and_returns_paths(tmp_path: Path) -> None:

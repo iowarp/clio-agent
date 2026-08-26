@@ -103,7 +103,7 @@ def test_provider_detail_returns_listed_provider(tmp_path: Path) -> None:
 
 
 def test_session_and_message_diffs_return_conformance_shape(tmp_path: Path) -> None:
-    client = _client(
+    with _client(
         tmp_path,
         diffs=[
             {
@@ -111,16 +111,16 @@ def test_session_and_message_diffs_return_conformance_shape(tmp_path: Path) -> N
                 "unified_diff": "--- a/main.py\n+++ b/main.py\n@@ -1 +1 @@\n-old\n+new\n",
             }
         ],
-    )
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    assistant = complete_turn(client, sid, "propose edit")
+    ) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        assistant = complete_turn(client, sid, "propose edit")
 
-    session_body = client.get(f"/v1/sessions/{sid}/diffs").json()
-    message_body = client.get(f"/v1/sessions/{sid}/messages/{assistant['id']}/diffs").json()
+        session_body = client.get(f"/v1/sessions/{sid}/diffs").json()
+        message_body = client.get(f"/v1/sessions/{sid}/messages/{assistant['id']}/diffs").json()
 
-    assert session_body["diffs"][0]["path"] == "main.py"
-    assert session_body["diffs"][0]["applied"] is False
-    assert message_body["diffs"][0]["message_id"] == assistant["id"]
+        assert session_body["diffs"][0]["path"] == "main.py"
+        assert session_body["diffs"][0]["applied"] is False
+        assert message_body["diffs"][0]["message_id"] == assistant["id"]
 
 
 def test_workspace_repo_map_returns_tree_envelope(tmp_path: Path) -> None:

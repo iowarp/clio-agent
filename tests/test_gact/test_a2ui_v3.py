@@ -556,7 +556,8 @@ def test_root_agent_tool_documents_the_valid_button_action_envelope() -> None:
     assert "Tabs never use a ``children`` property" in tool.desc
     assert "``clio.data-table.v1`` does not accept ``title``" in tool.desc
     assert "Do not nest a second ``action`` object" in tool.desc
-    assert "``agent.submit`` needs\n        ``text`` or ``prompt``" in tool.desc
+    compact_description = " ".join(tool.desc.split())
+    assert "``agent.submit`` needs ``text`` or ``prompt``" in compact_description
     assert 'a server action has the shape ``{"event"' not in tool.desc
     assert "Accessibility is always an object, never a string" in tool.desc
 
