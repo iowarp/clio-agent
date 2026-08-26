@@ -9,6 +9,8 @@ tests) don't care.
 
 from __future__ import annotations
 
+import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,8 +37,10 @@ class _FakeAgent:
 
 
 @pytest.fixture()
-def client(tmp_path: Path) -> TestClient:
-    return TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=_FakeAgent()))
+def client(tmp_path: Path) -> Iterator[TestClient]:
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=_FakeAgent())
+    with TestClient(app) as client:
+        yield client
 
 
 def test_metrics_empty_state(client: TestClient) -> None:
@@ -59,15 +63,21 @@ def test_metrics_empty_state(client: TestClient) -> None:
 def test_metrics_reflects_session_and_message_counts(client: TestClient) -> None:
     """After a session with one turn, totals line up."""
 
+    from .conftest import complete_turn
+
     sess = client.post("/v1/sessions", json={"title": "m"}).json()
     sid = sess["id"]
-    resp = client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "analyze /tmp/f.hdf5"}]},
-    )
-    assert resp.status_code == 200
+    complete_turn(client, sid, "analyze /tmp/f.hdf5")
 
-    body = client.get("/v1/metrics").json()
+    deadline = time.monotonic() + 5.0
+    while True:
+        body = client.get("/v1/metrics").json()
+        if body["sessions"]["by_status"].get("idle", 0) >= 1:
+            break
+        if time.monotonic() >= deadline:
+            pytest.fail(f"session metrics did not settle: {body['sessions']!r}")
+        time.sleep(0.02)
+
     assert body["sessions"]["total"] == 1
     assert body["messages"]["total"] == 2  # user + assistant
     assert body["messages"]["by_role"].get("user") == 1
