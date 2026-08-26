@@ -180,3 +180,28 @@ def test_gateway_apply_edit_write_respects_late_fallback_permission_gate(
     finally:
         set_tool_runtime_fallback(ToolRuntimeHooks())
         executor.close()
+
+
+def test_write_result_declares_written_path_for_seam_a(tmp_path):
+    """#1247: a DIRECT fs_apply_edit_write call must mint its output. The
+    designation vocabulary deliberately ignores bare ``path`` (input echo),
+    so the writer declares the SAME value under the recognized
+    ``written_path`` key -- without it, direct tool writes never minted and
+    live transform records carried zero OUTPUT edges."""
+    import os
+
+    from clio_agent.gact.artifacts.designation import result_declared_paths
+    from clio_agent.tools.fs_write import write_text_with_policy
+
+    target = tmp_path / "b.csv"
+    os.environ["CLIO_ALLOWED_ROOTS"] = str(tmp_path)
+    try:
+        result = write_text_with_policy(str(target), "header\n20\n40\n")
+    finally:
+        os.environ.pop("CLIO_ALLOWED_ROOTS", None)
+
+    assert result["written_path"] == result["path"]
+    declared = result_declared_paths(result)
+    assert declared == {"written_path": str(target)}, (
+        "seam (a) must see the written file through the recognized key"
+    )
