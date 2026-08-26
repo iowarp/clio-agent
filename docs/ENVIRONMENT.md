@@ -163,6 +163,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_PROVENANCE_PROVIDERS` | `provenance.agentic.providers` | list | `jsonl` | `src/clio_agent/provenance_config.py` |
 | `CLIO_PROVENANCE_QUERY_DEFAULT` | `provenance.agentic.query_default` | str | `native` | `src/clio_agent/gact/routes/provenance.py` |
 | `CLIO_PROVENANCE_QUEUE_SIZE` | `provenance.agentic.queue_size` | int | `4096` | `src/clio_agent/gact/provenance/factory.py` |
+| `CLIO_RELAY_CLI_PATH` | `relay.install_surface.cli_path` | str | _(unset)_ | `src/clio_agent/tools/relay_cli_runner.py` |
 | `CLIO_RELAY_CLUSTER` | `relay.cluster` | str | _(unset)_ | `src/clio_agent/tools/relay_factory.py` |
 | `CLIO_RELAY_CONSOLE_ENABLED` | `relay.console.enabled` | bool | `true` | `src/clio_agent/tools/relay_console.py` |
 | `CLIO_RELAY_CONSOLE_PULL_LIMIT_BYTES` | `relay.console.pull_limit_bytes` | int | `65536` | `src/clio_agent/tools/relay_console.py` |
@@ -170,6 +171,13 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_RELAY_CONSOLE_TAIL_CAP_BYTES` | `relay.console.tail_cap_bytes` | int | `8192` | `src/clio_agent/tools/relay_console.py` |
 | `CLIO_RELAY_FETCH_MAX_BYTES` | `relay.fetch_max_bytes` | int | `104857600` | `src/clio_agent/tools/relay_artifact_fetch.py` |
 | `CLIO_RELAY_HTTP_URL` | `relay.http_url` | str | _(unset)_ | `src/clio_agent/tools/relay_factory.py` |
+| `CLIO_RELAY_INSTALL_ATTENTION_IDLE_S` | `relay.install_surface.attention_idle_seconds` | float | `45.0` | `src/clio_agent/tools/relay_cli_runner.py` |
+| `CLIO_RELAY_INSTALL_BOUNDED_TIMEOUT_S` | `relay.install_surface.bounded_timeout_seconds` | float | `60.0` | `src/clio_agent/tools/relay_cli_runner.py` |
+| `CLIO_RELAY_INSTALL_JOB_RETENTION_HARD_CAP` | `relay.install_surface.job_retention_hard_cap` | int | `400` | `src/clio_agent/tools/relay_cli_runner.py` |
+| `CLIO_RELAY_INSTALL_JOB_RETENTION_MAX` | `relay.install_surface.job_retention_max` | int | `200` | `src/clio_agent/tools/relay_cli_runner.py` |
+| `CLIO_RELAY_INSTALL_LONG_OP_TIMEOUT_S` | `relay.install_surface.long_operation_timeout_seconds` | float | `900.0` | `src/clio_agent/tools/relay_cli_runner.py` |
+| `CLIO_RELAY_INSTALL_OUTPUT_TAIL_BYTES` | `relay.install_surface.output_tail_bytes` | int | `4096` | `src/clio_agent/tools/relay_cli_runner.py` |
+| `CLIO_RELAY_INSTALL_PARSED_DOCUMENT_MAX_BYTES` | `relay.install_surface.parsed_document_max_bytes` | int | `262144` | `src/clio_agent/tools/relay_cli_runner.py` |
 | `CLIO_RELAY_JARVIS_DOOR_NAMESPACE` | `relay.jarvis_door_namespace` | str | `remote_jarvis` | `src/clio_agent/tools/relay_factory.py` |
 | `CLIO_RELAY_MCP_URL` | `relay.mcp_url` | str | _(unset)_ | `src/clio_agent/gact/relay_status.py` |
 | `CLIO_RELAY_OWNER_SESSION_ID` | `relay.owner_session_id` | str | _(unset)_ | `src/clio_agent/tools/relay_factory.py` |

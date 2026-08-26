@@ -455,6 +455,30 @@ relay.fetch_max_bytes: 104857600
 # CLIO_RELAY_HTTP_URL  (str)  <- src/clio_agent/tools/relay_factory.py
 # relay.http_url:  # default unset; resolved in code
 
+# CLIO_RELAY_INSTALL_ATTENTION_IDLE_S  (float)  <- src/clio_agent/tools/relay_cli_runner.py
+relay.install_surface.attention_idle_seconds: 45.0
+
+# CLIO_RELAY_INSTALL_BOUNDED_TIMEOUT_S  (float)  <- src/clio_agent/tools/relay_cli_runner.py
+relay.install_surface.bounded_timeout_seconds: 60.0
+
+# CLIO_RELAY_CLI_PATH  (str)  <- src/clio_agent/tools/relay_cli_runner.py
+# relay.install_surface.cli_path:  # default unset; resolved in code
+
+# CLIO_RELAY_INSTALL_JOB_RETENTION_HARD_CAP  (int)  <- src/clio_agent/tools/relay_cli_runner.py
+relay.install_surface.job_retention_hard_cap: 400
+
+# CLIO_RELAY_INSTALL_JOB_RETENTION_MAX  (int)  <- src/clio_agent/tools/relay_cli_runner.py
+relay.install_surface.job_retention_max: 200
+
+# CLIO_RELAY_INSTALL_LONG_OP_TIMEOUT_S  (float)  <- src/clio_agent/tools/relay_cli_runner.py
+relay.install_surface.long_operation_timeout_seconds: 900.0
+
+# CLIO_RELAY_INSTALL_OUTPUT_TAIL_BYTES  (int)  <- src/clio_agent/tools/relay_cli_runner.py
+relay.install_surface.output_tail_bytes: 4096
+
+# CLIO_RELAY_INSTALL_PARSED_DOCUMENT_MAX_BYTES  (int)  <- src/clio_agent/tools/relay_cli_runner.py
+relay.install_surface.parsed_document_max_bytes: 262144
+
 # CLIO_RELAY_JARVIS_DOOR_NAMESPACE  (str)  <- src/clio_agent/tools/relay_factory.py
 relay.jarvis_door_namespace: "remote_jarvis"
 

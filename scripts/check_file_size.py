@@ -107,7 +107,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # launcher-cache-lock acquisition on the declared spec. (+5 more: that
     # stamp goes through getattr — the SyncToolExecutor protocol doesn't
     # declare _async_executor and test doubles lack it; mypy CI catch.)
-    "src/clio_agent/agent.py": 1017,  # blueprint activation moved to gact/blueprint_activation.py
+    # clio-relay#209 A2: +6 for the relay_install constructor param + its
+    # forwarding into build_gateway() at _build_tool_gateway's one call site
+    # (mirrors the existing jarvis_jobs param exactly). All logic (the five
+    # curated tools, the subprocess job runner) lives in the owner modules
+    # tools/relay_install_surface.py / tools/relay_cli_runner.py; only the
+    # constructor field + one forwarding line land here.
+    "src/clio_agent/agent.py": 1023,  # blueprint activation moved to gact/blueprint_activation.py
     "src/clio_agent/arc/memory.py": 1389,  # provider ladder moved to provenance_config.py
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -782,7 +788,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # docstring cross-reference on list_tool_definitions. Ratchets back below
     # 800 if this helper moves out too. (+~24 more, b8eff254: the federation
     # projections seed list_relay_tool_definitions -- the L3 run-4..9 fix.)
-    "src/clio_agent/tools/gateway.py": 852,
+    # clio-relay#209 A2: +15 for the relay_install mount block, mirroring the
+    # jarvis_jobs mount block immediately above it verbatim (namespace-collision
+    # guard + _mount_with_namespace + registry entry). The curated tools + the
+    # subprocess job runner live entirely in the owner modules
+    # tools/relay_install_surface.py / tools/relay_cli_runner.py.
+    "src/clio_agent/tools/gateway.py": 867,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.

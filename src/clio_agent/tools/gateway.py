@@ -33,6 +33,7 @@ from fastmcp.server.providers.proxy import FastMCPProxy
 if TYPE_CHECKING:
     from clio_agent.tools.jarvis_jobs import JarvisJobs
     from clio_agent.tools.mcp_runtime import MCPClientCapabilities, MCPClientHandlers
+    from clio_agent.tools.relay_install_surface import RelayInstallSurface
     from clio_agent.tools.remote_mcp import RemoteMcpFederation
 
 from clio_agent.tools import listing_attempts
@@ -213,6 +214,7 @@ def build_gateway(
     capabilities: "MCPClientCapabilities | None" = None,
     remote_mcp_federation: "RemoteMcpFederation | None" = None,
     jarvis_jobs: "JarvisJobs | None" = None,
+    relay_install: "RelayInstallSurface | None" = None,
     relay_status: Mapping[str, Any] | None = None,
 ) -> FastMCP:
     """Build the agent's tool gateway: built-ins PLUS the declared MCP servers.
@@ -252,6 +254,9 @@ def build_gateway(
 
         jarvis_jobs: Optional curated durable application surface mounted under the
             reserved jarvis namespace.
+        relay_install: Optional curated cluster-lifecycle tool surface (clio-relay#209
+            A2: register/bootstrap/status/session/proxy over the local clio-relay
+            CLI) mounted under the reserved relay_ops namespace.
         relay_status: Optional typed production wiring status. A non-empty reason is
             retained on the gateway for diagnostics even when only part of the relay
             surface could be mounted.
@@ -347,6 +352,16 @@ def build_gateway(
         jarvis_server = jarvis_jobs.server
         _mount_with_namespace(gw, jarvis_server, JARVIS_NAMESPACE)
         registry[JARVIS_NAMESPACE] = jarvis_server
+
+    if relay_install is not None:
+        from clio_agent.tools.relay_install_surface import RELAY_INSTALL_NAMESPACE  # noqa: PLC0415
+
+        occupied = _mounted_namespaces(gw) | set(BUILTIN_SERVER_NAMES)
+        if RELAY_INSTALL_NAMESPACE in occupied:
+            raise ValueError("curated relay install surface namespace is already provided")
+        relay_install_server = relay_install.server
+        _mount_with_namespace(gw, relay_install_server, RELAY_INSTALL_NAMESPACE)
+        registry[RELAY_INSTALL_NAMESPACE] = relay_install_server
 
     # Names already provided (built-ins / earlier mounts) must not be shadowed.
     existing = _mounted_namespaces(gw) | set(BUILTIN_SERVER_NAMES)
