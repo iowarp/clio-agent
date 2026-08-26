@@ -142,6 +142,13 @@ For each: file the server issue with the review evidence, fix server-side in thi
 - `data-grid-table.tsx`: fork explicitly into CLIO ownership (it carries load-bearing TanStack v9 fixes) — enters lint+size+test scope — or upstream the fix.
 - Fix `context-canvas-panel.tsx:294` invalid `hsl(oklch(...))`.
 
+### W15 — Port the UI-level flowcept work (feat/flowcept-observability)
+- gact-tui branch `feat/flowcept-observability` (1 commit e4e4b877, "provenance provider views") targets ONLY deleted old-tree paths (`apps/core/src/client/execution_provenance.ts`, `apps/web/src/observability/{ExecutionGraph,Observability,executionProvenance}.*`, `apps/web/src/session/SessionView.tsx`). **Do not merge the branch** — a merge resurrects orphans in dead directories. Port it, treating the branch as the data/action inventory (the same method used for the rest of the rebuild):
+  1. Data layer: a v3 repository + zod schemas in `packages/core/src/v3` for the execution-provenance endpoints the backend now serves on develop (flowcept/CMF work, #1247).
+  2. Views: re-express the provenance provider views in the new observability stack (`observability-evidence.tsx` / `workflow-graph.tsx` are the natural homes); follow W11 typed-degradation rules for missing/partial provenance.
+  3. Tests ported from `execution_provenance.test.ts` / `execution-provenance.test.tsx` semantics onto the new seams.
+  4. Acceptance: provenance views render real Flowcept/CMF data in the live qualification run (Verification #4/#5); then close `feat/flowcept-observability` as superseded (delete the branch, note it in this doc).
+
 ### W14 — Test integrity
 - Port the provenance machinery to v3: `spec_vocabulary.test.ts` against the v3 event set; document protocol v3 + A2UI events in `contract/SPEC.md`; un-exclude `live-clio.test.ts` (service container in CI) or generate frontend fixtures from a backend golden-frame capture.
 - Dedicated tests for `tool-presentation.ts` and `child-agent-presentation.ts` (the surviving, registry-governed parts); delete self-confirming fixtures with the heuristics they validated (W9.6).
@@ -174,7 +181,7 @@ For each: file the server issue with the review evidence, fix server-side in thi
 2. **marketplace → main** (green PR). clio-agent re-pins to the main commit.
 3. **clio-kit → main** (green PR); forward-merge main→develop.
 4. **clio-agent `codex/gact-a2ui-v091-producer` → develop**: after Phases 1+2+4 complete on the branch. PR CI must be fully green: pytest (`-m "not integration"`, cov ≥78), ruff, mypy, `check_file_size`, `check_silent_fallbacks`, `check_no_class_in_function`, route-count guardrail, env-reference check. The gact-tui submodule pin stays at v0.9.9 (release pins move only at release time; we stop at develop).
-5. **gact-tui `codex/gact-tui-node-revamp` → develop**: after Phases 3+4 complete. PR CI fully green: oxlint (`--deny-warnings`), file-size + reuse checks, vitest, Playwright e2e + axe (Linux snapshots), Go build/vet/test **including `tui/`**, conformance gates (now v3-targeted).
+5. **gact-tui `codex/gact-tui-node-revamp` → develop**: after Phases 3+4 complete — **including W15** (the ported flowcept observability views; the develop merge supersedes `feat/flowcept-observability`, which is then deleted). PR CI fully green: oxlint (`--deny-warnings`), file-size + reuse checks, vitest, Playwright e2e + axe (Linux snapshots), Go build/vet/test **including `tui/`**, conformance gates (now v3-targeted).
 6. Post-merge: delete the four feature branches; prune stale locals (`fix/172-survivors` in clio-relay is unrelated — leave it); clean any worktrees/caches this campaign created; update `docs/design/roadmap.md` and the memory/plan docs to reflect the landed state.
 
 ## Verification (the definition of done)
