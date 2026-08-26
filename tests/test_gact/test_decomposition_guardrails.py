@@ -80,7 +80,11 @@ from clio_agent.gact.app import build_app
 # 190 -> 191 (#1211): +1 POST /v1/providers/models/refresh, owned by the new
 # routes/provider_models_refresh.py (registered alongside routes/providers.py,
 # not inline in app.py).
-EXPECTED_ROUTE_METHOD_PAIRS = 191
+# 191 -> 193: the provenance read routes (gact/routes/provenance.py,
+# register_provenance_routes — the provider-neutral execution-provenance
+# surface, #1247) added two (route, method) pairs, wired from a routes
+# module as required.
+EXPECTED_ROUTE_METHOD_PAIRS = 193
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

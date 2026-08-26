@@ -377,7 +377,7 @@ provenance.agentic.flowcept.workflow_scope: "session"
 # CLIO_PROVENANCE_JSONL_PATH  (str)  <- src/clio_agent/gact/provenance/factory.py
 # provenance.agentic.jsonl.path:  # default unset; resolved in code
 
-# CLIO_PROVENANCE_PROVIDERS  (list)  <- src/clio_agent/gact/provenance/factory.py
+# CLIO_PROVENANCE_PROVIDERS  (list)  <- src/clio_agent/provenance_config.py
 provenance.agentic.providers: ["jsonl"]
 
 # CLIO_PROVENANCE_QUERY_DEFAULT  (str)  <- src/clio_agent/gact/routes/provenance.py
