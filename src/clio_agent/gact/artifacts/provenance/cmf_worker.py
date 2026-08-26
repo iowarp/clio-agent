@@ -257,11 +257,27 @@ class CMFEventStore:
         if existing:
             return existing[-1]
         value = self._api["value"]
+        mlpb = self._api["mlpb"]
         artifact = self._api["create_artifact"](
             store=self.store,
             uri=uri,
             name=str(edge.get("name") or reference),
             type_name="Dataset",
+            # MLMD artifact TYPES are first-writer-wins per name: creating
+            # "Dataset" here WITHOUT the typed properties poisons the type so
+            # every later _record_artifact mint of the same type fails with
+            # "Found unknown property: git_repo" (live 2026-08-26, #1247).
+            # Both creation sites must declare the SAME type schema.
+            properties={
+                "git_repo": value(""),
+                "Commit": value(""),
+                "url": value(str(edge.get("external_ref") or reference)),
+            },
+            type_properties={
+                "git_repo": mlpb.STRING,
+                "Commit": mlpb.STRING,
+                "url": mlpb.STRING,
+            },
             custom_properties={
                 "clio_external": value(1),
                 "clio_external_ref": value(reference),

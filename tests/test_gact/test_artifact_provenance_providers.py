@@ -574,7 +574,19 @@ class _Ctx:
 def _edge_worker() -> tuple[Any, _EdgeStore]:
     store = _EdgeStore()
 
+    type_schemas: dict[str, frozenset[str]] = {}
+
     def _create_artifact(*, store: _EdgeStore, uri: str, name: str, type_name: str, custom_properties: dict[str, Any], properties: Any = None, type_properties: Any = None) -> _FakeArtifact:
+        # Models MLMD's first-writer-wins type schemas: a type name created
+        # with one property set REJECTS later artifacts carrying properties
+        # outside it ("Found unknown property" — the live 2026-08-26 failure).
+        keys = frozenset((properties or {}).keys())
+        if type_name in type_schemas:
+            unknown = keys - type_schemas[type_name]
+            if unknown:
+                raise RuntimeError(f"Found unknown property: {sorted(unknown)[0]}")
+        else:
+            type_schemas[type_name] = keys
         artifact = _FakeArtifact(store.next_id(), uri, name, dict(custom_properties))
         store.artifacts.append(artifact)
         return artifact
@@ -682,6 +694,28 @@ def test_cmf_worker_transform_replay_does_not_duplicate_events() -> None:
     assert first["execution_mlmd_id"] == second["execution_mlmd_id"] or True
     assert len([e for e in store.events if e.type == _MlEvent.INPUT]) == 1
     assert len([e for e in store.events if e.type == _MlEvent.OUTPUT]) == 1
+
+
+def test_cmf_worker_external_first_does_not_poison_the_dataset_type() -> None:
+    """MLMD types are first-writer-wins: an external Dataset minted BEFORE any
+    typed artifact must declare the same type schema, or every later
+    artifact.created of that type fails "Found unknown property: git_repo"
+    (observed live 2026-08-26 — run 1's external mint poisoned the store)."""
+    worker, store = _edge_worker()
+    worker.record(
+        {
+            "event_type": "artifact.transform.recorded",
+            "payload": {
+                "call_id": "call_ext",
+                "used": [{"external_ref": "file:///pre/a.csv", "name": "a.csv"}],
+                "generated": [],
+            },
+        }
+    )
+    result = worker.record(_artifact_event("art_typed", "typed.csv"))
+
+    assert "artifact_mlmd_id" in result, "typed mint must survive an external-first store"
+    assert len(store.get_artifacts_by_uri("clio://artifact/art_typed")) == 1
 
 
 def test_dispatcher_first_provider_failure_is_loud(caplog: pytest.LogCaptureFixture) -> None:

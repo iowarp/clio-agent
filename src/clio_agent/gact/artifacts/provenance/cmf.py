@@ -132,8 +132,12 @@ class CMFBridge:
         worker = Path(__file__).with_name("cmf_worker.py")
         self.config.metadata_path.parent.mkdir(parents=True, exist_ok=True)
         self.config.artifact_root.mkdir(parents=True, exist_ok=True)
-        # sys.platform narrowing (not os.name) so Linux mypy skips the branch.
-        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        # sys.platform narrowing as an IF-STATEMENT (not a conditional
+        # expression): statement-level narrowing is the form mypy reliably
+        # skips on non-win32 platforms — the expression form flaked in CI.
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = subprocess.CREATE_NO_WINDOW
         process = subprocess.Popen(  # noqa: S603 - fixed worker with configured interpreter
             [
                 executable,
