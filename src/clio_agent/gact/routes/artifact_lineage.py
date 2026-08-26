@@ -25,7 +25,6 @@ from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
 
-from clio_agent.gact.artifacts.lineage import build_lineage
 from clio_agent.gact.artifacts.registry import ArtifactRegistry, get_registry
 from clio_agent.gact.runtime.retention import enforce_list_bound
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
@@ -95,8 +94,36 @@ def register_artifact_lineage_routes(app: FastAPI) -> None:
         to ``both``); ``depth`` is clamped to ``[0, 12]``. An unknown ``artifact_id``
         is an honest ``404``.
         """
-        registry = await _registry(app)
-        graph = build_lineage(registry, artifact_id, direction=direction, depth=_clamp_depth(depth))
+        requested_depth = _clamp_depth(depth)
+        backend = getattr(app.state, "artifact_provenance_backend", None)
+        lineage = getattr(backend, "lineage", None)
+        try:
+            if callable(lineage):
+                graph = await asyncio.to_thread(
+                    lineage,
+                    artifact_id,
+                    direction=direction,
+                    depth=requested_depth,
+                )
+                provider_name = str(getattr(backend, "provider_name", "native"))
+            else:
+                from clio_agent.gact.artifacts.lineage import build_lineage  # noqa: PLC0415
+
+                registry = await _registry(app)
+                graph = build_lineage(
+                    registry,
+                    artifact_id,
+                    direction=direction,
+                    depth=requested_depth,
+                )
+                provider_name = "native"
+        except Exception as exc:
+            raise _lineage_error(
+                status_code=503,
+                error="artifact_provenance_query_failed",
+                message="selected artifact provenance provider could not answer lineage",
+                details={"artifact_id": artifact_id, "reason": f"{type(exc).__name__}: {exc}"},
+            ) from exc
         if graph is None:
             raise _lineage_error(
                 status_code=404,
@@ -110,6 +137,7 @@ def register_artifact_lineage_routes(app: FastAPI) -> None:
             artifact_id=artifact_id,
             direction=graph["direction"],
             nodes=len(graph["nodes"]),
+            provider=provider_name,
         )
         return graph
 

@@ -304,6 +304,7 @@ def mint_artifact_outcome(
     producing: bool = True,
     lease_clean: bool = False,
     not_ingested_size: int | None = None,
+    ingested: Any = None,
 ) -> Optional[MintOutcome]:
     """Mint one artifact version: atomic decide-and-append, then emit + index.
 
@@ -332,6 +333,10 @@ def mint_artifact_outcome(
     from clio_agent.gact.semantic_events import _event_id  # noqa: PLC0415
 
     event_id = _event_id()
+    # The storage owner's receipt is stamped at the ONE funnel, never per site.
+    producer_map = dict(producer or {})
+    if ingested is not None and getattr(ingested, "storage_receipt", None):
+        producer_map["storage_receipt"] = dict(ingested.storage_receipt)
     # Atomic decide-and-append under ONE registry lock (findings [1/6] + [3/10]); the
     # version decision itself is the single decision point (versions.decide_version).
     outcome = registry.mint(
@@ -342,7 +347,7 @@ def mint_artifact_outcome(
         custody=custody,
         mechanism=mechanism,
         evidence=evidence,
-        producer=dict(producer or {}),
+        producer=producer_map,
         path=path,
         created_at=_now_iso(),
         annotation=annotation,
@@ -455,6 +460,7 @@ def mint_artifact(
     turn_id: str = "",
     trace_id: str = "",
     not_ingested_size: int | None = None,
+    ingested: Any = None,
 ) -> Optional[ArtifactVersion]:
     """Back-compat projection over :func:`mint_artifact_outcome`.
 
@@ -478,6 +484,7 @@ def mint_artifact(
         turn_id=turn_id,
         trace_id=trace_id,
         not_ingested_size=not_ingested_size,
+        ingested=ingested,
     )
     return outcome.version if outcome is not None else None
 
@@ -513,12 +520,12 @@ def mint_tool_declared_outputs(
     routed to the honest drift reconcile (finding [8]). Content CHANGED outside the
     call still mints — designation is designation.
     """
-    from clio_agent.gact.artifacts.cas import ingest_identity  # noqa: PLC0415
     from clio_agent.gact.artifacts.designation import (  # noqa: PLC0415
         grounded_output_paths,
         kind_for_path,
         result_declared_paths,
     )
+    from clio_agent.gact.artifacts.storage import ingest_artifact_identity  # noqa: PLC0415
 
     root = _workspace_root(app, workspace_id)
     minted: list[ArtifactVersion] = []
@@ -564,9 +571,8 @@ def mint_tool_declared_outputs(
             )
             continue
         try:
-            # S6 (#972): stream the identity hash ONCE and tee small bytes into CAS
-            # (custody ``cas``); over threshold → referenced + typed not_ingested_size.
-            ingested = ingest_identity(path, workspace_root=root)
+            # Selected store owns identity+custody (native keeps S6 semantics).
+            ingested = ingest_artifact_identity(app, path, workspace_root=root)
         except OSError:
             logger.warning(
                 "artifact mint skipped reason=stat_hash_failed tool=%s %s=%s path=%s",
@@ -622,6 +628,7 @@ def mint_tool_declared_outputs(
             turn_id=turn_id,
             trace_id=trace_id,
             not_ingested_size=ingested.not_ingested_size,
+            ingested=ingested,
         )
         if version is not None:
             minted.append(version)
@@ -650,11 +657,11 @@ def mint_pack_declared_paths(
     load-bearing: a path already minted by seam (a) with identical content
     deduplicates at the mint (no new version). Best-effort.
     """
-    from clio_agent.gact.artifacts.cas import ingest_identity  # noqa: PLC0415
     from clio_agent.gact.artifacts.designation import (  # noqa: PLC0415
         kind_for_path,
         pack_declared_paths,
     )
+    from clio_agent.gact.artifacts.storage import ingest_artifact_identity  # noqa: PLC0415
 
     root = _workspace_root(app, workspace_id)
     minted: list[ArtifactVersion] = []
@@ -673,7 +680,7 @@ def mint_pack_declared_paths(
         try:
             if not path.is_file():
                 continue
-            ingested = ingest_identity(path, workspace_root=root)
+            ingested = ingest_artifact_identity(app, path, workspace_root=root)
         except OSError:
             logger.warning(
                 "artifact mint skipped reason=pack_declared_stat_failed path=%s", raw_path
@@ -714,6 +721,7 @@ def mint_pack_declared_paths(
             },
             custody=ingested.custody,
             path=str(path),
+            ingested=ingested,
             turn_id=turn_id,
             trace_id=trace_id,
             not_ingested_size=ingested.not_ingested_size,
@@ -780,21 +788,23 @@ def mint_harness_write(
 ) -> None:
     """Seam (b) entry point: mint an ``artifact.created`` for a user-approved write.
 
-    Finding [3]: the just-written bytes are ingested into CAS for durable custody
-    (delegated to :func:`cas.harness_write_identity`, which falls back to the writer's
-    in-hand ``sha256`` on a stat/hash failure). The ACTIVE turn id is threaded from the
-    turn-identity contextvar so a write DURING a turn buffers its version and drains to
+    Finding [3]: the just-written bytes are handed to the selected artifact store
+    (falling back to the writer's in-hand ``sha256`` on a stat/hash failure). The
+    ACTIVE turn id is threaded from the turn-identity contextvar so a write DURING a turn buffers its version and drains to
     a ``resource_link`` part at finalize — parity with seams (a)/(c). Fully guarded: an
     artifact mint must never break the approved write.
     """
     try:
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
-        from clio_agent.gact.artifacts.cas import harness_write_identity  # noqa: PLC0415
         from clio_agent.gact.artifacts.designation import kind_for_path  # noqa: PLC0415
+        from clio_agent.gact.artifacts.storage import (  # noqa: PLC0415
+            harness_write_artifact_identity,  # the selected store's write-path identity
+        )
 
         workspace_id = str(getattr(session, "workspace_id", "") or "")
         try:
-            ingested = harness_write_identity(
+            ingested = harness_write_artifact_identity(
+                app,
                 target,
                 workspace_root=_workspace_root(app, workspace_id),
                 in_hand_sha=str(write_result.get("sha256") or ""),
@@ -820,6 +830,7 @@ def mint_harness_write(
             },
             custody=ingested.custody,
             path=target,
+            ingested=ingested,
             turn_id=_ctx.active_turn_id(),
             trace_id=_ctx.active_trace_id(),
             not_ingested_size=ingested.not_ingested_size,

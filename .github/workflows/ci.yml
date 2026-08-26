@@ -63,6 +63,25 @@ jobs:
       # raise this toward the 80% target as gact code gains tests (#31/#773).
       - run: uv run pytest tests/ -m "not integration" --cov=clio_agent --cov-branch --cov-report=term-missing --cov-fail-under=78
 
+  flowcept-integration:
+    # The Flowcept live-runtime test is excluded from the main leg (integration
+    # marker) and would silently rot as skip-only — this job installs the
+    # flowcept extra and actually exercises it (#1247).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv sync --python 3.12 --extra dev --extra flowcept
+      # Fail FAST if the extra did not yield an importable flowcept — otherwise
+      # importorskip would skip the module and this job would go green having
+      # tested nothing (the exact skip-rot it exists to prevent).
+      - run: uv run python -c "import flowcept"
+      - run: uv run pytest tests/test_gact/test_flowcept_integration.py -m integration -q
+
   flake-hunt:
     # Concurrency / shared-state tests (marked ``@pytest.mark.concurrency``) run
     # under xdist load repeated x3. This surfaces GENUINELY-THREADED races that a

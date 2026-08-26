@@ -185,7 +185,7 @@ default root `<cwd>/.clio/agent/`.
 | 2 | LSM invocation metrics | ARC (`arc/lsm.py`) | `.clio/agent/arc/lsm/sst_*.msgpack` | `ARCMemory.store_invocation` range reads |
 | 3 | Session registry | gact (`gact/sessions.py`) | `.clio/agent/sessions.json` | gact session routes; TUI |
 | 4 | Message ledgers | gact (`gact/messages.py`, `MessageStore`) | `.clio/agent/messages/<session_id>.json` | gact message routes; the turn transcript prepend |
-| 5 | Durable semantic Trace | gact (`gact/semantic_events.py`) | `.clio/agent/semantic_traces/` — **default disabled** (`CLIO_SEMANTIC_TRACE_BACKEND=none`) | audit/replay tooling when enabled |
+| 5 | Agentic provenance providers | gact (`gact/provenance/`) | `.clio/agent/semantic_traces/` — **JSONL enabled by default**; optional Flowcept | audit/replay and provider-neutral execution queries |
 | 6 | Context-files ledger | gact (`gact/app.py`) | `.clio/agent/context_files.json` | context-file routes |
 
 Plus `~/.clio/` daemon coordination artifacts (lock/port files) owned by the
@@ -250,8 +250,10 @@ CLIO_ARC_CTE_DIR=                     # CTE working dir; blank = OS data dir
 CLIO_ARC_CTE_FILE_CAPACITY=50GB       # on-disk capacity for the CTE file tier
 ```
 
-The durable semantic Trace backend is off by default; enable it via
-`CLIO_SEMANTIC_TRACE_BACKEND` (see ENVIRONMENT.md).
+The durable JSONL agentic-provenance provider is enabled by default. Configure
+the provider set with `CLIO_PROVENANCE_PROVIDERS`; the old
+`CLIO_SEMANTIC_TRACE_BACKEND` remains a compatibility input (see
+ENVIRONMENT.md).
 
 ---
 

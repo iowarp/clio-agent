@@ -13,16 +13,21 @@ Blueprint AGENT.md ``mcp_servers`` must mount on blueprint ACTIVATION
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from clio_agent.agent import ClioAgent
 from clio_agent.gact.agent_blueprints import AgentBlueprintDefinition
-from clio_agent.tools.execution import get_active_tool_blueprint_id, tool_blueprint_context
+from clio_agent.tools.execution import (
+    get_active_tool_blueprint_id,
+    get_active_tool_blueprint_path,
+    tool_blueprint_context,
+)
 from clio_agent.tools.gateway import namespace_specs
 
 
-def _blueprint(bp_id: str, servers: dict[str, str]) -> AgentBlueprintDefinition:
+def _blueprint(bp_id: str, servers: dict[str, object]) -> AgentBlueprintDefinition:
     root = Path(f"/fake/{bp_id}")
     return AgentBlueprintDefinition(
         id=bp_id,
@@ -79,6 +84,32 @@ class TestDiscoverPackServers:
         # The OTHER installed blueprint's servers never leak in.
         assert "pack-b" not in servers
 
+    def test_installed_blueprint_checksum_invalidates_mcp_listing_cache(
+        self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        blueprint = _blueprint(
+            "spotter-ai",
+            {
+                "spotter": {
+                    "command": "uv",
+                    "args": ["run", "spotter-mcp"],
+                    "env": {"EXISTING": "preserved"},
+                }
+            },
+        )
+        blueprint.metadata["install"] = {"checksum": "pack-checksum-v2"}
+        monkeypatch.setattr(
+            "clio_agent.gact.agent_blueprints.discover_agent_blueprints", lambda: [blueprint]
+        )
+
+        servers = agent._discover_pack_servers("spotter-ai")
+
+        spec = servers["spotter-ai"]["spotter"]
+        assert spec["env"] == {
+            "EXISTING": "preserved",
+            "CLIO_BLUEPRINT_INSTALL_CHECKSUM": "pack-checksum-v2",
+        }
+
     def test_unknown_blueprint_id_returns_nothing(
         self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -96,6 +127,84 @@ class TestDiscoverPackServers:
 
         monkeypatch.setattr("clio_agent.gact.agent_blueprints.discover_agent_blueprints", _boom)
         assert agent._discover_pack_servers("pack-a") == {}
+
+    def test_path_activated_blueprint_exposes_its_declared_server(
+        self, agent: ClioAgent, tmp_path: Path
+    ) -> None:
+        blueprint = tmp_path / "AGENT.md"
+        blueprint.write_text(
+            """---
+id: spotter-ai
+title: Spotter
+version: 1.0.0
+root_expert: watcher
+blueprint:
+  format: agent-blueprint-v1
+mcp_servers:
+  spotter:
+    command: uv
+    args: [run, spotter-mcp]
+experts:
+  - watcher.md
+---
+""",
+            encoding="utf-8",
+        )
+        (tmp_path / "watcher.md").write_text(
+            """---
+id: watcher
+title: Watcher
+tier: 1
+module:
+  kind: react
+signature:
+  inputs:
+    question: {type: string}
+  outputs:
+    answer: {type: string}
+tools: [spotter_capabilities]
+---
+""",
+            encoding="utf-8",
+        )
+
+        with tool_blueprint_context("spotter-ai", blueprint):
+            servers = agent._discover_pack_servers("spotter-ai")
+
+        assert set(servers["spotter-ai"]) == {"spotter"}
+
+    def test_session_metadata_recovers_path_when_tool_context_has_no_path(
+        self, agent: ClioAgent, tmp_path: Path
+    ) -> None:
+        blueprint = tmp_path / "AGENT.md"
+        blueprint.write_text(
+            """---
+id: spotter-ai
+title: Spotter
+version: 1.0.0
+root_expert: watcher
+blueprint: {format: agent-blueprint-v1}
+mcp_servers:
+  spotter: uv run spotter-mcp
+experts: [watcher.md]
+---
+""",
+            encoding="utf-8",
+        )
+        session = SimpleNamespace(metadata={"active_agent_blueprint_path": str(blueprint)})
+        app = SimpleNamespace(state=SimpleNamespace(sessions={"session-1": session}))
+        from clio_agent.gact import context as gact_context
+
+        app_token = gact_context.set_app(app)
+        session_token = gact_context.set_session_id("session-1")
+        try:
+            with tool_blueprint_context("spotter-ai"):
+                servers = agent._discover_pack_servers("spotter-ai")
+        finally:
+            gact_context.reset(session_token)
+            gact_context.reset(app_token)
+
+        assert set(servers["spotter-ai"]) == {"spotter"}
 
 
 class TestBootGatewayNeverMountsPackServers:
@@ -124,9 +233,11 @@ class TestToolBlueprintContext:
         assert get_active_tool_blueprint_id() == ""
 
     def test_bind_and_reset(self) -> None:
-        with tool_blueprint_context("my-blueprint"):
+        with tool_blueprint_context("my-blueprint", "/packs/my-blueprint/AGENT.md"):
             assert get_active_tool_blueprint_id() == "my-blueprint"
+            assert get_active_tool_blueprint_path() == "/packs/my-blueprint/AGENT.md"
         assert get_active_tool_blueprint_id() == ""
+        assert get_active_tool_blueprint_path() == ""
 
     def test_none_binds_empty(self) -> None:
         with tool_blueprint_context(None):

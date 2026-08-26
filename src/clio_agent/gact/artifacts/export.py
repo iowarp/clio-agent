@@ -144,6 +144,18 @@ def _version_bytes(
     size = version.size_bytes
     if size is not None and size > max_bytes:
         return None
+    from clio_agent.gact.artifacts.storage import resolve_owned_artifact_path  # noqa: PLC0415
+
+    owned = resolve_owned_artifact_path(app, version, workspace_root=root)
+    if owned is not None:
+        try:
+            if owned.stat().st_size <= max_bytes:
+                return owned.read_bytes()
+        except OSError:
+            return None
+    receipt = (version.producer or {}).get("storage_receipt")
+    if isinstance(receipt, dict) and receipt.get("provider") == "cmf":
+        return None
     sha = version.sha256
     if root is not None and sha:
         blob = CASStore(root).blob_path(sha)
@@ -562,6 +574,7 @@ def build_session_bundle(
                 transform_ids.add(transform.call_id)
                 transforms.append(transform)
     cross_job_truncated = _close_cross_job_inputs(
+        app,
         registry,
         workspaces=workspaces,
         records=records,
@@ -582,6 +595,7 @@ def build_session_bundle(
 
 
 def _close_cross_job_inputs(
+    app: "FastAPI",
     registry: ArtifactRegistry,
     *,
     workspaces: list[str],
@@ -615,7 +629,13 @@ def _close_cross_job_inputs(
             in_rec, _in_ver = resolved
             if in_rec.workspace_id in workspaces:
                 continue  # already covered by the descendant workspace union
-            lineage = build_lineage(registry, input_id, direction="upstream", complete=True)
+            lineage = _provider_lineage(
+                app,
+                registry,
+                input_id,
+                direction="upstream",
+                complete=True,
+            )
             if lineage is None:
                 continue
             # Retain the FIRST cross-job closure that hit the node cap, so the session
@@ -656,7 +676,13 @@ def build_artifact_bundle(app: "FastAPI", artifact_id: str) -> Optional[ExportBu
     record_keys: set[tuple[str, str]] = set()
     transforms: list[TransformRecord] = []
     transform_ids: set[str] = set()
-    lineage = build_lineage(registry, artifact_id, direction="upstream", complete=True)
+    lineage = _provider_lineage(
+        app,
+        registry,
+        artifact_id,
+        direction="upstream",
+        complete=True,
+    )
     if lineage is not None:
         _accumulate_lineage(
             registry,
@@ -678,6 +704,32 @@ def build_artifact_bundle(app: "FastAPI", artifact_id: str) -> Optional[ExportBu
         records=records,
         transforms=transforms,
         lineage_truncated=lineage.get("truncated") if lineage is not None else None,
+    )
+
+
+def _provider_lineage(
+    app: "FastAPI",
+    registry: ArtifactRegistry,
+    artifact_id: str,
+    *,
+    direction: str,
+    complete: bool,
+) -> Optional[dict[str, Any]]:
+    """Query the selected artifact provider, falling back for legacy test apps."""
+    backend = getattr(app.state, "artifact_provenance_backend", None)
+    lineage = getattr(backend, "lineage", None)
+    if callable(lineage):
+        return lineage(
+            artifact_id,
+            direction=direction,
+            depth=0,
+            complete=complete,
+        )
+    return build_lineage(
+        registry,
+        artifact_id,
+        direction=direction,
+        complete=complete,
     )
 
 

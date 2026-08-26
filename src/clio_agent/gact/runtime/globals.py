@@ -130,6 +130,7 @@ def _tool_session_context(sid: str) -> Iterator[None]:
     """
     from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
         _runtime_active_agent_blueprint_id,
+        _runtime_active_agent_blueprint_path,
     )
     from clio_agent.tools.execution import (  # noqa: PLC0415
         tool_blueprint_context,
@@ -147,6 +148,7 @@ def _tool_session_context(sid: str) -> Iterator[None]:
         ws = workspaces.get(workspace_id) if workspaces is not None and workspace_id else None
         workspace_root = str(getattr(ws, "root_path", "") or "")
     blueprint_id = _runtime_active_agent_blueprint_id(app, sid) if app is not None else ""
+    blueprint_path = _runtime_active_agent_blueprint_path(app, sid) if app is not None else None
     token = _ctx.set_tool_session_id(sid)
     # #933: pin the workspace fleet for the WHOLE turn — between-call idleness
     # inside a live turn must not count toward the reaper's TTL.
@@ -157,7 +159,7 @@ def _tool_session_context(sid: str) -> Iterator[None]:
             with (
                 lease(workspace_root),
                 tool_workspace_context(workspace_root),
-                tool_blueprint_context(blueprint_id),
+                tool_blueprint_context(blueprint_id, blueprint_path),
             ):
                 yield
         else:
@@ -172,7 +174,7 @@ def _tool_session_context(sid: str) -> Iterator[None]:
                 )
             with (
                 tool_workspace_context(workspace_root),
-                tool_blueprint_context(blueprint_id),
+                tool_blueprint_context(blueprint_id, blueprint_path),
             ):
                 yield
     finally:

@@ -327,7 +327,7 @@ def _enrich_cancellation_error_info(
 # (behavior-preserving extraction)                                              #
 # --------------------------------------------------------------------------- #
 # gact/_params.py -- user-agent generation-parameter parsing.
-from clio_agent.gact import relay_wiring  # noqa: E402
+from clio_agent.gact import provenance_wiring, relay_wiring  # noqa: E402
 from clio_agent.gact._params import (  # noqa: E402,F401
     _gact_turn_timeout_s,
     _semantic_trace_detail_level,
@@ -519,6 +519,7 @@ from clio_agent.gact.routes.permissions import (  # noqa: E402
 from clio_agent.gact.routes.prompts import (  # noqa: E402
     register_prompts_routes,
 )
+from clio_agent.gact.routes.provenance import register_provenance_routes  # noqa: E402
 from clio_agent.gact.routes.provider_models_refresh import (
     register_provider_models_refresh_routes,  # noqa: E402
 )
@@ -1039,6 +1040,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             _trace_close()
         except Exception:  # pragma: no cover - defensive shutdown cleanup  # noqa: BLE001,S110 - defensive shutdown cleanup
             pass
+    provenance_wiring.close_artifact_backend(app)
     # #900: explicit clean-shutdown teardown (promoted from atexit best-effort) — close
     # the agent's MCP stdio executors + pooled SDK CLI transports now, with typed logging,
     # off the event loop (thread joins). A HARD kill skips this; the Job Object / pdeathsig
@@ -1278,6 +1280,9 @@ def build_app(
     app.state.semantic_trace_backend = build_trace_backend(
         session_store_path.parent / "semantic_traces"
     )
+    provenance_wiring.wire_artifact_provenance(
+        app, session_store_path.parent / "artifact_provenance"
+    )
     # ARC-as-source: the sink has NO arc live_consumer. ARC is the SOURCE now —
     # _emit_semantic_event routes each event through arc.record_semantic_event, which
     # folds the observer (on_semantic_event) INSIDE its record and then derives THIS
@@ -1287,9 +1292,11 @@ def build_app(
     app.state.semantic_event_sink = SemanticEventSink(
         bus=app.state.bus,
         trace_backend=app.state.semantic_trace_backend,
+        artifact_backend=app.state.artifact_provenance_backend,
         detail_level=app.state.semantic_trace_detail_level,
         live_consumers=None,
     )
+    provenance_wiring.install_session_lifecycle_observer(app)
     # (ARC's arc.op op-logger AND highway-derive sink are wired via _set_app_arc
     # whenever app.state.arc is assigned — see _set_app_arc; the highway closure reads
     # app.state.semantic_event_sink at fire-time, so this construction order is fine.)
@@ -2260,6 +2267,7 @@ def build_app(
     # state-assembly + ARC-unavailable helpers they share live there.
     register_context_routes(app, deps)
     register_trace_routes(app, deps)
+    register_provenance_routes(app, deps)
 
     # ---- /v1/sessions/{sid}/diffs/* + /context/files + /context/frames ---
     # Pending/applied file-diff list/apply/reject plus the context-file

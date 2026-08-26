@@ -34,13 +34,17 @@ absent-optional fields per §3.2.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 # Keep session ids namespaced so log scraping (and humans) can tell
 # them apart from e.g. message ids at a glance.
@@ -213,6 +217,7 @@ class SessionStore:
         self._path = path
         self._lock = threading.Lock()
         self._sessions: dict[str, Session] = {}
+        self._lifecycle_observer: Callable[[str, Session], None] | None = None
         if path is not None:
             self._load()
             # #1115: a PERSISTENT session registry is the durable home for in-flight
@@ -227,6 +232,23 @@ class SessionStore:
             install_session_task_store(self)
 
     # ---- lifecycle ----------------------------------------------------
+
+    def set_lifecycle_observer(self, observer: Callable[[str, Session], None] | None) -> None:
+        """Install the app-owned semantic lifecycle bridge."""
+        self._lifecycle_observer = observer
+
+    def _observe_lifecycle(self, event_type: str, session: Session) -> None:
+        observer = self._lifecycle_observer
+        if observer is None:
+            return
+        try:
+            observer(event_type, session)
+        except Exception:  # noqa: BLE001 - observability cannot change CRUD semantics
+            logger.exception(
+                "session lifecycle provenance failed event=%s session=%s",
+                event_type,
+                session.id,
+            )
 
     def _load(self) -> None:
         """Populate in-memory dict from the on-disk JSON, if any."""
@@ -333,6 +355,7 @@ class SessionStore:
                 "mode": sess.mode,
             },
         )
+        self._observe_lifecycle("session.created", sess)
         return sess
 
     def get(self, sid: str) -> Optional[Session]:
@@ -383,6 +406,8 @@ class SessionStore:
             from clio_agent.gact.hooks import dispatch_session_end  # noqa: PLC0415
 
             dispatch_session_end(session_id=sid)
+            assert existing is not None
+            self._observe_lifecycle("session.deleted", existing)
         return existed
 
     def update(

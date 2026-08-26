@@ -107,8 +107,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # launcher-cache-lock acquisition on the declared spec. (+5 more: that
     # stamp goes through getattr — the SyncToolExecutor protocol doesn't
     # declare _async_executor and test doubles lack it; mypy CI catch.)
-    "src/clio_agent/agent.py": 1036,
-    "src/clio_agent/arc/memory.py": 1394,
+    "src/clio_agent/agent.py": 1017,  # blueprint activation moved to gact/blueprint_activation.py
+    "src/clio_agent/arc/memory.py": 1389,  # provider ladder moved to provenance_config.py
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
     # owner ruling 2026-07-14: +3 to route explicit =local through the loud
@@ -274,7 +274,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # days" bug). All reap logic lives in the owner module
     # runtime/process_census.py (reap_orphaned_processes/boot_reap_off_loop);
     # only the sequencing wrapper + its one call site land here.
-    "src/clio_agent/gact/app.py": 2566,  # relay wiring moved to gact/relay_wiring.py
+    "src/clio_agent/gact/app.py": 2574,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -292,7 +292,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # surface with nothing to show for it). All logic (materialize + emit) lives in
     # the owner module artifacts/versions.py (emit_artifact_used); only the guarded
     # call site is here. Ratchets back with the #714 mint/registry split.
-    "src/clio_agent/gact/artifacts/minting.py": 856,
+    "src/clio_agent/gact/artifacts/minting.py": 867,  # provider-store seam: funnel receipt stamp + per-site ingested threading (#1247)
     # #1191: not previously baselined (silently over the 800 cap already, from
     # earlier unbaselined growth on this branch — the create_artifact tool floor).
     # +19 net for the OPTIONAL used=[...] input-refs param on create_artifact (the
@@ -313,7 +313,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # owner modules artifacts/proposal_effects.py, artifacts/dedup_enrichment.py and
     # artifacts/versions.py (emit_artifact_enriched) — only the call sites + the
     # typed outcome field landed here. Ratchets back with the #714 decomposition.
-    "src/clio_agent/gact/artifacts/proposals.py": 865,
+    "src/clio_agent/gact/artifacts/proposals.py": 876,  # inline-content ingest channel through the selected store (#1247)
     # #971 GAP B (S5 live gate): not baselined before this entry (silently over the
     # 800 cap already, from earlier unbaselined growth on this branch).
     # #1191: +51 for the per-session artifact-USE index (record_artifact_used /
@@ -346,7 +346,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # merge DECISION itself is a one-line call into the owner module
     # ``artifacts/dedup_enrichment.py`` (``merged_annotation``) — only the
     # threading landed here. Ratchets back with the #714 decomposition.
-    "src/clio_agent/gact/routes/artifacts.py": 937,
+    "src/clio_agent/gact/routes/artifacts.py": 940,  # provider-owned serve rung (logic in artifacts/storage.py) (#1247)
     # #948 S4: +10 for round-tripping the module: declaration in the overlay
     # export (an exported react parent re-loaded as predict and failed the new
     # hierarchy validation).
@@ -464,7 +464,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # mount_failures map (namespace -> typed reason) so the exception itself
     # can name a declared tool's server + reason -- turn.py's except handler
     # is the only reader; the mount decision lives in gact/agents/builders.py.
-    "src/clio_agent/gact/runtime/globals.py": 984,
+    "src/clio_agent/gact/runtime/globals.py": 986,  # blueprint-path arg threading (#1247)
     "src/clio_agent/gact/streaming.py": 995,
     # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
     # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
@@ -694,7 +694,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # thin sync delegate to AsyncMCPToolExecutor.merge_namespace_tools
     # (mcp_executor.py), the actual live-tool-table merge target for an
     # on-demand mount (gact/agents/builders.py).
-    "src/clio_agent/tools/execution.py": 1230,
+    "src/clio_agent/tools/execution.py": 1245,  # _ACTIVE_TOOL_BLUEPRINT_PATH contextvar trio - this IS the owner module (#1247)
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.

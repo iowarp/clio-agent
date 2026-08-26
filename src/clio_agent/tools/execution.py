@@ -73,6 +73,10 @@ _ACTIVE_TOOL_BLUEPRINT_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
     "clio_active_tool_blueprint_id",
     default="",
 )
+_ACTIVE_TOOL_BLUEPRINT_PATH: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "clio_active_tool_blueprint_path",
+    default="",
+)
 
 
 @contextmanager
@@ -93,26 +97,37 @@ def get_active_tool_workspace_root() -> str:
 
 
 @contextmanager
-def tool_blueprint_context(blueprint_id: str | None) -> Iterator[None]:
-    """Bind the session's explicitly-activated Agent Blueprint id (#1232 pt 1).
+def tool_blueprint_context(
+    blueprint_id: str | None, blueprint_path: str | Path | None = None
+) -> Iterator[None]:
+    """Bind the session's explicitly activated Agent Blueprint identity.
 
     An empty/``None`` id (no blueprint activated) is the default and correct
     state for a bare session — it makes the per-workspace tool gateway mount
     NO pack-declared MCP servers, matching ``_runtime_active_agent_blueprint_id``'s
-    "never an implicit one" contract.
+    "never an implicit one" contract. The optional path keeps path-activated
+    blueprints queryable even when they are not installed in a discovery root.
     """
 
-    token = _ACTIVE_TOOL_BLUEPRINT_ID.set(str(blueprint_id or ""))
+    id_token = _ACTIVE_TOOL_BLUEPRINT_ID.set(str(blueprint_id or ""))
+    path_token = _ACTIVE_TOOL_BLUEPRINT_PATH.set(str(blueprint_path or ""))
     try:
         yield
     finally:
-        _ACTIVE_TOOL_BLUEPRINT_ID.reset(token)
+        _ACTIVE_TOOL_BLUEPRINT_PATH.reset(path_token)
+        _ACTIVE_TOOL_BLUEPRINT_ID.reset(id_token)
 
 
 def get_active_tool_blueprint_id() -> str:
     """Return the active session's Agent Blueprint id, or ``""`` when none is bound."""
 
     return _ACTIVE_TOOL_BLUEPRINT_ID.get()
+
+
+def get_active_tool_blueprint_path() -> str:
+    """Return the explicitly activated Agent Blueprint path, when path-selected."""
+
+    return _ACTIVE_TOOL_BLUEPRINT_PATH.get()
 
 
 # --------------------------------------------------------------------------- #

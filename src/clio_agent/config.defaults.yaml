@@ -353,6 +353,72 @@ paths.data_dir: ".clio/agent"
 # CLIO_AI_REVIEW_TIMEOUT_S  (str)  <- src/clio_agent/gact/runtime/ai_review.py
 permissions.ai_review_timeout_s: "45.0"
 
+# CLIO_FLOWCEPT_CAMPAIGN_ID  (str)  <- src/clio_agent/gact/provenance/factory.py
+# provenance.agentic.flowcept.campaign_id:  # default unset; resolved in code
+
+# CLIO_FLOWCEPT_CAMPAIGN_SCOPE  (str)  <- src/clio_agent/gact/provenance/factory.py
+provenance.agentic.flowcept.campaign_scope: "session"
+
+# CLIO_FLOWCEPT_CHECK_SAFE_STOPS  (bool)  <- src/clio_agent/gact/provenance/factory.py
+provenance.agentic.flowcept.check_safe_stops: true
+
+# CLIO_FLOWCEPT_EXCLUDE_EVENTS  (list)  <- src/clio_agent/gact/provenance/factory.py
+provenance.agentic.flowcept.exclude_events: ["lm.token.delta", "thinking.*"]
+
+# CLIO_FLOWCEPT_INCLUDE_EVENTS  (list)  <- src/clio_agent/gact/provenance/factory.py
+provenance.agentic.flowcept.include_events: ["*"]
+
+# CLIO_FLOWCEPT_PRIVACY  (str)  <- src/clio_agent/gact/provenance/factory.py
+provenance.agentic.flowcept.privacy: "metadata"
+
+# CLIO_FLOWCEPT_WORKFLOW_SCOPE  (str)  <- src/clio_agent/gact/provenance/factory.py
+provenance.agentic.flowcept.workflow_scope: "session"
+
+# CLIO_PROVENANCE_JSONL_PATH  (str)  <- src/clio_agent/gact/provenance/factory.py
+# provenance.agentic.jsonl.path:  # default unset; resolved in code
+
+# CLIO_PROVENANCE_PROVIDERS  (list)  <- src/clio_agent/gact/provenance/factory.py
+provenance.agentic.providers: ["jsonl"]
+
+# CLIO_PROVENANCE_QUERY_DEFAULT  (str)  <- src/clio_agent/gact/routes/provenance.py
+provenance.agentic.query_default: "native"
+
+# CLIO_PROVENANCE_QUEUE_SIZE  (int)  <- src/clio_agent/gact/provenance/factory.py
+provenance.agentic.queue_size: 4096
+
+# CLIO_CMF_ARTIFACT_ROOT  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+# provenance.artifacts.cmf.artifact_root:  # default unset; resolved in code
+
+# CLIO_CMF_ARTIFACT_STORE  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+provenance.artifacts.cmf.artifact_store: "reference"
+
+# CLIO_CMF_METADATA_PATH  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+# provenance.artifacts.cmf.metadata_path:  # default unset; resolved in code
+
+# CLIO_CMF_PIPELINE_NAME  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+provenance.artifacts.cmf.pipeline_name: "clio-agent"
+
+# CLIO_CMF_PUBLISH_TIMEOUT_S  (float)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+provenance.artifacts.cmf.publish_timeout_s: 30.0
+
+# CLIO_CMF_PYTHON  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+# provenance.artifacts.cmf.python:  # default unset; resolved in code
+
+# CLIO_CMF_SERVER_URL  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+# provenance.artifacts.cmf.server_url:  # default unset; resolved in code
+
+# CLIO_ARTIFACT_PROVENANCE_EVENTS  (list)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+# provenance.artifacts.include_events:  # computed at runtime: sorted(DEFAULT_ARTIFACT_EVENTS)
+
+# CLIO_NATIVE_ARTIFACT_STORE  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+provenance.artifacts.native.storage: "file"
+
+# CLIO_ARTIFACT_PROVENANCE_PROVIDER  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+provenance.artifacts.provider: "native"
+
+# CLIO_ARTIFACT_PROVENANCE_QUEUE_SIZE  (int)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+provenance.artifacts.queue_size: 4096
+
 # CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
 providers.claude_code.max_concurrent_processes: 1.0
 
@@ -524,19 +590,16 @@ tools.mcp_cache.temp_max_age_days: 3.0
 # CLIO_WINDOWS_SHELL_BACKEND  (str)  <- src/clio_agent/tools/servers/shell_server.py
 tools.shell.windows_backend: "powershell"
 
-# CLIO_SEMANTIC_TRACE_BACKEND  (str)  <- src/clio_agent/arc/memory.py
-trace.backend: "none"
-
 # CLIO_SEMANTIC_TRACE_DETAIL  (str)  <- src/clio_agent/gact/_params.py
 # trace.detail_level:  # computed at runtime: DEFAULT_DETAIL_LEVEL
 
-# CLIO_SEMANTIC_TRACE_PATH  (str)  <- src/clio_agent/gact/semantic_events.py
+# CLIO_SEMANTIC_TRACE_PATH  (str)  <- src/clio_agent/gact/provenance/factory.py
 # trace.path:  # default unset; resolved in code
 
-# CLIO_SEMANTIC_TRACE_CONFIG  (str)  <- src/clio_agent/gact/semantic_events.py
+# CLIO_SEMANTIC_TRACE_CONFIG  (str)  <- src/clio_agent/gact/provenance/factory.py
 # trace.semantic_config:  # default unset; resolved in code
 
-# CLIO_SEMANTIC_TRACE_FACTORY  (str)  <- src/clio_agent/gact/semantic_events.py
+# CLIO_SEMANTIC_TRACE_FACTORY  (str)  <- src/clio_agent/gact/provenance/factory.py
 # trace.semantic_factory:  # default unset; resolved in code
 
 # CLIO_WORKFLOW_STEP_INACTIVITY_S  (float)  <- src/clio_agent/gact/workflow_step_watch.py
