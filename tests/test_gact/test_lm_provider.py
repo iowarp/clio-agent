@@ -994,8 +994,11 @@ def test_put_lm_provider_rejects_removed_codex_transport(tmp_path: Path, monkeyp
                 "transport": "app_server",
             },
         )
-        assert rejected.status_code == 422, rejected.text
-        assert rejected.json()["error"]["details"]["errors"][0]["msg"] == "Input should be 'sdk'"
+        assert rejected.status_code == 400, rejected.text
+        error = rejected.json()["error"]
+        assert error["error"] == "config_error"
+        assert "official Python SDK" in error["message"]
+        assert error["details"]["original_error"] == "ValueError"
 
         resp = c.put(
             "/v1/providers/lm",

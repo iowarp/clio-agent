@@ -349,6 +349,27 @@ def _structured_tool_result_error(result: Any) -> str | None:
         normalized = decoded.strip().casefold()
         if normalized.startswith("error:"):
             return decoded.strip()
+
+    result_map = result if isinstance(result, Mapping) else {}
+    for candidate in (
+        getattr(result, "structured_content", None),
+        getattr(result, "structuredContent", None),
+        result_map.get("structuredContent"),
+        result_map.get("structured_content"),
+        getattr(result, "data", None),
+        result_map.get("data"),
+    ):
+        if candidate is not None and candidate is not result:
+            nested_error = _structured_tool_result_error(candidate)
+            if nested_error is not None:
+                return nested_error
+    explicitly_failed = getattr(
+        result,
+        "is_error",
+        getattr(result, "isError", result_map.get("isError", result_map.get("is_error"))),
+    )
+    if explicitly_failed is True:
+        return "tool_result_is_error"
     return None
 
 
@@ -846,7 +867,7 @@ class SyncMCPToolExecutor:
             raise
         result = outcome.model_text
         observer_result = call_tool_result_to_observer(outcome.raw_result)
-        structured_error = _structured_tool_result_error(result)
+        structured_error = _structured_tool_result_error(outcome.raw_result)
         if structured_error:
             self._record_tool_failure(name, structured_error)
             notify_tool_observer(

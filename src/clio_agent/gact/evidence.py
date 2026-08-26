@@ -31,9 +31,11 @@ duplicated here.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
+from clio_agent import conf
 from clio_agent.gact.workflow_state.merge import (
     _TRAJECTORY_TOOL_ARGS_KEYS,
     _TRAJECTORY_TOOL_NAME_KEYS,
@@ -45,6 +47,9 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from clio_agent.gact.types import AgentDef
+
+logger = logging.getLogger(__name__)
+TOOL_RESULT_TRUNCATED_REASON = "tool_result_oversize"
 
 
 # ------------------------------------------------------------------------- #
@@ -119,14 +124,27 @@ def _is_bounded_tool_result(value: Any) -> bool:
     )
 
 
-def _bounded_tool_call_result(value: Any, *, max_result_chars: int = 12000) -> Any:
+def _bounded_tool_call_result(value: Any, *, max_result_chars: int | None = None) -> Any:
     """Return a JSON-safe bounded result payload for assistant metadata."""
 
     if _is_bounded_tool_result(value):
         return value  # already bounded -> never re-wrap (idempotent)
+    if max_result_chars is None:
+        max_result_chars = conf.resolve(
+            "limits.tool_result_chars",
+            env="CLIO_TOOL_RESULT_CHARS",
+            default=12_000,
+            cast=conf.as_int,
+        )
     preview = _tool_result_preview(value)
     if len(preview) <= max_result_chars:
         return value
+    logger.info(
+        "tool result bounded reason=%s original_chars=%d preview_chars=%d",
+        TOOL_RESULT_TRUNCATED_REASON,
+        len(preview),
+        max_result_chars,
+    )
     return {
         "preview": preview[:max_result_chars].rstrip(),
         "truncated": True,

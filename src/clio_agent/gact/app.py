@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -686,12 +687,15 @@ def _clear_session_model_refs(app: "FastAPI") -> None:
     even though the user just changed the global provider correctly.
     """
 
+    defaults = getattr(app.state, "session_defaults", None)
+    if defaults is not None:
+        defaults.clear_model_ref()
+
     sessions = getattr(app.state, "sessions", None)
-    if sessions is None:
-        return
-    for sess in sessions.list():
-        if not _model_ref_is_empty(sess.model):
-            sessions.update(sess.id, model={})
+    if sessions is not None:
+        for sess in sessions.list():
+            if not _model_ref_is_empty(sess.model):
+                sessions.update(sess.id, model={})
 
 
 # --------------------------------------------------------------------------- #
@@ -2373,7 +2377,7 @@ def build_app(
             error=ErrorInfo(
                 error="validation_error",
                 message="Request validation failed.",
-                details={"errors": exc.errors()},
+                details={"errors": jsonable_encoder(exc.errors())},
                 recoverable=True,
             )
         )

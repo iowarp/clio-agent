@@ -4,7 +4,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from clio_agent.gact.app import build_app
+from clio_agent.gact.app import _clear_session_model_refs, build_app
+from clio_agent.gact.session_defaults import SessionDefaultsStore
 
 GACT_V3_HEADERS = {"x-gact-version": "0.3"}
 
@@ -102,3 +103,55 @@ def test_session_defaults_reject_unknown_and_invalid_values(tmp_path: Path) -> N
 
     assert client.patch("/v1/session-defaults", json={"unknown": True}).status_code == 422
     assert client.patch("/v1/session-defaults", json={"mode": "chat"}).status_code == 422
+
+
+def test_session_defaults_reject_half_filled_model_reference(tmp_path: Path) -> None:
+    client = _client(tmp_path / "sessions.json")
+
+    provider_only = client.patch("/v1/session-defaults", json={"provider_id": "codex"})
+    model_only = client.patch("/v1/session-defaults", json={"model_id": "gpt-5.6-luna"})
+    mismatched_empty = client.patch(
+        "/v1/session-defaults",
+        json={"provider_id": "codex", "model_id": ""},
+    )
+
+    for response in (provider_only, model_only, mismatched_empty):
+        assert response.status_code == 422
+        assert "provider_id and model_id" in response.text
+
+
+def test_corrupt_session_defaults_are_quarantined_without_overwrite(tmp_path: Path) -> None:
+    path = tmp_path / "session-defaults.json"
+    original = '{"provider_id": "codex", broken}'
+    path.write_text(original, encoding="utf-8")
+
+    store = SessionDefaultsStore(path)
+
+    assert store.get().provider_id == ""
+    assert not path.exists()
+    quarantined = list(tmp_path.glob("session-defaults.json.corrupt-*"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text(encoding="utf-8") == original
+    assert store.load_degradation == {
+        "reason": "session_defaults_corrupt",
+        "source_path": str(path),
+        "quarantine_path": str(quarantined[0]),
+    }
+
+
+def test_provider_swap_clears_persisted_session_default_model_reference(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    client = _client(sessions_path)
+    updated = client.patch(
+        "/v1/session-defaults",
+        json={"provider_id": "codex", "model_id": "gpt-5.6-luna"},
+    )
+    assert updated.status_code == 200
+
+    _clear_session_model_refs(client.app)
+
+    assert client.get("/v1/session-defaults").json()["provider_id"] == ""
+    assert client.get("/v1/session-defaults").json()["model_id"] == ""
+    rebuilt = _client(sessions_path)
+    assert rebuilt.get("/v1/session-defaults").json()["provider_id"] == ""
+    assert rebuilt.get("/v1/session-defaults").json()["model_id"] == ""

@@ -268,8 +268,8 @@ def test_default_root_auto_declares_workspace_skills_on_real_runtime_rows(
         title="Main",
         metadata={"agent_blueprint_id": DEFAULT_AGENT_BLUEPRINT_ID},
     )
-    # Workspace skills lead the surface; clio's shipped built-in skills (``planning``,
-    # ``update-models``) are auto-declared after them onto the default-registry root
+    # Workspace skills lead the surface; clio's shipped built-in skills are
+    # auto-declared after them onto the default-registry root
     # (P1.5 #1067), alphabetically by id. #1211 review R6/D1: ``update-models`` is a
     # DELIBERATE inclusion, not an oversight -- there is no per-skill auto-declare
     # opt-out today, its declaration cost is the same ~100-token metadata-only block
@@ -279,6 +279,7 @@ def test_default_root_auto_declares_workspace_skills_on_real_runtime_rows(
     assert effective_declared_skills(listing_root, catalog) == [
         "user-skill",
         "planning",
+        "present-interactive-analysis",
         "update-models",
     ]
     # DELETED SEAM regression pin: the retired "listing seam" stamp

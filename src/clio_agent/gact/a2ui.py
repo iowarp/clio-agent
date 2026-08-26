@@ -6,11 +6,13 @@ import json
 import math
 import re
 import threading
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from clio_agent.gact.events import Event, EventBus
 from clio_agent.gact.protocol_v3 import A2UI_V091, CLIO_A2UI_CATALOG_ID, utcnow_iso
@@ -215,6 +217,8 @@ class A2UISurfaceRecord:
     message_id: str = ""
     part_id: str = ""
     error: str = ""
+    eviction_reason: str = ""
+    evicted_messages: int = 0
     created_at: str = field(default_factory=utcnow_iso)
     updated_at: str = field(default_factory=utcnow_iso)
 
@@ -541,6 +545,7 @@ class A2UIStore:
         self._bus = bus
         self._lock = threading.Lock()
         self._surfaces: dict[tuple[str, str], A2UISurfaceRecord] = {}
+        self._load_degradation: dict[str, str] | None = None
         self._load()
 
     def _load(self) -> None:
@@ -548,20 +553,47 @@ class A2UIStore:
             return
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return
-        for raw in data.get("surfaces", []):
-            try:
+            if not isinstance(data, Mapping) or not isinstance(data.get("surfaces"), list):
+                raise ValueError("A2UI ledger root must contain a surfaces list")
+            loaded: dict[tuple[str, str], A2UISurfaceRecord] = {}
+            for raw in data["surfaces"]:
+                if not isinstance(raw, Mapping):
+                    raise ValueError("A2UI ledger surface must be an object")
                 surface = A2UISurfaceRecord(**raw)
-            except (TypeError, ValueError):
-                continue
-            self._surfaces[(surface.session_id, surface.id)] = surface
+                loaded[(surface.session_id, surface.id)] = surface
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            quarantine_path = self._quarantine_corrupt_file()
+            self._load_degradation = {
+                "reason": "a2ui_ledger_corrupt",
+                "source_path": str(self._path),
+                "quarantine_path": str(quarantine_path) if quarantine_path else "",
+            }
+            return
+        self._surfaces = loaded
 
-    def _flush(self) -> None:
+    def _quarantine_corrupt_file(self) -> Path | None:
+        """Move a corrupt ledger aside without overwriting earlier evidence."""
+
+        if not self._path.exists():
+            return None
+        quarantine = self._path.with_name(f"{self._path.name}.corrupt-{uuid4().hex}")
+        try:
+            self._path.replace(quarantine)
+        except OSError:
+            return None
+        return quarantine
+
+    @property
+    def load_degradation(self) -> dict[str, str] | None:
+        """Return typed evidence when the durable ledger was quarantined."""
+
+        return dict(self._load_degradation) if self._load_degradation is not None else None
+
+    def _flush(self, surfaces: Mapping[tuple[str, str], A2UISurfaceRecord]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_suffix(self._path.suffix + ".tmp")
         tmp.write_text(
-            json.dumps({"surfaces": [asdict(row) for row in self._surfaces.values()]}, indent=2),
+            json.dumps({"surfaces": [asdict(row) for row in surfaces.values()]}, indent=2),
             encoding="utf-8",
         )
         tmp.replace(self._path)
@@ -591,50 +623,115 @@ class A2UIStore:
     ) -> A2UISurfaceRecord:
         """Validate, persist, and publish one ordered server message."""
 
+        return self.apply_batch(
+            session_id,
+            [message],
+            run_id=run_id,
+            message_id=message_id,
+            part_id=part_id,
+        )[0]
+
+    @staticmethod
+    def _apply_staged_message(
+        surfaces: dict[tuple[str, str], A2UISurfaceRecord],
+        session_id: str,
+        message: Mapping[str, Any],
+        *,
+        deleted_in_batch: set[str],
+        run_id: str,
+        message_id: str,
+        part_id: str,
+    ) -> tuple[str, str, A2UISurfaceRecord]:
+        """Apply one validated message to an uncommitted surface map."""
+
         operation, surface_id = validate_server_message(message)
+        if surface_id in deleted_in_batch:
+            raise A2UIValidationError("A2UI deleteSurface is terminal within a message batch")
+        key = (session_id, surface_id)
+        surface = surfaces.get(key)
+        if operation == "createSurface":
+            if surface is not None and surface.state != "deleted":
+                raise A2UIValidationError("A2UI surface already exists")
+            surface = A2UISurfaceRecord(
+                id=surface_id,
+                session_id=session_id,
+                catalog_id=CLIO_A2UI_CATALOG_ID,
+                run_id=run_id,
+                message_id=message_id,
+                part_id=part_id,
+            )
+            surfaces[key] = surface
+        elif surface is None:
+            raise A2UIValidationError("A2UI surface does not exist in this session")
+        elif surface.state == "deleted":
+            raise A2UIValidationError("A2UI deleteSurface is terminal until a new createSurface")
+        if operation == "updateComponents":
+            surface.messages = [
+                existing for existing in surface.messages if "updateComponents" not in existing
+            ]
+        if len(surface.messages) >= MAX_A2UI_MESSAGES:
+            removable = next(
+                (index for index, existing in enumerate(surface.messages) if "createSurface" not in existing),
+                None,
+            )
+            if removable is None:
+                raise A2UIValidationError("A2UI message limit cannot preserve createSurface")
+            surface.messages.pop(removable)
+            surface.eviction_reason = "a2ui_message_limit"
+            surface.evicted_messages += 1
+        surface.messages.append(dict(message))
+        surface.revision += 1
+        surface.updated_at = utcnow_iso()
+        if operation == "deleteSurface":
+            surface.state = "deleted"
+            deleted_in_batch.add(surface_id)
+        elif operation == "createSurface":
+            surface.state = "creating"
+        else:
+            surface.state = "ready"
+        return operation, surface_id, surface
+
+    def apply_batch(
+        self,
+        session_id: str,
+        messages: list[Mapping[str, Any]],
+        *,
+        run_id: str = "",
+        message_id: str = "",
+        part_id: str = "",
+    ) -> list[A2UISurfaceRecord]:
+        """Atomically validate, persist, and publish an ordered message batch."""
+
         with self._lock:
-            key = (session_id, surface_id)
-            surface = self._surfaces.get(key)
-            if operation == "createSurface":
-                if surface is not None and surface.state != "deleted":
-                    raise A2UIValidationError("A2UI surface already exists")
-                surface = A2UISurfaceRecord(
-                    id=surface_id,
-                    session_id=session_id,
-                    catalog_id=CLIO_A2UI_CATALOG_ID,
+            staged = deepcopy(self._surfaces)
+            deleted_in_batch: set[str] = set()
+            applied: list[tuple[str, str, A2UISurfaceRecord]] = []
+            snapshots: list[A2UISurfaceRecord] = []
+            for message in messages:
+                result = self._apply_staged_message(
+                    staged,
+                    session_id,
+                    message,
+                    deleted_in_batch=deleted_in_batch,
                     run_id=run_id,
                     message_id=message_id,
                     part_id=part_id,
                 )
-                self._surfaces[key] = surface
-            elif surface is None:
-                raise A2UIValidationError("A2UI surface does not exist in this session")
-            if operation == "updateComponents":
-                # updateComponents carries the complete authoritative component
-                # set for a surface revision. Retaining superseded definitions
-                # makes one historical renderer-invalid revision poison every
-                # later valid update during replay, and needlessly grows the
-                # durable snapshot. Keep the lifecycle and data-model messages,
-                # but compact component state to the newest complete revision.
-                surface.messages = [
-                    existing for existing in surface.messages if "updateComponents" not in existing
-                ]
-            if len(surface.messages) >= MAX_A2UI_MESSAGES:
-                surface.messages = surface.messages[-(MAX_A2UI_MESSAGES - 1) :]
-            surface.messages.append(dict(message))
-            surface.revision += 1
-            surface.updated_at = utcnow_iso()
-            if operation == "deleteSurface":
-                surface.state = "deleted"
-            elif operation == "createSurface":
-                surface.state = "creating"
-            else:
-                surface.state = "ready"
-            self._flush()
-            wire = surface.to_wire()
-        event_type = (
-            "a2ui.surface.deleted" if operation == "deleteSurface" else "a2ui.surface.upserted"
-        )
-        payload = {"surface_id": surface_id} if operation == "deleteSurface" else wire
-        self._bus.publish(Event(type=event_type, session_id=session_id, payload=payload))
-        return surface
+                snapshot = deepcopy(result[2])
+                applied.append((result[0], result[1], snapshot))
+                snapshots.append(snapshot)
+            self._flush(staged)
+            self._surfaces = staged
+        for operation, surface_id, surface in applied:
+            event_type = (
+                "a2ui.surface.deleted"
+                if operation == "deleteSurface"
+                else "a2ui.surface.upserted"
+            )
+            payload = (
+                {"surface_id": surface_id}
+                if operation == "deleteSurface"
+                else surface.to_wire()
+            )
+            self._bus.publish(Event(type=event_type, session_id=session_id, payload=payload))
+        return snapshots

@@ -11,7 +11,6 @@ from clio_agent.gact.a2ui import (
     SERVER_ACTIONS,
     A2UIValidationError,
     validate_client_action,
-    validate_server_message,
 )
 from clio_agent.gact.events import Event
 from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
@@ -74,16 +73,15 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
             for message in messages:
                 if not isinstance(message, Mapping):
                     raise A2UIValidationError("A2UI message must be an object")
-                validate_server_message(message)
             surfaces = [
-                app.state.a2ui_store.apply(
+                surface.to_wire()
+                for surface in app.state.a2ui_store.apply_batch(
                     sid,
-                    message,
+                    messages,
                     run_id=str(correlation.get("run_id") or ""),
                     message_id=str(correlation.get("message_id") or ""),
                     part_id=str(correlation.get("part_id") or ""),
-                ).to_wire()
-                for message in messages
+                )
             ]
         except A2UIValidationError as exc:
             raise _error(422, "a2ui_validation_failed", str(exc)) from exc

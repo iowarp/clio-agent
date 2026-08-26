@@ -148,6 +148,24 @@ class StructuredErrorClient(FakeClient):
         )
 
 
+class OversizedStructuredErrorClient(FakeClient):
+    """Return an error whose raw truth falls outside the bounded model preview."""
+
+    async def call_tool(self, name: str, args: dict[str, Any]):
+        self.started_call = True
+        return SimpleNamespace(
+            data={
+                "head": "h" * 15_000,
+                "error": {
+                    "type": "remote_failure",
+                    "code": "catalog_unavailable",
+                    "message": "Catalog lookup failed",
+                },
+                "tail": "t" * 15_000,
+            }
+        )
+
+
 @pytest.fixture(autouse=True)
 def reload_conf() -> None:
     conf.reload()
@@ -664,6 +682,31 @@ def test_sync_mcp_tool_executor_reports_structured_tool_error_result():
             "args": {"output_path": "/missing/plot.png"},
         },
     }
+
+
+def test_oversized_structured_failure_uses_raw_result_for_error_truth() -> None:
+    """Model truncation must not turn a real structured failure into success."""
+
+    fake_client = OversizedStructuredErrorClient()
+    observed: list[tuple[str, str | None]] = []
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _: fake_client,
+        tool_observer=lambda _name, _args, phase, error, _result=None: observed.append(
+            (phase, error)
+        ),
+    )
+
+    try:
+        model_result = executor.call_tool("ndp_search_datasets", {"terms": ["GNSS"]})
+    finally:
+        executor.close()
+
+    assert len(model_result) < 13_000
+    assert "model_tool_result_oversize" in model_result
+    assert observed[-1][0] == "completed"
+    assert observed[-1][1] == "catalog_unavailable: Catalog lookup failed"
 
 
 def test_sync_mcp_tool_executor_bounds_repeated_transient_tool_failures():

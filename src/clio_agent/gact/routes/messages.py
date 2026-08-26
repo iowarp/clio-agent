@@ -470,7 +470,11 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         # resident set, but never materialize an absent durable ledger while the
         # authoritative session count is still zero.
         messages = app.state.messages
-        if sess.message_count == 0:
+        message_store = getattr(app.state, "message_store", None)
+        has_persisted_ledger = bool(
+            message_store is not None and message_store.has_session(sid)
+        )
+        if sess.message_count == 0 and not has_persisted_ledger:
             get_if_resident = getattr(messages, "get_if_resident", None)
             if callable(get_if_resident):
                 chronological_rows = list(get_if_resident(sid) or [])

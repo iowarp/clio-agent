@@ -263,6 +263,9 @@ limits.shell_max_timeout_s: 30.0
 # CLIO_SUBMIT_REPAIR_ATTEMPTS  (float)  <- src/clio_agent/gact/agents/reactv2.py
 limits.submit_repair_attempts: 3.0
 
+# CLIO_TOOL_RESULT_CHARS  (int)  <- src/clio_agent/gact/evidence.py
+limits.tool_result_chars: 12000
+
 # CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS  (list)  <- src/clio_agent/agent.py
 # limits.transient_provider_retry_delays:  # default unset; resolved in code
 

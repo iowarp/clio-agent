@@ -8,9 +8,10 @@ from fastapi.testclient import TestClient
 from pytest import MonkeyPatch, raises
 
 from clio_agent.gact import context as gact_context
-from clio_agent.gact.a2ui import A2UIValidationError
+from clio_agent.gact.a2ui import MAX_A2UI_MESSAGES, A2UIStore, A2UIValidationError
 from clio_agent.gact.a2ui_tools import build_create_a2ui_surface_tool
 from clio_agent.gact.app import build_app
+from clio_agent.gact.events import EventBus
 from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
 
 HEADERS = {
@@ -69,6 +70,75 @@ def test_surface_lifecycle_persists_and_reconciles(tmp_path: Path) -> None:
     assert persisted is not None
     assert persisted.revision == 2
     assert persisted.messages == [_create_message(), update]
+
+
+def test_corrupt_a2ui_ledger_is_quarantined_without_overwrite(tmp_path: Path) -> None:
+    path = tmp_path / "a2ui-surfaces.json"
+    original = '{"surfaces": [broken]}'
+    path.write_text(original, encoding="utf-8")
+
+    store = A2UIStore(path=path, bus=EventBus())
+
+    assert store.list_wire("sess_any") == []
+    assert not path.exists()
+    quarantined = list(tmp_path.glob("a2ui-surfaces.json.corrupt-*"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text(encoding="utf-8") == original
+    assert store.load_degradation == {
+        "reason": "a2ui_ledger_corrupt",
+        "source_path": str(path),
+        "quarantine_path": str(quarantined[0]),
+    }
+
+
+def test_message_batch_rejects_delete_followed_by_update_atomically(tmp_path: Path) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    deleted_then_updated = [
+        _create_message(),
+        {"version": "v0.9.1", "deleteSurface": {"surfaceId": "surface_1"}},
+        {
+            "version": "v0.9.1",
+            "updateDataModel": {
+                "surfaceId": "surface_1",
+                "path": "/late",
+                "value": True,
+            },
+        },
+    ]
+
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": deleted_then_updated},
+    )
+
+    assert response.status_code == 422
+    assert "terminal within a message batch" in response.json()["error"]["message"]
+    assert client.app.state.a2ui_store.get(sid, "surface_1") is None
+
+
+def test_a2ui_message_eviction_preserves_create_and_reports_typed_count(tmp_path: Path) -> None:
+    store = A2UIStore(path=tmp_path / "a2ui-surfaces.json", bus=EventBus())
+    store.apply("sess_1", _create_message())
+    for index in range(MAX_A2UI_MESSAGES + 3):
+        store.apply(
+            "sess_1",
+            {
+                "version": "v0.9.1",
+                "updateDataModel": {
+                    "surfaceId": "surface_1",
+                    "path": "/counter",
+                    "value": index,
+                },
+            },
+        )
+
+    surface = store.get("sess_1", "surface_1")
+    assert surface is not None
+    assert len(surface.messages) == MAX_A2UI_MESSAGES
+    assert "createSurface" in surface.messages[0]
+    assert surface.eviction_reason == "a2ui_message_limit"
+    assert surface.evicted_messages == 4
 
 
 def test_complete_component_update_compacts_the_superseded_snapshot(tmp_path: Path) -> None:
