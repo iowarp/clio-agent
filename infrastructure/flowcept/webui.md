@@ -4,8 +4,8 @@ component: flowcept
 kind: webui
 services: [flowcept-webservice]
 ports:
-  webservice: not-deployed (see below)
-status: not-deployed-on-homelab
+  webservice: 8008 (loopback, homelab)
+status: deployed-loopback-homelab
 ---
 
 # Flowcept — native web UI
@@ -17,10 +17,14 @@ live and historical workflow queries, workflow cards, and agent chat.
 
 ## Deployment state
 
-**Not part of the homelab qualification stack.** Only Redis + MongoDB were
-deployed there; the webservice/UI can be added later from
-`compose-service.yml` pointed at the same MongoDB. Port assignment happens
-at that deployment (keep it loopback like the rest of the stack).
+Running on the homelab as `flowcept_webservice`, loopback `:8008` (verified
+2026-08-25, up alongside the Redis/Mongo capture stack). To view from a
+workstation:
+
+```
+ssh -L 8008:127.0.0.1:8008 homelab
+# then open http://localhost:8008
+```
 
 ## Role
 
