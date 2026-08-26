@@ -507,12 +507,17 @@ def _parse_retry_attempts(config: LMProviderConfig) -> int:
             return max(0, conf.as_int(raw))
         except (ValueError, TypeError):
             pass
-    # The official Codex SDK already returns a complete, expensive reasoning turn.
-    # Re-sampling after a formatting error multiplied one visible NDP iteration into
-    # three minute-long model calls.  The lenient adapter repairs known format-only
-    # shapes; anything still invalid must surface immediately unless an operator has
-    # explicitly opted into retries above.
-    if str(getattr(config, "provider", "") or "").strip().lower() == "codex":
+    # Providers declare this transport capability on their resolved config. The
+    # official Codex SDK already returns a complete, expensive reasoning turn, so a
+    # parse failure is surfaced after one attempt unless an operator explicitly
+    # overrides the policy above.
+    if getattr(config, "parse_retry_capability", "bounded") == "single_attempt":
+        logger.info(
+            "LM parse retry suppressed reason=provider_single_attempt_capability "
+            "provider=%s model=%s",
+            config.provider,
+            config.model,
+        )
         return 0
     return 2 if _reasoning_model_capability(config) else 0
 

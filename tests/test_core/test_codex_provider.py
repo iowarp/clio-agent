@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -85,7 +86,11 @@ def test_sdk_home_contains_auth_only(
     environment = isolated.start()
     isolated_path = Path(environment["CODEX_HOME"])
     try:
-        assert {path.name for path in isolated_path.iterdir()} == {"auth.json", "sqlite"}
+        assert {path.name for path in isolated_path.iterdir()} == {
+            ".clio-owner-pid",
+            "auth.json",
+            "sqlite",
+        }
         assert (isolated_path / "auth.json").read_text(encoding="utf-8") == '{"token":"secret"}'
     finally:
         isolated.close()
@@ -116,8 +121,42 @@ def test_hidden_sdk_action_is_a_typed_error() -> None:
         codex_stream._validate_bare_lm_event(_event("item/started", item=item))
 
 
+def test_unknown_sdk_informational_item_is_typed_skip(caplog: pytest.LogCaptureFixture) -> None:
+    item = SimpleNamespace(root=SimpleNamespace(type="sdkNotice"))
+    with caplog.at_level(logging.INFO):
+        codex_stream._validate_bare_lm_event(_event("item/started", item=item))
+    assert "reason=codex_sdk_informational_item_skipped" in caplog.text
+
+
+def test_sdk_home_reaps_orphan_and_caps_live_copies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    orphan = tmp_path / "clio-codex-sdk-orphan"
+    orphan.mkdir()
+    (orphan / ".clio-owner-pid").write_text("99999999", encoding="ascii")
+    with caplog.at_level(logging.INFO):
+        assert codex_stream._reap_orphaned_codex_homes(tmp_path) == [orphan]
+    assert not orphan.exists()
+    assert "reason=credential_homes_reaped" in caplog.text
+
+    personal_home = tmp_path / "personal"
+    personal_home.mkdir()
+    (personal_home / "auth.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(personal_home))
+    monkeypatch.setattr(codex_stream, "MAX_LIVE_CODEX_HOMES", 1)
+    first = codex_stream.IsolatedCodexHome()
+    first.start()
+    try:
+        with pytest.raises(codex_stream.CodexSDKError, match="credential_home_capacity"):
+            codex_stream.IsolatedCodexHome().start()
+    finally:
+        first.close()
+
+
 @pytest.mark.asyncio
-async def test_sdk_startup_is_inside_no_activity_deadline(
+async def test_sdk_startup_is_inside_progress_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = codex_stream.CodexSDKClient()
@@ -125,10 +164,10 @@ async def test_sdk_startup_is_inside_no_activity_deadline(
     async def stalled_client() -> Any:
         await asyncio.Event().wait()
 
-    monkeypatch.setattr(codex_stream, "FIRST_MODEL_ACTIVITY_TIMEOUT_S", 0.02)
+    monkeypatch.setenv("CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S", "0.02")
     monkeypatch.setattr(client, "_ensure_client", stalled_client)
     try:
-        with pytest.raises(codex_stream.CodexSDKError, match="no model activity"):
+        with pytest.raises(codex_stream.CodexSDKError, match="codex_sdk_progress_timeout"):
             async for _event_row in client.stream(
                 prompt="prompt",
                 model="gpt-5.6-luna",
@@ -210,6 +249,48 @@ async def test_sdk_stream_is_interrupted_by_scoped_session_cancel(
 
 
 @pytest.mark.asyncio
+async def test_sdk_progress_deadline_resets_on_every_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = codex_stream.CodexSDKClient()
+
+    class FakeTurn:
+        def stream(self):
+            async def events():
+                for value in ("one", "two", "three", "four"):
+                    await asyncio.sleep(0.04)
+                    yield _event("item/agentMessage/delta", delta=value)
+
+            return events()
+
+    class FakeThread:
+        async def turn(self, *_args: Any, **_kwargs: Any) -> FakeTurn:
+            return FakeTurn()
+
+    class FakeClient:
+        async def thread_start(self, **_kwargs: Any) -> FakeThread:
+            return FakeThread()
+
+    async def fake_ensure_client() -> FakeClient:
+        return FakeClient()
+
+    monkeypatch.setenv("CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S", "0.1")
+    monkeypatch.setattr(client, "_ensure_client", fake_ensure_client)
+    seen = [
+        event.payload.delta
+        async for event in client.stream(
+            prompt="prompt",
+            model="gpt-5.6-luna",
+            cwd=None,
+            effort="medium",
+            timeout=1.0,
+        )
+    ]
+    client.close_blocking()
+    assert seen == ["one", "two", "three", "four"]
+
+
+@pytest.mark.asyncio
 async def test_sdk_stream_keeps_raw_reasoning_and_summary_distinct(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -223,7 +304,10 @@ async def test_sdk_stream_keeps_raw_reasoning_and_summary_distinct(
     )
     events = [
         _event("item/reasoning/textDelta", delta="raw thought"),
-        _event("item/reasoning/summaryTextDelta", delta="summary"),
+        _event("item/reasoning/summaryPartAdded"),
+        _event("item/reasoning/summaryTextDelta", delta="summary one"),
+        _event("item/reasoning/summaryPartAdded"),
+        _event("item/reasoning/summaryTextDelta", delta="summary two"),
         _event("item/agentMessage/delta", delta="answer"),
         _event(
             "thread/tokenUsage/updated",
@@ -257,7 +341,9 @@ async def test_sdk_stream_keeps_raw_reasoning_and_summary_distinct(
     assert "".join(str(chunk["text"]) for chunk in chunks) == "answer"
     assert observed == [
         ("codex_sdk_reasoning", "raw thought"),
-        ("codex_sdk_summary", "summary"),
+        ("codex_sdk_summary", "summary one"),
+        ("codex_sdk_summary", "\n\n"),
+        ("codex_sdk_summary", "summary two"),
     ]
     assert chunks[-1]["usage"] == {
         "prompt_tokens": 100,

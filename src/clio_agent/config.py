@@ -266,6 +266,9 @@ class LMProviderConfig:
     # entry in the defaults dict, no agent.py branches.
     strip_openai_prefix: bool = field(init=False, default=True)
     supports_vision: bool = field(init=False, default=False)
+    parse_retry_capability: Literal["bounded", "single_attempt"] = field(
+        init=False, default="bounded"
+    )
     # Handshake-discovered model config. init=False + default empty so callers
     # never set them; ``apply_handshake`` populates them at bind time (the only
     # place that networks). ``__post_init__`` stays network-free for /health.
@@ -316,6 +319,9 @@ class LMProviderConfig:
         # so re-reading on every config load is safe.
         self.strip_openai_prefix = bool(defaults.get("strip_openai_prefix", True))
         self.supports_vision = bool(defaults.get("supports_vision", False))
+        self.parse_retry_capability = (
+            "single_attempt" if self.provider == "codex" else "bounded"
+        )
         if self.codex_transport != "sdk":
             raise ValueError(
                 f"codex_transport must use the official Python SDK (got {self.codex_transport!r})"

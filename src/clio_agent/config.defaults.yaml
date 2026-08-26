@@ -215,6 +215,9 @@ hooks.stop_loop_cap: 8
 # CLIO_HOOKS_TRUST_STORE  (str)  <- src/clio_agent/gact/hooks/dispatcher.py
 # hooks.trust_store:  # default unset; resolved in code
 
+# CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S  (float)  <- src/clio_agent/providers/codex_stream.py
+limits.codex_sdk_progress_timeout_s: 120.0
+
 # CLIO_CTX_MAX_BYTES  (int)  <- src/clio_agent/gact/runtime/constants.py
 limits.context_inline_bytes: 32768
 

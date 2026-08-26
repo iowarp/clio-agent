@@ -784,6 +784,16 @@ def render_markdown(resolved: list[ResolvedVar], env_only: list[EnvOnlyVar]) -> 
 
     lines += [
         "",
+        "### Codex SDK transport",
+        "",
+        "Codex runs through the official Python SDK and its venv-bundled binary, "
+        "with one SDK-owned cancellation path. This deliberately replaces the "
+        "former stateful-delta/subprocess transport in exchange for an observed "
+        "roughly 2.5x time-to-first-token cost. "
+        "`CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S` is a progress deadline: it resets "
+        "after every SDK event rather than imposing a fixed wall-clock cap on a "
+        "healthy long-running exchange.",
+        "",
         "## Environment-only variables",
         "",
         "These deliberately bypass the config store (a shared file must not be "

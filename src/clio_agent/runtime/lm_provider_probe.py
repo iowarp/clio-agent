@@ -18,8 +18,10 @@ transport handling has a single owner:
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
@@ -84,8 +86,73 @@ def extract_models(response: Any) -> list[str]:
 # meaningful readiness signal (the SDK client cannot run without it).
 _CLI_TRANSPORT_BINARIES: dict[str, tuple[str, str]] = {
     "claude_code": ("claude", "Claude Code"),
-    "codex": ("codex", "Codex"),
 }
+
+
+def _codex_auth_path() -> Path:
+    """Return the official SDK authentication file location."""
+    configured = os.environ.get("CODEX_HOME", "").strip()
+    return (Path(configured) if configured else Path.home() / ".codex") / "auth.json"
+
+
+def _bundled_codex_path() -> Path | None:
+    """Resolve the SDK-pinned Codex binary without consulting ``PATH``."""
+    try:
+        from codex_cli_bin import bundled_codex_path  # noqa: PLC0415
+
+        return Path(bundled_codex_path())
+    except (ImportError, OSError, RuntimeError):
+        return None
+
+
+def _probe_codex_sdk(
+    config: LMProviderConfig,
+    source: str,
+    auth_mode: str,
+) -> IntegrationStatus:
+    """Probe the three dependencies the official Codex SDK actually consumes."""
+    sdk_present = importlib.util.find_spec("openai_codex") is not None
+    bundled_binary = _bundled_codex_path()
+    auth_path = _codex_auth_path()
+    details: dict[str, Any] = {
+        "provider": "codex",
+        "model": config.model,
+        "transport": "sdk",
+        "sdk_module": "openai_codex",
+        "bundled_binary": str(bundled_binary or ""),
+        "auth_path": str(auth_path),
+    }
+    missing: list[str] = []
+    if not sdk_present:
+        missing.append("sdk_module_absent")
+    if bundled_binary is None or not bundled_binary.is_file():
+        missing.append("bundled_binary_absent")
+    if not auth_path.is_file():
+        missing.append("auth_absent")
+    if missing:
+        return IntegrationStatus(
+            name="lm_provider",
+            state=IntegrationState.UNAVAILABLE,
+            summary="Codex SDK transport is unavailable: " + ", ".join(missing) + ".",
+            config_source=source,
+            next_action="Install the Codex SDK extra and authenticate Codex on this machine.",
+            endpoint=config.api_base,
+            auth_mode=auth_mode,
+            details={**details, "reason": missing[0], "missing": missing},
+            required=True,
+        )
+    return IntegrationStatus(
+        name="lm_provider",
+        state=IntegrationState.READY,
+        summary="Codex official Python SDK, bundled runtime, and authentication are ready.",
+        config_source=source,
+        next_action="No action required.",
+        endpoint=config.api_base,
+        auth_mode=auth_mode,
+        capabilities=["chat-completions", "sdk-transport"],
+        details=details,
+        required=True,
+    )
 
 
 def _which_cli(binary: str) -> str | None:
@@ -129,6 +196,9 @@ def probe_cli_transport(
         A READY row when the CLI is on PATH, else a typed UNAVAILABLE row naming
         the missing binary (``reason=cli_binary_absent``).
     """
+    if config.provider == "codex":
+        return _probe_codex_sdk(config, source, auth_mode)
+
     parsed = urlparse(config.api_base)
     transport = parsed.netloc or parsed.path.lstrip("/") or "cli"
     binary, label = _CLI_TRANSPORT_BINARIES.get(config.provider, (config.provider, config.provider))

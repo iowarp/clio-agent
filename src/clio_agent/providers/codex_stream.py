@@ -6,6 +6,12 @@ owns the pinned runtime and JSON-RPC lifecycle; CLIO never shells out to
 
 Provider-exposed reasoning text and reasoning summaries remain distinct. A
 summary is never relabelled as full provider reasoning.
+
+The official SDK owns its pinned runtime, subprocess, and thread state. That
+gives CLIO one typed cancellation path and removes the unsupported shell/app-
+server transports, at the measured cost of roughly 2.5x first-token latency.
+Progress is consequently bounded per SDK exchange, never by a composite turn
+deadline that could kill a healthy long-running stream.
 """
 
 from __future__ import annotations
@@ -44,8 +50,9 @@ from clio_agent.providers.codex_audit import (
 
 logger = logging.getLogger(__name__)
 
-FIRST_MODEL_ACTIVITY_TIMEOUT_S = 120.0
+DEFAULT_SDK_PROGRESS_TIMEOUT_S = 120.0
 DEFAULT_TURN_TIMEOUT_S = 180.0
+MAX_LIVE_CODEX_HOMES = 4
 
 BARE_LM_BASE_INSTRUCTIONS = """You are a language-model completion backend inside Clio.
 Answer only the serialized prompt supplied by Clio. Do not inspect the workspace,
@@ -76,6 +83,18 @@ BARE_LM_THREAD_CONFIG: dict[str, Any] = {
 }
 
 _ALLOWED_ITEM_TYPES = frozenset({"agentMessage", "reasoning", "userMessage"})
+_ACTION_ITEM_TYPES = frozenset(
+    {
+        "collabAgentToolCall",
+        "commandExecution",
+        "dynamicToolCall",
+        "fileChange",
+        "imageGeneration",
+        "mcpToolCall",
+        "subAgentActivity",
+        "webSearch",
+    }
+)
 _MODEL_ACTIVITY_METHODS = frozenset(
     {
         "item/agentMessage/delta",
@@ -87,6 +106,9 @@ _MODEL_ACTIVITY_METHODS = frozenset(
 _STREAM_END = object()
 _CALL_COUNTER_LOCK = threading.Lock()
 _CALL_COUNTER = 0
+_CODEX_HOME_LOCK = threading.Lock()
+_LIVE_CODEX_HOMES: set[Path] = set()
+_CODEX_HOME_OWNER = ".clio-owner-pid"
 _CODEX_MODEL_REJECTION_PATTERN = re.compile(
     r"is not supported when using codex with (a|an)\b[^.]{0,40}account",
     re.IGNORECASE,
@@ -95,6 +117,66 @@ _CODEX_MODEL_REJECTION_PATTERN = re.compile(
 
 class CodexSDKError(RuntimeError):
     """Typed failure raised by the sole Codex SDK provider transport."""
+
+
+def _process_is_alive(pid: int) -> bool:
+    """Return whether ``pid`` is alive without terminating or signalling it."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _reap_orphaned_codex_homes(temp_root: Path | None = None) -> list[Path]:
+    """Remove private SDK homes whose owning process no longer exists."""
+    root = temp_root or Path(tempfile.gettempdir())
+    reaped: list[Path] = []
+    for home in root.glob("clio-codex-sdk-*"):
+        if home in _LIVE_CODEX_HOMES or not home.is_dir():
+            continue
+        try:
+            pid = int((home / _CODEX_HOME_OWNER).read_text(encoding="ascii").strip())
+        except (OSError, ValueError):
+            pid = -1
+        if _process_is_alive(pid):
+            continue
+        try:
+            shutil.rmtree(home)
+            reaped.append(home)
+        except OSError as exc:
+            logger.warning(
+                "Codex SDK credential reaper could not remove home "
+                "reason=credential_home_reap_failed path=%s error=%r",
+                home,
+                exc,
+            )
+    if reaped:
+        logger.info(
+            "Codex SDK credential reaper removed orphaned homes "
+            "reason=credential_homes_reaped count=%d",
+            len(reaped),
+        )
+    return reaped
+
+
+def _sdk_progress_timeout_s(requested_timeout: float) -> float:
+    """Resolve the maximum silence allowed for one SDK exchange or event."""
+    from clio_agent import conf  # noqa: PLC0415
+
+    configured = conf.resolve(
+        "limits.codex_sdk_progress_timeout_s",
+        env="CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S",
+        default=DEFAULT_SDK_PROGRESS_TIMEOUT_S,
+        cast=conf.as_float,
+    )
+    return max(0.01, min(float(requested_timeout), float(configured)))
 
 
 class IsolatedCodexHome:
@@ -118,9 +200,18 @@ class IsolatedCodexHome:
         if self._temporary_home is not None:
             return self._environment(self._temporary_home)
 
-        home = Path(tempfile.mkdtemp(prefix="clio-codex-sdk-"))
+        with _CODEX_HOME_LOCK:
+            _reap_orphaned_codex_homes()
+            if len(_LIVE_CODEX_HOMES) >= MAX_LIVE_CODEX_HOMES:
+                raise CodexSDKError(
+                    "Codex SDK private credential-home capacity reached "
+                    "reason=credential_home_capacity"
+                )
+            home = Path(tempfile.mkdtemp(prefix="clio-codex-sdk-"))
+            _LIVE_CODEX_HOMES.add(home)
         auth_target = home / "auth.json"
         try:
+            (home / _CODEX_HOME_OWNER).write_text(str(os.getpid()), encoding="ascii")
             if self._source_auth.is_file():
                 auth_bytes = self._source_auth.read_bytes()
                 auth_target.write_bytes(auth_bytes)
@@ -130,6 +221,8 @@ class IsolatedCodexHome:
             (home / "sqlite").mkdir(exist_ok=True)
         except Exception:
             shutil.rmtree(home, ignore_errors=True)
+            with _CODEX_HOME_LOCK:
+                _LIVE_CODEX_HOMES.discard(home)
             raise
         self._temporary_home = home
         return self._environment(home)
@@ -178,6 +271,8 @@ class IsolatedCodexHome:
             )
         finally:
             self._remove_private_home(home)
+            with _CODEX_HOME_LOCK:
+                _LIVE_CODEX_HOMES.discard(home)
 
     @staticmethod
     def _remove_private_home(home: Path) -> None:
@@ -270,10 +365,19 @@ def _validate_bare_lm_event(event: Any) -> None:
     if method not in {"item/started", "item/completed"}:
         return
     item_type = _item_type(event.payload) or "unknown"
-    if item_type not in _ALLOWED_ITEM_TYPES:
+    if item_type in _ACTION_ITEM_TYPES or any(
+        marker in item_type.lower()
+        for marker in ("toolcall", "commandexecution", "filechange", "subagent")
+    ):
         raise CodexSDKError(
             "bare Codex SDK LM attempted a hidden internal action "
             f"({item_type}); Clio owns tools and orchestration"
+        )
+    if item_type not in _ALLOWED_ITEM_TYPES:
+        logger.info(
+            "Codex SDK informational item skipped "
+            "reason=codex_sdk_informational_item_skipped item_type=%s",
+            item_type,
         )
 
 
@@ -379,68 +483,54 @@ class CodexSDKClient:
             stream = None
             clean = False
             cancelled = False
-            model_activity_seen = False
             try:
-                loop = asyncio.get_running_loop()
-                deadline = loop.time() + timeout
-                first_activity_deadline = min(
-                    deadline,
-                    loop.time() + FIRST_MODEL_ACTIVITY_TIMEOUT_S,
-                )
+                progress_timeout = _sdk_progress_timeout_s(timeout)
 
                 def _record(event: Any) -> None:
-                    nonlocal model_activity_seen
                     _validate_bare_lm_event(event)
                     _raise_failed_turn(event)
-                    model_activity_seen = model_activity_seen or _is_model_activity(event)
                     chunks.put(("event", event))
 
-                # Startup, thread creation, turn creation, and all pre-model
-                # notifications share one absolute no-activity deadline. None
-                # of those operations may silently consume a fresh timeout.
-                try:
-                    async with asyncio.timeout_at(first_activity_deadline):
-                        client = await self._ensure_client()
-                        thread = await client.thread_start(
-                            approval_mode=ApprovalMode.deny_all,
-                            base_instructions=BARE_LM_BASE_INSTRUCTIONS,
-                            config=BARE_LM_THREAD_CONFIG,
-                            cwd=cwd or tempfile.gettempdir(),
-                            developer_instructions=BARE_LM_BASE_INSTRUCTIONS,
-                            ephemeral=True,
-                            model=model,
-                            sandbox=Sandbox.read_only,
-                        )
-                        turn = await thread.turn(
-                            prompt,
-                            effort=effort,
-                            summary=ReasoningSummary.model_validate("detailed"),
-                        )
-                        stream = turn.stream()
-                        while not model_activity_seen:
-                            try:
-                                _record(await anext(stream))
-                            except StopAsyncIteration:
-                                break
-                except TimeoutError as exc:
-                    raise CodexSDKError(
-                        "Codex SDK produced no model activity within "
-                        f"{FIRST_MODEL_ACTIVITY_TIMEOUT_S:.0f}s"
-                    ) from exc
-
-                while True:
-                    remaining = deadline - loop.time()
-                    if remaining <= 0:
-                        raise CodexSDKError(f"Codex SDK turn timed out after {timeout:.0f}s")
+                async def _await_progress(awaitable: Any, *, phase: str) -> Any:
                     try:
-                        assert stream is not None
-                        event = await asyncio.wait_for(anext(stream), timeout=remaining)
-                    except StopAsyncIteration:
-                        break
+                        return await asyncio.wait_for(awaitable, timeout=progress_timeout)
                     except TimeoutError as exc:
                         raise CodexSDKError(
-                            f"Codex SDK turn timed out after {timeout:.0f}s"
+                            "Codex SDK made no progress for "
+                            f"{progress_timeout:g}s during {phase} "
+                            "reason=codex_sdk_progress_timeout"
                         ) from exc
+
+                client = await _await_progress(self._ensure_client(), phase="client startup")
+                thread = await _await_progress(
+                    client.thread_start(
+                        approval_mode=ApprovalMode.deny_all,
+                        base_instructions=BARE_LM_BASE_INSTRUCTIONS,
+                        config=BARE_LM_THREAD_CONFIG,
+                        cwd=cwd or tempfile.gettempdir(),
+                        developer_instructions=BARE_LM_BASE_INSTRUCTIONS,
+                        ephemeral=True,
+                        model=model,
+                        sandbox=Sandbox.read_only,
+                    ),
+                    phase="thread start",
+                )
+                turn = await _await_progress(
+                    thread.turn(
+                        prompt,
+                        effort=effort,
+                        summary=ReasoningSummary.model_validate("detailed"),
+                    ),
+                    phase="turn start",
+                )
+                stream = turn.stream()
+
+                while True:
+                    try:
+                        assert stream is not None
+                        event = await _await_progress(anext(stream), phase="event stream")
+                    except StopAsyncIteration:
+                        break
                     _record(event)
                 clean = True
             except asyncio.CancelledError:
@@ -538,6 +628,7 @@ async def astream_sdk(
     fallback_text = ""
     usage: dict[str, int] = {}
     event_index = 0
+    summary_parts = 0
     try:
         async for event in _SDK_CLIENT.stream(
             prompt=prompt,
@@ -569,6 +660,18 @@ async def astream_sdk(
                     text=text,
                 )
                 yield _stream_chunk(text=text, is_finished=False)
+            elif method == "item/reasoning/summaryPartAdded":
+                if summary_parts:
+                    boundary = "\n\n"
+                    emit_raw_event(
+                        call_index=call_index,
+                        event_index=event_index,
+                        source_channel="reasoning_summary",
+                        text=boundary,
+                        raw_event_type=method,
+                    )
+                    _note_provider_thinking(boundary, summary=True)
+                summary_parts += 1
             elif method in {
                 "item/reasoning/textDelta",
                 "item/reasoning/summaryTextDelta",
@@ -666,7 +769,7 @@ def run_sdk(
 __all__ = [
     "CodexSDKClient",
     "CodexSDKError",
-    "FIRST_MODEL_ACTIVITY_TIMEOUT_S",
+    "DEFAULT_SDK_PROGRESS_TIMEOUT_S",
     "IsolatedCodexHome",
     "_SDK_CLIENT",
     "_next_call_index",

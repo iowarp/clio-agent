@@ -5,14 +5,16 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from openai_codex import AsyncCodex, CodexConfig, CodexError
-
-from clio_agent.providers.codex_stream import BARE_LM_CONFIG_OVERRIDES, IsolatedCodexHome
 from clio_agent.providers.model_discovery.overlay import (
     CODEX_SOURCE,
     ProviderDiscoveryResult,
     attach_context_limits,
 )
+
+# Deliberate injection seam for focused discovery tests.  The official SDK is
+# still imported only when discovery is requested; keeping the default as
+# ``None`` prevents provider startup from loading Codex for unrelated users.
+AsyncCodex: Any | None = None
 
 
 def discover_codex(*, timeout: float = 20.0) -> ProviderDiscoveryResult:
@@ -22,10 +24,28 @@ def discover_codex(*, timeout: float = 20.0) -> ProviderDiscoveryResult:
     resolves a ``codex`` executable nor opens an app-server protocol connection.
     """
 
+    try:
+        from openai_codex import AsyncCodex as SDKAsyncCodex  # noqa: PLC0415
+        from openai_codex import CodexConfig, CodexError  # noqa: PLC0415
+
+        from clio_agent.providers.codex_stream import (  # noqa: PLC0415
+            BARE_LM_CONFIG_OVERRIDES,
+            IsolatedCodexHome,
+        )
+    except (ImportError, OSError) as exc:
+        return ProviderDiscoveryResult(
+            provider="codex",
+            discovered=[],
+            source=CODEX_SOURCE,
+            failed_reason=f"Codex Python SDK is unavailable: {exc}",
+        )
+
+    sdk_client = AsyncCodex or SDKAsyncCodex
+
     async def _query() -> Any:
         sdk_home = IsolatedCodexHome()
         try:
-            async with AsyncCodex(
+            async with sdk_client(
                 CodexConfig(
                     config_overrides=BARE_LM_CONFIG_OVERRIDES,
                     env=sdk_home.start(),

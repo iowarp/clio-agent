@@ -73,6 +73,9 @@ from clio_agent.gact.agents.reactv2_submit import (
 )
 from clio_agent.gact.agents.reactv2_submit import forced_submit
 from clio_agent.gact.agents.reactv2_submit import record_submit_audit as _record_submit_audit
+from clio_agent.gact.agents.reactv2_upstream import assert_dspy_reactv2_contract
+
+assert_dspy_reactv2_contract()
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from clio_agent.arc.schema import Segment

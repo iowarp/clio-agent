@@ -62,6 +62,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CMF_PUBLISH_TIMEOUT_S` | `provenance.artifacts.cmf.publish_timeout_s` | float | `30.0` | `src/clio_agent/gact/artifacts/provenance/factory.py` |
 | `CLIO_CMF_PYTHON` | `provenance.artifacts.cmf.python` | str | _(unset)_ | `src/clio_agent/gact/artifacts/provenance/factory.py` |
 | `CLIO_CMF_SERVER_URL` | `provenance.artifacts.cmf.server_url` | str | _(unset)_ | `src/clio_agent/gact/artifacts/provenance/factory.py` |
+| `CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S` | `limits.codex_sdk_progress_timeout_s` | float | `120.0` | `src/clio_agent/providers/codex_stream.py` |
 | `CLIO_CODEX_TRANSPORT` | `lm.codex_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_CORE_PORT` | `arc.core_port` | str | _(unset)_ | `src/clio_agent/arc/clio_core_liveness.py` |
 | `CLIO_CTX_MAX_BYTES` | `limits.context_inline_bytes` | int | `32768` | `src/clio_agent/gact/runtime/constants.py` |
@@ -209,6 +210,10 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_WEB_DIR` | `paths.web_dir` | str | _(unset)_ | `src/clio_agent/gact/app.py` |
 | `CLIO_WINDOWS_SHELL_BACKEND` | `tools.shell.windows_backend` | str | `powershell` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_WORKFLOW_STEP_INACTIVITY_S` | `workflows.step_inactivity_s` | float | `120.0` | `src/clio_agent/gact/workflow_step_watch.py` |
+
+### Codex SDK transport
+
+Codex runs through the official Python SDK and its venv-bundled binary, with one SDK-owned cancellation path. This deliberately replaces the former stateful-delta/subprocess transport in exchange for an observed roughly 2.5x time-to-first-token cost. `CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S` is a progress deadline: it resets after every SDK event rather than imposing a fixed wall-clock cap on a healthy long-running exchange.
 
 ## Environment-only variables
 

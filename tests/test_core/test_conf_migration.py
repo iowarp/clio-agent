@@ -152,7 +152,12 @@ class TestParseRetryAttempts:
     def _cfg(is_reasoning=False, provider="openai"):
         from types import SimpleNamespace
 
-        return SimpleNamespace(provider=provider, model="gpt-4o", is_reasoning=is_reasoning)
+        return SimpleNamespace(
+            provider=provider,
+            model="gpt-4o",
+            is_reasoning=is_reasoning,
+            parse_retry_capability="single_attempt" if provider == "codex" else "bounded",
+        )
 
     def test_default(self, monkeypatch):
         from clio_agent.config import _parse_retry_attempts

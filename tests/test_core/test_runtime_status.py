@@ -239,6 +239,53 @@ def test_lm_provider_sdk_transport_unavailable_when_cli_absent(tmp_path, monkeyp
     assert "No connection adapters" not in status.summary
 
 
+def test_codex_doctor_uses_sdk_bundle_and_auth_not_path(tmp_path, monkeypatch):
+    """Codex readiness follows its SDK-owned runtime and authentication contract."""
+    from clio_agent.runtime import lm_provider_probe
+
+    binary = tmp_path / "codex-bundled"
+    binary.write_text("runtime", encoding="utf-8")
+    auth = tmp_path / "auth.json"
+    auth.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(lm_provider_probe, "_bundled_codex_path", lambda: binary)
+    monkeypatch.setattr(lm_provider_probe, "_codex_auth_path", lambda: auth)
+    monkeypatch.setattr(
+        lm_provider_probe.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "openai_codex" else None,
+    )
+    monkeypatch.setattr("shutil.which", lambda _binary: None)
+
+    probe = RuntimeProbe(
+        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_LM_PROVIDER": "codex"},
+        http_get=_http_get_must_not_run,
+    )
+    status = probe.probe_lm_provider()
+
+    assert status.state == IntegrationState.READY
+    assert status.details["bundled_binary"] == str(binary)
+    assert status.details["auth_path"] == str(auth)
+
+
+def test_codex_doctor_reports_missing_auth(tmp_path, monkeypatch):
+    from clio_agent.runtime import lm_provider_probe
+
+    binary = tmp_path / "codex-bundled"
+    binary.write_text("runtime", encoding="utf-8")
+    monkeypatch.setattr(lm_provider_probe, "_bundled_codex_path", lambda: binary)
+    monkeypatch.setattr(lm_provider_probe, "_codex_auth_path", lambda: tmp_path / "missing.json")
+    monkeypatch.setattr(lm_provider_probe.importlib.util, "find_spec", lambda _name: object())
+
+    probe = RuntimeProbe(
+        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_LM_PROVIDER": "codex"},
+        http_get=_http_get_must_not_run,
+    )
+    status = probe.probe_lm_provider()
+
+    assert status.state == IntegrationState.UNAVAILABLE
+    assert status.details["reason"] == "auth_absent"
+
+
 def test_lm_provider_http_provider_still_probes_models(tmp_path):
     """HTTP providers are unchanged: the /models GET path still drives the row (#899)."""
     seen: dict[str, str] = {}
