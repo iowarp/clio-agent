@@ -17,7 +17,7 @@ import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import FastMCPDeprecationWarning
 
-from clio_agent.gact.routes.catalog import _runtime_tool_value
+from clio_agent.gact.routes.catalog_runtime_tools import runtime_tool_value
 from clio_agent.tools.mcp_executor import _tool_input_schema
 
 
@@ -74,8 +74,8 @@ async def test_catalog_projection_reads_snake_without_deprecation(
     tool = await _live_tool()
     with warnings.catch_warnings():
         warnings.filterwarnings("error", category=FastMCPDeprecationWarning)
-        input_schema = _runtime_tool_value(tool, "input_schema", "inputSchema")
-        output_schema = _runtime_tool_value(tool, "output_schema", "outputSchema")
+        input_schema = runtime_tool_value(tool, "input_schema", "inputSchema")
+        output_schema = runtime_tool_value(tool, "output_schema", "outputSchema")
     assert isinstance(input_schema, dict)
     assert "value" in input_schema.get("properties", {})
     # output_schema may be None for a str-returning tool; the read must not warn.

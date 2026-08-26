@@ -27,7 +27,7 @@ def agent_runtime_tool_rows(app: FastAPI) -> list[dict[str, Any]]:
         return []
     rows: list[dict[str, Any]] = []
     for key, tool in definitions.items():
-        tool_name = str(_tool_value(tool, "name") or key).strip()
+        tool_name = str(runtime_tool_value(tool, "name") or key).strip()
         if not tool_name:
             continue
         namespace, separator, _ = tool_name.partition("_")
@@ -36,11 +36,11 @@ def agent_runtime_tool_rows(app: FastAPI) -> list[dict[str, Any]]:
                 "id": tool_name,
                 "name": tool_name,
                 "title": mcp_tool_title(tool),
-                "description": str(_tool_value(tool, "description") or ""),
+                "description": str(runtime_tool_value(tool, "description") or ""),
                 "server_id": f"mcp_{namespace}" if separator else "",
                 "source": "agent_runtime_mcp",
-                "input_schema": _tool_value(tool, "input_schema", "inputSchema") or {},
-                "output_schema": _tool_value(tool, "output_schema", "outputSchema") or {},
+                "input_schema": runtime_tool_value(tool, "input_schema", "inputSchema") or {},
+                "output_schema": runtime_tool_value(tool, "output_schema", "outputSchema") or {},
                 "owner": _tool_owner_for_catalog(tool_name),
                 "tags": _tool_tags_for_catalog(tool_name),
                 "visible_to": _tool_visible_to_for_catalog(tool_name),
@@ -49,7 +49,9 @@ def agent_runtime_tool_rows(app: FastAPI) -> list[dict[str, Any]]:
     return rows
 
 
-def _tool_value(tool: Any, *names: str) -> Any:
+def runtime_tool_value(tool: Any, *names: str) -> Any:
+    """Read the first populated field from an MCP model object or mapping."""
+
     for name in names:
         if isinstance(tool, Mapping) and name in tool:
             return tool[name]
