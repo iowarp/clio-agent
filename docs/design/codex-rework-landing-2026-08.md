@@ -222,6 +222,13 @@ For each: file the server issue with the review evidence, fix server-side in thi
 - `BudgetReport.total_bytes: int | None` (no fabricated zero); test for invalid-config → skip with both typed events.
 - PR description states plainly: conditional skip, not non-blocking (the branch name overstates).
 
+### Phase 5 record — 2026-08-27
+
+- **Marketplace:** `clio-agent-marketplace` `197a802` removes the surviving pack-level model pins and stale EarthScope Sonnet/Haiku advertising, adds the `default_model:` justification policy, and runs that policy in CI. Draft PR [#56](https://github.com/iowarp/clio-agent-marketplace/pull/56) targets `main`; its `model-inheritance` check passes. Local evidence is 3/3 policy tests plus clean policy, Ruff, and format gates. Claude review remains pending, so the PR is not merge-qualified.
+- **clio-kit:** `abf15aa` makes `BudgetReport.total_bytes` optional when no measurement occurred, covers configured `maintain_after_build`, emits both typed invalid-configuration and measurement-skip events, and removes an obsolete file-size ratchet entry after extracting configuration parsing; no baseline was raised. Local evidence is 21/21 focused cache tests, 37/37 cache-plus-ratchet tests, and 158/158 root tests with zero skips, plus clean changed-file Ruff/format/mypy and file-size gates. GitHub then exposed `pip 26.1.2` as `PYSEC-2026-3721`; `ed2561d` updates all 19 affected committed locks to 26.2.1, and all 19 local lock checks and audits pass. Draft PR [#383](https://github.com/iowarp/clio-kit/pull/383) is rerunning and remains unmerged pending fully green CI and Claude review.
+- **Live-gate boundary:** clio-agent `bbc9fc3f` points the observe gate at the real EarthScope marketplace blueprint, removes the session-level Sonnet argument, clears inherited `CLIO_LM_MODEL`, and records the effective provider/default-model source. Focused script tests, Ruff check/format, and the unchanged file-size ratchet pass in the current Phase 4-compatible environment.
+- **Stop point:** no marketplace or clio-kit PR was merged, the clio-agent marketplace gitlink was not staged or moved, and `.clio-relay/` was preserved. The re-pin and all merge choreography remain Phase 6 work. Phase 5 implementation is pushed, but its acceptance remains open until the current CI runs and Claude reviews are green; existing Phase 4 frontend failures are not waived.
+
 ## Phase 6 — Merge choreography (strict order)
 
 1. **flowcept → clio-agent develop** — ✅ DONE (already landed via PR #1248 + edge-close train; branch deleted).
