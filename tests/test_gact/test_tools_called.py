@@ -53,9 +53,9 @@ def _client(tmp_path: Path, pred) -> TestClient:
 def test_no_tools_called_keeps_metadata_empty(tmp_path: Path) -> None:
     from .conftest import complete_turn
 
-    client = _client(tmp_path, _PredNoTools())
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    a = complete_turn(client, sid, "hi")
+    with _client(tmp_path, _PredNoTools()) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        a = complete_turn(client, sid, "hi")
     # No tools_called metadata key — TUI's renderer treats its
     # presence as "call the post-hoc gutter" so an empty list is
     # also wrong.
@@ -94,10 +94,9 @@ def test_tools_called_propagates_to_message_and_completion(tmp_path: Path) -> No
         ),
     ]
     pred = _PredWithTools(tools_called=tools)
-    client = _client(tmp_path, pred)
-
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    a = complete_turn(client, sid, "analyze /tmp/x.h5")
+    with _client(tmp_path, pred) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        a = complete_turn(client, sid, "analyze /tmp/x.h5")
     md = a["metadata"]
     assert "tools_called" in md
     rows = md["tools_called"]
@@ -148,10 +147,9 @@ def test_expert_handoffs_propagate_to_message_metadata(tmp_path: Path) -> None:
         },
     ]
     pred = _PredWithTools(expert_handoffs=handoffs)
-    client = _client(tmp_path, pred)
-
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    assistant = complete_turn(client, sid, "find seismic data")
+    with _client(tmp_path, pred) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        assistant = complete_turn(client, sid, "find seismic data")
 
     assert assistant["metadata"]["expert_handoffs"] == handoffs
     # #767 PR3 (mechanism 2, design §4 row 6): there is NO finalize
