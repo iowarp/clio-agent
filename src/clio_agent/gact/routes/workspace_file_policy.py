@@ -35,10 +35,16 @@ FILE_PICKER_SKIP_DIRS = {
 }
 
 
-def skip_workspace_file_directory(name: str) -> bool:
-    """Return whether a directory is service-owned or too costly to browse."""
+def is_internal_workspace_file_directory(name: str) -> bool:
+    """Return whether a directory is owned by CLIO rather than the user."""
 
-    return name in FILE_PICKER_SKIP_DIRS or name == ".clio" or name.startswith(".clio-")
+    return name == ".clio" or name.startswith(".clio-")
+
+
+def skip_workspace_file_directory(name: str) -> bool:
+    """Return whether a directory is too costly or unsafe to browse."""
+
+    return name in FILE_PICKER_SKIP_DIRS
 
 
 def is_textual_workspace_file(name: str, raw: bytes) -> bool:
@@ -57,4 +63,8 @@ def is_textual_workspace_file(name: str, raw: bytes) -> bool:
     return True
 
 
-__all__ = ["is_textual_workspace_file", "skip_workspace_file_directory"]
+__all__ = [
+    "is_internal_workspace_file_directory",
+    "is_textual_workspace_file",
+    "skip_workspace_file_directory",
+]

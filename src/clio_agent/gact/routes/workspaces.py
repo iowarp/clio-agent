@@ -32,6 +32,7 @@ from fastapi.responses import JSONResponse, Response
 from clio_agent.gact.protocol_v3 import project_for_request, workspace_to_v3
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.routes.workspace_file_policy import (
+    is_internal_workspace_file_directory,
     is_textual_workspace_file,
     skip_workspace_file_directory,
 )
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
 # of entries so a giant repo cannot lock the picker for seconds, and skip
 # cost-walking dirs (VCS metadata, caches, build output, vendored deps).
 _FILE_PICKER_LIMIT = 5000
+_INTERNAL_FILE_PICKER_LIMIT = 32
 _GRANTOR_USER = "user"
 
 
@@ -539,9 +541,10 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         entries: list[dict[str, Any]] = []
         cap = _FILE_PICKER_LIMIT
+        internal_cap = _INTERNAL_FILE_PICKER_LIMIT
 
         def _walk(d: Path) -> None:
-            nonlocal cap
+            nonlocal cap, internal_cap
             if cap <= 0:
                 return
             try:
@@ -557,6 +560,12 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                 if cap <= 0:
                     return
                 name = child.name
+                rel = str(child.relative_to(root))
+                if is_internal_workspace_file_directory(name):
+                    if internal_cap > 0:
+                        entries.append({"path": rel, "type": "dir", "internal": True})
+                        internal_cap -= 1
+                    continue
                 if skip_workspace_file_directory(name):
                     continue
                 try:
@@ -568,10 +577,10 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                     # walk. Common in /tmp where other users' sockets
                     # are 0600 and trip stat's permission check.
                     continue
-                rel = str(child.relative_to(root))
                 entry: dict[str, Any] = {
                     "path": rel,
                     "type": "dir" if is_dir else "file",
+                    "internal": False,
                 }
                 if not is_dir:
                     try:
@@ -622,9 +631,10 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         }
         body = await list_workspace_files(wid)
         entries = body.get("entries", [])
+        visible_entries = [entry for entry in entries if not entry.get("internal", False)]
         nodes_by_path: dict[str, dict[str, Any]] = {"": tree}
         token_estimate = 0
-        for entry in entries:
+        for entry in visible_entries:
             path = str(entry.get("path") or "")
             if not path:
                 continue
@@ -647,7 +657,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         return {
             "tree": tree,
             "tokens": token_estimate,
-            "truncated": len(entries) >= _FILE_PICKER_LIMIT,
+            "truncated": len(visible_entries) >= _FILE_PICKER_LIMIT,
         }
 
     @app.get("/v1/workspaces/{wid}/files/read")

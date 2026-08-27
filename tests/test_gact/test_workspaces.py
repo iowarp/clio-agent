@@ -138,7 +138,7 @@ def test_workspace_file_read_returns_plain_text_not_json(tmp_path: Path) -> None
     assert resp.content == b"hello picker\n"
 
 
-def test_workspace_file_listing_skips_service_storage_before_applying_cap(
+def test_workspace_file_listing_marks_service_storage_without_spending_visible_cap(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -157,9 +157,19 @@ def test_workspace_file_listing_skips_service_storage_before_applying_cap(
 
     assert response.status_code == 200
     entries = response.json()["entries"]
-    assert [(entry["path"], entry["type"], entry.get("size")) for entry in entries] == [
-        ("report.md", "file", 7)
+    assert [
+        (entry["path"], entry["type"], entry["internal"], entry.get("size"))
+        for entry in entries
+    ] == [
+        (".clio", "dir", True, None),
+        (".clio-child-cache", "dir", True, None),
+        ("report.md", "file", False, 7),
     ]
+
+    repo_map = c.get("/v1/workspaces/ws_default/repo_map")
+
+    assert repo_map.status_code == 200
+    assert [child["path"] for child in repo_map.json()["tree"]["children"]] == ["report.md"]
 
 
 def test_workspace_file_read_serves_png_as_raw_bytes(tmp_path: Path) -> None:
