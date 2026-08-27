@@ -183,6 +183,13 @@ For each: file the server issue with the review evidence, fix server-side in thi
 ### W14 — Test integrity
 - Port the provenance machinery to v3: `spec_vocabulary.test.ts` against the v3 event set; document protocol v3 + A2UI events in `contract/SPEC.md`; un-exclude `live-clio.test.ts` (service container in CI) or generate frontend fixtures from a backend golden-frame capture.
 - Dedicated tests for `tool-presentation.ts` and `child-agent-presentation.ts` (the surviving, registry-governed parts); delete self-confirming fixtures with the heuristics they validated (W9.6).
+- **Completed 2026-08-27:** gact-tui `3e8c68ad` defines and machine-checks the canonical GACT 0.3 event vocabulary, documents the scoped v3 envelope and A2UI 0.9.1 operations in `contract/SPEC.md`, and exercises the decoder/reducer against a deterministic golden capture produced by `clio_agent.gact.protocol.v3.event.event_to_v3` at backend SHA `654ff56c`. The capture includes provider reasoning, answer streaming, tool lifecycle, child-agent lifecycle, A2UI surface creation, cursor ordering, usage, and cost. Dedicated tool- and child-agent-presentation tests now own the surviving registry-governed semantics; the prose-scoring fixture removed with W9.6 is gone. Evidence: the complete v3 core suite passed **58/58**, focused presentation coverage passed **13/13**, core/web typechecks, core lint, focused web lint, the unchanged 800-line ratchet, and diff hygiene all passed.
+
+### Phase 3 record — 2026-08-27
+
+- **Scope and commits:** W8–W15 are complete on gact-tui `codex/gact-tui-node-revamp` through `3e8c68ad`. The work restored CI/release truth, removed client-side semantic repairs after fixing the authoritative server projections, added an auditable presentation-override registry, made v3 decoding forward-compatible with typed degradation, locked the approved Full/Chain render contract, enforced current package boundaries, ported Flowcept/CMF execution provenance without merging the obsolete branch, and bound frontend fixtures to the real backend v3 projection.
+- **Cross-repo boundary:** the backend golden capture is explicitly pinned to clio-agent `654ff56c`; no frontend fixture invents a second semantic projection. Flowcept qualification and the W15 branch retirement remain recorded above. No ratchet baseline was raised and no acceptance was converted to a skip.
+- **Stop point:** Phase 3 is complete and pushed. **Phase 4 has not begun.** The next authorized work is W7 in `clio-schemas`, starting with its v3 conformance/schema boundary; this record does not claim that cross-repo contract, campaign-wide CI, Claude review, or merge acceptance.
 
 ## Phase 4 — W7: the cross-repo contract (clio-schemas)
 
