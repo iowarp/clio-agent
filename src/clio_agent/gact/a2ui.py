@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import json
-import math
 import re
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Literal, Mapping
+from typing import Any, Mapping
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, ValidationError, create_model
+from clio_schemas import A2UIClientActionMessage, A2UIComponent, trusted_component_names
+from pydantic import ValidationError
 
 from clio_agent.gact.protocol.constants import (
     A2UI_V091,
@@ -36,186 +36,6 @@ SERVER_ACTIONS = frozenset(
     {"agent.submit", "approval.respond", "form.submit", "run.retry", "run.cancel"}
 )
 CLIENT_ACTIONS = frozenset({"artifact.open", "data.select", "workflow.focus"})
-
-_COMPONENT_PROPS: dict[str, frozenset[str]] = {
-    "Text": frozenset({"text", "variant", "accessibility", "weight"}),
-    "Icon": frozenset({"name", "accessibility", "weight"}),
-    "Image": frozenset({"url", "description", "fit", "variant", "accessibility", "weight"}),
-    "Row": frozenset({"children", "justify", "align", "accessibility", "weight"}),
-    "Column": frozenset({"children", "justify", "align", "accessibility", "weight"}),
-    "Grid": frozenset({"children", "columns", "gap", "accessibility", "weight"}),
-    "List": frozenset({"children", "direction", "align", "listStyle", "accessibility", "weight"}),
-    "Frame": frozenset({"child", "title", "description", "accessibility", "weight"}),
-    "Tabs": frozenset({"tabs", "accessibility", "weight"}),
-    "Modal": frozenset({"trigger", "content", "accessibility", "weight"}),
-    "Divider": frozenset({"axis", "accessibility", "weight"}),
-    "Button": frozenset(
-        {
-            "child",
-            "variant",
-            "action",
-            "checks",
-            "isValid",
-            "validationErrors",
-            "accessibility",
-            "weight",
-        }
-    ),
-    "CheckBox": frozenset(
-        {"label", "value", "checks", "isValid", "validationErrors", "accessibility", "weight"}
-    ),
-    "TextField": frozenset(
-        {
-            "label",
-            "value",
-            "variant",
-            "validationRegexp",
-            "checks",
-            "isValid",
-            "validationErrors",
-            "accessibility",
-            "weight",
-        }
-    ),
-    "ChoicePicker": frozenset(
-        {
-            "label",
-            "variant",
-            "options",
-            "value",
-            "displayStyle",
-            "filterable",
-            "checks",
-            "isValid",
-            "validationErrors",
-            "accessibility",
-            "weight",
-        }
-    ),
-    "Slider": frozenset(
-        {
-            "label",
-            "min",
-            "max",
-            "value",
-            "checks",
-            "isValid",
-            "validationErrors",
-            "accessibility",
-            "weight",
-        }
-    ),
-    "clio.status.v1": frozenset(
-        {"label", "state", "detail", "elapsedMs", "accessibility", "weight"}
-    ),
-    "clio.metric.v1": frozenset(
-        {"label", "value", "unit", "trend", "detail", "accessibility", "weight"}
-    ),
-    "clio.progress.v1": frozenset(
-        {"label", "value", "max", "state", "detail", "accessibility", "weight"}
-    ),
-    "clio.callout.v1": frozenset(
-        {"title", "body", "severity", "action", "accessibility", "weight"}
-    ),
-    "clio.data-table.v1": frozenset(
-        {"columns", "rows", "selection", "action", "accessibility", "weight"}
-    ),
-    "clio.time-series.v1": frozenset(
-        {"series", "dataUri", "xKey", "yKeys", "title", "accessibility", "weight"}
-    ),
-    "clio.mermaid.v1": frozenset({"source", "title", "accessibility", "weight"}),
-    "clio.map.v1": frozenset(
-        {
-            "title",
-            "points",
-            "selected",
-            "action",
-            "actionLabel",
-            "accessibility",
-            "weight",
-        }
-    ),
-    "clio.workflow.v1": frozenset(
-        {"nodes", "edges", "selected", "action", "accessibility", "weight"}
-    ),
-    "clio.artifact.v1": frozenset(
-        {"name", "uri", "mediaType", "size", "action", "accessibility", "weight"}
-    ),
-    "clio.code.v1": frozenset({"code", "language", "title", "accessibility", "weight"}),
-    "clio.diff.v1": frozenset({"path", "diff", "status", "action", "accessibility", "weight"}),
-    "clio.action-card.v1": frozenset(
-        {"title", "body", "severity", "actions", "accessibility", "weight"}
-    ),
-    "clio.approval.v1": frozenset(
-        {"title", "reason", "risk", "actions", "accessibility", "weight"}
-    ),
-}
-
-# Keep the server acceptance boundary aligned with the renderer's required
-# fields.  Allow-listing property names alone can otherwise persist a surface as
-# ``ready`` even though the browser must reject it during schema validation.
-_COMPONENT_REQUIRED_PROPS: dict[str, frozenset[str]] = {
-    "Text": frozenset({"text"}),
-    "Icon": frozenset({"name"}),
-    "Image": frozenset({"url"}),
-    "Row": frozenset({"children"}),
-    "Column": frozenset({"children"}),
-    "Grid": frozenset({"children", "columns"}),
-    "List": frozenset({"children"}),
-    "Frame": frozenset({"child"}),
-    "Tabs": frozenset({"tabs"}),
-    "Modal": frozenset({"trigger", "content"}),
-    "Divider": frozenset(),
-    "Button": frozenset({"child"}),
-    "CheckBox": frozenset({"label", "value"}),
-    "TextField": frozenset({"label", "value"}),
-    "ChoicePicker": frozenset({"label", "options", "value"}),
-    "Slider": frozenset({"label", "min", "max", "value"}),
-    "clio.status.v1": frozenset({"label", "state"}),
-    "clio.metric.v1": frozenset({"label", "value"}),
-    "clio.progress.v1": frozenset({"label"}),
-    "clio.callout.v1": frozenset({"title", "body", "severity"}),
-    "clio.data-table.v1": frozenset({"columns", "rows"}),
-    "clio.time-series.v1": frozenset({"xKey", "yKeys"}),
-    "clio.mermaid.v1": frozenset({"source"}),
-    "clio.map.v1": frozenset({"points"}),
-    "clio.workflow.v1": frozenset({"nodes", "edges"}),
-    "clio.artifact.v1": frozenset({"name", "uri", "mediaType"}),
-    "clio.code.v1": frozenset({"code", "language"}),
-    "clio.diff.v1": frozenset({"path", "diff"}),
-    "clio.action-card.v1": frozenset({"title", "body", "severity", "actions"}),
-    "clio.approval.v1": frozenset({"title", "reason", "risk", "actions"}),
-}
-
-
-def _build_component_models() -> dict[str, type[BaseModel]]:
-    """Generate strict Pydantic component models from the interim catalog."""
-
-    models: dict[str, type[BaseModel]] = {}
-    for component_name, props in _COMPONENT_PROPS.items():
-        required = _COMPONENT_REQUIRED_PROPS[component_name]
-        fields: dict[str, Any] = {
-            "id": (str, ...),
-            "component": (Literal[component_name], ...),
-        }
-        for prop in props:
-            fields[prop] = (Any, ... if prop in required else None)
-        models[component_name] = create_model(
-            f"A2UI{re.sub(r'[^A-Za-z0-9]', '', component_name).title()}Component",
-            __config__=ConfigDict(extra="forbid"),
-            **fields,
-        )
-    return models
-
-
-_COMPONENT_MODELS = _build_component_models()
-
-
-def trusted_component_names() -> tuple[str, ...]:
-    """Return the interim trusted catalog used to generate producer guidance."""
-
-    return tuple(_COMPONENT_MODELS)
-
 
 _FORBIDDEN_KEYS = frozenset(
     {
@@ -369,89 +189,6 @@ def _validate_value(value: Any, *, key: str = "", depth: int = 0) -> None:
         _validate_value(child_value, key=child_key, depth=depth + 1)
 
 
-def _validate_map_component(component: Mapping[str, Any]) -> None:
-    """Apply the same bounded geospatial contract enforced by the renderer."""
-
-    points = component.get("points")
-    if not isinstance(points, list) or not 1 <= len(points) <= 500:
-        raise A2UIValidationError("A2UI map points must be a non-empty list bounded to 500")
-    allowed = {"id", "label", "latitude", "longitude", "detail", "category"}
-    for point in points:
-        if not isinstance(point, Mapping) or set(point) - allowed:
-            raise A2UIValidationError("A2UI map point contains unknown properties")
-        point_id = point.get("id")
-        label = point.get("label")
-        if not isinstance(point_id, str) or not 1 <= len(point_id) <= 128:
-            raise A2UIValidationError("A2UI map point id is required and bounded")
-        if not isinstance(label, str) or not 1 <= len(label) <= 240:
-            raise A2UIValidationError("A2UI map point label is required and bounded")
-        for key, lower, upper in (
-            ("latitude", -90.0, 90.0),
-            ("longitude", -180.0, 180.0),
-        ):
-            value = point.get(key)
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not math.isfinite(float(value))
-                or not lower <= float(value) <= upper
-            ):
-                raise A2UIValidationError(f"A2UI map point {key} is outside its valid range")
-        detail = point.get("detail")
-        category = point.get("category")
-        if detail is not None and (not isinstance(detail, str) or len(detail) > 2_000):
-            raise A2UIValidationError("A2UI map point detail exceeds the size limit")
-        if category is not None and (not isinstance(category, str) or len(category) > 120):
-            raise A2UIValidationError("A2UI map point category exceeds the size limit")
-    for key, limit in (("title", 240), ("selected", 128), ("actionLabel", 240)):
-        value = component.get(key)
-        if value is not None and (not isinstance(value, (str, Mapping)) or len(value) > limit):
-            raise A2UIValidationError(f"A2UI map {key} is invalid or exceeds the size limit")
-
-
-def _validate_time_series_component(component: Mapping[str, Any]) -> None:
-    """Validate the mutually exclusive inline and registered-artifact data paths."""
-
-    has_series = "series" in component
-    has_data_uri = "dataUri" in component
-    if has_series == has_data_uri:
-        raise A2UIValidationError(
-            "A2UI clio.time-series.v1 requires exactly one of series or dataUri"
-        )
-    x_key = component.get("xKey")
-    y_keys = component.get("yKeys")
-    if not isinstance(x_key, str) or not x_key.strip():
-        raise A2UIValidationError("A2UI time-series xKey must be a non-empty string")
-    if (
-        not isinstance(y_keys, list)
-        or not 1 <= len(y_keys) <= 5
-        or len(set(y_keys)) != len(y_keys)
-        or not all(isinstance(key, str) and key.strip() for key in y_keys)
-    ):
-        raise A2UIValidationError(
-            "A2UI time-series yKeys must contain one to five distinct column names"
-        )
-    if has_series:
-        series = component.get("series")
-        if (
-            not isinstance(series, list)
-            or not 1 <= len(series) <= 10_000
-            or not all(isinstance(row, Mapping) for row in series)
-        ):
-            raise A2UIValidationError(
-                "A2UI time-series series must be a non-empty list bounded to 10000 rows"
-            )
-        return
-    data_uri = component.get("dataUri")
-    if (
-        not isinstance(data_uri, str)
-        or re.fullmatch(r"artifact://artifact_[A-Za-z0-9_-]+", data_uri) is None
-    ):
-        raise A2UIValidationError(
-            "A2UI time-series dataUri must be artifact:// followed by a registered artifact id"
-        )
-
-
 def _validate_accessibility(component: Mapping[str, Any], component_name: str) -> None:
     """Mirror the official renderer's accessibility object at the server boundary.
 
@@ -486,6 +223,17 @@ def _validate_accessibility(component: Mapping[str, Any], component_name: str) -
             )
 
 
+def _component_validation_error(component_name: str, exc: ValidationError) -> str:
+    """Translate schema failures into stable CLIO boundary errors."""
+
+    for error in exc.errors():
+        location = tuple(error.get("loc", ()))
+        for coordinate in ("latitude", "longitude"):
+            if coordinate in location:
+                return f"A2UI map point {coordinate} is outside its valid range"
+    return f"A2UI {component_name} component shape is invalid: {exc.errors()}"
+
+
 def validate_server_message(message: Mapping[str, Any]) -> tuple[str, str]:
     """Validate an official server-to-client message and return operation/id."""
 
@@ -518,15 +266,12 @@ def validate_server_message(message: Mapping[str, Any]) -> tuple[str, str]:
             if not isinstance(component, Mapping):
                 raise A2UIValidationError("A2UI component must be an object")
             component_name = str(component.get("component") or "")
-            component_model = _COMPONENT_MODELS.get(component_name)
-            if component_model is None:
+            if component_name not in trusted_component_names():
                 raise A2UIValidationError(f"A2UI component is not trusted: {component_name}")
             try:
-                component_model.model_validate(component)
+                A2UIComponent.model_validate(component)
             except ValidationError as exc:
-                raise A2UIValidationError(
-                    f"A2UI {component_name} component shape is invalid: {exc.errors()}"
-                ) from exc
+                raise A2UIValidationError(_component_validation_error(component_name, exc)) from exc
             _validate_accessibility(component, component_name)
             if component_name == "clio.mermaid.v1":
                 source = component.get("source")
@@ -538,10 +283,6 @@ def validate_server_message(message: Mapping[str, Any]) -> tuple[str, str]:
                     raise A2UIValidationError(
                         "A2UI Mermaid source contains an executable or HTML directive"
                     )
-            if component_name == "clio.map.v1":
-                _validate_map_component(component)
-            if component_name == "clio.time-series.v1":
-                _validate_time_series_component(component)
     if operation == "updateDataModel":
         path = payload.get("path")
         if not isinstance(path, str) or not path.startswith("/"):
@@ -553,29 +294,17 @@ def validate_server_message(message: Mapping[str, Any]) -> tuple[str, str]:
 def validate_client_action(message: Mapping[str, Any], *, surface_id: str) -> dict[str, Any]:
     """Validate the official 0.9.1 client action envelope."""
 
-    if message.get("version") != A2UI_V091_WIRE or set(message) != {"version", "action"}:
-        raise A2UIValidationError(f"A2UI client message must be a {A2UI_V091_WIRE} action")
-    action = message.get("action")
-    if not isinstance(action, Mapping):
-        raise A2UIValidationError("A2UI action payload must be an object")
-    expected = {"name", "surfaceId", "sourceComponentId", "timestamp", "context"}
-    if set(action) != expected:
-        raise A2UIValidationError("A2UI action contains missing or unknown properties")
-    name = str(action.get("name") or "")
-    if name not in SERVER_ACTIONS:
-        raise A2UIValidationError(f"A2UI server action is not registered: {name}")
+    try:
+        parsed = A2UIClientActionMessage.model_validate(message)
+    except ValidationError as exc:
+        raise A2UIValidationError(
+            f"A2UI client message must be a {A2UI_V091_WIRE} action: {exc.errors()}"
+        ) from exc
+    action = parsed.action.model_dump(mode="json")
     if action.get("surfaceId") != surface_id:
         raise A2UIValidationError("A2UI action surface does not match the route")
-    if not str(action.get("sourceComponentId") or ""):
-        raise A2UIValidationError("A2UI action sourceComponentId is required")
-    try:
-        datetime.fromisoformat(str(action.get("timestamp") or "").replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise A2UIValidationError("A2UI action timestamp must be ISO 8601") from exc
-    if not isinstance(action.get("context"), Mapping):
-        raise A2UIValidationError("A2UI action context must be an object")
     _validate_value(action)
-    return dict(action)
+    return action
 
 
 def _apply_staged_message(

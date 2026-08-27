@@ -50,7 +50,7 @@ dependencies = [
     "openai-codex>=0.147.0,<0.148.0",
     "fastmcp==4.0.0b1",  # 2026-07-28 line (#1107); re-lock needs --prerelease=allow (beta).
     "fastmcp-tasks==4.0.0b1",
-    "clio-schemas==0.2.1",
+    "clio-schemas==0.2.2",
     "pydantic>=2.12,<2.14",
     "requests>=2.31.0",
     "h5py>=3.10.0",
@@ -272,4 +272,4 @@ also_copy = ["src/clio_agent/", "tests/"]
 override-dependencies = ["mcp>=2.0.0"]
 
 [tool.uv.sources]
-clio-schemas = { git = "https://github.com/iowarp/clio-schemas.git", tag = "v0.2.1" }
+clio-schemas = { git = "https://github.com/iowarp/clio-schemas.git", rev = "8074fda2c2aef417f924ed0d950629d7d7125343" }

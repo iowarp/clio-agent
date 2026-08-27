@@ -456,6 +456,43 @@ def test_registered_form_action_gets_a_server_surface_update(tmp_path: Path) -> 
     assert messages[-1]["updateDataModel"]["path"] == "/lastAction"
 
 
+def test_action_route_requires_a2ui_negotiation_and_tolerates_extensions(tmp_path: Path) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message()]},
+    )
+    action = {
+        "version": "v0.9.1",
+        "traceId": "trace_1",
+        "action": {
+            "name": "form.submit",
+            "surfaceId": "surface_1",
+            "sourceComponentId": "submit",
+            "timestamp": "2026-08-22T12:00:00Z",
+            "context": {"selection": "continue"},
+            "extension": {"source": "future-client"},
+        },
+    }
+
+    missing_version = client.post(
+        f"/v1/sessions/{sid}/a2ui/actions",
+        headers={"X-GACT-Version": "0.3"},
+        json={"message": action},
+    )
+    accepted = client.post(
+        f"/v1/sessions/{sid}/a2ui/actions",
+        headers=HEADERS,
+        json={"message": action},
+    )
+
+    assert missing_version.status_code == 406
+    assert missing_version.json()["error"]["error"] == "unsupported_protocol"
+    assert accepted.status_code == 200
+    assert accepted.json()["submitted"] == {"selection": "continue"}
+
+
 def test_unregistered_action_is_rejected(tmp_path: Path) -> None:
     client, sid, _ = _session_client(tmp_path)
     client.post(

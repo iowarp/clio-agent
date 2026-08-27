@@ -103,6 +103,12 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
         """Validate and dispatch a registered official A2UI client action."""
 
         sess = require_session(sid)
+        if getattr(request.state, "a2ui_protocol_version", None) != A2UI_V091:
+            raise _error(
+                406,
+                "unsupported_protocol",
+                f"A2UI {A2UI_V091} must be negotiated",
+            )
         body = await json_body(request, route="POST /v1/sessions/{sid}/a2ui/actions")
         if set(body) - {"message", "correlation"}:
             raise _error(422, "validation_error", "A2UI action body contains unknown fields")
