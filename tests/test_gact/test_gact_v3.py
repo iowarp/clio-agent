@@ -11,7 +11,7 @@ from clio_agent.gact.agent_tasks import seed_agent_task
 from clio_agent.gact.app import build_app
 from clio_agent.gact.events import Event
 from clio_agent.gact.parts import Part
-from clio_agent.gact.protocol_v3 import event_to_v3, part_to_v3_block
+from clio_agent.gact.protocol_v3 import event_to_v3, message_to_v3, part_to_v3_block
 from clio_agent.gact.types import Message, Tokens
 
 V3_HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
@@ -309,6 +309,46 @@ def test_v3_preserves_rowless_tool_thought_fallback() -> None:
     }
 
 
+def test_v3_text_defaults_to_the_server_owned_answer_channel() -> None:
+    block = part_to_v3_block(Part(id="part_answer", type="text", text="Observed result.").to_wire())
+
+    assert block["channel"] == "answer"
+
+
+def test_v3_message_deduplicates_repeated_artifact_references() -> None:
+    projected = message_to_v3(
+        Message(
+            id="msg_artifact",
+            session_id="sess_artifact",
+            role="assistant",
+            created_at="2026-08-22T00:00:00+00:00",
+            updated_at="2026-08-22T00:00:01+00:00",
+            parts=[
+                Part(
+                    id="artifact_first",
+                    type="resource_link",
+                    uri="artifact://report",
+                    metadata={"artifact_id": "artifact_report"},
+                ),
+                Part(
+                    id="artifact_duplicate",
+                    type="resource_link",
+                    uri="artifact://report",
+                    metadata={"artifact_id": "artifact_report"},
+                ),
+            ],
+        )
+    )
+
+    assert projected["blocks"] == [
+        {
+            "id": "artifact_first",
+            "type": "artifact",
+            "artifact_id": "artifact_report",
+        }
+    ]
+
+
 def test_v3_transcript_preserves_navigable_child_agent_semantics(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json")
     parent = app.state.sessions.create(workspace_id="ws_default", title="Flat NDP")
@@ -362,10 +402,56 @@ def test_v3_transcript_preserves_navigable_child_agent_semantics(tmp_path: Path)
             "agent_id": "geospatial",
             "title": "Resolve station region",
             "state": "completed",
-            "summary": "main <- geospatial",
+            "summary": "Resolved the region with authoritative coordinates.",
             "task": "Ground the requested region before catalog search.",
             "result": "Resolved the region with authoritative coordinates.",
             "duration_ms": 12_500.0,
+        }
+    ]
+
+
+def test_v3_projects_authoritative_child_relation_without_handoff_part(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    parent = app.state.sessions.create(workspace_id="ws_default", title="Parent")
+    child = seed_agent_task(
+        app,
+        parent_session_id=parent.id,
+        parent_turn_id="run_child",
+        agent_ref={"expert_id": "geospatial"},
+        task_id="task_child",
+        status="running",
+        run_label="Resolve Seattle",
+    )
+    app.state.agent_task_registry.transition(
+        child.task_id,
+        "completed",
+        result={"answer_excerpt": "Seattle resolved to an authoritative region."},
+    )
+
+    transcript = (
+        TestClient(app).get(f"/v1/sessions/{parent.id}/messages", headers=V3_HEADERS).json()
+    )
+
+    relation_message = transcript["messages"][0]
+    assert relation_message["id"] == "child-relation:task_child"
+    assert relation_message["blocks"] == [
+        {
+            "id": "child-relation-block:task_child",
+            "type": "subagent",
+            "subagent_id": "task_child",
+        }
+    ]
+    assert transcript["subagents"] == [
+        {
+            "id": "task_child",
+            "session_id": parent.id,
+            "parent_run_id": "run_child",
+            "child_session_id": child.child_session_id,
+            "agent_id": "geospatial",
+            "title": "Resolve Seattle",
+            "state": "completed",
+            "summary": "Seattle resolved to an authoritative region.",
+            "result": "Seattle resolved to an authoritative region.",
         }
     ]
 

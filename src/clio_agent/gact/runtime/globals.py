@@ -548,7 +548,7 @@ def _emit_react_step_event(
             parent_span_id=expert_span_id,
             status="completed",
             summary=(
-                f"{expert_id or 'expert'} ReAct step {step_index}: {str(tool_name) or 'finish'}"
+                f"{expert_id or 'expert'} model action {step_index}: {str(tool_name) or 'finish'}"
             ),
             actor={"agent_id": expert_id, "role": "expert"},
             payload={

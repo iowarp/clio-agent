@@ -213,8 +213,10 @@ def _subagent_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Pr
     raw_state = str(payload.get("live_state") or payload.get("status") or "interrupted")
     summary = payload.get("error_reason")
     result = payload.get("result")
+    answer_excerpt = ""
     if not summary and isinstance(result, Mapping):
-        summary = result.get("answer_excerpt")
+        answer_excerpt = str(result.get("answer_excerpt") or "")
+        summary = answer_excerpt
     projected = {
         "id": entity_id,
         "session_id": str(payload.get("parent_session_id") or event.session_id),
@@ -228,6 +230,7 @@ def _subagent_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Pr
             else {}
         ),
         **({"summary": str(summary)} if summary else {}),
+        **({"result": answer_excerpt} if answer_excerpt else {}),
     }
     return _Projection("subagent.upserted", projected, entity_id)
 

@@ -71,6 +71,12 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
         common["stream_source"] = str(metadata["stream_source"])
     if metadata.get("signature_field_name"):
         common["channel"] = str(metadata["signature_field_name"])
+    elif part_type == "text":
+        # Text parts are the model's visible answer channel unless the provider
+        # bridge explicitly identifies a richer signature field.  Keeping this
+        # server-owned means consumers never infer channel semantics by looking
+        # ahead for a tool call or comparing prose.
+        common["channel"] = "answer"
     if part_type == "text":
         return {
             "id": part_id,
@@ -199,6 +205,7 @@ def message_to_v3(message: Any) -> dict[str, Any]:
         role = "system"
     blocks: list[dict[str, Any]] = []
     tool_blocks: set[str] = set()
+    artifact_blocks: set[str] = set()
     for part in raw_parts:
         if not isinstance(part, Mapping):
             continue
@@ -211,6 +218,11 @@ def message_to_v3(message: Any) -> dict[str, Any]:
             if tool_id in tool_blocks:
                 continue
             tool_blocks.add(tool_id)
+        if block["type"] == "artifact":
+            artifact_id = str(block["artifact_id"])
+            if artifact_id in artifact_blocks:
+                continue
+            artifact_blocks.add(artifact_id)
         blocks.append(block)
     row: dict[str, Any] = {
         "id": str(wire.get("id") or ""),
@@ -244,7 +256,7 @@ def message_to_v3(message: Any) -> dict[str, Any]:
 class _TranscriptProjection:
     session_id: str
     wire: Mapping[str, Any]
-    subagent_links: Mapping[str, Mapping[str, str]]
+    subagent_links: Mapping[str, Mapping[str, Any]]
     tools: dict[str, dict[str, Any]] = field(default_factory=dict)
     tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
     subagents: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -306,17 +318,22 @@ def _project_subagent(
     agent_id = str(
         part.get("child_agent") or metadata.get("agent_id") or link.get("agent_id") or ""
     )
+    result = str(metadata.get("output") or link.get("result") or "")
+    summary = str(
+        metadata.get("summary") or link.get("summary") or result or part.get("text") or ""
+    )
+    task = str(metadata.get("question") or link.get("task") or "")
     context.subagents[subagent_id] = {
         "id": subagent_id,
         "session_id": context.session_id,
         "parent_run_id": str(context.wire.get("turn_id") or "") or None,
         "title": str(part.get("run_label") or link.get("title") or agent_id or "Subagent"),
         "state": str(part.get("live_state") or part.get("status") or "completed"),
-        "summary": str(part.get("text") or ""),
+        **({"summary": summary} if summary else {}),
         **({"agent_id": agent_id} if agent_id else {}),
         **({"child_session_id": child_session_id} if child_session_id else {}),
-        **({"task": str(metadata["question"])} if metadata.get("question") else {}),
-        **({"result": str(metadata["output"])} if metadata.get("output") else {}),
+        **({"task": task} if task else {}),
+        **({"result": result} if result else {}),
         **(
             {"duration_ms": float(part["duration_ms"])}
             if isinstance(part.get("duration_ms"), int | float)
@@ -366,7 +383,7 @@ def transcript_entities(
     messages: list[Any],
     session_id: str,
     *,
-    subagent_links: Mapping[str, Mapping[str, str]] | None = None,
+    subagent_links: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Return a normalized transcript snapshot and its referenced entities."""
 
@@ -401,6 +418,57 @@ def transcript_entities(
         tasks.update(context.tasks)
         subagents.update(context.subagents)
         artifacts.update(context.artifacts)
+
+    # A child task is an authoritative relation even when the parent has not yet
+    # persisted an expert_handoff part (for example, while detached work is still
+    # running).  Project that relation on the server so clients do not mint fake
+    # messages, processes, or subagent entities from the sessions list.
+    for subagent_id, link in (subagent_links or {}).items():
+        if subagent_id in subagents:
+            continue
+        child_session_id = str(link.get("child_session_id") or "")
+        agent_id = str(link.get("agent_id") or "")
+        summary = str(link.get("summary") or link.get("result") or "")
+        task = str(link.get("task") or "")
+        result = str(link.get("result") or "")
+        created_at = str(link.get("created_at") or utcnow_iso())
+        subagents[subagent_id] = {
+            "id": subagent_id,
+            "session_id": session_id,
+            "parent_run_id": str(link.get("parent_run_id") or "") or None,
+            "title": str(link.get("title") or agent_id or "Subagent"),
+            "state": str(link.get("state") or "interrupted"),
+            **({"child_session_id": child_session_id} if child_session_id else {}),
+            **({"agent_id": agent_id} if agent_id else {}),
+            **({"summary": summary} if summary else {}),
+            **({"task": task} if task else {}),
+            **({"result": result} if result else {}),
+            **(
+                {"duration_ms": float(link["duration_ms"])}
+                if isinstance(link.get("duration_ms"), int | float)
+                else {}
+            ),
+        }
+        projected_messages.append(
+            {
+                "id": f"child-relation:{subagent_id}",
+                "session_id": session_id,
+                "run_id": str(link.get("parent_run_id") or "") or None,
+                "role": "system",
+                "created_at": created_at,
+                "blocks": [
+                    {
+                        "id": f"child-relation-block:{subagent_id}",
+                        "type": "subagent",
+                        "subagent_id": subagent_id,
+                    }
+                ],
+                "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+                "cost_usd": 0.0,
+            }
+        )
+
+    projected_messages.sort(key=lambda message: str(message.get("created_at") or ""))
 
     surface_records, a2ui_degradations = project_a2ui_parts(transcript_parts, session_id)
     surfaces = list(surface_records.values())

@@ -30,7 +30,7 @@ unsupported-override error, and the agent-not-available error) travel on
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -539,14 +539,21 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         # never a string compare); a no-op for post-S2 rows.
         def project_v3() -> JSONResponse:
             task_registry = getattr(app.state, "agent_task_registry", None)
-            subagent_links: dict[str, dict[str, str]] = {}
+            subagent_links: dict[str, dict[str, Any]] = {}
             if task_registry is not None:
                 for task in task_registry.for_parent(sid):
                     agent_id = str(task.agent_ref.get("expert_id") or "")
+                    result = task.result if isinstance(task.result, Mapping) else {}
+                    answer_excerpt = str(result.get("answer_excerpt") or "")
                     subagent_links[task.task_id] = {
                         "child_session_id": str(task.child_session_id or ""),
                         "agent_id": agent_id,
                         "title": display_run_name(agent_id, task.run_index, task.run_label),
+                        "state": str(task.live_state or task.status),
+                        "parent_run_id": str(task.parent_turn_id or ""),
+                        "created_at": str(task.created_at or ""),
+                        "summary": str(task.error_reason or answer_excerpt),
+                        "result": answer_excerpt,
                     }
             snapshot = transcript_entities(rows, sid, subagent_links=subagent_links)
             snapshot["cursor"] = str(app.state.bus.latest_event_id(sid))
