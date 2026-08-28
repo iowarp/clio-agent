@@ -10,10 +10,24 @@ from typing import Any
 import pytest
 from fastmcp import FastMCP
 from mcp.shared.exceptions import MCPError
+from pydantic import BaseModel
 
 from clio_agent.tools.execution import SyncMCPToolExecutor
 from clio_agent.tools.mcp_executor import AsyncMCPToolExecutor
 from clio_agent.tools.mcp_results import call_tool_result_to_observer
+
+
+class _FakeJarvisRunResult(BaseModel):
+    """Fake typed FastMCP result mimicking a generated ``jarvis_run`` ``Root`` model.
+
+    Module-level (not defined inside a test function) so
+    ``scripts/check_no_class_in_function.py`` accepts it.
+    """
+
+    task_id: str
+    job_id: str
+    state: str
+    terminal: bool
 
 
 class _ResultClient:
@@ -293,6 +307,94 @@ def test_result_to_text_still_prefers_json_for_encodable_values() -> None:
     from clio_agent.tools.mcp_executor import _result_to_text
 
     assert _result_to_text([{"a": 1}, {"b": 2}]) == json.dumps([{"a": 1}, {"b": 2}])
+
+
+def test_result_to_text_pydantic_model_serializes_to_json_without_repr_fallback(
+    caplog,
+) -> None:
+    """A typed pydantic ``BaseModel`` result (e.g. FastMCP's generated ``Root``)
+    must serialize via ``model_dump(mode="json")``, not degrade to repr text.
+
+    Live consequence (case13 S3 grind): five ``jarvis_run`` results reached
+    the client as a typed model rather than a plain ``structuredContent``
+    dict, and rendered to the model as ``"Root(task_id='...', ...)"`` repr
+    text -- worse grounding, and invisible to dict-only structured-evidence
+    matchers (agent-test's ``_has_task_envelope``). This is a proper
+    serialization path, not a degradation: it must never touch the
+    repr-fallback reason.
+    """
+
+    from clio_agent.tools.mcp_executor import (
+        MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON,
+        _result_to_text,
+    )
+
+    payload = _FakeJarvisRunResult(
+        task_id="task-1", job_id="job-1", state="RUNNING", terminal=False
+    )
+    # ``data`` sits on ``result.data``, exactly where a real FastMCP
+    # ``CallToolResult`` carries its client-side structured projection.
+    result = SimpleNamespace(data=payload, content=[])
+
+    with caplog.at_level("WARNING"):
+        text = _result_to_text(result)
+
+    assert json.loads(text) == {
+        "task_id": "task-1",
+        "job_id": "job-1",
+        "state": "RUNNING",
+        "terminal": False,
+    }
+    assert MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON not in caplog.text
+
+
+def test_result_to_text_nested_pydantic_model_serializes_to_json(caplog) -> None:
+    """A pydantic ``BaseModel`` nested inside a dict/list container must also
+    serialize via ``model_dump(mode="json")``, not only when it sits at the
+    top level of ``result.data``."""
+
+    from clio_agent.tools.mcp_executor import (
+        MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON,
+        _result_to_text,
+    )
+
+    payload = {
+        "results": [
+            _FakeJarvisRunResult(task_id="task-1", job_id="job-1", state="COMPLETE", terminal=True)
+        ]
+    }
+    result = SimpleNamespace(data=payload, content=[])
+
+    with caplog.at_level("WARNING"):
+        text = _result_to_text(result)
+
+    assert json.loads(text) == {
+        "results": [{"task_id": "task-1", "job_id": "job-1", "state": "COMPLETE", "terminal": True}]
+    }
+    assert MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON not in caplog.text
+
+
+def test_result_to_text_unserializable_object_still_falls_back_with_typed_reason(
+    caplog,
+) -> None:
+    """A genuinely non-serializable object (no pydantic escape hatch) must
+    still take the repr fallback WITH the typed reason -- the fallback and
+    its typed reason stay in place for values with no real JSON mapping;
+    the pydantic hook only ADDS a serialization path, it never suppresses
+    this one."""
+
+    from clio_agent.tools.mcp_executor import (
+        MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON,
+        _result_to_text,
+    )
+
+    payload = object()
+
+    with caplog.at_level("WARNING"):
+        text = _result_to_text(payload)
+
+    assert text == str(payload)
+    assert MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON in caplog.text
 
 
 @pytest.mark.asyncio
