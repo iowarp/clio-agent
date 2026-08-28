@@ -41,6 +41,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+from mcp.types import Tool as McpTool
+
+from clio_agent.agent import ClioAgent
 from clio_agent.gact.agents.builders import _resolve_declared_tools_with_on_demand_mount
 from clio_agent.tools.gateway import (
     build_gateway,
@@ -50,6 +53,8 @@ from clio_agent.tools.gateway import (
     namespace_specs,
 )
 from clio_agent.tools.jarvis_jobs import JARVIS_TOOL_NAMES, JarvisJobs
+from clio_agent.tools.relay_transport import RelayRemoteMcpCatalog
+from clio_agent.tools.remote_mcp import RemoteMcpFederation
 
 
 class _RecordingExecutor:
@@ -141,3 +146,53 @@ def test_list_jarvis_tool_definitions_prefixes_and_covers_all_six() -> None:
     assert set(definitions) == set(JARVIS_TOOL_NAMES)
     for name, tool in definitions.items():
         assert tool.name == name
+
+
+def _client_factory_never_called() -> Any:
+    raise AssertionError("client factory must not be opened during agent construction")
+
+
+def test_real_agent_construction_seeds_jarvis_and_relay_fetch_artifact() -> None:
+    """PINS ``ClioAgent._build_tool_gateway``'s seeding call site (agent.py
+    ~389-392) -- the review's D1 finding: pre-fix that call site was pinned
+    by NOTHING, since every other test in this file (above) re-implements
+    the builtins+relay+jarvis composition by hand instead of constructing a
+    real ``ClioAgent``. Reverting the seeding call left the full suite green.
+
+    Constructs a REAL ``ClioAgent`` with a jarvis surface AND a relay
+    federation carrying the follow-server-mounted ``relay_fetch_artifact``
+    tool (#1200), and asserts both land on ``agent._tool_definitions`` -- the
+    dict every executor's ``preloaded_tools`` and ``/v1/tools`` actually
+    read. Both client factories raise if ever opened: construction is proven
+    I/O-free (nothing here ever dispatches a real call), so this stays a fast
+    unit test."""
+
+    jarvis = JarvisJobs(_client_factory_never_called)
+    catalog = RelayRemoteMcpCatalog(
+        revision="d" * 64,
+        tools={},
+        follow_tools={
+            "relay_wait": McpTool(
+                name="relay_wait",
+                inputSchema={"type": "object", "properties": {"job_id": {"type": "string"}}},
+            )
+        },
+    )
+    federation = RemoteMcpFederation(
+        catalog, _client_factory_never_called, cluster_hint="ares-p5run2"
+    )
+
+    agent = ClioAgent(remote_mcp_federation=federation, jarvis_jobs=jarvis)
+    try:
+        assert agent._tool_definitions is not None, (
+            "boot-preload catalog derivation must not have degraded"
+        )
+        names = set(agent._tool_definitions)
+        assert set(JARVIS_TOOL_NAMES) <= names, (
+            "the curated jarvis_* tools must seed at real ClioAgent construction"
+        )
+        assert "relay_fetch_artifact" in names, (
+            "the follow-server-mounted relay_fetch_artifact tool must seed too"
+        )
+    finally:
+        agent.shutdown()

@@ -443,3 +443,23 @@ def test_refresh_agent_relay_tool_surfaces_jarvis_only_change_is_not_skipped(
     assert agent.tool_executor is not old_executor
     assert agent._jarvis_jobs is surfaces.jarvis_jobs
     assert "jarvis_run" in agent._tool_definitions, "jarvis definitions must reseed on refresh"
+
+
+def test_refresh_agent_relay_tool_surfaces_surfaces_double_missing_jarvis_attr_is_a_noop() -> None:
+    """D3 (review finding): a bare ``surfaces.jarvis_jobs`` read before the
+    guard raised ``AttributeError`` on a surfaces double lacking that
+    attribute -- pre-fix a no-op case, since the module's own convention
+    (``relay_install`` a few lines below) is ``getattr(..., None)``, absent
+    treated exactly like an explicit None. A double with no ``jarvis_jobs``
+    attribute at all, plus an unchanged federation, must still clean no-op:
+    no epoch bump, no rebuild, no exception."""
+
+    agent = _FakeGatewayAgent()
+    old_executor = agent.tool_executor
+    surfaces = SimpleNamespace(remote_mcp_federation=None, status={"configured": False})
+
+    relay_wiring._refresh_agent_relay_tool_surfaces(agent, surfaces)
+
+    assert getattr(agent, "_relay_federation_epoch", 0) == 0
+    assert agent.gateway_builds == 0
+    assert agent.tool_executor is old_executor
