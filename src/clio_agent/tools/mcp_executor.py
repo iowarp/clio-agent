@@ -26,6 +26,7 @@ from clio_agent.tools.mcp_connection_era import (
     resolved_connect_mode,
 )
 from clio_agent.tools.mcp_errors import typed_mcp_call_error, typed_mcp_protocol_error
+from clio_agent.tools.mcp_result_json import pydantic_json_default
 from clio_agent.tools.mcp_result_projection import (
     MAX_MODEL_TOOL_RESULT_CHARS as MAX_MODEL_TOOL_RESULT_CHARS,
 )
@@ -39,21 +40,27 @@ from clio_agent.tools.mcp_runtime import make_mcp_client
 from clio_agent.tools.mcp_timeout_budget import component_declared_timeout_seconds
 
 logger = logging.getLogger(__name__)
+
+
 class MCPClientProtocol(Protocol):
     """Subset of FastMCP client methods used by the bridge."""
 
     async def __aenter__(self) -> "MCPClientProtocol":
         """Enter the client context."""
         ...
+
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool | None:
         """Exit the client context."""
         ...
+
     async def list_tools(self) -> list[Any]:
         """List tools exposed by the backing server."""
         ...
+
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         """Call a named tool on the backing server."""
         ...
+
     async def read_resource(self, uri: str) -> Any:
         """Read a resource from the backing server."""
         ...
@@ -75,6 +82,8 @@ class _MCPCallOutcome:
     model_text: str
     raw_result: Any
     source_namespace: str | None
+
+
 # Per-tool wall-clock timeouts are domain-specific and now come from MCP
 # server declarations (a server's ``timeout`` maps into ``tool_timeouts``),
 # not from a hardcoded core table. Core ships no default overrides.
@@ -616,15 +625,7 @@ class AsyncMCPToolExecutor:
         self._call_lock = None
 
 
-#: Finding E (proven degradation, tools/mcp_executor.py review): the
-#: last-resort ``str(data)`` fallback below reintroduces Python repr text on
-#: the wire -- the exact defect ``_result_to_text`` exists to close for the
-#: JSON-encodable case. It stays, because a handful of values genuinely have
-#: no JSON mapping, but the degradation is never silent: this typed reason
-#: reaches the log the same way every other degradation in this package does
-#: (``execution.py``'s ``reason=tool_observer_failed`` /
-#: ``reason=file_policy_unavailable`` idiom; ``gateway.py``'s
-#: ``reason=%s`` degrade logs).
+#: Typed reason for the logged repr fallback when no real JSON mapping exists.
 MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON = "mcp_result_to_text_repr_fallback"
 
 
@@ -759,8 +760,7 @@ def _result_to_text(result: Any) -> str:
     (TEXT blocks verbatim, everything else a short placeholder -- never raw
     base64 in the model-facing lane).
 
-    ``allow_nan=False`` keeps NaN/Infinity out of the encoded text: Python's
-    ``json`` module happily emits the non-standard tokens ``NaN`` / ``Infinity``
+    ``allow_nan=False`` keeps Python's non-standard NaN/Infinity out of encoded text;
     by default, which is invalid JSON everywhere else, so they are routed to
     the same typed fallback as any other unencodable value instead of landing
     on the wire as JSON that isn't actually valid JSON. The fallback itself
@@ -770,9 +770,7 @@ def _result_to_text(result: Any) -> str:
     pathologically self-referential structure exhausting the recursion limit
     before json's own cycle guard fires), ``OverflowError`` (an int outside
     the encoder's range) -- and logs a structured, typed reason
-    (:data:`MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON`) before returning the
-    repr text, so the degradation reaches the log/trace channel instead of
-    silently reintroducing repr-on-the-wire.
+    (:data:`MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON`) before returning repr.
     """
     data = getattr(result, "data", result)
     if isinstance(data, str):
@@ -790,7 +788,9 @@ def _result_to_text(result: Any) -> str:
             if placeholder:
                 return _bounded_model_tool_result(placeholder)
     try:
-        return _bounded_model_tool_result(json.dumps(data, allow_nan=False))
+        return _bounded_model_tool_result(
+            json.dumps(data, allow_nan=False, default=pydantic_json_default)
+        )
     except (TypeError, ValueError, RecursionError, OverflowError) as exc:
         logger.warning(
             "mcp result to text degraded to repr fallback reason=%s type=%s error=%s",

@@ -112,10 +112,18 @@ RATCHET_BASELINE: dict[str, int] = {
     # (mirrors the existing jarvis_jobs param exactly). All logic (the five
     # curated tools, the subprocess job runner) lives in the owner modules
     # tools/relay_install_surface.py / tools/relay_cli_runner.py; only the
-    # constructor field + one forwarding line land here. Phase 2 had already
-    # reduced this owner from 1017 to 1011; the merged six-line seam restores
-    # the measured 1017 count without inheriting develop's stale 1023 ceiling.
-    "src/clio_agent/agent.py": 1017,  # blueprint activation moved to gact/blueprint_activation.py
+    # constructor field + one forwarding line land here.
+    # v1.7.0 live-verification campaign (final blocker): +5 for the
+    # list_jarvis_tool_definitions import + its _tool_definitions.update()
+    # call site in _build_tool_gateway, mirroring the existing
+    # list_relay_tool_definitions call immediately above it (the curated
+    # JARVIS surface was never seeded into the boot preload at all -- the
+    # six jarvis_* tools bricked custom_agent_tools_unavailable with an
+    # empty mount_failures map on every cold boot). The listing logic itself
+    # lives in the owner module tools/gateway.py; only the call site is here.
+    # The campaign's blueprint extraction offsets six lines from that merged
+    # seam; the synchronized owner is measured at 1022 lines.
+    "src/clio_agent/agent.py": 1022,  # blueprint activation moved to gact/blueprint_activation.py
     "src/clio_agent/arc/memory.py": 1389,  # provider ladder moved to provenance_config.py
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -795,7 +803,22 @@ RATCHET_BASELINE: dict[str, int] = {
     # guard + _mount_with_namespace + registry entry). The curated tools + the
     # subprocess job runner live entirely in the owner modules
     # tools/relay_install_surface.py / tools/relay_cli_runner.py.
-    "src/clio_agent/tools/gateway.py": 867,
+    # v1.7.0 live-verification campaign (final blocker): +35 for two new
+    # boot-preload functions mirroring list_builtin_tool_definitions's own
+    # shape. list_jarvis_tool_definitions lists the curated JARVIS surface's
+    # in-process server (no I/O) -- the six jarvis_* tools were never seeded
+    # into ClioAgent._tool_definitions at all, so they bricked
+    # custom_agent_tools_unavailable with an EMPTY mount_failures map on
+    # every cold boot (jarvis carries no MCPServerSpec, so the on-demand-
+    # mount fallback in gact/agents/builders.py never even attempted a
+    # mount). list_relay_tool_definitions gained a second seed straight off
+    # federation.follow_server for relay_fetch_artifact (#1200), which is
+    # clio-agent's own tool and was never a catalog.follow_tools key, so the
+    # existing catalog-only loop missed it the same way. Trimmed to the two
+    # functions' irreducible bodies + minimal docstrings before accepting
+    # this ratchet (house precedent: gact/transcript.py's discard_open_text
+    # entry). Ratchets back with the #714/#767 decomposition.
+    "src/clio_agent/tools/gateway.py": 902,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.

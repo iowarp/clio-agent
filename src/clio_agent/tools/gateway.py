@@ -451,6 +451,11 @@ def list_relay_tool_definitions(federation: Any) -> dict[str, Any]:
     builtins-only, and every custom-agent ACL naming a relay tool bricked
     typed (L3 runs 4-9: ``available=['fs_*', 'shell_bash']`` with
     ``federation=present``).
+
+    ``relay_fetch_artifact`` (#1200, v1.7.0 gap): clio-agent's own tool,
+    mounted onto ``follow_server`` outside ``catalog.follow_tools`` so the
+    loop above misses it; seeded off the mounted server itself (no I/O).
+    Plain assignment lets this SERVED projection win over the raw catalog.
     """
 
     if federation is None:
@@ -462,6 +467,36 @@ def list_relay_tool_definitions(federation: Any) -> dict[str, Any]:
     for source in (getattr(catalog, "tools", {}), getattr(catalog, "follow_tools", {})):
         for name, tool in dict(source).items():
             tools[str(name)] = tool
+    follow_server = getattr(federation, "follow_server", None)
+    if follow_server is not None:
+        from clio_agent.tools.remote_mcp import RELAY_FOLLOW_NAMESPACE  # noqa: PLC0415
+
+        for tool in _list_tools_sync(follow_server):
+            prefixed = f"{RELAY_FOLLOW_NAMESPACE}_{tool.name}"
+            tools[prefixed] = tool.model_copy(update={"name": prefixed})
+    return tools
+
+
+def list_jarvis_tool_definitions(jarvis_jobs: Any) -> dict[str, Any]:
+    """List the curated JARVIS surface's tools — fast, no I/O (v1.7.0 gap).
+
+    ``jarvis_jobs.server`` is in-process (no transport), like fs/shell.
+    Pre-fix, the six ``jarvis_*`` tools were absent from every snapshot AND
+    unreachable via on-demand mount (``jarvis`` has no ``MCPServerSpec``) —
+    a silent no-attempt brick even on a fully-discovered cold boot.
+    """
+
+    if jarvis_jobs is None:
+        return {}
+    server = getattr(jarvis_jobs, "server", None)
+    if server is None:
+        return {}
+    from clio_agent.tools.jarvis_jobs import JARVIS_NAMESPACE  # noqa: PLC0415
+
+    tools: dict[str, Any] = {}
+    for tool in _list_tools_sync(server):
+        prefixed = f"{JARVIS_NAMESPACE}_{tool.name}"
+        tools[prefixed] = tool.model_copy(update={"name": prefixed})
     return tools
 
 

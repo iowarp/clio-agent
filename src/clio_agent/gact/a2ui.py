@@ -268,11 +268,12 @@ def validate_server_message(message: Mapping[str, Any]) -> tuple[str, str]:
             component_name = str(component.get("component") or "")
             if component_name not in trusted_component_names():
                 raise A2UIValidationError(f"A2UI component is not trusted: {component_name}")
+            _validate_accessibility(component, component_name)
+            _validate_value(component)
             try:
                 A2UIComponent.model_validate(component)
             except ValidationError as exc:
                 raise A2UIValidationError(_component_validation_error(component_name, exc)) from exc
-            _validate_accessibility(component, component_name)
             if component_name == "clio.mermaid.v1":
                 source = component.get("source")
                 if isinstance(source, str) and re.search(
