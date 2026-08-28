@@ -31,6 +31,7 @@ from clio_agent.tools.mcp_connection_era import (
     resolved_connect_mode,
 )
 from clio_agent.tools.mcp_errors import typed_mcp_call_error, typed_mcp_protocol_error
+from clio_agent.tools.mcp_result_json import pydantic_json_default
 from clio_agent.tools.mcp_runtime import make_mcp_client
 from clio_agent.tools.mcp_timeout_budget import component_declared_timeout_seconds
 
@@ -626,9 +627,8 @@ class AsyncMCPToolExecutor:
 #: JSON-encodable case. It stays, because a handful of values genuinely have
 #: no JSON mapping, but the degradation is never silent: this typed reason
 #: reaches the log the same way every other degradation in this package does
-#: (``execution.py``'s ``reason=tool_observer_failed`` /
-#: ``reason=file_policy_unavailable`` idiom; ``gateway.py``'s
-#: ``reason=%s`` degrade logs).
+#: (``execution.py``'s ``reason=tool_observer_failed`` / ``reason=file_policy_unavailable``
+#: idiom; ``gateway.py``'s ``reason=%s`` degrade logs).
 MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON = "mcp_result_to_text_repr_fallback"
 
 
@@ -794,7 +794,7 @@ def _result_to_text(result: Any) -> str:
             if placeholder:
                 return placeholder
     try:
-        return json.dumps(data, allow_nan=False)
+        return json.dumps(data, allow_nan=False, default=pydantic_json_default)
     except (TypeError, ValueError, RecursionError, OverflowError) as exc:
         logger.warning(
             "mcp result to text degraded to repr fallback reason=%s type=%s error=%s",
