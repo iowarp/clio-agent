@@ -220,6 +220,7 @@ def test_boot_passes_discovered_relay_surfaces_into_clio_agent(monkeypatch, tmp_
             jarvis_jobs=jarvis,
             relay_install=relay_install,
             status={"configured": True, "reason": None},
+            relay_install=None,
         )
 
     monkeypatch.setattr(relay_module, "discover_relay_tool_surfaces", fake_discover, raising=False)
