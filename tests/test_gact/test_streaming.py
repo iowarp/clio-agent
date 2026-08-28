@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -93,7 +94,28 @@ class _FakeStreamListener:
 def app_client(tmp_path: Path):
     answer = "X" * 200  # 200 chars -> 4 chunks at 64-char window.
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent(answer))
-    return app, TestClient(app), answer
+    # Keep one app-lifetime portal for the fixture. Constructing TestClient
+    # without entering it gives each request a transient portal; a turn that
+    # correctly outlives POST /messages can then race that portal's teardown.
+    with TestClient(app) as client:
+        yield app, client, answer
+
+
+def _wait_for_turn_settlement(app: Any, sid: str, timeout: float = 5.0) -> None:
+    """Wait on the owned turn task without polling or changing turn semantics."""
+
+    task = app.state.in_flight_turns.get(sid)
+    if task is None:
+        return
+
+    settled = threading.Event()
+
+    def _observe() -> None:
+        task.add_done_callback(lambda _finished: settled.set())
+
+    app.state.turn_runner.call_soon_threadsafe(_observe)
+    assert settled.wait(timeout), "background turn did not settle before event assertions"
+    assert not app.state.turn_runner.busy(sid)
 
 
 def _assert_structured_stream_fallback(payload: dict[str, Any], reason: str) -> None:
@@ -116,6 +138,7 @@ def test_batch_text_is_delivered_without_deltas(app_client) -> None:
         f"/v1/sessions/{sid}/messages",
         json={"parts": [{"type": "text", "text": "stream me"}]},
     )
+    _wait_for_turn_settlement(app, sid)
 
     history = app.state.bus._history.get(sid, [])
     added = [
@@ -825,6 +848,7 @@ def test_message_events_carry_turn_id_and_stream_source_batch(app_client) -> Non
         f"/v1/sessions/{sid}/messages",
         json={"parts": [{"type": "text", "text": "correlate me"}]},
     )
+    _wait_for_turn_settlement(app, sid)
 
     history = app.state.bus._history.get(sid, [])
     turn_id = _turn_id_of(history)
