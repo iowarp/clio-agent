@@ -34,6 +34,8 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.agent_tasks import STATUS_CANCELLED, STATUS_RUNNING
 from clio_agent.gact.app import build_app
+from clio_agent.gact.permission_gate import _make_permission_gate
+from clio_agent.gact.runtime.globals import _tool_session_context
 from clio_agent.gact.spotter_watcher import (
     _WAKE_COALESCED_TEXT,
     _WAKE_TURN_FINAL_TEXT,
@@ -42,6 +44,7 @@ from clio_agent.gact.spotter_watcher import (
     _wake_text,
     ensure_spotter_watcher,
     on_turn_finalized,
+    wait_for_spotter_clearance,
     wake_on_parent_activity,
 )
 
@@ -405,7 +408,9 @@ def test_parent_tool_completion_wakes_exactly_one_check_turn(tmp_path: Path) -> 
         )
 
         assert _wait_for(lambda: len(agent.calls) == 1)
-        assert "phenotype_measure_cohort completed (5 runs reported)" in agent.calls[0]
+        assert (
+            "phenotype_measure_cohort completed (5 runs reported: r1 through r5)" in agent.calls[0]
+        )
         assert "provenance" in agent.calls[0]
 
         # Exactly one check turn: no duplicate/second forward call.
@@ -490,6 +495,91 @@ def test_live_state_flips_waiting_running_waiting_across_a_wake(tmp_path: Path) 
 
 
 @pytest.mark.usefixtures("host_agent_executor")
+def test_clearance_waits_until_running_watcher_releases_its_turn(tmp_path: Path) -> None:
+    """A subsequent protected call cannot overtake the active watcher check."""
+
+    block = threading.Event()
+    agent = _CapturingAgent(block_until=block)
+    app, root_path = _build_app_with_watcher_blueprint(tmp_path, agent)
+    with TestClient(app) as client:
+        wid = _make_workspace(client, root_path)
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "t", "workspace_id": wid, "approval_mode": "spotter-ai"},
+        ).json()["id"]
+        child_sid = app.state.agent_task_registry.for_parent(sid)[0].child_session_id
+
+        wake_on_parent_activity(
+            app,
+            sid,
+            tool_name="phenotype_measure_cohort",
+            result={"runs": [{"run_id": "run-001"}]},
+        )
+        assert _wait_for(lambda: app.state.turn_runner.busy(child_sid))
+
+        result: list[bool] = []
+        waiter = threading.Thread(
+            target=lambda: result.append(wait_for_spotter_clearance(app, sid, timeout_s=10.0))
+        )
+        waiter.start()
+        time.sleep(0.1)
+        assert waiter.is_alive()
+
+        block.set()
+        waiter.join(timeout=10.0)
+        assert not waiter.is_alive()
+        assert result == [True]
+
+
+@pytest.mark.usefixtures("host_agent_executor")
+def test_permission_boundary_does_not_register_next_mutation_until_watcher_clears(
+    tmp_path: Path,
+) -> None:
+    """The real tool gate applies the clearance barrier before asking/allowing."""
+
+    block = threading.Event()
+    agent = _CapturingAgent(block_until=block)
+    app, root_path = _build_app_with_watcher_blueprint(tmp_path, agent)
+    with TestClient(app) as client:
+        wid = _make_workspace(client, root_path)
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "t", "workspace_id": wid, "approval_mode": "spotter-ai"},
+        ).json()["id"]
+        child_sid = app.state.agent_task_registry.for_parent(sid)[0].child_session_id
+
+        wake_on_parent_activity(
+            app,
+            sid,
+            tool_name="phenotype_measure_cohort",
+            result={"runs": [{"run_id": "run-001"}]},
+        )
+        assert _wait_for(lambda: app.state.turn_runner.busy(child_sid))
+
+        gate = _make_permission_gate(app)
+        result: dict[str, str] = {}
+
+        def _call_gate() -> None:
+            with _tool_session_context(sid):
+                result["decision"] = gate("phenotype_measure_cohort", {"runs": 5})
+
+        caller = threading.Thread(target=_call_gate)
+        caller.start()
+        time.sleep(0.1)
+        assert caller.is_alive()
+        assert app.state.permissions == {}
+
+        block.set()
+        assert _wait_for(lambda: bool(app.state.permissions))
+        permission_id = next(iter(app.state.permissions))
+        response = client.post(f"/v1/permissions/{permission_id}", json={"action": "allow_session"})
+        assert response.status_code == 204
+        caller.join(timeout=3.0)
+        assert not caller.is_alive()
+        assert result == {"decision": "allow"}
+
+
+@pytest.mark.usefixtures("host_agent_executor")
 def test_user_message_to_waiting_watcher_works_and_returns_to_waiting(tmp_path: Path) -> None:
     """A direct "Discuss" message to the watcher's own session must work like
     any ordinary session turn while it is "waiting", and must not break the
@@ -571,7 +661,11 @@ def test_tool_outcome_fact_reports_a_list_valued_entrys_length() -> None:
         _tool_outcome_fact({"campaign": None, "runs_checked": 10, "verdicts": [1, 2, 3]})
         == "3 verdicts reported"
     )
-    assert _tool_outcome_fact({"runs": ["a", "b", "c", "d", "e"]}) == "5 runs reported"
+    assert _tool_outcome_fact({"runs": ["a", "b", "c", "d", "e"]}) == "5 runs reported: a through e"
+    assert (
+        _tool_outcome_fact({"runs": [{"run_id": "run-006"}, {"run_id": "run-010"}]})
+        == "2 runs reported: run-006 through run-010"
+    )
 
 
 def test_tool_outcome_fact_is_empty_when_nothing_list_shaped() -> None:

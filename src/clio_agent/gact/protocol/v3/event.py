@@ -135,7 +135,7 @@ def _tool_started(event: Event, payload: dict[str, Any], session: Any) -> _Proje
     projected = {
         "id": entity_id,
         "session_id": event.session_id,
-        "run_id": str(payload.get("turn_id") or "") or None,
+        **({"run_id": str(payload["turn_id"])} if payload.get("turn_id") else {}),
         "name": str(payload.get("tool") or "Tool"),
         **({"title": str(payload["tool_title"])} if payload.get("tool_title") else {}),
         "state": "running",
@@ -220,7 +220,11 @@ def _subagent_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Pr
     projected = {
         "id": entity_id,
         "session_id": str(payload.get("parent_session_id") or event.session_id),
-        "parent_run_id": str(payload.get("parent_turn_id") or "") or None,
+        **(
+            {"parent_run_id": str(payload["parent_turn_id"])}
+            if payload.get("parent_turn_id")
+            else {}
+        ),
         "title": title,
         "state": _LIVE_WORK_STATE.get(raw_state, "interrupted"),
         "agent_id": expert_id,

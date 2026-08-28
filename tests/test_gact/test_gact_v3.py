@@ -472,6 +472,31 @@ def test_v3_projects_authoritative_child_relation_without_handoff_part(tmp_path:
     ]
 
 
+def test_v3_omits_missing_parent_run_from_authoritative_child_relation(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    parent = app.state.sessions.create(workspace_id="ws_default", title="Parent")
+    child = seed_agent_task(
+        app,
+        parent_session_id=parent.id,
+        parent_turn_id="",
+        agent_ref={"expert_id": "spotter_watcher"},
+        task_id="task_watcher",
+        status="waiting",
+        run_label="SPOTTER AI",
+    )
+
+    transcript = (
+        TestClient(app).get(f"/v1/sessions/{parent.id}/messages", headers=V3_HEADERS).json()
+    )
+
+    relation_message = transcript["messages"][0]
+    assert relation_message["id"] == "child-relation:task_watcher"
+    assert "run_id" not in relation_message
+    subagent = transcript["subagents"][0]
+    assert subagent["child_session_id"] == child.child_session_id
+    assert "parent_run_id" not in subagent
+
+
 def test_v3_action_card_preserves_labels_and_safe_client_behavior(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="Working SPOTTER")

@@ -591,6 +591,29 @@ def _make_permission_gate(app: "FastAPI"):
         # Prefer the session currently driving the turn. Recency is
         # only a fallback for truly out-of-band tool calls.
         sid, current = _resolve_tool_session(app)
+        # Standing SPOTTER surveillance is asynchronous, but protected work is
+        # causally ordered: a new mutating tool call may not overtake the
+        # watcher's check of earlier tool evidence. Reads returned above and
+        # therefore remain ungated. Timeout fails closed rather than silently
+        # degrading to unobserved execution.
+        if current is not None and getattr(current, "approval_mode", "") == "spotter-ai":
+            from clio_agent.gact.spotter_watcher import wait_for_spotter_clearance  # noqa: PLC0415
+
+            if not wait_for_spotter_clearance(app, sid):
+                _record_resolved_permission(
+                    app,
+                    session_id=sid,
+                    tool_name=name,
+                    args=args,
+                    status="auto_denied",
+                    action="deny",
+                    summary=f"{subject} {name!r} blocked while SPOTTER surveillance was pending",
+                    reason="spotter_clearance_timeout",
+                )
+                return DenyDecision(
+                    "SPOTTER did not finish reviewing the preceding workload evidence within "
+                    "the safety deadline, so this tool call was not run."
+                )
         # P2.2 #1070: PreToolUse hooks (the ported ``pre_tool`` consumer, deny-capable
         # and TIGHTEN-ONLY). A hook deny blocks the call and its reason reaches the
         # model via ``DenyDecision``; a hook allow proceeds to the policy match below

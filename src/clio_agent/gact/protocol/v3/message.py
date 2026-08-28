@@ -282,7 +282,7 @@ def _project_tool(context: _TranscriptProjection, part: Mapping[str, Any], part_
     context.tools[tool_id] = {
         "id": tool_id,
         "session_id": context.session_id,
-        "run_id": str(context.wire.get("turn_id") or "") or None,
+        **({"run_id": str(context.wire["turn_id"])} if context.wire.get("turn_id") else {}),
         "name": str(part.get("tool_name") or current.get("name") or "Tool"),
         **(
             {"title": str(part["tool_title"])}
@@ -326,7 +326,7 @@ def _project_subagent(
     context.subagents[subagent_id] = {
         "id": subagent_id,
         "session_id": context.session_id,
-        "parent_run_id": str(context.wire.get("turn_id") or "") or None,
+        **({"parent_run_id": str(context.wire["turn_id"])} if context.wire.get("turn_id") else {}),
         "title": str(part.get("run_label") or link.get("title") or agent_id or "Subagent"),
         "state": str(part.get("live_state") or part.get("status") or "completed"),
         **({"summary": summary} if summary else {}),
@@ -435,7 +435,7 @@ def transcript_entities(
         subagents[subagent_id] = {
             "id": subagent_id,
             "session_id": session_id,
-            "parent_run_id": str(link.get("parent_run_id") or "") or None,
+            **({"parent_run_id": str(link["parent_run_id"])} if link.get("parent_run_id") else {}),
             "title": str(link.get("title") or agent_id or "Subagent"),
             "state": str(link.get("state") or "interrupted"),
             **({"child_session_id": child_session_id} if child_session_id else {}),
@@ -453,7 +453,7 @@ def transcript_entities(
             {
                 "id": f"child-relation:{subagent_id}",
                 "session_id": session_id,
-                "run_id": str(link.get("parent_run_id") or "") or None,
+                **({"run_id": str(link["parent_run_id"])} if link.get("parent_run_id") else {}),
                 "role": "system",
                 "created_at": created_at,
                 "blocks": [

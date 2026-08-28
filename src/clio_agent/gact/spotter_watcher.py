@@ -61,6 +61,8 @@ reason=...`` / ``spotter_wake_started`` / ``spotter_wake_enqueued`` /
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from collections.abc import Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Optional
@@ -114,12 +116,34 @@ _WAKE_COALESCED_TEXT = (
 )
 
 
+def _structural_item_identity(value: Any) -> str:
+    """Return a bounded identity copied from one typed result item.
+
+    The wake lane must distinguish successive equal-sized batches without
+    authoring a semantic summary. Prefer explicit identifier fields on
+    mapping-shaped items; scalar list entries are already their own identity.
+    """
+
+    if isinstance(value, Mapping):
+        for key in ("run_id", "task_id", "artifact_id", "verdict_id", "id"):
+            candidate = str(value.get(key) or "").strip()
+            if candidate:
+                return candidate[:80]
+        return ""
+    if isinstance(value, str):
+        return str(value).strip()[:80]
+    return ""
+
+
 def _tool_outcome_fact(structured_result: Any) -> str:
     """A short, STRUCTURAL fact drawn from a completed tool's own typed result
     (#1218 e) — never an authored/inferred summary. When the result is a
     mapping, the first list-valued entry's length is reported using that
     entry's OWN key as the noun (e.g. ``{"verdicts": [...]*5}`` -> ``"5
     verdicts reported"``), so the fact is always traceable to real wire data.
+    When the items expose structural identifiers, the first/last identifiers
+    are included. This keeps equal-sized successive batches causally distinct
+    without re-narrating or inferring anything from their contents.
     Returns ``""`` when the result carries no list-shaped evidence (a tool
     that returns scalars/None yields no fabricated count — never a guess).
     """
@@ -129,8 +153,86 @@ def _tool_outcome_fact(structured_result: Any) -> str:
     for key, value in structured_result.items():
         if isinstance(value, (list, tuple)):
             noun = str(key).replace("_", " ").strip() or "items"
-            return f"{len(value)} {noun} reported"
+            fact = f"{len(value)} {noun} reported"
+            identities = [
+                identity for item in value if (identity := _structural_item_identity(item))
+            ]
+            if identities:
+                if len(identities) == 1 or identities[0] == identities[-1]:
+                    return f"{fact}: {identities[0]}"
+                return f"{fact}: {identities[0]} through {identities[-1]}"
+            return fact
     return ""
+
+
+def _clearance_event(app: "FastAPI", parent_session_id: str) -> threading.Event:
+    """Return the process-local condition event for one protected session."""
+
+    events = getattr(app.state, "spotter_clearance_events", None)
+    if events is None:
+        events = {}
+        app.state.spotter_clearance_events = events
+    return events.setdefault(parent_session_id, threading.Event())
+
+
+def _watcher_clearance_pending(app: "FastAPI", parent_session_id: str) -> bool:
+    """Whether the standing watcher still has active or buffered evidence."""
+
+    task = next(iter(_live_watcher_tasks(app, parent_session_id)), None)
+    if task is None:
+        return False
+    runner = getattr(app.state, "turn_runner", None)
+    if runner is not None and runner.busy(task.child_session_id):
+        return True
+    from clio_agent.gact.loop_inbox import inbox_for  # noqa: PLC0415
+
+    return inbox_for(app, task.child_session_id).peek_nonempty()
+
+
+def wait_for_spotter_clearance(
+    app: "FastAPI", parent_session_id: str, *, timeout_s: float = 180.0
+) -> bool:
+    """Wait until all watcher evidence preceding a protected call is settled.
+
+    The watcher remains asynchronous while the parent renders/reasons, but a
+    subsequent mutating tool call cannot overtake an active check or a
+    coalesced wake. Returns ``False`` on timeout so the permission boundary can
+    fail closed instead of silently running unobserved work.
+    """
+
+    session = app.state.sessions.get(parent_session_id)
+    if session is None or session.approval_mode != SPOTTER_APPROVAL_MODE:
+        return True
+    event = _clearance_event(app, parent_session_id)
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    while _watcher_clearance_pending(app, parent_session_id):
+        event.clear()
+        if not _watcher_clearance_pending(app, parent_session_id):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        event.wait(remaining)
+    return True
+
+
+def on_turn_runner_idle(app: "FastAPI", session_id: str) -> None:
+    """Wake a clearance waiter after the watcher slot is actually released."""
+
+    session = app.state.sessions.get(session_id)
+    parent_id = str(getattr(session, "parent_session_id", "") or "") if session else ""
+    if not parent_id:
+        return
+    task = next(
+        (
+            item
+            for item in _live_watcher_tasks(app, parent_id)
+            if item.child_session_id == session_id
+        ),
+        None,
+    )
+    if task is not None:
+        _clearance_event(app, parent_id).set()
 
 
 def _wake_text(*, tool_name: str = "", tool_ok: bool = True, tool_result: Any = None) -> str:
@@ -584,6 +686,7 @@ def _push_wake(app: "FastAPI", parent_session_id: str, task: "AgentTask", wake_t
                 child_sid,
                 task.task_id,
             )
+        _clearance_event(app, parent_session_id).set()
         return
 
     child_session = app.state.sessions.get(child_sid)
@@ -592,6 +695,7 @@ def _push_wake(app: "FastAPI", parent_session_id: str, task: "AgentTask", wake_t
 
     _start_check_turn_on_app_loop(app, child_sid, child_session, wake_text)
     _set_live_state(app, task.task_id, "running")
+    _clearance_event(app, parent_session_id).set()
     logger.info(
         "spotter_wake_started session=%s watcher=%s task=%s",
         parent_session_id,
@@ -647,6 +751,7 @@ def on_turn_finalized(app: "FastAPI", session_id: str) -> None:
         return
     updated = _set_live_state(app, task.task_id, "waiting")
     if updated is not None:
+        _clearance_event(app, parent_id).set()
         logger.info(
             "spotter_watcher_check_turn_ended session=%s watcher=%s task=%s",
             parent_id,
