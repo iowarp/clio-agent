@@ -11,6 +11,13 @@ RUN printf '{ "profile": "clio", "brandingRoot": "/build/branding" }\n' > brand.
     && pnpm --filter @clio/web build \
     && test -f web/dist/index.html
 
+FROM python:3.12-slim AS agent-builder
+WORKDIR /app
+COPY pyproject.toml README.md uv.lock ./
+COPY src ./src
+RUN pip install --no-cache-dir uv \
+    && uv sync --frozen --extra argonne --no-dev
+
 FROM python:3.12-slim
 LABEL org.opencontainers.image.title="CLIO Web" \
       org.opencontainers.image.description="CLIO web UI (gact-tui apps/web, brand profile clio) + gact backend." \
@@ -27,9 +34,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends nginx curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md uv.lock ./
+COPY --from=agent-builder /app/.venv /app/.venv
 COPY src ./src
-RUN pip install --no-cache-dir '.[argonne]'
+ENV PATH="/app/.venv/bin:$PATH"
 
 COPY --from=web-builder /build/apps/web/dist /usr/share/nginx/html
 COPY docker/nginx-clio-web.conf /etc/nginx/conf.d/default.conf
