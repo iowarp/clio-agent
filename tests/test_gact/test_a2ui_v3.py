@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from clio_schemas import A2UIComponent
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch, raises
 
@@ -279,6 +280,19 @@ def test_catalog_models_and_generated_tool_guidance_share_one_allowlist() -> Non
     assert f"Trusted component names: {generated_allowlist}." in tool.desc
     assert "Checkbox" not in generated_allowlist
     assert "CheckBox" in generated_allowlist
+
+
+def test_catalog_component_names_and_property_sets_are_bidirectionally_closed() -> None:
+    schema = A2UIComponent.model_json_schema()
+    mapping = schema["discriminator"]["mapping"]
+
+    assert set(mapping) == set(trusted_component_names())
+    for component_name, reference in mapping.items():
+        definition = schema["$defs"][reference.rsplit("/", 1)[-1]]
+        properties = definition["properties"]
+        assert definition["additionalProperties"] is False, component_name
+        assert {"id", "component"}.issubset(properties), component_name
+        assert set(definition.get("required", ())).issubset(properties), component_name
 
 
 def test_diff_paths_are_content_while_binding_paths_remain_json_pointers() -> None:
@@ -933,3 +947,50 @@ def test_root_agent_tool_recreates_a_deleted_surface(
         "createSurface",
         "updateComponents",
     ]
+
+
+def test_deleted_surface_cannot_resurrect_across_requests_without_create(tmp_path: Path) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    deleted = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={
+            "messages": [
+                _create_message("terminal-surface"),
+                {
+                    "version": "v0.9.1",
+                    "deleteSurface": {"surfaceId": "terminal-surface"},
+                },
+            ]
+        },
+    )
+    assert deleted.status_code == 200
+
+    resurrect = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={
+            "messages": [
+                {
+                    "version": "v0.9.1",
+                    "updateComponents": {
+                        "surfaceId": "terminal-surface",
+                        "components": [
+                            {
+                                "id": "root",
+                                "component": "clio.status.v1",
+                                "label": "Must not return",
+                                "state": "running",
+                            }
+                        ],
+                    },
+                }
+            ]
+        },
+    )
+
+    assert resurrect.status_code == 422
+    assert resurrect.json()["error"]["error"] == "a2ui_validation_failed"
+    surface = client.app.state.a2ui_store.get(sid, "terminal-surface")
+    assert surface is not None
+    assert surface.state == "deleted"

@@ -97,6 +97,7 @@ class Provider:
     #: HuggingFace-id backends like ALCF where ``openai/gpt-oss-120b``
     #: *is* the literal model id.
     strip_openai_prefix: bool = True
+    parse_retry_capability: Literal["bounded", "single_attempt"] = "bounded"
 
     # ----- registry bookkeeping ---------------------------------------
     #: When True, this provider's wire fields populate the
@@ -330,6 +331,7 @@ PROVIDERS: tuple[Provider, ...] = (
         auth_method="none",
         is_kind_default=True,
         supports_live_catalog=False,
+        parse_retry_capability="single_attempt",
         model_catalog=(
             ModelEntry(
                 "gpt-5.5",
@@ -527,6 +529,8 @@ def as_provider_defaults_dict() -> dict[str, dict[str, Any]]:
             entry["max_tokens"] = p.max_tokens_default
         if not p.strip_openai_prefix:
             entry["strip_openai_prefix"] = False
+        if p.parse_retry_capability != "bounded":
+            entry["parse_retry_capability"] = p.parse_retry_capability
         out[p.provider_kind] = entry
     return out
 

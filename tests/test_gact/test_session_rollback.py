@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
 from clio_agent.gact.types import Message, Part
 
 
@@ -53,6 +54,52 @@ def test_undo_removes_last_messages_and_audits_destructive_action(tmp_path: Path
             "session.undo",
             "session.updated",
         ]
+
+
+def test_undo_preserves_ready_a2ui_surface_from_removed_message(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "rollback surface"}).json()["id"]
+        _seed_messages(client, sid, ["msg_1", "msg_2"])
+        app.state.a2ui_store.apply_batch(
+            sid,
+            [
+                {
+                    "version": "v0.9.1",
+                    "createSurface": {
+                        "surfaceId": "analysis_surface",
+                        "catalogId": CLIO_A2UI_CATALOG_ID,
+                    },
+                },
+                {
+                    "version": "v0.9.1",
+                    "updateComponents": {
+                        "surfaceId": "analysis_surface",
+                        "components": [
+                            {
+                                "id": "status",
+                                "component": "clio.status.v1",
+                                "label": "Analysis",
+                                "state": "completed",
+                            }
+                        ],
+                    },
+                },
+            ],
+        )
+
+        response = client.post(f"/v1/sessions/{sid}/undo", json={"count": 1})
+
+        assert response.status_code == 200, response.text
+        surface = app.state.a2ui_store.get(sid, "analysis_surface")
+        assert surface is not None
+        assert surface.state == "ready"
+        assert app.state.a2ui_store.projection_degradations(sid) == []
+        assert app.state.messages[sid][-1].metadata == {
+            "synthetic": "a2ui_preservation",
+            "preserved_by": "undo",
+        }
+        assert app.state.messages[sid][-1].parts[0].type == "a2ui"
 
 
 def test_rewind_removes_messages_after_target_by_default(tmp_path: Path) -> None:

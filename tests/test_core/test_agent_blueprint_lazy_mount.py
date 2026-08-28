@@ -14,12 +14,16 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from clio_agent.agent import ClioAgent
 from clio_agent.gact.agent_blueprints import AgentBlueprintDefinition
-from clio_agent.gact.blueprint_activation import blueprint_resolution_reasons
+from clio_agent.gact.blueprint_activation import (
+    blueprint_resolution_reasons,
+    resolve_active_blueprint_servers,
+)
 from clio_agent.tools.execution import (
     get_active_tool_blueprint_id,
     get_active_tool_blueprint_path,
@@ -53,6 +57,15 @@ def agent():
 
 
 class TestDiscoverPackServers:
+    @staticmethod
+    def _resolution_context() -> tuple[SimpleNamespace, Any, Any, Any]:
+        from clio_agent.gact import context as gact_context
+
+        app = SimpleNamespace(state=SimpleNamespace(sessions={}))
+        app_token = gact_context.set_app(app)
+        session_token = gact_context.set_session_id("session-1")
+        return app, gact_context, app_token, session_token
+
     def test_empty_blueprint_id_returns_no_pack_servers(
         self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -167,6 +180,90 @@ class TestDiscoverPackServers:
                 "blueprint_id": "pack-a",
             }
         ]
+
+    def test_active_blueprint_path_lookup_failure_is_typed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _boom(*_args: object) -> None:
+            raise RuntimeError("session path unavailable")
+
+        monkeypatch.setattr(
+            "clio_agent.gact.agents.resolution._runtime_active_agent_blueprint_path",
+            _boom,
+        )
+        app, gact_context, app_token, session_token = self._resolution_context()
+        try:
+            assert resolve_active_blueprint_servers("pack-a") is None
+        finally:
+            gact_context.reset(session_token)
+            gact_context.reset(app_token)
+
+        assert blueprint_resolution_reasons(app, "session-1")[0]["reason"] == (
+            "active_blueprint_path_lookup_failed"
+        )
+
+    def test_active_blueprint_path_parse_failure_is_typed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        invalid = tmp_path / "AGENT.md"
+        invalid.write_text("---\nid: pack-a\n---\n", encoding="utf-8")
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise ValueError("invalid blueprint")
+
+        monkeypatch.setattr(
+            "clio_agent.gact.agent_blueprints.parse_agent_blueprint_root",
+            _boom,
+        )
+        app, gact_context, app_token, session_token = self._resolution_context()
+        try:
+            with tool_blueprint_context("pack-a", invalid):
+                assert resolve_active_blueprint_servers("pack-a") == {}
+        finally:
+            gact_context.reset(session_token)
+            gact_context.reset(app_token)
+
+        assert blueprint_resolution_reasons(app, "session-1")[0]["reason"] == (
+            "active_blueprint_path_parse_failed"
+        )
+
+    def test_active_blueprint_identity_mismatch_is_typed(self, tmp_path: Path) -> None:
+        blueprint = tmp_path / "AGENT.md"
+        blueprint.write_text("---\nid: pack-b\ntitle: Pack B\n---\n", encoding="utf-8")
+        app, gact_context, app_token, session_token = self._resolution_context()
+        try:
+            with tool_blueprint_context("pack-a", blueprint):
+                assert resolve_active_blueprint_servers("pack-a") == {}
+        finally:
+            gact_context.reset(session_token)
+            gact_context.reset(app_token)
+
+        assert blueprint_resolution_reasons(app, "session-1")[0]["reason"] == (
+            "active_blueprint_identity_mismatch"
+        )
+
+    def test_disabled_active_blueprint_is_typed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        blueprint = tmp_path / "AGENT.md"
+        blueprint.write_text("---\nid: pack-a\ntitle: Pack A\n---\n", encoding="utf-8")
+        disabled = _blueprint("pack-a", {})
+        disabled.enabled = False
+        monkeypatch.setattr(
+            "clio_agent.gact.agent_blueprints.parse_agent_blueprint_root",
+            lambda *_args, **_kwargs: disabled,
+        )
+        app, gact_context, app_token, session_token = self._resolution_context()
+        try:
+            with tool_blueprint_context("pack-a", blueprint):
+                assert resolve_active_blueprint_servers("pack-a") == {}
+        finally:
+            gact_context.reset(session_token)
+            gact_context.reset(app_token)
+
+        assert blueprint_resolution_reasons(app, "session-1")[0]["reason"] == (
+            "active_blueprint_disabled"
+        )
 
     def test_explicit_session_path_precedes_cwd_discovery(
         self, agent: ClioAgent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

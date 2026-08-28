@@ -156,6 +156,7 @@ class TestLMProviderConfig:
         """Codex transport defaults to the official Python SDK."""
         config = LMProviderConfig(provider="codex")
         assert config.codex_transport == "sdk"
+        assert config.parse_retry_capability == "single_attempt"
 
     def test_invalid_codex_transport_rejected(self):
         """Invalid Codex transport should fail during config construction."""

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -122,7 +123,7 @@ class _LateToolObserverAgent:
         )()
 
 
-def test_cancel_reports_best_effort_for_executor_thread(tmp_path: Path) -> None:
+def test_cancel_during_turn_marks_turn_as_cancelled(tmp_path: Path) -> None:
     """Cancelling the asyncio task does not kill executor-thread work."""
 
     import time as _time
@@ -185,6 +186,57 @@ def test_cancel_reports_best_effort_for_executor_thread(tmp_path: Path) -> None:
         while _time.monotonic() < deadline and not agent.completed:
             _time.sleep(0.05)
         assert agent.completed is True
+
+
+def test_cancel_before_turn_skips_agent_forward(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancellation committed at the turn boundary prevents provider work."""
+
+    import time as _time
+
+    from clio_agent.gact import turn as turn_module
+
+    original_make_turn_cancel_event = turn_module.make_turn_cancel_event
+
+    def cancel_at_turn_boundary(state: Any) -> None:
+        original_make_turn_cancel_event(state)
+        state.app.state.cancel_flags.add(state.sid)
+        state.turn_cancel_event.set()
+
+    monkeypatch.setattr(turn_module, "make_turn_cancel_event", cancel_at_turn_boundary)
+    agent = _CountingAgent()
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "cancel before forward"}).json()["id"]
+        response = client.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "do not forward"}]},
+        )
+        assert response.status_code == 200
+
+        deadline = _time.monotonic() + 3.0
+        assistant = None
+        while _time.monotonic() < deadline:
+            messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+            assistant = next(
+                (
+                    message
+                    for message in messages
+                    if message["role"] == "assistant"
+                    and message.get("error_info", {}).get("error") == "cancelled"
+                ),
+                None,
+            )
+            if assistant is not None:
+                break
+            _time.sleep(0.05)
+
+        assert assistant is not None, "turn-boundary cancellation did not settle"
+        assert agent.calls == 0
+        assert assistant["error_info"]["details"]["execution_cancellation"] == "turn_boundary"
+        assert assistant["error_info"]["details"]["executor_work_may_continue"] is False
 
 
 def test_late_tool_completion_after_cancel_is_not_reported_as_success(

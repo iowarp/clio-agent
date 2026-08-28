@@ -156,14 +156,17 @@ class TestDerivedViews:
         assert row["max_tokens"] == 4096
         assert row["strip_openai_prefix"] is False
 
+    def test_codex_parse_retry_is_a_catalog_capability(self) -> None:
+        defaults = as_provider_defaults_dict()
+        assert defaults["codex"]["parse_retry_capability"] == "single_attempt"
+        assert defaults["anthropic"].get("parse_retry_capability", "bounded") == "bounded"
+
     def test_argonne_catalog_prefers_modern_models_before_legacy_llama31(self) -> None:
         models = as_provider_models_dict()["argonne_sophia"]
         ids = [row["id"] for row in models]
         assert ids[:3] == ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "gpt-oss-120b"]
         assert "meta-llama/Meta-Llama-3.1-8B-Instruct" in ids
-        assert ids.index("openai/gpt-oss-120b") < ids.index(
-            "meta-llama/Meta-Llama-3.1-8B-Instruct"
-        )
+        assert ids.index("openai/gpt-oss-120b") < ids.index("meta-llama/Meta-Llama-3.1-8B-Instruct")
 
     def test_cloud_api_key_env_only_cloud_kinds(self) -> None:
         env_map = as_cloud_api_key_env()

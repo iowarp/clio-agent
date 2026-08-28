@@ -66,6 +66,22 @@ def test_capabilities_report_the_effective_active_model(tmp_path: Path) -> None:
     assert response.json()["model_catalog"]["stale"] is False
 
 
+def test_capabilities_preserve_explicit_false_flags(tmp_path: Path) -> None:
+    response = TestClient(build_app(sessions_path=tmp_path / "sessions.json")).get(
+        "/v1/capabilities", headers=V3_HEADERS
+    )
+
+    assert response.status_code == 200
+    assert response.json()["capabilities"]["session_summary"] is False
+    assert response.json()["capabilities"]["x_clio_synthetic_posthoc_streaming"] is False
+    unavailable = {
+        row["capability"]
+        for row in response.json()["degradations"]
+        if row["code"] == "capability_unavailable"
+    }
+    assert {"session_summary", "x_clio_synthetic_posthoc_streaming"}.issubset(unavailable)
+
+
 def test_unknown_protocol_is_rejected(tmp_path: Path) -> None:
     client = TestClient(build_app(sessions_path=tmp_path / "sessions.json"))
 

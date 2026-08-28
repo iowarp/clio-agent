@@ -54,6 +54,19 @@ DEFAULT_SDK_PROGRESS_TIMEOUT_S = 120.0
 DEFAULT_TURN_TIMEOUT_S = 180.0
 MAX_LIVE_CODEX_HOMES = 4
 
+
+async def _cleanup_sdk_action(action: str, awaitable: Any) -> None:
+    """Await one SDK teardown action and report failure without masking the turn."""
+    try:
+        await awaitable
+    except Exception as exc:  # noqa: BLE001 - cleanup is typed and observable
+        logger.warning(
+            "Codex SDK cleanup failed reason=codex_sdk_cleanup_failed action=%s error=%r",
+            action,
+            exc,
+        )
+
+
 BARE_LM_BASE_INSTRUCTIONS = """You are a language-model completion backend inside Clio.
 Answer only the serialized prompt supplied by Clio. Do not inspect the workspace,
 invoke Codex tools, delegate to agents, browse, use plugins, or perform work outside
@@ -458,8 +471,7 @@ class CodexSDKClient:
         sdk_home, self._sdk_home = self._sdk_home, None
         try:
             if client is not None:
-                with contextlib.suppress(Exception):
-                    await client.close()
+                await _cleanup_sdk_action("client_close", client.close())
         finally:
             if sdk_home is not None:
                 sdk_home.close()
@@ -536,20 +548,17 @@ class CodexSDKClient:
             except asyncio.CancelledError:
                 cancelled = True
                 if turn is not None:
-                    with contextlib.suppress(Exception):
-                        await turn.interrupt()
+                    await _cleanup_sdk_action("turn_interrupt_cancel", turn.interrupt())
                 raise
             except BaseException as exc:  # noqa: BLE001 - delivered to caller loop
                 if turn is not None:
-                    with contextlib.suppress(Exception):
-                        await turn.interrupt()
+                    await _cleanup_sdk_action("turn_interrupt_error", turn.interrupt())
                 chunks.put(("exc", exc))
             finally:
                 if stream is not None:
-                    with contextlib.suppress(Exception):
-                        close_stream = getattr(stream, "aclose", None)
-                        if callable(close_stream):
-                            await close_stream()
+                    close_stream = getattr(stream, "aclose", None)
+                    if callable(close_stream):
+                        await _cleanup_sdk_action("stream_close", close_stream())
                 if not clean and not cancelled:
                     await self._reset_client()
                 chunks.put((_STREAM_END, None))
@@ -561,6 +570,7 @@ class CodexSDKClient:
             gact_sid = active_session_id() or ""
         except Exception:  # noqa: BLE001 - off-turn SDK calls are not cancellable by session
             gact_sid = ""
+
         def _cancel_future() -> None:
             future.cancel()
 

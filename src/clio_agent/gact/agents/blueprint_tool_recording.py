@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import skill_runtime as _skill_runtime
 from clio_agent.gact.runtime.globals import _BlueprintTerminalWorkflowState
+from clio_agent.tools.result_errors import structured_tool_result_error
 
 if TYPE_CHECKING:
     from clio_agent.gact.agents.types import AgentDef
@@ -26,10 +27,7 @@ def recorded_spawn_skill_task_tool(agent_def: AgentDef, skill_rt: Any) -> Any:
 def recording_blueprint_tool(tool: Any) -> Any:
     """Wrap a DSPy tool so blueprint ReAct predictions retain tool evidence."""
     from clio_agent.gact.agents.tool_instrumentation import rebuilt_tool  # noqa: PLC0415
-    from clio_agent.gact.app import (  # noqa: PLC0415
-        _bounded_tool_call_result,
-        _tool_result_is_error,
-    )
+    from clio_agent.gact.app import _bounded_tool_call_result  # noqa: PLC0415
 
     name = str(getattr(tool, "name", "") or "").strip()
     desc = str(getattr(tool, "desc", "") or getattr(tool, "__doc__", "") or name)
@@ -55,18 +53,20 @@ def recording_blueprint_tool(tool: Any) -> Any:
                     }
                 )
             raise
+        tool_error = structured_tool_result_error(result)
         row_result = _bounded_tool_call_result(result)
         if rows is not None:
-            rows.append(
-                {
-                    "name": name,
-                    "args": dict(kwargs),
-                    "ok": not _tool_result_is_error(result),
-                    "duration_ms": (time.perf_counter() - started_at) * 1000,
-                    "result": row_result,
-                    "telemetry_source": "blueprint_react_tool_wrapper",
-                }
-            )
+            row = {
+                "name": name,
+                "args": dict(kwargs),
+                "ok": tool_error is None,
+                "duration_ms": (time.perf_counter() - started_at) * 1000,
+                "result": row_result,
+                "telemetry_source": "blueprint_react_tool_wrapper",
+            }
+            if tool_error is not None:
+                row["error"] = tool_error
+            rows.append(row)
         return result
 
     call_tool.__name__ = name

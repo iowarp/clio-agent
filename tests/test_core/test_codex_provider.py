@@ -71,6 +71,17 @@ def test_sdk_boundary_disables_personal_capabilities() -> None:
     assert "Clio owns the agent loop" in codex_stream.BARE_LM_BASE_INSTRUCTIONS
 
 
+def test_sdk_cleanup_failure_is_reported(caplog: pytest.LogCaptureFixture) -> None:
+    async def fail_close() -> None:
+        raise RuntimeError("close broke")
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(codex_stream._cleanup_sdk_action("test_close", fail_close()))
+
+    assert "reason=codex_sdk_cleanup_failed" in caplog.text
+    assert "action=test_close" in caplog.text
+
+
 def test_sdk_home_contains_auth_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

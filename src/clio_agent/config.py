@@ -31,7 +31,7 @@ import os
 from dataclasses import dataclass, field
 from ipaddress import ip_address
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Literal, Mapping, Optional, cast
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -319,8 +319,9 @@ class LMProviderConfig:
         # so re-reading on every config load is safe.
         self.strip_openai_prefix = bool(defaults.get("strip_openai_prefix", True))
         self.supports_vision = bool(defaults.get("supports_vision", False))
-        self.parse_retry_capability = (
-            "single_attempt" if self.provider == "codex" else "bounded"
+        self.parse_retry_capability = cast(
+            Literal["bounded", "single_attempt"],
+            defaults.get("parse_retry_capability", "bounded"),
         )
         if self.codex_transport != "sdk":
             raise ValueError(

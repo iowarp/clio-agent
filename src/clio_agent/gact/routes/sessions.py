@@ -26,13 +26,10 @@ session-scoped ask-user / retry protocol.
   ``POST /v1/sessions/{sid}/messages/{message_id}/retry``: record/execute a turn
   retry, optionally kicking a background turn off the source user message.
 
-The fork, question-answer and retry routes drive a background user turn through
-``deps.start_background_user_turn`` (the turn engine in
-:mod:`clio_agent.gact.turn`). The module imports only leaf packages (events,
-runtime, types, stdlib) and never loads :mod:`clio_agent.gact.app`; the shared
-cross-concern helpers (ledger replace, ARC release, model-ref
-errors, evidence index, resume text) travel on :class:`GactDeps`. The session-
-private rollback + ask-user/retry helpers live here.
+Fork, question-answer and retry routes use ``deps.start_background_user_turn``.
+This module loads only leaf packages and never :mod:`clio_agent.gact.app`; shared
+cross-concern helpers (ledger replace, ARC release, model-ref errors, evidence index,
+resume text) travel on :class:`GactDeps`; private rollback and retry helpers stay here.
 """
 
 from __future__ import annotations
@@ -57,6 +54,7 @@ from clio_agent.gact.messaging import raise_on_reserved_metadata
 from clio_agent.gact.protocol_v3 import project_for_request, session_to_v3
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
 from clio_agent.gact.routes.compaction import build_compact_summary_message
+from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui
 from clio_agent.gact.routes.session_cancellation import cancel_session_state
 from clio_agent.gact.routes.session_rows import filter_session_rows, rows_to_wire
 from clio_agent.gact.runtime import bringup_timing
@@ -398,11 +396,12 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         target_message_id: str = "",
         include_target: bool = False,
     ) -> dict[str, Any]:
-        deps.replace_session_messages(app, sid, kept_messages)
+        replacement_messages = preserve_a2ui(sid, kept_messages, deleted_messages, operation)
+        deps.replace_session_messages(app, sid, replacement_messages)
         deleted_ids = [m.id for m in deleted_messages]
         updated = app.state.sessions.update(
             sid,
-            message_count=len(kept_messages),
+            message_count=len(replacement_messages),
             status="idle",
             metadata_patch={
                 "last_rollback": {
@@ -432,7 +431,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             "deleted_message_ids": deleted_ids,
             "deleted_messages": deleted_ids,
             "reverted_message_ids": deleted_ids,
-            "message_count": len(kept_messages),
+            "message_count": len(replacement_messages),
             "memory_scope": "gact_visible_transcript_only",
             "session": session_payload,
         }
@@ -873,7 +872,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             event_id=event_id,
             compacted_message_ids=[mid for m in ledger if (mid := _attr(m, "id", ""))],
         )
-        deps.replace_session_messages(app, sid, [compact_message])
+        replacement_messages = preserve_a2ui(sid, [compact_message], ledger, "compact")
+        deps.replace_session_messages(app, sid, replacement_messages)
         memory_event = {
             "id": event_id,
             "version": 1,

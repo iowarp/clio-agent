@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.arc.schema import Conversation as ARCConversation
 from clio_agent.gact.app import build_app
+from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
 from clio_agent.gact.types import Message, Part, Tokens
 
 
@@ -237,7 +238,9 @@ def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
         assert messages[0]["metadata"]["memory_event_id"] == body["event_id"]
         # No part on the compaction message is a legacy `[compact summary]` text part.
         for p in messages[0]["parts"]:
-            assert not (p.get("type") == "text" and p.get("text", "").startswith("[compact summary]"))
+            assert not (
+                p.get("type") == "text" and p.get("text", "").startswith("[compact summary]")
+            )
         events = c.get(f"/v1/sessions/{sid}/memory/events").json()["events"]
         assert len(events) == 1
         event = events[0]
@@ -254,6 +257,56 @@ def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
             e for e in c.app.state.bus._history.get(sid, []) if e.type == "session.compacted"
         ]
         assert compact_events[-1].payload["event_id"] == body["event_id"]
+
+
+def test_compact_preserves_ready_a2ui_surface(tmp_path: Path) -> None:
+    agent = RetryCompactAgent()
+    with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent)) as c:
+        sid = c.post("/v1/sessions", json={"title": "compact surface"}).json()["id"]
+        _seed_text_message(c, sid, "important experiment details and next steps")
+        c.app.state.a2ui_store.apply_batch(
+            sid,
+            [
+                {
+                    "version": "v0.9.1",
+                    "createSurface": {
+                        "surfaceId": "analysis_surface",
+                        "catalogId": CLIO_A2UI_CATALOG_ID,
+                    },
+                },
+                {
+                    "version": "v0.9.1",
+                    "updateComponents": {
+                        "surfaceId": "analysis_surface",
+                        "components": [
+                            {
+                                "id": "status",
+                                "component": "clio.status.v1",
+                                "label": "Analysis",
+                                "state": "completed",
+                            }
+                        ],
+                    },
+                },
+            ],
+        )
+
+        response = c.post(f"/v1/sessions/{sid}/compact", json={})
+
+        assert response.status_code == 200, response.text
+        surface = c.app.state.a2ui_store.get(sid, "analysis_surface")
+        assert surface is not None
+        assert surface.state == "ready"
+        assert c.app.state.a2ui_store.projection_degradations(sid) == []
+        messages = c.app.state.messages[sid]
+        assert [part.type for message in messages for part in message.parts] == [
+            "compaction",
+            "a2ui",
+        ]
+        assert messages[-1].metadata == {
+            "synthetic": "a2ui_preservation",
+            "preserved_by": "compact",
+        }
 
 
 def test_compact_surfaces_exhausted_transient_provider_errors(tmp_path: Path) -> None:

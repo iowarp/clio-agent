@@ -1446,6 +1446,39 @@ def test_recording_blueprint_tool_captures_context_local_tool_result() -> None:
     ]
 
 
+def test_recording_blueprint_tool_classifies_oversized_structured_failure_before_bounding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "256")
+
+    def failing_tool(station: str) -> dict[str, Any]:
+        del station
+        return {
+            "payload": "x" * 20_000,
+            "status": "failed",
+        }
+
+    tool = dspy.Tool(
+        func=failing_tool,
+        name="oversized_station_tool",
+        desc="Oversized failing station tool",
+        args={"station": {"type": "string"}},
+    )
+    rows: list[dict[str, Any]] = []
+    token = ctx.set_blueprint_tool_rows(rows)
+    try:
+        wrapped = _recording_blueprint_tool(tool)
+        result = wrapped(station="UCSF")
+    finally:
+        ctx.reset(token)
+
+    assert result["status"] == "failed"
+    assert rows[0]["ok"] is False
+    assert rows[0]["error"] == "status=failed"
+    assert rows[0]["result"]["truncated"] is True
+    assert '"status": "failed"' not in rows[0]["result"]["preview"]
+
+
 @pytest.mark.parametrize(
     "blueprint_id",
     [
