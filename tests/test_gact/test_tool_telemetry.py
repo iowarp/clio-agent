@@ -803,6 +803,8 @@ def test_live_observer_keeps_exact_large_mcp_structured_content(tmp_path: Path) 
 def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(tmp_path: Path) -> None:
     """The wire keeps exact Root/data while the model receives a bounded projection."""
 
+    from clio_agent.tools.mcp_result_json import pydantic_json_default
+
     from .conftest import complete_turn
 
     agent = _LiveWorkspaceMcpRootDataAgent()
@@ -821,7 +823,12 @@ def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(tmp_path:
 
         model_result = json.loads(agent.model_text)
         assert model_result["_clio"]["reason"] == "model_tool_result_oversize"
-        assert model_result["_clio"]["original_chars"] == len(str(agent.root))
+        model_input = json.dumps(
+            agent.root,
+            allow_nan=False,
+            default=pydantic_json_default,
+        )
+        assert model_result["_clio"]["original_chars"] == len(model_input)
         assert len(agent.model_text) <= 12_000
         assert tool_result["metadata"]["result"]["truncated"] is True
         # #1190: the structured copy is served at the part TOP LEVEL (the UI
