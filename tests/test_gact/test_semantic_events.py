@@ -129,12 +129,17 @@ def test_full_debug_trace_includes_llm_payload(tmp_path: Path, monkeypatch) -> N
     set_config("trace.path", str(trace_file))
     monkeypatch.setenv("CLIO_SEMANTIC_TRACE_DETAIL", "full_debug")
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
-    client = TestClient(app)
+    # Keep one application lifespan around the background turn. Constructing a
+    # TestClient without entering it creates a fresh portal around each request;
+    # the slower 3.13 CI runner could therefore tear down the turn portal after
+    # the assistant message became readable but before the response trace reached
+    # the shared writer. Production keeps one lifespan for the whole server, and
+    # this test must exercise that same ordering contract.
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        complete_turn(client, sid, "show the raw prompt in full debug")
+        app.state.semantic_trace_backend.flush()  # drain before leaving the lifespan
 
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    complete_turn(client, sid, "show the raw prompt in full debug")
-
-    app.state.semantic_trace_backend.flush()  # off-loop writer: drain before reading
     rows = [json.loads(line) for line in trace_file.read_text().splitlines()]
     request_row = next(row for row in rows if row["event_type"] == "llm.request.started")
     response_row = next(row for row in rows if row["event_type"] == "llm.response.completed")
