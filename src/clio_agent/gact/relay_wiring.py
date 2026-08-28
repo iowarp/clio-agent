@@ -9,7 +9,11 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.agents.relay_expert_invoker import RelayExpertInvoker
 from clio_agent.tools.execution import create_sync_tool_executor
-from clio_agent.tools.gateway import list_relay_tool_definitions, namespace_proxies
+from clio_agent.tools.gateway import (
+    list_jarvis_tool_definitions,
+    list_relay_tool_definitions,
+    namespace_proxies,
+)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -169,12 +173,22 @@ def _refresh_agent_relay_tool_surfaces(agent: Any, surfaces: Any) -> None:
     # failure TTL, so a relay-less serve bumped every turn, evicting every
     # resident workspace fleet mid-turn (the executor-closed campaign kills).
     # Identity = presence + the projected tool-name set, compared against the
-    # agent's LIVE state (no stored marker to seed or drift).
+    # agent's LIVE state (no stored marker to seed or drift). The curated
+    # JARVIS surface (v1.7.0 cold-boot gap) joins the SAME identity check:
+    # pre-fix this compared only the federation, so a refresh that changed
+    # jarvis_jobs while the federation stayed put (or absent) early-returned
+    # and never reseeded the six jarvis_* tools onto the live agent.
     old_federation = getattr(agent, "_remote_mcp_federation", None)
     new_definitions = list_relay_tool_definitions(surfaces.remote_mcp_federation)
-    if (old_federation is None) == (surfaces.remote_mcp_federation is None) and frozenset(
-        list_relay_tool_definitions(old_federation)
-    ) == frozenset(new_definitions):
+    old_jarvis = getattr(agent, "_jarvis_jobs", None)
+    new_jarvis_definitions = list_jarvis_tool_definitions(surfaces.jarvis_jobs)
+    unchanged = (
+        (old_federation is None) == (surfaces.remote_mcp_federation is None)
+        and frozenset(list_relay_tool_definitions(old_federation)) == frozenset(new_definitions)
+        and (old_jarvis is None) == (surfaces.jarvis_jobs is None)
+        and frozenset(list_jarvis_tool_definitions(old_jarvis)) == frozenset(new_jarvis_definitions)
+    )
+    if unchanged:
         return
     agent._remote_mcp_federation = surfaces.remote_mcp_federation  # noqa: SLF001
     agent._jarvis_jobs = surfaces.jarvis_jobs  # noqa: SLF001
@@ -190,8 +204,13 @@ def _refresh_agent_relay_tool_surfaces(agent: Any, surfaces: Any) -> None:
     # pushed the federation onto the agent while its executor kept offering
     # four builtins, and every custom-agent ACL still bricked
     # (federation=present in the diagnostics, tools absent). Re-seed from the
-    # same projection the construction path uses.
+    # same projections the construction path uses (the ``_build_tool_gateway``
+    # call below rebuilds ``_tool_definitions`` from scratch for a real
+    # ``ClioAgent``; this direct update is what a test double -- or any other
+    # caller whose ``_build_tool_gateway`` does not reassign the dict --
+    # actually observes).
     agent._tool_definitions.update(new_definitions)  # noqa: SLF001
+    agent._tool_definitions.update(new_jarvis_definitions)  # noqa: SLF001
     # #1236: bump the federation epoch so RESIDENT per-workspace executors
     # (minted under the previous — possibly ABSENT — federation) evict on
     # their next resolve instead of serving a stale tool snapshot forever
