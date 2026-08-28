@@ -262,6 +262,7 @@ def _arm_watcher(app: "FastAPI", session: "Session") -> Optional["AgentTask"]:
         skip_declared_check=True,
         run_label=WATCHER_RUN_LABEL,
         session_scope_metadata={"active_agent_blueprint_id": _watcher_blueprint_id()},
+        session_approval_profile="spotter-watcher",
         start_turn=False,
     )
     try:
@@ -622,9 +623,11 @@ def on_turn_finalized(app: "FastAPI", session_id: str) -> None:
       ended — flip ``live_state`` back to ``"waiting"``. Never a ``status``
       transition; disarm stays the only path to terminal.
 
-    A session is never both (the watcher's own session's ``approval_mode``
-    defaults to ``"ask"`` — it is never itself armed into spotter-ai — see
-    the self-wake guard test), so these are mutually exclusive branches.
+    A session is never both (the watcher's own session keeps the public
+    ``approval_mode="ask"`` and carries only the server-owned narrow
+    ``approval_profile="spotter-watcher"`` — it is never itself armed into
+    spotter-ai; see the self-wake guard test), so these are mutually exclusive
+    branches.
     """
 
     session = app.state.sessions.get(session_id)

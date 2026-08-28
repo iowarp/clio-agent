@@ -101,7 +101,20 @@ def test_watcher_child_session_is_never_itself_in_spotter_mode(tmp_path: Path) -
         ).json()["id"]
         task = app.state.agent_task_registry.for_parent(sid)[0]
         child = app.state.sessions.get(task.child_session_id)
-        assert child.approval_mode != "spotter-ai"
+        assert child.approval_mode == "ask"
+        assert child.approval_profile == "spotter-watcher"
+        assert "approval_profile" not in child.to_wire()
+
+
+def test_watcher_approval_mode_allows_containment_but_not_release() -> None:
+    """Standing surveillance may contain immediately; only a human may release it."""
+
+    from clio_agent.gact.permission_gate import default_decision
+
+    assert default_decision("spotter-watcher", "tool", "spotter_raise_alert", {}) == "allow"
+    assert default_decision("spotter-watcher", "tool", "raise_alert_card", {}) == "allow"
+    assert default_decision("spotter-watcher", "tool", "spotter_lift_quarantine", {}) == "ask"
+    assert default_decision("spotter-watcher", "tool", "shell_bash", {}) == "ask"
 
 
 # --------------------------------------------------------------------------- #
@@ -274,6 +287,7 @@ def test_ensure_spotter_watcher_builds_expected_taskspec(
     assert spec.skip_declared_check is True
     assert spec.parent_session_id == session.id
     assert spec.session_scope_metadata == {"active_agent_blueprint_id": _WATCHER_BLUEPRINT_ID}
+    assert spec.session_approval_profile == "spotter-watcher"
     # No timers, no turn at arm time: the standing shape.
     assert spec.start_turn is False
     assert spec.task_text == ""

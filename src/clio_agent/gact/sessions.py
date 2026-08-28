@@ -170,6 +170,12 @@ class Session:
     # round-trips old persisted rows (asdict/Session(**payload)) with no
     # migration.
     approval_mode: str = "ask"
+    # Server-owned approval refinement for internal executors. This field is
+    # persisted so a standing child retains its authority after restart, but
+    # ``to_wire`` removes it and no public create/update request accepts it.
+    # The public approval mode therefore remains truthful while the dedicated
+    # SPOTTER watcher can contain an anomaly without acquiring blanket bypass.
+    approval_profile: str = ""
     # Routing override. "auto" runs the LM-based router; "chat" forces
     # every turn through the chat path; "experts" rejects chat/none
     # routes (raises a routing error) so users can lock the session
@@ -191,6 +197,7 @@ class Session:
 
         wire = asdict(self)
         wire["mode"] = normalize_stored_mode(self.mode)
+        wire.pop("approval_profile", None)
         return wire
 
 
@@ -314,6 +321,7 @@ class SessionStore:
         edit_mode: str = "diff",
         routing_mode: str = "auto",
         approval_mode: str = "ask",
+        approval_profile: str = "",
     ) -> Session:
         """Create a new session. Returns the freshly-minted record.
 
@@ -342,6 +350,7 @@ class SessionStore:
             edit_mode=edit_mode if edit_mode in {"diff", "whole", "patch"} else "diff",
             routing_mode=routing_mode if routing_mode in valid_routing_modes else "auto",
             approval_mode=approval_mode if approval_mode in valid_approval_modes else "ask",
+            approval_profile=(approval_profile if approval_profile in {"spotter-watcher"} else ""),
         )
         with self._lock:
             self._sessions[sid] = sess

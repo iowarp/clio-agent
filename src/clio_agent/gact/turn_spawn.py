@@ -110,6 +110,12 @@ class TaskSpec:
     workspace_id: Optional[str] = None
     session_mode: Optional[str] = None
     session_scope_metadata: Optional[dict[str, Any]] = None
+    # Server-owned permission refinement for a detached executor. This is not
+    # the user-facing approval mode and is never projected on the wire. ``None``
+    # preserves the existing child default; SPOTTER uses the narrow
+    # ``spotter-watcher`` profile so containment can proceed while release still
+    # requires a human decision.
+    session_approval_profile: Optional[str] = None
     # P2.10 (#1127): resolved execution placement carried across the invoker seam.
     placement: str = "local"
     # Spotter-ai (#1034 follow-on): a caller-chosen display label for the minted
@@ -338,6 +344,7 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         parent_session_id=spec.parent_session_id,
         agent={"id": spec.child_expert_id, "mode": "subagent"},
         mode=parent_mode,
+        approval_profile=spec.session_approval_profile or "",
     )
     if parent_mode in _RESTRICTIVE_SESSION_MODES:
         # Typed, queryable note (no-silent-fallback ground rule): this is a real
@@ -413,6 +420,7 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
                 "workspace_id": workspace_id,
                 "session_mode": parent_mode,
                 "session_scope_metadata": session_scope_metadata,
+                "session_approval_profile": spec.session_approval_profile,
             },
         },
     )
@@ -795,6 +803,7 @@ def _admit_next_queued(app: "FastAPI") -> None:
             workspace_id=pending.get("workspace_id"),
             session_mode=pending.get("session_mode"),
             session_scope_metadata=pending.get("session_scope_metadata"),
+            session_approval_profile=pending.get("session_approval_profile"),
         )
         reg.register(replace(task, queued_reason=""))  # clear queued_reason as it launches
         _launch(app, reg.get(task.task_id), spec)

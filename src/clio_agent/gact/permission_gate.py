@@ -98,6 +98,7 @@ _EXTERNAL_MCP_PERMISSION_CONTEXT_KIND = EXTERNAL_MCP_CONTEXT_KIND
 #: trace always shows WHY a non-read call was auto-approved or still prompted (never silent).
 REASON_APPROVAL_BYPASS = "approval_mode_bypass"
 REASON_APPROVAL_AUTO_EDITS = "approval_mode_auto_edits"
+REASON_SPOTTER_WATCHER_CONTAINMENT = "approval_profile_spotter_watcher_containment"
 #: ai-review still PROMPTS today (the reviewer agent is the split follow-up slice); the pending
 #: row carries this typed reason so the ask is attributable to the reviewer-pending state.
 REASON_AI_REVIEW_REVIEWER_PENDING = "ai_review_reviewer_pending"
@@ -138,20 +139,24 @@ def default_decision(
     the existing interactive prompt; it never manufactures a denial (that stays with the lock and
     explicit deny policies above). Returns:
 
-    * ``allow`` — ``bypass`` (any non-read call) or ``auto-edits`` for an fs WRITE (a call whose
-      static catalog entry carries the ``write`` tag);
+    * ``allow`` — ``bypass`` (any non-read call), ``auto-edits`` for an fs WRITE (a call whose
+      static catalog entry carries the ``write`` tag), or the server-owned
+      ``spotter-watcher`` profile for the exact containment/alert-card tools;
     * ``ask``   — ``ask`` (default), ``auto-edits`` for a non-write (e.g. ``shell_bash``, whose
       writes live behind the OS fence, not a catalog ``write`` tag), ``ai-review`` (the caller
       stamps the typed ``ai_review_reviewer_pending`` reason on the pending row), or
       ``spotter-ai`` (deliberately identical to ``ask`` — spotter-ai only ARMS a watcher
       child that observes the session; it grants no auto-approval axis of its own, so a
-      non-read call still prompts the interactive gate exactly as the default mode would).
+      non-read call still prompts the interactive gate exactly as the default mode would),
+      or ``spotter-watcher`` for every other tool, including quarantine release.
 
     ``kind``/``args`` are accepted for a stable signature (a future kind may inspect them) but the
     two current signals (mode + the catalog ``write`` tag) do not consult them.
     """
 
     _ = (kind, args)
+    if approval_mode == "spotter-watcher":
+        return "allow" if name in {"spotter_raise_alert", "raise_alert_card"} else "ask"
     if approval_mode == "bypass":
         return "allow"
     if approval_mode == "auto-edits":
@@ -697,9 +702,13 @@ def _make_permission_gate(app: "FastAPI"):
         # tool"): the mode may auto-approve ONLY the unpolicied case, so an explicit ``ask`` survives
         # even bypass. Reads never reach here (is_read_only returned at the top).
         approval_mode = getattr(current, "approval_mode", "ask") if current is not None else "ask"
+        approval_profile = (
+            str(getattr(current, "approval_profile", "") or "") if current is not None else ""
+        )
+        decision_posture = approval_profile or approval_mode
         if (
             policy_action != "ask"
-            and default_decision(approval_mode, "tool", name, args) == "allow"
+            and default_decision(decision_posture, "tool", name, args) == "allow"
         ):
             # bypass (any non-read) or auto-edits (fs write): auto-approve but STILL record a
             # resolved audit row + permission.resolved boundary event — the OS fence is
@@ -711,11 +720,15 @@ def _make_permission_gate(app: "FastAPI"):
                 args=args,
                 status="auto_approved",
                 action="allow",
-                summary=f"{subject} {name!r} allowed by approval_mode={approval_mode!r}",
+                summary=f"{subject} {name!r} allowed by approval posture={decision_posture!r}",
                 reason=(
                     REASON_APPROVAL_BYPASS
                     if approval_mode == "bypass"
-                    else REASON_APPROVAL_AUTO_EDITS
+                    else (
+                        REASON_SPOTTER_WATCHER_CONTAINMENT
+                        if approval_profile == "spotter-watcher"
+                        else REASON_APPROVAL_AUTO_EDITS
+                    )
                 ),
             )
             return "allow"
