@@ -65,6 +65,7 @@ from clio_agent.tools.gateway import (
     build_gateway,
     build_tool_catalog,
     list_builtin_tool_definitions,
+    list_jarvis_tool_definitions,
     list_relay_tool_definitions,
     namespace_proxies,
     namespace_specs,
@@ -384,6 +385,10 @@ class ClioAgent(dspy.Module):
             # deferred to the background pass.
             self._tool_definitions.update(
                 list_relay_tool_definitions(getattr(self, "_remote_mcp_federation", None))
+            )
+            # v1.7.0 cold-boot gap: see list_jarvis_tool_definitions.
+            self._tool_definitions.update(
+                list_jarvis_tool_definitions(getattr(self, "_jarvis_jobs", None))
             )
             catalog = build_tool_catalog(
                 tool_gateway, experts=experts, tools=list(self._tool_definitions.values())
