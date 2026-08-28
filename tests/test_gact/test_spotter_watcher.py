@@ -330,6 +330,23 @@ class _CapturingAgent:
         return SimpleNamespace(answer="ack", selected_expert="", routing_rationale="")
 
 
+class _FailingAgent:
+    """A watcher executor that returns the live failure observed in qualification."""
+
+    def forward(self, question: str, session_id: str, **_kw: Any) -> Any:
+        return SimpleNamespace(
+            answer="",
+            selected_expert="",
+            routing_rationale="",
+            error_info={
+                "error": "not_implemented",
+                "message": "The requested custom tools are unavailable.",
+                "details": {"reason": "custom_agent_tools_unavailable"},
+                "recoverable": False,
+            },
+        )
+
+
 def _write_watcher_blueprint(root: Path) -> None:
     """A minimal ONE-expert Agent Blueprint standing in for the real spotter-ai
     pack (a separate, not-yet-authored deliverable) — just enough for the
@@ -492,6 +509,31 @@ def test_live_state_flips_waiting_running_waiting_across_a_wake(tmp_path: Path) 
         )
         # Never terminal across the wake -- only disarm goes terminal.
         assert not app.state.agent_task_registry.get(task.task_id).is_terminal
+
+
+@pytest.mark.usefixtures("host_agent_executor")
+def test_failed_watcher_turn_stays_armed_but_blocks_clearance(tmp_path: Path) -> None:
+    """A typed watcher failure must never masquerade as idle/healthy surveillance."""
+
+    app, root_path = _build_app_with_watcher_blueprint(tmp_path, _FailingAgent())
+    with TestClient(app) as client:
+        wid = _make_workspace(client, root_path)
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "t", "workspace_id": wid, "approval_mode": "spotter-ai"},
+        ).json()["id"]
+        task = app.state.agent_task_registry.for_parent(sid)[0]
+
+        wake_on_parent_activity(app, sid, tool_name="phenotype_measure_cohort")
+
+        assert _wait_for(
+            lambda: app.state.agent_task_registry.get(task.task_id).live_state == "error"
+        )
+        failed = app.state.agent_task_registry.get(task.task_id)
+        assert failed.status == STATUS_RUNNING
+        assert failed.error_reason == "custom_agent_tools_unavailable"
+        assert not failed.is_terminal
+        assert wait_for_spotter_clearance(app, sid, timeout_s=0.01) is False
 
 
 @pytest.mark.usefixtures("host_agent_executor")

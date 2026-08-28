@@ -189,6 +189,13 @@ def _watcher_clearance_pending(app: "FastAPI", parent_session_id: str) -> bool:
     return inbox_for(app, task.child_session_id).peek_nonempty()
 
 
+def _watcher_clearance_failed(app: "FastAPI", parent_session_id: str) -> bool:
+    """Whether the armed watcher most recently failed its check turn."""
+
+    task = next(iter(_live_watcher_tasks(app, parent_session_id)), None)
+    return task is not None and task.live_state == "error"
+
+
 def wait_for_spotter_clearance(
     app: "FastAPI", parent_session_id: str, *, timeout_s: float = 180.0
 ) -> bool:
@@ -205,15 +212,19 @@ def wait_for_spotter_clearance(
         return True
     event = _clearance_event(app, parent_session_id)
     deadline = time.monotonic() + max(0.0, timeout_s)
+    if _watcher_clearance_failed(app, parent_session_id):
+        return False
     while _watcher_clearance_pending(app, parent_session_id):
         event.clear()
+        if _watcher_clearance_failed(app, parent_session_id):
+            return False
         if not _watcher_clearance_pending(app, parent_session_id):
-            return True
+            return not _watcher_clearance_failed(app, parent_session_id)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
         event.wait(remaining)
-    return True
+    return not _watcher_clearance_failed(app, parent_session_id)
 
 
 def on_turn_runner_idle(app: "FastAPI", session_id: str) -> None:
@@ -305,7 +316,9 @@ def _live_watcher_tasks(app: "FastAPI", parent_session_id: str) -> list["AgentTa
     ]
 
 
-def _set_live_state(app: "FastAPI", task_id: str, live_state: str) -> Optional["AgentTask"]:
+def _set_live_state(
+    app: "FastAPI", task_id: str, live_state: str, *, error_reason: str = ""
+) -> Optional["AgentTask"]:
     """Flip a standing watcher task's ``live_state`` WITHOUT a status transition.
 
     ``AgentTaskRegistry.transition()`` always forces ``live_state == new_status``
@@ -322,7 +335,7 @@ def _set_live_state(app: "FastAPI", task_id: str, live_state: str) -> Optional["
     record, never a queued/terminal one.
     """
 
-    from clio_agent.gact.agent_tasks import persist_agent_task  # noqa: PLC0415
+    from clio_agent.gact.agent_tasks import ERROR_REASONS, persist_agent_task  # noqa: PLC0415
 
     registry = app.state.agent_task_registry
     current = registry.get(task_id)
@@ -333,9 +346,12 @@ def _set_live_state(app: "FastAPI", task_id: str, live_state: str) -> Optional["
             live_state,
         )
         return None
-    if current.live_state == live_state:
+    normalized_reason = error_reason if error_reason in ERROR_REASONS else ""
+    if live_state == "error" and not normalized_reason:
+        normalized_reason = "agent_error"
+    if current.live_state == live_state and current.error_reason == normalized_reason:
         return current  # already there -- idempotent, no redundant persist/publish
-    updated = replace(current, live_state=live_state)
+    updated = replace(current, live_state=live_state, error_reason=normalized_reason)
     registry.register(updated)
     persist_agent_task(app, updated)
     return updated
@@ -724,8 +740,11 @@ def on_turn_finalized(app: "FastAPI", session_id: str) -> None:
     * ``session_id`` IS a watcher's OWN child session (a live standing task
       whose ``child_session_id`` matches): its CHECK turn (or a direct
       "Discuss" user turn — both are ordinary turns on this session) just
-      ended — flip ``live_state`` back to ``"waiting"``. Never a ``status``
-      transition; disarm stays the only path to terminal.
+      ended — inspect its authoritative final assistant message. A successful
+      check returns to ``"waiting"``; a typed failure remains armed but enters
+      ``live_state="error"`` and blocks protected mutations until a later
+      successful recovery check. Never a ``status`` transition; disarm stays
+      the only path to terminal.
 
     A session is never both (the watcher's own session keeps the public
     ``approval_mode="ask"`` and carries only the server-owned narrow
@@ -749,19 +768,37 @@ def on_turn_finalized(app: "FastAPI", session_id: str) -> None:
     )
     if task is None:
         return
-    updated = _set_live_state(app, task.task_id, "waiting")
+    messages = app.state.messages.get(session_id, []) or []
+    user_messages = [message for message in messages if getattr(message, "role", "") == "user"]
+    latest_turn_id = (
+        str(getattr(user_messages[-1], "turn_id", "") or getattr(user_messages[-1], "id", "") or "")
+        if user_messages
+        else ""
+    )
+    finals = [
+        message
+        for message in messages
+        if getattr(message, "role", "") == "assistant"
+        and not (getattr(message, "metadata", {}) or {}).get("live")
+        and (not latest_turn_id or str(getattr(message, "turn_id", "") or "") == latest_turn_id)
+    ]
+    final = finals[-1] if finals else None
+    error_info = getattr(final, "error_info", None) if final is not None else None
+    if latest_turn_id and (final is None or error_info is not None):
+        from clio_agent.gact.turn_spawn_failures import (  # noqa: PLC0415
+            child_task_error_reason,
+        )
+
+        reason = child_task_error_reason(error_info)
+        updated = _set_live_state(app, task.task_id, "error", error_reason=reason)
+        event_name = "spotter_watcher_check_turn_failed"
+    else:
+        reason = ""
+        updated = _set_live_state(app, task.task_id, "waiting")
+        event_name = "spotter_watcher_check_turn_ended"
     if updated is not None:
         _clearance_event(app, parent_id).set()
-        logger.info(
-            "spotter_watcher_check_turn_ended session=%s watcher=%s task=%s",
-            parent_id,
-            session_id,
-            task.task_id,
-        )
-        trace.event(
-            "SPOTTER",
-            "spotter_watcher_check_turn_ended session=%s watcher=%s task=%s",
-            parent_id,
-            session_id,
-            task.task_id,
-        )
+        detail = f" reason={reason}" if reason else ""
+        message = f"{event_name}{detail} session=%s watcher=%s task=%s"
+        logger.info(message, parent_id, session_id, task.task_id)
+        trace.event("SPOTTER", message, parent_id, session_id, task.task_id)
