@@ -209,7 +209,14 @@ def test_lm_provider_sdk_transport_ready_when_cli_present(tmp_path, monkeypatch)
     """
     import shutil
 
+    from clio_agent.runtime import lm_provider_probe
+
     monkeypatch.setattr(shutil, "which", lambda binary: f"/usr/bin/{binary}")
+    monkeypatch.setattr(
+        lm_provider_probe.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "claude_agent_sdk" else None,
+    )
     probe = RuntimeProbe(
         env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_LM_PROVIDER": "claude_code"},
         http_get=_http_get_must_not_run,
@@ -222,11 +229,38 @@ def test_lm_provider_sdk_transport_ready_when_cli_present(tmp_path, monkeypatch)
     assert status.details["cli_binary"] == "claude"
 
 
+def test_lm_provider_sdk_transport_unavailable_when_sdk_package_absent(tmp_path, monkeypatch):
+    """Claude SDK transport must not report READY when its Python package is absent."""
+    import shutil
+
+    from clio_agent.runtime import lm_provider_probe
+
+    monkeypatch.setattr(shutil, "which", lambda binary: f"/usr/bin/{binary}")
+    monkeypatch.setattr(lm_provider_probe.importlib.util, "find_spec", lambda _name: None)
+    probe = RuntimeProbe(
+        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_LM_PROVIDER": "claude_code"},
+        http_get=_http_get_must_not_run,
+    )
+
+    status = probe.probe_lm_provider()
+
+    assert status.state == IntegrationState.UNAVAILABLE
+    assert status.details["reason"] == "sdk_package_absent"
+    assert "uv sync --extra claude-code" in status.next_action
+
+
 def test_lm_provider_sdk_transport_unavailable_when_cli_absent(tmp_path, monkeypatch):
     """SDK transport -> typed UNAVAILABLE (not an HTTP error) when the CLI is absent (#899)."""
     import shutil
 
+    from clio_agent.runtime import lm_provider_probe
+
     monkeypatch.setattr(shutil, "which", lambda binary: None)
+    monkeypatch.setattr(
+        lm_provider_probe.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "claude_agent_sdk" else None,
+    )
     probe = RuntimeProbe(
         env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_LM_PROVIDER": "claude_code"},
         http_get=_http_get_must_not_run,

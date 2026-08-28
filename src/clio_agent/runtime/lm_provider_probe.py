@@ -11,9 +11,9 @@ transport handling has a single owner:
   pseudo-schemes (``codex://sdk``, ``claude-code://sdk``). These providers have
   no HTTP ``/models`` endpoint; an HTTP GET against the pseudo-scheme yields
   ``requests``' ``No connection adapters were found`` and reports the provider
-  UNAVAILABLE while turns actually run fine (#899). The real dependency is the
-  local CLI the transport spawns, so this probes ``shutil.which`` for it -- never
-  an HTTP GET against a pseudo-scheme.
+  UNAVAILABLE while turns actually run fine (#899). Claude's SDK transport
+  requires both the optional ``claude_agent_sdk`` package and the local CLI;
+  Codex owns a separate bundled-runtime probe. No pseudo-scheme is HTTP-probed.
 """
 
 from __future__ import annotations
@@ -183,8 +183,9 @@ def probe_cli_transport(
     """Transport-aware doctor probe for CLI/SDK pseudo-scheme providers (#899).
 
     The ``api_base`` (e.g. ``claude-code://sdk``, ``codex://sdk``) has no HTTP
-    ``/models`` endpoint; this probes the local CLI the transport spawns rather
-    than issuing an HTTP GET that would always report the provider unreachable.
+    ``/models`` endpoint. This validates the local dependencies that the
+    selected transport actually imports or starts rather than issuing an HTTP
+    GET that would always report the provider unreachable.
 
     Args:
         config: The resolved provider config (provider, api_base, model).
@@ -208,6 +209,22 @@ def probe_cli_transport(
         "transport": transport,
         "cli_binary": binary,
     }
+
+    if config.provider == "claude_code" and importlib.util.find_spec("claude_agent_sdk") is None:
+        return IntegrationStatus(
+            name="lm_provider",
+            state=IntegrationState.UNAVAILABLE,
+            summary=(
+                "Claude Code sdk transport selected but the `claude_agent_sdk` package "
+                "is not installed; the provider cannot start its SDK transport."
+            ),
+            config_source=source,
+            next_action="Install the Claude transport with `uv sync --extra claude-code`.",
+            endpoint=config.api_base,
+            auth_mode=auth_mode,
+            details={**details, "reason": "sdk_package_absent", "sdk_package": "claude_agent_sdk"},
+            required=True,
+        )
 
     resolved = which(binary)
     if resolved:
