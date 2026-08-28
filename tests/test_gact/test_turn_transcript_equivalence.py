@@ -416,6 +416,45 @@ def test_activated_blueprint_turn_stamps_agent_blueprint_provenance(tmp_path: Pa
     assert blueprint.get("version") and blueprint.get("scope")
 
 
+def test_activated_blueprint_catalog_agent_id_executes_declared_root(tmp_path: Path) -> None:
+    """A session may name the selected blueprint while its root is ``main``.
+
+    The session-level catalog identity is not itself an executable AgentDef. Once
+    the same blueprint is explicitly activated, turn forwarding must translate
+    that container identity to the blueprint's declared root rather than return
+    ``unknown_or_non_executable_agent``.
+    """
+
+    from clio_agent.gact.agent_blueprints import DEFAULT_AGENT_BLUEPRINT_ID
+
+    app = _build(tmp_path, "catalog-agent-id", _PlainAgent("root answer"))
+    with TestClient(app) as client:
+        sid = client.post(
+            "/v1/sessions",
+            json={
+                "title": "selected blueprint",
+                "agent": {"id": DEFAULT_AGENT_BLUEPRINT_ID},
+            },
+        ).json()["id"]
+        activated = client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"blueprint_id": DEFAULT_AGENT_BLUEPRINT_ID},
+        )
+        assert activated.status_code == 200, activated.text
+        _complete_turn(client, sid, "hello")
+        messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+
+    assistant = next(
+        message
+        for message in messages
+        if message["role"] == "assistant" and not message.get("metadata", {}).get("live")
+    )
+    assert assistant["stop_reason"] != "error", assistant.get("error_info")
+    runtime = (assistant.get("metadata") or {}).get("agent_runtime")
+    assert runtime["agent_id"] == "main"
+    assert runtime["agent_blueprint"]["id"] == DEFAULT_AGENT_BLUEPRINT_ID
+
+
 # ---------------------------------------------------------------------------
 # shim equivalence: legacy dict path == transcript-shimmed path
 # ---------------------------------------------------------------------------

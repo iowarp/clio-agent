@@ -166,13 +166,22 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
     bringup_timing.timer_for_session(state.app, state.sid).start_phase("blueprint.resolve")
     session_agent_id = _session_agent_id(state.sess)
     state.active_agent_id = state.turn_agent_id or session_agent_id
+    active_blueprint_id = _runtime_active_agent_blueprint_id(state.app, state.sid)
     active_blueprint_root_id = _runtime_active_agent_blueprint_root_id(state.app, state.sid)
     active_blueprint_agent_ids = _runtime_active_agent_blueprint_agent_ids(state.app, state.sid)
     if (
         not state.turn_agent_id
         and active_blueprint_root_id
-        and state.active_agent_id in {"", "main", "default"}
+        and (
+            state.active_agent_id in {"", "main", "default"}
+            or state.active_agent_id == active_blueprint_id
+        )
     ):
+        # Session creation may persist the selected Agent Blueprint's catalog id
+        # as ``session.agent.id`` while activation resolves its executable root
+        # expert separately. The catalog id names the container, not an AgentDef;
+        # translate it to the declared root instead of rejecting the correctly
+        # activated blueprint as an unknown session agent.
         state.active_agent_id = active_blueprint_root_id
     if (
         active_blueprint_root_id
@@ -202,7 +211,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
     run_builtin_main = (
         not active_blueprint_root_id
         and state.active_agent_id in _EXECUTABLE_SESSION_AGENT_IDS
-        and not _runtime_active_agent_blueprint_id(state.app, state.sid)
+        and not active_blueprint_id
         and _runtime_active_agent_blueprint_path(state.app, state.sid) is None
     )
     if run_builtin_main:
