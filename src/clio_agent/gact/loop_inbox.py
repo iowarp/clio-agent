@@ -565,3 +565,12 @@ def _make_loop_inbox_drain(app: "FastAPI"):
         return drain_active_session_inbox(app)
 
     return drain
+
+
+def drain_inbox_and_notify_spotter(app: "FastAPI", sid: str) -> None:
+    """Drain deferred input, then release any SPOTTER clearance waiter."""
+
+    drain_inbox_to_new_turn(app, sid)
+    from clio_agent.gact.spotter_watcher import on_turn_runner_idle  # noqa: PLC0415
+
+    on_turn_runner_idle(app, sid)

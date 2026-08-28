@@ -762,7 +762,7 @@ from clio_agent.gact.expert_packs import (
     load_expert_packs,
     validate_expert_hierarchy,
 )
-from clio_agent.gact.loop_inbox import _make_loop_inbox_drain, drain_inbox_to_new_turn
+from clio_agent.gact.loop_inbox import _make_loop_inbox_drain, drain_inbox_and_notify_spotter
 from clio_agent.gact.messages import MessageStore
 from clio_agent.gact.permission_gate import (  # noqa: E402,F401
     _direct_permission_denied,
@@ -1362,14 +1362,7 @@ def build_app(
     # resume that arrives while busy is enqueued as a user_message steer and the
     # idle hook (drain_inbox_to_new_turn) re-drives residual steers into ONE turn.
     app.state.loop_inboxes = {}
-
-    def _on_session_idle(sid: str) -> None:
-        drain_inbox_to_new_turn(app, sid)
-        from clio_agent.gact.spotter_watcher import on_turn_runner_idle  # noqa: PLC0415
-
-        on_turn_runner_idle(app, sid)
-
-    app.state.turn_runner.set_idle_hook(_on_session_idle)
+    app.state.turn_runner.set_idle_hook(lambda sid: drain_inbox_and_notify_spotter(app, sid))
     # iowarp/clio-agent#2: per-session ledger of tool calls observed
     # during the in-flight turn. The global tool_observer appends
     # here; _run_turn_in_background drains it post-forward to attach

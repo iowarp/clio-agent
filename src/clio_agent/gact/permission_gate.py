@@ -84,6 +84,7 @@ from clio_agent.gact.runtime.permission_policies import (
     _permission_path_from_args,
 )
 from clio_agent.gact.runtime.retention import enforce_dict_bound
+from clio_agent.gact.spotter_permission import enforce_spotter_clearance as _spotter_clearance
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.catalog import get_tool_entry
 
@@ -91,12 +92,10 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
 logger = logging.getLogger(__name__)
-
 #: The gate ``context`` kind marking an external MCP tool call. Single-sourced in
 #: :mod:`grant_resolver`; re-exported here under its historical private name for the
 #: routes/builders/tests that bind ``permission_gate._EXTERNAL_MCP_PERMISSION_CONTEXT_KIND``.
 _EXTERNAL_MCP_PERMISSION_CONTEXT_KIND = EXTERNAL_MCP_CONTEXT_KIND
-
 #: #1034 typed approval-mode reasons stamped on the resolved / pending permission row so the
 #: trace always shows WHY a non-read call was auto-approved or still prompted (never silent).
 REASON_APPROVAL_BYPASS = "approval_mode_bypass"
@@ -591,29 +590,10 @@ def _make_permission_gate(app: "FastAPI"):
         # Prefer the session currently driving the turn. Recency is
         # only a fallback for truly out-of-band tool calls.
         sid, current = _resolve_tool_session(app)
-        # Standing SPOTTER surveillance is asynchronous, but protected work is
-        # causally ordered: a new mutating tool call may not overtake the
-        # watcher's check of earlier tool evidence. Reads returned above and
-        # therefore remain ungated. Timeout fails closed rather than silently
-        # degrading to unobserved execution.
-        if current is not None and getattr(current, "approval_mode", "") == "spotter-ai":
-            from clio_agent.gact.spotter_watcher import wait_for_spotter_clearance  # noqa: PLC0415
-
-            if not wait_for_spotter_clearance(app, sid):
-                _record_resolved_permission(
-                    app,
-                    session_id=sid,
-                    tool_name=name,
-                    args=args,
-                    status="auto_denied",
-                    action="deny",
-                    summary=f"{subject} {name!r} blocked while SPOTTER surveillance was pending",
-                    reason="spotter_clearance_timeout",
-                )
-                return DenyDecision(
-                    "SPOTTER did not finish reviewing the preceding workload evidence within "
-                    "the safety deadline, so this tool call was not run."
-                )
+        if denial := _spotter_clearance(
+            app, sid, current, name, args, subject, _record_resolved_permission
+        ):
+            return DenyDecision(denial)
         # P2.2 #1070: PreToolUse hooks (the ported ``pre_tool`` consumer, deny-capable
         # and TIGHTEN-ONLY). A hook deny blocks the call and its reason reaches the
         # model via ``DenyDecision``; a hook allow proceeds to the policy match below
