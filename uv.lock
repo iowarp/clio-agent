@@ -503,7 +503,7 @@ requires-dist = [
     { name = "adios2", marker = "sys_platform != 'win32' and extra == 'adios'", specifier = ">=2.10.0" },
     { name = "claude-agent-sdk", marker = "extra == 'claude-code'", specifier = ">=0.2.110" },
     { name = "clio-agent", extras = ["optimizers", "adios", "argonne", "claude-code", "flowcept", "dev"], marker = "extra == 'all'" },
-    { name = "clio-schemas", git = "https://github.com/iowarp/clio-schemas.git?rev=8074fda2c2aef417f924ed0d950629d7d7125343" },
+    { name = "clio-schemas", git = "https://github.com/iowarp/clio-schemas.git?rev=f99450067e498de25c28764e15ecad1a88b7d595" },
     { name = "dspy", specifier = "==3.3.0b1" },
     { name = "fastapi", specifier = ">=0.140" },
     { name = "fastmcp", specifier = "==4.0.0b1" },
@@ -552,8 +552,8 @@ provides-extras = ["optimizers", "adios", "argonne", "claude-code", "flowcept", 
 
 [[package]]
 name = "clio-schemas"
-version = "0.2.2"
-source = { git = "https://github.com/iowarp/clio-schemas.git?rev=8074fda2c2aef417f924ed0d950629d7d7125343#8074fda2c2aef417f924ed0d950629d7d7125343" }
+version = "0.2.3"
+source = { git = "https://github.com/iowarp/clio-schemas.git?rev=f99450067e498de25c28764e15ecad1a88b7d595#f99450067e498de25c28764e15ecad1a88b7d595" }
 dependencies = [
     { name = "pydantic" },
 ]
