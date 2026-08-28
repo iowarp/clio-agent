@@ -13,6 +13,9 @@ RUN printf '{ "profile": "clio", "brandingRoot": "/build/branding" }\n' > brand.
 
 FROM python:3.12-slim AS agent-builder
 WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml README.md uv.lock ./
 COPY src ./src
 RUN pip install --no-cache-dir uv \
