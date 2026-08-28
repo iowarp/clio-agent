@@ -65,6 +65,9 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 
+from clio_agent.gact.cancellation_check import (
+    make_cancellation_checker as _make_cancellation_checker,  # noqa: F401 - compatibility export
+)
 from clio_agent.gact.permission_delivery import publish_permission_event
 from clio_agent.gact.planning import active_playbook_allowed_tools
 from clio_agent.gact.runtime.globals import _resolve_tool_session
@@ -792,18 +795,3 @@ def _make_permission_gate(app: "FastAPI"):
         return "deny"
 
     return gate
-
-
-def _make_cancellation_checker(app: "FastAPI"):
-    """Build a tool-executor cancellation checker for the active GACT session."""
-
-    def check() -> bool:
-        sid, _current = _resolve_tool_session(app)
-        if not sid:
-            return False
-        event = app.state.cancel_events.get(sid)
-        if event is not None and event.is_set():
-            return True
-        return sid in app.state.cancel_flags
-
-    return check

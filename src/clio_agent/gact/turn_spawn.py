@@ -32,6 +32,7 @@ from clio_agent.gact.turn_spawn_failures import (
     child_task_error_reason,
     child_task_failure_result,
 )
+from clio_agent.gact.turn_spawn_result import child_workflow_state as _child_workflow_state
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -741,19 +742,6 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
         return
 
     finish_agent_task_transition(app, outcome)
-
-
-def _child_workflow_state(app: "FastAPI", child_sid: str, final: Any) -> dict[str, Any]:
-    """The child's typed workflow_state riding back on the result (empty when none)."""
-
-    meta = getattr(final, "metadata", {}) or {}
-    wf = meta.get("workflow_state")
-    if isinstance(wf, dict):
-        return wf
-    sess = app.state.sessions.get(child_sid)
-    smeta = getattr(sess, "metadata", {}) or {}
-    wf = smeta.get("workflow_state")
-    return wf if isinstance(wf, dict) else {}
 
 
 def _admit_next_queued(app: "FastAPI") -> None:
