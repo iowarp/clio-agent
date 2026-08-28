@@ -63,10 +63,13 @@ _INSTALLED = False
 _CURRENT_PROBE_SERVER_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
     "clio_mcp_probe_server_id", default=""
 )
+_CURRENT_PROBE_TIMEOUT_RETRIES: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "clio_mcp_probe_timeout_retries", default=None
+)
 
 
 @contextmanager
-def probe_server_context(server_id: str) -> Iterator[None]:
+def probe_server_context(server_id: str, *, timeout_retries: int | None = None) -> Iterator[None]:
     """Bind the MCP server/namespace name for the connect(s) made in this scope.
 
     Callers that connect on behalf of a KNOWN declared server (the boot
@@ -75,11 +78,13 @@ def probe_server_context(server_id: str) -> Iterator[None]:
     An unbound connect (never entered) always uses the global default.
     """
 
-    token = _CURRENT_PROBE_SERVER_ID.set(server_id or "")
+    server_token = _CURRENT_PROBE_SERVER_ID.set(server_id or "")
+    retries_token = _CURRENT_PROBE_TIMEOUT_RETRIES.set(timeout_retries)
     try:
         yield
     finally:
-        _CURRENT_PROBE_SERVER_ID.reset(token)
+        _CURRENT_PROBE_TIMEOUT_RETRIES.reset(retries_token)
+        _CURRENT_PROBE_SERVER_ID.reset(server_token)
 
 
 def resolve_timeout_retries(server_id: str = "") -> int:
@@ -96,6 +101,9 @@ def resolve_timeout_retries(server_id: str = "") -> int:
 
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
 
+    declared_override = _CURRENT_PROBE_TIMEOUT_RETRIES.get()
+    if declared_override is not None:
+        return declared_override
     resolved_id = (server_id or _CURRENT_PROBE_SERVER_ID.get()).strip()
     if resolved_id:
         env_key = "".join(c if c.isalnum() else "_" for c in resolved_id.upper())

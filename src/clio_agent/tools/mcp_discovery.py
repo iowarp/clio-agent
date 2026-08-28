@@ -171,7 +171,7 @@ def _list_one_namespace(
         listed = listing_cache.load_listing(namespace, spec.command, tuple(spec.args), spec.env)
     if listed is None:
         timeout_s = _namespace_attempt_timeout_s(namespace)
-        with probe_server_context(namespace):
+        with probe_server_context(namespace, timeout_retries=spec.probe_timeout_retries):
             if uses_shared_launcher_cache(spec):
                 with acquire_launcher_cache_lock(namespace):
                     listed = _list_declared_tools(

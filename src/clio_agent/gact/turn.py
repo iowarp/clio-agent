@@ -61,6 +61,7 @@ from clio_agent.gact.messaging import (
     _image_part_summaries,
     _user_message_parts,
 )
+from clio_agent.gact.permission_delivery import publish_permission_event
 from clio_agent.gact.plan_mode import inject_plan_mode_reminder
 from clio_agent.gact.replanning import inject_replan_suggestion
 from clio_agent.gact.runtime import bringup_timing
@@ -556,12 +557,11 @@ async def _run_turn_in_background(
                 subject={"permission_id": pid},
                 payload=row,
             )
-            state.bus.publish(
-                Event(
-                    type="permission.requested",
-                    session_id=state.sid,
-                    payload=row,
-                )
+            publish_permission_event(
+                state.app,
+                "permission.requested",
+                owner_session_id=state.sid,
+                payload=row,
             )
         if state.sid in state.app.state.cancel_flags:
             state.app.state.cancel_flags.discard(state.sid)

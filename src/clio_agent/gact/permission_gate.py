@@ -65,7 +65,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 
-from clio_agent.gact.events import Event
+from clio_agent.gact.permission_delivery import publish_permission_event
 from clio_agent.gact.planning import active_playbook_allowed_tools
 from clio_agent.gact.runtime.globals import _resolve_tool_session
 from clio_agent.gact.runtime.grant_resolver import (
@@ -331,17 +331,16 @@ def _record_resolved_permission(
         app.state.permissions[pid] = row
         enforce_dict_bound(app, app.state.permissions, "permissions", session_id=session_id)
     if hasattr(app.state, "bus"):
-        app.state.bus.publish(
-            Event(
-                type="permission.resolved",
-                session_id=session_id,
-                payload={
-                    "permission_id": pid,
-                    "action": action,
-                    "session_id": session_id,
-                    "reason": reason,
-                },
-            )
+        publish_permission_event(
+            app,
+            "permission.resolved",
+            owner_session_id=session_id,
+            payload={
+                "permission_id": pid,
+                "action": action,
+                "session_id": session_id,
+                "reason": reason,
+            },
         )
     return pid
 
@@ -526,17 +525,17 @@ def resolve_permission(
             pid,
             exc,
         )
-    app.state.bus.publish(
-        Event(
-            type="permission.resolved",
-            session_id=row.get("session_id", ""),
-            payload={
-                "permission_id": pid,
-                "action": action,
-                "session_id": row.get("session_id", ""),
-                "grantor": grantor,
-            },
-        )
+    owner_session_id = str(row.get("session_id") or "")
+    publish_permission_event(
+        app,
+        "permission.resolved",
+        owner_session_id=owner_session_id,
+        payload={
+            "permission_id": pid,
+            "action": action,
+            "session_id": owner_session_id,
+            "grantor": grantor,
+        },
     )
     return row
 
@@ -745,12 +744,11 @@ def _make_permission_gate(app: "FastAPI"):
         app.state.permissions[pid] = row
         app.state.permission_events[pid] = evt
         enforce_dict_bound(app, app.state.permissions, "permissions", session_id=sid)
-        app.state.bus.publish(
-            Event(
-                type="permission.requested",
-                session_id=sid,
-                payload=row,
-            )
+        publish_permission_event(
+            app,
+            "permission.requested",
+            owner_session_id=sid,
+            payload=row,
         )
         # #1044: one-shot AI reviewer (ai-review approval mode only). The pending row +
         # event are already on the ledger (auditable that a review happened, carrying the

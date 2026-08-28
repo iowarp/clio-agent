@@ -164,6 +164,7 @@ class MCPServerSpec:
     auth: MCPAuthConfig | None = field(default=None, repr=False)
     always_load: bool = False
     timeout_ms: int | None = None
+    probe_timeout_retries: int | None = None
     source: str = ""
     validation_errors: tuple[str, ...] = ()
 
@@ -358,6 +359,16 @@ def _spec_from_mapping(
         except (TypeError, ValueError):
             errors.append("'timeout' must be an integer (milliseconds)")
 
+    probe_timeout_retries: int | None = None
+    if entry.get("probe_timeout_retries") is not None:
+        try:
+            probe_timeout_retries = int(entry["probe_timeout_retries"])
+            if probe_timeout_retries < 0:
+                errors.append("'probe_timeout_retries' must be zero or greater")
+                probe_timeout_retries = None
+        except (TypeError, ValueError):
+            errors.append("'probe_timeout_retries' must be an integer")
+
     return MCPServerSpec(
         name=name,
         transport=transport,
@@ -369,6 +380,7 @@ def _spec_from_mapping(
         auth=auth,
         always_load=bool(entry.get("alwaysLoad") or entry.get("always_load") or False),
         timeout_ms=timeout_ms,
+        probe_timeout_retries=probe_timeout_retries,
         source=source,
         validation_errors=tuple(errors),
     )

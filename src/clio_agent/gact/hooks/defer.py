@@ -62,6 +62,7 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.events import Event
 from clio_agent.gact.hooks.wire import record_hook_reason
+from clio_agent.gact.permission_delivery import publish_permission_event
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 
 if TYPE_CHECKING:
@@ -169,7 +170,12 @@ def _publish_pending(app: "FastAPI", sid: str, row: dict[str, Any]) -> None:
     """Surface a pending defer so ANY client sees it (the interactive-gate event shape)."""
 
     if hasattr(app.state, "bus"):
-        app.state.bus.publish(Event(type="permission.requested", session_id=sid, payload=row))
+        publish_permission_event(
+            app,
+            "permission.requested",
+            owner_session_id=sid,
+            payload=row,
+        )
     try:
         from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
 
