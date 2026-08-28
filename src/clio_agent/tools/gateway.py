@@ -454,8 +454,8 @@ def list_relay_tool_definitions(federation: Any) -> dict[str, Any]:
 
     ``relay_fetch_artifact`` (#1200, v1.7.0 gap): clio-agent's own tool,
     mounted onto ``follow_server`` outside ``catalog.follow_tools`` so the
-    loop above misses it; seeded here off the mounted server itself instead
-    (no I/O). ``setdefault`` keeps the catalog authoritative where it reports.
+    loop above misses it; seeded off the mounted server itself (no I/O).
+    Plain assignment lets this SERVED projection win over the raw catalog.
     """
 
     if federation is None:
@@ -473,7 +473,7 @@ def list_relay_tool_definitions(federation: Any) -> dict[str, Any]:
 
         for tool in _list_tools_sync(follow_server):
             prefixed = f"{RELAY_FOLLOW_NAMESPACE}_{tool.name}"
-            tools.setdefault(prefixed, tool.model_copy(update={"name": prefixed}))
+            tools[prefixed] = tool.model_copy(update={"name": prefixed})
     return tools
 
 

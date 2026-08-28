@@ -70,3 +70,40 @@ def test_relay_definitions_include_the_locally_mounted_artifact_fetch_tool() -> 
     )
     assert listed["relay_fetch_artifact"].name == "relay_fetch_artifact"
     assert "relay_wait" in listed, "the catalog-reported follow tool must still seed"
+
+
+def test_relay_definitions_served_projection_wins_over_raw_catalog_entry() -> None:
+    """D4 (review finding): for a name BOTH the raw catalog AND the mounted
+    ``follow_server`` report, the SERVED (mounted) definition must win, not
+    the raw catalog one -- ``_tool_definitions`` feeds executors'
+    ``preloaded_tools`` and ``/v1/tools``, so the model must see the better
+    definition. Measured drift on ``relay_observe``: catalog-reported has
+    ``title=None`` and the bare relay description; served has
+    ``title='Observe Job'`` and the cluster-identity sentence
+    ``_with_cluster_hint`` appends. Pre-fix (``setdefault``) the raw catalog
+    entry won because it was inserted first."""
+
+    from mcp.types import Tool as McpTool
+
+    from clio_agent.tools.relay_transport import RelayRemoteMcpCatalog
+    from clio_agent.tools.remote_mcp import RemoteMcpFederation
+
+    catalog = RelayRemoteMcpCatalog(
+        revision="e" * 64,
+        tools={},
+        follow_tools={
+            "relay_observe": McpTool(
+                name="relay_observe",
+                inputSchema={"type": "object", "properties": {"job_id": {"type": "string"}}},
+            )
+        },
+    )
+    federation = RemoteMcpFederation(catalog, lambda: None, cluster_hint="ares-p5run2")
+
+    listed = list_relay_tool_definitions(federation)
+
+    served = listed["relay_observe"]
+    assert served.title == "Observe Job", "the served projection's human title must win"
+    assert served.description is not None and "ares-p5run2" in served.description, (
+        "the served projection's cluster-hint sentence must win"
+    )

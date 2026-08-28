@@ -167,31 +167,31 @@ def _refresh_agent_relay_tool_surfaces(agent: Any, surfaces: Any) -> None:
     ``agent._remote_mcp_federation`` fresh on its next reaper-evicted rebuild.
     """
 
-    # #1244 rerun evidence (2026-08-21): an UNCHANGED catalog must be a no-op.
-    # This used to fall through unconditionally, bumping the federation epoch
-    # on every TTL-expired refresh — and an ABSENT federation keeps the SHORT
-    # failure TTL, so a relay-less serve bumped every turn, evicting every
-    # resident workspace fleet mid-turn (the executor-closed campaign kills).
-    # Identity = presence + the projected tool-name set, compared against the
-    # agent's LIVE state (no stored marker to seed or drift). The curated
-    # JARVIS surface (v1.7.0 cold-boot gap) joins the SAME identity check:
-    # pre-fix this compared only the federation, so a refresh that changed
-    # jarvis_jobs while the federation stayed put (or absent) early-returned
-    # and never reseeded the six jarvis_* tools onto the live agent.
+    # #1244 rerun evidence (2026-08-21) + D2 (review finding): an UNCHANGED
+    # catalog must be a cheap no-op -- unconditional epoch bumps evicted every
+    # resident workspace fleet mid-turn, and the old guard LISTED old+new
+    # relay/jarvis to compare tool-name sets (4x synchronous
+    # ``_list_tools_sync``, ~38.5ms blocking the loop) for zero discriminating
+    # power: jarvis's name set is the constant ``JARVIS_TOOL_NAMES``, so
+    # presence is the only signal; relay's catalog already carries a cheap
+    # identity, ``catalog.revision``, bumped only when its tools change.
     old_federation = getattr(agent, "_remote_mcp_federation", None)
-    new_definitions = list_relay_tool_definitions(surfaces.remote_mcp_federation)
+    new_federation = surfaces.remote_mcp_federation
     old_jarvis = getattr(agent, "_jarvis_jobs", None)
-    new_jarvis_definitions = list_jarvis_tool_definitions(surfaces.jarvis_jobs)
+    # getattr (D3): a surfaces double lacking ``jarvis_jobs`` no-ops like an
+    # explicit None -- never an AttributeError on this async path.
+    new_jarvis = getattr(surfaces, "jarvis_jobs", None)
+    old_revision = getattr(getattr(old_federation, "catalog", None), "revision", None)
+    new_revision = getattr(getattr(new_federation, "catalog", None), "revision", None)
     unchanged = (
-        (old_federation is None) == (surfaces.remote_mcp_federation is None)
-        and frozenset(list_relay_tool_definitions(old_federation)) == frozenset(new_definitions)
-        and (old_jarvis is None) == (surfaces.jarvis_jobs is None)
-        and frozenset(list_jarvis_tool_definitions(old_jarvis)) == frozenset(new_jarvis_definitions)
+        (old_federation is None) == (new_federation is None)
+        and old_revision == new_revision
+        and (old_jarvis is None) == (new_jarvis is None)
     )
     if unchanged:
         return
-    agent._remote_mcp_federation = surfaces.remote_mcp_federation  # noqa: SLF001
-    agent._jarvis_jobs = surfaces.jarvis_jobs  # noqa: SLF001
+    agent._remote_mcp_federation = new_federation  # noqa: SLF001
+    agent._jarvis_jobs = new_jarvis  # noqa: SLF001
     # getattr: pre-#209 callers (and existing test doubles) may construct a
     # surfaces object with no relay_install field at all -- absent is treated
     # exactly like an explicit None, never an AttributeError.
@@ -200,17 +200,14 @@ def _refresh_agent_relay_tool_surfaces(agent: Any, surfaces: Any) -> None:
     # Late-arrival seed (L3 run-14 brick): construction seeded
     # ``_tool_definitions`` while the federation was still ABSENT, and this
     # rebuild used to pass that stale builtins-only dict as
-    # ``preloaded_tools`` — so a discovery that succeeded AFTER construction
-    # pushed the federation onto the agent while its executor kept offering
-    # four builtins, and every custom-agent ACL still bricked
-    # (federation=present in the diagnostics, tools absent). Re-seed from the
-    # same projections the construction path uses (the ``_build_tool_gateway``
-    # call below rebuilds ``_tool_definitions`` from scratch for a real
-    # ``ClioAgent``; this direct update is what a test double -- or any other
-    # caller whose ``_build_tool_gateway`` does not reassign the dict --
-    # actually observes).
-    agent._tool_definitions.update(new_definitions)  # noqa: SLF001
-    agent._tool_definitions.update(new_jarvis_definitions)  # noqa: SLF001
+    # ``preloaded_tools`` -- a discovery succeeding AFTER construction left
+    # every custom-agent ACL bricked (federation=present, tools absent).
+    # Re-seed from the same projections construction uses (the real
+    # ``_build_tool_gateway`` rebuilds ``_tool_definitions`` from scratch;
+    # this direct update is what a test double -- or any caller whose
+    # ``_build_tool_gateway`` does not reassign the dict -- observes).
+    agent._tool_definitions.update(list_relay_tool_definitions(new_federation))  # noqa: SLF001
+    agent._tool_definitions.update(list_jarvis_tool_definitions(new_jarvis))  # noqa: SLF001
     # #1236: bump the federation epoch so RESIDENT per-workspace executors
     # (minted under the previous — possibly ABSENT — federation) evict on
     # their next resolve instead of serving a stale tool snapshot forever
