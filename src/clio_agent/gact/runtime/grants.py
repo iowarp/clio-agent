@@ -31,7 +31,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
-from clio_agent.gact.permission_delivery import publish_permission_event
+from clio_agent.gact.permission_delivery import publish_permission_event as publish_permission
 from clio_agent.gact.runtime.grant_revocation import revoke_root_grant
 from clio_agent.gact.runtime.permission_policies import (
     NETWORK_EGRESS_REQUEST_KIND,
@@ -722,14 +722,7 @@ def _emit_egress_requested(app: "FastAPI", session_id: str, row: dict[str, Any])
         )
     except Exception as exc:  # noqa: BLE001 - the emit must never wedge the gate
         logger.debug("egress permission.requested emit skipped error=%r", exc)
-    bus = getattr(app.state, "bus", None)
-    if bus is not None:
-        publish_permission_event(
-            app,
-            "permission.requested",
-            owner_session_id=session_id,
-            payload=row,
-        )
+    publish_permission(app, "permission.requested", owner_session_id=session_id, payload=row)
 
 
 def _record_egress_denied(app: "FastAPI", workspace_id: str, host: str, *, reason: str) -> None:

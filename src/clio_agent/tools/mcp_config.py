@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import yaml
 
 from clio_agent.errors import MCP_YAML_DECLARATION_UNREADABLE
+from clio_agent.tools.mcp_config_values import optional_int
 from clio_agent.tools.mcp_environment import stdio_environment
 
 if TYPE_CHECKING:
@@ -352,22 +353,8 @@ def _spec_from_mapping(
     except MCPConfigError as exc:
         errors.append(str(exc))
 
-    timeout_ms: int | None = None
-    if entry.get("timeout") is not None:
-        try:
-            timeout_ms = int(entry["timeout"])
-        except (TypeError, ValueError):
-            errors.append("'timeout' must be an integer (milliseconds)")
-
-    probe_timeout_retries: int | None = None
-    if entry.get("probe_timeout_retries") is not None:
-        try:
-            probe_timeout_retries = int(entry["probe_timeout_retries"])
-            if probe_timeout_retries < 0:
-                errors.append("'probe_timeout_retries' must be zero or greater")
-                probe_timeout_retries = None
-        except (TypeError, ValueError):
-            errors.append("'probe_timeout_retries' must be an integer")
+    timeout_ms = optional_int(entry, "timeout", errors, unit=" (milliseconds)")
+    probe_timeout_retries = optional_int(entry, "probe_timeout_retries", errors, minimum=0)
 
     return MCPServerSpec(
         name=name,

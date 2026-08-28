@@ -738,7 +738,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # thread_local=True silently orphans the OS lock when acquire/release
     # run on different threads, as they do here via asyncio.to_thread).
     "src/clio_agent/tools/mcp_executor.py": 843,
-    "src/clio_agent/tools/mcp_config.py": 818,
+    "src/clio_agent/tools/mcp_config.py": 817,
     # #1231 Part 1/2 (consumer half of the live-console feature): not previously
     # baselined -- this file was ALREADY 7 lines over the 800 cap before this
     # change (unbaselined pre-existing debt), i.e. 807 -> 820. Part 1 (+6 net):
