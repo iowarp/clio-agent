@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The b=transform(a) edge-requalification driver (doc §14.x). Source your
 # deployment.env first. Exits after dumping the MLMD graph for inspection.
-set -uo pipefail
+set -euo pipefail
 
 : "${CLIO_PQ_PORT:?}"
 : "${CLIO_PQ_WORKSPACE:?}"
@@ -13,35 +13,39 @@ wait_idle() {
   local sid=$1 budget=$2 st="?"
   for _ in $(seq 1 $((budget / 8))); do
     sleep 8
-    st=$(curl -s "$B/v1/sessions/$sid" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')
-    case "$st" in idle|error|failed) echo "$st"; return;; esac
+    st=$(curl -fsS "$B/v1/sessions/$sid" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')
+    case "$st" in
+      idle) echo "$st"; return 0;;
+      error|failed) echo "session $sid entered terminal failure state: $st" >&2; return 1;;
+    esac
   done
-  echo "budget_exhausted($st)"
+  echo "session $sid exceeded ${budget}s budget (last status: $st)" >&2
+  return 1
 }
 
 rm -f "$CLIO_PQ_WORKSPACE/a.csv" "$CLIO_PQ_WORKSPACE/b.csv"
 
-WS=$(curl -s -X POST -H 'Content-Type: application/json' \
+WS=$(curl -fsS -X POST -H 'Content-Type: application/json' \
   -d "{\"name\":\"edges-requal\",\"root_path\":\"$CLIO_PQ_WORKSPACE\"}" \
   "$B/v1/workspaces" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 echo "workspace=$WS"
 
-curl -s -X PUT -H 'Content-Type: application/json' \
+curl -fsS -X PUT -H 'Content-Type: application/json' \
   -d "{\"policies\":[{\"scope\":\"workspace\",\"scope_id\":\"$WS\",\"action\":\"allow\",\"priority\":1,\"tool_name_pattern\":\"*\",\"path_pattern\":\"*\"}]}" \
   "$B/v1/policies" > /dev/null
 
-SID=$(curl -s -X POST -H 'Content-Type: application/json' \
+SID=$(curl -fsS -X POST -H 'Content-Type: application/json' \
   -d "{\"title\":\"edge requalification b=transform(a)\",\"workspace_id\":\"$WS\"}" \
   "$B/v1/sessions" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 echo "session=$SID"
 
-curl -s -X POST -H 'Content-Type: application/json' \
+curl -fsS -X POST -H 'Content-Type: application/json' \
   -d '{"text":"Create a file a.csv in the workspace root containing exactly three lines: header value then rows 10 and 20. Use your file-write tool. Nothing else."}' \
   "$B/v1/sessions/$SID/messages" > /dev/null
 echo "turn1: $(wait_idle "$SID" 240)"
 
 sleep 3
-curl -s -X POST -H 'Content-Type: application/json' \
+curl -fsS -X POST -H 'Content-Type: application/json' \
   -d '{"text":"Read a.csv with your file-read tool, then write b.csv (file-write tool) containing the same header and each value doubled. Report the doubled values. Nothing else."}' \
   "$B/v1/sessions/$SID/messages" > /dev/null
 echo "turn2: $(wait_idle "$SID" 300)"

@@ -1035,11 +1035,30 @@ async def _construct_agent_async(app: "FastAPI") -> None:
     """
 
     loop = asyncio.get_running_loop()
-    # Construct (or reuse) the ONE per-process ARC up front and inject it into the build,
-    # so the agent does not mint a fresh ARC — the same instance is app.state.arc for the
-    # whole process across every later LM bind (no per-build ARC churn / trace ⊋ ARC split).
-    arc = _process_arc(app)
-    relay_kwargs = await relay_wiring.relay_agent_kwargs(app)
+    # Construction starts before the executor build: ARC initialization and relay
+    # surface discovery import production dependencies too. Keep the entire startup
+    # boundary typed. A missing dependency or relay discovery failure must not leave
+    # a server that advertises provider readiness while every turn returns the vague
+    # ``not_configured`` state.
+    try:
+        # Construct (or reuse) the ONE per-process ARC up front and inject it into the
+        # build, so the agent does not mint a fresh ARC — the same instance is
+        # app.state.arc for the whole process across every later LM bind (no per-build
+        # ARC churn / trace ⊋ ARC split).
+        arc = _process_arc(app)
+        relay_kwargs = await relay_wiring.relay_agent_kwargs(app)
+        # Pre-import the heavy LM stack ON THIS THREAD before any builder thread
+        # runs: the deferred init here and a concurrent provider bind otherwise
+        # import litellm simultaneously on two executor threads.
+        import litellm  # noqa: F401, PLC0415
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[clio-agent-gact] deferred agent preflight failed ({exc!r}); "
+            "POST /messages will keep returning 503.",
+            flush=True,
+        )
+        app.state.agent_init_error = repr(exc)
+        return
 
     def _build() -> Any:
         import dspy  # noqa: PLC0415
@@ -1084,13 +1103,6 @@ async def _construct_agent_async(app: "FastAPI") -> None:
             else ProviderProfileStore.seed(default_spec)
         )
         return agent
-
-    # Pre-import the heavy LM stack ON THIS THREAD before any builder thread
-    # runs: the deferred init here and a concurrent provider bind
-    # (construct_agent_with_relay) otherwise import litellm simultaneously on
-    # two executor threads, and the importlib race surfaces as KeyError('litellm')
-    # -> agent_init_error -> every turn 503s until a lucky reboot.
-    import litellm  # noqa: F401, PLC0415
 
     try:
         agent = await loop.run_in_executor(None, _build)

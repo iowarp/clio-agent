@@ -13,11 +13,33 @@ set -euo pipefail
 : "${CLIO_PQ_CMF_SERVER_URL:?CMF server base URL}"
 : "${CLIO_PQ_PIPELINE:?CMF pipeline name for this qualification}"
 
+if [[ "${CLIO_PQ_ARC_STORE:-cte}" != "cte" ]]; then
+  echo "qualification requires CLIO_PQ_ARC_STORE=cte; LocalFS is not acceptance evidence" >&2
+  exit 2
+fi
+
+# Fail before binding the port when the selected interpreter is stale or
+# incomplete. These imports cover the exact pre-executor seams that construct
+# the ARC, relay surfaces, provider, and pinned GACT schema.
+PYTHONPATH="$CLIO_PQ_REPO/src" "$CLIO_PQ_PYTHON" - <<'PY'
+from importlib.metadata import version
+
+import iowarp_core  # noqa: F401
+import litellm  # noqa: F401
+import psutil  # noqa: F401
+from clio_schemas import A2UIClientActionMessage  # noqa: F401
+
+expected = {"clio-schemas": "0.2.3", "litellm": "1.91.3"}
+actual = {name: version(name) for name in expected}
+if actual != expected:
+    raise SystemExit(f"qualification dependency drift: expected={expected}, actual={actual}")
+PY
+
 mkdir -p "$CLIO_PQ_WORKSPACE"
 cd "$CLIO_PQ_WORKSPACE"
 exec env \
   PYTHONPATH="$CLIO_PQ_REPO/src" \
-  CLIO_ARC_STORE="${CLIO_PQ_ARC_STORE:-local}" \
+  CLIO_ARC_STORE="${CLIO_PQ_ARC_STORE:-cte}" \
   CLIO_LM_PROVIDER="${CLIO_PQ_LM_PROVIDER:-claude_code}" \
   CLIO_LM_MODEL="${CLIO_PQ_LM_MODEL:-sonnet}" \
   CLIO_PROVENANCE_PROVIDERS="${CLIO_PQ_PROVIDERS:-jsonl}" \

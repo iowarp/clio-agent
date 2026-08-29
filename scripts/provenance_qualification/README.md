@@ -46,6 +46,10 @@ read), `OUTPUT -> b.csv` (turn 2 write). Failures on the CMF path surface as
 - An isolated CMF-compatible Python (3.9, `cmflib==0.1.0`,
   `ml-metadata==1.15.0`) at `$CLIO_PQ_CMF_PYTHON` — CLIO's own interpreter
   never imports cmflib.
+- A lock-synchronized CLIO interpreter containing the pinned `clio-schemas`,
+  LiteLLM, `psutil`, and `iowarp-core` runtime. `serve-qualification.sh`
+  verifies these before binding a port and rejects LocalFS; an overlay or a
+  host with an incompatible `iowarp-core` wheel is not qualification evidence.
 - A fresh `$CLIO_PQ_CMF_METADATA_PATH` per qualification run: MLMD types are
   first-writer-wins per name, so re-using a store predating the consistent
   type-schema fix (#1247) rejects typed mints.
