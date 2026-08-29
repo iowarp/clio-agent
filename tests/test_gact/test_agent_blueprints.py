@@ -3783,6 +3783,16 @@ def test_first_run_bootstrap_installs_every_registry_pack(
     assert diagnostic == ""
     assert install_root.joinpath("AGENT.md").exists()
     assert install_root.parent.joinpath("extra-pack", "AGENT.md").exists()
+    from clio_agent.gact.agent_blueprint_sources import load_agent_blueprint_sources
+
+    sources = load_agent_blueprint_sources()
+    assert len(sources) == 1
+    assert sources[0]["name"] == "CLIO Agent Marketplace"
+    assert sources[0]["status"] == "ready"
+    assert {row["id"] for row in sources[0]["available_blueprints"]} == {
+        DEFAULT_AGENT_BLUEPRINT_ID,
+        "extra-pack",
+    }
 
 
 def test_bootstrap_installs_pack_added_to_local_registry_after_install(
@@ -3819,6 +3829,61 @@ def test_bootstrap_installs_pack_added_to_local_registry_after_install(
     reset_registry_sync_for_tests()
     assert ensure_default_registry_bootstrap(home=home, cwd=tmp_path / "cwd") == ""
     assert install_root.parent.joinpath("late-pack", "AGENT.md").exists()
+
+
+def test_local_registry_sync_is_serialized_across_concurrent_discovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Concurrent first discovery reconciles each marketplace pack exactly once."""
+
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    import clio_agent.gact.agent_blueprint_refresh as refresh
+
+    registry_dir = tmp_path / "local-registry"
+    for pack_id in ("pack-one", "pack-two"):
+        pack = registry_dir / pack_id
+        pack.mkdir(parents=True)
+        pack.joinpath("AGENT.md").write_text(
+            _EXTRA_PACK_MD.replace("extra-pack", pack_id), encoding="utf-8"
+        )
+
+    refresh.reset_registry_sync_for_tests()
+    active = 0
+    maximum_active = 0
+    installed: list[str] = []
+    counter_lock = threading.Lock()
+
+    def record_install(**kwargs: object) -> dict[str, list[dict[str, str]]]:
+        nonlocal active, maximum_active
+        with counter_lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        try:
+            time.sleep(0.03)
+            installed.append(str(kwargs["blueprint_id"]))
+            return {"installed": [], "skipped": []}
+        finally:
+            with counter_lock:
+                active -= 1
+
+    monkeypatch.setattr(refresh, "install_agent_blueprint", record_install)
+    kwargs = {
+        "source": str(registry_dir),
+        "home": tmp_path / "home",
+        "cwd": tmp_path / "cwd",
+        "pinned": "",
+    }
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        diagnostics = list(
+            pool.map(lambda _: refresh.sync_local_registry_packs(**kwargs), range(4))
+        )
+
+    assert diagnostics == ["", "", "", ""]
+    assert sorted(installed) == ["pack-one", "pack-two"]
+    assert maximum_active == 1
 
 
 def test_uninstalled_pack_is_not_resurrected_by_the_sync(

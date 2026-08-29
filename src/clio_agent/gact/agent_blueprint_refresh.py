@@ -23,9 +23,11 @@ top level; that module imports THIS one only function-locally (inside
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
 from clio_agent import conf
+from clio_agent.gact.agent_blueprint_sources import record_default_agent_blueprint_source
 from clio_agent.gact.agent_blueprints import (
     _BLUEPRINT_ROOT_NAME,
     DEFAULT_AGENT_BLUEPRINT_ID,
@@ -84,10 +86,18 @@ def ensure_default_registry_bootstrap(
         # #948 S4b upgrade path: an installed-but-invalid default blueprint (a
         # pre-migration chain_of_thought/predict root disabled by validation) is
         # a dead end that never self-heals.
-        return (
+        diagnostic = (
             evaluate_installed_default_registry(home=home, cwd=cwd, root=root, pinned=pinned)
             or sync_diagnostic
         )
+        if not diagnostic:
+            _record_default_registry_source(
+                source=source,
+                home=home,
+                cwd=cwd,
+                pinned=pinned,
+            )
+        return diagnostic
     try:
         result = install_agent_blueprint(
             source=source,
@@ -113,7 +123,22 @@ def ensure_default_registry_bootstrap(
             f"default registry install from {default_registry_url()} did not produce "
             f"{DEFAULT_AGENT_BLUEPRINT_ID}: {detail}"
         )
+    _record_default_registry_source(source=source, home=home, cwd=cwd, pinned=pinned)
     return sync_diagnostic
+
+
+def _record_default_registry_source(*, source: str, home: Path, cwd: Path, pinned: str) -> None:
+    """Expose the automatically installed marketplace through source discovery."""
+
+    try:
+        record_default_agent_blueprint_source(
+            source=source,
+            ref=DEFAULT_REGISTRY_REF,
+            pinned_commit=pinned,
+            install_root=_install_root(home=home, cwd=cwd, scope="global"),
+        )
+    except Exception as exc:  # noqa: BLE001 - installed packs remain usable
+        logger.warning("default_registry_source_record_failed source=%s error=%r", source, exc)
 
 
 def update_installed_agent_blueprint(
@@ -208,6 +233,7 @@ def write_uninstalled_tombstones(ids: set[str], *, home: Path, cwd: Path) -> Non
 # running serve), and discovery calls it on every request. Gate it to once per
 # process; tests reset via :func:`reset_registry_sync_for_tests`.
 _SYNC_COMPLETED_FOR: set[tuple[str, str]] = set()
+_SYNC_LOCK = threading.Lock()
 
 
 def reset_registry_sync_for_tests() -> None:
@@ -246,46 +272,52 @@ def sync_local_registry_packs(*, source: str, home: Path, cwd: Path, pinned: str
             return ""
         install_root = _install_root(home=home, cwd=cwd, scope="global")
         gate_key = (str(source_path), str(install_root))
-        if gate_key in _SYNC_COMPLETED_FOR:
+        # Discovery can run concurrently during first browser connection. The
+        # old set-only gate allowed every caller through until one completed,
+        # so they rmtree/copytree'd the same pack destinations concurrently and
+        # produced partial installs. Serialize the complete reconcile and check
+        # the gate again after acquiring the lock.
+        with _SYNC_LOCK:
+            if gate_key in _SYNC_COMPLETED_FOR:
+                return ""
+            tombstones = read_uninstalled_tombstones(home=home, cwd=cwd)
+            failures: list[str] = []
+            for candidate in _install_candidates(source_path):
+                parsed = parse_agent_blueprint_root(candidate, scope="install")
+                if not parsed.enabled:
+                    continue
+                if parsed.id in tombstones:
+                    logger.info("registry_pack_skipped reason=user_uninstalled id=%s", parsed.id)
+                    continue
+                if (install_root / parsed.id / _BLUEPRINT_ROOT_NAME).exists():
+                    continue
+                try:
+                    install_agent_blueprint(
+                        source=source,
+                        scope="global",
+                        cwd=cwd,
+                        home=home,
+                        ref=DEFAULT_REGISTRY_REF,
+                        blueprint_id=parsed.id,
+                        pinned_commit=pinned,
+                    )
+                    logger.info(
+                        "registry_pack_installed reason=missing_from_install_root id=%s source=%s",
+                        parsed.id,
+                        source,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "registry_pack_install_failed id=%s source=%s error=%r",
+                        parsed.id,
+                        source,
+                        exc,
+                    )
+                    failures.append(f"{parsed.id}: {exc}")
+            _SYNC_COMPLETED_FOR.add(gate_key)
+            if failures:
+                return "unable to install registry pack(s): " + "; ".join(failures)
             return ""
-        tombstones = read_uninstalled_tombstones(home=home, cwd=cwd)
-        failures: list[str] = []
-        for candidate in _install_candidates(source_path):
-            parsed = parse_agent_blueprint_root(candidate, scope="install")
-            if not parsed.enabled:
-                continue
-            if parsed.id in tombstones:
-                logger.info("registry_pack_skipped reason=user_uninstalled id=%s", parsed.id)
-                continue
-            if (install_root / parsed.id / _BLUEPRINT_ROOT_NAME).exists():
-                continue
-            try:
-                install_agent_blueprint(
-                    source=source,
-                    scope="global",
-                    cwd=cwd,
-                    home=home,
-                    ref=DEFAULT_REGISTRY_REF,
-                    blueprint_id=parsed.id,
-                    pinned_commit=pinned,
-                )
-                logger.info(
-                    "registry_pack_installed reason=missing_from_install_root id=%s source=%s",
-                    parsed.id,
-                    source,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "registry_pack_install_failed id=%s source=%s error=%r",
-                    parsed.id,
-                    source,
-                    exc,
-                )
-                failures.append(f"{parsed.id}: {exc}")
-        _SYNC_COMPLETED_FOR.add(gate_key)
-        if failures:
-            return "unable to install registry pack(s): " + "; ".join(failures)
-        return ""
     except Exception as exc:  # noqa: BLE001 - discovery must never die on registry sync
         logger.warning("registry_sync_failed source=%s error=%r", source, exc)
         return f"registry sync failed: {exc}"

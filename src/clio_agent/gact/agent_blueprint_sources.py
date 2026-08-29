@@ -25,10 +25,13 @@ import logging
 import os
 import subprocess
 import tempfile
+import threading
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
 logger = logging.getLogger(__name__)
+_SOURCE_REGISTRY_LOCK = threading.Lock()
 
 
 def sources_path() -> Path:
@@ -176,6 +179,68 @@ def save_agent_blueprint_sources(rows: list[dict[str, Any]]) -> None:
         with contextlib.suppress(OSError):
             os.unlink(tmp_name)
         raise
+
+
+def record_default_agent_blueprint_source(
+    *,
+    source: str,
+    ref: str,
+    pinned_commit: str,
+    install_root: Path,
+) -> dict[str, Any]:
+    """Persist the bundled marketplace alongside its installed blueprints.
+
+    The default marketplace is installed automatically, so it must also be
+    visible through the same source ledger as user-added marketplaces. Build
+    the catalog from the installed, source-matching snapshots instead of
+    cloning the remote a second time during first-run bootstrap.
+    """
+
+    from clio_agent.gact.agent_blueprints import read_install_metadata  # noqa: PLC0415
+    from clio_agent.gact.routes.blueprint_candidates import (  # noqa: PLC0415
+        agent_blueprint_candidates,
+    )
+
+    source = str(source).strip()
+    now = datetime.now(UTC).isoformat()
+    available: list[dict[str, Any]] = []
+    commit = ""
+    source_kind = "path" if Path(source).expanduser().exists() else "git"
+    for candidate in sorted(install_root.iterdir()) if install_root.is_dir() else ():
+        if not candidate.is_dir() or not candidate.joinpath("AGENT.md").exists():
+            continue
+        metadata = read_install_metadata(candidate)
+        if str(metadata.get("source") or "").strip() != source:
+            continue
+        available.extend(agent_blueprint_candidates(candidate))
+        commit = commit or str(metadata.get("commit") or "").strip()
+        source_kind = str(metadata.get("source_kind") or source_kind).strip() or source_kind
+
+    source_id = source_registry_id(source, ref)
+    with _SOURCE_REGISTRY_LOCK:
+        rows = load_agent_blueprint_sources()
+        existing = next((row for row in rows if row.get("id") == source_id), {})
+        row = {
+            **existing,
+            "id": source_id,
+            "name": "CLIO Agent Marketplace",
+            "source": source,
+            "ref": ref,
+            "commit": commit,
+            "pinned_commit": pinned_commit,
+            "source_kind": source_kind,
+            "status": "ready" if available else "degraded",
+            "error": "" if available else "installed marketplace exposed no blueprints",
+            "added_at": str(existing.get("added_at") or now),
+            "updated_at": now,
+            "available_blueprints": available,
+            "install_scope": "global",
+            "is_default": True,
+        }
+        save_agent_blueprint_sources(
+            [existing_row for existing_row in rows if existing_row.get("id") != source_id] + [row]
+        )
+    return row
 
 
 def install_agent_blueprint_source(
