@@ -284,6 +284,23 @@ _INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "package_name": _IDENTITY,
             "config": {"type": ["object", "null"], "default": None},
             "step_id": _OPTIONAL_IDENTITY,
+            # clio-kit-jarvis-user-v3.7.2 (clio-kit#376): interceptor-class
+            # packages (e.g. Darshan) REQUIRE a top-level ``target`` naming the
+            # pipeline step they instrument -- JARVIS's own 422 says
+            # "requires 'target': name the pipeline step it instruments", and
+            # passing it inside ``config`` collides with the handler's kwarg
+            # ("append_pkg() got multiple values for keyword argument
+            # 'target'"; both live-observed, ares 2026-08-28). This closed
+            # schema predated the contract field and made the requirement
+            # unsatisfiable through the curated surface.
+            "target": {
+                **_OPTIONAL_IDENTITY,
+                "description": (
+                    "For interceptor-class packages only: the step_id of the "
+                    "pipeline step this interceptor instruments. Omit for "
+                    "ordinary application steps."
+                ),
+            },
             **_CONTROL_PROPERTIES,
         },
         "required": ["cluster", "pipeline_id", "package_name"],

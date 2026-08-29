@@ -1,0 +1,8 @@
+Option (b) is done: the tool-side gap you isolated has been fixed. Adding an
+interceptor step can now carry its target as a proper first-class field of the
+call itself rather than smuggled inside config. Retry exactly as you planned
+in your step 6 — no further discovery needed — then carry the run through to
+completion: run the short LAMMPS simulation with Darshan bound to it, preserve
+the raw Darshan log and the darshan-parser text summary from the run so I can
+collect both, and give me the I/O breakdown — total bytes read vs written,
+hottest files, interfaces — quoting exact numbers.

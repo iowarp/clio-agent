@@ -1,0 +1,9 @@
+Don't wait — I checked with the cluster side: nothing is stale and no admin
+override is needed; the software is genuinely there. Those rejections were
+carrying an actionable reason that was not reaching you before; it will reach
+you now. Retry attaching Darshan the way you were doing it, read the error
+text that comes back carefully, and follow what it says. Then carry the run
+through to completion: run the short LAMMPS simulation with Darshan attached,
+preserve the raw Darshan log and the darshan-parser text summary from the run
+so I can collect both, and give me the I/O breakdown — total bytes read vs
+written, hottest files, interfaces — quoting exact numbers.

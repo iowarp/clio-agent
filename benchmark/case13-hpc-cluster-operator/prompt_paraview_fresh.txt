@@ -1,0 +1,18 @@
+I want to actually watch a small molecular dynamics system evolve: LAMMPS
+trajectory snapshots rendered into one PNG per frame, at least five frames,
+every frame preserved from the run so I can collect the whole set, and each
+frame's exact identity and size reported from the run's own records.
+
+A previous shift already built a two-stage pipeline for exactly this on the
+cluster — it is named lammps-md-render-case13 — and its simulation stage runs
+fine through the batch scheduler, producing six trajectory snapshots. Only
+the rendering stage's script has been failing. The previous shift's recorded
+lessons: launches must go through the batch scheduler (direct launches are
+refused by the cluster); the ParaView build there is 5.13.3 OSMesa with no
+LAMMPS dump reader registered, so the script has to parse the dump text
+itself; and importing the standalone vtk module alongside ParaView's own
+Python crashes the process — stay within what ParaView's own modules provide
+(their programmable pipeline sources cover this). Inspect the pipeline, fix
+the rendering script accordingly, run it through the scheduler to a real
+finish, and deliver the frames. Work straight through — no status updates
+before the frames genuinely exist.

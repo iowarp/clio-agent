@@ -1553,6 +1553,31 @@ def test_failed_remote_call_raises_its_own_reason_not_identity_mismatch() -> Non
     assert "extra_forbidden" in details["remote_message"]
 
 
+def test_failed_remote_call_message_carries_remote_text_and_job_id() -> None:
+    """FAILING-FIRST (darshan journey, 2026-08-28): the MESSAGE is the wire.
+
+    The FastMCP error path serializes ``str(exc)`` into the tool-error content
+    and drops the ``details`` dict, so a details-only ``remote_message`` never
+    reaches the model. Live burn: JARVIS's actionable 422 ("interceptor package
+    ... requires 'target'") sat in the relay job's mcp-result artifact while
+    the agent saw only the bare wrapper line and had no job_id handle to fetch
+    its own failure record. The remote rejection text AND the durable job id
+    must ride the exception message itself.
+    """
+
+    wire = _tasks_get_structured_content_wrapper(
+        _failed_remote_call_envelope(remote_message=_REMOTE_REJECTION)
+    )
+
+    with pytest.raises(JarvisJobError) as raised:
+        _raise_remote_call_failure("jarvis_add_step", "job_705ee0", wire)
+
+    text = str(raised.value)
+    assert "artifacts.include_content" in text  # the remote tool's own words
+    assert "job_705ee07dd8894bcd8416324db328ddb8" in text  # the durable handle
+    assert raised.value.details["job_id"] == "job_705ee07dd8894bcd8416324db328ddb8"
+
+
 def test_failed_remote_call_is_detected_in_every_envelope_carrier() -> None:
     """The same failure must be caught wherever the envelope sits.
 

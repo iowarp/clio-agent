@@ -154,12 +154,29 @@ def raise_remote_call_failure(tool_name: str, task_id: str, result: Mapping[str,
         if details is None:
             continue
         job = envelope.get("job")
+        # The remote tool's own rejection text and the durable job id MUST ride
+        # the message string, not only ``details``: the FastMCP error path
+        # serializes str(exc) into the tool-error content and drops the details
+        # dict, so a details-only remote_message never reaches the model.
+        # Live-burned (darshan journey, 2026-08-28): JARVIS's actionable 422
+        # ("interceptor package ... requires 'target': name the pipeline step
+        # it instruments") sat in the relay job's mcp-result artifact while the
+        # agent saw only this wrapper line, flailed through five binding
+        # variants, and stopped — with no job_id handle to even fetch its own
+        # failure record. relay-operations.md's own contract is "the actionable
+        # detail is in the message text"; honor it.
+        job_id = job.get("job_id") if isinstance(job, Mapping) else None
+        remote_message = details.get("remote_message")
+        suffix = f" (job_id={job_id or 'unknown'})"
+        if remote_message:
+            suffix += f": {remote_message}"
         raise JarvisJobError(
-            f"{tool_name} reached JARVIS but the remote call failed",
+            f"{tool_name} reached JARVIS but the remote call failed{suffix}",
             reason="jarvis_remote_call_failed",
             details={
                 "tool": tool_name,
                 "task_id": task_id,
+                "job_id": job_id,
                 "job_state": job.get("state") if isinstance(job, Mapping) else None,
                 **details,
             },

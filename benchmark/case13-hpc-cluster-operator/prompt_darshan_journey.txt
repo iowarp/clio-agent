@@ -1,0 +1,8 @@
+Run a short LAMMPS simulation on the cluster with Darshan I/O profiling
+attached to it, so I can study the simulation's I/O behavior. When it
+finishes, I need two things preserved from the run so I can collect them
+afterwards: the raw Darshan log file itself, and a human-readable parsed
+text summary of that log (the kind darshan-parser produces). Then give me
+the I/O breakdown from the profile: total bytes read vs written, which
+files saw the most I/O, and which I/O interfaces were involved. Quote
+exact numbers from the log.

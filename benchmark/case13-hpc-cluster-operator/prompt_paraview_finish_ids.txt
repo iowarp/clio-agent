@@ -1,0 +1,11 @@
+No deployment repair is needed — your run already reached a terminal state,
+and you were reading the wrong record. A lesson the previous shift learned
+the hard way, which you should adopt: after launching, watch the SUBMISSION
+handle itself — the wait/observe follow-up on the job id the launch returned.
+A startup failure lands its full failure record there, and the execution
+directory you were querying only ever materializes when startup succeeds, so
+its absence just means the run failed early. Also from the previous shift:
+the launch's own record and its listed artifacts (the run job's stdout and
+stderr) carry the render stage's actual crash output. Read the record of the
+launch you just made, diagnose from what it actually says, fix, relaunch
+through the scheduler, and deliver the frame inventory. Straight through.

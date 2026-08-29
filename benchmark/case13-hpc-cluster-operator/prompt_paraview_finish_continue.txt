@@ -1,0 +1,7 @@
+That was a transient connection hiccup on the cluster link — it has been
+verified healthy again just now, and your working identity is fine. Resume
+and carry it straight through: fix the rendering script per the recorded
+lessons, rebind it, run the pipeline through the batch scheduler to a real
+finish, preserve every rendered PNG frame, and report each frame's exact
+identity and size from the run's own records. No status updates before the
+frames genuinely exist.

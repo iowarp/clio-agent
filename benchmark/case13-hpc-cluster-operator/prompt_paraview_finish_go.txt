@@ -1,0 +1,7 @@
+Your own verification call just succeeded — the recovery is real, stop
+re-confirming it. Execute your six concrete steps now, all of them in this
+one go, no checkpoint reports in between: author the corrected render
+script, stage it, submit through the batch scheduler, drive it to a real
+terminal state, and then report every PNG frame's exact identity and size
+from the run's own records. The only acceptable reply is the finished frame
+inventory, or a precisely-reported failure after honest recovery attempts.

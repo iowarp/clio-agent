@@ -1,0 +1,12 @@
+Agreed — verify it yourself with your own tools; that is the right instinct.
+Now actually do it, this turn, without stopping to narrate: execute your
+stated plan end to end, and follow the evidence wherever it leads. If your
+own fresh run shows the render artifacts do register, retrieve them through
+the artifact channel and deliver the frames. If your own fresh run shows
+zero render artifacts register even with correct placement and a clean
+terminal success, then the artifact channel is genuinely closed for these
+files and you deliver the bytes the only way that remains: emit them from a
+command step in bounded, per-file pieces small enough to survive any capture
+cap, with per-file digests computed on the cluster, retrieve and verify.
+Either way, the turn ends with the frame bytes retrievable on my side, or a
+precisely-evidenced impossibility. Go.

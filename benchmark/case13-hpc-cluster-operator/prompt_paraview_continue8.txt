@@ -1,0 +1,6 @@
+Proceed with your v7 plan exactly as written, all seven steps, straight
+through: confirm the real crash point from the full error record first, then
+author the corrected script, rebind, relaunch through the scheduler, wait to
+terminal, and once it genuinely succeeds report every PNG frame's exact
+identity and size from the run's own records. No status updates before the
+frames exist.

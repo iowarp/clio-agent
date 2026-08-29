@@ -1,0 +1,16 @@
+One hypothesis you haven't tested before declaring the attach path broken:
+the deferred flag on an interceptor add may be the design, not a bug — the
+interceptor's configuration completes at launch time, when the run's actual
+runtime environment is known. And your launch went out with NO runtime
+environment resolution at all: unlike the previous shifts' successful runs,
+you passed no resolved runtimes into it. Your own working notes say it
+plainly — when a step's runtime resolves through the package manager, locate
+it first and carry the resolved load spec into the launch. That is true for
+the simulation's runtime AND for the profiler's runtime library. "Could not
+find darshan" reads exactly like the launch-time resolver failing to find a
+runtime that was never put in the environment. So: locate both runtimes,
+carry both resolved specs into one launch through the batch scheduler, and
+drive it to terminal. If it fails again with the same error even with both
+runtimes resolved and passed, THEN you have real evidence the attach path is
+broken — report that precisely. Otherwise finish the job: raw Darshan log
+and darshan-parser summary preserved, exact I/O numbers quoted. Go.

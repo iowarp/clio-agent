@@ -1,0 +1,7 @@
+Yes — different execution mode: go through the batch scheduler. This cluster
+refuses workloads launched outside it (that's exactly the refusal you hit,
+and your own pipeline notes for ares recommend the scheduler path). Relaunch
+the already-built pipeline through the scheduler and carry it to a real
+finish, then preserve every rendered PNG frame and tell me each frame's exact
+identity and size from the run's own records. Work straight through — no
+status updates.

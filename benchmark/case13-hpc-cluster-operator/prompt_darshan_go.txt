@@ -1,0 +1,6 @@
+Your plan is right — now execute it, all five steps in this one go, no
+narration stops: attach the interceptor with its target, launch through the
+batch scheduler, drive it to a real terminal state, preserve the raw Darshan
+log and the darshan-parser text summary from the run, and reply only with the
+exact quoted I/O breakdown — total bytes read vs written, hottest files,
+interfaces — or a precisely-evidenced failure after honest recovery. Go.

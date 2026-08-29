@@ -1,0 +1,21 @@
+One last step finishes a job a previous shift all but completed: on the
+cluster there is a two-stage pipeline, lammps-md-render-case13, whose LAMMPS
+stage runs perfectly through the batch scheduler (with the runtime resolved
+through the package manager) and whose rendering stage was fixed to the point
+that all six trajectory frames render correctly as PNGs and the script prints
+a frame manifest — the previous shift's working renderer is saved in your
+workspace as render_lammps_dump_v8.py; read it rather than rewriting from
+scratch. The one remaining defect: after the last frame is written, the
+ParaView process crashes during its own library teardown, so the run is
+recorded as failed and the frames never get registered as artifacts.
+
+Finish it: produce a v9 of that script whose ONLY changes are (1) terminate
+the process hard and immediately after the manifest is printed, before any
+library teardown can begin, and (2) write the frames into the location where
+the run's artifact bookkeeping actually registers outputs (the previous shift
+noted frames written to the process working directory were NOT picked up).
+Rebind the rendering step to v9, relaunch through the batch scheduler, and
+once the run lands as a genuine success, deliver: every PNG frame registered,
+each frame's exact identity and size quoted from the run's records, and at
+least one frame read back to prove the bytes are real. Work straight
+through — no status updates before the frames are delivered.

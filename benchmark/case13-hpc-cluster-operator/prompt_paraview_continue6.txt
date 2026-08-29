@@ -1,0 +1,5 @@
+Go — do exactly what you named: author the v3 script with the corrected
+trajectory directory resolution, rebind the render step, relaunch through the
+scheduler, and this time carry it all the way: once it genuinely finishes,
+preserve every rendered PNG frame and report each frame's exact identity and
+size from the run's own records. Straight through, no status updates.

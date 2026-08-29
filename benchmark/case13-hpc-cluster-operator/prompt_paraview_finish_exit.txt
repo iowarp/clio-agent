@@ -1,0 +1,12 @@
+You have already won — the frames render perfectly; the only thing killing
+the run is that the process is allowed to live long enough to reach its
+crashing teardown. So don't let it: have your script terminate the process
+itself, immediately and unconditionally, the instant the last frame is
+written and the manifest is printed — a hard immediate exit, before any
+library teardown can begin. Then the run ends in success, the artifact
+bookkeeping runs, and the frames become registered artifacts. Also write the
+frames where the run's artifact bookkeeping actually looks, if your earlier
+findings say that matters. Relaunch through the scheduler, confirm the run
+lands as a genuine success, and then deliver: every PNG frame registered,
+with each frame's exact identity and size quoted from the records, and read
+at least one frame back to prove the bytes are real. Straight through.

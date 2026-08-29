@@ -1,0 +1,6 @@
+Keep going — pick up exactly where your own plan left off and carry it to
+completion without stopping for me: confirm the rendering package, sort out
+the runtime if it needs it, compose the two-stage pipeline, run it to a real
+terminal state, and preserve every rendered PNG frame from the run so I can
+collect the whole set. Then tell me exactly which frames exist — identities
+and sizes — quoting the run's own records.

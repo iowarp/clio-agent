@@ -1,0 +1,12 @@
+So close — the run's console proves your harvest worked end to end: the
+profiler log was found, copied, and parsed. But it also proves your step's
+notion of "the execution tree" was actually the dispatch scratch directory
+— the same working-directory illusion another pipeline's shift hit and
+solved this week: derive the run's TRUE execution tree from where the
+simulation's own output files actually land in that same run, never from
+the process working directory. One more pass: identical harvest, but place
+the raw log and the parser text inside the run's true execution root, next
+to the files the bookkeeping already indexes there (its hostfile and logs).
+Then list that run's artifacts, read both files back, and deliver the exact
+quoted I/O breakdown — total bytes read vs written, hottest files,
+interfaces. Straight through. Go.

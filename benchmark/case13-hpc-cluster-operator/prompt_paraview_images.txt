@@ -1,0 +1,7 @@
+I want to actually watch a small molecular dynamics system evolve. Run a
+short LAMMPS simulation on the cluster that writes trajectory snapshots
+as it goes, then render those snapshots into images - one PNG per frame,
+at least five frames - so I can flip through them and see the system
+change over time. Keep every rendered frame from the run preserved so I
+can collect the whole set afterwards, and tell me exactly which frames
+exist and how big each one is.

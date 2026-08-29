@@ -1,0 +1,6 @@
+Good — everything you needed is confirmed. Go ahead and finish the job now:
+run the short LAMMPS simulation with Darshan I/O profiling attached, and when
+it completes, produce the raw Darshan log and the human-readable darshan-parser
+text summary, keep both preserved from the run so I can collect them, and give
+me the I/O breakdown — total bytes read vs written, which files saw the most
+I/O, and which I/O interfaces were involved — quoting exact numbers.

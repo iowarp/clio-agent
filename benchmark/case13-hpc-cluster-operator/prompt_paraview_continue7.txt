@@ -1,0 +1,5 @@
+Execute your v5 plan now, exactly as you wrote it, straight through all five
+steps — register the fixed-root script, rebind the render step, relaunch
+through the scheduler, wait to terminal, and if it genuinely succeeds,
+enumerate the PNG frames and report each one's exact identity and size from
+the run's own records. No status updates before the frames exist.

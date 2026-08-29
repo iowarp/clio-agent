@@ -1,0 +1,7 @@
+Keep going — you were cut off mid-diagnosis. The scheduler path worked: your
+pipeline genuinely started and the simulation stage ran; the failure was in
+the rendering stage, and the run's own failure text names exactly what broke
+in your render script on that cluster's ParaView build. Fix your script
+accordingly, relaunch through the scheduler, and carry it to a real finish.
+Preserve every rendered PNG frame and tell me each frame's exact identity and
+size from the run's own records. Work straight through — no status updates.

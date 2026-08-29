@@ -539,8 +539,21 @@ class ClioAgent(SUT):
         return str(created.json().get("id") or "")
 
     def _create_session(self, http: httpx.Client, workspace_id: str, blueprint_id: str) -> str:
+        # approval_mode="bypass" (CreateSessionRequest, gact/types.py) is REQUIRED for a
+        # headless SUT run: the permission gate (gact/permission_gate.py::_make_permission_gate)
+        # blocks any non-read tool call on a pending /v1/permissions/{pid} row for up to 600s
+        # then times out to deny when nothing ever answers it -- there is no human/TUI in this
+        # loop to approve a state-changing call (e.g. jarvis_create_pipeline). Without this, every
+        # live case13 scenario that dispatches work silently eats ~10 minutes per state-changing
+        # call before failing with "denied by permission gate" (live-observed, case13 s1_capability,
+        # 2026-08-27: jarvis_create_pipeline blocked the full 600s timeout then denied).
         created = http.post(
-            "/v1/sessions", json={"title": "agent-test", "workspace_id": workspace_id}
+            "/v1/sessions",
+            json={
+                "title": "agent-test",
+                "workspace_id": workspace_id,
+                "approval_mode": "bypass",
+            },
         )
         created.raise_for_status()
         session_id = created.json()["id"]

@@ -1,0 +1,18 @@
+Run a short LAMMPS simulation on the cluster with Darshan I/O profiling
+attached to it, and give me the I/O breakdown: total bytes read vs written,
+which files saw the most I/O, and which I/O interfaces were involved — exact
+numbers quoted from the log. I need two things preserved from the run so I
+can collect them afterwards: the raw Darshan log file itself, and a
+human-readable darshan-parser text summary of it.
+
+A previous shift already did the groundwork on this cluster and recorded
+these lessons: a pipeline named lammps-darshan-short-run-v1 already exists
+with a correctly configured short LAMMPS step — inspect it rather than
+rebuilding from scratch; both darshan-runtime and darshan-util (the package
+that provides darshan-parser) are genuinely installed even where a cached
+catalog snapshot claims otherwise; when you add the Darshan interceptor to
+the pipeline you must name the step it instruments — the add call accepts
+that binding as a first-class field; and launches must go through the batch
+scheduler (direct launches are refused by the cluster). Pick the work up from
+there and carry it straight through — no status updates before the profile
+data genuinely exists.

@@ -1,0 +1,7 @@
+Perfect plan. Execute all eight steps now, in this one go, no stops: learn
+the runner's settings, resolve the parser runtime, author and stage the
+harvest script, add the step, launch through the batch scheduler with all
+three runtimes carried in, drive to terminal, list the run's artifacts, read
+back the raw profiler log and the parser summary, and reply only with the
+exact quoted I/O breakdown — total bytes read vs written, hottest files,
+interfaces — or a precisely-evidenced failure. Go.

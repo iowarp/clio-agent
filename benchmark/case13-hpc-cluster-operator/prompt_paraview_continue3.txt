@@ -1,0 +1,8 @@
+Stop sending me status reports — I don't want another update, I want the
+finished result. You have everything: the runtime is resolved, both packages
+are fully described, your plan is written. Work straight through without
+pausing to summarize: create the pipeline, add both stages, launch it, watch
+it to a real finish, and preserve every PNG frame from the run. Reply to me
+only when the frames genuinely exist — with each frame's exact identity and
+size quoted from the run's own records — or if something truly fails after
+honest recovery attempts, in which case report that failure precisely.

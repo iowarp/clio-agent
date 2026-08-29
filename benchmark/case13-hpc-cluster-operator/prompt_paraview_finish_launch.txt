@@ -1,0 +1,5 @@
+The corrected script is staged and bound — launch it NOW through the batch
+scheduler and do not stop again until you have the result: drive the run to
+a real terminal state, and reply only with every PNG frame's exact identity
+and size from the run's own records (or the precise failure after honest
+recovery attempts). Nothing else is an acceptable reply.
