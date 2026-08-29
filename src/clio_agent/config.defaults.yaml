@@ -8,7 +8,7 @@
 # override name, the coercion type and the defining module. Regenerate
 # with: uv run python scripts/gen_env_reference.py
 
-# CLIO_MAX_CONCURRENT_AGENT_TASKS  (int)  <- src/clio_agent/gact/turn_spawn.py
+# CLIO_MAX_CONCURRENT_AGENT_TASKS  (int)  <- src/clio_agent/gact/turn_spawn_executor.py
 agent_tasks.max_concurrent: 3
 
 # CLIO_CHILD_FORWARD_DEADLINE_S  (float)  <- src/clio_agent/gact/child_forward.py
@@ -221,6 +221,9 @@ limits.codex_sdk_progress_timeout_s: 120.0
 # CLIO_CTX_MAX_BYTES  (int)  <- src/clio_agent/gact/runtime/constants.py
 limits.context_inline_bytes: 32768
 
+# CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS  (int)  <- src/clio_agent/gact/agents/reactv2_events.py
+limits.empty_tool_repair_attempts: 3
+
 # CLIO_EXTRACT_REPAIR_ATTEMPTS  (float)  <- src/clio_agent/gact/agents/builders.py
 limits.extract_repair_attempts: 3.0
 
@@ -262,9 +265,6 @@ limits.shell_max_output_bytes: 131072
 
 # CLIO_SHELL_MAX_TIMEOUT_S  (float)  <- src/clio_agent/tools/servers/shell_server.py
 limits.shell_max_timeout_s: 30.0
-
-# CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS  (int)  <- src/clio_agent/gact/agents/reactv2_events.py
-limits.empty_tool_repair_attempts: 3
 
 # CLIO_SUBMIT_REPAIR_ATTEMPTS  (float)  <- src/clio_agent/gact/agents/reactv2.py
 limits.submit_repair_attempts: 3.0

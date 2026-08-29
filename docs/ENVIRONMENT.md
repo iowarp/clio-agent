@@ -74,6 +74,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_DEBUG_ONLY` | `debug.only` | list | `_no_only` _(computed)_ | `src/clio_agent/runtime/trace.py` |
 | `CLIO_DISABLE_JSON_ADAPTER_FALLBACK` | `lm.disable_json_adapter_fallback` | bool | `false` | `src/clio_agent/lm/adapters.py` |
 | `CLIO_DUMP_UNPARSEABLE` | `debug.dump_unparseable` | str | _(unset)_ | `src/clio_agent/lm/adapters.py` |
+| `CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS` | `limits.empty_tool_repair_attempts` | int | `3` | `src/clio_agent/gact/agents/reactv2_events.py` |
 | `CLIO_ENVIRONMENT` | `runtime.environment` | str | `dev` | `src/clio_agent/config.py` |
 | `CLIO_EXTRACT_REPAIR_ATTEMPTS` | `limits.extract_repair_attempts` | float | `3.0` | `src/clio_agent/gact/agents/builders.py` |
 | `CLIO_FLOWCEPT_CAMPAIGN_ID` | `provenance.agentic.flowcept.campaign_id` | str | _(unset)_ | `src/clio_agent/gact/provenance/factory.py` |
@@ -133,7 +134,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LM_TRANSIENT_BACKOFF_S` | `limits.lm_transient_backoff_s` | float | `8.0` | `src/clio_agent/lm/io_logging.py` |
 | `CLIO_LM_TRANSIENT_RETRIES` | `limits.lm_transient_retries` | float | `2.0` | `src/clio_agent/lm/io_logging.py` |
 | `CLIO_LOG_LM_RESPONSE` | `debug.lm_response` | bool | `false` | `src/clio_agent/runtime/trace.py` |
-| `CLIO_MAX_CONCURRENT_AGENT_TASKS` | `agent_tasks.max_concurrent` | int | `3` | `src/clio_agent/gact/turn_spawn.py` |
+| `CLIO_MAX_CONCURRENT_AGENT_TASKS` | `agent_tasks.max_concurrent` | int | `3` | `src/clio_agent/gact/turn_spawn_executor.py` |
 | `CLIO_MAX_FILE_SIZE_BYTES` | `tools.file_policy.max_file_size_bytes` | str | `1073741824` | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_MAX_LM_CALL_S` | `limits.lm_call_s` | float | `1800.0` | `src/clio_agent/runtime/lm_activity.py` |
 | `CLIO_MCP_CACHE_MAX_AGE_DAYS` | `tools.mcp_cache.max_age_days` | float | `14.0` | `src/clio_agent/tools/mcp_cache.py` |
@@ -212,7 +213,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SSE_EVENT_LOG` | `debug.sse_event_log` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
 | `CLIO_SSE_WIRE_TAP` | `debug.sse_wire_tap` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
 | `CLIO_STREAM_AUDIT_LOG` | `debug.stream_audit_log` | str | _(unset)_ | `src/clio_agent/runtime/stream_audit.py` |
-| `CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS` | `limits.empty_tool_repair_attempts` | int | `3` | `src/clio_agent/gact/agents/reactv2_events.py` |
 | `CLIO_SUBMIT_REPAIR_ATTEMPTS` | `limits.submit_repair_attempts` | float | `3.0` | `src/clio_agent/gact/agents/reactv2.py` |
 | `CLIO_TOOL_RESULT_CHARS` | `limits.tool_result_chars` | int | `12000` | `src/clio_agent/gact/evidence.py` |
 | `CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS` | `limits.transient_provider_retry_delays` | list | _(unset)_ | `src/clio_agent/agent.py` |
