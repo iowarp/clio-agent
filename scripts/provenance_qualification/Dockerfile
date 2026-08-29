@@ -31,4 +31,7 @@ ENV PATH="/app/.venv/bin:/root/.local/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
     CLIO_PQ_CMF_PYTHON=/opt/clio-cmf/bin/python
 
+RUN install -d -o 1000 -g 1000 /qualification
+WORKDIR /qualification
+
 ENTRYPOINT ["/usr/local/bin/clio-serve-qualification"]
