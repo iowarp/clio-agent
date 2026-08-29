@@ -51,9 +51,9 @@ def build_sdk_options(
 ) -> Any:
     """Build ``ClaudeAgentOptions`` for the bare-model transport (both SDK paths).
 
-    Bare-model transport: Claude Code's own tools are disabled, ``max_turns=1``,
-    ``setting_sources=[]`` (the model sees only clio's transcript, never
-    ``~/.claude`` settings), and clio's ReAct loop drives tools. ``stream`` adds
+    Bare-model transport: Claude Code's own tools, MCP servers, plugins, and skills
+    are disabled; ``setting_sources=[]`` keeps the model isolated from filesystem
+    settings; and clio's ReAct loop drives tools. ``stream`` adds
     ``include_partial_messages``. ``thinking`` (#895) is the resolved SDK thinking
     config (``{"type":"disabled"}`` / ``{"type":"enabled","budget_tokens":N}``);
     ``None`` sends nothing so the provider/CLI default governs.
@@ -72,6 +72,16 @@ def build_sdk_options(
         # cannot agent-loop within a query anyway.
         "max_turns": 0,
         "allowed_tools": [],
+        # An empty mcp_servers map alone does not suppress MCPs from user, project,
+        # or plugin configuration. The SDK documents strict_mcp_config as the
+        # isolation switch; keep both explicit so account-local connectors never
+        # appear in CLIO's bare-model prompt.
+        "mcp_servers": {},
+        "strict_mcp_config": True,
+        # ``None`` means the CLI's default skill discovery still applies. An empty
+        # list is the SDK's explicit "skills off" value.
+        "skills": [],
+        "plugins": [],
         "permission_mode": "bypassPermissions",
         "setting_sources": [],
         "cwd": cwd,
