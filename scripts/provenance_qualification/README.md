@@ -58,15 +58,18 @@ Flowcept settings, and provider authentication required for the run. The pinned
 ```bash
 docker run --rm --network host \
   --security-opt seccomp=unconfined \
+  --ulimit core=0 \
   --env-file deployment.env \
   --mount type=bind,src="$CLIO_PQ_RUNTIME",dst=/qualification \
   clio-provenance-qualification:exact
 ```
 
 This exception is limited to the disposable qualification container; it is not
-a general host security change. The image contains the frozen CLIO/Flowcept
-environment, CTE, and a separate Python 3.9 CMF worker. Use a new, empty runtime
-mount for every acceptance run, then remove it after its evidence is captured.
+a general host security change. Core dumps are disabled for the disposable run
+so a native shutdown cannot silently consume the qualification disk. The image
+contains the frozen CLIO/Flowcept environment, CTE, and a separate Python 3.9
+CMF worker. Use a new, empty runtime mount for every acceptance run, then remove
+it after its evidence is captured.
 The startup preflight probes `io_uring` before starting CTE and reports this
 missing container option directly instead of surfacing iowarp-core's misleading
 `Failed to open file` message.
