@@ -2395,6 +2395,13 @@ def test_agent_blueprint_marketplace_sources_persist_and_install_by_id(
         assert source["source_kind"] == "path"
         assert source["pinned_commit"] == ""
         assert [row["id"] for row in source["available_blueprints"]] == ["genomics"]
+        assert [row["id"] for row in created.json()["installed"]] == ["genomics"]
+        assert source["installed_blueprints"] == [
+            {"id": "genomics", "version": "0.1.0", "scope": "global"}
+        ]
+
+        globally_installed = client.get("/v1/agent-blueprints").json()
+        assert "genomics" in {row["id"] for row in globally_installed["agent_blueprints"]}
 
         listed = client.get("/v1/agent-blueprints/sources").json()
         assert [row["id"] for row in listed["sources"]] == [source_id]
@@ -2402,6 +2409,7 @@ def test_agent_blueprint_marketplace_sources_persist_and_install_by_id(
         refreshed = client.post(f"/v1/agent-blueprints/sources/{source_id}/refresh")
         assert refreshed.status_code == 200, refreshed.text
         assert refreshed.json()["source"]["available_blueprints"][0]["id"] == "genomics"
+        assert [row["id"] for row in refreshed.json()["installed"]] == ["genomics"]
 
         wid = client.post(
             "/v1/workspaces",
@@ -2422,6 +2430,39 @@ def test_agent_blueprint_marketplace_sources_persist_and_install_by_id(
         assert client.get("/v1/agent-blueprints/sources").json()["sources"] == []
 
     assert (workspace / ".clio" / "agent-blueprints" / "genomics" / ".clio-install.md").exists()
+
+
+def test_agent_blueprint_source_installs_valid_entries_and_reports_invalid_ones(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken marketplace entry never hides valid installs or reports ready."""
+
+    monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path / "user-config"))
+    marketplace = tmp_path / "marketplace"
+    _write_blueprint(marketplace / "genomics")
+    broken = marketplace / "broken-pack"
+    broken.mkdir(parents=True)
+    broken.joinpath("AGENT.md").write_text(_BROKEN_PACK_MD, encoding="utf-8")
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/agent-blueprints/sources",
+            json={"source": str(marketplace), "name": "Mixed marketplace"},
+        )
+        assert created.status_code == 201, created.text
+        payload = created.json()
+        source = payload["source"]
+        assert source["status"] == "degraded"
+        assert "broken-pack" in source["error"]
+        assert [row["id"] for row in payload["installed"]] == ["genomics"]
+        assert [row["id"] for row in payload["skipped"]] == ["broken-pack"]
+
+        globally_installed = client.get("/v1/agent-blueprints").json()
+        installed_ids = {row["id"] for row in globally_installed["agent_blueprints"]}
+        assert "genomics" in installed_ids
+        assert "broken-pack" not in installed_ids
 
 
 def test_marketplace_install_supports_distinct_session_blueprints(tmp_path: Path) -> None:

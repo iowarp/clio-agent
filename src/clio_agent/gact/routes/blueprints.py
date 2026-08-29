@@ -1,53 +1,15 @@
-"""Agent-blueprint (and expert-pack) lifecycle routes for the GACT server (#714).
+"""Agent-blueprint marketplace, lifecycle, file, and activation routes.
 
-This concern owns the marketplace/install surface for agent blueprints under
-``/v1/agent-blueprints`` plus the session-scoped activation routes:
-
-* ``GET/POST/.../DELETE /v1/agent-blueprints/sources*`` -- the registry of
-  remote/local blueprint *sources* (git repos or on-disk roots) the user can
-  install from. The source ledger persists to ``agent-blueprint-sources.json``
-  under the user config dir; ``refresh`` clones/inspects a source to enumerate
-  its available blueprints.
-* ``GET /v1/agent-blueprints`` / ``GET /v1/agent-blueprints/{id}`` -- discover
-  installed blueprints (workspace/global/builtin) and resolve one to its agent
-  hierarchy + MCP descriptors.
-* ``GET /v1/agent-blueprints/{id}/files`` / ``.../files/read`` and
-  ``PUT .../files/write`` -- flat recursive file listing plus raw content
-  reading and explicit textual edits for a blueprint root
-  (iowarp/clio-agent#1192), the explorer surface behind the blueprint window.
-  Both accept ``session_id`` to resolve a PATH-activated blueprint. Their
-  logic lives in the owner module :mod:`clio_agent.gact.agent_blueprint_files`
-  (no accretion); these two handlers are thin call sites, registered ahead of
-  the greedy ``GET .../{id}`` below so they are not shadowed by its
-  ``:path`` converter.
-* ``POST /v1/agent-blueprints/validate`` -- validate a blueprint root on disk.
-* ``POST /v1/agent-blueprints/install`` / ``.../{id}/update`` /
-  ``DELETE /v1/agent-blueprints/{id}`` -- the install/update/uninstall engine.
-* ``POST /v1/agent-blueprints/{id}/mcp/{descriptor_id}/enable`` -- enable a
-  blueprint-declared MCP descriptor, optionally probing the live server.
-* ``POST /v1/expert-packs/install`` / ``.../{id}/update`` /
-  ``DELETE /v1/expert-packs/{id}`` -- thin aliases of the blueprint lifecycle
-  (iowarp/clio-agent#663): a blueprint and a pack share ONE install/update/delete
-  engine, distinguished by the installed row's ``kind`` field. They delegate to
-  the blueprint handlers so there is exactly one implementation.
-* ``GET/POST /v1/sessions/{sid}/agent-blueprint`` -- read/set the active
-  blueprint for a session (by installed id or by an on-disk path).
-
-The disk-reading lifecycle primitives live in
-:mod:`clio_agent.gact.agent_blueprints` (single source); the session-state reads
-reuse the byte-identical ``_runtime_*`` helpers in
-:mod:`clio_agent.gact.agents.resolution`. The ``build_app``-local seam the
-session-set route needs -- the activation-metadata builder -- travels on
-:class:`~clio_agent.gact.routes.deps.GactDeps`.
-Handlers reach ``app.state`` directly and never import :mod:`clio_agent.gact.app`.
+Disk and registry work lives in the ``agent_blueprint_*`` owner modules; these
+handlers expose that behavior without importing the application builder. Expert
+pack endpoints remain aliases of the same install engine, and specific file
+routes are registered before the greedy blueprint-id route.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
-import tempfile
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,7 +26,13 @@ from clio_agent.gact.agent_blueprint_files import (
     resolve_blueprint_file_path,
 )
 from clio_agent.gact.agent_blueprint_sources import (
+    install_agent_blueprint_source as _install_agent_blueprint_source,
+)
+from clio_agent.gact.agent_blueprint_sources import (
     load_agent_blueprint_sources as _load_agent_blueprint_sources,
+)
+from clio_agent.gact.agent_blueprint_sources import (
+    refresh_agent_blueprint_source as _refresh_agent_blueprint_source,
 )
 from clio_agent.gact.agent_blueprint_sources import (
     save_agent_blueprint_sources as _save_agent_blueprint_sources,
@@ -91,7 +59,6 @@ from clio_agent.gact.agents.resolution import (
 )
 from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
 from clio_agent.gact.permission_gate import _normalize_mcp_tool_annotations
-from clio_agent.gact.routes.blueprint_candidates import agent_blueprint_candidates
 from clio_agent.gact.routes.blueprint_file_write import register_blueprint_file_write_route
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
 
@@ -99,64 +66,6 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
-
-
-def _refresh_agent_blueprint_source(row: Mapping[str, Any]) -> dict[str, Any]:
-    """Inspect a source (clone if remote) and refresh its available-blueprint list."""
-
-    source = str(row.get("source") or "").strip()
-    ref = str(row.get("ref") or "").strip()
-    refreshed = dict(row)
-    refreshed["ref"] = ref
-    refreshed["available_blueprints"] = []
-    if not source:
-        return {**refreshed, "status": "error", "error": "source is empty"}
-    source_path = Path(source).expanduser()
-    refreshed["source_kind"] = "path" if source_path.exists() else "git"
-    refreshed["status"] = "ready"
-    refreshed["error"] = ""
-    try:
-        if source_path.exists():
-            try:
-                refreshed["commit"] = subprocess.check_output(
-                    ["git", "-C", str(source_path), "rev-parse", "HEAD"],
-                    text=True,
-                    stderr=subprocess.DEVNULL,
-                ).strip()
-            except Exception:  # noqa: BLE001 - display commit left blank when git rev-parse unavailable
-                refreshed["commit"] = ""
-            refreshed["available_blueprints"] = agent_blueprint_candidates(source_path)
-            return refreshed
-        with tempfile.TemporaryDirectory(prefix="clio-agent-blueprint-source-") as tmp:
-            clone_target = Path(tmp) / "repo"
-            cmd = ["git", "clone", "--depth", "1"]
-            if ref:
-                cmd.extend(["--branch", ref])
-            cmd.extend([source, str(clone_target)])
-            env = {
-                **os.environ,
-                "GIT_TERMINAL_PROMPT": "0",
-                "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
-            }
-            subprocess.run(
-                cmd,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=30,
-                env=env,
-            )
-            refreshed["commit"] = subprocess.check_output(
-                ["git", "-C", str(clone_target), "rev-parse", "HEAD"],
-                text=True,
-            ).strip()
-            refreshed["available_blueprints"] = agent_blueprint_candidates(clone_target)
-            return refreshed
-    except Exception as exc:  # noqa: BLE001
-        refreshed["status"] = "error"
-        refreshed["error"] = str(exc)
-        return refreshed
 
 
 def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
@@ -203,6 +112,18 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
         if bool(req.get("refresh", True)):
             row = _refresh_agent_blueprint_source(row)
             row["updated_at"] = datetime.now(timezone.utc).isoformat()
+        scope = str(req.get("scope") or "global").strip()
+        if scope not in {"global", "workspace"}:
+            raise HTTPException(status_code=422, detail="scope must be global or workspace")
+        workspace_id = str(req.get("workspace_id") or "")
+        if scope == "workspace":
+            row["workspace_id"] = workspace_id
+        cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id)
+        row, installation = _install_agent_blueprint_source(
+            row,
+            cwd=cwd or Path.cwd(),
+            scope=scope,  # type: ignore[arg-type]
+        )
         rows = [
             existing
             for existing in _load_agent_blueprint_sources()
@@ -210,7 +131,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
         ]
         rows.append(row)
         _save_agent_blueprint_sources(rows)
-        return {"source": row}
+        return {"source": row, **installation}
 
     @app.post("/v1/agent-blueprints/sources/{source_id}/refresh")
     async def refresh_agent_blueprint_source(source_id: str) -> dict[str, Any]:
@@ -219,9 +140,18 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             if row.get("id") == source_id:
                 refreshed = _refresh_agent_blueprint_source(row)
                 refreshed["updated_at"] = datetime.now(timezone.utc).isoformat()
+                scope = str(refreshed.get("install_scope") or "global")
+                cwd = _runtime_workspace_catalog_cwd(
+                    app, workspace_id=str(refreshed.get("workspace_id") or "")
+                )
+                refreshed, installation = _install_agent_blueprint_source(
+                    refreshed,
+                    cwd=cwd or Path.cwd(),
+                    scope=scope,  # type: ignore[arg-type]
+                )
                 rows[index] = refreshed
                 _save_agent_blueprint_sources(rows)
-                return {"source": refreshed}
+                return {"source": refreshed, **installation}
         raise HTTPException(
             status_code=404,
             detail=ErrorEnvelope(
