@@ -430,17 +430,29 @@ def probe_clio_core_daemon_memory(
     ]
 
 
-def _cte_cold_tier_dir_size(store_dir: Path) -> int:
-    """Sum the on-disk size of the CTE cold-tier data directory (best-effort)."""
-    total = 0
+def _cte_cold_tier_dir_usage(store_dir: Path) -> tuple[int, int]:
+    """Return allocated and logical bytes for the CTE cold-tier directory.
+
+    clio-core preallocates its file tier as a sparse file. ``st_size`` therefore
+    describes the tier's logical capacity, not the disk space consumed by data.
+    POSIX ``st_blocks`` reports the allocated 512-byte blocks and lets the health
+    probe distinguish a fresh sparse tier from one that is genuinely filling up.
+    Platforms without ``st_blocks`` fall back to logical size rather than claiming
+    a level of allocation precision they cannot provide.
+    """
+    allocated_total = 0
+    logical_total = 0
     for root, _dirs, files in os.walk(store_dir, followlinks=False):
         for name in files:
             fp = os.path.join(root, name)
             try:
-                total += os.lstat(fp).st_size
+                stat = os.lstat(fp)
             except OSError:
                 continue
-    return total
+            logical_total += stat.st_size
+            blocks = getattr(stat, "st_blocks", None)
+            allocated_total += stat.st_size if blocks is None else int(blocks) * 512
+    return allocated_total, logical_total
 
 
 def probe_cte_cold_tier_disk(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
@@ -471,12 +483,18 @@ def probe_cte_cold_tier_disk(*, env: Mapping[str, str] | None = None) -> list[In
         return []
 
     store_dir = cte_store_dir(env=env, config_path=cap.config_path)
-    used = _cte_cold_tier_dir_size(store_dir) if store_dir.is_dir() else 0
+    allocated, logical = (
+        _cte_cold_tier_dir_usage(store_dir) if store_dir.is_dir() else (0, 0)
+    )
     warn_fraction = cte_disk_warn_fraction()
-    fraction = used / capacity_bytes if capacity_bytes else 0.0
+    fraction = allocated / capacity_bytes if capacity_bytes else 0.0
     details = {
         "store_dir": str(store_dir),
-        "used_bytes": used,
+        # Preserve ``used_bytes`` for existing health consumers while making its
+        # physical-allocation meaning explicit in the new fields and summary.
+        "used_bytes": allocated,
+        "allocated_bytes": allocated,
+        "logical_bytes": logical,
         "capacity_bytes": capacity_bytes,
         "capacity": cap.final_tier_capacity,
         "used_fraction": round(fraction, 4),
@@ -489,8 +507,10 @@ def probe_cte_cold_tier_disk(*, env: Mapping[str, str] | None = None) -> list[In
                 name="cte_cold_tier_disk",
                 state=IntegrationState.DEGRADED,
                 summary=(
-                    f"CTE cold tier {format_bytes(used)} is {fraction:.0%} of its "
-                    f"{cap.final_tier_capacity} capacity (warn at {warn_fraction:.0%}). "
+                    f"CTE cold tier has {format_bytes(allocated)} allocated "
+                    f"({fraction:.0%} of its {cap.final_tier_capacity} capacity; "
+                    f"warn at {warn_fraction:.0%}). "
+                    f"Its sparse files have {format_bytes(logical)} logical size. "
                     "clio-core does not trim the cold tier yet (upstream-gated)."
                 ),
                 config_source="arc.cte.file_capacity, arc.cte.disk_warn_fraction",
@@ -509,8 +529,10 @@ def probe_cte_cold_tier_disk(*, env: Mapping[str, str] | None = None) -> list[In
             name="cte_cold_tier_disk",
             state=IntegrationState.READY,
             summary=(
-                f"CTE cold tier {format_bytes(used)} is {fraction:.0%} of its "
-                f"{cap.final_tier_capacity} capacity (warn at {warn_fraction:.0%})."
+                f"CTE cold tier has {format_bytes(allocated)} allocated "
+                f"({fraction:.0%} of its {cap.final_tier_capacity} capacity; "
+                f"warn at {warn_fraction:.0%}). Its sparse files have "
+                f"{format_bytes(logical)} logical size."
             ),
             config_source="arc.cte.file_capacity, arc.cte.disk_warn_fraction",
             next_action="No action required.",

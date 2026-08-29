@@ -6,6 +6,7 @@ a configurable fraction of ``arc.cte.file_capacity``; actual trim is upstream-ga
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from clio_agent.runtime.clio_core_health import probe_cte_cold_tier_disk
@@ -55,6 +56,25 @@ def test_under_fraction_ready(tmp_path: Path) -> None:
     rows = probe_cte_cold_tier_disk(env=env)
     assert len(rows) == 1
     assert rows[0].state is IntegrationState.READY
+
+
+def test_sparse_preallocation_uses_allocated_not_logical_bytes(tmp_path: Path) -> None:
+    env = _seed_cte(tmp_path, data_bytes=0)
+    backing = tmp_path / "cte" / "storage.bin"
+    with backing.open("wb") as stream:
+        stream.truncate(1_000_000)
+
+    stat = os.lstat(backing)
+    if not hasattr(stat, "st_blocks"):
+        return
+
+    rows = probe_cte_cold_tier_disk(env=env)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.state is IntegrationState.READY
+    assert row.details["logical_bytes"] >= 1_000_000
+    assert row.details["allocated_bytes"] < 500_000
+    assert "allocated" in row.summary
 
 
 def test_custom_fraction_env(tmp_path: Path, monkeypatch) -> None:
