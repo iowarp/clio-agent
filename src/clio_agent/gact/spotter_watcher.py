@@ -21,18 +21,12 @@ PUSH-WAKE shape:
   arm time**. Called after a session TRANSITIONS into ``spotter-ai`` mode
   (never on an unrelated PATCH to an already-armed session — see
   :func:`sync_watcher_for_mode`).
-* :func:`wake_on_parent_activity` / :func:`on_turn_finalized` — the PUSH: real
-  activity on the PARENT session (a tool call completing, or its turn
-  finishing) pushes a short factual wake message into the watcher's session
-  via the loop-inbox machinery (:mod:`clio_agent.gact.loop_inbox`), which
-  starts a "check turn" immediately if the watcher is idle, or coalesces onto
-  an already-pending wake if one is buffered (never more than one queued wake
-  behind a running check turn). ``on_turn_finalized`` ALSO flips the standing
-  task's ``live_state`` back to ``"waiting"`` when the watcher's OWN check
-  turn ends. Because the first check turn can only ever follow REAL parent
-  activity, the workspace's MCP tool fleet is already warm by construction
-  when it runs — the cold-start race a timer-based retry would have had to
-  work around simply cannot occur.
+* :func:`wake_on_parent_activity` / :func:`on_turn_finalized` — real parent
+  activity pushes a factual wake through the loop inbox. An idle watcher starts
+  a check turn immediately; a busy watcher retains at most one coalesced wake.
+  Finalizing the watcher's own check returns its standing task to ``waiting``.
+  The first check always follows real parent activity, after workspace tools
+  have warmed, so no timer-based cold-start workaround is needed.
 * :func:`disarm_spotter_watcher` — targeted cancel of the parent's live watcher
   task(s) ONLY (never the parent's other children) via the existing targeted
   per-task cancel primitive (:func:`clio_agent.gact.turn_spawn.cancel_agent_task`),
