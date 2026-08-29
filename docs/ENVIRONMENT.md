@@ -212,6 +212,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SSE_EVENT_LOG` | `debug.sse_event_log` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
 | `CLIO_SSE_WIRE_TAP` | `debug.sse_wire_tap` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
 | `CLIO_STREAM_AUDIT_LOG` | `debug.stream_audit_log` | str | _(unset)_ | `src/clio_agent/runtime/stream_audit.py` |
+| `CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS` | `limits.empty_tool_repair_attempts` | int | `1` | `src/clio_agent/gact/agents/reactv2_events.py` |
 | `CLIO_SUBMIT_REPAIR_ATTEMPTS` | `limits.submit_repair_attempts` | float | `3.0` | `src/clio_agent/gact/agents/reactv2.py` |
 | `CLIO_TOOL_RESULT_CHARS` | `limits.tool_result_chars` | int | `12000` | `src/clio_agent/gact/evidence.py` |
 | `CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS` | `limits.transient_provider_retry_delays` | list | _(unset)_ | `src/clio_agent/agent.py` |
