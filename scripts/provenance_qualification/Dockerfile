@@ -7,6 +7,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir uv
 
+ENV UV_TOOL_DIR=/opt/uv-tools \
+    UV_TOOL_BIN_DIR=/usr/local/bin
+RUN uv tool install "clio-kit==2.2.3"
+
 COPY pyproject.toml README.md uv.lock ./
 RUN uv sync --frozen --extra flowcept --extra claude-code --no-dev --no-install-project
 
