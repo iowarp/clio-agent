@@ -38,6 +38,22 @@ read), `OUTPUT -> b.csv` (turn 2 write). Failures on the CMF path surface as
 `provenance provider cmf degraded on emit ...` WARNINGs in the serve log
 (first failure per worker is loud by design — never rely on silence).
 
+### Native-wheel host mismatch
+
+If the host cannot install the locked `iowarp-core` wheel (for example, an
+older glibc), do not reuse an older venv or select LocalFS. Build the exact
+qualification image from the repository root:
+
+```bash
+docker build -f scripts/provenance_qualification/Dockerfile \
+  -t clio-provenance-qualification:exact .
+```
+
+Run it with host networking and bind only the isolated qualification runtime,
+Flowcept settings, and provider authentication required for the run. The image
+contains the frozen CLIO/Flowcept environment, CTE, and a separate Python 3.9
+CMF worker. Delete and recreate the runtime mount before every acceptance run.
+
 ## Prerequisites
 
 - The backing services (per `infrastructure/`): CMF server + PostgreSQL for
