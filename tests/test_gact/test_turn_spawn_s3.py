@@ -653,6 +653,35 @@ def test_edit_mode_parent_spawns_edit_mode_child_unchanged(tmp_path: Path, monke
         )
 
 
+def test_child_inherits_parent_approval_mode(tmp_path: Path, monkeypatch) -> None:
+    """A child keeps the parent's user-selected confirmation posture.
+
+    This prevents effectful MCP calls from silently falling back to ``ask`` in a
+    child while the parent session is explicitly configured for unattended work.
+    """
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post(
+            "/v1/sessions",
+            json={"title": "p", "mode": "edit", "approval_mode": "bypass"},
+        ).json()["id"]
+
+        task = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(
+                child_expert_id="main",
+                task_text="do something",
+                parent_session_id=parent,
+                requesting_expert_id="main",
+            ),
+        )
+
+        child = app.state.sessions.get(task.child_session_id)
+        assert child.approval_mode == "bypass"
+
+
 def _spawn_scope(metadata: dict[str, Any]) -> dict[str, Any]:
     """Return the session-scoped blueprint/expert-pack keys copied by spawn."""
 

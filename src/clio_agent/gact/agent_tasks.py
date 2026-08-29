@@ -650,6 +650,7 @@ def seed_agent_task(
         metadata={"spawn_placement": placement, **dict(session_scope_metadata or {})},
         agent={"id": agent_ref.get("expert_id", ""), "mode": "subagent"},
         mode=session_mode or getattr(parent, "mode", "edit"),
+        approval_mode=getattr(parent, "approval_mode", "ask"),
     )
     task = AgentTask(
         task_id=tid,

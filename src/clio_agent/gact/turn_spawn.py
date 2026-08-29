@@ -345,6 +345,18 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         parent_session_id=spec.parent_session_id,
         agent={"id": spec.child_expert_id, "mode": "subagent"},
         mode=parent_mode,
+        # A child is part of the parent's authorization scope, so it must inherit
+        # the user-selected confirmation posture as well as the work mode.  The
+        # previous implicit Session default (``ask``) made a bypass/auto-edits
+        # parent silently park every effectful child tool behind a permission the
+        # parent UI did not expose.  A server-owned approval profile is the one
+        # deliberate exception: SPOTTER's watcher stays ``ask`` and receives only
+        # its narrow containment grants through ``approval_profile`` below.
+        approval_mode=(
+            getattr(parent, "approval_mode", "ask")
+            if spec.session_approval_profile is None
+            else "ask"
+        ),
         approval_profile=spec.session_approval_profile or "",
     )
     if parent_mode in _RESTRICTIVE_SESSION_MODES:
