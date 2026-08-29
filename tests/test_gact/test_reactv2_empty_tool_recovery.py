@@ -89,3 +89,31 @@ def test_repeated_empty_tool_responses_stop_at_the_repair_budget(
     assert len(observed) == 3
     assert prediction.termination_reason == "empty_tool_calls"
     assert [tool.name for tool in observed[-1]["tools"]] == ["submit"]
+
+
+def test_default_repair_budget_allows_three_consecutive_provider_reasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Normal long workflows survive several malformed tool-less provider turns."""
+    monkeypatch.delenv("CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS", raising=False)
+    monkeypatch.setenv("CLIO_SUBMIT_REPAIR_ATTEMPTS", "0")
+    from clio_agent import conf
+
+    conf.reload()
+    agent = retaining_reactv2_cls()(
+        "question -> answer",
+        tools=[dspy.Tool(lambda q: q, name="search")],
+        max_iters=0,
+    )
+    observed: list[dict[str, Any]] = []
+
+    def react(**kwargs: Any) -> dspy.Prediction:
+        observed.append(kwargs)
+        return dspy.Prediction(next_thought="still planning", tool_calls={"tool_calls": []})
+
+    monkeypatch.setattr(agent, "react", react)
+    prediction = agent(question="find it")
+
+    # Initial response + three bounded recoveries + one forced-submit attempt.
+    assert len(observed) == 5
+    assert prediction.termination_reason == "empty_tool_calls"

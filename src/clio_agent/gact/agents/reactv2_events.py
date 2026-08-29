@@ -75,11 +75,11 @@ def _empty_tool_repair_attempts() -> int:
         attempts = conf.resolve(
             "limits.empty_tool_repair_attempts",
             env="CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS",
-            default=1,
+            default=3,
             cast=conf.as_int,
         )
     except Exception:  # noqa: BLE001 - config failure must not make recovery unbounded
-        return 1
+        return 3
     return max(0, attempts)
 
 

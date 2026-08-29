@@ -10,6 +10,31 @@ from dspy.adapters.types.tool import ToolCalls
 REACT_FORCED_SUBMIT_REJECTED = "react_forced_submit_rejected"
 
 
+def _forced_submit_error_info(break_reason: str) -> dict[str, Any] | None:
+    """Describe a forced partial answer caused by malformed provider output.
+
+    A forced ``submit`` can preserve useful text after the normal tool loop is no
+    longer viable, but it must not turn a protocol failure into a successful turn.
+    The ``partial`` marker keeps that text visible while the GACT turn settles as
+    failed and remains explicitly retryable.
+    """
+    if break_reason != "empty_tool_calls":
+        return None
+    return {
+        "error": "provider_protocol_error",
+        "message": (
+            "The provider repeatedly returned an agent step without a structured "
+            "tool call. Any partial response is preserved; retry the turn."
+        ),
+        "details": {
+            "partial": True,
+            "termination_reason": break_reason,
+            "recovery_actions": ["retry_turn"],
+        },
+        "recoverable": True,
+    }
+
+
 def active_react_scope_safe() -> str:
     """Return the active ReAct scope, or an empty value outside a live turn."""
     try:
@@ -106,9 +131,13 @@ def forced_submit(
     _append_history_event(history, event)
 
     if final_outputs is not None:
-        return Prediction(
+        prediction = Prediction(
             **final_outputs,
             history=history,
             termination_reason="forced_submit",
         )
+        error_info = _forced_submit_error_info(break_reason)
+        if error_info is not None:
+            prediction.error_info = error_info
+        return prediction
     return Prediction(history=history, termination_reason=break_reason or "failed")

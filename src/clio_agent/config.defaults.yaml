@@ -264,7 +264,7 @@ limits.shell_max_output_bytes: 131072
 limits.shell_max_timeout_s: 30.0
 
 # CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS  (int)  <- src/clio_agent/gact/agents/reactv2_events.py
-limits.empty_tool_repair_attempts: 1
+limits.empty_tool_repair_attempts: 3
 
 # CLIO_SUBMIT_REPAIR_ATTEMPTS  (float)  <- src/clio_agent/gact/agents/reactv2.py
 limits.submit_repair_attempts: 3.0

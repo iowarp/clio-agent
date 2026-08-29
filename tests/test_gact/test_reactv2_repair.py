@@ -348,6 +348,50 @@ def test_forced_submit_exposes_only_submit_tool(monkeypatch: pytest.MonkeyPatch)
     assert pred.termination_reason == "forced_submit"
 
 
+def test_forced_submit_after_empty_tool_exhaustion_is_a_partial_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recovered partial answer cannot make malformed provider output successful."""
+    agent = retaining_reactv2_cls()(
+        "question -> answer",
+        tools=[dspy.Tool(lambda q: q, name="search")],
+        max_iters=1,
+    )
+
+    def react(**kwargs: Any) -> dspy.Prediction:
+        del kwargs
+        return dspy.Prediction(
+            next_thought="I can only provide a partial answer.",
+            tool_calls={
+                "tool_calls": [
+                    {
+                        "name": "submit",
+                        "args": {"answer": "partial evidence"},
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(agent, "react", react)
+    pred = agent._forced_submit(dspy.History(messages=[]), {"question": "q"}, "empty_tool_calls", 1)
+
+    assert pred.answer == "partial evidence"
+    assert pred.termination_reason == "forced_submit"
+    assert pred.error_info == {
+        "error": "provider_protocol_error",
+        "message": (
+            "The provider repeatedly returned an agent step without a structured "
+            "tool call. Any partial response is preserved; retry the turn."
+        ),
+        "details": {
+            "partial": True,
+            "termination_reason": "empty_tool_calls",
+            "recovery_actions": ["retry_turn"],
+        },
+        "recoverable": True,
+    }
+
+
 def test_forced_submit_non_submit_is_audited(monkeypatch: pytest.MonkeyPatch) -> None:
     """A provider ignoring the submit-only contract is recorded, never silently filtered."""
     records = _capture_reasons(monkeypatch)
