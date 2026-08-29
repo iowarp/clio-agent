@@ -44,6 +44,11 @@ if actual != expected:
     raise SystemExit(f"qualification dependency drift: expected={expected}, actual={actual}")
 PY
 
+# A listening clio-core socket is not sufficient qualification evidence.  Prove
+# that the configured CTE can accept, return, and remove a real ARC record before
+# the API binds and before a user can create a session.
+PYTHONPATH="$CLIO_PQ_REPO/src" "$CLIO_PQ_PYTHON" /usr/local/bin/clio-preflight-arc
+
 mkdir -p "$CLIO_PQ_WORKSPACE"
 cd "$CLIO_PQ_WORKSPACE"
 exec env \

@@ -24,10 +24,10 @@ def test_missing_clio_kit_launcher_yields_exact_remediation():
     assert finding.required is True
     # Exact clio-kit remediation: the install command plus the PATH step.
     assert finding.next_action == (
-        "uv tool install clio-kit==2.2.3, then ensure the directory reported by "
+        "uv tool install clio-kit==2.10.6, then ensure the directory reported by "
         "`uv tool dir --bin` is on PATH for the clio-agent process."
     )
-    assert "uv tool install clio-kit==2.2.3" in finding.next_action
+    assert "uv tool install clio-kit==2.10.6" in finding.next_action
 
 
 def test_present_launcher_yields_no_finding():

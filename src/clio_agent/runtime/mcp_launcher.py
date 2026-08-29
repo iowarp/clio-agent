@@ -10,7 +10,7 @@ the same reality *before* the first spawn, from the doctor, with an actionable
 remediation.
 
 The canonical clio-kit tool launcher (``clio-kit mcp-server <name>``) is provisioned by
-``uv tool install clio-kit==2.2.3``; when that launcher is the one missing, the
+``uv tool install clio-kit==2.10.6``; when that launcher is the one missing, the
 remediation names that exact command plus the ``uv tool dir --bin`` PATH step.
 """
 
@@ -30,7 +30,7 @@ WhichChecker = Callable[[str], str | None]
 # the marketplace packs that launch ``clio-kit mcp-server <name>``.
 _CLIO_KIT_LAUNCHER = "clio-kit"
 _CLIO_KIT_REMEDIATION = (
-    "uv tool install clio-kit==2.2.3, then ensure the directory reported by "
+    "uv tool install clio-kit==2.10.6, then ensure the directory reported by "
     "`uv tool dir --bin` is on PATH for the clio-agent process."
 )
 

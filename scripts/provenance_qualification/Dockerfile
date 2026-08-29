@@ -8,8 +8,13 @@ RUN apt-get update \
     && pip install --no-cache-dir uv
 
 ENV UV_TOOL_DIR=/opt/uv-tools \
-    UV_TOOL_BIN_DIR=/usr/local/bin
-RUN uv tool install "clio-kit==2.2.3"
+    UV_TOOL_BIN_DIR=/usr/local/bin \
+    CLIO_KIT_CACHE_DIR=/opt/clio-kit-cache
+RUN uv tool install "clio-kit==2.10.6" \
+    && for server in geo ndp pandas plot hdf5 parquet web; do \
+        clio-kit mcp-server "$server" </dev/null; \
+    done \
+    && chown -R 1000:1000 /opt/clio-kit-cache
 
 COPY pyproject.toml README.md uv.lock ./
 RUN uv sync --frozen --extra flowcept --extra claude-code --no-dev --no-install-project
@@ -30,6 +35,8 @@ COPY --chmod=0755 scripts/provenance_qualification/serve-qualification.sh \
     /usr/local/bin/clio-serve-qualification
 COPY --chmod=0755 scripts/provenance_qualification/edges-drive.sh \
     /usr/local/bin/clio-edges-drive
+COPY --chmod=0755 scripts/provenance_qualification/preflight-arc.py \
+    /usr/local/bin/clio-preflight-arc
 
 ENV PATH="/app/.venv/bin:/root/.local/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
