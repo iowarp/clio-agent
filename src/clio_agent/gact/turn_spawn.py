@@ -8,9 +8,7 @@ forwards use a dedicated executor so a waiting parent cannot starve them.
 
 from __future__ import annotations
 
-import concurrent.futures
 import logging
-import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
@@ -28,6 +26,15 @@ from clio_agent.gact.agent_tasks import (
 )
 from clio_agent.gact.spawn_context import validate_task_spec
 from clio_agent.gact.task_fold import finish_agent_task_transition, fold_agent_task_transition
+from clio_agent.gact.turn_spawn_executor import (
+    agent_task_executor_for_depth as agent_task_executor_for_depth,
+)
+from clio_agent.gact.turn_spawn_executor import (
+    install_agent_task_executor as install_agent_task_executor,
+)
+from clio_agent.gact.turn_spawn_executor import (
+    shutdown_agent_task_executors as shutdown_agent_task_executors,
+)
 from clio_agent.gact.turn_spawn_failures import (
     child_task_error_reason,
     child_task_failure_result,
@@ -141,60 +148,6 @@ class SpawnError(Exception):
     def __init__(self, message: str, *, reason: str) -> None:
         super().__init__(message)
         self.reason = reason
-
-
-def install_agent_task_executor(app: "FastAPI") -> None:
-    """Install the DEDICATED child-forward pool machinery (never the default
-    executor). Pools are created lazily PER DEPTH by
-    :func:`agent_task_executor_for_depth`: a child turn at depth ``d`` runs on
-    ``pool[d]``, so a waiter blocked on ``pool[d]`` can never starve its own
-    children on ``pool[d+1]`` (a single shared pool deadlocks nested orchestrators
-    — see #948 S4 adversarial review). Each pool is sized to the concurrency cap;
-    the depth backstop (:data:`MAX_SPAWN_DEPTH`) bounds the number of pools."""
-
-    from clio_agent import conf  # noqa: PLC0415
-
-    cap = conf.resolve(
-        "agent_tasks.max_concurrent",
-        env="CLIO_MAX_CONCURRENT_AGENT_TASKS",
-        default=3,
-        cast=conf.as_int,
-    )
-    cap = max(1, int(cap or 3))
-    app.state.max_concurrent_agent_tasks = cap
-    app.state.agent_task_executors = {}
-    app.state.agent_task_executor_lock = threading.Lock()
-
-
-def agent_task_executor_for_depth(
-    app: "FastAPI", depth: int
-) -> concurrent.futures.ThreadPoolExecutor:
-    """Return the dedicated child-forward pool for turns at ``depth`` (lazily
-    created, one per depth). Same ``max_concurrent`` cap and shutdown semantics as
-    every other depth's pool; thread-safe against concurrent child launches."""
-
-    depth = max(1, int(depth or 1))
-    pools: dict[int, concurrent.futures.ThreadPoolExecutor] = app.state.agent_task_executors
-    lock = app.state.agent_task_executor_lock
-    with lock:
-        pool = pools.get(depth)
-        if pool is None:
-            cap = getattr(app.state, "max_concurrent_agent_tasks", 3)
-            pool = concurrent.futures.ThreadPoolExecutor(
-                max_workers=cap, thread_name_prefix=f"clio-agent-task-d{depth}"
-            )
-            pools[depth] = pool
-        return pool
-
-
-def shutdown_agent_task_executors(app: "FastAPI") -> None:
-    """Shut down every per-depth child-forward pool (symmetric to their lazy
-    install). Non-daemon workers otherwise leak across app lifecycles and a worker
-    still in a slow child forward blocks process exit."""
-
-    pools = getattr(app.state, "agent_task_executors", None) or {}
-    for pool in list(pools.values()):
-        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _batch_key(
