@@ -16,6 +16,7 @@ RUN uv sync --frozen --extra flowcept --extra claude-code --no-dev
 # CMF 0.1.0 / MLMD 1.15 require their own Python 3.9 runtime. Keep that
 # compatibility boundary in the qualification image instead of borrowing a
 # mutable host venv.
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
 RUN uv python install 3.9 \
     && uv venv /opt/clio-cmf --python 3.9 \
     && uv pip install --python /opt/clio-cmf/bin/python \
@@ -23,6 +24,8 @@ RUN uv python install 3.9 \
 
 COPY --chmod=0755 scripts/provenance_qualification/serve-qualification.sh \
     /usr/local/bin/clio-serve-qualification
+COPY --chmod=0755 scripts/provenance_qualification/edges-drive.sh \
+    /usr/local/bin/clio-edges-drive
 
 ENV PATH="/app/.venv/bin:/root/.local/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
