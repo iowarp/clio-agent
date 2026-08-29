@@ -21,8 +21,11 @@ RUN uv python install 3.9 \
     && uv pip install --python /opt/clio-cmf/bin/python \
         "cmflib==0.1.0" "ml-metadata==1.15.0"
 
+COPY --chmod=0755 scripts/provenance_qualification/serve-qualification.sh \
+    /usr/local/bin/clio-serve-qualification
+
 ENV PATH="/app/.venv/bin:/root/.local/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
     CLIO_PQ_CMF_PYTHON=/opt/clio-cmf/bin/python
 
-ENTRYPOINT ["clio-agent", "serve"]
+ENTRYPOINT ["/usr/local/bin/clio-serve-qualification"]
