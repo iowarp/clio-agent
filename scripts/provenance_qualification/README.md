@@ -50,9 +50,26 @@ docker build -f scripts/provenance_qualification/Dockerfile \
 ```
 
 Run it with host networking and bind only the isolated qualification runtime,
-Flowcept settings, and provider authentication required for the run. The image
-contains the frozen CLIO/Flowcept environment, CTE, and a separate Python 3.9
-CMF worker. Delete and recreate the runtime mount before every acceptance run.
+Flowcept settings, and provider authentication required for the run. The pinned
+`iowarp-core` runtime uses `io_uring`; Docker's default seccomp profile denies
+`io_uring_setup`, so the qualification container must include the explicit
+`--security-opt seccomp=unconfined` option:
+
+```bash
+docker run --rm --network host \
+  --security-opt seccomp=unconfined \
+  --env-file deployment.env \
+  --mount type=bind,src="$CLIO_PQ_RUNTIME",dst=/qualification \
+  clio-provenance-qualification:exact
+```
+
+This exception is limited to the disposable qualification container; it is not
+a general host security change. The image contains the frozen CLIO/Flowcept
+environment, CTE, and a separate Python 3.9 CMF worker. Use a new, empty runtime
+mount for every acceptance run, then remove it after its evidence is captured.
+The startup preflight probes `io_uring` before starting CTE and reports this
+missing container option directly instead of surfacing iowarp-core's misleading
+`Failed to open file` message.
 
 ## Prerequisites
 
