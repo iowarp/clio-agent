@@ -27,9 +27,14 @@ from importlib.metadata import version
 import iowarp_core  # noqa: F401
 import litellm  # noqa: F401
 import psutil  # noqa: F401
+import claude_agent_sdk  # noqa: F401
 from clio_schemas import A2UIClientActionMessage  # noqa: F401
 
-expected = {"clio-schemas": "0.2.3", "litellm": "1.91.3"}
+expected = {
+    "claude-agent-sdk": "0.2.128",
+    "clio-schemas": "0.2.3",
+    "litellm": "1.91.3",
+}
 actual = {name: version(name) for name in expected}
 if actual != expected:
     raise SystemExit(f"qualification dependency drift: expected={expected}, actual={actual}")

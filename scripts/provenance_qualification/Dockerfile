@@ -8,10 +8,10 @@ RUN apt-get update \
     && pip install --no-cache-dir uv
 
 COPY pyproject.toml README.md uv.lock ./
-RUN uv sync --frozen --extra flowcept --no-dev --no-install-project
+RUN uv sync --frozen --extra flowcept --extra claude-code --no-dev --no-install-project
 
 COPY src ./src
-RUN uv sync --frozen --extra flowcept --no-dev
+RUN uv sync --frozen --extra flowcept --extra claude-code --no-dev
 
 # CMF 0.1.0 / MLMD 1.15 require their own Python 3.9 runtime. Keep that
 # compatibility boundary in the qualification image instead of borrowing a
