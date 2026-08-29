@@ -142,6 +142,9 @@ flowcept = [
     # Optional queryable agentic-provenance provider. CLIO imports it only
     # when provenance.agentic.providers includes "flowcept".
     "flowcept[redis,mongo]>=1.0.3,<2",
+    # Flowcept 1.0.3 imports pandas while constructing its Mongo persistence
+    # consumer but does not declare it in the redis/mongo extras.
+    "pandas>=2.0.0,<3",
 ]
 
 dev = [

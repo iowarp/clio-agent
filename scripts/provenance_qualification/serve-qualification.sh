@@ -27,6 +27,7 @@ from importlib.metadata import version
 import iowarp_core  # noqa: F401
 import litellm  # noqa: F401
 import openai_codex  # noqa: F401
+import pandas  # noqa: F401
 import psutil  # noqa: F401
 import claude_agent_sdk  # noqa: F401
 from clio_schemas import A2UIClientActionMessage  # noqa: F401
@@ -36,6 +37,7 @@ expected = {
     "clio-schemas": "0.2.3",
     "litellm": "1.91.3",
     "openai-codex": "0.147.0",
+    "pandas": "2.3.3",
 }
 actual = {name: version(name) for name in expected}
 if actual != expected:
