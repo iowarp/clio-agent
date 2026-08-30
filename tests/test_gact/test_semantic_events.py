@@ -204,9 +204,12 @@ def build(default_root, config):
     monkeypatch.setenv("CLIO_SEMANTIC_TRACE_CONFIG", '{"sink": "test"}')
 
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
-    client = TestClient(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    complete_turn(client, sid, "factory trace")
+    # The trace backend observes a tracked background turn. Keep one application
+    # lifespan around that turn so the test exercises the production ordering
+    # contract instead of a per-request portal that may close between POST/poll.
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        complete_turn(client, sid, "factory trace")
 
     rows = [json.loads(line) for line in marker.read_text().splitlines()]
     assert app.state.semantic_trace_backend.name == "test_factory"
@@ -233,9 +236,14 @@ with open({str(marker)!r}, "a", encoding="utf-8") as f:
     install_global_dispatcher(make_command_dispatcher(tmp_path, event="SemanticEvent", body=body))
     try:
         app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
-        client = TestClient(app)
-        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-        complete_turn(client, sid, "hello")
+        # SemanticEvent delivery is part of the tracked turn lifecycle. A bare
+        # TestClient creates and tears down a portal for every request, which can
+        # cancel the slower Python 3.13 turn after its assistant is readable but
+        # before its terminal hook is delivered. Production has one application
+        # lifespan, so hold that same boundary here.
+        with TestClient(app) as client:
+            sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+            complete_turn(client, sid, "hello")
     finally:
         install_global_dispatcher(None)
 
