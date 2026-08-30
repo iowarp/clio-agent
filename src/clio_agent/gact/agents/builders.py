@@ -585,17 +585,6 @@ def _emit_mcp_downgrade_events(executor: Any) -> None:
     emit_downgrade_events_for_executor(app, _ctx.active_session_id(), executor)
 
 
-def _mount_failure_reason(exc: BaseException) -> str:
-    """Typed reason for an on-demand mount attempt's failure (#1237), reusing
-    the SAME classification the discovery pass uses so the reason a tool is
-    unavailable is byte-identical whether it degraded at discovery or at an
-    on-demand call-time mount."""
-
-    from clio_agent.tools.mcp_discovery import _classify_degrade_reason  # noqa: PLC0415
-
-    return _classify_degrade_reason(exc)
-
-
 def _resolve_declared_tools_with_on_demand_mount(
     tool_executor: Any, requested_tools: list[str]
 ) -> tuple[dict[str, Any], dict[str, str]]:
@@ -617,7 +606,11 @@ def _resolve_declared_tools_with_on_demand_mount(
     resolve/call can still re-attempt after the underlying condition changes.
     """
 
-    from clio_agent.gact.mcp_readiness import mount_namespace_for_session  # noqa: PLC0415
+    from clio_agent.gact.mcp_readiness import (  # noqa: PLC0415
+        mount_failure_reason,
+        mount_namespace_for_session,
+        namespaces_requiring_preparation,
+    )
 
     available_tools = {
         name: tool
@@ -627,15 +620,12 @@ def _resolve_declared_tools_with_on_demand_mount(
     }
     declared_specs: Mapping[str, Any] = getattr(tool_executor, "_clio_namespace_specs", None) or {}
     mount_failures: dict[str, str] = {}
-    namespace_prepared = getattr(tool_executor, "is_namespace_prepared", None)
-    needed_namespaces: set[str] = set()
-    for name in requested_tools:
-        namespace, sep, bare = name.partition("_")
-        if not sep or not bare or namespace not in declared_specs:
-            continue
-        prepared = callable(namespace_prepared) and namespace_prepared(namespace)
-        if name not in available_tools or not prepared:
-            needed_namespaces.add(namespace)
+    needed_namespaces = namespaces_requiring_preparation(
+        tool_executor,
+        requested_tools,
+        available_tools,
+        declared_specs,
+    )
     merged_any = False
     for namespace in sorted(needed_namespaces):
         try:
@@ -645,7 +635,7 @@ def _resolve_declared_tools_with_on_demand_mount(
                 declared_specs[namespace],
             )
         except Exception as exc:  # noqa: BLE001 - typed + named, never cached (next call retries)
-            mount_failures[namespace] = _mount_failure_reason(exc)
+            mount_failures[namespace] = mount_failure_reason(exc)
             logger.warning(
                 "on_demand_mount_failed namespace=%s reason=%s error=%s",
                 namespace,
@@ -674,7 +664,9 @@ def _dynamic_agent_tools(
     try:
         tool_executor = _active_base_agent_tool_executor(base_agent)
     except Exception as exc:  # noqa: BLE001 - preserve the typed agent boundary
-        resolution_failures = {"workspace_fleet": _mount_failure_reason(exc)}
+        from clio_agent.gact.mcp_readiness import mount_failure_reason  # noqa: PLC0415
+
+        resolution_failures = {"workspace_fleet": mount_failure_reason(exc)}
         logger.exception(
             "custom_agent_tool_executor_unavailable agent=%s tools=%s",
             agent_def.id,

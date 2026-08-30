@@ -26,6 +26,7 @@ from clio_agent.tools.mcp_connection_era import (
     resolved_connect_mode,
 )
 from clio_agent.tools.mcp_errors import typed_mcp_call_error, typed_mcp_protocol_error
+from clio_agent.tools.mcp_namespace_executor import AsyncNamespacePreparationMixin
 from clio_agent.tools.mcp_result_json import pydantic_json_default
 from clio_agent.tools.mcp_result_projection import (
     MAX_MODEL_TOOL_RESULT_CHARS as MAX_MODEL_TOOL_RESULT_CHARS,
@@ -235,7 +236,7 @@ def _clean_tool_timeouts(tool_timeouts: Mapping[str, float] | None) -> dict[str,
     return cleaned
 
 
-class AsyncMCPToolExecutor:
+class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
     """Async FastMCP execution boundary with no background thread.
 
     This is the API-service path: it binds a FastMCP client to the caller's
@@ -306,48 +307,6 @@ class AsyncMCPToolExecutor:
     def namespaces(self) -> tuple[str, ...]:
         """Declared server namespaces this executor routes to (#1201 gact readers)."""
         return tuple(self._namespace_servers)
-
-    def merge_namespace_tools(self, namespace: str, tools: Mapping[str, Any]) -> None:
-        """Merge a namespace's freshly-mounted tool definitions into the LIVE
-        tool table (#1237).
-
-        The #932 freeze (``_mcp_tools`` set once from ``preloaded_tools`` at
-        :meth:`start` and never re-listed) becomes append-only-mergeable: an
-        on-demand mount (``tools.mcp_discovery.ensure_namespace``, called
-        from ``gact/agents/builders.py``'s expert-tool resolve) reaches
-        ``get_tool_definitions()``/``to_dspy_tools()`` for THIS SAME executor
-        instance immediately, rather than only a future rebuild seeing it.
-        ``namespace`` is accepted for future per-namespace bookkeeping
-        (unused today -- the merge is a flat dict update).
-        """
-
-        del namespace
-        self._mcp_tools.update(tools)
-
-    async def prepare_namespace(self, namespace: str) -> None:
-        """Establish one declared namespace's persistent client connection.
-
-        Tool discovery deliberately uses a throwaway client. This separate
-        preparation seam connects the namespace through the same workspace-
-        scoped executor used by real calls, so session readiness reflects a
-        resident initialized transport rather than a successful list probe.
-        """
-
-        if self._closed:
-            raise RuntimeError("AsyncMCPToolExecutor is closed")
-        if self._client is None or self._call_lock is None:
-            raise RuntimeError("AsyncMCPToolExecutor is not started")
-        proxy = self._namespace_servers.get(namespace)
-        if proxy is None:
-            raise ValueError(f"unknown MCP namespace {namespace!r}")
-        async with self._call_lock:
-            if namespace not in self._namespace_clients:
-                await self._connect_namespace(namespace, proxy)
-
-    def is_namespace_prepared(self, namespace: str) -> bool:
-        """Return whether this executor owns a persistent namespace client."""
-
-        return namespace in self._namespace_clients
 
     async def __aenter__(self) -> "AsyncMCPToolExecutor":
         """Start the executor in an async context manager."""

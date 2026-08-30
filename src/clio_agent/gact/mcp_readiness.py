@@ -19,6 +19,34 @@ from clio_agent.gact.events import Event
 MCP_MOUNT_RETRY_DELAYS_S: tuple[float, ...] = (0.5, 1.5)
 
 
+def namespaces_requiring_preparation(
+    tool_executor: Any,
+    requested_tools: list[str],
+    available_tools: Mapping[str, Any],
+    declared_specs: Mapping[str, Any],
+) -> set[str]:
+    """Return declared namespaces whose requested tools are absent or disconnected."""
+
+    namespace_prepared = getattr(tool_executor, "is_namespace_prepared", None)
+    needed: set[str] = set()
+    for name in requested_tools:
+        namespace, sep, bare = name.partition("_")
+        if not sep or not bare or namespace not in declared_specs:
+            continue
+        prepared = callable(namespace_prepared) and namespace_prepared(namespace)
+        if name not in available_tools or not prepared:
+            needed.add(namespace)
+    return needed
+
+
+def mount_failure_reason(exc: BaseException) -> str:
+    """Classify an on-demand mount failure using the discovery vocabulary."""
+
+    from clio_agent.tools.mcp_discovery import _classify_degrade_reason  # noqa: PLC0415
+
+    return _classify_degrade_reason(exc)
+
+
 def _session_id() -> str:
     """Return the session that owns the current tool-setup operation."""
 

@@ -35,6 +35,7 @@ from clio_agent.tools.mcp_executor import (
     _tool_input_schema,
     _tool_visible_to_model,
 )
+from clio_agent.tools.mcp_namespace_executor import SyncNamespacePreparationMixin
 from clio_agent.tools.mcp_results import call_tool_result_to_observer
 from clio_agent.tools.result_errors import structured_tool_result_error
 from clio_agent.tools.tool_hooks import InterceptDecision, PostToolHook, apply_post_tool_hook
@@ -356,14 +357,6 @@ class SyncToolExecutor(Protocol):
         """Convert executor-backed tools to DSPy tool objects."""
         ...
 
-    def prepare_namespace(self, namespace: str) -> None:
-        """Establish one declared namespace's persistent workspace connection."""
-        ...
-
-    def is_namespace_prepared(self, namespace: str) -> bool:
-        """Return whether this workspace already owns a live namespace client."""
-        ...
-
     def close(self) -> None:
         """Release tool resources."""
         ...
@@ -522,7 +515,7 @@ def create_sync_tool_executor(
     )
 
 
-class SyncMCPToolExecutor:
+class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
     """Sync adapter for async MCP tools.
 
     This is the CLI/DSPy path. It owns one event-loop thread per executor and
@@ -940,38 +933,6 @@ class SyncMCPToolExecutor:
     def to_dspy_tools(self) -> list[dspy.Tool]:
         """Convert MCP tools to DSPy Tool objects."""
         return _make_dspy_tools(self._async_executor.get_tool_definitions(), self.call_tool)
-
-    def merge_namespace_tools(self, namespace: str, tools: Mapping[str, Any]) -> None:
-        """Merge an on-demand mount's tool definitions into the live table (#1237).
-
-        Delegates to :meth:`AsyncMCPToolExecutor.merge_namespace_tools`; a
-        plain dict update on the shared ``_mcp_tools`` mapping, safe to call
-        from any thread (the caller, ``builders.py``'s sync expert-tool
-        resolve, does not run on this executor's own event-loop thread).
-        """
-
-        self._async_executor.merge_namespace_tools(namespace, tools)
-
-    def prepare_namespace(self, namespace: str) -> None:
-        """Establish and cache a declared namespace's persistent connection.
-
-        Discovery uses a short-lived client to list tools. Readiness must not
-        call that listing probe "connected": the first user turn is released
-        only after this workspace executor owns a live namespace client.
-        """
-
-        if self._closed:
-            raise RuntimeError("SyncMCPToolExecutor is closed")
-        self._run_coroutine(
-            self._async_executor.prepare_namespace(namespace),
-            timeout=self._setup_timeout,
-            action=f"MCP namespace {namespace!r} setup",
-        )
-
-    def is_namespace_prepared(self, namespace: str) -> bool:
-        """Return whether this workspace already owns a live namespace client."""
-
-        return self._async_executor.is_namespace_prepared(namespace)
 
     def close(self) -> None:
         """Shut down the executor, closing the client and event loop."""

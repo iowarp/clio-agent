@@ -203,7 +203,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # module tools/mcp_discovery.py (ensure_namespace); only the expert-
     # resolve-specific decision (which namespace, how to merge into THIS
     # executor, how to name the failure) belongs here.
-    "src/clio_agent/gact/agents/builders.py": 1998,
+    "src/clio_agent/gact/agents/builders.py": 1997,
     # #948 S4/S5/S6 growth already carried this file past the flat 800 cap (to 842)
     # before it was ever added to this baseline — a pre-existing gap this change
     # did not introduce (it was silently exempt from the ratchet, not under it).
@@ -290,7 +290,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # days" bug). All reap logic lives in the owner module
     # runtime/process_census.py (reap_orphaned_processes/boot_reap_off_loop);
     # only the sequencing wrapper + its one call site land here.
-    "src/clio_agent/gact/app.py": 2547,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
+    "src/clio_agent/gact/app.py": 2540,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -385,7 +385,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # prompt/list branches) -- the classification logic itself lives in the owner
     # module tools/mcp_connection_era.py; only the server_id= threading + one
     # instrument_client_era() wrap for the bare-Client list branch land here.
-    "src/clio_agent/gact/routes/mcp.py": 968,  # -14: handshake row shaping moved to routes/mcp_rows.py (#1111)
+    "src/clio_agent/gact/routes/mcp.py": 958,  # declared MCP assembly moved to routes/mcp_specs.py
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
     # develop with the check job red). Recording current counts makes the debt
@@ -710,7 +710,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # thin sync delegate to AsyncMCPToolExecutor.merge_namespace_tools
     # (mcp_executor.py), the actual live-tool-table merge target for an
     # on-demand mount (gact/agents/builders.py).
-    "src/clio_agent/tools/execution.py": 1216,  # structured result parsing moved to tools/result_errors.py
+    "src/clio_agent/tools/execution.py": 1206,  # structured result parsing moved to tools/result_errors.py
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.
@@ -737,7 +737,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # the owner module tools/launcher_cache_lock.py: FileLock's default
     # thread_local=True silently orphans the OS lock when acquire/release
     # run on different threads, as they do here via asyncio.to_thread).
-    "src/clio_agent/tools/mcp_executor.py": 843,
+    "src/clio_agent/tools/mcp_executor.py": 827,
     "src/clio_agent/tools/mcp_config.py": 817,
     # #1231 Part 1/2 (consumer half of the live-console feature): not previously
     # baselined -- this file was ALREADY 7 lines over the 800 cap before this

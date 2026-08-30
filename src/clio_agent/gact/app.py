@@ -1052,12 +1052,9 @@ async def _construct_agent_async(app: "FastAPI") -> None:
         # import litellm simultaneously on two executor threads.
         import litellm  # noqa: F401, PLC0415
     except Exception as exc:  # noqa: BLE001
-        print(
-            f"[clio-agent-gact] deferred agent preflight failed ({exc!r}); "
-            "POST /messages will keep returning 503.",
-            flush=True,
-        )
-        app.state.agent_init_error = repr(exc)
+        from clio_agent.gact.agent_initialization import record_init_failure  # noqa: PLC0415
+
+        record_init_failure(app, exc, stage="preflight")
         return
 
     def _build() -> Any:
@@ -1086,33 +1083,17 @@ async def _construct_agent_async(app: "FastAPI") -> None:
         # sanctioned env-credential read, design §6), so a GACT booted purely from
         # ``CLIO_LM_*`` still authenticates.
         agent = ClioAgent(verbose=False, arc=arc, provider_config=cfg, **relay_kwargs)
-        # Make the ProviderProfileStore the authoritative identity registry:
-        # reseed its default from the agent's FINAL resolved config (post
-        # lm_studio model discovery) so the store's default profile and
-        # ``ClioAgent._main_lm`` are the SAME identity, and every expert inherits
-        # exactly what the main agent runs (design §9 step 9). build_app already
-        # seeded a default; this keeps the store consistent via an atomic swap.
-        from clio_agent.gact.providers.profile_store import ProviderProfileStore
-        from clio_agent.providers.lm_spec import spec_from_config
+        from clio_agent.gact.agent_initialization import update_provider_profile  # noqa: PLC0415
 
-        existing = getattr(app.state, "provider_profiles", None)
-        default_spec = spec_from_config(agent._provider_config)
-        app.state.provider_profiles = (
-            existing.with_default(default_spec)
-            if isinstance(existing, ProviderProfileStore)
-            else ProviderProfileStore.seed(default_spec)
-        )
+        update_provider_profile(app, agent)
         return agent
 
     try:
         agent = await loop.run_in_executor(None, _build)
     except Exception as exc:  # noqa: BLE001
-        print(
-            f"[clio-agent-gact] deferred agent init failed ({exc!r}); "
-            "POST /messages will keep returning 503.",
-            flush=True,
-        )
-        app.state.agent_init_error = repr(exc)
+        from clio_agent.gact.agent_initialization import record_init_failure  # noqa: PLC0415
+
+        record_init_failure(app, exc, stage="init")
         return
 
     # _set_app_arc must run before the boot fold (reads app.state.arc) and before ready.
