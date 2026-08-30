@@ -1,10 +1,62 @@
 # MCP client unification — one client, negotiated v1/v2, no privileged integrations
 
-**Umbrella:** iowarp/clio-agent#1274 (+ #1275 refusal semantics). **Status:** ACTIVE.
-**Owner ruling (2026-08-28, verbatim intent):** "there is no review of this, you know
-what is wrong, a relay specific path, and you know what is right, a unified proper mcp
-client that can handshake and operate with both v1 and v2 mcps." The relay is JUST an
-MCP; capability built for one integration lands as a generic mechanism or not at all.
+**Umbrella:** iowarp/clio-agent#1274 (+ #1275 refusal semantics). **Status:** ACTIVE — kickoff Monday 2026-08-31.
+**Protocol references (this repo):** `docs/design/mcp-v2-understanding-2026-08.md` (the working
+understanding) and `docs/design/mcp-client-obligations-2026-07-28.md` (per-item obligations table).
+
+## THE CAMPAIGN LETTERS (owner-ruled, 2026-08-29 — the authoritative frame)
+
+- **(a) The unified client, with the official handshake mechanism.** ONE client for every MCP
+  server and every tool — no exceptions, no enumerated consumers, no privileged pathways. v1 vs v2
+  is decided by the protocol's own negotiation only: `server/discover`, per-request `_meta`
+  protocol fields, the dual-era probe model, and generic extensions negotiation (a real registry,
+  reading server-declared extensions — not today's hardcoded tasks special case). Never probed by
+  behavior, never classified by timing.
+- **(b) Artifact pathway semantics done properly for IOR, Darshan, and ParaView** — the capture
+  contract (declared outputs from the package's own configuration parameters + the loud
+  uncaptured-files signal, clio-relay#293) proven on those three packages
+  (grc-iit/jarvis-cd#211, clio-relay#294, jarvis-cd#209/PR#210). LAMMPS is the verified reference
+  implementation of both halves (live progress stream + configured-root/script-declared files).
+- **(c) Re-verify EVERYTHING under the finished stack** — with the acceptance frame that
+  clio-relay is a tool of EASE for the agent: single-command install, easy deployment, clear
+  artifact tracking, SSE updates — never demanding the agent jump through hoops. Runs under
+  production enforcement (dev mode off, both clusters), ends in the formal v1.7.0 release.
+- **(d) MCP Apps support** — align the EXISTING Apps host (`gact/mcp_apps.py`, built at revision
+  2026-01-26) to the 2026-07-28 extensions framework: declare `io.modelcontextprotocol/ui` through
+  the generic extension registry, align revision metadata, keep the proven
+  tolerate-unknown-metadata behavior.
+- **(e) MRTR support** — verify and complete: the retry/`requestState` loop is the mcp-2.0 SDK's;
+  clio's contribution (round bound, typed exhaustion, the single HITL surface all three input
+  shapes converge on) must survive unification intact; plus the elicitation completeness items
+  (per-mode form/url capability declaration, URL-mode consent MUSTs, SEP-1034 defaults,
+  SEP-1330 multi-select enums, and never carrying forward the removed elicitationId constructs).
+- **(f) The rest of the v2 protocol surface** — the completeness-sweep items (#1274 comments):
+  `resultType` handling, `subscriptions/listen` + listChanged as the listing-cache invalidation
+  signal, server cache hints (`ttlMs`/`cacheScope` + the caching MUST-NOTs), SSE
+  re-issue-never-resume, `x-mcp-header` duties, era-gating the removals (ping / logging/setLevel /
+  roots list_changed), authorization specifics by name (iss validation, credential-per-issuer,
+  PKCE-absence refusal, RFC 8707, CIMD hosting as a cluster-parameterized deployment artifact),
+  JSON-Schema 2020-12 posture, pagination/completions small MUSTs, and the fastmcp beta-track
+  hardening (develop is already on 4.0.0b1; upstream b5) with the verification-probe shortlist.
+
+## EXECUTION ORDER (Monday kickoff)
+
+1. **clio-relay + MCP v2 adaptation first**: build (a) on the feature branch
+   (`feat/mcp-client-unification`; owner ruling — develop is user-consumed, the campaign lands on
+   develop only at its final proof), migrate the relay onto the unified client, and DELETE the
+   relay's special path (the inventory's dissolve/keep/delete verdicts below).
+2. (d), (e), (f) land as slices on the same branch as the generic client grows.
+3. **Final testing grounds: clio-web-search and the clio-kit web MCP** — the acceptance is
+   explicitly ordered: FIRST clio-relay works properly with no special path (the full relay
+   workload through the unified client), THEN the web MCPs prove generality end-to-end (the
+   `task=required` fetch scenario that exposed the fork — a real user's exact failure).
+4. (b) runs in parallel in jarvis-cd/clio-kit (different repos); (c) gates on everything and
+   closes the campaign with the v1.7.0 release.
+
+PRECONDITION (owner hold, 2026-08-29): the other development teams' outstanding week of work
+merges into develop first; the campaign branches from the true integrated base. Known conflict
+surfaces vs this session's pushed merges: gact/relay_wiring.py, tools/gateway.py, agent.py relay
+fields.
 
 ## The defect, precisely
 
@@ -41,9 +93,7 @@ ONE client pathway for every server (built-in, declared, relay):
    (-32021/-32022) propagate immediately — the ONLY fail-fast; slowness is never a
    verdict; per-exchange retry with increasing backoff to a cap; intermediate
    progress RESETS the clock; every wait names what it waits on. Template:
-   `arc/rpc_liveness` stall ladder. (See also
-   docs anchor: feedback memories handshakes-not-global-timeouts,
-   protocol-by-negotiation-never-timing.)
+   `arc/rpc_liveness` stall ladder.
 4. **The relay becomes consumer #1**: a declared server entry (`mcp_config`
    `MCPServerSpec` + auth) plus a small transport adapter for what is honestly
    relay-only (held-channel/session identity headers, its HTTP door endpoints, the
@@ -87,27 +137,34 @@ ONE client pathway for every server (built-in, declared, relay):
 
 ## Slices (dependency order; implement → adversarial review → merge, per slice)
 
+Letter mapping: S1–S8 deliver (a); (d)/(e)/(f) slot in as marked.
+
 - **S1 — capability-keyed task routing (the unlock).** Read `taskSupport` at
   discovery; record per-server capability; `tasks_declaration` keyed on capability;
   direct task-capable route in `_proxy_for_spec`/`_connect_namespace` for
-  task-capable servers; v1 path byte-identical (regression-proven). ACCEPTANCE:
-  the real clio-kit web server's `task=required` fetch called end-to-end through
-  the GENERIC declared-server path (live locked-stdio test against the pinned kit
-  wheel), plus zero behavior change for v1 servers.
+  task-capable servers; v1 path byte-identical (regression-proven).
 - **S2 — refusal + wait semantics (#1275):** protocol-refusal class terminal-fast
-  on every path (no retry, typed propagation to run surfaces); progress-aware
-  ladder on the direct route; visible waiting.
+  on every path; progress-aware ladder on the direct route; visible waiting.
+  Includes (e)'s MRTR per-path verification.
 - **S3 — task machinery unification:** drive-to-terminal, handle registries
   (`relay_install_jobs` → shared registry), ONE state vocabulary.
+- **S3b — (a) extension registry:** generic extension negotiation (declare + read
+  server extensions); tasks becomes an entry; **(d) the ui extension declares here**;
+  enumerate the other official extensions (oauth-client-credentials for headless/CI,
+  enterprise-managed-auth).
 - **S4 — console generalization:** `mcp_task_console.py` + stream observer factory.
 - **S5 — curated tool overlay + relay as declared server:** `tool_overlay.py`;
   `relay_factory` deleted; relay enters `load_mcp_servers()`.
 - **S6 — artifact fetch generalization** + origin-schema-keyed edges.
-- **S7 — glue deletion sweep** with content-accounted deletion verification;
-  `relay_wiring` dies; agent.py loses its relay fields.
-- **S8 — relay-on-generic migration proof:** the relay live workload (case13
-  surface) runs entirely through the unified client; relay-specific tests migrate
-  or die with their subjects.
+- **S6b — (f) protocol-surface completion:** subscriptions/listen + listChanged→cache
+  invalidation, server cache hints, resultType/x-mcp-header/era-gated removals,
+  auth specifics + CIMD deployment artifact, fastmcp b1→b5 + verification probes.
+- **S7 — glue deletion sweep** with content-accounted deletion verification.
+- **S8 — the ordered acceptance:** FIRST the full relay workload through the unified
+  client, no special path (this is where the campaign may land on develop); THEN the
+  final testing grounds — clio-web-search / clio-kit web MCP `task=required` fetch
+  end-to-end through the generic declared-server path (the exact real-user failure
+  that exposed the fork). Relay-specific tests migrate or die with their subjects.
 
 Rules that bind every slice: no accretion (owner modules, ratchets); no silent
 fallback (typed reasons); protocol-negotiation only; the five #1274 wait
