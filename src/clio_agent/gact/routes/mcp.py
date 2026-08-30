@@ -47,11 +47,13 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 
-from clio_agent.gact.agent_blueprints import (
-    discover_agent_blueprints,
-    load_mcp_descriptors,
+from clio_agent.gact.agent_blueprints import discover_agent_blueprints, load_mcp_descriptors
+from clio_agent.gact.agents.resolution import (
+    _runtime_active_agent_blueprint_id,
+    _runtime_active_agent_blueprint_path,
+    _runtime_workspace_catalog_cwd,
 )
-from clio_agent.gact.agents.resolution import _runtime_workspace_catalog_cwd
+from clio_agent.gact.blueprint_activation import blueprint_mcp_servers, blueprint_server_map
 from clio_agent.gact.events import Event
 from clio_agent.gact.mcp_apps import call_tool_result_to_observer
 from clio_agent.gact.permission_gate import (
@@ -230,7 +232,11 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             pass
         return rows
 
-    def _declared_mcp_specs(cwd: Path | None = None) -> dict[str, Any]:
+    def _declared_mcp_specs(
+        cwd: Path | None = None,
+        *,
+        session_id: str = "",
+    ) -> dict[str, Any]:
         """Assemble the declared MCP server specs the runtime would mount.
 
         Mirrors ``ClioAgent._build_tool_gateway``: merge each active blueprint's
@@ -240,14 +246,25 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         """
         from clio_agent.tools.mcp_config import load_mcp_servers  # noqa: PLC0415
 
+        blueprint_id = _runtime_active_agent_blueprint_id(app, session_id)
         pack_servers: dict[str, dict[str, Any]] = {}
-        try:
-            for blueprint in discover_agent_blueprints(cwd=cwd):
-                servers = blueprint.metadata.get("mcp_servers")
-                if isinstance(servers, Mapping) and servers:
-                    pack_servers[blueprint.id] = {str(k): v for k, v in servers.items()}
-        except Exception:  # noqa: BLE001,S110 - pack discovery is best-effort
-            pass
+        if blueprint_id:
+            blueprint_path = _runtime_active_agent_blueprint_path(app, session_id)
+            if blueprint_path is not None:
+                try:
+                    from clio_agent.gact.agent_blueprints import (  # noqa: PLC0415
+                        parse_agent_blueprint_root,
+                    )
+
+                    blueprint = parse_agent_blueprint_root(blueprint_path, scope="session")
+                    if blueprint.enabled and blueprint.id == blueprint_id:
+                        servers = blueprint_server_map(blueprint)
+                        if servers:
+                            pack_servers[blueprint_id] = servers
+                except Exception:  # noqa: BLE001,S110 - mcp.yaml remains available
+                    pass
+            else:
+                pack_servers = blueprint_mcp_servers(blueprint_id, cwd=cwd)
         return load_mcp_servers(cwd=cwd, pack_servers=pack_servers)
 
     @app.get("/v1/mcp/handshake")
@@ -271,7 +288,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         from clio_agent.providers.handshake import handshake_mcp_servers  # noqa: PLC0415
 
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
-        specs = _declared_mcp_specs(cwd=cwd)
+        specs = _declared_mcp_specs(cwd=cwd, session_id=session_id)
         reports = await handshake_mcp_servers(list(specs.values()))
         return {"servers": [handshake_server_row(report) for report in reports]}
 

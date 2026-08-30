@@ -80,3 +80,40 @@ def test_mcp_handshake_empty_declared_set(client: TestClient, monkeypatch) -> No
 
     body = client.get("/v1/mcp/handshake").json()
     assert body == {"servers": []}
+
+
+def test_mcp_handshake_scopes_pack_servers_to_selected_session_blueprint(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The handshake never warms every blueprint merely because it is installed."""
+
+    captured_names: list[str] = []
+
+    async def _capture(specs, **kwargs):  # noqa: ANN001 - test double
+        del kwargs
+        captured_names.extend(spec.name for spec in specs)
+        return []
+
+    monkeypatch.setattr(
+        "clio_agent.gact.routes.mcp._runtime_active_agent_blueprint_id",
+        lambda app, session_id="": "earthscope" if session_id == "selected" else "",
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.routes.mcp._runtime_active_agent_blueprint_path",
+        lambda app, session_id="": None,
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.routes.mcp.blueprint_mcp_servers",
+        lambda blueprint_id, cwd=None: {
+            blueprint_id: {
+                "geo": {"command": "clio-kit", "args": ["mcp-server", "geo"]},
+                "ndp": {"command": "clio-kit", "args": ["mcp-server", "ndp"]},
+            }
+        },
+    )
+    monkeypatch.setattr("clio_agent.providers.handshake.handshake_mcp_servers", _capture)
+
+    body = client.get("/v1/mcp/handshake?session_id=selected").json()
+
+    assert body == {"servers": []}
+    assert set(captured_names) == {"geo", "ndp"}

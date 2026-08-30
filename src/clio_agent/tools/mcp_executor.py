@@ -324,6 +324,31 @@ class AsyncMCPToolExecutor:
         del namespace
         self._mcp_tools.update(tools)
 
+    async def prepare_namespace(self, namespace: str) -> None:
+        """Establish one declared namespace's persistent client connection.
+
+        Tool discovery deliberately uses a throwaway client. This separate
+        preparation seam connects the namespace through the same workspace-
+        scoped executor used by real calls, so session readiness reflects a
+        resident initialized transport rather than a successful list probe.
+        """
+
+        if self._closed:
+            raise RuntimeError("AsyncMCPToolExecutor is closed")
+        if self._client is None or self._call_lock is None:
+            raise RuntimeError("AsyncMCPToolExecutor is not started")
+        proxy = self._namespace_servers.get(namespace)
+        if proxy is None:
+            raise ValueError(f"unknown MCP namespace {namespace!r}")
+        async with self._call_lock:
+            if namespace not in self._namespace_clients:
+                await self._connect_namespace(namespace, proxy)
+
+    def is_namespace_prepared(self, namespace: str) -> bool:
+        """Return whether this executor owns a persistent namespace client."""
+
+        return namespace in self._namespace_clients
+
     async def __aenter__(self) -> "AsyncMCPToolExecutor":
         """Start the executor in an async context manager."""
         return await self.start()

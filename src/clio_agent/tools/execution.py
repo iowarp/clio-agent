@@ -356,6 +356,14 @@ class SyncToolExecutor(Protocol):
         """Convert executor-backed tools to DSPy tool objects."""
         ...
 
+    def prepare_namespace(self, namespace: str) -> None:
+        """Establish one declared namespace's persistent workspace connection."""
+        ...
+
+    def is_namespace_prepared(self, namespace: str) -> bool:
+        """Return whether this workspace already owns a live namespace client."""
+        ...
+
     def close(self) -> None:
         """Release tool resources."""
         ...
@@ -943,6 +951,27 @@ class SyncMCPToolExecutor:
         """
 
         self._async_executor.merge_namespace_tools(namespace, tools)
+
+    def prepare_namespace(self, namespace: str) -> None:
+        """Establish and cache a declared namespace's persistent connection.
+
+        Discovery uses a short-lived client to list tools. Readiness must not
+        call that listing probe "connected": the first user turn is released
+        only after this workspace executor owns a live namespace client.
+        """
+
+        if self._closed:
+            raise RuntimeError("SyncMCPToolExecutor is closed")
+        self._run_coroutine(
+            self._async_executor.prepare_namespace(namespace),
+            timeout=self._setup_timeout,
+            action=f"MCP namespace {namespace!r} setup",
+        )
+
+    def is_namespace_prepared(self, namespace: str) -> bool:
+        """Return whether this workspace already owns a live namespace client."""
+
+        return self._async_executor.is_namespace_prepared(namespace)
 
     def close(self) -> None:
         """Shut down the executor, closing the client and event loop."""

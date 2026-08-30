@@ -30,6 +30,7 @@ class _FakeExecutor:
     def __init__(self, declared_specs: dict[str, MCPServerSpec], preloaded: dict[str, Any]) -> None:
         self._clio_namespace_specs = declared_specs
         self._mcp_tools: dict[str, Any] = dict(preloaded)
+        self.prepared_namespaces: set[str] = set()
 
     def to_dspy_tools(self) -> list[Any]:
         return [_FakeTool(name) for name in self._mcp_tools]
@@ -37,6 +38,13 @@ class _FakeExecutor:
     def merge_namespace_tools(self, namespace: str, tools: dict[str, Any]) -> None:
         del namespace
         self._mcp_tools.update(tools)
+
+    def prepare_namespace(self, namespace: str) -> None:
+        assert namespace in self._clio_namespace_specs
+        self.prepared_namespaces.add(namespace)
+
+    def is_namespace_prepared(self, namespace: str) -> bool:
+        return namespace in self.prepared_namespaces
 
 
 def _spec(name: str) -> MCPServerSpec:
@@ -77,7 +85,7 @@ class TestOnDemandMount:
         assert "ghost_tool" not in available
         assert mount_failures == {}
 
-    def test_failed_mount_is_named_and_never_cached_next_resolve_retries(
+    def test_transient_mount_retries_inside_first_resolve(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         executor = _FakeExecutor(declared_specs={"geo": _spec("geo")}, preloaded={})
@@ -90,25 +98,37 @@ class TestOnDemandMount:
             return {"geo_geocode": _FakeTool("geo_geocode")}
 
         monkeypatch.setattr("clio_agent.tools.mcp_discovery.ensure_namespace", _fake_ensure)
+        monkeypatch.setattr("clio_agent.gact.mcp_readiness.time.sleep", lambda _delay: None)
 
         available, mount_failures = _resolve_declared_tools_with_on_demand_mount(
             executor, ["geo_geocode"]
         )
-        assert "geo_geocode" not in available
-        assert "geo" in mount_failures
-        assert mount_failures["geo"]  # a typed reason string, non-empty
-
-        # #1237: the SAME namespace, resolved again (e.g. the next turn / the
-        # next tool call), must NOT reuse the remembered failure -- it must
-        # re-attempt and succeed once the underlying condition clears.
-        available2, mount_failures2 = _resolve_declared_tools_with_on_demand_mount(
-            executor, ["geo_geocode"]
-        )
-        assert "geo_geocode" in available2
-        assert mount_failures2 == {}
+        assert "geo_geocode" in available
+        assert mount_failures == {}
         assert len(attempts) == 2
 
-    def test_already_available_tool_never_triggers_a_mount(
+    def test_terminal_mount_failure_is_named_without_retry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        executor = _FakeExecutor(declared_specs={"geo": _spec("geo")}, preloaded={})
+        attempts: list[int] = []
+
+        def _missing_launcher(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:
+            del namespace, spec
+            attempts.append(1)
+            raise FileNotFoundError("fake-launcher")
+
+        monkeypatch.setattr("clio_agent.tools.mcp_discovery.ensure_namespace", _missing_launcher)
+
+        available, mount_failures = _resolve_declared_tools_with_on_demand_mount(
+            executor, ["geo_geocode"]
+        )
+
+        assert "geo_geocode" not in available
+        assert mount_failures["geo"]
+        assert attempts == [1]
+
+    def test_cached_listing_still_prepares_the_workspace_connection(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         executor = _FakeExecutor(
@@ -125,7 +145,28 @@ class TestOnDemandMount:
             executor, ["geo_geocode"]
         )
 
-        assert calls == [], "an already-available tool must never re-trigger a mount"
+        assert calls == ["geo"], "a listing cache hit is not a persistent workspace connection"
+        assert executor.prepared_namespaces == {"geo"}
+        assert "geo_geocode" in available
+        assert mount_failures == {}
+
+    def test_prepared_tool_never_retriggers_mount(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        executor = _FakeExecutor(
+            declared_specs={"geo": _spec("geo")},
+            preloaded={"geo_geocode": _FakeTool("geo_geocode")},
+        )
+        executor.prepared_namespaces.add("geo")
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "clio_agent.tools.mcp_discovery.ensure_namespace",
+            lambda ns, spec: calls.append(ns) or {},
+        )
+
+        available, mount_failures = _resolve_declared_tools_with_on_demand_mount(
+            executor, ["geo_geocode"]
+        )
+
+        assert calls == []
         assert "geo_geocode" in available
         assert mount_failures == {}
 

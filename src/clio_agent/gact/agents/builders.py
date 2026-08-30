@@ -605,16 +605,19 @@ def _resolve_declared_tools_with_on_demand_mount(
     A namespace is DECLARED when it appears on the executor's
     ``_clio_namespace_specs`` map (stamped by ``ClioAgent._active_tool_executor``
     at gateway-build time -- #1237 Gap 1 means this is routinely non-empty on
-    a cold workspace/blueprint, since activation mounts nothing eagerly).
-    Mounting goes through ``tools.mcp_discovery.ensure_namespace``: single-
-    flight (concurrent resolves for the SAME namespace join one attempt) and
-    liveness-driven (never a bounded retry ladder). A failed attempt is
-    reported in the returned ``mount_failures`` map (namespace -> typed
-    reason) for THIS resolve only -- it is never remembered, so the very
-    next resolve/call re-attempts.
+    a cold workspace/blueprint, since activation mounts nothing eagerly). A
+    process-wide listing cache can make a tool name available before this
+    workspace owns the persistent namespace connection; both conditions are
+    checked before a turn is released.
+    Mounting goes through the session-readiness boundary, which joins the
+    discovery layer's single-flight attempt, reports lifecycle updates over
+    GACT, and applies a short increasing-wait retry ladder. A terminal failure
+    is reported in the returned ``mount_failures`` map (namespace -> typed
+    reason) for THIS resolve only -- it is never remembered, so a later
+    resolve/call can still re-attempt after the underlying condition changes.
     """
 
-    from clio_agent.tools.mcp_discovery import ensure_namespace  # noqa: PLC0415
+    from clio_agent.gact.mcp_readiness import mount_namespace_for_session  # noqa: PLC0415
 
     available_tools = {
         name: tool
@@ -624,17 +627,23 @@ def _resolve_declared_tools_with_on_demand_mount(
     }
     declared_specs: Mapping[str, Any] = getattr(tool_executor, "_clio_namespace_specs", None) or {}
     mount_failures: dict[str, str] = {}
+    namespace_prepared = getattr(tool_executor, "is_namespace_prepared", None)
     needed_namespaces: set[str] = set()
     for name in requested_tools:
-        if name in available_tools:
-            continue
         namespace, sep, bare = name.partition("_")
-        if sep and bare and namespace in declared_specs:
+        if not sep or not bare or namespace not in declared_specs:
+            continue
+        prepared = callable(namespace_prepared) and namespace_prepared(namespace)
+        if name not in available_tools or not prepared:
             needed_namespaces.add(namespace)
     merged_any = False
     for namespace in sorted(needed_namespaces):
         try:
-            mounted_tools = ensure_namespace(namespace, declared_specs[namespace])
+            mounted_tools = mount_namespace_for_session(
+                tool_executor,
+                namespace,
+                declared_specs[namespace],
+            )
         except Exception as exc:  # noqa: BLE001 - typed + named, never cached (next call retries)
             mount_failures[namespace] = _mount_failure_reason(exc)
             logger.warning(
@@ -644,9 +653,7 @@ def _resolve_declared_tools_with_on_demand_mount(
                 exc,
             )
             continue
-        merger = getattr(tool_executor, "merge_namespace_tools", None)
-        if callable(merger):
-            merger(namespace, mounted_tools)
+        if mounted_tools:
             merged_any = True
     if merged_any:
         available_tools = {
