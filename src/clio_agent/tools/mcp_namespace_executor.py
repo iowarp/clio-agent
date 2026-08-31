@@ -60,14 +60,22 @@ class SyncNamespacePreparationMixin:
 
         self._async_executor.merge_namespace_tools(namespace, tools)
 
-    def prepare_namespace(self, namespace: str) -> None:
-        """Establish and cache a declared namespace's persistent connection."""
+    def prepare_namespace(self, namespace: str, *, timeout: float | None = None) -> None:
+        """Establish and cache a declared namespace's persistent connection.
+
+        ``timeout`` lets the session-readiness boundary widen successive cold
+        start attempts without mutating this executor's configured baseline.
+        Ordinary callers retain the configured setup timeout.
+        """
 
         if self._closed:
             raise RuntimeError("SyncMCPToolExecutor is closed")
+        effective_timeout = self._setup_timeout if timeout is None else timeout
+        if effective_timeout <= 0:
+            raise ValueError("namespace setup timeout must be positive")
         self._run_coroutine(
             self._async_executor.prepare_namespace(namespace),
-            timeout=self._setup_timeout,
+            timeout=effective_timeout,
             action=f"MCP namespace {namespace!r} setup",
         )
 

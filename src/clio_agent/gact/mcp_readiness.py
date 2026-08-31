@@ -17,6 +17,7 @@ from clio_agent.gact import context as _ctx
 from clio_agent.gact.events import Event
 
 MCP_MOUNT_RETRY_DELAYS_S: tuple[float, ...] = (0.5, 1.5)
+MCP_MOUNT_TIMEOUT_MULTIPLIERS: tuple[float, ...] = (1.0, 3.0, 6.0)
 
 
 def namespaces_requiring_preparation(
@@ -124,6 +125,7 @@ def mount_namespace_for_session(
     )
 
     max_attempts = len(retry_delays_s) + 1
+    base_setup_timeout = float(getattr(tool_executor, "_setup_timeout", 10.0))
     for attempt in range(1, max_attempts + 1):
         phase = "launch"
         _publish_status(
@@ -153,7 +155,10 @@ def mount_namespace_for_session(
                 max_attempts=max_attempts,
                 tool_count=len(mounted_tools),
             )
-            connector(namespace)
+            multiplier = MCP_MOUNT_TIMEOUT_MULTIPLIERS[
+                min(attempt - 1, len(MCP_MOUNT_TIMEOUT_MULTIPLIERS) - 1)
+            ]
+            connector(namespace, timeout=base_setup_timeout * multiplier)
         except Exception as exc:
             reason = _classify_degrade_reason(exc)
             if attempt < max_attempts and _retryable_mount_error(exc):

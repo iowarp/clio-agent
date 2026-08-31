@@ -22,15 +22,18 @@ class _Executor:
     def __init__(self, *, fail_connect_once: bool = False) -> None:
         self.fail_connect_once = fail_connect_once
         self.connect_attempts = 0
+        self.connect_timeouts: list[float | None] = []
         self.merged: dict[str, Any] = {}
+        self._setup_timeout = 10.0
 
     def merge_namespace_tools(self, namespace: str, tools: dict[str, Any]) -> None:
         del namespace
         self.merged.update(tools)
 
-    def prepare_namespace(self, namespace: str) -> None:
+    def prepare_namespace(self, namespace: str, *, timeout: float | None = None) -> None:
         assert namespace == "geo"
         self.connect_attempts += 1
+        self.connect_timeouts.append(timeout)
         if self.fail_connect_once and self.connect_attempts == 1:
             raise ConnectionRefusedError("private endpoint detail")
 
@@ -65,6 +68,7 @@ def test_mount_retries_persistent_connect_and_emits_causal_lifecycle(
 
     assert set(tools) == {"geo_geocode"}
     assert executor.connect_attempts == 2
+    assert executor.connect_timeouts == [10.0, 30.0]
     assert sleeps == [0.25]
     payloads = [event.payload for event in bus.events]
     assert [(row["phase"], row["state"]) for row in payloads] == [
