@@ -308,7 +308,7 @@ def probe_clio_core_init_degradation(*, record: object | None = None) -> list[In
                 "clio doctor), or set CLIO_ARC_STORE=local to choose LocalFS "
                 "deliberately (no degrade row). clio-core is retried on the next boot."
             ),
-            endpoint=details["config_path"] or None,
+            endpoint=str(details["config_path"]) if details["config_path"] else None,
             fallback="local",
             details=details,
             required=True,
@@ -483,9 +483,7 @@ def probe_cte_cold_tier_disk(*, env: Mapping[str, str] | None = None) -> list[In
         return []
 
     store_dir = cte_store_dir(env=env, config_path=cap.config_path)
-    allocated, logical = (
-        _cte_cold_tier_dir_usage(store_dir) if store_dir.is_dir() else (0, 0)
-    )
+    allocated, logical = _cte_cold_tier_dir_usage(store_dir) if store_dir.is_dir() else (0, 0)
     warn_fraction = cte_disk_warn_fraction()
     fraction = allocated / capacity_bytes if capacity_bytes else 0.0
     details = {
@@ -542,6 +540,42 @@ def probe_cte_cold_tier_disk(*, env: Mapping[str, str] | None = None) -> list[In
     ]
 
 
+def probe_clio_core_write_health(
+    *, env: Mapping[str, str] | None = None
+) -> list[IntegrationStatus]:
+    """Fail health after this process observes a permanent clio-core write error."""
+    env = env if env is not None else os.environ
+    if env.get("CLIO_ARC_STORE", "cte").strip().lower() != "cte":
+        return []
+
+    from clio_agent.arc.clio_core_retry import (  # noqa: PLC0415
+        last_permanent_put_failure,
+    )
+
+    failure = last_permanent_put_failure()
+    if failure is None:
+        return []
+    details = failure.to_details()
+    return [
+        IntegrationStatus(
+            name="clio_core_write",
+            state=IntegrationState.UNAVAILABLE,
+            summary=(
+                "clio-core rejected a required persistent write; new transcript "
+                f"state is not durable ({details['error']})."
+            ),
+            config_source="runtime:clio_core_put_failure",
+            next_action=(
+                "Repair or expand the active clio-core tier, then restart the "
+                "backend and verify a write/read/delete sentinel before resuming work."
+            ),
+            fallback="none",
+            details=details,
+            required=True,
+        )
+    ]
+
+
 def probe_clio_core_health(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
     """Aggregate the clio-core doctor rows: init (#897) + ram cap (#890) + liveness (#892) + daemon mem (#891) + cold-tier disk (#1001).
 
@@ -560,4 +594,5 @@ def probe_clio_core_health(*, env: Mapping[str, str] | None = None) -> list[Inte
         *probe_clio_core_liveness(),
         *probe_clio_core_daemon_memory(env=env),
         *probe_cte_cold_tier_disk(env=env),
+        *probe_clio_core_write_health(env=env),
     ]
