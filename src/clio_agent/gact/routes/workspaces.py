@@ -265,6 +265,22 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
     ) -> Workspace | JSONResponse:
         """SPEC §6.1 — create a workspace pinned to ``root_path``."""
 
+        if req.root_path:
+            try:
+                Path(req.root_path).expanduser().mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=ErrorEnvelope(
+                        error=ErrorInfo(
+                            error="invalid_request",
+                            message=f"workspace root could not be created: {req.root_path}",
+                            details={"root_path": req.root_path, "reason": str(exc)},
+                            recoverable=True,
+                        )
+                    ).model_dump(exclude_none=True),
+                ) from exc
+
         ws = app.state.workspaces.create(
             name=req.name,
             root_path=req.root_path,

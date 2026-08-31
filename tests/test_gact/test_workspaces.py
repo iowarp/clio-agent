@@ -44,6 +44,20 @@ def test_create_workspace_persists(tmp_path: Path) -> None:
     assert {w["name"] for w in body["workspaces"]} >= {"default", "iowarp"}
 
 
+def test_create_workspace_materializes_missing_root(tmp_path: Path) -> None:
+    """A newly registered workspace is immediately usable as a tool cwd."""
+    c = _client(tmp_path)
+    root = tmp_path / "new-workspace"
+
+    response = c.post(
+        "/v1/workspaces",
+        json={"name": "new workspace", "root_path": str(root)},
+    )
+
+    assert response.status_code == 201
+    assert root.is_dir()
+
+
 def test_workspace_exposes_default_and_configured_storage_root(tmp_path: Path) -> None:
     c = _client(tmp_path)
     project = tmp_path / "project"
@@ -158,8 +172,7 @@ def test_workspace_file_listing_marks_service_storage_without_spending_visible_c
     assert response.status_code == 200
     entries = response.json()["entries"]
     assert [
-        (entry["path"], entry["type"], entry["internal"], entry.get("size"))
-        for entry in entries
+        (entry["path"], entry["type"], entry["internal"], entry.get("size")) for entry in entries
     ] == [
         (".clio", "dir", True, None),
         (".clio-child-cache", "dir", True, None),
