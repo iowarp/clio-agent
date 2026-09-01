@@ -85,6 +85,15 @@ def build_artifact_provenance_backend(
                     default="",
                     cast=conf.as_str,
                 ).strip(),
+                # Kept as a raw string (never a Path): when the interpreter is
+                # a remote launcher the script path belongs to the worker's
+                # host and must survive this host's path flavour untouched.
+                worker_script=conf.resolve(
+                    "provenance.artifacts.cmf.worker_script",
+                    env="CLIO_CMF_WORKER_SCRIPT",
+                    default="",
+                    cast=conf.as_str,
+                ).strip(),
                 metadata_path=(
                     Path(raw_metadata).expanduser()
                     if raw_metadata

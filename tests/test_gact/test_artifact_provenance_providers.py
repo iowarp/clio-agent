@@ -19,8 +19,11 @@ from clio_agent.gact.artifacts.provenance import cmf_worker
 from clio_agent.gact.artifacts.provenance.cmf import (
     CMFArtifactProvenanceProvider,
     CMFArtifactStore,
+    CMFBridgeError,
     CMFProviderConfig,
     _resolve_python,
+    _resolve_worker_command,
+    _worker_argv,
 )
 from clio_agent.gact.artifacts.provenance.selector import ArtifactProvenanceDispatcher
 from clio_agent.gact.artifacts.records import (
@@ -68,6 +71,93 @@ def test_cmf_python_keeps_virtualenv_launcher_path(
     monkeypatch.setattr(Path, "resolve", _unexpected_resolve)
 
     assert _resolve_python(str(launcher)) == str(launcher.absolute())
+
+
+def test_cmf_python_accepts_a_launcher_command_not_only_an_interpreter_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A multi-word interpreter runs the worker through a launcher (e.g. ssh)."""
+    ssh = tmp_path / "ssh"
+    ssh.write_bytes(b"")
+    monkeypatch.setattr(
+        "clio_agent.gact.artifacts.provenance.cmf.shutil.which",
+        lambda value: str(ssh) if value == "ssh" else None,
+    )
+
+    command = _resolve_worker_command("ssh homelab /opt/cmf/bin/python")
+
+    assert command == [str(ssh), "homelab", "/opt/cmf/bin/python"]
+
+
+def test_cmf_launcher_command_is_empty_when_its_first_token_is_unresolvable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unresolvable launcher stays typed-empty rather than half-built argv."""
+    monkeypatch.setattr(
+        "clio_agent.gact.artifacts.provenance.cmf.shutil.which",
+        lambda _value: None,
+    )
+
+    assert _resolve_worker_command("no-such-launcher homelab /opt/cmf/bin/python") == []
+
+
+def test_cmf_worker_script_override_and_store_paths_survive_a_remote_launcher(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A remote worker gets the overridden script and POSIX store paths verbatim."""
+    ssh = tmp_path / "ssh"
+    ssh.write_bytes(b"")
+    monkeypatch.setattr(
+        "clio_agent.gact.artifacts.provenance.cmf.shutil.which",
+        lambda value: str(ssh) if value == "ssh" else None,
+    )
+    config = CMFProviderConfig(
+        python="ssh homelab /home/u/cmf-venv/bin/python",
+        metadata_path=Path("/home/u/qual/mlmd.sqlite"),
+        artifact_root=Path("/home/u/qual/artifacts"),
+        worker_script="/home/u/qual/cmf_worker.py",
+        pipeline_name="clio-qual",
+    )
+
+    launcher = _resolve_worker_command(config.python)
+    argv = _worker_argv(config, launcher)
+
+    assert argv == [
+        str(ssh),
+        "homelab",
+        "/home/u/cmf-venv/bin/python",
+        "/home/u/qual/cmf_worker.py",
+        "--metadata",
+        "/home/u/qual/mlmd.sqlite",
+        "--artifact-root",
+        "/home/u/qual/artifacts",
+        "--pipeline",
+        "clio-qual",
+    ]
+
+
+def test_cmf_worker_script_defaults_to_the_bundled_worker(tmp_path: Path) -> None:
+    """Without an override the bundled worker module is what gets executed."""
+    interpreter = tmp_path / "python"
+    interpreter.write_bytes(b"")
+    config = CMFProviderConfig(
+        python=str(interpreter),
+        metadata_path=tmp_path / "mlmd.sqlite",
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    argv = _worker_argv(config, _resolve_worker_command(config.python))
+
+    assert argv[0] == str(interpreter.absolute())
+    assert argv[1] == str(Path(cmf_worker.__file__))
+
+
+def test_cmf_worker_argv_refuses_an_unresolvable_interpreter(tmp_path: Path) -> None:
+    """No interpreter is a typed bridge failure, not a bare-name Popen attempt."""
+    with pytest.raises(CMFBridgeError, match="provenance.artifacts.cmf.python"):
+        _worker_argv(_config(tmp_path), [])
 
 
 def test_cmf_worker_posts_server_payload_without_optional_http_dependency(
@@ -505,7 +595,9 @@ class _MlEvent:
     OUTPUT = 4
     Path = _MlEventPath
 
-    def __init__(self, execution_id: int = 0, artifact_id: int = 0, type: int = 0, path: Any = None) -> None:  # noqa: A002
+    def __init__(
+        self, execution_id: int = 0, artifact_id: int = 0, type: int = 0, path: Any = None
+    ) -> None:  # noqa: A002
         self.execution_id = execution_id
         self.artifact_id = artifact_id
         self.type = type
@@ -584,7 +676,16 @@ def _edge_worker() -> tuple[Any, _EdgeStore]:
 
     type_schemas: dict[str, frozenset[str]] = {}
 
-    def _create_artifact(*, store: _EdgeStore, uri: str, name: str, type_name: str, custom_properties: dict[str, Any], properties: Any = None, type_properties: Any = None) -> _FakeArtifact:
+    def _create_artifact(
+        *,
+        store: _EdgeStore,
+        uri: str,
+        name: str,
+        type_name: str,
+        custom_properties: dict[str, Any],
+        properties: Any = None,
+        type_properties: Any = None,
+    ) -> _FakeArtifact:
         # Models MLMD's first-writer-wins type schemas: a type name created
         # with one property set REJECTS later artifacts carrying properties
         # outside it ("Found unknown property" — the live 2026-08-26 failure).
@@ -601,7 +702,9 @@ def _edge_worker() -> tuple[Any, _EdgeStore]:
 
     executions_by_name: dict[str, _FakeExecution] = {}
 
-    def _create_execution(*, store: _EdgeStore, execution_name: str = "", **_kwargs: Any) -> _FakeExecution:
+    def _create_execution(
+        *, store: _EdgeStore, execution_name: str = "", **_kwargs: Any
+    ) -> _FakeExecution:
         # Models cmflib's create_new_execution=False contract: the same
         # execution_name (clio:{call_id}) returns the EXISTING execution —
         # this reuse is what makes _link_edges' per-execution dedup effective

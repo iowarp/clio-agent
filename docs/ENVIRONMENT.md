@@ -70,6 +70,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CMF_PUBLISH_TIMEOUT_S` | `provenance.artifacts.cmf.publish_timeout_s` | float | `30.0` | `src/clio_agent/gact/artifacts/provenance/factory.py` |
 | `CLIO_CMF_PYTHON` | `provenance.artifacts.cmf.python` | str | _(unset)_ | `src/clio_agent/gact/artifacts/provenance/factory.py` |
 | `CLIO_CMF_SERVER_URL` | `provenance.artifacts.cmf.server_url` | str | _(unset)_ | `src/clio_agent/gact/artifacts/provenance/factory.py` |
+| `CLIO_CMF_WORKER_SCRIPT` | `provenance.artifacts.cmf.worker_script` | str | _(unset)_ | `src/clio_agent/gact/artifacts/provenance/factory.py` |
 | `CLIO_CODEX_CREDENTIAL_HOME_CAPACITY` | `providers.codex.credential_home_capacity` | int | `4` | `src/clio_agent/providers/codex_credential_home.py` |
 | `CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S` | `limits.codex_sdk_progress_timeout_s` | float | `120.0` | `src/clio_agent/providers/codex_stream.py` |
 | `CLIO_CODEX_TRANSPORT` | `lm.codex_transport` | str | _(unset)_ | `src/clio_agent/config.py` |

@@ -654,8 +654,12 @@ KEY_NOTES: dict[str, str] = {
         "publishing to a remote server times out."
     ),
     "provenance.artifacts.cmf.python": (
-        "Path to the Python interpreter used to invoke the CMF library; set only when CMF must run "
-        "under a different interpreter/venv."
+        "Interpreter that runs the CMF worker -- a path, or a whole launcher command ending in one "
+        "(e.g. 'ssh host /opt/cmf/bin/python') when CMF cannot run on this host."
+    ),
+    "provenance.artifacts.cmf.worker_script": (
+        "Path of the CMF worker script the interpreter executes (default: the bundled one); set to "
+        "the copy on the worker's host when the interpreter is remote."
     ),
     "provenance.artifacts.cmf.server_url": (
         "URL of a remote CMF metadata server to publish artifact provenance to; unset keeps CMF "

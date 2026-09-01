@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -47,6 +48,12 @@ class CMFProviderConfig:
     pipeline_name: str = "clio-agent"
     server_url: str = ""
     publish_timeout_s: float = 30.0
+    # Path of the worker script the interpreter executes. Empty selects the
+    # bundled ``cmf_worker.py`` next to this module. It is deliberately a plain
+    # string, not a ``Path``: when ``python`` is a remote launcher the script
+    # lives on the WORKER's filesystem, and a POSIX path must not be reshaped
+    # by the parent's local path flavour.
+    worker_script: str = ""
 
     def __post_init__(self) -> None:
         if self.artifact_store not in {"reference", "local"}:
@@ -123,15 +130,16 @@ class CMFBridge:
         process = self._process
         if process is not None and process.poll() is None:
             return process
-        executable = _resolve_python(self.config.python)
-        if not executable:
-            raise CMFBridgeError(
-                "CMF requires an isolated compatible Python runtime; configure "
-                "provenance.artifacts.cmf.python or CLIO_CMF_PYTHON"
-            )
-        worker = Path(__file__).with_name("cmf_worker.py")
-        self.config.metadata_path.parent.mkdir(parents=True, exist_ok=True)
-        self.config.artifact_root.mkdir(parents=True, exist_ok=True)
+        launcher = _resolve_worker_command(self.config.python)
+        argv = _worker_argv(self.config, launcher)
+        if len(launcher) == 1:
+            # A single resolved executable runs the worker on THIS machine, so
+            # the stores it opens are ours to create. A multi-token launcher
+            # (``ssh <host> <python>``, a container exec, ...) runs the worker
+            # on another host where these paths name that host's filesystem —
+            # pre-creating them locally would fabricate empty look-alikes here.
+            self.config.metadata_path.parent.mkdir(parents=True, exist_ok=True)
+            self.config.artifact_root.mkdir(parents=True, exist_ok=True)
         # sys.platform narrowing as an IF-STATEMENT (not a conditional
         # expression): statement-level narrowing is the form mypy reliably
         # skips on non-win32 platforms — the expression form flaked in CI.
@@ -139,16 +147,7 @@ class CMFBridge:
         if sys.platform == "win32":
             creationflags = subprocess.CREATE_NO_WINDOW
         process = subprocess.Popen(  # noqa: S603 - fixed worker with configured interpreter
-            [
-                executable,
-                str(worker),
-                "--metadata",
-                str(self.config.metadata_path),
-                "--artifact-root",
-                str(self.config.artifact_root),
-                "--pipeline",
-                self.config.pipeline_name,
-            ],
+            argv,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -187,6 +186,78 @@ def _resolve_python(configured: str) -> str:
         # configured executable path while still making a relative path absolute.
         return str(path.absolute())
     return shutil.which(value) or ""
+
+
+def _resolve_worker_command(configured: str) -> list[str]:
+    """Resolve ``provenance.artifacts.cmf.python`` into an argv prefix.
+
+    The setting names either a single interpreter (the common case) or a whole
+    launcher *command* that ends in one — ``ssh <host> /opt/cmf/bin/python``,
+    ``docker exec cmf python``, ``srun ... python``.  The command form is how a
+    CMF/MLMD runtime that cannot exist on this host (no MLMD wheels for this
+    platform) is still reachable, without a wrapper script per deployment.
+
+    Args:
+        configured: The configured interpreter path or launcher command.
+
+    Returns:
+        The argv prefix that starts the worker, or ``[]`` when the configured
+        value is empty or its leading executable cannot be resolved.
+    """
+    value = configured.strip()
+    if not value:
+        return []
+    if not any(character.isspace() for character in value):
+        # A single token is a path or a PATH name. Resolve it directly: never
+        # hand it to shlex, whose POSIX mode would eat a Windows path's
+        # backslashes.
+        executable = _resolve_python(value)
+        return [executable] if executable else []
+    if Path(value).expanduser().is_file():
+        # A real local interpreter whose path merely contains spaces.
+        return [_resolve_python(value)]
+    tokens = shlex.split(value)
+    if not tokens:
+        return []
+    launcher = _resolve_python(tokens[0])
+    if not launcher:
+        return []
+    return [launcher, *tokens[1:]]
+
+
+def _worker_argv(config: CMFProviderConfig, launcher: list[str]) -> list[str]:
+    """Build the full worker argv from a resolved launcher and the store config.
+
+    Args:
+        config: The CMF provider configuration naming the script and stores.
+        launcher: The resolved argv prefix from :func:`_resolve_worker_command`.
+
+    Returns:
+        The complete argv for :class:`subprocess.Popen`.
+
+    Raises:
+        CMFBridgeError: The configured interpreter could not be resolved.
+    """
+    if not launcher:
+        raise CMFBridgeError(
+            "CMF requires an isolated compatible Python runtime; configure "
+            "provenance.artifacts.cmf.python or CLIO_CMF_PYTHON"
+        )
+    worker = config.worker_script.strip() or str(Path(__file__).with_name("cmf_worker.py"))
+    return [
+        *launcher,
+        worker,
+        "--metadata",
+        # ``as_posix`` and not ``str``: a POSIX store path configured for a
+        # remote worker would otherwise be rewritten with this host's
+        # separators.  Windows accepts forward slashes for its own paths, so
+        # the local case is unchanged.
+        config.metadata_path.as_posix(),
+        "--artifact-root",
+        config.artifact_root.as_posix(),
+        "--pipeline",
+        config.pipeline_name,
+    ]
 
 
 class CMFArtifactStore:
