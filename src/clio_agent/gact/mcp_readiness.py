@@ -43,7 +43,10 @@ def mcp_mount_retry_delays_s() -> tuple[float, ...]:
         for delay in conf.resolve(
             "tools.mcp.mount_retry_delays_s",
             env="CLIO_MCP_MOUNT_RETRY_DELAYS_S",
-            default=[0.5, 1.5],
+            # Spelled as strings: ``as_csv`` yields ``list[str]`` for both a YAML
+            # list and a comma-separated env value, and the float coercion is the
+            # comprehension above -- one conversion point, not two.
+            default=["0.5", "1.5"],
             cast=conf.as_csv,
         )
     )
