@@ -51,6 +51,12 @@ reason=...`` / ``spotter_wake_started`` / ``spotter_wake_enqueued`` /
 ``spotter_wake_coalesced reason=...``) through both the module logger and
 :mod:`clio_agent.runtime.trace`.
 
+Arming is GATED before it happens: :func:`sync_watcher_for_mode` refuses a
+transition into ``spotter-ai`` whose watcher could never execute (typed
+``spotter_watcher_arm_refused reason=...``, HTTP 422). That static
+arm-time check lives in its own owner module,
+:mod:`clio_agent.gact.spotter_arming`.
+
 The PROTECTED-PARENT half of the barrier — the clearance event this module
 signals, the typed fail-closed reasons, and the per-exchange progress wait a
 mutating tool call performs — lives in its own owner module,
@@ -421,11 +427,26 @@ def sync_watcher_for_mode(
     unrelated PATCH (mode unchanged, spotter-ai before and after — e.g. a
     title rename, a pin toggle) is a true no-op: neither branch runs.
 
+    An arming transition is GATED first (:mod:`clio_agent.gact.spotter_arming`,
+    which carries the full case): the watcher blueprint's declared MCP servers
+    must statically resolve. When they do not, the transition is REFUSED with a
+    typed 422 instead of arming a watcher that cannot execute — whose only
+    downstream signal would be the clearance barrier denying every mutating tool
+    call. A transition AWAY from spotter-ai is never gated: disarm must always
+    be possible, including on a deployment that broke after arming.
+
     Args:
         app: The GACT app.
         session: The just-created-or-patched session, already persisted.
         prior_approval_mode: The session's approval_mode BEFORE this call (empty
             for a fresh create, where there is no prior mode).
+
+    Raises:
+        fastapi.HTTPException: 422 when the session transitions INTO spotter-ai
+            but its watcher could not execute. The persisted transition is
+            rolled back first (a refused create deletes the just-minted row; a
+            refused patch restores the prior mode), so a refusal never leaves a
+            half-armed session behind.
     """
 
     entered_spotter_ai = (
@@ -437,6 +458,14 @@ def sync_watcher_for_mode(
         and session.approval_mode != SPOTTER_APPROVAL_MODE
     )
     if entered_spotter_ai:
+        from clio_agent.gact.spotter_arming import (  # noqa: PLC0415
+            refuse_watcher_arming,
+            validate_watcher_arming,
+        )
+
+        refusal = validate_watcher_arming(app, session_id=session.id)
+        if refusal is not None:
+            refuse_watcher_arming(app, session, refusal, prior_approval_mode=prior_approval_mode)
         ensure_spotter_watcher(app, session)
     elif left_spotter_ai:
         disarm_spotter_watcher(app, session)
