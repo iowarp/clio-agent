@@ -57,6 +57,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from clio_agent.gact.artifacts.provenance.cmf_encoding import encode_properties, posix_path
 from clio_agent.gact.artifacts.provenance.cmf_reasons import CMFRefusal
 
 #: Stamped on every entity so a CMF store can tell which CLIO mapping wrote it.
@@ -128,7 +129,12 @@ class ArtifactEntry:
     producer_tool: str = ""
 
     def to_document(self) -> dict[str, Any]:
-        """Return the artifact object as the merger reads it."""
+        """Return the artifact object as the merger reads it.
+
+        Values are encoded on the way out (see :mod:`cmf_encoding`): a literal
+        backslash anywhere in an entity's properties makes the cmf-server
+        discard it silently.
+        """
         return {
             "id": 0,
             "name": self.name,
@@ -137,8 +143,8 @@ class ArtifactEntry:
             "uri": self.uri,
             "create_time_since_epoch": self.created_ms,
             "last_update_time_since_epoch": self.created_ms,
-            "properties": dict(self.properties),
-            "custom_properties": dict(self.custom_properties),
+            "properties": encode_properties(self.properties),
+            "custom_properties": encode_properties(self.custom_properties),
         }
 
 
@@ -198,7 +204,9 @@ def artifact_entry(event: dict[str, Any], body: dict[str, Any]) -> ArtifactEntry
     version = int(body.get("version") or 1)
     uri = f"clio://artifact/{artifact_id}"
     sha256 = str(body.get("sha256") or digests.get("sha256") or "")
-    url = str(receipt.get("object_uri") or body.get("path") or "")
+    # ``url`` and ``clio_path`` are declared paths, so they carry the faithful
+    # POSIX representation rather than a percent-escaped Windows one.
+    url = posix_path(str(receipt.get("object_uri") or body.get("path") or ""))
     properties: dict[str, Any] = {
         "git_repo": "",
         "Commit": str(digests.get("md5") or ""),
@@ -224,7 +232,7 @@ def artifact_entry(event: dict[str, Any], body: dict[str, Any]) -> ArtifactEntry
         "clio_prior_version": int(body.get("prior_version") or 0),
         "clio_prior_sha256": str(body.get("prior_sha256") or ""),
         "clio_created_at": str(body.get("created_at") or event.get("occurred_at") or ""),
-        "clio_path": str(body.get("path") or ""),
+        "clio_path": posix_path(str(body.get("path") or "")),
         "clio_annotation": str(body.get("annotation") or ""),
         "clio_producer_json": json.dumps(producer, sort_keys=True),
         "clio_storage_receipt_json": json.dumps(receipt, sort_keys=True),
@@ -412,21 +420,26 @@ def build_push_document(
                 "type_id": 0,
                 "create_time_since_epoch": entry.created_ms,
                 "last_update_time_since_epoch": entry.created_ms,
-                "properties": {
-                    "Context_Type": stage_name,
-                    "Context_ID": _STAGE_ID,
-                    "Execution": entry.execution,
-                    "Execution_type_name": stage_name,
-                    "Pipeline_Type": pipeline_name,
-                    "Pipeline_id": _PIPELINE_ID,
-                    "Git_Repo": "",
-                    "Git_Start_Commit": "",
-                    "Git_End_Commit": "",
-                    # Mandatory: the federation layer indexes this key
-                    # unconditionally, and its absence is answered 422.
-                    "Execution_uuid": entry.call_id,
-                },
-                "custom_properties": dict(entry.custom_properties),
+                # Encoded: a literal backslash in ANY execution property or
+                # custom property makes the cmf-server discard this execution
+                # and every event on it, while still answering success.
+                "properties": encode_properties(
+                    {
+                        "Context_Type": stage_name,
+                        "Context_ID": _STAGE_ID,
+                        "Execution": entry.execution,
+                        "Execution_type_name": stage_name,
+                        "Pipeline_Type": pipeline_name,
+                        "Pipeline_id": _PIPELINE_ID,
+                        "Git_Repo": "",
+                        "Git_Start_Commit": "",
+                        "Git_End_Commit": "",
+                        # Mandatory: the federation layer indexes this key
+                        # unconditionally, and its absence is answered 422.
+                        "Execution_uuid": entry.call_id,
+                    }
+                ),
+                "custom_properties": encode_properties(entry.custom_properties),
                 "events": events,
             }
         )

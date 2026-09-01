@@ -38,6 +38,7 @@ import httpx
 # are stdlib only and cmflib is loaded lazily), but the worker must never import
 # CLIO -- it runs inside the isolated CMF interpreter. Sharing the traversal
 # keeps both lanes bounding the graph identically instead of drifting.
+from clio_agent.gact.artifacts.provenance.cmf_encoding import decode_property_value
 from clio_agent.gact.artifacts.provenance.cmf_worker import _bounded_component
 
 #: Row cap per listing call, mirroring the pack's bound.
@@ -289,7 +290,11 @@ def _items(raw: Any) -> list[dict[str, Any]]:
 
 
 def cmf_property(row: dict[str, Any], name: str) -> Any:
-    """Read one CMF row property, whatever container the server flattened it into.
+    """Read one CMF row property, decoded, whatever container it arrived in.
+
+    Values are stored percent-encoded so the cmf-server cannot discard the
+    entity (see :mod:`cmf_encoding`); every read path decodes, so a caller sees
+    the original bytes and never a ``%5C``.
 
     The dashboard API has shipped several row shapes (top-level keys, a nested
     ``*_properties`` dict, a list of ``{name, value}`` pairs, and prefixed flat
@@ -298,18 +303,18 @@ def cmf_property(row: dict[str, Any], name: str) -> Any:
     """
     direct = row.get(name)
     if direct is not None:
-        return direct
+        return decode_property_value(direct)
     for container_name in ("artifact_properties", "execution_properties", "properties"):
         container = row.get(container_name)
         if isinstance(container, dict) and name in container:
-            return container[name]
+            return decode_property_value(container[name])
         if isinstance(container, list):
             for item in container:
                 if isinstance(item, dict) and (item.get("name") or item.get("key")) == name:
-                    return item.get("value")
+                    return decode_property_value(item.get("value"))
     for prefix in ("custom_properties_", "properties_"):
         if f"{prefix}{name}" in row:
-            return row[f"{prefix}{name}"]
+            return decode_property_value(row[f"{prefix}{name}"])
     return None
 
 
