@@ -14,7 +14,7 @@ import subprocess
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
@@ -116,9 +116,12 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             "added_at": now,
             "updated_at": now,
         }
-        scope = str(req.get("scope") or "global").strip()
-        if scope not in {"global", "workspace"}:
+        scope_raw = str(req.get("scope") or "global").strip()
+        if scope_raw not in {"global", "workspace"}:
             raise HTTPException(status_code=422, detail="scope must be global or workspace")
+        scope: Literal["global", "workspace"] = (
+            "workspace" if scope_raw == "workspace" else "global"
+        )
         workspace_id = str(req.get("workspace_id") or "")
         if scope == "workspace":
             row["workspace_id"] = workspace_id
@@ -137,7 +140,9 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def refresh_agent_blueprint_source(source_id: str) -> dict[str, Any]:
         for row in _load_agent_blueprint_sources():
             if row.get("id") == source_id:
-                scope = str(row.get("install_scope") or "global")
+                scope: Literal["global", "workspace"] = (
+                    "workspace" if str(row.get("install_scope") or "") == "workspace" else "global"
+                )
                 cwd = _source_install_cwd(
                     app, scope=scope, workspace_id=str(row.get("workspace_id") or "")
                 )
