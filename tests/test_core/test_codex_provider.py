@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from clio_agent.providers import codex_litellm, codex_stream
+from clio_agent.providers import codex_credential_home, codex_litellm, codex_stream
 from clio_agent.providers.claude_code_cancel import (
     _reset_for_tests as reset_sdk_cancel_registry,
 )
@@ -93,7 +93,7 @@ def test_sdk_home_contains_auth_only(
     (personal_home / "plugins").mkdir()
     monkeypatch.setenv("CODEX_HOME", str(personal_home))
 
-    isolated = codex_stream.IsolatedCodexHome()
+    isolated = codex_credential_home.IsolatedCodexHome()
     environment = isolated.start()
     isolated_path = Path(environment["CODEX_HOME"])
     try:
@@ -118,7 +118,7 @@ def test_sdk_home_reconciles_uncontended_auth_rotation(
     source_auth.write_text('{"token":"old"}', encoding="utf-8")
     monkeypatch.setenv("CODEX_HOME", str(personal_home))
 
-    isolated = codex_stream.IsolatedCodexHome()
+    isolated = codex_credential_home.IsolatedCodexHome()
     isolated_path = Path(isolated.start()["CODEX_HOME"])
     (isolated_path / "auth.json").write_text('{"token":"rotated"}', encoding="utf-8")
     isolated.close()
@@ -148,7 +148,7 @@ def test_sdk_home_reaps_orphan_and_caps_live_copies(
     orphan.mkdir()
     (orphan / ".clio-owner-pid").write_text("99999999", encoding="ascii")
     with caplog.at_level(logging.INFO):
-        assert codex_stream._reap_orphaned_codex_homes(tmp_path) == [orphan]
+        assert codex_credential_home._reap_orphaned_codex_homes(tmp_path) == [orphan]
     assert not orphan.exists()
     assert "reason=credential_homes_reaped" in caplog.text
 
@@ -156,12 +156,12 @@ def test_sdk_home_reaps_orphan_and_caps_live_copies(
     personal_home.mkdir()
     (personal_home / "auth.json").write_text("{}", encoding="utf-8")
     monkeypatch.setenv("CODEX_HOME", str(personal_home))
-    monkeypatch.setattr(codex_stream, "MAX_LIVE_CODEX_HOMES", 1)
-    first = codex_stream.IsolatedCodexHome()
+    monkeypatch.setattr(codex_credential_home, "MAX_LIVE_CODEX_HOMES", 1)
+    first = codex_credential_home.IsolatedCodexHome()
     first.start()
     try:
         with pytest.raises(codex_stream.CodexSDKError, match="credential_home_capacity"):
-            codex_stream.IsolatedCodexHome().start()
+            codex_credential_home.IsolatedCodexHome().start()
     finally:
         first.close()
 
@@ -419,3 +419,203 @@ def test_model_response_preserves_reasoning_token_count() -> None:
         },
     )
     assert response.usage.completion_tokens_details.reasoning_tokens == 21
+
+
+# --------------------------------------------------------------------------- #
+# Credential-home + shared-client lifetime (adversarial review, PR #1255)
+# --------------------------------------------------------------------------- #
+
+
+class _StalledSDKClient:
+    """Stands in for ``AsyncCodex`` whose startup handshake never completes."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def __aenter__(self) -> "_StalledSDKClient":
+        await asyncio.Event().wait()
+        return self
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_startup_cancellation_does_not_leak_a_credential_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancel delivered inside the SDK handshake must still remove the private home.
+
+    ``CancelledError`` is a ``BaseException``, so an ``except Exception`` cleanup can
+    never see it. A leaked home strands a 0600 copy of the user's real credentials and
+    permanently consumes one of the four live-home slots.
+    """
+    import tempfile
+
+    personal = tmp_path / "personal"
+    personal.mkdir()
+    (personal / "auth.json").write_text('{"token":"secret"}', encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(personal))
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(codex_stream, "CodexConfig", lambda **kwargs: kwargs)
+    monkeypatch.setattr(codex_stream, "AsyncCodex", lambda _config: _StalledSDKClient())
+
+    sdk = codex_stream.CodexSDKClient()
+    task = asyncio.ensure_future(sdk._ensure_client())
+    for _ in range(200):
+        await asyncio.sleep(0.01)
+        if list(tmp_path.glob("clio-codex-sdk-*")):
+            break
+    assert list(tmp_path.glob("clio-codex-sdk-*")), "the private home was never created"
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert list(tmp_path.glob("clio-codex-sdk-*")) == [], "cancelled startup leaked its home"
+    assert not codex_credential_home._LIVE_CODEX_HOMES, "the leaked home still holds a cap slot"
+
+
+def test_credential_home_is_never_glob_visible_without_its_owner_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second CLIO process's reaper must never see a home lacking its owner pid.
+
+    ``_CODEX_HOME_LOCK`` is process-local, so the only cross-process guard is the
+    order the directory becomes visible to the reaper's glob in.
+    """
+    import os
+    import tempfile
+
+    personal = tmp_path / "personal"
+    personal.mkdir()
+    (personal / "auth.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(personal))
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+    real_mkdtemp = tempfile.mkdtemp
+    reaped: list[list[Path]] = []
+
+    def racing_mkdtemp(*args: Any, **kwargs: Any) -> str:
+        created = real_mkdtemp(*args, **kwargs)
+        # Stand in for a concurrent CLIO process sweeping mid-``start()``.
+        reaped.append(codex_credential_home._reap_orphaned_codex_homes(tmp_path))
+        return created
+
+    monkeypatch.setattr(tempfile, "mkdtemp", racing_mkdtemp)
+    isolated = codex_credential_home.IsolatedCodexHome()
+    home = Path(isolated.start()["CODEX_HOME"])
+    try:
+        assert reaped == [[]], f"a concurrent reaper deleted a live home: {reaped!r}"
+        assert (home / ".clio-owner-pid").read_text(encoding="ascii") == str(os.getpid())
+        assert (home / "auth.json").is_file()
+    finally:
+        isolated.close()
+
+
+class _FakeTurn:
+    """One SDK turn whose event stream the test drives step by step."""
+
+    def __init__(self, script: list[Any]) -> None:
+        self._script = script
+        self.interrupted = False
+
+    async def interrupt(self) -> None:
+        self.interrupted = True
+
+    async def _events(self) -> Any:
+        for step in self._script:
+            if isinstance(step, BaseException):
+                raise step
+            await step()
+            yield _event("item/agentMessage/delta", delta="x")
+
+    def stream(self) -> Any:
+        return self._events()
+
+
+class _FakeThread:
+    def __init__(self, client: "_FakeSDKClient") -> None:
+        self._client = client
+
+    async def turn(self, prompt: str, **_kwargs: Any) -> _FakeTurn:
+        turn = _FakeTurn(list(self._client.scripts[prompt]))
+        self._client.turns.append(turn)
+        return turn
+
+
+class _FakeSDKClient:
+    """Records whether the process-wide singleton was closed, and when."""
+
+    def __init__(self) -> None:
+        self.closed = False
+        self.turns: list[_FakeTurn] = []
+        self.scripts: dict[str, list[Any]] = {}
+
+    async def thread_start(self, **_kwargs: Any) -> _FakeThread:
+        return _FakeThread(self)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_failing_turn_does_not_close_the_client_under_a_live_sibling() -> None:
+    """One turn's failure must not tear the shared SDK client out from under another.
+
+    ``_SDK_CLIENT`` is a process-wide singleton, so ``spawn_agents_parallel`` runs
+    several pumps against one ``AsyncCodex``. A teardown fired by a failing turn kills
+    every healthy sibling with a misattributed transport error.
+    """
+    sdk = codex_stream.CodexSDKClient()
+    fake = _FakeSDKClient()
+    sdk._client = fake
+
+    async def _ensure() -> Any:
+        return fake
+
+    sdk._ensure_client = _ensure  # type: ignore[method-assign]
+
+    sibling_started = asyncio.Event()
+    sibling_may_finish = asyncio.Event()
+    observed: dict[str, bool] = {}
+
+    async def _sibling_step_one() -> None:
+        sibling_started.set()
+        await sibling_may_finish.wait()
+
+    async def _sibling_step_two() -> None:
+        observed["closed_mid_stream"] = fake.closed
+
+    async def _failing_step() -> None:
+        await sibling_started.wait()
+
+    async def _drain(prompt: str, script: list[Any]) -> list[Any]:
+        fake.scripts[prompt] = script
+        rows: list[Any] = []
+        async for row in sdk.stream(
+            prompt=prompt, model="gpt-5.6-luna", cwd=None, effort="medium", timeout=5.0
+        ):
+            rows.append(row)
+        return rows
+
+    async def _sibling() -> list[Any]:
+        return await _drain("sibling", [_sibling_step_one, _sibling_step_two])
+
+    async def _failing() -> None:
+        with pytest.raises(codex_stream.CodexSDKError):
+            await _drain("failing", [_failing_step, codex_stream.CodexSDKError("turn failed")])
+        # The failing turn has settled; release the sibling's second event.
+        sibling_may_finish.set()
+
+    try:
+        sibling_rows, _ = await asyncio.gather(_sibling(), _failing())
+        assert len(sibling_rows) == 2, "the healthy sibling lost events"
+        assert observed["closed_mid_stream"] is False, (
+            "a failing turn closed the shared SDK client under a live sibling"
+        )
+        assert fake.closed is True, "the deferred teardown never ran after the last holder left"
+    finally:
+        sdk.close_blocking()

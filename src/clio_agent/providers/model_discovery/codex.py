@@ -28,9 +28,11 @@ def discover_codex(*, timeout: float = 20.0) -> ProviderDiscoveryResult:
         from openai_codex import AsyncCodex as SDKAsyncCodex  # noqa: PLC0415
         from openai_codex import CodexConfig, CodexError  # noqa: PLC0415
 
+        from clio_agent.providers.codex_credential_home import (  # noqa: PLC0415
+            IsolatedCodexHome,
+        )
         from clio_agent.providers.codex_stream import (  # noqa: PLC0415
             BARE_LM_CONFIG_OVERRIDES,
-            IsolatedCodexHome,
         )
     except (ImportError, OSError) as exc:
         return ProviderDiscoveryResult(

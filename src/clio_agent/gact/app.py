@@ -911,7 +911,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Reap proven CLIO orphans before the MCP-cache peer-liveness check; a
     # surviving orphan otherwise defers pruning indefinitely. Keep the order
     # real while running blocking cleanup off-loop with typed logging.
-    from clio_agent.providers.codex_stream import (  # noqa: PLC0415
+    from clio_agent.providers.codex_credential_home import (  # noqa: PLC0415
         _reap_orphaned_codex_homes,
     )
     from clio_agent.runtime.process_census import boot_reap_off_loop  # noqa: PLC0415

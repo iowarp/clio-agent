@@ -18,19 +18,13 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import contextlib
-import hashlib
 import logging
-import os
 import queue
 import re
-import shutil
 import tempfile
 import threading
-import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
-from pathlib import Path
 from typing import Any
 
 from openai_codex import ApprovalMode, AsyncCodex, CodexConfig, CodexError, Sandbox
@@ -47,12 +41,12 @@ from clio_agent.providers.codex_audit import (
     emit_normalized,
     emit_raw_event,
 )
+from clio_agent.providers.codex_credential_home import IsolatedCodexHome
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_SDK_PROGRESS_TIMEOUT_S = 120.0
 DEFAULT_TURN_TIMEOUT_S = 180.0
-MAX_LIVE_CODEX_HOMES = 4
 
 
 async def _cleanup_sdk_action(action: str, awaitable: Any) -> None:
@@ -119,9 +113,6 @@ _MODEL_ACTIVITY_METHODS = frozenset(
 _STREAM_END = object()
 _CALL_COUNTER_LOCK = threading.Lock()
 _CALL_COUNTER = 0
-_CODEX_HOME_LOCK = threading.Lock()
-_LIVE_CODEX_HOMES: set[Path] = set()
-_CODEX_HOME_OWNER = ".clio-owner-pid"
 _CODEX_MODEL_REJECTION_PATTERN = re.compile(
     r"is not supported when using codex with (a|an)\b[^.]{0,40}account",
     re.IGNORECASE,
@@ -130,53 +121,6 @@ _CODEX_MODEL_REJECTION_PATTERN = re.compile(
 
 class CodexSDKError(RuntimeError):
     """Typed failure raised by the sole Codex SDK provider transport."""
-
-
-def _process_is_alive(pid: int) -> bool:
-    """Return whether ``pid`` is alive without terminating or signalling it."""
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
-
-
-def _reap_orphaned_codex_homes(temp_root: Path | None = None) -> list[Path]:
-    """Remove private SDK homes whose owning process no longer exists."""
-    root = temp_root or Path(tempfile.gettempdir())
-    reaped: list[Path] = []
-    for home in root.glob("clio-codex-sdk-*"):
-        if home in _LIVE_CODEX_HOMES or not home.is_dir():
-            continue
-        try:
-            pid = int((home / _CODEX_HOME_OWNER).read_text(encoding="ascii").strip())
-        except (OSError, ValueError):
-            pid = -1
-        if _process_is_alive(pid):
-            continue
-        try:
-            shutil.rmtree(home)
-            reaped.append(home)
-        except OSError as exc:
-            logger.warning(
-                "Codex SDK credential reaper could not remove home "
-                "reason=credential_home_reap_failed path=%s error=%r",
-                home,
-                exc,
-            )
-    if reaped:
-        logger.info(
-            "Codex SDK credential reaper removed orphaned homes "
-            "reason=credential_homes_reaped count=%d",
-            len(reaped),
-        )
-    return reaped
 
 
 def _sdk_progress_timeout_s(requested_timeout: float) -> float:
@@ -190,122 +134,6 @@ def _sdk_progress_timeout_s(requested_timeout: float) -> float:
         cast=conf.as_float,
     )
     return max(0.01, min(float(requested_timeout), float(configured)))
-
-
-class IsolatedCodexHome:
-    """Give the SDK authentication without personal Codex capabilities.
-
-    Empty config overrides do not erase configuration contributed by personal
-    plugins. The SDK runtime therefore receives a private ``CODEX_HOME`` seeded
-    with only ``auth.json``. If the runtime rotates credentials, the refreshed
-    file is copied back only when the source has not changed concurrently.
-    """
-
-    def __init__(self) -> None:
-        configured_home = os.environ.get("CODEX_HOME", "").strip()
-        source_home = Path(configured_home) if configured_home else Path.home() / ".codex"
-        self._source_auth = source_home / "auth.json"
-        self._temporary_home: Path | None = None
-        self._seed_digest = ""
-
-    def start(self) -> dict[str, str]:
-        """Create the private home and return environment overrides for the SDK."""
-        if self._temporary_home is not None:
-            return self._environment(self._temporary_home)
-
-        with _CODEX_HOME_LOCK:
-            _reap_orphaned_codex_homes()
-            if len(_LIVE_CODEX_HOMES) >= MAX_LIVE_CODEX_HOMES:
-                raise CodexSDKError(
-                    "Codex SDK private credential-home capacity reached "
-                    "reason=credential_home_capacity"
-                )
-            home = Path(tempfile.mkdtemp(prefix="clio-codex-sdk-"))
-            _LIVE_CODEX_HOMES.add(home)
-        auth_target = home / "auth.json"
-        try:
-            (home / _CODEX_HOME_OWNER).write_text(str(os.getpid()), encoding="ascii")
-            if self._source_auth.is_file():
-                auth_bytes = self._source_auth.read_bytes()
-                auth_target.write_bytes(auth_bytes)
-                with contextlib.suppress(OSError):
-                    auth_target.chmod(0o600)
-                self._seed_digest = hashlib.sha256(auth_bytes).hexdigest()
-            (home / "sqlite").mkdir(exist_ok=True)
-        except Exception:
-            shutil.rmtree(home, ignore_errors=True)
-            with _CODEX_HOME_LOCK:
-                _LIVE_CODEX_HOMES.discard(home)
-            raise
-        self._temporary_home = home
-        return self._environment(home)
-
-    @staticmethod
-    def _environment(home: Path) -> dict[str, str]:
-        return {
-            "CODEX_HOME": str(home),
-            "CODEX_SQLITE_HOME": str(home / "sqlite"),
-        }
-
-    def close(self) -> None:
-        """Persist an uncontended auth rotation, then remove the private home."""
-        home, self._temporary_home = self._temporary_home, None
-        if home is None:
-            return
-        try:
-            isolated_auth = home / "auth.json"
-            if isolated_auth.is_file() and self._seed_digest:
-                updated = isolated_auth.read_bytes()
-                updated_digest = hashlib.sha256(updated).hexdigest()
-                if updated_digest != self._seed_digest:
-                    current = self._source_auth.read_bytes()
-                    current_digest = hashlib.sha256(current).hexdigest()
-                    if current_digest == self._seed_digest:
-                        staged = self._source_auth.with_name(
-                            f".{self._source_auth.name}.clio-{uuid.uuid4().hex}.tmp"
-                        )
-                        try:
-                            staged.write_bytes(updated)
-                            with contextlib.suppress(OSError):
-                                staged.chmod(0o600)
-                            os.replace(staged, self._source_auth)
-                        finally:
-                            with contextlib.suppress(OSError):
-                                staged.unlink()
-                    else:
-                        logger.warning(
-                            "Codex SDK refreshed auth was not copied back because the "
-                            "source changed concurrently reason=auth_source_changed"
-                        )
-        except Exception:  # noqa: BLE001 - teardown reports but still removes secrets
-            logger.warning(
-                "Codex SDK isolated auth reconciliation failed reason=auth_reconcile_failed",
-                exc_info=True,
-            )
-        finally:
-            self._remove_private_home(home)
-            with _CODEX_HOME_LOCK:
-                _LIVE_CODEX_HOMES.discard(home)
-
-    @staticmethod
-    def _remove_private_home(home: Path) -> None:
-        """Remove the SDK home after Windows releases its SQLite handles."""
-        last_error: OSError | None = None
-        for _attempt in range(20):
-            try:
-                shutil.rmtree(home)
-                return
-            except FileNotFoundError:
-                return
-            except OSError as exc:
-                last_error = exc
-                time.sleep(0.1)
-        logger.error(
-            "Codex SDK private home cleanup failed reason=private_home_cleanup_failed "
-            "path=%s error=%r",
-            home,
-            last_error,
-        )
 
 
 def _next_call_index() -> int:
@@ -430,6 +258,13 @@ class CodexSDKClient:
         self._client: AsyncCodex | None = None
         self._client_lock: asyncio.Lock | None = None
         self._sdk_home: IsolatedCodexHome | None = None
+        # The SDK client is a process-wide singleton shared by every concurrent codex
+        # turn. ``_generation`` identifies which client a pump is holding, ``_client_users``
+        # counts the pumps still holding it, and ``_reset_pending`` records a teardown
+        # requested by a failed turn but not yet safe to perform.
+        self._generation = 0
+        self._client_users = 0
+        self._reset_pending = False
 
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
         with self._guard:
@@ -447,6 +282,7 @@ class CodexSDKClient:
         async with self._client_lock:
             if self._client is None:
                 sdk_home = IsolatedCodexHome()
+                started = False
                 try:
                     client = AsyncCodex(
                         CodexConfig(
@@ -458,23 +294,74 @@ class CodexSDKClient:
                         )
                     )
                     await client.__aenter__()
-                except Exception:
-                    sdk_home.close()
-                    raise
+                    started = True
+                finally:
+                    # ``__aenter__`` spawns the runtime subprocess and runs the JSON-RPC
+                    # handshake, so a Stop or the startup progress deadline lands here as
+                    # ``CancelledError`` -- a ``BaseException`` an ``except Exception``
+                    # cleanup cannot see. The leaked home would strand a 0600 copy of the
+                    # user's credentials and permanently consume one live-home slot.
+                    if not started:
+                        sdk_home.close()
                 self._client = client
                 self._sdk_home = sdk_home
+                self._generation += 1
+                self._client_users = 0
+                self._reset_pending = False
         assert self._client is not None
         return self._client
 
     async def _reset_client(self) -> None:
+        """Close the shared SDK client unconditionally (process teardown only)."""
+        if self._client_lock is None:
+            self._client_lock = asyncio.Lock()
+        async with self._client_lock:
+            await self._close_locked()
+
+    async def _close_locked(self) -> None:
+        """Close and forget the current client. The caller must hold ``_client_lock``."""
         client, self._client = self._client, None
         sdk_home, self._sdk_home = self._sdk_home, None
+        self._client_users = 0
+        self._reset_pending = False
+        self._generation += 1
         try:
             if client is not None:
                 await _cleanup_sdk_action("client_close", client.close())
         finally:
             if sdk_home is not None:
                 sdk_home.close()
+
+    async def _release_client(self, generation: int, *, reset: bool) -> None:
+        """Drop one turn's hold on the shared client, tearing it down only when safe.
+
+        ``client.close()`` terminates the single ``codex`` runtime subprocess, which
+        fails every other in-flight turn's stream with a transport error attributed to
+        its own turn. A teardown requested by a failing turn is therefore recorded and
+        executed once the LAST holder of that client generation has left.
+
+        Args:
+            generation: The client generation the releasing pump obtained.
+            reset: Whether this pump's turn ended in a state that should discard the
+                shared client.
+        """
+
+        if self._client_lock is None:
+            self._client_lock = asyncio.Lock()
+        async with self._client_lock:
+            if generation != self._generation:
+                return
+            self._client_users = max(0, self._client_users - 1)
+            if reset:
+                self._reset_pending = True
+            if self._reset_pending and self._client_users == 0:
+                await self._close_locked()
+            elif reset:
+                logger.info(
+                    "Codex SDK client teardown deferred while other turns hold it "
+                    "reason=codex_sdk_reset_deferred_in_flight holders=%d",
+                    self._client_users,
+                )
 
     async def stream(
         self,
@@ -495,6 +382,7 @@ class CodexSDKClient:
             stream = None
             clean = False
             cancelled = False
+            generation = -1
             try:
                 progress_timeout = _sdk_progress_timeout_s(timeout)
 
@@ -514,6 +402,11 @@ class CodexSDKClient:
                         ) from exc
 
                 client = await _await_progress(self._ensure_client(), phase="client startup")
+                # Claim a hold on this client generation. Every pump runs on the single
+                # owner loop, so recording the hold in the same synchronous block as the
+                # await's return is atomic with respect to the other pumps.
+                generation = self._generation
+                self._client_users += 1
                 thread = await _await_progress(
                     client.thread_start(
                         approval_mode=ApprovalMode.deny_all,
@@ -559,8 +452,11 @@ class CodexSDKClient:
                     close_stream = getattr(stream, "aclose", None)
                     if callable(close_stream):
                         await _cleanup_sdk_action("stream_close", close_stream())
-                if not clean and not cancelled:
-                    await self._reset_client()
+                if generation >= 0:
+                    # Only a pump that actually obtained the client may ask for its
+                    # teardown; a failure BEFORE the handshake completed would otherwise
+                    # close a client that belongs entirely to other turns.
+                    await self._release_client(generation, reset=not clean and not cancelled)
                 chunks.put((_STREAM_END, None))
 
         future = asyncio.run_coroutine_threadsafe(_pump(), owner_loop)
@@ -780,7 +676,6 @@ __all__ = [
     "CodexSDKClient",
     "CodexSDKError",
     "DEFAULT_SDK_PROGRESS_TIMEOUT_S",
-    "IsolatedCodexHome",
     "_SDK_CLIENT",
     "_next_call_index",
     "astream_sdk",
