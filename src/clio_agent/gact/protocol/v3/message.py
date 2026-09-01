@@ -392,7 +392,11 @@ def transcript_entities(
     tasks: dict[str, dict[str, Any]] = {}
     subagents: dict[str, dict[str, Any]] = {}
     artifacts: dict[str, dict[str, Any]] = {}
-    transcript_parts: list[Any] = []
+    # (part recorded_at or its message created_at, arrival index, part). Callers
+    # hand this function rows in their own order -- the v3 transcript route pages
+    # newest-first -- but an A2UI fold is only correct in transcript order, so
+    # the parts are re-sorted chronologically before they are folded.
+    transcript_parts: list[tuple[str, int, Any]] = []
 
     for message in messages:
         projected = message_to_v3(message)
@@ -404,7 +408,11 @@ def transcript_entities(
             subagent_links=subagent_links or {},
         )
         raw_parts = _list(wire.get("parts"))
-        transcript_parts.extend(raw_parts)
+        created_at = str(projected.get("created_at") or wire.get("created_at") or "")
+        for raw_part in raw_parts:
+            metadata = raw_part.get("metadata") if isinstance(raw_part, Mapping) else None
+            recorded_at = str((metadata or {}).get("recorded_at") or created_at)
+            transcript_parts.append((recorded_at, len(transcript_parts), raw_part))
         for part in raw_parts:
             if not isinstance(part, Mapping):
                 continue
@@ -470,7 +478,10 @@ def transcript_entities(
 
     projected_messages.sort(key=lambda message: str(message.get("created_at") or ""))
 
-    surface_records, a2ui_degradations = project_a2ui_parts(transcript_parts, session_id)
+    transcript_parts.sort(key=lambda row: (row[0], row[1]))
+    surface_records, a2ui_degradations = project_a2ui_parts(
+        [row[2] for row in transcript_parts], session_id
+    )
     surfaces = list(surface_records.values())
     surfaces.sort(key=lambda row: row.created_at)
 

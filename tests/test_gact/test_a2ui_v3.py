@@ -1113,3 +1113,42 @@ def test_frozen_transcript_returns_the_typed_tool_reason(
         "surface_id": "frozen-surface",
     }
     assert app.state.a2ui_store.get(sid, "frozen-surface") is None
+
+
+def _update_root_text(surface_id: str, text: str) -> dict[str, object]:
+    return {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": surface_id,
+            "components": [{"id": "root", "component": "Text", "text": text}],
+        },
+    }
+
+
+def test_v3_transcript_route_folds_a2ui_parts_chronologically(tmp_path: Path) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    created = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={
+            "messages": [
+                _create_message("paged-surface"),
+                _update_root_text("paged-surface", "First"),
+            ]
+        },
+    )
+    updated = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_update_root_text("paged-surface", "Second")]},
+    )
+    assert created.status_code == 200
+    assert updated.status_code == 200
+
+    snapshot = client.get(f"/v1/sessions/{sid}/messages", headers=HEADERS).json()
+
+    assert snapshot["a2ui_degradations"] == []
+    assert len(snapshot["surfaces"]) == 1
+    surface = snapshot["surfaces"][0]
+    assert surface["revision"] == 3
+    assert surface["messages"][-1]["updateComponents"]["components"][0]["text"] == "Second"
