@@ -334,6 +334,58 @@ def test_result_to_text_bounds_only_the_model_lane_with_typed_head_and_tail() ->
     assert "earthscope_stations_clean.csv" in bounded["tail"]
 
 
+def test_result_to_text_bounds_a_quote_dense_tabular_result() -> None:
+    """The head/tail slices are re-escaped by json.dumps AFTER being measured.
+
+    A row-dict payload (the station/geocode shape this bound was built for)
+    carries ~18% quote density, so 11,360 sliced chars gained ~2,000 escape
+    characters and the "bounded" result overran the declared cap. The low-quote
+    fixture above lands just under the threshold and cannot see it.
+    """
+
+    from clio_agent.tools.mcp_executor import MAX_MODEL_TOOL_RESULT_CHARS, _result_to_text
+
+    payload = {
+        "summary": {"rows": 4000, "status": "success"},
+        "rows": [
+            {"net": "IU", "sta": f"ANM{index:04d}", "lat": 34.9459, "lon": -106.4572}
+            for index in range(4000)
+        ],
+        "completion": {"output_file": "earthscope_stations_clean.csv"},
+    }
+
+    text = _result_to_text(payload)
+    bounded = json.loads(text)
+
+    assert len(text) <= MAX_MODEL_TOOL_RESULT_CHARS
+    # The stamped head/tail counts describe the slices actually returned.
+    assert bounded["_clio"]["head_chars"] == len(bounded["head"])
+    assert bounded["_clio"]["tail_chars"] == len(bounded["tail"])
+    assert bounded["_clio"]["original_chars"] == len(json.dumps(payload))
+
+
+def test_result_to_text_bounds_an_escape_dense_result() -> None:
+    """Control characters expand 6:1 (\\u0007), the worst escaping case."""
+
+    from clio_agent.tools.mcp_executor import MAX_MODEL_TOOL_RESULT_CHARS, _result_to_text
+
+    text = _result_to_text("\x07" * 40_000)
+
+    assert len(text) <= MAX_MODEL_TOOL_RESULT_CHARS
+    assert len(json.loads(text)["head"]) > 0
+
+
+def test_result_to_text_never_returns_more_than_it_was_given() -> None:
+    """Just over the cap at high escape density, truncation used to INFLATE."""
+
+    from clio_agent.tools.mcp_executor import MAX_MODEL_TOOL_RESULT_CHARS, _result_to_text
+
+    source = '"' * (MAX_MODEL_TOOL_RESULT_CHARS + 1)
+    text = _result_to_text(source)
+
+    assert len(text) <= MAX_MODEL_TOOL_RESULT_CHARS
+
+
 def test_result_to_text_leaves_small_string_results_verbatim() -> None:
     from clio_agent.tools.mcp_executor import _result_to_text
 
