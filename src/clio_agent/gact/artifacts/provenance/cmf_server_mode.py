@@ -36,6 +36,7 @@ import logging
 import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 import httpx
 
@@ -48,6 +49,8 @@ from clio_agent.gact.artifacts.provenance.cmf_document import (
     build_push_document,
     execution_entry,
 )
+from clio_agent.gact.artifacts.provenance.cmf_encoding import has_hostile_value
+from clio_agent.gact.artifacts.provenance.cmf_lineage_rest import cmf_property
 from clio_agent.gact.artifacts.provenance.cmf_reasons import CMFRefusal
 from clio_agent.gact.provenance.protocol import ProviderReceipt
 
@@ -69,6 +72,10 @@ _ANNOTATION_EVENTS = frozenset({"artifact.alias.moved", "artifact.enriched", "ar
 #: Statuses a 200 can carry (cmf_federation.update_mlmd).
 _STATUS_WRITTEN = "success"
 _STATUS_EXISTS = "exists"
+
+#: Floor for the confirmation read's page size, so a one-execution batch still
+#: tolerates a few concurrent writers landing between the push and the read.
+_CONFIRM_MIN_ROWS = 20
 
 
 def verify_push_document(document: dict[str, Any]) -> None:
@@ -106,6 +113,18 @@ def _verify_execution(execution: dict[str, Any]) -> None:
         raise CMFRefusal(
             "cmf_server_version_incompatible",
             "execution carries no Execution_uuid; the server answers 422 version_update",
+            execution=str(execution.get("name") or ""),
+        )
+    # A literal backslash in ANY execution property makes the server discard the
+    # execution and all its events while still answering success. The encoding
+    # in cmf_encoding removes them; this asserts the encoding actually ran.
+    if has_hostile_value(properties) or has_hostile_value(execution.get("custom_properties") or {}):
+        raise CMFRefusal(
+            "cmf_server_discarded_entities",
+            (
+                "execution carries a raw backslash, which the cmf-server discards "
+                "silently along with every event on it; the value encoding did not run"
+            ),
             execution=str(execution.get("name") or ""),
         )
     for event in execution.get("events") or []:
@@ -249,6 +268,7 @@ class CMFServerPublisher:
         )
         verify_push_document(document)
         status, status_code = self._post(document, evicted=evicted)
+        self._confirm_held(document, evicted=evicted)
         with self._lock:
             for artifact_id in artifacts:
                 self._artifacts.pop(artifact_id, None)
@@ -262,6 +282,88 @@ class CMFServerPublisher:
             "executions": len(document["Pipeline"][0]["stages"][0]["executions"]),
         }
         return dict(self.last_publication)
+
+    def _confirm_held(self, document: dict[str, Any], *, evicted: int) -> None:
+        """Verify the server actually HOLDS what it just answered success to.
+
+        A 200 is not evidence. The server's ingest swallows per-entity failures
+        (``cmf_merger.handle_execution`` wraps the write in
+        ``except Exception: logger.error(...)``), so a push can report success
+        having stored nothing -- which is exactly how a live run recorded 13
+        executions, zero artifacts and zero events against a green counter.
+
+        One bounded read of the stage's most recent executions, checking the
+        names just pushed are present, is what makes ``accepted`` structural
+        rather than aspirational.
+
+        Args:
+            document: The document that was just pushed.
+            evicted: Records dropped from the pending bound, for the refusal.
+
+        Raises:
+            CMFRefusal: ``cmf_server_discarded_entities`` -- entities are
+                missing; ``cmf_server_unreachable`` -- the read-back failed.
+        """
+        # Match on Execution_uuid, not on the execution name: the dashboard's
+        # execution rows carry only ``execution_id`` plus an
+        # ``execution_properties`` list of {name, value} pairs -- there is no
+        # ``name`` key to match (verified against a live cmf-server).
+        expected = {
+            str((execution.get("properties") or {}).get("Execution_uuid") or "")
+            for pipeline in document.get("Pipeline") or []
+            for stage in pipeline.get("stages") or []
+            for execution in stage.get("executions") or []
+        }
+        expected.discard("")
+        if not expected:
+            return
+        stage_name = f"{self.config.pipeline_name}/artifacts"
+        try:
+            response = self._http().get(
+                f"{self.config.server_url.strip().rstrip('/')}"
+                f"/api/executions-by-stage/{quote(self.config.pipeline_name, safe='')}",
+                params={
+                    "stage_name": stage_name,
+                    "active_page": 1,
+                    # Bounded: the just-pushed rows are the most recent, so one
+                    # page sized to the batch (plus headroom for concurrent
+                    # writers) is enough to see them.
+                    "record_per_page": max(len(expected) * 2, _CONFIRM_MIN_ROWS),
+                    "sort_order": "DESC",
+                    "filter_value": "",
+                },
+                timeout=self.config.publish_timeout_s,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise CMFRefusal(
+                "cmf_server_unreachable",
+                f"push confirmation read failed: {type(exc).__name__}: {exc}",
+                server_url=self.config.server_url,
+                evicted_records=evicted,
+            ) from exc
+        rows = payload.get("items") if isinstance(payload, dict) else payload
+        held: set[str] = set()
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            # A merged execution's uuid property is a comma-joined union.
+            uuids = str(cmf_property(row, "Execution_uuid") or "")
+            held.update(part for part in uuids.split(",") if part)
+        missing = sorted(expected - held)
+        if missing:
+            raise CMFRefusal(
+                "cmf_server_discarded_entities",
+                (
+                    f"the CMF server answered success but does not hold "
+                    f"{len(missing)} of {len(expected)} pushed executions"
+                ),
+                missing=missing[:10],
+                missing_count=len(missing),
+                pipeline_name=self.config.pipeline_name,
+                evicted_records=evicted,
+            )
 
     def _post(self, document: dict[str, Any], *, evicted: int) -> tuple[str, int]:
         """POST one document and map the answer onto the refusal catalog."""

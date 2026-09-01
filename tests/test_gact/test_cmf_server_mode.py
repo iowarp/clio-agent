@@ -26,6 +26,7 @@ from clio_agent.gact.artifacts.provenance.cmf_server_mode import (
     CMFServerPublisher,
     verify_push_document,
 )
+from clio_agent.gact.provenance.dispatcher import ProvenanceDispatcher
 from clio_agent.gact.provenance.protocol import ProviderReceipt
 
 
@@ -36,26 +37,78 @@ class _Recorder:
         self.requests: list[dict[str, Any]] = []
         self.status_code = 200
         self.body: dict[str, Any] = {"status": "success"}
+        #: Execution names the server actually HOLDS. ``None`` means "an honest
+        #: server holds what it was given"; a list overrides it, so a test can
+        #: model the upstream defect -- 200 success, entities silently dropped.
+        self.held: list[str] | None = None
+        self.pushed_names: list[str] = []
+        #: Status the confirmation read answers with.
+        self.confirm_status = 200
+
+    def holds(self) -> list[str]:
+        return self.pushed_names if self.held is None else self.held
+
+    def pushes(self) -> list[dict[str, Any]]:
+        """Only the metadata pushes, excluding confirmation reads."""
+        return [item for item in self.requests if item.get("method") != "GET"]
 
 
 def _handler(recorder: _Recorder) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
-            length = int(self.headers.get("Content-Length") or 0)
-            raw = self.rfile.read(length)
-            recorder.requests.append(
-                {
-                    "path": self.path,
-                    "content_type": self.headers.get("Content-Type"),
-                    "body": json.loads(raw.decode("utf-8")),
-                }
-            )
-            payload = json.dumps(recorder.body).encode("utf-8")
-            self.send_response(recorder.status_code)
+        def _respond(self, status: int, body: Any) -> None:
+            payload = json.dumps(body).encode("utf-8")
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
+
+        def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length)
+            body = json.loads(raw.decode("utf-8"))
+            recorder.requests.append(
+                {
+                    "path": self.path,
+                    "content_type": self.headers.get("Content-Type"),
+                    "body": body,
+                }
+            )
+            if recorder.status_code == 200:
+                document = json.loads(body.get("json_payload") or "{}")
+                for pipeline in document.get("Pipeline") or []:
+                    for stage in pipeline.get("stages") or []:
+                        for execution in stage.get("executions") or []:
+                            recorder.pushed_names.append(
+                                str((execution.get("properties") or {}).get("Execution_uuid") or "")
+                            )
+            self._respond(recorder.status_code, recorder.body)
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
+            recorder.requests.append({"path": self.path, "method": "GET"})
+            if recorder.confirm_status != 200:
+                self._respond(recorder.confirm_status, {"detail": "confirmation unavailable"})
+                return
+            if self.path.startswith("/api/executions-by-stage/"):
+                # The REAL row shape a live cmf-server returns: no "name" key,
+                # identity lives in an execution_properties {name, value} list.
+                self._respond(
+                    200,
+                    {
+                        "items": [
+                            {
+                                "execution_id": index,
+                                "execution_properties": [
+                                    {"name": "Execution_uuid", "value": uuid},
+                                    {"name": "Context_Type", "value": "clio-test/artifacts"},
+                                ],
+                            }
+                            for index, uuid in enumerate(recorder.holds())
+                        ]
+                    },
+                )
+                return
+            self._respond(404, {"detail": "no route"})
 
         def log_message(self, *args: Any) -> None:
             return
@@ -122,8 +175,8 @@ def test_push_hits_the_documented_endpoint_with_the_documented_body(cmf_server: 
     publisher.close()
 
     assert result["status"] == "success"
-    assert len(cmf_server.requests) == 1
-    request = cmf_server.requests[0]
+    assert len(cmf_server.pushes()) == 1
+    request = cmf_server.pushes()[0]
     assert request["path"] == "/api/mlmd_push"
     assert "application/json" in str(request["content_type"])
     # Exactly the three documented keys, no more.
@@ -153,7 +206,7 @@ def test_a_confirmed_push_clears_the_batch_so_pushes_are_incremental(cmf_server:
     publisher.publish()
     publisher.close()
 
-    second = json.loads(cmf_server.requests[1]["body"]["json_payload"])
+    second = json.loads(cmf_server.pushes()[1]["body"]["json_payload"])
     names = [execution["name"] for execution in second["Pipeline"][0]["stages"][0]["executions"]]
     assert names == ["clio:call_2"], "the second push must not resend the first batch"
 
@@ -175,7 +228,7 @@ def test_re_pushing_the_same_call_id_is_idempotent_by_named_execution(cmf_server
     publisher.publish()
     publisher.close()
 
-    documents = [json.loads(item["body"]["json_payload"]) for item in cmf_server.requests]
+    documents = [json.loads(item["body"]["json_payload"]) for item in cmf_server.pushes()]
     for document in documents:
         executions = document["Pipeline"][0]["stages"][0]["executions"]
         assert [execution["name"] for execution in executions] == ["clio:call_1"]
@@ -264,7 +317,7 @@ def test_a_source_or_environment_ontology_is_pushed_not_refused(cmf_server: Any)
     publisher.publish()
     publisher.close()
 
-    document = json.loads(cmf_server.requests[0]["body"]["json_payload"])
+    document = json.loads(cmf_server.pushes()[0]["body"]["json_payload"])
     artifacts = [
         event["artifact"]
         for execution in document["Pipeline"][0]["stages"][0]["executions"]
@@ -334,7 +387,7 @@ def test_provider_accepts_only_after_the_server_confirms(cmf_server: Any) -> Non
     provider = CMFServerModeProvider(_config(cmf_server.url), store=object())
     receipt = provider.emit(_Event(_transform_event("call_1", ["artifact_1"])))
     assert receipt is ProviderReceipt.ACCEPTED
-    assert len(cmf_server.requests) == 1
+    assert len(cmf_server.pushes()) == 1
     provider.close()
 
 
@@ -346,7 +399,7 @@ def test_provider_reports_an_annotation_event_as_filtered_not_written(cmf_server
         _Event({"event_type": "artifact.enriched", "payload": {"artifact_id": "artifact_1"}})
     )
     assert receipt is ProviderReceipt.FILTERED
-    assert cmf_server.requests == []
+    assert cmf_server.pushes() == []
     provider.close()
 
 
@@ -383,3 +436,111 @@ def test_push_url_is_built_from_the_declared_server_url() -> None:
     assert CMFServerConfig(server_url="http://host:8080/").push_url == (
         "http://host:8080/api/mlmd_push"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Read-back confirmation: a 200 is not evidence. The cmf-server swallows
+# per-entity ingest failures (cmf_merger.handle_execution wraps the write in
+# `except Exception: logger.error(...)`), so it can answer success having
+# stored nothing -- which is how a live run recorded 13 executions, zero
+# artifacts and zero events against a green counter.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_success_the_server_does_not_hold_is_a_typed_failure(cmf_server: Any) -> None:
+    cmf_server.held = []  # 200 success, nothing stored: the upstream defect
+    publisher = CMFServerPublisher(_config(cmf_server.url))
+    publisher.record(_transform_event("call_1", ["artifact_1"]))
+    publisher.record(_artifact_event("artifact_1", "a.csv"))
+
+    with pytest.raises(CMFRefusal) as excinfo:
+        publisher.publish()
+
+    assert excinfo.value.reason == "cmf_server_discarded_entities"
+    assert excinfo.value.payload["details"]["missing"] == ["call_1"]
+    assert excinfo.value.payload["details"]["missing_count"] == 1
+    publisher.close()
+
+
+def test_discarded_entities_are_not_counted_as_accepted(cmf_server: Any) -> None:
+    """The whole point: the counter cannot outrun what CMF actually holds."""
+    cmf_server.held = []
+    provider = CMFServerModeProvider(_config(cmf_server.url), store=object())
+    dispatcher = ProvenanceDispatcher([provider], queue_size=4)
+
+    dispatcher.emit(_Event(_transform_event("call_1", ["artifact_1"])))
+    dispatcher.flush()
+    health = dispatcher.health()[0]
+
+    assert health["queued"] == 1
+    assert health["accepted"] == 0, "a 200 that stored nothing is not a write"
+    # emit fails, then flush retries the still-pending batch and fails again.
+    assert health["failed"] >= 1
+    assert "cmf_server_discarded_entities" in health["last_error"]
+    assert health["status"] == "degraded"
+
+
+def test_a_push_the_server_really_holds_confirms_and_counts(cmf_server: Any) -> None:
+    provider = CMFServerModeProvider(_config(cmf_server.url), store=object())
+    dispatcher = ProvenanceDispatcher([provider], queue_size=4)
+
+    dispatcher.emit(_Event(_transform_event("call_1", ["artifact_1"])))
+    dispatcher.flush()
+    health = dispatcher.health()[0]
+    dispatcher.close()
+
+    assert health["accepted"] == 1
+    assert health["failed"] == 0
+    confirmations = [item for item in cmf_server.requests if item.get("method") == "GET"]
+    assert confirmations, "the publisher must read back what it pushed"
+    assert "/api/executions-by-stage/" in confirmations[0]["path"]
+
+
+def test_the_confirmation_read_is_bounded(cmf_server: Any) -> None:
+    """One bounded page, not a full pipeline pull."""
+    publisher = CMFServerPublisher(_config(cmf_server.url))
+    publisher.record(_transform_event("call_1", ["artifact_1"]))
+    publisher.publish()
+    publisher.close()
+
+    get = next(item for item in cmf_server.requests if item.get("method") == "GET")
+    assert "record_per_page=" in get["path"]
+    assert "active_page=1" in get["path"]
+    page_size = int(get["path"].split("record_per_page=")[1].split("&")[0])
+    assert 0 < page_size <= 200
+
+
+def test_an_unreadable_confirmation_does_not_silently_pass(cmf_server: Any) -> None:
+    """A confirmation that cannot be performed is not a confirmation.
+
+    The push itself succeeded, but without a read-back there is no evidence the
+    entities are held, so the batch must not be counted or cleared.
+    """
+    cmf_server.confirm_status = 500
+    publisher = CMFServerPublisher(_config(cmf_server.url))
+    publisher.record(_transform_event("call_1", ["artifact_1"]))
+    publisher.record(_artifact_event("artifact_1", "a.csv"))
+
+    with pytest.raises(CMFRefusal) as excinfo:
+        publisher.publish()
+
+    assert excinfo.value.reason == "cmf_server_unreachable"
+    assert publisher.pending == 2, "an unconfirmed batch stays pending"
+    publisher.close()
+
+
+def test_a_raw_backslash_never_reaches_the_wire(cmf_server: Any) -> None:
+    """The exact upstream trigger, asserted on the bytes that would be sent."""
+    publisher = CMFServerPublisher(_config(cmf_server.url))
+    event = _artifact_event("artifact_1", "a.csv")
+    event["payload"]["path"] = r"D:\Libraries\Documents\a.csv"
+    publisher.record(event)
+    publisher.publish()
+    publisher.close()
+
+    document = json.loads(cmf_server.pushes()[0]["body"]["json_payload"])
+    for pipeline in document["Pipeline"]:
+        for stage in pipeline["stages"]:
+            for execution in stage["executions"]:
+                assert "\\" not in json.dumps(list(execution["properties"].values()))
+                assert "\\" not in json.dumps(list(execution["custom_properties"].values()))

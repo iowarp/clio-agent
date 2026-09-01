@@ -138,6 +138,22 @@ CMF_REFUSAL_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "narrowing was bypassed -- a CLIO defect, not a configuration issue."
         ),
     },
+    "cmf_server_discarded_entities": {
+        "category": "downstream_data_loss",
+        "writes": False,
+        "recovery_actions": ["retry", "inspect_server_logs", "report_upstream_defect"],
+        "description": (
+            "The CMF server answered 200 success but a bounded read-back shows "
+            "it does not hold the executions that were just pushed. The known "
+            "cause is an upstream defect: an execution whose properties contain "
+            "a literal backslash is discarded WHOLE (with all its events) while "
+            "the push still reports success -- cmf_merger.handle_execution wraps "
+            "the write in 'except Exception: logger.error(...)', so nothing "
+            "reaches the wire. CLIO encodes values to avoid it; reaching this "
+            "reason means entities were lost anyway and must not be counted as "
+            "written."
+        ),
+    },
     "cmf_lineage_query_unavailable": {
         "category": "capability_gap",
         "writes": False,

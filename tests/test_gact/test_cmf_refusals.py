@@ -27,6 +27,7 @@ _EXPECTED_REASONS = {
     "cmf_server_unreachable",
     "cmf_server_rejected_payload",
     "cmf_server_version_incompatible",
+    "cmf_server_discarded_entities",
     "cmf_artifact_not_attached_to_execution",
     "cmf_artifact_kind_not_representable",
     "cmf_lineage_query_unavailable",
