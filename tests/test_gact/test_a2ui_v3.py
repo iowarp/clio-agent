@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from typing import Any
 
 from clio_schemas import A2UIComponent
 from fastapi.testclient import TestClient
@@ -1152,3 +1153,79 @@ def test_v3_transcript_route_folds_a2ui_parts_chronologically(tmp_path: Path) ->
     surface = snapshot["surfaces"][0]
     assert surface["revision"] == 3
     assert surface["messages"][-1]["updateComponents"]["components"][0]["text"] == "Second"
+
+
+class _LiveTurn:
+    """Stand-in for an in-flight turn task the busy gate must observe."""
+
+    def done(self) -> bool:
+        return False
+
+
+def _agent_submit(surface_id: str) -> dict[str, object]:
+    return {
+        "version": "v0.9.1",
+        "action": {
+            "name": "agent.submit",
+            "surfaceId": surface_id,
+            "sourceComponentId": "submit",
+            "timestamp": "2026-08-22T12:00:00Z",
+            "context": {"text": "continue the analysis"},
+        },
+    }
+
+
+def test_agent_submit_is_refused_while_a_turn_is_in_flight(tmp_path: Path) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    app = client.app
+    client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message()]},
+    )
+    # A cancel flips the projected status while the turn keeps running, which is
+    # exactly the window a status-based gate lets a second turn through.
+    app.state.sessions.update(sid, status="cancelled")
+    app.state.in_flight_turns[sid] = _LiveTurn()
+    staged_before = len(app.state.messages.get(sid, []))
+
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/actions",
+        headers=HEADERS,
+        json={"message": _agent_submit("surface_1")},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["error"]["error"] == "session_busy"
+    assert response.json()["error"]["details"]["session_id"] == sid
+    assert len(app.state.messages.get(sid, [])) == staged_before
+
+
+def test_agent_submit_clears_a_stale_cancel_flag_before_staging(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    app = client.app
+    client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message()]},
+    )
+    app.state.cancel_flags.add(sid)
+    app.state.cancel_events[sid] = object()
+
+    def _spawn(coro: Any, **_kwargs: Any) -> None:
+        coro.close()
+
+    monkeypatch.setattr(app.state.turn_runner, "spawn", _spawn)
+
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/actions",
+        headers=HEADERS,
+        json={"message": _agent_submit("surface_1")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "accepted"
+    assert sid not in app.state.cancel_flags
+    assert sid not in app.state.cancel_events
