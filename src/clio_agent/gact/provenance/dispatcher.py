@@ -55,7 +55,12 @@ class _ProviderWorker:
         self._thread.start()
 
     def submit(self, event: SemanticEvent) -> ProviderReceipt:
-        """Enqueue without blocking the semantic highway."""
+        """Enqueue without blocking the semantic highway.
+
+        Counts ``queued``, never ``accepted``: this call only proves the event
+        reached the queue. Whether the provider actually wrote it is decided in
+        :meth:`_run`, where the provider's own outcome is known.
+        """
         if self._closed:
             with self._lock:
                 self.health.failed += 1
@@ -71,7 +76,7 @@ class _ProviderWorker:
                 self.health.last_error = "provider queue overflow"
             return ProviderReceipt.OVERFLOW
         with self._lock:
-            self.health.accepted += 1
+            self.health.queued += 1
         return ProviderReceipt.ACCEPTED
 
     def snapshot(self) -> ProviderHealth:
@@ -87,9 +92,14 @@ class _ProviderWorker:
                     return
                 try:
                     receipt = self.provider.emit(event)
-                    if receipt == ProviderReceipt.FILTERED:
-                        with self._lock:
+                    with self._lock:
+                        # The provider's OWN outcome decides the counter. A
+                        # provider that returns nothing has no way to report a
+                        # filter, so a returning emit is a write.
+                        if receipt == ProviderReceipt.FILTERED:
                             self.health.filtered += 1
+                        else:
+                            self.health.accepted += 1
                 except Exception as exc:  # noqa: BLE001 - downstream cannot kill the worker
                     with self._lock:
                         self.health.failed += 1

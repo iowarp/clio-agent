@@ -41,6 +41,15 @@ class ProviderHealth:
     durable: bool = False
     status: str = "ready"
     queue_depth: int = 0
+    #: Events handed to this provider's queue. Counted at SUBMIT time, so this
+    #: is the hand-off number and nothing more.
+    queued: int = 0
+    #: Events the provider CONFIRMED it wrote -- its ``emit`` returned without
+    #: raising and did not report the event filtered. Deliberately not counted
+    #: at submit time: a queue-time counter can never disagree with reality, so
+    #: it reported 26 accepted / 0 failed for a CMF lane whose store had
+    #: received nothing for half of them (live qualification, sess_3c2660f69bd5).
+    #: ``queued - (accepted + filtered + failed)`` is what is still in flight.
     accepted: int = 0
     filtered: int = 0
     overflow: int = 0

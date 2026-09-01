@@ -51,6 +51,8 @@ class _RecordingProvider:
         # (which only records ACCEPTED emits) so a slow/failing emit still
         # shows up in the ordering a caller cares about (D3a/D3b).
         self.calls: list[str] = calls if calls is not None else []
+        #: What this provider reports back for a successful emit.
+        self.receipt = ProviderReceipt.ACCEPTED
 
     def emit(self, event: SemanticEvent) -> ProviderReceipt:
         if self.emit_delay:
@@ -60,7 +62,7 @@ class _RecordingProvider:
             raise RuntimeError("downstream unavailable")
         self.events.append(event)
         self.calls.append("emit")
-        return ProviderReceipt.ACCEPTED
+        return self.receipt
 
     def flush(self) -> None:
         self.flushed = True
@@ -135,6 +137,50 @@ def test_dispatcher_isolates_provider_failure() -> None:
     assert health["bad"]["failed"] == 1
     assert health["bad"]["status"] == "degraded"
     assert good.closed and bad.closed
+
+
+def test_accepted_counts_confirmed_writes_not_enqueued_events() -> None:
+    """``accepted`` must describe what the provider WROTE, not what was queued.
+
+    Live defect (qualification sess_3c2660f69bd5): the CMF lane reported
+    accepted 26 / filtered 0 / failed 0 while MLMD had received nothing for
+    half of them. ``submit()`` incremented ``accepted`` the moment an event
+    landed in the queue, so the counter described the hand-off and could never
+    disagree with reality -- exactly the silent loss it should have exposed.
+    """
+    filtering = _RecordingProvider()
+    filtering.name = "filtering"
+    filtering.receipt = ProviderReceipt.FILTERED
+    failing = _RecordingProvider(fail=True)
+    failing.name = "failing"
+    dispatcher = ProvenanceDispatcher([filtering, failing], queue_size=4)
+    dispatcher.emit(_event())
+    dispatcher.emit(_event())
+    dispatcher.flush()
+    health = {row["name"]: row for row in dispatcher.health()}
+    dispatcher.close()
+
+    # Nothing was written by either provider, so nothing may be counted as
+    # accepted; the queue depth is reported separately as `queued`.
+    assert health["filtering"]["accepted"] == 0
+    assert health["filtering"]["filtered"] == 2
+    assert health["filtering"]["queued"] == 2
+    assert health["failing"]["accepted"] == 0
+    assert health["failing"]["failed"] == 2
+    assert health["failing"]["queued"] == 2
+
+
+def test_accepted_still_counts_a_provider_that_really_wrote() -> None:
+    provider = _RecordingProvider()
+    dispatcher = ProvenanceDispatcher([provider], queue_size=4)
+    dispatcher.emit(_event())
+    dispatcher.flush()
+    health = dispatcher.health()[0]
+    dispatcher.close()
+
+    assert health["accepted"] == 1
+    assert health["queued"] == 1
+    assert health["filtered"] == 0
 
 
 def test_dispatcher_flush_waits_for_a_slow_emit_before_calling_provider_flush() -> None:
