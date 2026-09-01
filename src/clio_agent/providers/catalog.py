@@ -97,6 +97,7 @@ class Provider:
     #: HuggingFace-id backends like ALCF where ``openai/gpt-oss-120b``
     #: *is* the literal model id.
     strip_openai_prefix: bool = True
+    parse_retry_capability: Literal["bounded", "single_attempt"] = "bounded"
 
     # ----- registry bookkeeping ---------------------------------------
     #: When True, this provider's wire fields populate the
@@ -226,7 +227,7 @@ PROVIDERS: tuple[Provider, ...] = (
         id="openai",
         label="OpenAI / ChatGPT",
         description=(
-            "Direct OpenAI API (powers ChatGPT + Codex CLI). Requires "
+            "Direct OpenAI API. Requires "
             "an OPENAI_API_KEY. Defaults to gpt-4o-mini for low cost; "
             "swap in gpt-4o or gpt-4-turbo for heavier work."
         ),
@@ -316,29 +317,26 @@ PROVIDERS: tuple[Provider, ...] = (
         id="codex",
         label="OpenAI Codex (subscription)",
         description=(
-            "Routes through the local `codex` CLI (`codex exec`) so "
-            "calls hit your ChatGPT / Codex subscription instead of "
-            "paying per-token on the OpenAI API. Requires the Codex "
-            "CLI on PATH and `codex login` done once per machine. "
-            "Implemented as a LiteLLM CustomLLM - no HTTP bridge "
-            "process needed."
+            "Uses the official OpenAI Codex Python SDK so calls reuse "
+            "your ChatGPT / Codex subscription instead of paying "
+            "per-token on the OpenAI API. Authenticate Codex once on "
+            "this machine; the SDK owns its pinned runtime."
         ),
         provider_kind="codex",
-        # Codex doesn't use an HTTP base; the CustomLLM drives the warm
-        # app-server. A registry marker, not a URL (v0.8.0: single transport;
-        # the old codex://exec marker silently steered swaps onto the deleted
-        # batch path).
-        api_base="codex://app-server",
+        # Codex does not use an HTTP base. This is an identity marker only;
+        # the official Python SDK owns its pinned runtime.
+        api_base="codex://sdk",
         suggested_model="gpt-5.5",
         requires_api_key=False,
         auth_method="none",
         is_kind_default=True,
         supports_live_catalog=False,
+        parse_retry_capability="single_attempt",
         model_catalog=(
             ModelEntry(
                 "gpt-5.5",
                 "GPT-5.5 (via Codex)",
-                "Candidate Codex CLI model id; not guaranteed by account entitlement.",
+                "Candidate Codex SDK model id; not guaranteed by account entitlement.",
             ),
             ModelEntry(
                 "gpt-5.5-codex",
@@ -356,11 +354,10 @@ PROVIDERS: tuple[Provider, ...] = (
         id="claude_code",
         label="Claude Code (subscription)",
         description=(
-            "Routes through the local `claude` CLI (`claude -p`) so "
-            "calls use Claude Code subscription auth instead of direct "
-            "Anthropic API keys. Requires Claude Code on PATH and "
-            "`claude login` done once per machine. Implemented as a "
-            "LiteLLM CustomLLM with Claude Code tools disabled."
+            "Uses the Claude Agent SDK with Claude Code subscription auth "
+            "instead of direct Anthropic API keys. Authenticate Claude Code "
+            "once on this machine; the SDK owns the model session and "
+            "streaming lifecycle."
         ),
         provider_kind="claude_code",
         api_base="claude-code://sdk",
@@ -532,6 +529,8 @@ def as_provider_defaults_dict() -> dict[str, dict[str, Any]]:
             entry["max_tokens"] = p.max_tokens_default
         if not p.strip_openai_prefix:
             entry["strip_openai_prefix"] = False
+        if p.parse_retry_capability != "bounded":
+            entry["parse_retry_capability"] = p.parse_retry_capability
         out[p.provider_kind] = entry
     return out
 

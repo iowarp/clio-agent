@@ -41,6 +41,7 @@ class NonObjectBodyError(Exception):
         self.payload_type = type(payload).__name__
         super().__init__(f"request body is valid JSON but not an object: {self.payload_type}")
 
+
 _LOGGER = logging.getLogger("clio_agent.gact.routes.body")
 
 # Structured reason for an unparseable/non-object request body, mirroring the

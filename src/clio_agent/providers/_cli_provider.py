@@ -18,7 +18,7 @@ lifecycle now lands once:
 * :func:`raise_model_rejected` — the typed classification for a DEFINITIVE
   model-rejection signal (#1184, #1211 review A3): both providers' response
   shapes tell them, unambiguously, "the account does not serve this model"
-  (codex app-server error text; claude_code's ``api_error_status == 404``).
+  (provider error text; claude_code's ``api_error_status == 404``).
   Raising ``litellm.BadRequestError`` instead of a bare ``RuntimeError``
   subclass keeps litellm's exception mapper from wrapping it into a generic
   ``APIConnectionError`` (which DSPy then reports as the misleading
@@ -176,9 +176,7 @@ def register_custom_provider(
             import litellm  # noqa: PLC0415
 
             litellm.custom_provider_map[:] = [
-                entry
-                for entry in litellm.custom_provider_map
-                if entry.get("provider") != provider
+                entry for entry in litellm.custom_provider_map if entry.get("provider") != provider
             ]
         state["registered"] = False
         state["handler"] = None
@@ -194,7 +192,7 @@ def raise_model_rejected(
     ``model`` is the litellm-facing id (e.g. ``"codex/gpt-5.5-codex"`` or
     ``"claude_code/bogus"``); ``llm_provider`` is the bare kind (``"codex"`` /
     ``"claude_code"``). Callers pass the provider's own rejection TEXT in
-    ``message`` (codex's app-server error string; claude_code's ``result``
+    ``message`` (a provider error string; claude_code's ``result``
     field) — it survives verbatim into ``str(exc)``, which the transcript's
     generic error tail already interpolates, so the rejection reason reaches
     the user with zero gact-layer changes. ``cause`` chains the original
@@ -204,4 +202,6 @@ def raise_model_rejected(
     """
     import litellm  # noqa: PLC0415 - imported lazily for fast import path
 
-    raise litellm.BadRequestError(message=message, model=model, llm_provider=llm_provider) from cause
+    raise litellm.BadRequestError(
+        message=message, model=model, llm_provider=llm_provider
+    ) from cause

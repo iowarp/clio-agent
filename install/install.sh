@@ -145,10 +145,10 @@ fi
 # is idempotent (re-run is a no-op / version pin). Needs uv; without it the
 # packs' tools simply stay unprovisioned until uv is installed.
 if have uv; then
-  say "Provisioning clio-kit MCP tool launcher (uv tool install clio-kit==2.2.3)"
-  uv tool install clio-kit==2.2.3 || warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until 'uv tool install clio-kit==2.2.3' succeeds and '\$(uv tool dir --bin)' is on PATH"
+  say "Provisioning clio-kit MCP tool launcher (uv tool install clio-kit==2.10.6)"
+  uv tool install clio-kit==2.10.6 || warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until 'uv tool install clio-kit==2.10.6' succeeds and '\$(uv tool dir --bin)' is on PATH"
 else
-  warn "uv not found — skipping clio-kit MCP launcher provisioning; install uv, then run: uv tool install clio-kit==2.2.3"
+  warn "uv not found — skipping clio-kit MCP launcher provisioning; install uv, then run: uv tool install clio-kit==2.10.6"
 fi
 
 # ---------- install gact ----------------------------------------------

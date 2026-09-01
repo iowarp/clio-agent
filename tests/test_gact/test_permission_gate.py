@@ -172,6 +172,74 @@ def test_external_mcp_non_read_only_hint_registers_pending_permission(tmp_path: 
         assert result["decision"] == "deny"
 
 
+def test_child_permission_lifecycle_is_visible_on_attended_root(tmp_path: Path) -> None:
+    """A child owns the approval while the root stream receives an actionable mirror."""
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        root_id = client.post("/v1/sessions", json={"title": "root"}).json()["id"]
+        root = app.state.sessions.get(root_id)
+        assert root is not None
+        child = app.state.sessions.create(
+            workspace_id=root.workspace_id,
+            title="child",
+            parent_session_id=root_id,
+        )
+        gate = _make_permission_gate(app)
+        result: dict[str, str] = {}
+
+        def call_gate() -> None:
+            with _tool_session_context(child.id):
+                result["decision"] = gate(
+                    "remote.submit",
+                    {"request_id": "request-child"},
+                    _external_mcp_permission_context({"readOnlyHint": False}),
+                )
+
+        thread = threading.Thread(target=call_gate)
+        thread.start()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not app.state.permissions:
+            time.sleep(0.01)
+
+        pending = next(iter(app.state.permissions.values()))
+        permission_id = pending["id"]
+        child_requested = [
+            event
+            for event in app.state.bus._history.get(child.id, [])
+            if event.type == "permission.requested" and event.payload.get("id") == permission_id
+        ]
+        root_requested = [
+            event
+            for event in app.state.bus._history.get(root_id, [])
+            if event.type == "permission.requested" and event.payload.get("id") == permission_id
+        ]
+        assert len(child_requested) == 1
+        assert len(root_requested) == 1
+        assert root_requested[0].payload["session_id"] == child.id
+        assert root_requested[0].payload["forwarded_from_session_id"] == child.id
+        assert root_requested[0].payload["attended_session_id"] == root_id
+
+        response = client.post(
+            f"/v1/permissions/{permission_id}",
+            json={"action": "allow"},
+        )
+        assert response.status_code == 204
+        thread.join(timeout=2.0)
+        assert not thread.is_alive()
+        assert result["decision"] == "allow"
+
+        for stream_id in (child.id, root_id):
+            resolved = [
+                event
+                for event in app.state.bus._history.get(stream_id, [])
+                if event.type == "permission.resolved"
+                and event.payload.get("permission_id") == permission_id
+            ]
+            assert len(resolved) == 1
+            assert resolved[0].payload["session_id"] == child.id
+
+
 def test_declared_mcp_mutation_blocks_before_transport_until_ui_resolution(
     tmp_path: Path,
 ) -> None:

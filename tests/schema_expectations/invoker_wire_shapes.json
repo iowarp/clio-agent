@@ -132,6 +132,7 @@
         "workspace_id",
         "session_mode",
         "session_scope_metadata",
+        "session_approval_profile",
         "placement",
         "run_label",
         "start_turn"
@@ -158,6 +159,7 @@
         "workspace_id",
         "session_mode",
         "session_scope_metadata",
+        "session_approval_profile",
         "placement",
         "run_label",
         "start_turn"

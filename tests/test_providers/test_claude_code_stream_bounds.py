@@ -177,6 +177,29 @@ async def test_connect_gate_is_a_noop_when_unconfigured(monkeypatch: pytest.Monk
     assert state["connected"] == 1
 
 
+async def test_connect_gate_reclaims_an_idle_sibling_while_queued() -> None:
+    """A waiter must re-check idle siblings after the allocation-time sweep.
+
+    This pins the live parent/child race: the parent was busy when the child
+    entry was allocated, became idle immediately afterward, and retained the
+    only process slot.  Without the waiter callback the acquire below never
+    completes even though reclaiming the now-idle parent is safe.
+    """
+    slots = threading.Semaphore(0)
+    reclaimed = threading.Event()
+
+    def reclaim() -> None:
+        if not reclaimed.is_set():
+            reclaimed.set()
+            slots.release()
+
+    entry = ccs._StreamClientEntry(
+        lambda: object(), connect_slots=slots, reclaim_idle_slot=reclaim
+    )
+    await asyncio.wait_for(entry._acquire_connect_slot(), timeout=0.8)
+    assert reclaimed.is_set()
+
+
 def test_pool_wires_its_connect_slots_into_every_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     """The pool's own cap (not the global default) is what every entry it
     mints actually gates on -- ``max_concurrent=`` must reach the entries."""
@@ -188,3 +211,22 @@ def test_pool_wires_its_connect_slots_into_every_entry(monkeypatch: pytest.Monke
     # this identity check goes red.
     assert base._connect_slots is pool._connect_slots
     assert scoped._connect_slots is pool._connect_slots
+    assert scoped._reclaim_idle_slot is not None
+
+
+def test_slot_wait_reclaim_evicts_only_idle_scoped_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cap-pressure sweep reaps idle scopes, never busy or base entries."""
+    pool = ccs.ClaudeStreamClientPool(max_concurrent=1)
+    base = pool.entry_for(model="m", cwd="/w", thinking=None)
+    idle = pool.entry_for(model="m", cwd="/w", thinking=None, scope="parent")
+    busy = pool.entry_for(model="m", cwd="/w", thinking=None, scope="sibling")
+    idle._mark_idle()
+    busy._mark_busy()
+    monkeypatch.setattr(ccs, "reap_idle_stream_entry", lambda _key, _entry: None)
+
+    assert pool._reclaim_idle_scoped_connections_for_slot() == 1
+    assert pool.entry_for(model="m", cwd="/w", thinking=None) is base
+    assert pool.entry_for(model="m", cwd="/w", thinking=None, scope="sibling") is busy
+    assert pool.entry_for(model="m", cwd="/w", thinking=None, scope="parent") is not idle

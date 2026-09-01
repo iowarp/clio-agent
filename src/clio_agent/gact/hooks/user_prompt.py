@@ -124,9 +124,7 @@ def _suspend_for_defer(state: "TurnState", outcome: Any) -> str:
     if isinstance(frame, dict) and frame.get("id"):
         from clio_agent.gact.enrichment import _finalize_context_frame  # noqa: PLC0415
 
-        _finalize_context_frame(
-            state.app, state.sid, frame["id"], "", "completed", error_info=None
-        )
+        _finalize_context_frame(state.app, state.sid, frame["id"], "", "completed", error_info=None)
     return "deferred"
 
 

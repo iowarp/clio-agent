@@ -2,8 +2,8 @@
 
 Skills are procedural knowledge loaded as TEXT (``skill_runtime.load_skill`` returns the
 SKILL.md body). This module adds a **declared, runtime-executed privileged EFFECT** to the
-skill contract: a structured capability the RUNTIME performs when a skill is invoked, in
-addition to / instead of returning the body.
+skill contract: a structured capability the RUNTIME performs through its explicit tool
+surface. Loading instructions and launching work remain separate causal actions.
 
 The effect is **authored metadata (trusted)** — it is read ONLY from the skill's YAML
 frontmatter (:attr:`SkillRef.meta`), NEVER from the skill BODY text, a read file, or model
@@ -19,10 +19,11 @@ Two effects shipped in P1.0:
   (edit → architect → plan). It can NEVER relax/leave a restrictive mode (e.g. plan → edit):
   exiting plan mode is the user-gated ``plan_exit`` approval flow (P1.4). An enter_mode
   effect that would weaken the current mode is REJECTED with a typed reason, mode unchanged.
-* ``spawn_subagent_with_skill`` — run the skill in a FRESH subagent (a real child turn via
-  the spawn substrate) seeded with the skill body, instead of inlining the body into the
-  caller's context (parity with Claude Code / Codex skill-as-subagent). Returns the task
-  handle; the body is NOT inlined.
+* ``spawn_subagent_with_skill`` — ``spawn_skill_task`` runs the skill in a FRESH subagent
+  (a real child turn via the spawn substrate) seeded with the skill body, instead of
+  inlining the body into the caller's context (parity with Claude Code / Codex
+  skill-as-subagent). Returns the task handle; the body is NOT inlined. ``load_skill``
+  never performs this effect.
 
 P4.4 (#1082) GENERALIZES this vocabulary with the **autonomy effects** — each a declared
 frontmatter bundle over the SAME primitives the ``/loop``·``/goal``·``/cron`` surfaces use,
@@ -635,53 +636,6 @@ def _execute_schedule(
     )
 
 
-def _execute_spawn(
-    effect: SkillEffect, ref: "SkillRef", app: Any, session_id: str, agent_id: str
-) -> SkillEffectOutcome:
-    """Perform the ``spawn_subagent_with_skill`` effect: spawn a child turn seeded with the
-    skill body (the body is NOT inlined into the caller). Returns the task handle."""
-
-    from clio_agent.gact.spawn_context import bind_task_spec_to_parent  # noqa: PLC0415
-    from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
-        SpawnError,
-        TaskSpec,
-        spawn_child_turn_threadsafe,
-    )
-
-    body = read_skill_body(ref)  # fresh read at invocation time
-    seed = f"# Skill: {ref.id}\n\n{body}"
-    # A missing agent is a self-directed fresh context, not a routing decision;
-    # the depth/resolution guards still apply.
-    child_expert = effect.agent or agent_id
-    spec = TaskSpec(
-        child_expert_id=child_expert,
-        task_text=(
-            f"Follow the procedure defined by the seeded skill {ref.id!r} to completion, "
-            "then report your result."
-        ),
-        parent_session_id=session_id,
-        requesting_expert_id=agent_id,
-        seed_context=seed,
-        skip_declared_check=not effect.agent,
-        mode="async",
-    )
-    spec = bind_task_spec_to_parent(app, spec)
-    try:
-        task = spawn_child_turn_threadsafe(app, spec)
-    except SpawnError as exc:
-        raise SkillEffectError(
-            f"spawn_subagent_with_skill refused for skill {ref.id!r}: {exc}",
-            reason=exc.reason,
-        ) from exc
-    return SkillEffectOutcome(
-        kind=EFFECT_SPAWN_SUBAGENT,
-        detail=f"spawned subagent {child_expert!r} seeded with skill {ref.id!r}",
-        replaces_body=True,
-        task_id=task.task_id,
-        child_session_id=task.child_session_id,
-    )
-
-
 def _emit_skill_effect(
     app: Any, session_id: str, ref: "SkillRef", outcome: SkillEffectOutcome, agent_id: str
 ) -> None:
@@ -748,7 +702,8 @@ def maybe_apply_skill_effect(ref: "SkillRef", *, agent_id: str) -> str | None:
       (the entered mode's instructions);
     * ``loop`` / ``set_goal`` / ``schedule`` → a confirmation (the armed loop/goal/schedule
       handle) + the skill body (the procedure the autonomy is armed around);
-    * ``spawn_subagent_with_skill`` → the spawned task handle (the body is NOT inlined).
+    * ``spawn_subagent_with_skill`` → rejected here; the explicit
+      :func:`apply_spawn_skill_effect` / ``spawn_skill_task`` path owns the child launch.
 
     Raises :class:`SkillEffectError` for a malformed/unknown effect, a missing session
     context, or a rejected (mode-relaxing / refused-spawn / clamp-tripped) effect — never a
@@ -758,6 +713,11 @@ def maybe_apply_skill_effect(ref: "SkillRef", *, agent_id: str) -> str | None:
     effect = parse_skill_effect(ref.meta)
     if effect is None:
         return None
+    if effect.kind == EFFECT_SPAWN_SUBAGENT:
+        raise SkillEffectError(
+            f"skill {ref.id!r} runs in a child; call spawn_skill_task instead of load_skill",
+            reason="spawn_requires_spawn_skill_task",
+        )
     app = _ctx.active_app()
     session_id = _ctx.active_session_id()
     if app is None or not session_id:
@@ -776,7 +736,7 @@ def maybe_apply_skill_effect(ref: "SkillRef", *, agent_id: str) -> str | None:
     elif effect.kind == EFFECT_SCHEDULE:
         outcome = _execute_schedule(effect, ref, app, session_id)
     else:
-        outcome = _execute_spawn(effect, ref, app, session_id, agent_id)
+        raise AssertionError(f"unhandled non-spawn skill effect {effect.kind!r}")
     # P1.6b/c #1068: a plan-entering effect records its operator playbook — inline (P1.6b) OR by
     # reference to a saved plan artifact (P1.6c playbook_from_plan) — as the ACTIVE playbook.
     if outcome.mode == "plan":
@@ -798,3 +758,12 @@ def maybe_apply_skill_effect(ref: "SkillRef", *, agent_id: str) -> str | None:
         )
     body = read_skill_body(ref)
     return f"[skill effect: {outcome.detail}]\n\n# Skill: {ref.id}\n{body}"
+
+
+def apply_spawn_skill_effect(ref: "SkillRef", *, agent_id: str, task: str) -> tuple[str, Any, str]:
+    """Delegate the explicit child launch to the skill-spawn effect owner."""
+    from clio_agent.gact.agents.skill_spawn_effect import (  # noqa: PLC0415
+        apply_spawn_skill_effect as apply_effect,
+    )
+
+    return apply_effect(ref, agent_id=agent_id, task=task)

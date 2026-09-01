@@ -60,10 +60,20 @@ class _SSEConnection:
     in its ``finally``) on exit.
     """
 
-    def __init__(self, app: Any, sid: str, last_event_id: str | None) -> None:
+    def __init__(
+        self,
+        app: Any,
+        sid: str,
+        last_event_id: str | None,
+        *,
+        gact_version: str = "",
+        a2ui_version: str = "",
+    ) -> None:
         self._app = app
         self._sid = sid
         self._last_event_id = last_event_id
+        self._gact_version = gact_version
+        self._a2ui_version = a2ui_version
         self._frames: asyncio.Queue[bytes] = asyncio.Queue()
         self._task: asyncio.Task[None] | None = None
         self.status: int | None = None
@@ -72,6 +82,10 @@ class _SSEConnection:
         headers: list[tuple[bytes, bytes]] = [(b"host", b"testserver")]
         if self._last_event_id is not None:
             headers.append((b"last-event-id", self._last_event_id.encode("utf-8")))
+        if self._gact_version:
+            headers.append((b"x-gact-version", self._gact_version.encode("utf-8")))
+        if self._a2ui_version:
+            headers.append((b"x-a2ui-version", self._a2ui_version.encode("utf-8")))
         scope = {
             "type": "http",
             "asgi": {"version": "3.0", "spec_version": "2.3"},
@@ -258,6 +272,35 @@ async def test_beyond_head_replays_nothing(tmp_path: Any) -> None:
         await conn.assert_no_frame()
 
 
+async def test_v3_beyond_process_head_emits_gap_and_restarts_replay(tmp_path: Any) -> None:
+    """GACT 0.3 identifies a cursor from a previous process timeline."""
+
+    app, sid = _make_app_with_session(tmp_path)
+    events = _seed_history(app, sid, 3)
+    beyond = events[-1].id + 10_000
+
+    async with _SSEConnection(
+        app,
+        sid,
+        last_event_id=str(beyond),
+        gact_version="0.3",
+    ) as conn:
+        preamble = await conn.read_frames(2)
+        gap = await conn.read_frame()
+        replayed = await conn.read_frames(len(events))
+
+    assert [frame["type"] for frame in preamble] == ["stream.live", "session.upserted"]
+    assert gap["id"] == 0
+    assert gap["type"] == "stream.gap"
+    assert gap["data"]["payload"] == {
+        "reason": "cursor_epoch_reset",
+        "requested_cursor": str(beyond),
+        "new_timeline_head": str(events[-1].id),
+    }
+    assert [frame["id"] for frame in replayed] == [event.id for event in events]
+    assert all(frame["data"]["replay"] is True for frame in replayed)
+
+
 async def test_head_resume_replays_nothing_but_keeps_live(tmp_path: Any) -> None:
     """Last-Event-ID == head → no stale replay, fresh live event delivered.
 
@@ -289,3 +332,24 @@ async def test_head_resume_replays_nothing_but_keeps_live(tmp_path: Any) -> None
     assert frame["type"] == "message.completed"
     # Live delivery is not a replay.
     assert "replay" not in frame["data"]
+
+
+async def test_v3_route_emits_scoped_revisioned_envelopes(tmp_path: Any) -> None:
+    """Negotiation reaches the real unbounded SSE route, not only pure projection."""
+
+    app, sid = _make_app_with_session(tmp_path)
+    async with _SSEConnection(
+        app,
+        sid,
+        last_event_id=None,
+        gact_version="0.3",
+        a2ui_version="0.9.1",
+    ) as conn:
+        connected, snapshot = await conn.read_frames(2)
+
+    assert connected["type"] == "stream.live"
+    assert connected["data"]["protocol_version"] == "0.3"
+    assert connected["data"]["scope"]["session_id"] == sid
+    assert snapshot["type"] == "session.upserted"
+    assert snapshot["data"]["entity_revision"] == 0
+    assert snapshot["data"]["payload"]["id"] == sid

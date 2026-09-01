@@ -1,9 +1,4 @@
-"""Async MCP tool execution boundary.
-
-This module owns the event-loop-native FastMCP executor, its narrow client
-protocol, and the timeout and result-projection helpers required by that
-executor.
-"""
+"""Event-loop-native MCP execution, timeouts, and result projection."""
 
 from __future__ import annotations
 
@@ -31,7 +26,17 @@ from clio_agent.tools.mcp_connection_era import (
     resolved_connect_mode,
 )
 from clio_agent.tools.mcp_errors import typed_mcp_call_error, typed_mcp_protocol_error
+from clio_agent.tools.mcp_namespace_executor import AsyncNamespacePreparationMixin
 from clio_agent.tools.mcp_result_json import pydantic_json_default
+from clio_agent.tools.mcp_result_projection import (
+    MODEL_TOOL_RESULT_TRUNCATED_REASON as MODEL_TOOL_RESULT_TRUNCATED_REASON,
+)
+from clio_agent.tools.mcp_result_projection import (
+    bounded_model_tool_result as _bounded_model_tool_result,
+)
+from clio_agent.tools.mcp_result_projection import (
+    model_tool_result_chars as model_tool_result_chars,
+)
 from clio_agent.tools.mcp_runtime import make_mcp_client
 from clio_agent.tools.mcp_timeout_budget import component_declared_timeout_seconds
 
@@ -231,7 +236,7 @@ def _clean_tool_timeouts(tool_timeouts: Mapping[str, float] | None) -> dict[str,
     return cleaned
 
 
-class AsyncMCPToolExecutor:
+class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
     """Async FastMCP execution boundary with no background thread.
 
     This is the API-service path: it binds a FastMCP client to the caller's
@@ -302,23 +307,6 @@ class AsyncMCPToolExecutor:
     def namespaces(self) -> tuple[str, ...]:
         """Declared server namespaces this executor routes to (#1201 gact readers)."""
         return tuple(self._namespace_servers)
-
-    def merge_namespace_tools(self, namespace: str, tools: Mapping[str, Any]) -> None:
-        """Merge a namespace's freshly-mounted tool definitions into the LIVE
-        tool table (#1237).
-
-        The #932 freeze (``_mcp_tools`` set once from ``preloaded_tools`` at
-        :meth:`start` and never re-listed) becomes append-only-mergeable: an
-        on-demand mount (``tools.mcp_discovery.ensure_namespace``, called
-        from ``gact/agents/builders.py``'s expert-tool resolve) reaches
-        ``get_tool_definitions()``/``to_dspy_tools()`` for THIS SAME executor
-        instance immediately, rather than only a future rebuild seeing it.
-        ``namespace`` is accepted for future per-namespace bookkeeping
-        (unused today -- the merge is a flat dict update).
-        """
-
-        del namespace
-        self._mcp_tools.update(tools)
 
     async def __aenter__(self) -> "AsyncMCPToolExecutor":
         """Start the executor in an async context manager."""
@@ -621,14 +609,7 @@ class AsyncMCPToolExecutor:
         self._call_lock = None
 
 
-#: Finding E (proven degradation, tools/mcp_executor.py review): the
-#: last-resort ``str(data)`` fallback below reintroduces Python repr text on
-#: the wire -- the exact defect ``_result_to_text`` exists to close for the
-#: JSON-encodable case. It stays, because a handful of values genuinely have
-#: no JSON mapping, but the degradation is never silent: this typed reason
-#: reaches the log the same way every other degradation in this package does
-#: (``execution.py``'s ``reason=tool_observer_failed`` / ``reason=file_policy_unavailable``
-#: idiom; ``gateway.py``'s ``reason=%s`` degrade logs).
+#: Typed reason for the logged repr fallback when no real JSON mapping exists.
 MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON = "mcp_result_to_text_repr_fallback"
 
 
@@ -763,8 +744,7 @@ def _result_to_text(result: Any) -> str:
     (TEXT blocks verbatim, everything else a short placeholder -- never raw
     base64 in the model-facing lane).
 
-    ``allow_nan=False`` keeps NaN/Infinity out of the encoded text: Python's
-    ``json`` module happily emits the non-standard tokens ``NaN`` / ``Infinity``
+    ``allow_nan=False`` keeps Python's non-standard NaN/Infinity out of encoded text;
     by default, which is invalid JSON everywhere else, so they are routed to
     the same typed fallback as any other unencodable value instead of landing
     on the wire as JSON that isn't actually valid JSON. The fallback itself
@@ -774,13 +754,11 @@ def _result_to_text(result: Any) -> str:
     pathologically self-referential structure exhausting the recursion limit
     before json's own cycle guard fires), ``OverflowError`` (an int outside
     the encoder's range) -- and logs a structured, typed reason
-    (:data:`MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON`) before returning the
-    repr text, so the degradation reaches the log/trace channel instead of
-    silently reintroducing repr-on-the-wire.
+    (:data:`MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON`) before returning repr.
     """
     data = getattr(result, "data", result)
     if isinstance(data, str):
-        return data
+        return _bounded_model_tool_result(data)
     if data is None:
         content = getattr(result, "content", None)
         if (
@@ -792,9 +770,11 @@ def _result_to_text(result: Any) -> str:
                 piece for piece in (_content_block_model_text(block) for block in content) if piece
             )
             if placeholder:
-                return placeholder
+                return _bounded_model_tool_result(placeholder)
     try:
-        return json.dumps(data, allow_nan=False, default=pydantic_json_default)
+        return _bounded_model_tool_result(
+            json.dumps(data, allow_nan=False, default=pydantic_json_default)
+        )
     except (TypeError, ValueError, RecursionError, OverflowError) as exc:
         logger.warning(
             "mcp result to text degraded to repr fallback reason=%s type=%s error=%s",
@@ -802,7 +782,7 @@ def _result_to_text(result: Any) -> str:
             type(data).__name__,
             exc,
         )
-        return str(data)
+        return _bounded_model_tool_result(str(data))
 
 
 def _tool_ui_metadata(tool: Any) -> Mapping[str, Any]:

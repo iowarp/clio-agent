@@ -41,6 +41,8 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import yaml
 
 from clio_agent.errors import MCP_YAML_DECLARATION_UNREADABLE
+from clio_agent.tools.mcp_config_values import optional_int
+from clio_agent.tools.mcp_environment import stdio_environment
 
 if TYPE_CHECKING:
     from mcp.client.auth.oauth2 import TokenStorage
@@ -163,6 +165,7 @@ class MCPServerSpec:
     auth: MCPAuthConfig | None = field(default=None, repr=False)
     always_load: bool = False
     timeout_ms: int | None = None
+    probe_timeout_retries: int | None = None
     source: str = ""
     validation_errors: tuple[str, ...] = ()
 
@@ -350,12 +353,8 @@ def _spec_from_mapping(
     except MCPConfigError as exc:
         errors.append(str(exc))
 
-    timeout_ms: int | None = None
-    if entry.get("timeout") is not None:
-        try:
-            timeout_ms = int(entry["timeout"])
-        except (TypeError, ValueError):
-            errors.append("'timeout' must be an integer (milliseconds)")
+    timeout_ms = optional_int(entry, "timeout", errors, unit=" (milliseconds)")
+    probe_timeout_retries = optional_int(entry, "probe_timeout_retries", errors, minimum=0)
 
     return MCPServerSpec(
         name=name,
@@ -368,6 +367,7 @@ def _spec_from_mapping(
         auth=auth,
         always_load=bool(entry.get("alwaysLoad") or entry.get("always_load") or False),
         timeout_ms=timeout_ms,
+        probe_timeout_retries=probe_timeout_retries,
         source=source,
         validation_errors=tuple(errors),
     )
@@ -606,12 +606,8 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
                 f"PATH for the clio-agent process. source={spec.source or 'unknown'}"
             )
 
-        # Merge ``os.environ`` under the spec vars: we always hand the subprocess an
-        # explicit env (so the UV_CACHE_DIR isolation below can apply), and PATH plus
-        # the rest of the parent environment must survive. A bare ``dict(spec.env)``
-        # would give the child ONLY the spec vars and drop PATH -> anything it execs by
-        # name fails with ``os error 2``.
-        env: dict[str, str] = {**os.environ, **dict(spec.env)}
+        # Preserve the host environment beneath explicit server overrides.
+        env = stdio_environment(spec.env)
         if cwd:
             # Pin clio-kit's artifacts root to the workspace so staged resources
             # and generated artifacts land in the workspace even when the

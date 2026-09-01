@@ -103,7 +103,9 @@ def _jsonish(value: Any) -> str:
         return str(value)
 
 
-def _excerpt_for_family(family: str, body: Mapping[str, Any], inner: Mapping[str, Any]) -> tuple[str, bool]:
+def _excerpt_for_family(
+    family: str, body: Mapping[str, Any], inner: Mapping[str, Any]
+) -> tuple[str, bool]:
     """Compose ONE bounded excerpt for a curated family from the semantic payload.
 
     Curation is deliberate — a react step surfaces its thought + the tool it called

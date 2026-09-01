@@ -33,7 +33,7 @@ def _ctx(provider_id: str = "codex", provider_kind: str = "codex") -> HandshakeC
     return HandshakeContext(
         provider_id=provider_id,
         provider_kind=provider_kind,
-        api_base="codex://app-server",
+        api_base="codex://sdk",
         allow_external_sources=True,
     )
 

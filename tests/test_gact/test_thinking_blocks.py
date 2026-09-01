@@ -42,9 +42,9 @@ def test_chain_of_thought_reasoning_becomes_thinking_part(
     from .conftest import complete_turn
 
     pred = _Pred(reasoning="the user wants HDF5 metadata; call hdf5_list_datasets")
-    c = _client(tmp_path, pred)
-    sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    a = complete_turn(c, sid, "what's in this file")
+    with _client(tmp_path, pred) as c:
+        sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        a = complete_turn(c, sid, "what's in this file")
     types = [p["type"] for p in a["parts"]]
     assert "thinking" in types
     thinking = next(p for p in a["parts"] if p["type"] == "thinking")
@@ -62,9 +62,9 @@ def test_react_trajectory_dict_becomes_thinking_part(tmp_path: Path) -> None:
             "step_1_tool_name": "hdf5_analyze_dataset",
         }
     )
-    c = _client(tmp_path, pred)
-    sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    a = complete_turn(c, sid, "analyze")
+    with _client(tmp_path, pred) as c:
+        sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        a = complete_turn(c, sid, "analyze")
     thinking = next(p for p in a["parts"] if p["type"] == "thinking")
     assert "first probe the schema" in thinking["text"]
     assert "hdf5_analyze_dataset" in thinking["text"]
@@ -74,14 +74,14 @@ def test_no_reasoning_skips_thinking_part(tmp_path: Path) -> None:
     from .conftest import complete_turn
 
     pred = _Pred(reasoning="", trajectory=None)
-    c = _client(tmp_path, pred)
-    sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    a = complete_turn(c, sid, "x")
+    with _client(tmp_path, pred) as c:
+        sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        a = complete_turn(c, sid, "x")
     types = [p["type"] for p in a["parts"]]
     assert "thinking" not in types
 
 
 def test_capability_advertised(tmp_path: Path) -> None:
-    c = _client(tmp_path, _Pred())
-    body = c.get("/v1/capabilities").json()
+    with _client(tmp_path, _Pred()) as c:
+        body = c.get("/v1/capabilities").json()
     assert body["capabilities"]["thinking_blocks"] is True

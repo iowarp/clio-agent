@@ -39,7 +39,7 @@ def register_provider_models_refresh_routes(app: FastAPI, deps: "GactDeps") -> N
         the configured-only filter) the scan to exactly those preset ids
         (#1211 review R3); an unknown id in that list is a typed 404.
 
-        Runs codex's ``model/list`` app-server RPC, claude_code's per-alias
+        Runs the Codex SDK model catalog, claude_code's per-alias
         probe-validation, and the existing live handshake for HTTP backends —
         concurrently, one typed result per provider, each capped at its own
         deadline so a wedged probe can never hang the whole action. A probe

@@ -69,6 +69,27 @@ def test_mapping_form_advanced_env_headers():
     assert http.transport == "http" and http.headers["Authorization"] == "Bearer t"
 
 
+def test_mapping_form_declares_probe_timeout_retry_budget():
+    spec = spec_from_declaration(
+        "geo",
+        {
+            "command": "clio-kit",
+            "args": ["mcp-server", "geo"],
+            "probe_timeout_retries": 9,
+        },
+    )
+    assert spec.probe_timeout_retries == 9
+    assert spec.usable
+
+
+@pytest.mark.parametrize("value", [-1, "later"])
+def test_mapping_form_rejects_invalid_probe_timeout_retry_budget(value):
+    spec = spec_from_declaration("geo", {"command": "clio-kit", "probe_timeout_retries": value})
+    assert spec.probe_timeout_retries is None
+    assert not spec.usable
+    assert any("probe_timeout_retries" in error for error in spec.validation_errors)
+
+
 def test_underscore_server_name_is_rejected_with_structured_error():
     """An ``_`` in a server name breaks ``_namespace_of`` — reject at declaration."""
     spec = spec_from_declaration("my_server", "uvx clio-kit run x")
@@ -325,6 +346,36 @@ def test_transport_for_no_cwd_env_keeps_path():
     assert stdio.cwd is None
     assert stdio.env["MY_KEY"] == "v"
     assert stdio.env.get("PATH") == os.environ.get("PATH")
+
+
+def test_transport_for_scrubs_ambient_python_import_overrides(monkeypatch):
+    """An isolated MCP virtual environment must not import CLIO's Python packages."""
+    monkeypatch.setenv("PYTHONHOME", "/ambient/clio/python")
+    monkeypatch.setenv("PYTHONPATH", "/ambient/clio/site-packages")
+
+    stdio = transport_for(
+        spec_from_declaration("ndp", {"command": sys.executable, "args": ["-c", "pass"]})
+    )
+
+    assert "PYTHONHOME" not in stdio.env
+    assert "PYTHONPATH" not in stdio.env
+
+
+def test_transport_for_preserves_declared_python_import_overrides(monkeypatch):
+    """A server declaration may intentionally opt back into Python import overrides."""
+    monkeypatch.setenv("PYTHONPATH", "/ambient/clio/site-packages")
+    spec = spec_from_declaration(
+        "ndp",
+        {
+            "command": sys.executable,
+            "args": ["-c", "true"],
+            "env": {"PYTHONPATH": "/server/owned/site-packages"},
+        },
+    )
+
+    stdio = transport_for(spec)
+
+    assert stdio.env["PYTHONPATH"] == "/server/owned/site-packages"
 
 
 # --- transport_from_spec: ONE canonical accepted set (#770 C2) -------------

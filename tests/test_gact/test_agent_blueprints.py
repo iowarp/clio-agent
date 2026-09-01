@@ -1446,6 +1446,39 @@ def test_recording_blueprint_tool_captures_context_local_tool_result() -> None:
     ]
 
 
+def test_recording_blueprint_tool_classifies_oversized_structured_failure_before_bounding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "256")
+
+    def failing_tool(station: str) -> dict[str, Any]:
+        del station
+        return {
+            "payload": "x" * 20_000,
+            "status": "failed",
+        }
+
+    tool = dspy.Tool(
+        func=failing_tool,
+        name="oversized_station_tool",
+        desc="Oversized failing station tool",
+        args={"station": {"type": "string"}},
+    )
+    rows: list[dict[str, Any]] = []
+    token = ctx.set_blueprint_tool_rows(rows)
+    try:
+        wrapped = _recording_blueprint_tool(tool)
+        result = wrapped(station="UCSF")
+    finally:
+        ctx.reset(token)
+
+    assert result["status"] == "failed"
+    assert rows[0]["ok"] is False
+    assert rows[0]["error"] == "status=failed"
+    assert rows[0]["result"]["truncated"] is True
+    assert '"status": "failed"' not in rows[0]["result"]["preview"]
+
+
 @pytest.mark.parametrize(
     "blueprint_id",
     [
@@ -2362,6 +2395,13 @@ def test_agent_blueprint_marketplace_sources_persist_and_install_by_id(
         assert source["source_kind"] == "path"
         assert source["pinned_commit"] == ""
         assert [row["id"] for row in source["available_blueprints"]] == ["genomics"]
+        assert [row["id"] for row in created.json()["installed"]] == ["genomics"]
+        assert source["installed_blueprints"] == [
+            {"id": "genomics", "version": "0.1.0", "scope": "global"}
+        ]
+
+        globally_installed = client.get("/v1/agent-blueprints").json()
+        assert "genomics" in {row["id"] for row in globally_installed["agent_blueprints"]}
 
         listed = client.get("/v1/agent-blueprints/sources").json()
         assert [row["id"] for row in listed["sources"]] == [source_id]
@@ -2369,6 +2409,7 @@ def test_agent_blueprint_marketplace_sources_persist_and_install_by_id(
         refreshed = client.post(f"/v1/agent-blueprints/sources/{source_id}/refresh")
         assert refreshed.status_code == 200, refreshed.text
         assert refreshed.json()["source"]["available_blueprints"][0]["id"] == "genomics"
+        assert [row["id"] for row in refreshed.json()["installed"]] == ["genomics"]
 
         wid = client.post(
             "/v1/workspaces",
@@ -2389,6 +2430,39 @@ def test_agent_blueprint_marketplace_sources_persist_and_install_by_id(
         assert client.get("/v1/agent-blueprints/sources").json()["sources"] == []
 
     assert (workspace / ".clio" / "agent-blueprints" / "genomics" / ".clio-install.md").exists()
+
+
+def test_agent_blueprint_source_installs_valid_entries_and_reports_invalid_ones(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken marketplace entry never hides valid installs or reports ready."""
+
+    monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path / "user-config"))
+    marketplace = tmp_path / "marketplace"
+    _write_blueprint(marketplace / "genomics")
+    broken = marketplace / "broken-pack"
+    broken.mkdir(parents=True)
+    broken.joinpath("AGENT.md").write_text(_BROKEN_PACK_MD, encoding="utf-8")
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/agent-blueprints/sources",
+            json={"source": str(marketplace), "name": "Mixed marketplace"},
+        )
+        assert created.status_code == 201, created.text
+        payload = created.json()
+        source = payload["source"]
+        assert source["status"] == "degraded"
+        assert "broken-pack" in source["error"]
+        assert [row["id"] for row in payload["installed"]] == ["genomics"]
+        assert [row["id"] for row in payload["skipped"]] == ["broken-pack"]
+
+        globally_installed = client.get("/v1/agent-blueprints").json()
+        installed_ids = {row["id"] for row in globally_installed["agent_blueprints"]}
+        assert "genomics" in installed_ids
+        assert "broken-pack" not in installed_ids
 
 
 def test_marketplace_install_supports_distinct_session_blueprints(tmp_path: Path) -> None:
@@ -2661,6 +2735,15 @@ A helper.
         assert resp.status_code == 201, resp.text
         kinds = {r["id"]: r["kind"] for r in resp.json()["installed"]}
         assert kinds.get("toolkit") == "pack", kinds
+        listed = client.get("/v1/expert-packs", params={"workspace_id": wid})
+        assert listed.status_code == 200, listed.text
+        listed_rows = {row["id"]: row for row in listed.json()["expert_packs"]}
+        assert listed_rows["toolkit"]["kind"] == "pack"
+
+        detail = client.get("/v1/expert-packs/toolkit", params={"workspace_id": wid})
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["expert_pack"]["kind"] == "pack"
+        assert [row["id"] for row in detail.json()["agents"]] == ["helper"]
 
 
 def test_active_agent_blueprint_drives_turn_runtime_and_overrides_builtin_ids(
@@ -3265,6 +3348,33 @@ def test_dynamic_agent_tools_still_bricks_when_nothing_resolves(tmp_path: Path) 
     assert raised.value.tools == ["fs_read_file"]
 
 
+def test_dynamic_agent_tools_never_falls_back_when_workspace_fleet_build_fails() -> None:
+    """A broken workspace fleet is typed, never replaced by the default executor."""
+
+    fallback = SimpleNamespace(to_dspy_tools=lambda: [])
+
+    def _broken_workspace_fleet() -> None:
+        raise RuntimeError("workspace fleet failed")
+
+    base_agent = SimpleNamespace(
+        _active_tool_executor=_broken_workspace_fleet,
+        tool_executor=fallback,
+    )
+    agent_def = AgentDef(
+        id="geospatial",
+        source="expert_pack",
+        title="Geospatial",
+        tools=["geo_geocode"],
+    )
+
+    with pytest.raises(_UnsupportedSessionAgent) as raised:
+        _dynamic_agent_tools(base_agent, agent_def, {})
+
+    assert raised.value.reason == "custom_agent_tool_executor_unavailable"
+    assert raised.value.tools == ["geo_geocode"]
+    assert raised.value.mount_failures == {"workspace_fleet": "mcp_namespace_discovery_unreachable"}
+
+
 def test_active_base_agent_tool_executor_prefers_per_workspace() -> None:
     """A bound workspace routes dynamic-agent tools to the per-workspace executor.
 
@@ -3303,6 +3413,48 @@ def test_active_base_agent_tool_executor_falls_back_without_seam() -> None:
     default_executor = object()
     base_agent = SimpleNamespace(tool_executor=default_executor)
     assert _active_base_agent_tool_executor(base_agent) is default_executor
+
+
+def test_active_base_agent_tool_executor_recovers_workspace_from_child_session() -> None:
+    """A child module rebuild uses its session territory after a fleet reap."""
+    from clio_agent.gact import context as runtime_context
+    from clio_agent.gact.runtime.globals import _gact_app_context
+
+    default_executor = object()
+    workspace_executor = object()
+    base_agent = SimpleNamespace(
+        tool_executor=default_executor,
+        _active_tool_executor=lambda: (
+            workspace_executor
+            if __import__(
+                "clio_agent.tools.execution",
+                fromlist=["get_active_tool_workspace_root"],
+            ).get_active_tool_workspace_root()
+            == "C:/workspace/ndp"
+            else default_executor
+        ),
+    )
+    session = SimpleNamespace(
+        workspace_id="ws_ndp",
+        metadata={"active_agent_blueprint_id": "earthscope-flat"},
+    )
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            sessions=SimpleNamespace(get=lambda sid: session if sid == "sess_child" else None),
+            workspaces=SimpleNamespace(
+                get=lambda wid: (
+                    SimpleNamespace(root_path="C:/workspace/ndp") if wid == "ws_ndp" else None
+                )
+            ),
+        )
+    )
+
+    with _gact_app_context(app):
+        token = runtime_context.set_session_id("sess_child")
+        try:
+            assert _active_base_agent_tool_executor(base_agent) is workspace_executor
+        finally:
+            runtime_context.reset(token)
 
 
 # --------------------------------------------------------------------------- #
@@ -3372,6 +3524,45 @@ def test_agent_blueprint_files_read_returns_raw_markdown(tmp_path: Path) -> None
     assert read.headers["content-type"].startswith("text/plain")
     assert "Coordinate genomics work." in read.text
     assert "id: root" in read.text
+
+
+def test_agent_blueprint_files_write_persists_text_and_returns_validation(tmp_path: Path) -> None:
+    """The editor atomically persists a real blueprint file and reports runtime validation."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid, _ = _install_genomics_blueprint(tmp_path, client)
+        replacement = "---\nid: root\ntitle: Root\n---\n\nCoordinate updated genomics work.\n"
+        written = client.put(
+            "/v1/agent-blueprints/genomics/files/write",
+            params={"workspace_id": wid, "path": "experts/root.md"},
+            json={"content": replacement},
+        )
+        reread = client.get(
+            "/v1/agent-blueprints/genomics/files/read",
+            params={"workspace_id": wid, "path": "experts/root.md"},
+        )
+
+    assert written.status_code == 200, written.text
+    assert written.json()["entry"]["size"] == len(replacement.encode("utf-8"))
+    assert "validation" in written.json()
+    assert reread.text == replacement
+
+
+def test_agent_blueprint_files_write_rejects_path_traversal(tmp_path: Path) -> None:
+    """The mutation endpoint carries the same blueprint-root confinement as reads."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid, _ = _install_genomics_blueprint(tmp_path, client)
+        escaped = client.put(
+            "/v1/agent-blueprints/genomics/files/write",
+            params={"workspace_id": wid, "path": "../../outside.md"},
+            json={"content": "forbidden"},
+        )
+
+    assert escaped.status_code == 400, escaped.text
+    assert escaped.json()["error"]["error"] == "path_outside_blueprint"
 
 
 def test_agent_blueprint_files_read_rejects_path_traversal(tmp_path: Path) -> None:
@@ -3488,6 +3679,40 @@ def test_agent_blueprint_files_session_scoped_path_activation_resolves(
         assert mismatched.status_code == 404, mismatched.text
 
 
+def test_agent_blueprint_files_historical_definition_snapshot_resolves(
+    tmp_path: Path,
+) -> None:
+    """A persisted activation remains inspectable after its transient path is cleared."""
+
+    external_root = tmp_path / "external" / "earthscope-flat"
+    _write_blueprint(external_root, blueprint_id="earthscope-flat")
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="historical demo")
+    app.state.sessions.update(
+        session.id,
+        metadata_patch={
+            "active_agent_blueprint_id": "earthscope-flat",
+            "active_agent_blueprint_name": "EarthScope (Flat / Haiku)",
+            "active_agent_blueprint_path": "",
+            "active_agent_blueprint_definition_path": str(external_root / "AGENT.md"),
+        },
+    )
+
+    with TestClient(app) as client:
+        listed = client.get(
+            "/v1/agent-blueprints/earthscope-flat/files",
+            params={"session_id": session.id},
+        )
+        mismatched = client.get(
+            "/v1/agent-blueprints/genomics/files",
+            params={"session_id": session.id},
+        )
+
+    assert listed.status_code == 200, listed.text
+    assert "AGENT.md" in {row["path"] for row in listed.json()["entries"]}
+    assert mismatched.status_code == 404, mismatched.text
+
+
 # --------------------------------------------------------------------------- #
 # Install-ALL registry semantics (owner ruling 2026-08-13): the marketplace is #
 # the shipped standard library — every valid pack on main installs, first-run  #
@@ -3558,6 +3783,16 @@ def test_first_run_bootstrap_installs_every_registry_pack(
     assert diagnostic == ""
     assert install_root.joinpath("AGENT.md").exists()
     assert install_root.parent.joinpath("extra-pack", "AGENT.md").exists()
+    from clio_agent.gact.agent_blueprint_sources import load_agent_blueprint_sources
+
+    sources = load_agent_blueprint_sources()
+    assert len(sources) == 1
+    assert sources[0]["name"] == "CLIO Agent Marketplace"
+    assert sources[0]["status"] == "ready"
+    assert {row["id"] for row in sources[0]["available_blueprints"]} == {
+        DEFAULT_AGENT_BLUEPRINT_ID,
+        "extra-pack",
+    }
 
 
 def test_bootstrap_installs_pack_added_to_local_registry_after_install(
@@ -3594,6 +3829,61 @@ def test_bootstrap_installs_pack_added_to_local_registry_after_install(
     reset_registry_sync_for_tests()
     assert ensure_default_registry_bootstrap(home=home, cwd=tmp_path / "cwd") == ""
     assert install_root.parent.joinpath("late-pack", "AGENT.md").exists()
+
+
+def test_local_registry_sync_is_serialized_across_concurrent_discovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Concurrent first discovery reconciles each marketplace pack exactly once."""
+
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    import clio_agent.gact.agent_blueprint_refresh as refresh
+
+    registry_dir = tmp_path / "local-registry"
+    for pack_id in ("pack-one", "pack-two"):
+        pack = registry_dir / pack_id
+        pack.mkdir(parents=True)
+        pack.joinpath("AGENT.md").write_text(
+            _EXTRA_PACK_MD.replace("extra-pack", pack_id), encoding="utf-8"
+        )
+
+    refresh.reset_registry_sync_for_tests()
+    active = 0
+    maximum_active = 0
+    installed: list[str] = []
+    counter_lock = threading.Lock()
+
+    def record_install(**kwargs: object) -> dict[str, list[dict[str, str]]]:
+        nonlocal active, maximum_active
+        with counter_lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        try:
+            time.sleep(0.03)
+            installed.append(str(kwargs["blueprint_id"]))
+            return {"installed": [], "skipped": []}
+        finally:
+            with counter_lock:
+                active -= 1
+
+    monkeypatch.setattr(refresh, "install_agent_blueprint", record_install)
+    kwargs = {
+        "source": str(registry_dir),
+        "home": tmp_path / "home",
+        "cwd": tmp_path / "cwd",
+        "pinned": "",
+    }
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        diagnostics = list(
+            pool.map(lambda _: refresh.sync_local_registry_packs(**kwargs), range(4))
+        )
+
+    assert diagnostics == ["", "", "", ""]
+    assert sorted(installed) == ["pack-one", "pack-two"]
+    assert maximum_active == 1
 
 
 def test_uninstalled_pack_is_not_resurrected_by_the_sync(
@@ -3717,3 +4007,260 @@ def test_dead_local_path_sources_are_pruned_on_load(
         user_dir.joinpath("agent-blueprint-sources.json").read_text(encoding="utf-8")
     )
     assert [row["id"] for row in rewritten["sources"]] == ["src_url"]
+
+
+_EDITED_ROOT_MD = """---
+id: root
+title: Genomics Root
+tier: 1
+module:
+  kind: react
+prompt_id: genomics.root
+---
+Coordinate LOCALLY EDITED genomics work.
+"""
+
+
+def _register_local_source(client: TestClient, marketplace: Path) -> str:
+    """Register a local-path marketplace source and return its id."""
+
+    created = client.post(
+        "/v1/agent-blueprints/sources",
+        json={"source": str(marketplace), "name": "Local marketplace"},
+    )
+    assert created.status_code == 201, created.text
+    return str(created.json()["source"]["id"])
+
+
+def test_source_refresh_never_resurrects_an_uninstalled_pack(tmp_path: Path) -> None:
+    """A user uninstall survives a marketplace-source refresh, with a typed reason.
+
+    **Sabotage:** drop ``skip_blueprint_ids`` from the source install -> the pack
+    is reinstalled (and its tombstone cleared) -> red, the review 2026-08-13
+    blocker reappearing on the source-refresh path.
+    """
+
+    marketplace = tmp_path / "marketplace"
+    _write_blueprint(marketplace / "genomics")
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        source_id = _register_local_source(client, marketplace)
+        deleted = client.delete("/v1/agent-blueprints/genomics", params={"scope": "global"})
+        assert deleted.status_code == 200, deleted.text
+
+        refreshed = client.post(f"/v1/agent-blueprints/sources/{source_id}/refresh")
+        assert refreshed.status_code == 200, refreshed.text
+        payload = refreshed.json()
+        assert payload["installed"] == []
+        assert payload["skipped"] == [{"id": "genomics", "reason": "user_uninstalled"}]
+        assert payload["source"]["status"] == "ready"
+        assert payload["source"]["skipped_blueprints"] == [
+            {"id": "genomics", "reason": "user_uninstalled"}
+        ]
+
+        listed = client.get("/v1/agent-blueprints").json()["agent_blueprints"]
+        assert "genomics" not in {row["id"] for row in listed}
+
+
+def test_source_refresh_preserves_a_locally_edited_blueprint(tmp_path: Path) -> None:
+    """Refreshing a source never discards edits made through the file-write route.
+
+    **Sabotage:** stop reporting ``local_edits_present`` -> the reinstall
+    rmtree+copytree's the edited root and the edited text is gone -> red.
+    """
+
+    marketplace = tmp_path / "marketplace"
+    _write_blueprint(marketplace / "genomics")
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        source_id = _register_local_source(client, marketplace)
+        edited = _EDITED_ROOT_MD
+        written = client.put(
+            "/v1/agent-blueprints/genomics/files/write",
+            params={"path": "experts/root.md"},
+            json={"content": edited},
+        )
+        assert written.status_code == 200, written.text
+
+        refreshed = client.post(f"/v1/agent-blueprints/sources/{source_id}/refresh")
+        assert refreshed.status_code == 200, refreshed.text
+        payload = refreshed.json()
+        assert payload["installed"] == []
+        assert payload["skipped"] == [{"id": "genomics", "reason": "local_edits_present"}]
+        assert payload["source"]["status"] == "ready"
+
+        read_back = client.get(
+            "/v1/agent-blueprints/genomics/files/read", params={"path": "experts/root.md"}
+        )
+        assert read_back.status_code == 200, read_back.text
+        assert "Coordinate LOCALLY EDITED genomics work." in read_back.text
+
+
+def test_workspace_scoped_source_refuses_an_unresolvable_workspace(tmp_path: Path) -> None:
+    """A workspace-scoped source is refused when the workspace does not resolve.
+
+    **Sabotage:** restore ``cwd or Path.cwd()`` -> the packs land in the server
+    process's own working directory under ``.clio/agent-blueprints`` and the
+    route reports 201 -> red on both the status code and the stray directory.
+    """
+
+    marketplace = tmp_path / "marketplace"
+    _write_blueprint(marketplace / "genomics")
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/agent-blueprints/sources",
+            json={"source": str(marketplace), "scope": "workspace", "workspace_id": "ws_gone"},
+        )
+        assert created.status_code == 404, created.text
+        detail = created.json()["error"]
+        assert detail["error"] == "workspace_unresolved"
+        assert detail["details"]["workspace_id"] == "ws_gone"
+        assert client.get("/v1/agent-blueprints/sources").json()["sources"] == []
+
+    assert not (Path.cwd() / ".clio" / "agent-blueprints" / "genomics").exists()
+
+
+def test_source_ledger_writers_share_one_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The boot recorder and the route writers cannot lose each other's rows.
+
+    **Sabotage:** drop the lock from ``upsert_agent_blueprint_source`` -> the two
+    read-modify-writes interleave and one row is silently gone -> red.
+    """
+
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from clio_agent.gact import agent_blueprint_sources as sources
+
+    registry = tmp_path / "registry"
+    _write_blueprint(registry / "genomics")
+    install_root = tmp_path / "install"
+    install_root.mkdir()
+    installed = install_root / "genomics"
+    _write_blueprint(installed)
+    installed.joinpath(".clio-install.md").write_text(
+        f"source: {registry}\nsource_kind: path\ncommit: abc123\n", encoding="utf-8"
+    )
+
+    original_save = sources.save_agent_blueprint_sources
+
+    def slow_save(rows: list[dict[str, Any]]) -> None:
+        time.sleep(0.05)
+        original_save(rows)
+
+    monkeypatch.setattr(sources, "save_agent_blueprint_sources", slow_save)
+    started = threading.Barrier(2)
+
+    def record_default() -> None:
+        started.wait(timeout=5)
+        sources.record_default_agent_blueprint_source(
+            source=str(registry), ref="main", pinned_commit="", install_root=install_root
+        )
+
+    def add_user_source() -> None:
+        started.wait(timeout=5)
+        sources.upsert_agent_blueprint_source({"id": "src_user", "source": "https://example/x.git"})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        for future in [pool.submit(record_default), pool.submit(add_user_source)]:
+            future.result(timeout=10)
+
+    ids = {row["id"] for row in sources.load_agent_blueprint_sources()}
+    assert ids == {sources.source_registry_id(str(registry), "main"), "src_user"}
+
+
+def test_default_source_record_writes_only_when_the_row_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Discovery calls the boot recorder constantly; an unchanged row is not rewritten.
+
+    **Sabotage:** always save -> the second call rewrites the ledger -> red.
+    """
+
+    from clio_agent.gact import agent_blueprint_sources as sources
+
+    registry = tmp_path / "registry"
+    _write_blueprint(registry / "genomics")
+    install_root = tmp_path / "install"
+    install_root.mkdir()
+    installed = install_root / "genomics"
+    _write_blueprint(installed)
+    installed.joinpath(".clio-install.md").write_text(
+        f"source: {registry}\nsource_kind: path\ncommit: abc123\n", encoding="utf-8"
+    )
+
+    saves: list[int] = []
+    original_save = sources.save_agent_blueprint_sources
+
+    def counting_save(rows: list[dict[str, Any]]) -> None:
+        saves.append(len(rows))
+        original_save(rows)
+
+    monkeypatch.setattr(sources, "save_agent_blueprint_sources", counting_save)
+    kwargs: dict[str, Any] = {
+        "source": str(registry),
+        "ref": "main",
+        "pinned_commit": "",
+        "install_root": install_root,
+    }
+    first = sources.record_default_agent_blueprint_source(**kwargs)
+    second = sources.record_default_agent_blueprint_source(**kwargs)
+
+    assert saves == [1], "an unchanged default source row must not rewrite the ledger"
+    assert first["id"] == second["id"]
+    assert second["updated_at"] == first["updated_at"]
+
+
+def test_source_routes_run_blocking_installs_off_the_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cloning/installing a source never runs on the server's event loop.
+
+    A git-backed source blocks for up to two clone timeouts; on the loop that
+    stalls every session and SSE stream. **Sabotage:** call the helpers directly
+    from the handler -> ``get_running_loop()`` succeeds inside them -> red.
+    """
+
+    import asyncio
+
+    from clio_agent.gact.routes import blueprints as blueprint_routes
+
+    marketplace = tmp_path / "marketplace"
+    _write_blueprint(marketplace / "genomics")
+    on_loop: list[str] = []
+
+    def _record(name: str) -> None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        on_loop.append(name)
+
+    original_refresh = blueprint_routes._refresh_agent_blueprint_source
+    original_install = blueprint_routes._install_agent_blueprint_source
+
+    def traced_refresh(row: Any) -> Any:
+        _record("refresh")
+        return original_refresh(row)
+
+    def traced_install(row: Any, **kwargs: Any) -> Any:
+        _record("install")
+        return original_install(row, **kwargs)
+
+    monkeypatch.setattr(blueprint_routes, "_refresh_agent_blueprint_source", traced_refresh)
+    monkeypatch.setattr(blueprint_routes, "_install_agent_blueprint_source", traced_install)
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        source_id = _register_local_source(client, marketplace)
+        refreshed = client.post(f"/v1/agent-blueprints/sources/{source_id}/refresh")
+        assert refreshed.status_code == 200, refreshed.text
+
+    assert on_loop == []

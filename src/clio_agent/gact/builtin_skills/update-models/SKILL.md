@@ -17,8 +17,8 @@ main session — not on a spawned sub-agent/child session. If you are running
 as a spawned child and don't see this tool available, report that back
 instead of guessing at another way to trigger a refresh; ask to have this
 skill invoked from the main session instead. On the main session, it takes no
-arguments and probes every CONFIGURED provider: codex through its app-server's
-live `model/list`,
+arguments and probes every CONFIGURED provider: codex through the official
+Python SDK model catalog,
 claude_code by validating each documented CLI model alias with a trivial turn,
 and every HTTP-backed provider (OpenAI, Anthropic, OpenRouter, ALCF/Argonne,
 LM Studio, Ollama, local vLLM) with usable credentials through its existing
@@ -30,7 +30,7 @@ live models endpoint. It returns JSON shaped like:
     {
       "provider": "codex",
       "discovered": [{"id": "...", "name": "...", "description": "..."}],
-      "source": "codex_app_server",
+      "source": "codex_sdk",
       "default_model": "...",
       "cli_default": "...",
       "added": ["..."],

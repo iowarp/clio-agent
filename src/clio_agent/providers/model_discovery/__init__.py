@@ -10,7 +10,7 @@ of, one submodule per concern (kept split to respect the #775 file-size ratchet)
 * :mod:`.overlay` — the refresh overlay: read/write/delta, malformed-vs-unreadable
   typed errors, the ``ProviderDiscoveryResult`` shape, and the context/output-limit
   enrichment persisted at refresh time (#1211 review D4).
-* :mod:`.codex` — codex discovery via the app-server's real ``model/list`` RPC,
+* :mod:`.codex` — Codex discovery via the official Python SDK model catalog,
   verified live against codex-cli 0.147.0 (see :func:`discover_codex`).
 * :mod:`.claude_code` — claude_code discovery via per-alias probe-validation (no
   enumeration endpoint exists for this channel) — a rejected alias comes back as

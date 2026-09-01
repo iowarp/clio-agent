@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
 from clio_agent.gact.types import Message, Part
 
 
@@ -86,3 +87,48 @@ def test_legacy_delete_without_session_remains_compatible(tmp_path: Path) -> Non
         assert resp.status_code == 204
         assert app.state.messages[sid] == []
         assert app.state.sessions.get(sid).message_count == 0
+
+
+def _a2ui_batch(surface_id: str) -> list[dict[str, object]]:
+    return [
+        {
+            "version": "v0.9.1",
+            "createSurface": {"surfaceId": surface_id, "catalogId": CLIO_A2UI_CATALOG_ID},
+        },
+        {
+            "version": "v0.9.1",
+            "updateComponents": {
+                "surfaceId": surface_id,
+                "components": [
+                    {
+                        "id": "root",
+                        "component": "clio.status.v1",
+                        "label": "Analysis",
+                        "state": "completed",
+                    }
+                ],
+            },
+        },
+    ]
+
+
+def test_deleting_an_a2ui_message_preserves_its_ready_surface(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "surface"}).json()["id"]
+        app.state.a2ui_store.apply_batch(sid, _a2ui_batch("kept_surface"))
+        target = app.state.messages[sid][-1].id
+
+        resp = client.delete(f"/v1/sessions/{sid}/messages/{target}")
+
+        assert resp.status_code == 204
+        assert [m.id for m in app.state.messages[sid]] != [target]
+        surface = app.state.a2ui_store.get(sid, "kept_surface")
+        assert surface is not None
+        assert surface.state == "ready"
+        assert app.state.a2ui_store.projection_degradations(sid) == []
+        assert app.state.messages[sid][-1].metadata == {
+            "synthetic": "a2ui_preservation",
+            "preserved_by": "message_delete",
+        }
+        assert app.state.sessions.get(sid).message_count == len(app.state.messages[sid])

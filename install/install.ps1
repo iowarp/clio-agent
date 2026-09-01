@@ -144,13 +144,13 @@ if (Test-Path $VenvPython) {
 # is idempotent (re-run is a no-op / version pin). Needs uv; without it the
 # packs' tools simply stay unprovisioned until uv is installed.
 if (Have uv) {
-    Say "Provisioning clio-kit MCP tool launcher (uv tool install clio-kit==2.2.3)"
-    & uv tool install clio-kit==2.2.3
+    Say "Provisioning clio-kit MCP tool launcher (uv tool install clio-kit==2.10.6)"
+    & uv tool install clio-kit==2.10.6
     if ($LASTEXITCODE -ne 0) {
-        Warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until 'uv tool install clio-kit==2.2.3' succeeds and the dir from 'uv tool dir --bin' is on PATH"
+        Warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until 'uv tool install clio-kit==2.10.6' succeeds and the dir from 'uv tool dir --bin' is on PATH"
     }
 } else {
-    Warn "uv not found - skipping clio-kit MCP launcher provisioning; install uv, then run: uv tool install clio-kit==2.2.3"
+    Warn "uv not found - skipping clio-kit MCP launcher provisioning; install uv, then run: uv tool install clio-kit==2.10.6"
 }
 
 # ---------- install gact ----------------------------------------------

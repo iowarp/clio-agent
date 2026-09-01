@@ -71,3 +71,49 @@ def test_mcp_prompt_get_round_trips_arguments_and_messages(
     assert response.json()["prompt"]["messages"] == [
         {"role": "user", "content": {"type": "text", "text": "Welcome, Alice!"}}
     ]
+
+
+def test_stdio_install_retains_environment_and_redacts_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A local provider keeps launch settings for reconnect without disclosing values."""
+    server = FastMCP("environment-test")
+    captured_specs: list[dict[str, object]] = []
+
+    @server.tool(name="ping")
+    def ping() -> str:
+        return "pong"
+
+    def capture_transport(spec: dict[str, object]) -> FastMCP:
+        captured_specs.append(spec)
+        return server
+
+    app = build_app(sessions_path=tmp_path / "environment.json")
+    monkeypatch.setattr("clio_agent.gact.routes.mcp.transport_from_spec", capture_transport)
+    with TestClient(app) as environment_client:
+        response = environment_client.post(
+            "/v1/mcp/servers",
+            json={
+                "name": "Web search",
+                "transport": "stdio",
+                "command": "web-tools",
+                "args": ["serve"],
+                "env": {"WEB_STATE_DIR": str(tmp_path / "web-state")},
+            },
+        )
+
+        assert response.status_code == 201, response.text
+        sid = response.json()["id"]
+        stored_spec = environment_client.app.state.external_mcp_servers[sid]["spec"]
+
+    expected_env = {"WEB_STATE_DIR": str(tmp_path / "web-state")}
+    assert captured_specs == [
+        {
+            "transport": "stdio",
+            "command": "web-tools",
+            "args": ["serve"],
+            "env": expected_env,
+        }
+    ]
+    assert stored_spec["env"] == expected_env
+    assert response.json()["spec"]["env"] == {"WEB_STATE_DIR": "<redacted>"}

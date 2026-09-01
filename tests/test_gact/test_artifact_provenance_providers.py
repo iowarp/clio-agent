@@ -21,7 +21,10 @@ from clio_agent.gact.artifacts.provenance.cmf import (
     CMFArtifactStore,
     CMFProviderConfig,
     _resolve_python,
+    _worker_argv,
+    resolve_local_worker_command,
 )
+from clio_agent.gact.artifacts.provenance.cmf_reasons import CMFRefusal
 from clio_agent.gact.artifacts.provenance.selector import ArtifactProvenanceDispatcher
 from clio_agent.gact.artifacts.records import (
     ArtifactKind,
@@ -68,6 +71,104 @@ def test_cmf_python_keeps_virtualenv_launcher_path(
     monkeypatch.setattr(Path, "resolve", _unexpected_resolve)
 
     assert _resolve_python(str(launcher)) == str(launcher.absolute())
+
+
+def test_cmf_python_refuses_a_launcher_command_naming_another_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``ssh host python`` is not product surface -- CLIO has no reach off-host.
+
+    The multi-token launcher form was removed: a CMF runtime that cannot exist
+    on this host is reached through server mode, not by shelling out.
+    """
+    ssh = tmp_path / "ssh"
+    ssh.write_bytes(b"")
+    monkeypatch.setattr(
+        "clio_agent.gact.artifacts.provenance.cmf.shutil.which",
+        lambda value: str(ssh) if value == "ssh" else None,
+    )
+
+    with pytest.raises(CMFRefusal) as excinfo:
+        resolve_local_worker_command("ssh homelab /opt/cmf/bin/python", platform="linux")
+
+    assert excinfo.value.reason == "cmf_local_runtime_unavailable"
+    assert "LOCAL interpreter" in excinfo.value.payload["message"]
+
+
+def test_cmf_python_refuses_a_single_token_remote_launcher(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare ``ssh``/``docker`` resolves on PATH but still starts another host."""
+    launcher = tmp_path / "docker"
+    launcher.write_bytes(b"")
+    monkeypatch.setattr(
+        "clio_agent.gact.artifacts.provenance.cmf.shutil.which",
+        lambda value: str(launcher) if value == "docker" else None,
+    )
+
+    with pytest.raises(CMFRefusal) as excinfo:
+        resolve_local_worker_command("docker", platform="linux")
+
+    assert excinfo.value.reason == "cmf_local_runtime_unavailable"
+
+
+def test_cmf_local_mode_refuses_win32_where_no_mlmd_wheels_exist(tmp_path: Path) -> None:
+    """The platform is a PARAMETER, so this is asserted on any host."""
+    interpreter = tmp_path / "python"
+    interpreter.write_bytes(b"")
+
+    with pytest.raises(CMFRefusal) as excinfo:
+        resolve_local_worker_command(str(interpreter), platform="win32")
+
+    assert excinfo.value.reason == "cmf_local_runtime_unsupported_platform"
+    assert excinfo.value.payload["details"]["platform"] == "win32"
+    assert "configure_server_url" in excinfo.value.payload["recovery_actions"]
+
+
+def test_cmf_local_mode_accepts_a_plain_local_interpreter(tmp_path: Path) -> None:
+    interpreter = tmp_path / "python"
+    interpreter.write_bytes(b"")
+
+    assert resolve_local_worker_command(str(interpreter), platform="linux") == [
+        str(interpreter.absolute())
+    ]
+
+
+def test_cmf_worker_runs_the_bundled_worker_script(tmp_path: Path) -> None:
+    """There is no worker_script override: local mode runs on THIS filesystem."""
+    interpreter = tmp_path / "python"
+    interpreter.write_bytes(b"")
+    config = CMFProviderConfig(
+        python=str(interpreter),
+        metadata_path=tmp_path / "mlmd.sqlite",
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    argv = _worker_argv(config, resolve_local_worker_command(config.python, platform="linux"))
+
+    assert argv[0] == str(interpreter.absolute())
+    assert argv[1] == str(Path(cmf_worker.__file__))
+    assert "--pipeline" in argv
+
+
+def test_cmf_config_has_no_worker_script_field() -> None:
+    """The override is gone, not merely unused."""
+    assert "worker_script" not in CMFProviderConfig.__dataclass_fields__
+
+
+def test_cmf_worker_refuses_an_unresolvable_interpreter(tmp_path: Path) -> None:
+    """No interpreter is a typed refusal, not a bare-name Popen attempt."""
+    with pytest.raises(CMFRefusal) as excinfo:
+        resolve_local_worker_command(str(tmp_path / "absent-python"), platform="linux")
+    assert excinfo.value.reason == "cmf_local_runtime_unavailable"
+
+
+def test_cmf_unset_python_is_the_no_write_target_refusal() -> None:
+    with pytest.raises(CMFRefusal) as excinfo:
+        resolve_local_worker_command("   ", platform="linux")
+    assert excinfo.value.reason == "cmf_no_write_target"
 
 
 def test_cmf_worker_posts_server_payload_without_optional_http_dependency(
@@ -468,6 +569,39 @@ def test_lineage_http_surface_is_artifact_provider_independent() -> None:
     }
 
 
+def test_lineage_route_reports_a_typed_refusal_verbatim() -> None:
+    """A typed reason must reach the caller, not a stringified traceback.
+
+    The catalog entry names the recovery actions, so collapsing it into
+    "CMFRefusal: ..." would force the client to parse prose to learn that the
+    fix is to configure a reader.
+    """
+
+    class _RefusingProvider:
+        name = "cmf"
+        provider_name = "cmf"
+
+        def lineage(self, artifact_id: str, **_kwargs: Any) -> dict[str, Any] | None:
+            raise CMFRefusal(
+                "cmf_lineage_query_unavailable",
+                "no reader configured",
+                artifact_id=artifact_id,
+            )
+
+    app = FastAPI()
+    app.state.artifact_provenance_backend = _RefusingProvider()
+    register_artifact_lineage_routes(app)
+
+    response = TestClient(app).get("/v1/artifacts/artifact_1/lineage")
+
+    assert response.status_code == 503
+    details = response.json()["detail"]["error"]["details"]
+    assert details["reason"] == "cmf_lineage_query_unavailable"
+    assert details["category"] == "capability_gap"
+    assert "configure_server_url" in details["recovery_actions"]
+    assert details["artifact_id"] == "artifact_1"
+
+
 # --------------------------------------------------------------------------- #
 # Golden edge tests (#1247): the transform path had ZERO coverage, so a worker
 # failure was invisible (dispatcher health captured it; nothing read it) and
@@ -505,7 +639,9 @@ class _MlEvent:
     OUTPUT = 4
     Path = _MlEventPath
 
-    def __init__(self, execution_id: int = 0, artifact_id: int = 0, type: int = 0, path: Any = None) -> None:  # noqa: A002
+    def __init__(
+        self, execution_id: int = 0, artifact_id: int = 0, type: int = 0, path: Any = None
+    ) -> None:  # noqa: A002
         self.execution_id = execution_id
         self.artifact_id = artifact_id
         self.type = type
@@ -584,7 +720,16 @@ def _edge_worker() -> tuple[Any, _EdgeStore]:
 
     type_schemas: dict[str, frozenset[str]] = {}
 
-    def _create_artifact(*, store: _EdgeStore, uri: str, name: str, type_name: str, custom_properties: dict[str, Any], properties: Any = None, type_properties: Any = None) -> _FakeArtifact:
+    def _create_artifact(
+        *,
+        store: _EdgeStore,
+        uri: str,
+        name: str,
+        type_name: str,
+        custom_properties: dict[str, Any],
+        properties: Any = None,
+        type_properties: Any = None,
+    ) -> _FakeArtifact:
         # Models MLMD's first-writer-wins type schemas: a type name created
         # with one property set REJECTS later artifacts carrying properties
         # outside it ("Found unknown property" — the live 2026-08-26 failure).
@@ -601,7 +746,9 @@ def _edge_worker() -> tuple[Any, _EdgeStore]:
 
     executions_by_name: dict[str, _FakeExecution] = {}
 
-    def _create_execution(*, store: _EdgeStore, execution_name: str = "", **_kwargs: Any) -> _FakeExecution:
+    def _create_execution(
+        *, store: _EdgeStore, execution_name: str = "", **_kwargs: Any
+    ) -> _FakeExecution:
         # Models cmflib's create_new_execution=False contract: the same
         # execution_name (clio:{call_id}) returns the EXISTING execution —
         # this reuse is what makes _link_edges' per-execution dedup effective
@@ -628,12 +775,103 @@ def _edge_worker() -> tuple[Any, _EdgeStore]:
     return worker, store
 
 
-def _artifact_event(artifact_id: str, name: str) -> dict[str, Any]:
+def _artifact_event(artifact_id: str, name: str, *, call_id: str = "") -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "artifact_id": artifact_id,
+        "name": name,
+        "kind": "dataset",
+        "version": 1,
+    }
+    if call_id:
+        payload["producer"] = {"call_id": call_id, "tool": "fs_apply_edit_write"}
     return {
         "event_type": "artifact.created",
         "event_id": f"sem_{artifact_id}",
-        "payload": {"artifact_id": artifact_id, "name": name, "kind": "dataset", "version": 1},
+        "payload": payload,
     }
+
+
+def test_cmf_worker_attaches_a_created_artifact_to_its_producing_call() -> None:
+    """An artifact with no event is INVISIBLE to CMF, however well it is stored.
+
+    CMF's push document carries artifacts only as ``execution.events[].artifact``
+    -- there is no free-standing artifact list. A tool that writes a file emits
+    ``artifact.created`` with a producer call but no ``transform.recorded``, so
+    on the old path the artifact became an orphan MLMD row and the push carried
+    13 executions, zero artifacts and zero events (live qualification
+    sess_3c2660f69bd5) while health reported no failure at all.
+    """
+    worker, store = _edge_worker()
+
+    worker.record(_artifact_event("art_a", "a3.csv", call_id="call_write"))
+
+    assert len(store.artifacts) == 1
+    assert len(store.executions) == 1, "a creation execution must carry the artifact"
+    assert len(store.events) == 1, "an unattached artifact never reaches the server"
+    event = store.events[0]
+    assert event.type == _Mlpb.Event.OUTPUT
+    assert event.artifact_id == store.artifacts[0].id
+    execution = store.executions[0]
+    assert execution.custom_properties["clio_call_id"].value == "call_write"
+    # The push needs this on every execution or the server answers 422.
+    assert execution.properties["Execution_uuid"].value == "call_write"
+
+
+def test_cmf_worker_does_not_duplicate_the_edge_when_the_transform_arrives_later() -> None:
+    """The creation execution is the SAME named row the transform merges into."""
+    worker, store = _edge_worker()
+    worker.record(_artifact_event("art_a", "a3.csv", call_id="call_write"))
+    worker.record(
+        {
+            "event_type": "artifact.transform.recorded",
+            "event_id": "sem_t",
+            "payload": {
+                "call_id": "call_write",
+                "instrument": {"tool": "fs_apply_edit_write"},
+                "generated": [{"artifact_id": "art_a", "name": "a3.csv"}],
+            },
+        }
+    )
+
+    assert len(store.executions) == 1, "clio:{call_id} must be reused, not duplicated"
+    assert len(store.events) == 1, "the OUTPUT edge must not be written twice"
+
+
+def test_cmf_worker_reports_an_artifact_it_cannot_attach(caplog: pytest.LogCaptureFixture) -> None:
+    """No producer call means nothing to anchor to -- say so, do not drop it."""
+    worker, _store = _edge_worker()
+
+    result = worker.record(_artifact_event("art_a", "a3.csv"))
+
+    assert result["unattached"] is True
+
+
+def test_cmf_provider_turns_an_unattached_artifact_into_the_typed_refusal(
+    tmp_path: Path,
+) -> None:
+    """The worker stays CLIO-free; the provider owns the refusal vocabulary."""
+
+    class _UnattachedBridge(_FakeBridge):
+        def request(self, operation: str, **payload: Any) -> dict[str, Any]:
+            if operation == "record":
+                return {"ok": True, "artifact_mlmd_id": 1, "unattached": True}
+            return super().request(operation, **payload)
+
+    provider = CMFArtifactProvenanceProvider(
+        _config(tmp_path),
+        bridge=_UnattachedBridge(),  # type: ignore[arg-type]
+    )
+    event = SemanticEvent(
+        event_type="artifact.created",
+        session_id="sess_1",
+        workspace_id="ws_1",
+        trace_id="trace_1",
+        span_id="sem_1",
+        payload={"artifact_id": "art_a", "name": "a3.csv", "version": 1},
+    )
+    with pytest.raises(CMFRefusal) as excinfo:
+        provider.emit(event)
+    assert excinfo.value.reason == "cmf_artifact_not_attached_to_execution"
 
 
 def test_cmf_worker_transform_records_input_and_output_events() -> None:

@@ -13,11 +13,47 @@ set -euo pipefail
 : "${CLIO_PQ_CMF_SERVER_URL:?CMF server base URL}"
 : "${CLIO_PQ_PIPELINE:?CMF pipeline name for this qualification}"
 
+if [[ "${CLIO_PQ_ARC_STORE:-cte}" != "cte" ]]; then
+  echo "qualification requires CLIO_PQ_ARC_STORE=cte; LocalFS is not acceptance evidence" >&2
+  exit 2
+fi
+
+# Fail before binding the port when the selected interpreter is stale or
+# incomplete. These imports cover the exact pre-executor seams that construct
+# the ARC, relay surfaces, provider, and pinned GACT schema.
+PYTHONPATH="$CLIO_PQ_REPO/src" "$CLIO_PQ_PYTHON" - <<'PY'
+from importlib.metadata import version
+
+import iowarp_core  # noqa: F401
+import litellm  # noqa: F401
+import openai_codex  # noqa: F401
+import pandas  # noqa: F401
+import psutil  # noqa: F401
+import claude_agent_sdk  # noqa: F401
+from clio_schemas import A2UIClientActionMessage  # noqa: F401
+
+expected = {
+    "claude-agent-sdk": "0.2.128",
+    "clio-schemas": "0.2.3",
+    "litellm": "1.91.3",
+    "openai-codex": "0.147.0",
+    "pandas": "2.3.3",
+}
+actual = {name: version(name) for name in expected}
+if actual != expected:
+    raise SystemExit(f"qualification dependency drift: expected={expected}, actual={actual}")
+PY
+
+# A listening clio-core socket is not sufficient qualification evidence.  Prove
+# that the configured CTE can accept, return, and remove a real ARC record before
+# the API binds and before a user can create a session.
+PYTHONPATH="$CLIO_PQ_REPO/src" "$CLIO_PQ_PYTHON" /usr/local/bin/clio-preflight-arc
+
 mkdir -p "$CLIO_PQ_WORKSPACE"
 cd "$CLIO_PQ_WORKSPACE"
 exec env \
   PYTHONPATH="$CLIO_PQ_REPO/src" \
-  CLIO_ARC_STORE="${CLIO_PQ_ARC_STORE:-local}" \
+  CLIO_ARC_STORE="${CLIO_PQ_ARC_STORE:-cte}" \
   CLIO_LM_PROVIDER="${CLIO_PQ_LM_PROVIDER:-claude_code}" \
   CLIO_LM_MODEL="${CLIO_PQ_LM_MODEL:-sonnet}" \
   CLIO_PROVENANCE_PROVIDERS="${CLIO_PQ_PROVIDERS:-jsonl}" \

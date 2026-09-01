@@ -4,6 +4,16 @@ COPY external/gact-tui ./external/gact-tui
 COPY scripts/build_clio_tui.sh ./scripts/build_clio_tui.sh
 RUN GACT_TUI_ROOT=/src/external/gact-tui ./scripts/build_clio_tui.sh /out/gact
 
+FROM python:3.12-slim AS agent-builder
+WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY pyproject.toml README.md uv.lock ./
+COPY src ./src
+RUN pip install --no-cache-dir uv \
+    && uv sync --frozen --extra argonne --no-dev
+
 FROM python:3.12-slim
 LABEL org.opencontainers.image.title="CLIO TUI" \
       org.opencontainers.image.description="CLIO terminal UI (gact, GACT_BRAND_NAME=CLIO) + gact backend." \
@@ -22,9 +32,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md uv.lock ./
+COPY --from=agent-builder /app/.venv /app/.venv
 COPY src ./src
-RUN pip install --no-cache-dir '.[argonne]'
+ENV PATH="/app/.venv/bin:$PATH"
 
 COPY --from=tui-builder /out/gact /usr/local/bin/gact
 COPY docker/clio-tui-entrypoint.sh /usr/local/bin/clio-tui-entrypoint.sh

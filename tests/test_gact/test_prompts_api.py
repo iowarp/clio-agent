@@ -55,6 +55,8 @@ def test_builtin_prompts_are_listed_and_resolvable(client: TestClient) -> None:
     assert "clio.chat" in prompts
     assert "default" in prompts["clio.chat"]["profiles"]
     assert "heavy" in prompts["clio.chat"]["profiles"]
+    assert prompts["clio.runtime.prompt_user_agent"]["title"] == "Agent without tools"
+    assert prompts["clio.runtime.tool_user_agent"]["title"] == "Agent with tools"
     assert "small_model" in prompts["clio.main.planner"]["profiles"]
 
     resolved = client.get("/v1/prompts/clio.chat").json()["prompt"]

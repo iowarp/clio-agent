@@ -42,11 +42,13 @@ def resolve_relay_endpoint() -> RelayEndpoint:
         but malformed URL remains configured with no host so status can report a
         typed configuration failure instead of silently treating it as absent.
     """
-    from clio_agent import conf  # noqa: PLC0415
+    from clio_agent.tools.relay_transport import (  # noqa: PLC0415
+        RelayTransportUnavailable,
+        resolve_relay_transport_config,
+    )
 
-    raw_url = conf.resolve(
-        "relay.mcp_url", env=RELAY_MCP_URL_ENV, default="", cast=conf.as_str
-    ).strip()
+    resolved = resolve_relay_transport_config()
+    raw_url = "" if isinstance(resolved, RelayTransportUnavailable) else resolved.mcp_url
     if not raw_url:
         return RelayEndpoint(configured=False, host=None, port=None)
     try:
@@ -120,12 +122,14 @@ async def probe_relay_status() -> dict[str, Any]:
         Relay configuration, reachability, probe time, and mechanism/error detail.
     """
     endpoint = resolve_relay_endpoint()
+    from clio_agent.tools.relay_factory import relay_connection_metadata  # noqa: PLC0415
     from clio_agent.tools.relay_transport import (  # noqa: PLC0415
         RelayTransportUnavailable,
         resolve_relay_transport_config,
     )
 
     resolved = resolve_relay_transport_config()
+    metadata = relay_connection_metadata()
     if isinstance(resolved, RelayTransportUnavailable):
         return {
             "configured": False,
@@ -135,6 +139,7 @@ async def probe_relay_status() -> dict[str, Any]:
             "reason": "relay_tools_not_configured",
             "details": dict(resolved.details),
             "detail": "relay_tools_not_configured: relay transport configuration is incomplete",
+            **metadata,
         }
 
     checked_at = datetime.now(timezone.utc).isoformat()
@@ -146,6 +151,7 @@ async def probe_relay_status() -> dict[str, Any]:
             "checked_at": checked_at,
             "reason": "relay_endpoint_invalid",
             "detail": f"relay_endpoint_invalid: {RELAY_MCP_URL_ENV} has no valid host/port",
+            **metadata,
         }
 
     target = f"{endpoint.host}:{endpoint.port}"
@@ -159,6 +165,7 @@ async def probe_relay_status() -> dict[str, Any]:
             "checked_at": checked_at,
             "reason": "relay_tcp_unreachable",
             "detail": f"relay_tcp_unreachable: TCP connect to {target} failed: {exc}",
+            **metadata,
         }
     return {
         "configured": True,
@@ -167,4 +174,5 @@ async def probe_relay_status() -> dict[str, Any]:
         "checked_at": checked_at,
         "reason": None,
         "detail": f"TCP connect to {target} succeeded",
+        **metadata,
     }

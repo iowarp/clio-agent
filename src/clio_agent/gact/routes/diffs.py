@@ -72,9 +72,7 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
     ``deps``; the wire/path/filter helpers below are concern-private closures.
     """
 
-    def _filter_diff_paths(
-        rows: list[dict[str, Any]], paths: list[str]
-    ) -> list[dict[str, Any]]:
+    def _filter_diff_paths(rows: list[dict[str, Any]], paths: list[str]) -> list[dict[str, Any]]:
         """Narrow pending diffs to a given path allow-list. Empty
         list (or no param) means "every pending row"."""
 

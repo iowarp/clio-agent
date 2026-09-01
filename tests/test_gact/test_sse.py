@@ -54,6 +54,20 @@ def test_event_ids_are_monotonic() -> None:
     assert b.id > a.id
 
 
+def test_latest_event_id_matches_the_session_scoped_feed() -> None:
+    bus = EventBus()
+    global_event = Event(type="lm.provider.changed", session_id="", payload={})
+    session_event = Event(type="message.created", session_id="s1", payload={})
+    other_event = Event(type="message.created", session_id="s2", payload={})
+
+    bus.publish(global_event)
+    bus.publish(session_event)
+    bus.publish(other_event)
+
+    assert bus.latest_event_id("s1") == session_event.id
+    assert bus.latest_event_id("s2") == other_event.id
+
+
 def test_format_sse_emits_canonical_wire_shape() -> None:
     e = Event(type="message.completed", session_id="s1", payload={"a": 1})
     raw = _format_sse(e).decode("utf-8")

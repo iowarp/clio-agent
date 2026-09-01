@@ -453,8 +453,8 @@ class _ToolRoutingAgent:
 @pytest.fixture()
 def app_client(tmp_path: Path):
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
-    client = TestClient(app)
-    return app, client
+    with TestClient(app) as client:
+        yield app, client
 
 
 def test_bounded_tool_result_is_idempotent_no_nested_preview() -> None:
@@ -475,6 +475,26 @@ def test_bounded_tool_result_is_idempotent_no_nested_preview() -> None:
     small = {"ok": True, "count": 1}
     assert _bounded_tool_call_result(small) == small
     assert not _is_bounded_tool_result(small)
+
+
+def test_bounded_tool_result_uses_configured_model_lane_limit(caplog) -> None:
+    """The model preview limit is configurable and every truncation is typed."""
+
+    set_config("limits.tool_result_chars", 80)
+    with caplog.at_level("INFO", logger="clio_agent.gact.evidence"):
+        bounded = _bounded_tool_call_result({"payload": "x" * 400})
+
+    assert bounded["truncated"] is True
+    assert bounded["original_chars"] > 400
+    assert len(bounded["preview"]) <= 80
+    matching = [
+        record.getMessage()
+        for record in caplog.records
+        if "reason=tool_result_oversize" in record.getMessage()
+    ]
+    assert len(matching) == 1
+    assert "original_chars=" in matching[0]
+    assert "preview_chars=80" in matching[0]
 
 
 def test_posthoc_tools_called_metadata_does_not_emit_lifecycle_events(app_client) -> None:
@@ -781,7 +801,9 @@ def test_live_observer_keeps_exact_large_mcp_structured_content(tmp_path: Path) 
 
 
 def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(tmp_path: Path) -> None:
-    """The real workspace bridge retains Root/data JSON beyond the bounded preview."""
+    """The wire keeps exact Root/data while the model receives a bounded projection."""
+
+    from clio_agent.tools.mcp_result_json import pydantic_json_default
 
     from .conftest import complete_turn
 
@@ -799,7 +821,15 @@ def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(tmp_path:
             and event.payload.get("part", {}).get("type") == "tool_result"
         )
 
-        assert agent.model_text == str(agent.root)
+        model_result = json.loads(agent.model_text)
+        assert model_result["_clio"]["reason"] == "model_tool_result_oversize"
+        model_input = json.dumps(
+            agent.root,
+            allow_nan=False,
+            default=pydantic_json_default,
+        )
+        assert model_result["_clio"]["original_chars"] == len(model_input)
+        assert len(agent.model_text) <= 12_000
         assert tool_result["metadata"]["result"]["truncated"] is True
         # #1190: the structured copy is served at the part TOP LEVEL (the UI
         # render ladder's read path), with no metadata mirror (ONE home).
@@ -811,11 +841,10 @@ def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(tmp_path:
         }
         assert "structured_content" not in tool_result["metadata"]
         assert "must-not-enter-telemetry" not in json.dumps(tool_result)
-        # #1190 model-context contract: the ReAct observation (the executor's
-        # return value — exactly what the model ingests) is the ``.data``-derived
-        # ``model_text`` and NEVER a second serialization of the structuredContent
-        # payload the wire part carries. The structured copy is wire/UI-only.
-        assert agent.model_text == str(agent.root)
+        # #1190 model-context contract: the ReAct observation is a bounded
+        # projection of the ``.data`` result and NEVER a second serialization of
+        # the exact structuredContent payload the wire part carries. The complete
+        # structured copy is trace/UI-only.
         assert json.dumps(tool_result["structured_content"]) not in agent.model_text
         assert '"schema_version"' not in agent.model_text  # no JSON-keyed twin
 

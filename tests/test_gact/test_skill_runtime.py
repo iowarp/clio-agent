@@ -18,8 +18,10 @@ import pytest
 from clio_agent.gact.agents.builders import _build_blueprint_dspy_module
 from clio_agent.gact.agents.skill_runtime import (
     build_load_skill_tool,
+    build_spawn_skill_task_tool,
     effective_declared_skills,
     skill_runtime_for_agent,
+    skill_runtime_spawns_subagents,
 )
 from clio_agent.gact.skills import SkillCatalog
 from clio_agent.gact.types import AgentDef
@@ -78,6 +80,44 @@ def test_no_declaration_means_no_block(pack: Path) -> None:
     assert rt.prompt_block == ""
     assert rt.bodies_block == ""
     assert rt.resolved == {}
+
+
+def test_spawn_effect_skill_marks_runtime_for_child_task_collection(pack: Path) -> None:
+    skill_md = pack / "skills" / "quality-rubric" / "SKILL.md"
+    skill_md.write_text(
+        "---\n"
+        "name: quality-rubric\n"
+        "description: Judge data quality\n"
+        "effect: spawn_subagent_with_skill\n"
+        "---\n\n"
+        f"{BODY}\n",
+        encoding="utf-8",
+    )
+
+    runtime = _runtime(pack)
+    assert skill_runtime_spawns_subagents(runtime) is True
+    assert "[child-task: use spawn_skill_task]" in runtime.prompt_block
+    assert build_spawn_skill_task_tool(_agent(pack), runtime).name == "spawn_skill_task"
+
+
+def test_load_skill_never_hides_a_child_spawn(pack: Path) -> None:
+    """Loading instructions and launching a child are distinct causal actions."""
+
+    from clio_agent.gact.agents.skill_effects import SkillEffectError
+
+    skill_md = pack / "skills" / "quality-rubric" / "SKILL.md"
+    skill_md.write_text(
+        "---\n"
+        "name: quality-rubric\n"
+        "description: Judge data quality\n"
+        "effect: spawn_subagent_with_skill\n"
+        "---\n\n"
+        f"{BODY}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SkillEffectError) as exc:
+        build_load_skill_tool(_agent(pack), _runtime(pack)).func(skill_id="quality-rubric")
+    assert exc.value.reason == "spawn_requires_spawn_skill_task"
 
 
 def test_unresolved_declaration_omitted_from_block(pack: Path) -> None:
@@ -228,8 +268,8 @@ def test_default_root_auto_declares_workspace_skills_on_real_runtime_rows(
         title="Main",
         metadata={"agent_blueprint_id": DEFAULT_AGENT_BLUEPRINT_ID},
     )
-    # Workspace skills lead the surface; clio's shipped built-in skills (``planning``,
-    # ``update-models``) are auto-declared after them onto the default-registry root
+    # Workspace skills lead the surface; clio's shipped built-in skills are
+    # auto-declared after them onto the default-registry root
     # (P1.5 #1067), alphabetically by id. #1211 review R6/D1: ``update-models`` is a
     # DELIBERATE inclusion, not an oversight -- there is no per-skill auto-declare
     # opt-out today, its declaration cost is the same ~100-token metadata-only block
@@ -239,6 +279,7 @@ def test_default_root_auto_declares_workspace_skills_on_real_runtime_rows(
     assert effective_declared_skills(listing_root, catalog) == [
         "user-skill",
         "planning",
+        "present-interactive-analysis",
         "update-models",
     ]
     # DELETED SEAM regression pin: the retired "listing seam" stamp

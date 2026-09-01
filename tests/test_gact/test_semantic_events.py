@@ -56,10 +56,9 @@ def test_semantic_events_stream_and_trace_file(tmp_path: Path, monkeypatch) -> N
     set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
     set_config("trace.path", str(trace_dir))
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
-    client = TestClient(app)
-
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    complete_turn(client, sid, "analyze this")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        complete_turn(client, sid, "analyze this")
 
     history = app.state.bus._history.get(sid, [])
     semantic_events = [e for e in history if e.type == "semantic.event"]
@@ -130,12 +129,17 @@ def test_full_debug_trace_includes_llm_payload(tmp_path: Path, monkeypatch) -> N
     set_config("trace.path", str(trace_file))
     monkeypatch.setenv("CLIO_SEMANTIC_TRACE_DETAIL", "full_debug")
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
-    client = TestClient(app)
+    # Keep one application lifespan around the background turn. Constructing a
+    # TestClient without entering it creates a fresh portal around each request;
+    # the slower 3.13 CI runner could therefore tear down the turn portal after
+    # the assistant message became readable but before the response trace reached
+    # the shared writer. Production keeps one lifespan for the whole server, and
+    # this test must exercise that same ordering contract.
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        complete_turn(client, sid, "show the raw prompt in full debug")
+        app.state.semantic_trace_backend.flush()  # drain before leaving the lifespan
 
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    complete_turn(client, sid, "show the raw prompt in full debug")
-
-    app.state.semantic_trace_backend.flush()  # off-loop writer: drain before reading
     rows = [json.loads(line) for line in trace_file.read_text().splitlines()]
     request_row = next(row for row in rows if row["event_type"] == "llm.request.started")
     response_row = next(row for row in rows if row["event_type"] == "llm.response.completed")
@@ -200,9 +204,12 @@ def build(default_root, config):
     monkeypatch.setenv("CLIO_SEMANTIC_TRACE_CONFIG", '{"sink": "test"}')
 
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
-    client = TestClient(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    complete_turn(client, sid, "factory trace")
+    # The trace backend observes a tracked background turn. Keep one application
+    # lifespan around that turn so the test exercises the production ordering
+    # contract instead of a per-request portal that may close between POST/poll.
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        complete_turn(client, sid, "factory trace")
 
     rows = [json.loads(line) for line in marker.read_text().splitlines()]
     assert app.state.semantic_trace_backend.name == "test_factory"
@@ -229,9 +236,14 @@ with open({str(marker)!r}, "a", encoding="utf-8") as f:
     install_global_dispatcher(make_command_dispatcher(tmp_path, event="SemanticEvent", body=body))
     try:
         app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
-        client = TestClient(app)
-        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-        complete_turn(client, sid, "hello")
+        # SemanticEvent delivery is part of the tracked turn lifecycle. A bare
+        # TestClient creates and tears down a portal for every request, which can
+        # cancel the slower Python 3.13 turn after its assistant is readable but
+        # before its terminal hook is delivered. Production has one application
+        # lifespan, so hold that same boundary here.
+        with TestClient(app) as client:
+            sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+            complete_turn(client, sid, "hello")
     finally:
         install_global_dispatcher(None)
 
@@ -341,36 +353,41 @@ def test_artifact_and_builtin_command_semantic_events(tmp_path: Path, monkeypatc
 
     set_config("trace.backend", "none")  # file-layer (file > env); #985 config-first
     app = build_app(sessions_path=tmp_path / "s.json", agent=_DiffAgent())
-    client = TestClient(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    complete_turn(client, sid, "write a result")
-    client.post(f"/v1/sessions/{sid}/commands/cache-stats")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        complete_turn(client, sid, "write a result")
+        client.post(f"/v1/sessions/{sid}/commands/cache-stats")
 
-    history = app.state.bus._history.get(sid, [])
-    # WS1: the artifact reaches the UI as a real ``file_diff`` PART (not a redundant
-    # semantic.event), carrying the proposed content unredacted so the UI renders the
-    # diff; the ``artifact.proposed`` semantic mirror is routed to trace/ARC only.
-    diff_parts = [
-        e.payload["part"]
-        for e in history
-        if e.type == "message.part.added" and e.payload.get("part", {}).get("type") == "file_diff"
-    ]
-    assert any(p.get("path") == "result.txt" for p in diff_parts)
-    assert "[redacted]" not in str(diff_parts)
-    # WS1: the built-in command result reaches the UI as a real assistant
-    # ``message.created`` (so the TUI shows it); the ``command.invocation.completed``
-    # semantic mirror is trace-only, NOT on the bus.
-    command_msgs = [
-        e.payload
-        for e in history
-        if e.type == "message.created"
-        and e.payload.get("metadata", {}).get("synthetic") == "command_result"
-    ]
-    assert command_msgs, "command result must reach the UI as an assistant message"
-    assert any("cache-stats" in str(m.get("metadata", {}).get("command", "")) for m in command_msgs)
-    bus_semantic_types = {e.payload["event_type"] for e in history if e.type == "semantic.event"}
-    assert "artifact.proposed" not in bus_semantic_types
-    assert "command.invocation.completed" not in bus_semantic_types
+        history = app.state.bus._history.get(sid, [])
+        # WS1: the artifact reaches the UI as a real ``file_diff`` PART (not a redundant
+        # semantic.event), carrying the proposed content unredacted so the UI renders the
+        # diff; the ``artifact.proposed`` semantic mirror is routed to trace/ARC only.
+        diff_parts = [
+            e.payload["part"]
+            for e in history
+            if e.type == "message.part.added"
+            and e.payload.get("part", {}).get("type") == "file_diff"
+        ]
+        assert any(p.get("path") == "result.txt" for p in diff_parts)
+        assert "[redacted]" not in str(diff_parts)
+        # WS1: the built-in command result reaches the UI as a real assistant
+        # ``message.created`` (so the TUI shows it); the ``command.invocation.completed``
+        # semantic mirror is trace-only, NOT on the bus.
+        command_msgs = [
+            e.payload
+            for e in history
+            if e.type == "message.created"
+            and e.payload.get("metadata", {}).get("synthetic") == "command_result"
+        ]
+        assert command_msgs, "command result must reach the UI as an assistant message"
+        assert any(
+            "cache-stats" in str(m.get("metadata", {}).get("command", "")) for m in command_msgs
+        )
+        bus_semantic_types = {
+            e.payload["event_type"] for e in history if e.type == "semantic.event"
+        }
+        assert "artifact.proposed" not in bus_semantic_types
+        assert "command.invocation.completed" not in bus_semantic_types
 
 
 def test_lm_token_delta_projection_contract():

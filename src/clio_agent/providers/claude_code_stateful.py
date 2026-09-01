@@ -7,13 +7,10 @@ no-accretion): that file only *calls* :func:`resolve_stateful_send` and hands th
 resolved payload / session id to the pooled streaming client
 (:mod:`clio_agent.providers.claude_code_sessions`).
 
-**The provider-agnostic core moved out (#891 codex slice).** The delta detector,
+**The provider-agnostic core is shared internally.** The delta detector,
 the typed reset catalog, the per-forward scope, and the bounded session registry
-are now shared with the native ``codex app-server`` transport
-(:mod:`clio_agent.providers.codex_stateful`) in
-:mod:`clio_agent.providers.stateful_common` — the prefix-classification and
-registry lifecycle are identical across providers; only the *send side* differs. To
-preserve every importer / test, this module RE-EXPORTS those names unchanged
+live in :mod:`clio_agent.providers.stateful_common`. This module RE-EXPORTS
+those names unchanged
 (:data:`STATEFUL_RESET_REASONS`, :func:`classify_delta`, :func:`is_strict_prefix`,
 :class:`StatefulSessionRegistry`, :func:`stateful_scope`, ...). What stays here is
 purely the ``claude_code`` send side: the SDK ``query`` under a stable
@@ -233,9 +230,7 @@ def resolve_stateful_send(
     from clio_agent.providers.claude_code_options import thinking_key  # noqa: PLC0415
 
     session_key = (scope, model, cwd, thinking_key(thinking))
-    plan, session_id = _REGISTRY.plan(
-        session_key=session_key, scope_token=scope, messages=messages
-    )
+    plan, session_id = _REGISTRY.plan(session_key=session_key, scope_token=scope, messages=messages)
     payload = serialize(plan.messages) if plan.mode == "delta" else full_prompt
     send = StatefulSend(
         payload=payload,

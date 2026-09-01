@@ -333,6 +333,72 @@ def _appended(app: "FastAPI", policy: dict[str, Any]) -> dict[str, Any]:
     return policy
 
 
+#: Marker key stamped on a row projected from a parent session onto its spawned child, so
+#: the inheritance is queryable in the persisted store rather than indistinguishable from a
+#: row the user authored directly against the child.
+INHERITED_FROM_SESSION = "inherited_from_session_id"
+
+#: The only actions a spawn may project. ``allow``/``allow_session``/``allow_workspace`` would
+#: WIDEN the child beyond the parent's posture, which spawn must never do.
+_INHERITABLE_ACTIONS = frozenset({"ask", "deny"})
+
+
+def inherit_child_session_policies(
+    app: "FastAPI", parent_session_id: str, child_session_id: str
+) -> list[dict[str, Any]]:
+    """Project a parent's narrowing session-scoped policy rows onto a spawned child.
+
+    A child inherits the parent's WIDENING axis (``approval_mode``) at spawn. The
+    NARROWING axis has to compose the same way: a session-scoped ``ask``/``deny`` row
+    is keyed to the parent's session id, and
+    :func:`~clio_agent.gact.runtime.grant_resolver._scope_matches` admits a session
+    row only for that exact id -- so without this projection a call the parent would
+    prompt for (the explicit-``ask`` escape hatch that survives even ``bypass``) runs
+    unprompted in the child.
+
+    Each projection copies the source row verbatim except for ``scope_id``, preserving
+    its ``priority`` band, subject patterns and ``modes``/``on`` axes, so the child
+    resolves the call exactly as the parent does.
+
+    Args:
+        app: The GACT application whose ``state.permission_policies`` holds the rows.
+        parent_session_id: The spawning parent's session id.
+        child_session_id: The freshly minted child's session id.
+
+    Returns:
+        The rows appended for the child, in source order; empty when the parent carries
+        no narrowing session-scoped rows.
+    """
+
+    policies = getattr(app.state, "permission_policies", None)
+    if not isinstance(policies, list) or not parent_session_id or not child_session_id:
+        return []
+    projected: list[dict[str, Any]] = []
+    for policy in list(policies):
+        if not isinstance(policy, Mapping):
+            continue
+        if str(policy.get("scope") or "").lower() != "session":
+            continue
+        if str(policy.get("scope_id") or "") != parent_session_id:
+            continue
+        if str(policy.get("action") or "").lower() not in _INHERITABLE_ACTIONS:
+            continue
+        row = dict(policy)
+        row["scope_id"] = child_session_id
+        row[INHERITED_FROM_SESSION] = parent_session_id
+        projected.append(row)
+    if projected:
+        policies.extend(projected)
+        logger.info(
+            "child session inherits parent narrowing policies "
+            "reason=child_policy_inheritance parent=%s child=%s count=%d",
+            parent_session_id,
+            child_session_id,
+            len(projected),
+        )
+    return projected
+
+
 def _host_action_for(
     app: "FastAPI",
     *,

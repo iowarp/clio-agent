@@ -4,8 +4,6 @@ Every effective-boundary change is a recorded DECISION by a user or the model, n
 deterministic clio choice (⚑ #974.8). This module is the owner of that record layer, built
 entirely on the EXISTING permission gate + policy store — a new request KIND, not a new gate:
 
-* :func:`emit_boundary_granted` / :func:`emit_boundary_revoked` — the ``boundary.*`` semantic
-  events (SSE-listed) that make a write-root or domain grant/revoke observable live + durable.
 * :func:`apply_root_grant` — a mid-session workspace root grant: register the root into the
   ONE grant registry (:mod:`clio_agent.runtime.sandbox_roots`) so the fence + advisory twin
   widen LIVE on the next spawn, persist it on the workspace record, restart the workspace's
@@ -33,7 +31,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
-from clio_agent.gact.events import Event
+from clio_agent.gact.permission_delivery import publish_permission_event as publish_permission
+from clio_agent.gact.runtime.grant_revocation import revoke_root_grant
 from clio_agent.gact.runtime.permission_policies import (
     NETWORK_EGRESS_REQUEST_KIND,
     _host_action_for,
@@ -723,9 +722,7 @@ def _emit_egress_requested(app: "FastAPI", session_id: str, row: dict[str, Any])
         )
     except Exception as exc:  # noqa: BLE001 - the emit must never wedge the gate
         logger.debug("egress permission.requested emit skipped error=%r", exc)
-    bus = getattr(app.state, "bus", None)
-    if bus is not None:
-        bus.publish(Event(type="permission.requested", session_id=session_id, payload=row))
+    publish_permission(app, "permission.requested", owner_session_id=session_id, payload=row)
 
 
 def _record_egress_denied(app: "FastAPI", workspace_id: str, host: str, *, reason: str) -> None:
@@ -790,6 +787,7 @@ __all__ = [
     "SCOPE_SESSION",
     "SCOPE_WORKSPACE",
     "apply_root_grant",
+    "revoke_root_grant",
     "emit_boundary_for_derived_policy",
     "emit_boundary_granted",
     "emit_boundary_revoked",

@@ -14,6 +14,7 @@ Drives the app with a FakeClioAgent so no LM is needed. Covers:
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -145,8 +146,11 @@ def fake_agent() -> FakeClioAgent:
 
 
 @pytest.fixture()
-def client(tmp_path: Path, fake_agent: FakeClioAgent) -> TestClient:
-    return TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent))
+def client(tmp_path: Path, fake_agent: FakeClioAgent) -> Iterator[TestClient]:
+    with TestClient(
+        build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent)
+    ) as test_client:
+        yield test_client
 
 
 def _create_session(client: TestClient, title: str = "t") -> str:
@@ -1460,17 +1464,11 @@ def test_post_message_session_model_mismatch_returns_structured_501(
     assert fake_agent.calls == []
 
 
-def test_post_message_clears_stale_session_model_when_global_lm_active(
+def test_post_message_preserves_mismatched_session_model_when_global_lm_active(
     client: TestClient,
     fake_agent: FakeClioAgent,
 ) -> None:
-    """Old TUI sessions may carry stale per-session model refs.
-
-    CLIO runs one global LM, so once that global LM is active those
-    stale refs should be healed instead of blocking the next send.
-    """
-
-    from .conftest import complete_turn
+    """A provider mismatch is explicit and never silently falls back."""
 
     fake_agent._provider_config = SimpleNamespace(
         provider="lm_studio",
@@ -1489,12 +1487,20 @@ def test_post_message_clears_stale_session_model_when_global_lm_active(
         },
     ).json()["id"]
 
-    assistant = complete_turn(client, sid, "hi")
+    response = client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={"parts": [{"type": "text", "text": "hi"}]},
+    )
     refreshed = client.get(f"/v1/sessions/{sid}").json()
 
-    assert assistant["parts"][-1]["text"] == "hello from fake"
-    assert refreshed["model"] == {"provider_id": "", "model_id": "", "variant": ""}
-    assert fake_agent.calls == [("hi", sid)]
+    assert response.status_code == 501
+    assert response.json()["error"]["details"]["source"] == "session"
+    assert refreshed["model"] == {
+        "provider_id": "anthropic",
+        "model_id": "claude-opus-4-7",
+        "variant": "",
+    }
+    assert fake_agent.calls == []
 
 
 def test_post_message_turn_timeout_surfaces_error(
@@ -1562,19 +1568,19 @@ def test_post_message_session_model_matching_global_config_runs(
         "provider": "lm_studio",
         "model": "qwopus3.5-9b-v3",
     }
-    client = TestClient(app)
-    sid = client.post(
-        "/v1/sessions",
-        json={
-            "title": "t",
-            "model": {
-                "provider_id": "lm_studio",
-                "model_id": "qwopus3.5-9b-v3",
+    with TestClient(app) as client:
+        sid = client.post(
+            "/v1/sessions",
+            json={
+                "title": "t",
+                "model": {
+                    "provider_id": "lm_studio",
+                    "model_id": "qwopus3.5-9b-v3",
+                },
             },
-        },
-    ).json()["id"]
+        ).json()["id"]
 
-    assistant = complete_turn(client, sid, "hi")
+        assistant = complete_turn(client, sid, "hi")
 
     # The text answer is the only part (routing decisions are semantic events).
     assert [part["type"] for part in assistant["parts"]] == ["text"]
@@ -1585,41 +1591,28 @@ def test_post_message_session_model_matching_global_config_runs(
 def test_post_message_model_matching_global_config_runs(
     tmp_path: Path,
 ) -> None:
+    from .conftest import complete_turn
+
     fake_agent = FakeClioAgent(answer="message model matched")
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent)
     app.state.lm_config = {
         "provider": "lm_studio",
         "model": "qwopus3.5-9b-v3",
     }
-    client = TestClient(app)
-    sid = _create_session(client)
-
-    resp = client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={
-            "parts": [{"type": "text", "text": "hi"}],
-            "model": {
-                "provider_id": "lm_studio",
-                "model_id": "qwopus3.5-9b-v3",
+    with TestClient(app) as client:
+        sid = _create_session(client)
+        assistant = complete_turn(
+            client,
+            sid,
+            "hi",
+            json_override={
+                "model": {
+                    "provider_id": "lm_studio",
+                    "model_id": "qwopus3.5-9b-v3",
+                }
             },
-        },
-    )
+        )
 
-    assert resp.status_code == 200
-    user_id = resp.json()["message_id"]
-    assistant = None
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
-        messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-        for i, msg in enumerate(messages):
-            if msg.get("id") == user_id and i > 0:
-                assistant = messages[i - 1]
-                break
-        if assistant is not None:
-            break
-        time.sleep(0.05)
-
-    assert assistant is not None
     # The text answer is the only part (routing decisions are semantic events).
     assert [part["type"] for part in assistant["parts"]] == ["text"]
     assert assistant["parts"][0]["text"] == "message model matched"

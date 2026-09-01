@@ -1,24 +1,14 @@
-"""Child-turn substrate (#948 S3, #951): spawn a declared child expert as a REAL
-turn in a REAL child session, projected as an :class:`AgentTask`.
+"""Spawn a child expert in a real child session projected as an AgentTask.
 
-``spawn_child_turn(app, TaskSpec) -> AgentTask`` mints a child session (created
-BEFORE the run, with ``parent_session_id`` lineage,
-``agent={"id": <child expert>}``, ``session_type=="agent_task"`` metadata),
-stages a real turn through the same ``_start_background_user_turn`` a user POST uses
-(so status / SSE / cancellation behave identically), and drives the task lifecycle
-to a terminal record via a completion hook on the child turn task.
-
-This is the #671 federation seam: :class:`TaskSpec` / the returned record are
-serializable from day one, so a remote executor can later swap in behind it.
-Child forwards run on a DEDICATED executor (never the default pool) so a parent
-blocked in a future wait (#948 S6) can never starve its own children.
+``spawn_child_turn(app, TaskSpec) -> AgentTask`` mints a child session with
+``parent_session_id`` lineage and ``session_type=="agent_task"``, stages the
+same background turn as a user POST, and records its terminal lifecycle. Child
+forwards use a dedicated executor so a waiting parent cannot starve them.
 """
 
 from __future__ import annotations
 
-import concurrent.futures
 import logging
-import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
@@ -34,8 +24,23 @@ from clio_agent.gact.agent_tasks import (
     persist_agent_task,
     publish_agent_task_event,
 )
+from clio_agent.gact.runtime.permission_policies import inherit_child_session_policies
 from clio_agent.gact.spawn_context import validate_task_spec
 from clio_agent.gact.task_fold import finish_agent_task_transition, fold_agent_task_transition
+from clio_agent.gact.turn_spawn_executor import (
+    agent_task_executor_for_depth as agent_task_executor_for_depth,
+)
+from clio_agent.gact.turn_spawn_executor import (
+    install_agent_task_executor as install_agent_task_executor,
+)
+from clio_agent.gact.turn_spawn_executor import (
+    shutdown_agent_task_executors as shutdown_agent_task_executors,
+)
+from clio_agent.gact.turn_spawn_failures import (
+    child_task_error_reason,
+    child_task_failure_result,
+)
+from clio_agent.gact.turn_spawn_result import child_workflow_state as _child_workflow_state
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -114,6 +119,12 @@ class TaskSpec:
     workspace_id: Optional[str] = None
     session_mode: Optional[str] = None
     session_scope_metadata: Optional[dict[str, Any]] = None
+    # Server-owned permission refinement for a detached executor. This is not
+    # the user-facing approval mode and is never projected on the wire. ``None``
+    # preserves the existing child default; SPOTTER uses the narrow
+    # ``spotter-watcher`` profile so containment can proceed while release still
+    # requires a human decision.
+    session_approval_profile: Optional[str] = None
     # P2.10 (#1127): resolved execution placement carried across the invoker seam.
     placement: str = "local"
     # Spotter-ai (#1034 follow-on): a caller-chosen display label for the minted
@@ -138,60 +149,6 @@ class SpawnError(Exception):
     def __init__(self, message: str, *, reason: str) -> None:
         super().__init__(message)
         self.reason = reason
-
-
-def install_agent_task_executor(app: "FastAPI") -> None:
-    """Install the DEDICATED child-forward pool machinery (never the default
-    executor). Pools are created lazily PER DEPTH by
-    :func:`agent_task_executor_for_depth`: a child turn at depth ``d`` runs on
-    ``pool[d]``, so a waiter blocked on ``pool[d]`` can never starve its own
-    children on ``pool[d+1]`` (a single shared pool deadlocks nested orchestrators
-    — see #948 S4 adversarial review). Each pool is sized to the concurrency cap;
-    the depth backstop (:data:`MAX_SPAWN_DEPTH`) bounds the number of pools."""
-
-    from clio_agent import conf  # noqa: PLC0415
-
-    cap = conf.resolve(
-        "agent_tasks.max_concurrent",
-        env="CLIO_MAX_CONCURRENT_AGENT_TASKS",
-        default=3,
-        cast=conf.as_int,
-    )
-    cap = max(1, int(cap or 3))
-    app.state.max_concurrent_agent_tasks = cap
-    app.state.agent_task_executors = {}
-    app.state.agent_task_executor_lock = threading.Lock()
-
-
-def agent_task_executor_for_depth(
-    app: "FastAPI", depth: int
-) -> concurrent.futures.ThreadPoolExecutor:
-    """Return the dedicated child-forward pool for turns at ``depth`` (lazily
-    created, one per depth). Same ``max_concurrent`` cap and shutdown semantics as
-    every other depth's pool; thread-safe against concurrent child launches."""
-
-    depth = max(1, int(depth or 1))
-    pools: dict[int, concurrent.futures.ThreadPoolExecutor] = app.state.agent_task_executors
-    lock = app.state.agent_task_executor_lock
-    with lock:
-        pool = pools.get(depth)
-        if pool is None:
-            cap = getattr(app.state, "max_concurrent_agent_tasks", 3)
-            pool = concurrent.futures.ThreadPoolExecutor(
-                max_workers=cap, thread_name_prefix=f"clio-agent-task-d{depth}"
-            )
-            pools[depth] = pool
-        return pool
-
-
-def shutdown_agent_task_executors(app: "FastAPI") -> None:
-    """Shut down every per-depth child-forward pool (symmetric to their lazy
-    install). Non-daemon workers otherwise leak across app lifecycles and a worker
-    still in a slow child forward blocks process exit."""
-
-    pools = getattr(app.state, "agent_task_executors", None) or {}
-    for pool in list(pools.values()):
-        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _batch_key(
@@ -291,6 +248,23 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
 
     # ---- structural guards -------------------------------------------------
     workspace_id, parent_mode, session_scope_metadata = validate_task_spec(app, spec)
+    parent = app.state.sessions.get(spec.parent_session_id)
+    if (
+        spec.start_turn
+        and parent is not None
+        and (
+            getattr(parent, "status", "") == "cancelled"
+            or spec.parent_session_id in app.state.cancel_flags
+        )
+    ):
+        # A provider/tool call can finish on an executor thread after the parent
+        # cancellation cascade took its registry snapshot.  Refuse that late spawn
+        # before minting a child session; otherwise the cancelled parent grows a new
+        # live child seconds after the user pressed Stop.
+        raise SpawnError(
+            f"parent session was cancelled before child {spec.child_expert_id!r} could start",
+            reason="parent_turn_cancelled",
+        )
 
     # ---- backpressure: queue (never fail) at the cap ----------------------
     # PER-DEPTH admission: each depth has its own pool, so the cap is counted
@@ -325,7 +299,24 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         parent_session_id=spec.parent_session_id,
         agent={"id": spec.child_expert_id, "mode": "subagent"},
         mode=parent_mode,
+        # A child is part of the parent's authorization scope, so it must inherit
+        # the user-selected confirmation posture as well as the work mode.  The
+        # previous implicit Session default (``ask``) made a bypass/auto-edits
+        # parent silently park every effectful child tool behind a permission the
+        # parent UI did not expose.  A server-owned approval profile is the one
+        # deliberate exception: SPOTTER's watcher stays ``ask`` and receives only
+        # its narrow containment grants through ``approval_profile`` below.
+        approval_mode=(
+            getattr(parent, "approval_mode", "ask")
+            if spec.session_approval_profile is None
+            else "ask"
+        ),
+        approval_profile=spec.session_approval_profile or "",
     )
+    # The narrowing axis composes too: the parent's session-scoped ``ask``/``deny`` rows are
+    # keyed to the PARENT's session id, so without this projection a call the parent would
+    # prompt for runs unprompted in the child (widening-only inheritance).
+    inherit_child_session_policies(app, spec.parent_session_id, child.id)
     if parent_mode in _RESTRICTIVE_SESSION_MODES:
         # Typed, queryable note (no-silent-fallback ground rule): this is a real
         # behavior change from the pre-fix default (child always got ``edit``), so
@@ -400,6 +391,7 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
                 "workspace_id": workspace_id,
                 "session_mode": parent_mode,
                 "session_scope_metadata": session_scope_metadata,
+                "session_approval_profile": spec.session_approval_profile,
             },
         },
     )
@@ -676,11 +668,19 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
                 app, task_id, STATUS_CANCELLED, notify_pending=False, updated_at=now
             )
         elif code:
+            error_info = getattr(final, "error_info", None)
             outcome = fold_agent_task_transition(
                 app,
                 task_id,
                 STATUS_FAILED,
-                error_reason="agent_error",
+                error_reason=child_task_error_reason(error_info),
+                result=child_task_failure_result(
+                    app,
+                    child_sid,
+                    final,
+                    workflow_state=_child_workflow_state,
+                    excerpt_limit=_ANSWER_EXCERPT_MAX,
+                ),
                 notify_pending=(mode == "async"),
                 updated_at=now,
             )
@@ -712,19 +712,6 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
         return
 
     finish_agent_task_transition(app, outcome)
-
-
-def _child_workflow_state(app: "FastAPI", child_sid: str, final: Any) -> dict[str, Any]:
-    """The child's typed workflow_state riding back on the result (empty when none)."""
-
-    meta = getattr(final, "metadata", {}) or {}
-    wf = meta.get("workflow_state")
-    if isinstance(wf, dict):
-        return wf
-    sess = app.state.sessions.get(child_sid)
-    smeta = getattr(sess, "metadata", {}) or {}
-    wf = smeta.get("workflow_state")
-    return wf if isinstance(wf, dict) else {}
 
 
 def _admit_next_queued(app: "FastAPI") -> None:
@@ -774,6 +761,7 @@ def _admit_next_queued(app: "FastAPI") -> None:
             workspace_id=pending.get("workspace_id"),
             session_mode=pending.get("session_mode"),
             session_scope_metadata=pending.get("session_scope_metadata"),
+            session_approval_profile=pending.get("session_approval_profile"),
         )
         reg.register(replace(task, queued_reason=""))  # clear queued_reason as it launches
         _launch(app, reg.get(task.task_id), spec)

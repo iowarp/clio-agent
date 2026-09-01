@@ -65,7 +65,10 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 
-from clio_agent.gact.events import Event
+from clio_agent.gact.cancellation_check import (
+    make_cancellation_checker as _make_cancellation_checker,  # noqa: F401 - compatibility export
+)
+from clio_agent.gact.permission_delivery import publish_permission_event
 from clio_agent.gact.planning import active_playbook_allowed_tools
 from clio_agent.gact.runtime.globals import _resolve_tool_session
 from clio_agent.gact.runtime.grant_resolver import (
@@ -81,6 +84,7 @@ from clio_agent.gact.runtime.permission_policies import (
     _permission_path_from_args,
 )
 from clio_agent.gact.runtime.retention import enforce_dict_bound
+from clio_agent.gact.spotter_permission import enforce_spotter_clearance as _spotter_clearance
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.catalog import get_tool_entry
 
@@ -88,16 +92,15 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
 logger = logging.getLogger(__name__)
-
 #: The gate ``context`` kind marking an external MCP tool call. Single-sourced in
 #: :mod:`grant_resolver`; re-exported here under its historical private name for the
 #: routes/builders/tests that bind ``permission_gate._EXTERNAL_MCP_PERMISSION_CONTEXT_KIND``.
 _EXTERNAL_MCP_PERMISSION_CONTEXT_KIND = EXTERNAL_MCP_CONTEXT_KIND
-
 #: #1034 typed approval-mode reasons stamped on the resolved / pending permission row so the
 #: trace always shows WHY a non-read call was auto-approved or still prompted (never silent).
 REASON_APPROVAL_BYPASS = "approval_mode_bypass"
 REASON_APPROVAL_AUTO_EDITS = "approval_mode_auto_edits"
+REASON_SPOTTER_WATCHER_CONTAINMENT = "approval_profile_spotter_watcher_containment"
 #: ai-review still PROMPTS today (the reviewer agent is the split follow-up slice); the pending
 #: row carries this typed reason so the ask is attributable to the reviewer-pending state.
 REASON_AI_REVIEW_REVIEWER_PENDING = "ai_review_reviewer_pending"
@@ -138,20 +141,24 @@ def default_decision(
     the existing interactive prompt; it never manufactures a denial (that stays with the lock and
     explicit deny policies above). Returns:
 
-    * ``allow`` — ``bypass`` (any non-read call) or ``auto-edits`` for an fs WRITE (a call whose
-      static catalog entry carries the ``write`` tag);
+    * ``allow`` — ``bypass`` (any non-read call), ``auto-edits`` for an fs WRITE (a call whose
+      static catalog entry carries the ``write`` tag), or the server-owned
+      ``spotter-watcher`` profile for the exact containment/alert-card tools;
     * ``ask``   — ``ask`` (default), ``auto-edits`` for a non-write (e.g. ``shell_bash``, whose
       writes live behind the OS fence, not a catalog ``write`` tag), ``ai-review`` (the caller
       stamps the typed ``ai_review_reviewer_pending`` reason on the pending row), or
       ``spotter-ai`` (deliberately identical to ``ask`` — spotter-ai only ARMS a watcher
       child that observes the session; it grants no auto-approval axis of its own, so a
-      non-read call still prompts the interactive gate exactly as the default mode would).
+      non-read call still prompts the interactive gate exactly as the default mode would),
+      or ``spotter-watcher`` for every other tool, including quarantine release.
 
     ``kind``/``args`` are accepted for a stable signature (a future kind may inspect them) but the
     two current signals (mode + the catalog ``write`` tag) do not consult them.
     """
 
     _ = (kind, args)
+    if approval_mode == "spotter-watcher":
+        return "allow" if name in {"spotter_raise_alert", "raise_alert_card"} else "ask"
     if approval_mode == "bypass":
         return "allow"
     if approval_mode == "auto-edits":
@@ -331,17 +338,16 @@ def _record_resolved_permission(
         app.state.permissions[pid] = row
         enforce_dict_bound(app, app.state.permissions, "permissions", session_id=session_id)
     if hasattr(app.state, "bus"):
-        app.state.bus.publish(
-            Event(
-                type="permission.resolved",
-                session_id=session_id,
-                payload={
-                    "permission_id": pid,
-                    "action": action,
-                    "session_id": session_id,
-                    "reason": reason,
-                },
-            )
+        publish_permission_event(
+            app,
+            "permission.resolved",
+            owner_session_id=session_id,
+            payload={
+                "permission_id": pid,
+                "action": action,
+                "session_id": session_id,
+                "reason": reason,
+            },
         )
     return pid
 
@@ -526,17 +532,17 @@ def resolve_permission(
             pid,
             exc,
         )
-    app.state.bus.publish(
-        Event(
-            type="permission.resolved",
-            session_id=row.get("session_id", ""),
-            payload={
-                "permission_id": pid,
-                "action": action,
-                "session_id": row.get("session_id", ""),
-                "grantor": grantor,
-            },
-        )
+    owner_session_id = str(row.get("session_id") or "")
+    publish_permission_event(
+        app,
+        "permission.resolved",
+        owner_session_id=owner_session_id,
+        payload={
+            "permission_id": pid,
+            "action": action,
+            "session_id": owner_session_id,
+            "grantor": grantor,
+        },
     )
     return row
 
@@ -584,6 +590,10 @@ def _make_permission_gate(app: "FastAPI"):
         # Prefer the session currently driving the turn. Recency is
         # only a fallback for truly out-of-band tool calls.
         sid, current = _resolve_tool_session(app)
+        if denial := _spotter_clearance(
+            app, sid, current, name, args, subject, _record_resolved_permission
+        ):
+            return DenyDecision(denial)
         # P2.2 #1070: PreToolUse hooks (the ported ``pre_tool`` consumer, deny-capable
         # and TIGHTEN-ONLY). A hook deny blocks the call and its reason reaches the
         # model via ``DenyDecision``; a hook allow proceeds to the policy match below
@@ -698,9 +708,13 @@ def _make_permission_gate(app: "FastAPI"):
         # tool"): the mode may auto-approve ONLY the unpolicied case, so an explicit ``ask`` survives
         # even bypass. Reads never reach here (is_read_only returned at the top).
         approval_mode = getattr(current, "approval_mode", "ask") if current is not None else "ask"
+        approval_profile = (
+            str(getattr(current, "approval_profile", "") or "") if current is not None else ""
+        )
+        decision_posture = approval_profile or approval_mode
         if (
             policy_action != "ask"
-            and default_decision(approval_mode, "tool", name, args) == "allow"
+            and default_decision(decision_posture, "tool", name, args) == "allow"
         ):
             # bypass (any non-read) or auto-edits (fs write): auto-approve but STILL record a
             # resolved audit row + permission.resolved boundary event — the OS fence is
@@ -712,11 +726,15 @@ def _make_permission_gate(app: "FastAPI"):
                 args=args,
                 status="auto_approved",
                 action="allow",
-                summary=f"{subject} {name!r} allowed by approval_mode={approval_mode!r}",
+                summary=f"{subject} {name!r} allowed by approval posture={decision_posture!r}",
                 reason=(
                     REASON_APPROVAL_BYPASS
                     if approval_mode == "bypass"
-                    else REASON_APPROVAL_AUTO_EDITS
+                    else (
+                        REASON_SPOTTER_WATCHER_CONTAINMENT
+                        if approval_profile == "spotter-watcher"
+                        else REASON_APPROVAL_AUTO_EDITS
+                    )
                 ),
             )
             return "allow"
@@ -745,12 +763,11 @@ def _make_permission_gate(app: "FastAPI"):
         app.state.permissions[pid] = row
         app.state.permission_events[pid] = evt
         enforce_dict_bound(app, app.state.permissions, "permissions", session_id=sid)
-        app.state.bus.publish(
-            Event(
-                type="permission.requested",
-                session_id=sid,
-                payload=row,
-            )
+        publish_permission_event(
+            app,
+            "permission.requested",
+            owner_session_id=sid,
+            payload=row,
         )
         # #1044: one-shot AI reviewer (ai-review approval mode only). The pending row +
         # event are already on the ledger (auditable that a review happened, carrying the
@@ -781,18 +798,3 @@ def _make_permission_gate(app: "FastAPI"):
         return "deny"
 
     return gate
-
-
-def _make_cancellation_checker(app: "FastAPI"):
-    """Build a tool-executor cancellation checker for the active GACT session."""
-
-    def check() -> bool:
-        sid, _current = _resolve_tool_session(app)
-        if not sid:
-            return False
-        event = app.state.cancel_events.get(sid)
-        if event is not None and event.is_set():
-            return True
-        return sid in app.state.cancel_flags
-
-    return check

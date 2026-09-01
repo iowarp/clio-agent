@@ -1,13 +1,8 @@
-"""Provider-agnostic core of the stateful session-delta transport (#901 / #891).
+"""Core of the Claude SDK stateful session-delta transport (#901 / #891).
 
-The TTFT closer's shared heart, extracted so BOTH the ``claude_code`` SDK
-transport (:mod:`clio_agent.providers.claude_code_stateful`) and the native
-``codex app-server`` transport (:mod:`clio_agent.providers.codex_stateful`) reuse
-ONE detector + ONE bounded per-loop session registry + ONE per-forward scope. Only
-the *send side* differs between providers (a Claude SDK ``query`` under a stable
-``session_id`` vs. a codex ``turn/start`` on a persistent thread); the
-prefix-classification and the registry lifecycle are identical, so they live here
-(no duplication — #775 no-accretion).
+The TTFT closer holds one detector, one bounded per-loop session registry, and
+one per-forward scope for the ``claude_code`` SDK transport. Codex no longer
+uses this layer: its official Python SDK is the sole Codex provider boundary.
 
 **The problem (measured, #901/#891).** dspy/litellm is stateless: every LM call
 re-sends the FULL rendered prompt and the provider must re-ingest it (cache reads
@@ -32,16 +27,7 @@ fallback: every reset/degrade is a recorded, queryable reason (#775).
 own scope token (a fresh per-``forward`` uuid) so they can never share a session.
 The registry is bounded (LRU over live entries) and released explicitly on loop end
 (:func:`stateful_scope`'s teardown, which releases EVERY registered provider
-registry so the codex + claude legs both tear down from the one scope the ReActV2
-loop binds).
-
-**Handle lifecycle is pluggable (the one provider difference).** A ``full`` send
-needs a fresh session HANDLE. Claude mints its own client-side (a uuid); codex must
-ask its app-server (``thread/start`` I/O that can fail). So
-:meth:`StatefulSessionRegistry.plan` takes an ``open_handle`` factory called ONLY
-on a full send; if it raises, the popped forced reason is restored so the retried
-call reclassifies with the correct typed reason (never a silent downgrade to
-``first_call``).
+registry so every Claude leg tears down from the one scope the ReActV2 loop binds).
 """
 
 from __future__ import annotations
@@ -52,7 +38,7 @@ import threading
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal
 
 __all__ = [
@@ -371,22 +357,11 @@ def classify_delta(
 # --------------------------------------------------------------------------- #
 @dataclass
 class _Entry:
-    """One live stateful session: its opaque handle + the last FULL list it sent.
-
-    ``extra`` is an opaque per-provider payload (unused by claude; the codex leg
-    stores the pooled ``CodexAppServerProcess`` so a respawn can be detected and
-    force a ``session_evicted`` reset).
-    """
+    """One live stateful session and the last full message list it sent."""
 
     handle: str
     messages: list[dict[str, Any]]
     scope_token: str
-    extra: Any = field(default=None)
-
-
-def _mint_uuid_handle() -> str:
-    """Default ``open_handle``: a fresh client-side session id (claude's mint)."""
-    return uuid.uuid4().hex
 
 
 class StatefulSessionRegistry:
@@ -398,9 +373,8 @@ class StatefulSessionRegistry:
     op, a provider error, or a process respawn flags the scope so the NEXT call for
     it classifies with the correct typed reason instead of a bare ``first_call``.
 
-    Provider-agnostic: the only provider difference is how a fresh handle is opened
-    on a ``full`` send (:meth:`plan`'s ``open_handle`` factory — a pure uuid for
-    claude, a ``thread/start`` I/O for codex).
+    A full send mints a fresh client-side Claude session id. Codex uses its official
+    SDK-owned thread lifecycle and does not participate in this registry.
     """
 
     def __init__(
@@ -427,47 +401,25 @@ class StatefulSessionRegistry:
                 return 128
         return 128
 
-    def peek_extra(self, session_key: tuple[Any, ...]) -> Any:
-        """Return the stored opaque ``extra`` for ``session_key`` (or ``None``).
-
-        The codex respawn check reads the process the key's thread was opened on and
-        compares it to the pool's current process; a mismatch means the thread died
-        with its process and the caller flags a ``session_evicted`` reset.
-        """
-        with self._lock:
-            entry = self._entries.get(session_key)
-            return entry.extra if entry is not None else None
-
     def plan(
         self,
         *,
         session_key: tuple[Any, ...],
         scope_token: str,
         messages: list[dict[str, Any]],
-        open_handle: Callable[[], str] = _mint_uuid_handle,
-        extra: Any = None,
     ) -> tuple[DeltaPlan, str]:
         """Classify a call and return ``(plan, handle)``, updating live state.
 
         A pending forced reason for ``scope_token`` (set by :meth:`mark_reset` /
         :meth:`note_provider_error` / an LRU eviction) wins first and is consumed
         here. A ``delta`` reuses the entry's ``handle`` and advances its stored FULL
-        list; a ``full`` calls ``open_handle`` to open a fresh session and (re)opens
+        list; a ``full`` mints a fresh session id and (re)opens
         the entry, evicting the LRU tail if over capacity.
-
-        ``open_handle`` is invoked ONLY on a full send. If it raises (e.g. codex
-        ``thread/start`` failed), the popped forced reason is RESTORED and the entry
-        is left untouched, so the retried call reclassifies with the correct typed
-        reason (never a silent downgrade to ``first_call``).
 
         Args:
             session_key: The ``(scope_token, model, cwd, thinking-or-effort)`` identity.
             scope_token: The per-forward scope token (for pending-reason lookup).
             messages: The rendered message list about to be sent.
-            open_handle: Factory that opens a fresh session handle on a full send
-                (default: a client-side uuid).
-            extra: An opaque per-provider payload stored on a full send.
-
         Returns:
             The :class:`DeltaPlan` and the ``handle`` to send under.
         """
@@ -480,16 +432,8 @@ class StatefulSessionRegistry:
                 entry.messages = list(messages)
                 self._entries.move_to_end(session_key)
                 return plan, entry.handle
-            try:
-                handle = open_handle()
-            except BaseException:
-                # The fresh-session open failed: restore the consumed forced reason so
-                # the bounded retry reclassifies with the SAME typed reason, and leave
-                # any prior entry intact (no half-open state).
-                if forced is not None:
-                    self._pending[scope_token] = forced
-                raise
-            self._entries[session_key] = _Entry(handle, list(messages), scope_token, extra)
+            handle = uuid.uuid4().hex
+            self._entries[session_key] = _Entry(handle, list(messages), scope_token)
             self._entries.move_to_end(session_key)
             self._evict_over_capacity(protect=session_key)
             return plan, handle
@@ -534,9 +478,7 @@ class StatefulSessionRegistry:
     def release(self, scope_token: str) -> None:
         """Drop every entry + pending flag for ``scope_token`` (loop-end teardown)."""
         with self._lock:
-            dead = [
-                key for key, entry in self._entries.items() if entry.scope_token == scope_token
-            ]
+            dead = [key for key, entry in self._entries.items() if entry.scope_token == scope_token]
             for key in dead:
                 self._entries.pop(key, None)
             self._pending.pop(scope_token, None)

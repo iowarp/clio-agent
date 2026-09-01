@@ -137,6 +137,37 @@ async def test_connect_namespace_skips_the_lock_for_an_opted_out_spec(
 
 
 @pytest.mark.asyncio
+async def test_prepare_namespace_establishes_one_persistent_client() -> None:
+    """Readiness connects the workspace client once; later sessions reuse it."""
+
+    composite_target = object()
+    namespace_target = object()
+    connected_targets: list[object] = []
+
+    def _client_factory(target: object) -> _FakeClient:
+        connected_targets.append(target)
+        return _FakeClient()
+
+    executor = AsyncMCPToolExecutor(
+        composite_target,
+        timeout=5.0,
+        client_factory=_client_factory,
+        preloaded_tools={},
+        namespace_servers={"geo": namespace_target},
+        server_id="composite",
+    )
+    await executor.start()
+    try:
+        await executor.prepare_namespace("geo")
+        await executor.prepare_namespace("geo")
+    finally:
+        await executor.aclose()
+
+    assert connected_targets == [composite_target, namespace_target]
+    assert executor.namespace_connection_era("geo") is not None
+
+
+@pytest.mark.asyncio
 async def test_the_real_async_lock_serializes_two_concurrent_cold_spawns(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:

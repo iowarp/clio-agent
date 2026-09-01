@@ -282,6 +282,15 @@ class Part(DocumentPartFields):
     body: str = ""
     actions: list[dict[str, Any]] = Field(default_factory=list)
 
+    # A2UI surface state is transcript-owned. Every mutation carries the exact
+    # ordered protocol messages that produced it; projections fold these parts
+    # to reconstruct the current surface on reconnect. ``a2ui_protocol_version``
+    # versions the persisted payload independently from the surrounding GACT
+    # envelope so an unknown future record can be quarantined visibly.
+    surface_id: str = ""
+    a2ui_protocol_version: str = ""
+    a2ui_messages: list[dict[str, Any]] = Field(default_factory=list)
+
     def to_wire(self) -> dict[str, Any]:
         """Project this part to its wire dict via ``exclude_defaults`` (omitempty:
         a part populates only its own ``type``'s fields; the rest sit at

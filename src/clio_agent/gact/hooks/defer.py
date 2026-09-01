@@ -62,6 +62,7 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.events import Event
 from clio_agent.gact.hooks.wire import record_hook_reason
+from clio_agent.gact.permission_delivery import publish_permission_event
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 
 if TYPE_CHECKING:
@@ -169,8 +170,11 @@ def _publish_pending(app: "FastAPI", sid: str, row: dict[str, Any]) -> None:
     """Surface a pending defer so ANY client sees it (the interactive-gate event shape)."""
 
     if hasattr(app.state, "bus"):
-        app.state.bus.publish(
-            Event(type="permission.requested", session_id=sid, payload=row)
+        publish_permission_event(
+            app,
+            "permission.requested",
+            owner_session_id=sid,
+            payload=row,
         )
     try:
         from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
@@ -286,9 +290,7 @@ def park_pretool_defer(
         return "allow"
 
     # deny (or anything non-allow): a typed deny to the model — never a silent drop.
-    record_hook_reason(
-        "hook_defer_denied", event="PreToolUse", tool_name=name, permission_id=pid
-    )
+    record_hook_reason("hook_defer_denied", event="PreToolUse", tool_name=name, permission_id=pid)
     stash_pre_tool_intercept(None)
     from clio_agent.gact.permission_gate import DenyDecision  # noqa: PLC0415
 
@@ -447,19 +449,28 @@ def _resume_user_prompt_defer(
             Event(
                 type="session.status_changed",
                 session_id=sid,
-                payload={"session_id": sid, "status": "idle", "prev_status": prev,
-                         "reason": "user_prompt_defer_denied"},
+                payload={
+                    "session_id": sid,
+                    "status": "idle",
+                    "prev_status": prev,
+                    "reason": "user_prompt_defer_denied",
+                },
             )
         )
         return
     resume_text = str(row.get("resume_text") or "")
-    _stage_resume_turn(app, sid, session, resume_text, {HOOK_DEFER_RESUME_META: True},
-                       event="user_prompt_defer.resumed", question_id=str(row.get("id") or ""))
+    _stage_resume_turn(
+        app,
+        sid,
+        session,
+        resume_text,
+        {HOOK_DEFER_RESUME_META: True},
+        event="user_prompt_defer.resumed",
+        question_id=str(row.get("id") or ""),
+    )
 
 
-def _resume_stop_defer(
-    app: "FastAPI", sid: str, row: Mapping[str, Any], approved: bool
-) -> None:
+def _resume_stop_defer(app: "FastAPI", sid: str, row: Mapping[str, Any], approved: bool) -> None:
     session = app.state.sessions.get(sid)
     if approved:
         # Completion accepted: the turn's answer stands, release the session.
@@ -468,8 +479,12 @@ def _resume_stop_defer(
             Event(
                 type="session.status_changed",
                 session_id=sid,
-                payload={"session_id": sid, "status": "idle", "prev_status": "waiting_user",
-                         "reason": "stop_defer_approved"},
+                payload={
+                    "session_id": sid,
+                    "status": "idle",
+                    "prev_status": "waiting_user",
+                    "reason": "stop_defer_approved",
+                },
             )
         )
         return
@@ -477,8 +492,15 @@ def _resume_stop_defer(
     feedback = str(row.get("resume_text") or row.get("defer_reason") or "").strip() or (
         "A Stop hook reported the task is not complete; continue working."
     )
-    _stage_resume_turn(app, sid, session, feedback, {"stop_defer_redrive": True},
-                       event="stop_defer.redriven", question_id=str(row.get("id") or ""))
+    _stage_resume_turn(
+        app,
+        sid,
+        session,
+        feedback,
+        {"stop_defer_redrive": True},
+        event="stop_defer.redriven",
+        question_id=str(row.get("id") or ""),
+    )
 
 
 def _stage_resume_turn(
@@ -504,8 +526,11 @@ def _stage_resume_turn(
     if app.state.turn_runner.busy(sid):
         enqueue_user_steer(app, sid, text, {**metadata, "question_id": question_id})
         app.state.bus.publish(
-            Event(type=event, session_id=sid,
-                  payload={"session_id": sid, "permission_id": question_id, "reason": "session_busy"})
+            Event(
+                type=event,
+                session_id=sid,
+                payload={"session_id": sid, "permission_id": question_id, "reason": "session_busy"},
+            )
         )
         return
     from clio_agent.gact.turn import _start_background_user_turn  # noqa: PLC0415
@@ -519,7 +544,13 @@ def _stage_resume_turn(
         prev_status=str(getattr(session, "status", "waiting_user") or "waiting_user"),
     )
     app.state.bus.publish(
-        Event(type=event, session_id=sid,
-              payload={"session_id": sid, "permission_id": question_id,
-                       "queued_user_message_id": resumed.id})
+        Event(
+            type=event,
+            session_id=sid,
+            payload={
+                "session_id": sid,
+                "permission_id": question_id,
+                "queued_user_message_id": resumed.id,
+            },
+        )
     )

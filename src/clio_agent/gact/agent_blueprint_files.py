@@ -1,6 +1,6 @@
-"""Agent-blueprint file-tree listing + raw read (iowarp/clio-agent#1192).
+"""Agent-blueprint file-tree listing, reading, and editing.
 
-Owner module for the read-only file-browsing surface a blueprint's window
+Owner module for the file-browsing and editing surface a blueprint's window
 consumes: ``GET /v1/agent-blueprints/{id}/files`` (flat recursive listing)
 and ``GET /v1/agent-blueprints/{id}/files/read`` (raw content). Mirrors the
 conventions of the workspace file-browsing routes
@@ -20,9 +20,11 @@ call sites into this module (no accretion, #774/#775).
 from __future__ import annotations
 
 import mimetypes
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping
 
 from clio_agent.gact.agent_blueprints import (
     discover_agent_blueprints,
@@ -56,6 +58,7 @@ _TEXTUAL_BLUEPRINT_MIME_TYPES = frozenset(
 # still carries VCS metadata (a raw marketplace clone) can never turn this
 # into an unbounded walk.
 _BLUEPRINT_FILE_LIMIT = 5000
+_BLUEPRINT_TEXT_FILE_LIMIT_BYTES = 2 * 1024 * 1024
 _BLUEPRINT_FILE_SKIP_DIRS = frozenset(
     {
         ".git",
@@ -84,9 +87,11 @@ def resolve_agent_blueprint_root(
     """Resolve ``blueprint_id`` to its on-disk root directory, or ``None``.
 
     Session-scoped resolution is tried FIRST: when ``session_id`` names a
-    session whose active blueprint was PATH-activated
-    (``metadata.active_agent_blueprint_path``) and that active blueprint's own
-    id matches ``blueprint_id``, its root directory wins --
+    session whose active blueprint was PATH-activated and that active
+    blueprint's own id matches ``blueprint_id``, its root directory wins. Live
+    activations expose ``metadata.active_agent_blueprint_path``; persisted
+    historical activations retain the authoritative
+    ``metadata.active_agent_blueprint_definition_path`` snapshot instead.
     :func:`~clio_agent.gact.agent_blueprints.parse_agent_blueprint_root`
     normalizes both an ``AGENT.md`` file path and a directory path to the
     same ``.root`` (the directory containing ``AGENT.md``), so this resolves
@@ -97,6 +102,17 @@ def resolve_agent_blueprint_root(
 
     if session_id:
         active_path = _runtime_active_agent_blueprint_path(app, session_id)
+        if active_path is None:
+            session = app.state.sessions.get(session_id)
+            metadata = getattr(session, "metadata", {}) if session is not None else {}
+            if isinstance(metadata, Mapping) and str(
+                metadata.get("active_agent_blueprint_id") or ""
+            ) == str(blueprint_id):
+                definition_path = str(
+                    metadata.get("active_agent_blueprint_definition_path") or ""
+                ).strip()
+                if definition_path:
+                    active_path = Path(definition_path).expanduser()
         if active_path is not None:
             parsed = parse_agent_blueprint_root(active_path, scope="session")
             if parsed.id == blueprint_id:
@@ -188,6 +204,58 @@ def resolve_blueprint_file_path(root: Path, relative_path: str) -> Path:
     except ValueError:
         raise BlueprintPathEscapesRootError(relative_path) from None
     return target
+
+
+class BlueprintFileNotTextError(ValueError):
+    """Raised when a binary blueprint file is submitted to the text editor."""
+
+
+class BlueprintFileTooLargeError(ValueError):
+    """Raised when an edited blueprint file exceeds the bounded text-file limit."""
+
+
+def write_blueprint_text_file(root: Path, relative_path: str, content: str) -> dict[str, Any]:
+    """Atomically replace one existing textual file beneath a blueprint root."""
+
+    target = resolve_blueprint_file_path(root, relative_path)
+    if not target.is_file():
+        raise FileNotFoundError(relative_path)
+    previous = target.read_bytes()
+    if not is_textual_blueprint_file(target.name, previous):
+        raise BlueprintFileNotTextError(relative_path)
+    encoded = content.encode("utf-8")
+    if len(encoded) > _BLUEPRINT_TEXT_FILE_LIMIT_BYTES:
+        raise BlueprintFileTooLargeError(relative_path)
+
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary.write(encoded)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        temporary_path.chmod(target.stat().st_mode)
+        os.replace(temporary_path, target)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+    stat = target.stat()
+    return {
+        "path": relative_path.replace("\\", "/"),
+        "type": "file",
+        "size": stat.st_size,
+        "modified": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z"),
+    }
 
 
 def is_textual_blueprint_file(name: str, raw: bytes) -> bool:

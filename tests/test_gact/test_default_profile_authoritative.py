@@ -212,13 +212,14 @@ def test_boot_passes_discovered_relay_surfaces_into_clio_agent(monkeypatch, tmp_
 
     remote = object()
     jarvis = object()
+    relay_install = object()
 
     async def fake_discover() -> Any:
         return SimpleNamespace(
             remote_mcp_federation=remote,
             jarvis_jobs=jarvis,
+            relay_install=relay_install,
             status={"configured": True, "reason": None},
-            relay_install=None,
         )
 
     monkeypatch.setattr(relay_module, "discover_relay_tool_surfaces", fake_discover, raising=False)
@@ -248,7 +249,28 @@ def test_boot_passes_discovered_relay_surfaces_into_clio_agent(monkeypatch, tmp_
 
     assert recorded["remote_mcp_federation"] is remote
     assert recorded["jarvis_jobs"] is jarvis
+    assert recorded["relay_install"] is relay_install
     assert app.state.relay_tool_status == {"configured": True, "reason": None}
+
+
+def test_boot_records_relay_preflight_failure(monkeypatch, tmp_path) -> None:
+    """A pre-executor dependency failure is a typed failed startup, never a dead agent."""
+
+    from clio_agent.gact.app import _construct_agent_async
+
+    async def fail_relay_preflight(_app: Any) -> Any:
+        raise ModuleNotFoundError("No module named 'psutil'")
+
+    monkeypatch.setattr(
+        "clio_agent.gact.app.relay_wiring.relay_agent_kwargs",
+        fail_relay_preflight,
+    )
+    app = build_app(sessions_path=tmp_path / "relay-preflight.json")
+
+    asyncio.run(_construct_agent_async(app))
+
+    assert app.state.agent is None
+    assert app.state.agent_init_error == "ModuleNotFoundError(\"No module named 'psutil'\")"
 
 
 def test_boot_seed_still_matches_env_single_provider(monkeypatch, tmp_path) -> None:

@@ -35,7 +35,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 from functools import partial
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents.composition import _apply_prompt_registry_to_agent
@@ -64,6 +64,7 @@ from clio_agent.gact.runtime.globals import (
 )
 from clio_agent.gact.runtime.type_parsing import _blueprint_module_kind
 from clio_agent.gact.streaming import (
+    _peek_stream_fallback,
     _run_dynamic_agent_compat,
     _try_streamed_forward_compat,
 )
@@ -93,6 +94,21 @@ def _forward_executor(state: "TurnState") -> Any:
     from clio_agent.gact.turn_spawn import agent_task_executor_for_depth  # noqa: PLC0415
 
     return agent_task_executor_for_depth(state.app, depth)
+
+
+async def _run_turn_setup_off_loop(state: "TurnState", operation: Callable[[], Any]) -> Any:
+    """Run blocking blueprint/tool setup without freezing REST, SSE, or heartbeats.
+
+    Cold MCP discovery may install and launch a scientific server before the
+    DSPy module can be built. That work is synchronous, so invoking it directly
+    from ``_forward_turn_leased`` stalled the application's event loop for tens
+    of seconds. Copy the exact turn/tool context into the same executor family
+    used by the child and leave the request loop free to report progress.
+    """
+
+    loop = asyncio.get_running_loop()
+    turn_context = contextvars.copy_context()
+    return await loop.run_in_executor(_forward_executor(state), lambda: turn_context.run(operation))
 
 
 async def forward_turn(state: "TurnState") -> Any:
@@ -150,13 +166,22 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
     bringup_timing.timer_for_session(state.app, state.sid).start_phase("blueprint.resolve")
     session_agent_id = _session_agent_id(state.sess)
     state.active_agent_id = state.turn_agent_id or session_agent_id
+    active_blueprint_id = _runtime_active_agent_blueprint_id(state.app, state.sid)
     active_blueprint_root_id = _runtime_active_agent_blueprint_root_id(state.app, state.sid)
     active_blueprint_agent_ids = _runtime_active_agent_blueprint_agent_ids(state.app, state.sid)
     if (
         not state.turn_agent_id
         and active_blueprint_root_id
-        and state.active_agent_id in {"", "main", "default"}
+        and (
+            state.active_agent_id in {"", "main", "default"}
+            or state.active_agent_id == active_blueprint_id
+        )
     ):
+        # Session creation may persist the selected Agent Blueprint's catalog id
+        # as ``session.agent.id`` while activation resolves its executable root
+        # expert separately. The catalog id names the container, not an AgentDef;
+        # translate it to the declared root instead of rejecting the correctly
+        # activated blueprint as an unknown session agent.
         state.active_agent_id = active_blueprint_root_id
     if (
         active_blueprint_root_id
@@ -186,7 +211,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
     run_builtin_main = (
         not active_blueprint_root_id
         and state.active_agent_id in _EXECUTABLE_SESSION_AGENT_IDS
-        and not _runtime_active_agent_blueprint_id(state.app, state.sid)
+        and not active_blueprint_id
         and _runtime_active_agent_blueprint_path(state.app, state.sid) is None
     )
     if run_builtin_main:
@@ -273,21 +298,63 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
             dynamic_agent,
             execution_mode=execution_mode,
         )
+        _emit_semantic_event(
+            state.app,
+            state.sid,
+            "agent.toolset.prepare.started",
+            turn_id=state.turn_id,
+            trace_id=state.trace_id,
+            status="running",
+            summary=f"Preparing tools for {dynamic_agent.id}.",
+            actor={"agent_id": dynamic_agent.id},
+            subject={"message_id": state.user_msg.id},
+            payload={"agent_id": dynamic_agent.id, "tools": list(dynamic_agent.tools)},
+        )
         # The keystone (set_turn_identity) already binds active_app() for the
         # whole turn, so no _gact_app_context wrapper is needed here.
         session_token = _ctx.set_session_id(state.sid)
         try:
-            module = (
-                _build_blueprint_dspy_module(state.app.state.agent, dynamic_agent)
-                if _agent_definition_uses_blueprint_runtime(dynamic_agent)
-                else (
-                    _build_tool_user_agent_module(state.app.state.agent, dynamic_agent)
-                    if dynamic_agent.tools
-                    else _build_prompt_user_agent_module(state.app.state.agent, dynamic_agent)
+
+            def build_module() -> Any:
+                return (
+                    _build_blueprint_dspy_module(state.app.state.agent, dynamic_agent)
+                    if _agent_definition_uses_blueprint_runtime(dynamic_agent)
+                    else (
+                        _build_tool_user_agent_module(state.app.state.agent, dynamic_agent)
+                        if dynamic_agent.tools
+                        else _build_prompt_user_agent_module(state.app.state.agent, dynamic_agent)
+                    )
                 )
+
+            module = await _run_turn_setup_off_loop(state, build_module)
+        except Exception:
+            _emit_semantic_event(
+                state.app,
+                state.sid,
+                "agent.toolset.prepare.failed",
+                turn_id=state.turn_id,
+                trace_id=state.trace_id,
+                status="failed",
+                summary=f"Tool preparation failed for {dynamic_agent.id}.",
+                actor={"agent_id": dynamic_agent.id},
+                subject={"message_id": state.user_msg.id},
+                payload={"agent_id": dynamic_agent.id, "tools": list(dynamic_agent.tools)},
             )
+            raise
         finally:
             _ctx.reset(session_token)
+        _emit_semantic_event(
+            state.app,
+            state.sid,
+            "agent.toolset.prepare.completed",
+            turn_id=state.turn_id,
+            trace_id=state.trace_id,
+            status="completed",
+            summary=f"Tools ready for {dynamic_agent.id}.",
+            actor={"agent_id": dynamic_agent.id},
+            subject={"message_id": state.user_msg.id},
+            payload={"agent_id": dynamic_agent.id, "tools": list(dynamic_agent.tools)},
+        )
         # #1215 S5: blueprint resolution + module build are done; the LLM
         # request dispatch below is NOT part of blueprint.resolve.
         bringup_timing.timer_for_session(state.app, state.sid).end_phase("blueprint.resolve")
@@ -352,6 +419,27 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
                 payload=_prediction_summary(state.pred),
             )
         if state.pred is None:
+            degradation = _peek_stream_fallback(state.app, state.sid)
+            _emit_semantic_event(
+                state.app,
+                state.sid,
+                "llm.request.degraded",
+                turn_id=state.turn_id,
+                trace_id=state.trace_id,
+                status="degraded",
+                summary=(
+                    f"Live delivery degraded for {dynamic_agent.id}: "
+                    f"{degradation.get('reason', 'sync_execution_path')}."
+                ),
+                actor=llm_actor,
+                subject=llm_subject,
+                blueprint=dict(state.agent_runtime.get("agent_blueprint") or {}),
+                provider=_llm_provider_payload(state.app, dynamic_agent.id),
+                payload={
+                    "request_mode": "sync",
+                    "degradation": degradation,
+                },
+            )
             _emit_semantic_event(
                 state.app,
                 state.sid,
@@ -366,6 +454,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
                 provider=_llm_provider_payload(state.app, dynamic_agent.id),
                 payload={
                     "request_mode": "sync",
+                    "degradation": degradation,
                     "input": state.enriched_text,
                     "prompt_resolution": state.prompt_resolution,
                     "agent_runtime": state.agent_runtime,

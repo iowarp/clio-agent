@@ -496,7 +496,7 @@ def test_failed_result_recovers_partial_route_evidence_from_semantic_events() ->
         session_id="sess_test",
         elapsed_s=300.0,
         message=message,
-        provider={"provider": "codex", "model": "gpt-5.5", "api_base": "codex://exec"},
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": "codex://sdk"},
         semantic_events=[
             {
                 "event_type": "agent.invocation.started",
@@ -3291,9 +3291,7 @@ def _seed_gact_app(tmp_path: Path):
     )
     client = TestClient(app)
     client.__enter__()
-    wid = client.post(
-        "/v1/workspaces", json={"name": "w", "root_path": str(tmp_path)}
-    ).json()["id"]
+    wid = client.post("/v1/workspaces", json={"name": "w", "root_path": str(tmp_path)}).json()["id"]
     sid = client.post("/v1/sessions", json={"workspace_id": wid}).json()["id"]
     return app, client, wid, sid
 

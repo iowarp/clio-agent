@@ -58,39 +58,39 @@ def test_turn_with_cost_populates_every_surface(tmp_path: Path) -> None:
         tokens={"input": 100, "output": 50, "cache_read": 40, "cache_write": 0},
         cost_usd=0.0032,
     )
-    client = _client(tmp_path, pred)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    with _client(tmp_path, pred) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
 
-    a = _turn(client, sid)
-    assert a["tokens"]["input"] == 100
-    assert a["tokens"]["output"] == 50
-    assert a["cost_usd"] == 0.0032
-    assert a["stop_reason"] == "end_turn"
+        a = _turn(client, sid)
+        assert a["tokens"]["input"] == 100
+        assert a["tokens"]["output"] == 50
+        assert a["cost_usd"] == 0.0032
+        assert a["stop_reason"] == "end_turn"
 
-    # Session rollup.
-    s = client.get(f"/v1/sessions/{sid}").json()
-    assert s["tokens_input"] == 100
-    assert s["tokens_output"] == 50
-    assert abs(s["cost_usd"] - 0.0032) < 1e-9
+        # Session rollup.
+        s = client.get(f"/v1/sessions/{sid}").json()
+        assert s["tokens_input"] == 100
+        assert s["tokens_output"] == 50
+        assert abs(s["cost_usd"] - 0.0032) < 1e-9
 
-    # Fire another turn to confirm cumulation.
-    _turn(client, sid)
-    s = client.get(f"/v1/sessions/{sid}").json()
-    assert s["tokens_input"] == 200
-    assert s["tokens_output"] == 100
-    assert abs(s["cost_usd"] - 0.0064) < 1e-9
+        # Fire another turn to confirm cumulation.
+        _turn(client, sid)
+        s = client.get(f"/v1/sessions/{sid}").json()
+        assert s["tokens_input"] == 200
+        assert s["tokens_output"] == 100
+        assert abs(s["cost_usd"] - 0.0064) < 1e-9
 
-    # /v1/metrics reflects the sum.
-    m = client.get("/v1/metrics").json()
-    assert m["tokens"]["input_total"] == 200
-    assert m["tokens"]["output_total"] == 100
-    assert abs(m["cost"]["total_usd"] - 0.0064) < 1e-9
+        # /v1/metrics reflects the sum.
+        m = client.get("/v1/metrics").json()
+        assert m["tokens"]["input_total"] == 200
+        assert m["tokens"]["output_total"] == 100
+        assert abs(m["cost"]["total_usd"] - 0.0064) < 1e-9
 
 
 def test_turn_without_cost_keeps_zero_envelope(tmp_path: Path) -> None:
     pred = _Pred(tokens=None, cost_usd=0.0)
-    client = _client(tmp_path, pred)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    a = _turn(client, sid)
-    assert a["tokens"]["input"] == 0
-    assert a["cost_usd"] == 0.0
+    with _client(tmp_path, pred) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        a = _turn(client, sid)
+        assert a["tokens"]["input"] == 0
+        assert a["cost_usd"] == 0.0

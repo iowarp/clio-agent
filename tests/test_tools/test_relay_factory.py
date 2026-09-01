@@ -486,3 +486,82 @@ async def test_ttl_refresh_construction_preserves_install_job_registry(
         )
     assert polled["terminal"] is True
     assert polled["state"] == "completed"
+
+
+class TestRuntimeRelayCredentialContinuity:
+    """A carried-over bearer credential must never follow a redirected endpoint.
+
+    ``configure_runtime_relay`` reuses the currently resolved credential when
+    ``api_token`` is omitted. Without an endpoint-continuity check, an
+    unauthenticated ``PUT /v1/relay/configuration`` naming an attacker host
+    installed the deployment's real token against that host, and every later
+    relay MCP/HTTP call sent ``Authorization: Bearer <token>`` to it -- a
+    credential the module promises stays process-local and that
+    ``relay_connection_metadata`` deliberately withholds from the wire.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_override(self) -> "Any":
+        relay_factory.reset_runtime_relay_override()
+        relay_factory.configure_runtime_relay(
+            mcp_url="https://relay.internal/mcp",
+            http_url="https://relay.internal",
+            api_token="T-secret",
+        )
+        yield
+        relay_factory.reset_runtime_relay_override()
+
+    def test_same_endpoint_still_reuses_the_held_credential(self) -> None:
+        configured = relay_factory.configure_runtime_relay(
+            mcp_url="https://relay.internal/mcp/v2",
+            http_url="https://relay.internal",
+        )
+        assert configured.api_token == "T-secret"
+
+    @pytest.mark.parametrize(
+        ("mcp_url", "http_url"),
+        [
+            ("https://attacker.example/mcp", "https://attacker.example"),
+            ("https://relay.internal/mcp", "https://attacker.example"),
+            ("https://relay.internal:9443/mcp", "https://relay.internal"),
+            ("http://relay.internal/mcp", "https://relay.internal"),
+        ],
+    )
+    def test_redirecting_the_endpoint_without_a_credential_is_refused(
+        self, mcp_url: str, http_url: str
+    ) -> None:
+        with pytest.raises(ValueError, match="relay_credential_endpoint_mismatch"):
+            relay_factory.configure_runtime_relay(mcp_url=mcp_url, http_url=http_url)
+
+        held = relay_factory.resolve_relay_transport_config()
+        assert isinstance(held, RelayTransportConfig)
+        assert held.mcp_url == "https://relay.internal/mcp"
+        assert held.http_url == "https://relay.internal"
+        assert held.api_token == "T-secret"
+
+    def test_an_explicit_credential_may_point_anywhere(self) -> None:
+        configured = relay_factory.configure_runtime_relay(
+            mcp_url="https://other.example/mcp",
+            http_url="https://other.example",
+            api_token="T-other",
+        )
+        assert configured.api_token == "T-other"
+        assert configured.mcp_url == "https://other.example/mcp"
+
+    def test_a_blank_credential_is_treated_as_omitted(self) -> None:
+        with pytest.raises(ValueError, match="relay_credential_endpoint_mismatch"):
+            relay_factory.configure_runtime_relay(
+                mcp_url="https://attacker.example/mcp",
+                http_url="https://attacker.example",
+                api_token="   ",
+            )
+
+    def test_a_first_time_connection_without_a_credential_still_reports_incomplete(
+        self,
+    ) -> None:
+        relay_factory.disconnect_runtime_relay()
+        with pytest.raises(ValueError, match="missing api_token"):
+            relay_factory.configure_runtime_relay(
+                mcp_url="https://relay.internal/mcp",
+                http_url="https://relay.internal",
+            )

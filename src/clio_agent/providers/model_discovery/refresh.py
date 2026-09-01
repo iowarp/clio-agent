@@ -38,7 +38,8 @@ def is_provider_configured(preset: Provider) -> bool:
     Filters :func:`refresh_all`'s default scan so an explicit refresh doesn't
     spend its (bounded) wall-clock on providers nobody has set up:
 
-    * codex / claude_code: the CLI must be on PATH.
+    * codex: the official Python SDK is a required dependency.
+    * claude_code: the CLI used by its SDK must be on PATH.
     * argonne: a stored Globus token must exist.
     * any other ``requires_api_key`` kind: its resolved API key must be non-empty.
     * local/no-auth kinds (lm_studio, ollama, local vLLM): always configured —
@@ -46,15 +47,11 @@ def is_provider_configured(preset: Provider) -> bool:
       local server is actually running.
     """
     if preset.provider_kind == "codex":
-        from clio_agent.providers.codex_litellm import (  # noqa: PLC0415
-            CodexCLIUnavailableError,
-            _resolve_codex_binary,
-        )
-
         try:
-            _resolve_codex_binary()
+            import openai_codex  # noqa: F401,PLC0415
+
             return True
-        except CodexCLIUnavailableError:
+        except ImportError:
             return False
     if preset.provider_kind == "claude_code":
         from clio_agent.providers.model_discovery.claude_code import (  # noqa: PLC0415
@@ -91,7 +88,8 @@ async def refresh_all(
     #1211 review R3) is honored verbatim, un-filtered — the caller named exactly
     what they want probed.
 
-    Runs one discovery coroutine per preset (CLI probes for codex/claude_code,
+    Runs one discovery coroutine per preset (SDK catalog for codex, CLI alias
+    probes for claude_code,
     the live handshake for everything else) via ``asyncio.gather`` so wall-clock
     is bounded by the SLOWEST single provider, not their sum. Each provider's
     coroutine is ADDITIONALLY capped at :data:`REFRESH_PER_PROVIDER_DEADLINE_S`

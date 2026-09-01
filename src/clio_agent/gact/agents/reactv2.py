@@ -65,6 +65,18 @@ import dspy
 from dspy.adapters.types.tool import Tool, ToolCallResults, ToolCalls
 from dspy.predict.react_v2 import _json_schema_for_annotation
 
+from clio_agent.gact.agents.reactv2_submit import (
+    REACT_FORCED_SUBMIT_REJECTED as REACT_FORCED_SUBMIT_REJECTED,
+)
+from clio_agent.gact.agents.reactv2_submit import (
+    active_react_scope_safe as _active_react_scope_safe,
+)
+from clio_agent.gact.agents.reactv2_submit import forced_submit
+from clio_agent.gact.agents.reactv2_submit import record_submit_audit as _record_submit_audit
+from clio_agent.gact.agents.reactv2_upstream import assert_dspy_reactv2_contract
+
+assert_dspy_reactv2_contract()
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from clio_agent.arc.schema import Segment
 
@@ -156,6 +168,20 @@ class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
             arg_types=arg_types,
         )
 
+    def _forced_submit(
+        self,
+        history: dspy.History,
+        pending_inputs: dict[str, Any],
+        break_reason: str,
+        turn_index: int,
+    ) -> Any:
+        """Finalize through the sole legal ``submit`` operation.
+
+        The extracted owner keeps provider tool-choice differences from inviting an
+        unrelated operation and audits every rejected finalization.
+        """
+        return forced_submit(self, history, pending_inputs, break_reason, turn_index)
+
     def forward(self, **input_args: Any) -> Any:
         """Run the V2 loop, retain the History, and bounded-repair a missing submit (#901 S4/S6).
 
@@ -205,7 +231,9 @@ class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
         from clio_agent.gact.agents import runtime as _rt  # noqa: PLC0415
         from clio_agent.gact.agents.reactv2_events import _arc_scope  # noqa: PLC0415
-        from clio_agent.gact.runtime.context_tokens import _autocompact_threshold  # noqa: PLC0415
+        from clio_agent.gact.runtime.context_tokens import (  # noqa: PLC0415
+            _session_autocompact_preferences,
+        )
         from clio_agent.providers.stateful_common import (
             note_prefix_reset_for_active_scope,  # noqa: PLC0415, E501
         )
@@ -213,11 +241,19 @@ class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
         arc, session, scope = _arc_scope()
         if arc is None:
             return
+        app = _ctx.active_app()
+        sessions = getattr(getattr(app, "state", None), "sessions", None)
+        session_row = sessions.get(session) if sessions is not None else None
+        enabled, threshold = _session_autocompact_preferences(
+            getattr(session_row, "metadata", None)
+        )
+        if not enabled:
+            return
         window = _ctx.active_react_context_window()
         last = _rt._last_prompt_tokens()
         if not window or not last:
             return
-        if (last / window) < _autocompact_threshold():
+        if (last / window) < threshold:
             return
         live = arc.render_working_set(session, scope)
         if len(live) <= 1:
@@ -759,42 +795,3 @@ def _stringify_value(value: Any) -> str:
         return json.dumps(value, default=str)
     except Exception:  # noqa: BLE001 - audit text only; never fail a turn on formatting
         return str(value)
-
-
-def _active_react_scope_safe() -> str:
-    """The active react scope for audit attribution, or ``""`` off-turn."""
-    try:
-        from clio_agent.gact import context as _ctx  # noqa: PLC0415
-
-        return _ctx.active_react_scope()
-    except Exception:  # noqa: BLE001 - scope unavailable off-turn (CLI / optimizer / unit test)
-        return ""
-
-
-def _record_submit_audit(
-    reason: str,
-    *,
-    agent_id: str,
-    field: str,
-    text: str,
-    suppressed: bool,
-) -> None:
-    """Emit one V2-path stream-audit record (the no-silent-fallback house style).
-
-    Mirrors ``lm_activity.note_suppressed_extract_field`` (the classic #878 record) so
-    the V2 submit-turn reasons are queryable in the same ``bridge.contract_field``
-    lane. The sink is a no-op unless ``CLIO_STREAM_AUDIT_LOG`` is configured.
-    """
-    from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
-
-    stream_audit(
-        "bridge.contract_field",
-        agent_id=agent_id or "",
-        field=field,
-        chunk_len=len(text),
-        visible=False,
-        duplicate_suppressed=suppressed,
-        duplicate_reason=reason,
-        head=text[:120],
-        full_text=text[:12000],
-    )

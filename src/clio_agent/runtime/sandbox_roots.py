@@ -76,6 +76,29 @@ def granted_write_roots(workspace_root: Optional[str]) -> tuple[Path, ...]:
         return _GRANTED_WRITE_ROOTS.get(key, ())
 
 
+def revoke_write_root_grant(workspace_root: str, granted: str) -> Path:
+    """Remove one granted writable root from the live workspace projection.
+
+    The caller owns persistence, boundary events, and resident-fleet restart.
+    This function only updates the shared in-process territory registry used by
+    both the advisory and OS-fence paths.
+    """
+
+    key = _normalize_root_key(workspace_root)
+    resolved = Path(granted).expanduser()
+    try:
+        resolved = resolved.resolve(strict=False)
+    except OSError:
+        pass
+    with _GRANTS_LOCK:
+        remaining = tuple(path for path in _GRANTED_WRITE_ROOTS.get(key, ()) if path != resolved)
+        if remaining:
+            _GRANTED_WRITE_ROOTS[key] = remaining
+        else:
+            _GRANTED_WRITE_ROOTS.pop(key, None)
+    return resolved
+
+
 def clear_write_root_grants() -> None:
     """Drop all registered root grants (test isolation seam)."""
     with _GRANTS_LOCK:
@@ -192,4 +215,5 @@ __all__ = [
     "effective_write_roots",
     "granted_write_roots",
     "register_write_root_grant",
+    "revoke_write_root_grant",
 ]

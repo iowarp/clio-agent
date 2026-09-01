@@ -243,6 +243,58 @@ def test_failed_async_child_sets_notify_pending(tmp_path: Path, monkeypatch) -> 
         assert settled.notify_pending is True, "failed async child must be observe-later pending"
 
 
+def test_failed_child_preserves_typed_tool_unavailability_for_parent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A typed child build failure must not collapse into opaque ``agent_error``."""
+
+    from clio_agent.gact.types import ErrorInfo, Message
+
+    _declare(monkeypatch, "geospatial")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        child = app.state.sessions.create(
+            workspace_id="ws_default", title="geo", parent_session_id="sess_p"
+        )
+        final = Message(
+            id="msg_failed",
+            session_id=child.id,
+            role="assistant",
+            created_at="2026-08-24T00:00:00+00:00",
+            updated_at="2026-08-24T00:00:00+00:00",
+            stop_reason="error",
+            error_info=ErrorInfo(
+                error="not_implemented",
+                message="Geospatial tools are unavailable.",
+                details={"reason": "custom_agent_tools_unavailable"},
+                recoverable=True,
+            ),
+        )
+        app.state.messages[child.id] = [final]
+        task = AgentTask(
+            task_id="task_geo_failed",
+            parent_session_id="sess_p",
+            child_session_id=child.id,
+            agent_ref={"expert_id": "geospatial", "requesting_expert_id": "main"},
+            status=STATUS_RUNNING,
+            created_at="2026-08-24T00:00:00+00:00",
+            updated_at="2026-08-24T00:00:00+00:00",
+        )
+        app.state.sessions.update(child.id, metadata_patch=task.to_metadata())
+        app.state.agent_task_registry.register(task)
+
+        _on_child_done(app, task.task_id, child.id, "async")
+
+        settled = app.state.agent_task_registry.get(task.task_id)
+        assert settled.status == STATUS_FAILED
+        assert settled.error_reason == "custom_agent_tools_unavailable"
+        assert settled.result == {
+            "message_ref": "msg_failed",
+            "answer_excerpt": "Geospatial tools are unavailable.",
+            "workflow_state": {},
+        }
+
+
 def test_cancelled_child_is_not_notify_pending(tmp_path: Path, monkeypatch) -> None:
     """A cancelled child is NOT observed-later (cancellation is parent-driven, so the
     parent already knows)."""

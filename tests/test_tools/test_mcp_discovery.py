@@ -166,6 +166,39 @@ def test_list_one_namespace_forwards_the_attempt_timeout_and_key(
     assert captured["attempt_key"] is token, "the attempt must register under its OWN key"
 
 
+def test_list_one_namespace_binds_declared_probe_retry_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.tools.mcp_probe_hardening import resolve_timeout_retries
+
+    observed: dict[str, int] = {}
+
+    def _fake_list_declared_tools(
+        spec: MCPServerSpec,
+        *,
+        timeout_s: float | None = None,
+        attempt_key: object | None = None,
+    ) -> list[Any]:
+        del spec, timeout_s, attempt_key
+        observed["retries"] = resolve_timeout_retries()
+        return []
+
+    monkeypatch.setattr("clio_agent.tools.gateway._list_declared_tools", _fake_list_declared_tools)
+    monkeypatch.setattr(
+        "clio_agent.tools.launcher_cache_lock.uses_shared_launcher_cache", lambda spec: False
+    )
+    spec = MCPServerSpec(
+        name="geo",
+        transport="stdio",
+        command="clio-kit",
+        probe_timeout_retries=11,
+    )
+
+    mcp_discovery._list_one_namespace("geo", spec)
+
+    assert observed == {"retries": 11}
+
+
 def test_abandoning_a_namespace_force_closes_its_listing_attempt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

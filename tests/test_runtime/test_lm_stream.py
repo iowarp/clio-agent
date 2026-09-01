@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from clio_agent.runtime.lm_stream import AnswerFieldExtractor, extract_delta
+from clio_agent.runtime.lm_stream import (
+    AnswerFieldExtractor,
+    extract_delta,
+    normalize_escaped_section_boundaries,
+)
 
 
 def _chunked(text: str, sizes: list[int]) -> list[str]:
@@ -84,6 +88,59 @@ def test_field_quoting_its_own_marker_inline_is_not_a_boundary():
         assert "`[[ ## next_thought ## ]]`" in out
         # the real trailing tool-name marker is NOT leaked into the field
         assert "pandas_profile_csv" not in out
+
+
+def test_escaped_section_boundary_does_not_leak_into_visible_field() -> None:
+    """A provider-escaped structural separator ends the visible thought field."""
+
+    full = (
+        "[[ ## next_thought ## ]]\nCreate the plot now."
+        r"\n[[ ## tool_calls ## ]]\n"
+        '{"tool_calls":[{"name":"plot_plot_timeseries","args":{}}]}'
+    )
+    extractor = AnswerFieldExtractor("next_thought")
+    out = "".join(extractor.feed(chunk) for chunk in _chunked(full, [1, 3, 8, 2]))
+    out += extractor.flush()
+
+    assert out.strip() == "Create the plot now."
+    assert "tool_calls" not in out
+
+
+def test_only_framed_escaped_section_markers_are_normalized() -> None:
+    quoted = r"Explain `[[ ## tool_calls ## ]]` and preserve this\nordinary newline."
+    assert normalize_escaped_section_boundaries(quoted) == quoted
+
+    encoded = r"thought\n[[ ## tool_calls ## ]]\n{\"tool_calls\": []}"
+    assert normalize_escaped_section_boundaries(encoded) == (
+        'thought\n[[ ## tool_calls ## ]]\n{\\"tool_calls\\": []}'
+    )
+
+
+def test_a_value_framing_a_marker_bounds_the_field_in_both_encodings() -> None:
+    """The escaped form is byte-identical to the real form once decoded.
+
+    A model that frames a marker with newlines INSIDE its own answer bounds the
+    field there -- for ``_SECTION``, for the escaped form, and for DSPy's own
+    ChatAdapter parser alike. Nothing local can separate a framed quotation from
+    a real separator, so this pins the limitation rather than hiding it: the
+    escaped lane must behave exactly like the real-newline lane, never worse.
+    """
+
+    body = "The adapter writes{nl}[[ ## answer ## ]]{nl}before each field."
+
+    real = AnswerFieldExtractor("answer")
+    real_out = real.feed("[[ ## answer ## ]]\n" + body.format(nl="\n")) + real.flush()
+
+    escaped = AnswerFieldExtractor("answer")
+    escaped_out = escaped.feed("[[ ## answer ## ]]\n" + body.format(nl=r"\n")) + escaped.flush()
+
+    assert real_out == escaped_out == "The adapter writes\n"
+    # An INLINE quotation (no newline framing) is still prose in both lanes.
+    inline = AnswerFieldExtractor("answer")
+    inline_out = inline.feed("[[ ## answer ## ]]\nUse `[[ ## answer ## ]]` to open it.") + (
+        inline.flush()
+    )
+    assert inline_out == "Use `[[ ## answer ## ]]` to open it."
 
 
 def test_extractor_flags_structured_answer_vs_prose():

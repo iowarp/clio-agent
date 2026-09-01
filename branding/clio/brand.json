@@ -5,6 +5,15 @@
   "taglineAccent": "Gnosis Research Center",
   "homeUrl": "https://iowarp.ai",
   "taglineAccentUrl": "https://grc.iit.edu",
+  "landing": {
+    "eyebrow": "Scientific intelligence workspace",
+    "headline": "From scientific question to defensible result.",
+    "description": "CLIO brings data discovery, analysis, expert agents, and provenance into one workspace so results stay explorable, reproducible, and ready to share."
+  },
+  "workspace": {
+    "greeting": "What should we investigate?",
+    "description": "Start with a scientific question, continue existing evidence, or choose an example."
+  },
   "markGlyph": "C",
   "logoSvg": "logo.svg",
   "logoImage": "../logo_cropeed.png",

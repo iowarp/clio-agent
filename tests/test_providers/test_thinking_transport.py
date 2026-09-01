@@ -100,6 +100,20 @@ def test_build_sdk_options_places_thinking_on_real_sdk_options() -> None:
     assert build_sdk_options(model="haiku", cwd=None, stream=False, thinking=None).thinking is None
 
 
+def test_build_sdk_options_isolates_clio_from_personal_claude_capabilities() -> None:
+    """CLIO's provider path never imports user MCPs, plugins, or SDK skills."""
+    pytest.importorskip("claude_agent_sdk")
+    opts = build_sdk_options(model="sonnet", cwd=None, stream=True, thinking=None)
+
+    assert opts.tools == []
+    assert opts.allowed_tools == []
+    assert opts.mcp_servers == {}
+    assert opts.strict_mcp_config is True
+    assert opts.setting_sources == []
+    assert opts.skills == []
+    assert opts.plugins == []
+
+
 # --------------------------------------------------------------------------- #
 # The claude_code provider passes optional_params thinking through to the SDK path.
 # (Fake ``_run_sdk`` asserts it received the option — the sabotage target: drop

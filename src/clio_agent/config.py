@@ -31,7 +31,7 @@ import os
 from dataclasses import dataclass, field
 from ipaddress import ip_address
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Literal, Mapping, Optional, cast
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -193,7 +193,7 @@ class LMProviderConfig:
         planner_temperature: Lower temperature for deterministic action planning
         planner_max_tokens: Maximum tokens for planner JSON generation
         environment: Deployment environment (dev/staging/production)
-        codex_transport: Codex transport: "app_server" (the only transport since v0.8.0)
+        codex_transport: Codex transport: "sdk" (the only supported transport)
     """
 
     provider: Literal[
@@ -241,7 +241,7 @@ class LMProviderConfig:
     min_p: float | None = None
     presence_penalty: float | None = None
     environment: str = "dev"
-    codex_transport: Literal["app_server"] = "app_server"
+    codex_transport: Literal["sdk"] = "sdk"
     # "sdk" (the only transport since v0.8.0): the in-process Claude Agent SDK
     #   with a persistent CLI session — no per-call spawn, streaming-capable, and
     #   setting_sources=[] keeps the user's ~/.claude/CLAUDE.md out of the prompt.
@@ -266,6 +266,9 @@ class LMProviderConfig:
     # entry in the defaults dict, no agent.py branches.
     strip_openai_prefix: bool = field(init=False, default=True)
     supports_vision: bool = field(init=False, default=False)
+    parse_retry_capability: Literal["bounded", "single_attempt"] = field(
+        init=False, default="bounded"
+    )
     # Handshake-discovered model config. init=False + default empty so callers
     # never set them; ``apply_handshake`` populates them at bind time (the only
     # place that networks). ``__post_init__`` stays network-free for /health.
@@ -316,10 +319,13 @@ class LMProviderConfig:
         # so re-reading on every config load is safe.
         self.strip_openai_prefix = bool(defaults.get("strip_openai_prefix", True))
         self.supports_vision = bool(defaults.get("supports_vision", False))
-        if self.codex_transport != "app_server":
+        self.parse_retry_capability = cast(
+            Literal["bounded", "single_attempt"],
+            defaults.get("parse_retry_capability", "bounded"),
+        )
+        if self.codex_transport != "sdk":
             raise ValueError(
-                "codex_transport 'exec'/'sdk' were removed in the v0.8.0 cleanup — "
-                f"app_server is the only transport (got {self.codex_transport!r})"
+                f"codex_transport must use the official Python SDK (got {self.codex_transport!r})"
             )
         if self.claude_code_transport != "sdk":
             raise ValueError(
@@ -463,7 +469,7 @@ def load_config_from_env() -> LMProviderConfig:
         ``lm.planner_max_tokens`` / CLIO_LM_PLANNER_MAX_TOKENS: planner token cap
         ``lm.max_tokens`` / CLIO_LM_MAX_TOKENS: Override max tokens
         ``lm.top_p`` / ``lm.top_k`` / ``lm.min_p`` / ``lm.presence_penalty``: sampling
-        ``lm.codex_transport`` / CLIO_CODEX_TRANSPORT: Codex transport (app_server only)
+        ``lm.codex_transport`` / CLIO_CODEX_TRANSPORT: Codex transport (sdk only)
         ``lm.claude_code_transport`` / CLIO_CLAUDE_CODE_TRANSPORT: Claude Code transport
         ``runtime.environment`` / CLIO_ENVIRONMENT: Deployment environment
 

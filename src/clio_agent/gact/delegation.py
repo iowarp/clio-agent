@@ -304,7 +304,12 @@ def _workflow_state_from_handoff_rows(
 
 
 def _produced_turn_workflow_state(
-    pred: Any, handoff_rows: list[dict[str, Any]], *, schema: "WorkflowStateSchema"
+    pred: Any,
+    handoff_rows: list[dict[str, Any]],
+    app: Any = None,
+    sid: str = "",
+    *,
+    schema: "WorkflowStateSchema",
 ) -> dict[str, Any]:
     """The COMPLETE typed workflow_state a turn produced, for the assistant message.
 
@@ -314,6 +319,13 @@ def _produced_turn_workflow_state(
     loop / handoff rows and carries its state ONLY on the prediction's typed
     ``workflow_state`` field, while a ``react`` orchestrator additionally accumulates
     its delegated children's state from the handoff rows. Merges both (empty -> ``{}``).
+
+    With ``app``/``sid`` bound, the merged state is then annotated with the ARTIFACT
+    IDENTITY of any path a section already carries
+    (:func:`~clio_agent.gact.artifacts.model_identity.annotate_workflow_state_artifacts`)
+    — an exact registry join, add-only, so the next turn reading the prior state can
+    reuse a registered artifact by id instead of re-staging its file. Unbound (a unit
+    caller, an app-less path) the state is returned exactly as merged.
     """
 
     state = _prediction_workflow_state(pred, schema=schema)
@@ -321,7 +333,13 @@ def _produced_turn_workflow_state(
         _merge_workflow_state_mapping(
             state, _workflow_state_from_handoff_rows(handoff_rows, schema=schema), schema=schema
         )
-    return state
+    if app is None or not sid:
+        return state
+    from clio_agent.gact.artifacts.model_identity import (  # noqa: PLC0415
+        annotate_workflow_state_artifacts,
+    )
+
+    return annotate_workflow_state_artifacts(app, sid, state)
 
 
 def _prediction_workflow_state(result: Any, *, schema: "WorkflowStateSchema") -> dict[str, Any]:

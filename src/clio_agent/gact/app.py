@@ -41,12 +41,13 @@ from clio_agent.gact.diagnostics import (  # noqa: E402,F401
 
 _install_sigusr1_diagnostic()
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional, cast
+from typing import Any, AsyncIterator, Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -55,7 +56,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from clio_agent import conf
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.auth import configure_bearer_auth
+from clio_agent.gact.cors import gact_cors_origins as _gact_cors_origins
 from clio_agent.gact.error_middleware import install_error_envelope
+from clio_agent.gact.protocol.negotiation import install_protocol_negotiation
+from clio_agent.gact.runtime.rework_state import initialize_a2ui_store, initialize_session_defaults
 from clio_agent.gact.semantic_events import (
     SemanticEventSink,
     build_trace_backend,
@@ -129,40 +133,6 @@ _EXECUTABLE_SESSION_AGENT_IDS = {
     "main",
     "default",
 }
-
-
-def _gact_cors_origins() -> list[str]:
-    """Return trusted browser origins for the GACT API.
-
-    The config file is the primary surface; the environment variable remains a
-    compatibility fallback for older launch scripts.
-    """
-
-    default_origins = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:4173",
-        "http://127.0.0.1:4173",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ]
-    try:
-        raw_value: Any = conf.resolve(
-            "gact.cors.origins",
-            env="CLIO_GACT_CORS_ORIGINS",
-            default=None,
-        )
-    except (TypeError, ValueError):
-        return default_origins
-    if raw_value in (None, "", []):
-        return default_origins
-    try:
-        raw = cast(Callable[[Any], list[str]], conf.as_csv)(raw_value)
-    except (TypeError, ValueError):
-        return default_origins
-    if raw == ["*"]:
-        return ["*"]
-    return [origin for origin in raw if origin]
 
 
 def _web_dir() -> str:
@@ -476,6 +446,7 @@ from clio_agent.gact.providers.lmstudio import (  # noqa: E402,F401
     _release_owned_lm_studio_instance,
 )
 from clio_agent.gact.routes import artifact_workspace  # noqa: E402
+from clio_agent.gact.routes.a2ui import register_a2ui_routes  # noqa: E402
 from clio_agent.gact.routes.agent_tasks import (  # noqa: E402
     register_agent_task_routes,
 )
@@ -527,6 +498,9 @@ from clio_agent.gact.routes.providers import register_providers_routes  # noqa: 
 from clio_agent.gact.routes.relay import register_relay_routes  # noqa: E402
 from clio_agent.gact.routes.schedules import (  # noqa: E402
     register_schedules_routes,
+)
+from clio_agent.gact.routes.session_defaults import (  # noqa: E402
+    register_session_defaults_routes,
 )
 from clio_agent.gact.routes.sessions import register_sessions_routes  # noqa: E402
 from clio_agent.gact.routes.system import register_system_routes  # noqa: E402
@@ -704,21 +678,14 @@ def _run_tool_user_agent(
 
 
 def _clear_session_model_refs(app: "FastAPI") -> None:
-    """Clear per-session model refs after a global LM provider swap.
+    """Clear stale default/session model refs after a global LM provider swap."""
 
-    CLIO executes every turn through the active global LM. Existing
-    sessions may still carry stale GACT ModelRefs from older TUI
-    versions or emulator-compatible defaults; leaving those refs in
-    place makes the next send fail with a per-session override error
-    even though the user just changed the global provider correctly.
-    """
-
-    sessions = getattr(app.state, "sessions", None)
-    if sessions is None:
-        return
-    for sess in sessions.list():
-        if not _model_ref_is_empty(sess.model):
-            sessions.update(sess.id, model={})
+    if (defaults := getattr(app.state, "session_defaults", None)) is not None:
+        defaults.clear_model_ref()
+    if (sessions := getattr(app.state, "sessions", None)) is not None:
+        for sess in sessions.list():
+            if not _model_ref_is_empty(sess.model):
+                sessions.update(sess.id, model={})
 
 
 # --------------------------------------------------------------------------- #
@@ -795,7 +762,7 @@ from clio_agent.gact.expert_packs import (
     load_expert_packs,
     validate_expert_hierarchy,
 )
-from clio_agent.gact.loop_inbox import _make_loop_inbox_drain, drain_inbox_to_new_turn
+from clio_agent.gact.loop_inbox import _make_loop_inbox_drain, drain_inbox_and_notify_spotter
 from clio_agent.gact.messages import MessageStore
 from clio_agent.gact.permission_gate import (  # noqa: E402,F401
     _direct_permission_denied,
@@ -941,18 +908,18 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.sandbox = install_sandbox()
 
-    # #1232 pt 4 + #1001: reap provably-orphaned clio-launched children (dead
-    # parent + clio identity; the daemon root is excluded by construction)
-    # BEFORE the MCP-cache prune's peer-liveness check runs — a still-running
-    # orphan from a prior hard kill otherwise looks like a live peer to
-    # ``live_peer_clio_processes`` and defers the prune indefinitely (the
-    # observed "deferred for two days" bug). Sequenced (not raced) so the
-    # ordering is real, still fully off-loop/best-effort/typed-logged.
+    # Reap proven CLIO orphans before the MCP-cache peer-liveness check; a
+    # surviving orphan otherwise defers pruning indefinitely. Keep the order
+    # real while running blocking cleanup off-loop with typed logging.
+    from clio_agent.providers.codex_credential_home import (  # noqa: PLC0415
+        _reap_orphaned_codex_homes,
+    )
     from clio_agent.runtime.process_census import boot_reap_off_loop  # noqa: PLC0415
     from clio_agent.tools.mcp_cache import boot_prune_off_loop  # noqa: PLC0415
 
     async def _reap_orphans_then_prune_mcp_cache() -> None:
         await boot_reap_off_loop()
+        await asyncio.to_thread(_reap_orphaned_codex_homes)
         await boot_prune_off_loop()
 
     app.state.mcp_cache_prune_task = asyncio.create_task(_reap_orphans_then_prune_mcp_cache())
@@ -1068,11 +1035,27 @@ async def _construct_agent_async(app: "FastAPI") -> None:
     """
 
     loop = asyncio.get_running_loop()
-    # Construct (or reuse) the ONE per-process ARC up front and inject it into the build,
-    # so the agent does not mint a fresh ARC — the same instance is app.state.arc for the
-    # whole process across every later LM bind (no per-build ARC churn / trace ⊋ ARC split).
-    arc = _process_arc(app)
-    relay_kwargs = await relay_wiring.relay_agent_kwargs(app)
+    # Construction starts before the executor build: ARC initialization and relay
+    # surface discovery import production dependencies too. Keep the entire startup
+    # boundary typed. A missing dependency or relay discovery failure must not leave
+    # a server that advertises provider readiness while every turn returns the vague
+    # ``not_configured`` state.
+    try:
+        # Construct (or reuse) the ONE per-process ARC up front and inject it into the
+        # build, so the agent does not mint a fresh ARC — the same instance is
+        # app.state.arc for the whole process across every later LM bind (no per-build
+        # ARC churn / trace ⊋ ARC split).
+        arc = _process_arc(app)
+        relay_kwargs = await relay_wiring.relay_agent_kwargs(app)
+        # Pre-import the heavy LM stack ON THIS THREAD before any builder thread
+        # runs: the deferred init here and a concurrent provider bind otherwise
+        # import litellm simultaneously on two executor threads.
+        import litellm  # noqa: F401, PLC0415
+    except Exception as exc:  # noqa: BLE001
+        from clio_agent.gact.agent_initialization import record_init_failure  # noqa: PLC0415
+
+        record_init_failure(app, exc, stage="preflight")
+        return
 
     def _build() -> Any:
         import dspy  # noqa: PLC0415
@@ -1100,40 +1083,17 @@ async def _construct_agent_async(app: "FastAPI") -> None:
         # sanctioned env-credential read, design §6), so a GACT booted purely from
         # ``CLIO_LM_*`` still authenticates.
         agent = ClioAgent(verbose=False, arc=arc, provider_config=cfg, **relay_kwargs)
-        # Make the ProviderProfileStore the authoritative identity registry:
-        # reseed its default from the agent's FINAL resolved config (post
-        # lm_studio model discovery) so the store's default profile and
-        # ``ClioAgent._main_lm`` are the SAME identity, and every expert inherits
-        # exactly what the main agent runs (design §9 step 9). build_app already
-        # seeded a default; this keeps the store consistent via an atomic swap.
-        from clio_agent.gact.providers.profile_store import ProviderProfileStore
-        from clio_agent.providers.lm_spec import spec_from_config
+        from clio_agent.gact.agent_initialization import update_provider_profile  # noqa: PLC0415
 
-        existing = getattr(app.state, "provider_profiles", None)
-        default_spec = spec_from_config(agent._provider_config)
-        app.state.provider_profiles = (
-            existing.with_default(default_spec)
-            if isinstance(existing, ProviderProfileStore)
-            else ProviderProfileStore.seed(default_spec)
-        )
+        update_provider_profile(app, agent)
         return agent
-
-    # Pre-import the heavy LM stack ON THIS THREAD before any builder thread
-    # runs: the deferred init here and a concurrent provider bind
-    # (construct_agent_with_relay) otherwise import litellm simultaneously on
-    # two executor threads, and the importlib race surfaces as KeyError('litellm')
-    # -> agent_init_error -> every turn 503s until a lucky reboot.
-    import litellm  # noqa: F401, PLC0415
 
     try:
         agent = await loop.run_in_executor(None, _build)
     except Exception as exc:  # noqa: BLE001
-        print(
-            f"[clio-agent-gact] deferred agent init failed ({exc!r}); "
-            "POST /messages will keep returning 503.",
-            flush=True,
-        )
-        app.state.agent_init_error = repr(exc)
+        from clio_agent.gact.agent_initialization import record_init_failure  # noqa: PLC0415
+
+        record_init_failure(app, exc, stage="init")
         return
 
     # _set_app_arc must run before the boot fold (reads app.state.arc) and before ready.
@@ -1238,6 +1198,8 @@ def build_app(
         lifespan=_lifespan,
     )
 
+    install_protocol_negotiation(app)
+
     configure_bearer_auth(app)
 
     # Browser/WebView origins are explicit: trust_socket must not grant arbitrary
@@ -1276,6 +1238,7 @@ def build_app(
     # per-session pub/sub. POST /messages
     # publishes; /v1/sessions/{sid}/events subscribers consume.
     app.state.bus = EventBus()
+    initialize_a2ui_store(app, session_store_path.parent)
     app.state.semantic_trace_detail_level = _semantic_trace_detail_level()
     app.state.semantic_trace_backend = build_trace_backend(
         session_store_path.parent / "semantic_traces"
@@ -1392,7 +1355,7 @@ def build_app(
     # resume that arrives while busy is enqueued as a user_message steer and the
     # idle hook (drain_inbox_to_new_turn) re-drives residual steers into ONE turn.
     app.state.loop_inboxes = {}
-    app.state.turn_runner.set_idle_hook(lambda sid: drain_inbox_to_new_turn(app, sid))
+    app.state.turn_runner.set_idle_hook(lambda sid: drain_inbox_and_notify_spotter(app, sid))
     # iowarp/clio-agent#2: per-session ledger of tool calls observed
     # during the in-flight turn. The global tool_observer appends
     # here; _run_turn_in_background drains it post-forward to attach
@@ -1560,6 +1523,7 @@ def build_app(
     app.state.schedules = _SchedStore(
         path=(sessions_path.parent / "schedules.json") if sessions_path is not None else None
     )
+    initialize_session_defaults(app, sessions_path)
     app.state.scheduler_task = None
     # iowarp/clio-agent#22: shared session tokens.
     app.state.shared_tokens = {}
@@ -2195,6 +2159,7 @@ def build_app(
     # replace + delete cascade, model-ref errors, evidence
     # index and resume text travel on ``deps``.
     register_sessions_routes(app, deps)
+    register_session_defaults_routes(app)
 
     # ---- /v1/sessions/{sid}/messages + /v1/messages (BBB9/BBB10/BBB27) ---
     # The session message ledger -- the turn-entry POST, the list/get reads,
@@ -2204,6 +2169,7 @@ def build_app(
     # replace, active-model ref + override error and the agent-not-available
     # error travel on ``deps``.
     register_messages_routes(app, deps)
+    register_a2ui_routes(app, deps)
 
     # ---- /v1/agent-tasks + /v1/sessions/{sid}/agent-tasks (#948 S2 / #950) ----
     # The AgentTask projection read + cancel routes, over
@@ -2394,7 +2360,7 @@ def build_app(
             error=ErrorInfo(
                 error="validation_error",
                 message="Request validation failed.",
-                details={"errors": exc.errors()},
+                details={"errors": jsonable_encoder(exc.errors())},
                 recoverable=True,
             )
         )

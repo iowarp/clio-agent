@@ -496,23 +496,11 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
             "ref": ref,
         }
 
-    # The mutable alias-move route lives in its own owner module (no-accretion, S4);
-    # register it here so the ``x_clio_artifacts`` surface is assembled in one place.
-    from clio_agent.gact.routes.artifact_aliases import (
-        register_artifact_alias_routes,  # noqa: E501,PLC0415
-    )
-    from clio_agent.gact.routes.artifact_export import (
-        register_artifact_export_routes,  # noqa: E501,PLC0415
-    )
-    from clio_agent.gact.routes.artifact_lineage import (
-        register_artifact_lineage_routes,  # noqa: E501,PLC0415
+    from clio_agent.gact.routes.artifact_extensions import (  # noqa: PLC0415
+        register_artifact_extension_routes,
     )
 
-    # S5 (#971) lineage/transform + S7 (#973) RO-Crate export routes ride the same
-    # ``x_clio_artifacts`` surface (assembled in one place, no-accretion).
-    register_artifact_alias_routes(app)
-    register_artifact_lineage_routes(app)
-    register_artifact_export_routes(app)
+    register_artifact_extension_routes(app)
 
     @app.get("/v1/artifacts/{artifact_id}")
     async def get_artifact(artifact_id: str) -> dict[str, Any]:

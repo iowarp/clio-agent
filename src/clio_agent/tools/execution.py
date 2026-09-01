@@ -6,7 +6,6 @@ import asyncio
 import concurrent.futures
 import contextvars
 import inspect
-import json
 import logging
 import os
 import threading
@@ -36,8 +35,10 @@ from clio_agent.tools.mcp_executor import (
     _tool_input_schema,
     _tool_visible_to_model,
 )
+from clio_agent.tools.mcp_namespace_executor import SyncNamespacePreparationMixin
 from clio_agent.tools.mcp_results import call_tool_result_to_observer
-from clio_agent.tools.tool_hooks import InterceptDecision, PostToolHook, apply_post_tool_hook
+from clio_agent.tools.result_errors import structured_tool_result_error
+from clio_agent.tools.tool_hooks import InterceptDecision, PostToolHook, assemble_model_observation
 
 logger = logging.getLogger(__name__)
 
@@ -321,37 +322,6 @@ def notify_global_tool_observer(
     notify_tool_observer(current_tool_runtime().tool_observer, name, args, phase, error, result)
 
 
-def _structured_tool_result_error(result: Any) -> str | None:
-    """Return an error string when a tool returns a structured error payload."""
-
-    decoded = result
-    if isinstance(result, str):
-        stripped = result.strip()
-        if stripped.startswith("{") and '"error"' in stripped:
-            with suppress(json.JSONDecodeError, TypeError):
-                decoded = json.loads(stripped)
-    if isinstance(decoded, Mapping):
-        error = decoded.get("error")
-        if error:
-            if isinstance(error, Mapping):
-                code = str(error.get("code") or error.get("type") or "tool_error")
-                message = str(error.get("message") or "").strip()
-                return f"{code}: {message}" if message else code
-            return str(error)
-        status = str(decoded.get("status") or "").strip().lower()
-        if status in {"error", "failed", "failure"}:
-            message = str(decoded.get("message") or decoded.get("detail") or "").strip()
-            return f"status={status}: {message}" if message else f"status={status}"
-        if decoded.get("ok") is False:
-            message = str(decoded.get("message") or decoded.get("detail") or "").strip()
-            return f"ok=false: {message}" if message else "ok=false"
-    elif isinstance(decoded, str):
-        normalized = decoded.strip().casefold()
-        if normalized.startswith("error:"):
-            return decoded.strip()
-    return None
-
-
 class AsyncToolExecutor(Protocol):
     """Native async tool execution interface for API/service callers."""
 
@@ -545,7 +515,7 @@ def create_sync_tool_executor(
     )
 
 
-class SyncMCPToolExecutor:
+class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
     """Sync adapter for async MCP tools.
 
     This is the CLI/DSPy path. It owns one event-loop thread per executor and
@@ -790,7 +760,7 @@ class SyncMCPToolExecutor:
             self._record_tool_success(name)
             if return_raw:
                 return intercept.result  # MCP Apps bridge is not model-facing: no PostToolUse
-            return apply_post_tool_hook(
+            return assemble_model_observation(
                 hooks.post_tool,
                 name,
                 effective_args,
@@ -814,10 +784,12 @@ class SyncMCPToolExecutor:
                     timeout=(None if timeout is None else timeout + SYNC_TOOL_RESULT_GRACE_SECONDS),
                     action=f"MCP tool {name!r}",
                     cancellation_checker=cancellation_checker,
-                    cancellation_error=lambda wire_settled: foreground_cancel._tool_cancellation_error(
-                        name,
-                        "tool_call_in_flight",
-                        wire_settled=wire_settled,
+                    cancellation_error=lambda wire_settled: (
+                        foreground_cancel._tool_cancellation_error(
+                            name,
+                            "tool_call_in_flight",
+                            wire_settled=wire_settled,
+                        )
                     ),
                 )
         except Exception as exc:
@@ -846,7 +818,7 @@ class SyncMCPToolExecutor:
             raise
         result = outcome.model_text
         observer_result = call_tool_result_to_observer(outcome.raw_result)
-        structured_error = _structured_tool_result_error(result)
+        structured_error = structured_tool_result_error(outcome.raw_result)
         if structured_error:
             self._record_tool_failure(name, structured_error)
             notify_tool_observer(
@@ -887,9 +859,9 @@ class SyncMCPToolExecutor:
             return outcome.raw_result  # MCP Apps bridge is not model-facing: no PostToolUse
         drained = hooks.loop_inbox_drain() if hooks.loop_inbox_drain is not None else None
         result = _prepend_repair_notes(repair_records, result) if repair_records else result
-        # P2.3 PostToolUse: rewrite the model-visible observation / feed a deny reason,
-        # AFTER the observer recorded the real effect (trace keeps the actual result).
-        result = apply_post_tool_hook(
+        # The model-visible observation (minted artifact identity, then P2.3 PostToolUse),
+        # assembled AFTER the observer recorded the real effect (the trace keeps the result).
+        result = assemble_model_observation(
             hooks.post_tool,
             name,
             effective_args,
@@ -961,17 +933,6 @@ class SyncMCPToolExecutor:
     def to_dspy_tools(self) -> list[dspy.Tool]:
         """Convert MCP tools to DSPy Tool objects."""
         return _make_dspy_tools(self._async_executor.get_tool_definitions(), self.call_tool)
-
-    def merge_namespace_tools(self, namespace: str, tools: Mapping[str, Any]) -> None:
-        """Merge an on-demand mount's tool definitions into the live table (#1237).
-
-        Delegates to :meth:`AsyncMCPToolExecutor.merge_namespace_tools`; a
-        plain dict update on the shared ``_mcp_tools`` mapping, safe to call
-        from any thread (the caller, ``builders.py``'s sync expert-tool
-        resolve, does not run on this executor's own event-loop thread).
-        """
-
-        self._async_executor.merge_namespace_tools(namespace, tools)
 
     def close(self) -> None:
         """Shut down the executor, closing the client and event loop."""

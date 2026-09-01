@@ -15,9 +15,8 @@ browsing surface the gact-tui ``@``-picker and desktop file tree consume:
 All handlers read the live ``WorkspaceStore`` via ``app.state.workspaces`` and
 reach the shared direct-destructive-action permission guard through
 :class:`~clio_agent.gact.routes.deps.GactDeps`. Concern-private helpers
-(:data:`_TEXTUAL_WORKSPACE_MIME_TYPES`, :func:`_is_textual_workspace_file`) live
-here; the module imports only leaf packages (types, file-policy, stdlib) and
-never loads :mod:`clio_agent.gact.app`.
+File-serving policy lives in the leaf ``workspace_file_policy`` module; this
+module never loads :mod:`clio_agent.gact.app`.
 """
 
 from __future__ import annotations
@@ -28,9 +27,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
+from clio_agent.gact.protocol_v3 import project_for_request, workspace_to_v3
 from clio_agent.gact.routes._body import json_body
+from clio_agent.gact.routes.workspace_file_policy import (
+    is_internal_workspace_file_directory,
+    is_textual_workspace_file,
+    skip_workspace_file_directory,
+)
+from clio_agent.gact.routes.workspace_grant_delete import register_workspace_grant_delete_route
+from clio_agent.gact.routes.workspace_root_materialization import materialize_workspace_root
 from clio_agent.gact.types import (
     CreateWorkspaceRequest,
     ErrorEnvelope,
@@ -43,44 +50,11 @@ from clio_agent.runtime import trace
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
 
-# Files served as decoded text/plain even though their MIME type is not under
-# the ``text/`` tree (JSON/YAML/shell/TOML). Everything else unknown is sniffed.
-_TEXTUAL_WORKSPACE_MIME_TYPES = frozenset(
-    {
-        "application/json",
-        "application/xml",
-        "application/javascript",
-        "application/x-yaml",
-        "application/yaml",
-        "application/x-sh",
-        "application/toml",
-    }
-)
-
 # gact-tui's ``@``-trigger file picker walks the workspace root; cap the number
 # of entries so a giant repo cannot lock the picker for seconds, and skip
 # cost-walking dirs (VCS metadata, caches, build output, vendored deps).
 _FILE_PICKER_LIMIT = 5000
-_FILE_PICKER_SKIP_DIRS = {
-    ".git",
-    ".hg",
-    ".svn",
-    "__pycache__",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    "node_modules",
-    ".npm",
-    ".venv",
-    "venv",
-    ".tox",
-    "build",
-    "dist",
-    ".egg-info",
-    ".clio/agent",  # ARC's local persistence
-}
-
-
+_INTERNAL_FILE_PICKER_LIMIT = 32
 _GRANTOR_USER = "user"
 
 
@@ -262,32 +236,6 @@ def _apply_root_kind_grant(app: FastAPI, workspace_id: str, pattern: str) -> dic
     return grants.apply_root_grant(app, workspace_id, pattern)
 
 
-def _is_textual_workspace_file(name: str, raw: bytes) -> bool:
-    """Whether a workspace file should be served as decoded ``text/plain``
-    (code preview) vs. raw bytes with its real content type (binary, e.g. PNG).
-
-    Binary files (images, archives, ...) MUST be served as raw bytes with the
-    correct content type -- decoding them as UTF-8 with ``errors="replace"``
-    corrupts the bytes (replacement characters) and mislabels them text/plain,
-    so a TUI/web preview can never recover the image
-    (iowarp/clio-agent#673, #676).
-    """
-    import mimetypes  # noqa: PLC0415
-
-    guessed, _ = mimetypes.guess_type(name)
-    if guessed is not None:
-        return guessed.startswith("text/") or guessed in _TEXTUAL_WORKSPACE_MIME_TYPES
-    # Unknown extension: sniff a sample. A NUL byte or invalid UTF-8 => binary.
-    sample = raw[:8192]
-    if b"\x00" in sample:
-        return False
-    try:
-        sample.decode("utf-8")
-    except UnicodeDecodeError:
-        return False
-    return True
-
-
 def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register the workspace store + file-browsing routes on ``app``.
 
@@ -300,16 +248,25 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
     # ---- /v1/workspaces -------------------------
 
     @app.get("/v1/workspaces", response_model=ListWorkspacesResponse)
-    async def list_workspaces() -> ListWorkspacesResponse:
+    async def list_workspaces(request: Request) -> ListWorkspacesResponse | JSONResponse:
         """SPEC §6.1 — list workspaces."""
 
         rows = app.state.workspaces.list()
-        return ListWorkspacesResponse(workspaces=[Workspace(**w.to_wire()) for w in rows])
+        return project_for_request(
+            request,
+            v3=lambda: JSONResponse(content={"workspaces": [workspace_to_v3(row) for row in rows]}),
+            v2=lambda: ListWorkspacesResponse(
+                workspaces=[Workspace(**row.to_wire()) for row in rows]
+            ),
+        )
 
     @app.post("/v1/workspaces", response_model=Workspace, status_code=201)
-    async def create_workspace(req: CreateWorkspaceRequest) -> Workspace:
+    async def create_workspace(
+        req: CreateWorkspaceRequest, request: Request
+    ) -> Workspace | JSONResponse:
         """SPEC §6.1 — create a workspace pinned to ``root_path``."""
 
+        materialize_workspace_root(req.root_path)
         ws = app.state.workspaces.create(
             name=req.name,
             root_path=req.root_path,
@@ -321,10 +278,14 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         # store leaf-pure. ``grantor=user`` (a direct user action, never a clio decision, ⚑).
         if ws.root_path:
             _emit_boundary_root(app, ws.id, ws.root_path, grantor=_GRANTOR_USER)
-        return Workspace(**ws.to_wire())
+        return project_for_request(
+            request,
+            v3=lambda: JSONResponse(content=workspace_to_v3(ws), status_code=201),
+            v2=lambda: Workspace(**ws.to_wire()),
+        )
 
     @app.get("/v1/workspaces/{wid}", response_model=Workspace)
-    async def get_workspace(wid: str) -> Workspace:
+    async def get_workspace(wid: str, request: Request) -> Workspace | JSONResponse:
         ws = app.state.workspaces.get(wid)
         if ws is None:
             raise HTTPException(
@@ -338,19 +299,24 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        return Workspace(**ws.to_wire())
+        return project_for_request(
+            request,
+            v3=lambda: JSONResponse(content=workspace_to_v3(ws)),
+            v2=lambda: Workspace(**ws.to_wire()),
+        )
 
     @app.patch("/v1/workspaces/{wid}", response_model=Workspace)
-    async def patch_workspace(wid: str, request: Request) -> Workspace:
+    async def patch_workspace(wid: str, request: Request) -> Workspace | JSONResponse:
         """iowarp/gact-tui §audit/E-18: the desktop's Rename action
         on the Workspaces page posts PATCH /v1/workspaces/{wid} with
-        {name?, metadata?, root_path?}. Without this endpoint clio
+        {name?, display_name?, metadata?, root_path?}. Without this endpoint clio
         returned 405 and the user saw 'Method Not Allowed' in a toast.
         Accept partial updates of any of those fields.
         """
 
         body = await json_body(request, route="PATCH /v1/workspaces/{wid}")
         name = body.get("name")
+        display_name = body.get("display_name")
         root_path = body.get("root_path")
         metadata = body.get("metadata")
         # The desktop sends `config` as an alias for metadata.
@@ -360,6 +326,11 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         prior = app.state.workspaces.get(wid)
         prior_root = str(getattr(prior, "root_path", "") or "") if prior is not None else ""
         new_root = root_path.strip() if isinstance(root_path, str) and root_path.strip() else None
+        # Repointing a root carries the same guarantee create does: the pinned root
+        # exists on disk before the workspace advertises it (and before the boundary
+        # event below records a grant over it).
+        if new_root is not None and new_root != prior_root:
+            materialize_workspace_root(new_root)
         # Route the mutation through the store so it serialises under the
         # WorkspaceStore lock (no torn write / flush racing a concurrent
         # create) and bumps ``updated_at`` — never mutate the live object
@@ -367,6 +338,11 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         ws = app.state.workspaces.update(
             wid,
             name=name.strip() if isinstance(name, str) and name.strip() else None,
+            display_name=(
+                display_name.strip()
+                if isinstance(display_name, str) and display_name.strip()
+                else None
+            ),
             root_path=new_root,
             metadata_patch=metadata if isinstance(metadata, dict) else None,
         )
@@ -388,7 +364,11 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             if prior_root:
                 _emit_boundary_root(app, wid, prior_root, grantor=_GRANTOR_USER, revoked=True)
             _emit_boundary_root(app, wid, new_root, grantor=_GRANTOR_USER)
-        return Workspace(**ws.to_wire())
+        return project_for_request(
+            request,
+            v3=lambda: JSONResponse(content=workspace_to_v3(ws)),
+            v2=lambda: Workspace(**ws.to_wire()),
+        )
 
     # ---- /v1/workspaces/{wid}/grants (B5 #979.3 — mid-session grants) ----
 
@@ -469,6 +449,8 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
         return result
+
+    register_workspace_grant_delete_route(app)
 
     @app.delete("/v1/workspaces/{wid}")
     async def delete_workspace(wid: str) -> Response:
@@ -566,9 +548,10 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         entries: list[dict[str, Any]] = []
         cap = _FILE_PICKER_LIMIT
+        internal_cap = _INTERNAL_FILE_PICKER_LIMIT
 
         def _walk(d: Path) -> None:
-            nonlocal cap
+            nonlocal cap, internal_cap
             if cap <= 0:
                 return
             try:
@@ -584,7 +567,13 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                 if cap <= 0:
                     return
                 name = child.name
-                if name in _FILE_PICKER_SKIP_DIRS:
+                rel = str(child.relative_to(root))
+                if is_internal_workspace_file_directory(name):
+                    if internal_cap > 0:
+                        entries.append({"path": rel, "type": "dir", "internal": True})
+                        internal_cap -= 1
+                    continue
+                if skip_workspace_file_directory(name):
                     continue
                 try:
                     if child.is_symlink() and not allow_symlinks:
@@ -595,10 +584,10 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                     # walk. Common in /tmp where other users' sockets
                     # are 0600 and trip stat's permission check.
                     continue
-                rel = str(child.relative_to(root))
                 entry: dict[str, Any] = {
                     "path": rel,
                     "type": "dir" if is_dir else "file",
+                    "internal": False,
                 }
                 if not is_dir:
                     try:
@@ -649,9 +638,10 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         }
         body = await list_workspace_files(wid)
         entries = body.get("entries", [])
+        visible_entries = [entry for entry in entries if not entry.get("internal", False)]
         nodes_by_path: dict[str, dict[str, Any]] = {"": tree}
         token_estimate = 0
-        for entry in entries:
+        for entry in visible_entries:
             path = str(entry.get("path") or "")
             if not path:
                 continue
@@ -674,7 +664,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         return {
             "tree": tree,
             "tokens": token_estimate,
-            "truncated": len(entries) >= _FILE_PICKER_LIMIT,
+            "truncated": len(visible_entries) >= _FILE_PICKER_LIMIT,
         }
 
     @app.get("/v1/workspaces/{wid}/files/read")
@@ -780,7 +770,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             ) from exc
-        if _is_textual_workspace_file(target.name, data):
+        if is_textual_workspace_file(target.name, data):
             return Response(
                 content=data.decode("utf-8", errors="replace"),
                 media_type="text/plain; charset=utf-8",

@@ -22,7 +22,11 @@ from clio_agent.gact.agents.skill_effects import (
     SkillModeTransitionError,
     parse_skill_effect,
 )
-from clio_agent.gact.agents.skill_runtime import SkillRuntime, build_load_skill_tool
+from clio_agent.gact.agents.skill_runtime import (
+    SkillRuntime,
+    build_load_skill_tool,
+    build_spawn_skill_task_tool,
+)
 from clio_agent.gact.app import build_app
 from clio_agent.gact.autonomous_loop import _get_loop
 from clio_agent.gact.goal import _get_goal
@@ -55,11 +59,11 @@ def _write_skill(ws: Path, skill_id: str, frontmatter: str, body: str) -> None:
     )
 
 
-def _tool(ws: Path, skill_id: str, *, agent_id: str = "main") -> Any:
+def _tool(ws: Path, skill_id: str, *, agent_id: str = "main", spawn: bool = False) -> Any:
     agent = AgentDef(id=agent_id, source="expert_pack", title="A", skills=[skill_id], metadata={})
     catalog = SkillCatalog(home=ws / "no-home", cwd=ws)
     rt = SkillRuntime(resolutions=catalog.resolve_declared([skill_id]))
-    return build_load_skill_tool(agent, rt)
+    return build_spawn_skill_task_tool(agent, rt) if spawn else build_load_skill_tool(agent, rt)
 
 
 def _message_text(msg: Any) -> str:
@@ -209,11 +213,14 @@ def test_spawn_subagent_with_skill_seeds_body_not_inlined(tmp_path: Path) -> Non
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app):
         sess = app.state.sessions.create(workspace_id="ws_default", title="p")
-        tool = _tool(ws, "research-sub", agent_id="main")
+        tool = _tool(ws, "research-sub", agent_id="main", spawn=True)
         tok_a = _ctx.set_app(app)
         tok_s = _ctx.set_session_id(sess.id)
         try:
-            out = tool.func(skill_id="research-sub")
+            out = tool.func(
+                skill_id="research-sub",
+                task="Research the requested topic and report the grounded result.",
+            )
         finally:
             _ctx.reset(tok_s)
             _ctx.reset(tok_a)
@@ -227,6 +234,11 @@ def test_spawn_subagent_with_skill_seeds_body_not_inlined(tmp_path: Path) -> Non
         # A real task/handle exists.
         task = app.state.agent_task_registry.get(data["task_id"])
         assert task is not None
+        parent_parts = (getattr(app.state, "live_assistant_parts", {}) or {}).get(sess.id, [])
+        handoffs = [part for part in parent_parts if getattr(part, "type", "") == "expert_handoff"]
+        assert len(handoffs) == 1
+        assert handoffs[0].handle_id == data["task_id"]
+        assert handoffs[0].stage == "delegate.started"
 
         _wait_terminal(app, data["task_id"])
         # The child turn was SEEDED with the skill body (staged as its user input).
@@ -234,6 +246,41 @@ def test_spawn_subagent_with_skill_seeds_body_not_inlined(tmp_path: Path) -> Non
         seeded = [m for m in child_msgs if getattr(m, "role", "") == "user"]
         assert seeded, "child got no staged user message"
         assert any("SUBAGENT_SKILL_BODY_MARKER." in _message_text(m) for m in seeded)
+
+
+def test_spawn_subagent_with_skill_uses_specific_task_assignment(tmp_path: Path) -> None:
+    """A caller can fan out the same procedural skill with distinct grounded tasks."""
+
+    from fastapi.testclient import TestClient
+
+    ws = tmp_path / "ws"
+    _write_skill(
+        ws, "region-worker", "effect: spawn_subagent_with_skill\n", "RESOLVE_REGION_PROCEDURE."
+    )
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        sess = app.state.sessions.create(workspace_id="ws_default", title="p")
+        tool = _tool(ws, "region-worker", agent_id="main", spawn=True)
+        tok_a = _ctx.set_app(app)
+        tok_s = _ctx.set_session_id(sess.id)
+        try:
+            out = tool.func(
+                skill_id="region-worker",
+                task="Resolve San Diego, California and count stations within 50 km.",
+            )
+        finally:
+            _ctx.reset(tok_s)
+            _ctx.reset(tok_a)
+
+        data = json.loads(out)
+        task = app.state.agent_task_registry.get(data["task_id"])
+        assert task is not None
+        assert task.run_label == "Resolve San Diego, California and count stations within 50 km"
+        _wait_terminal(app, data["task_id"])
+        child_msgs = app.state.messages.get(data["child_session_id"], []) or []
+        seeded = [m for m in child_msgs if getattr(m, "role", "") == "user"]
+        assert any("RESOLVE_REGION_PROCEDURE." in _message_text(m) for m in seeded)
+        assert any("Resolve San Diego" in _message_text(m) for m in seeded)
 
 
 def test_spawn_subagent_with_skill_from_plan_mode_parent_inherits_plan_mode(
@@ -259,11 +306,14 @@ def test_spawn_subagent_with_skill_from_plan_mode_parent_inherits_plan_mode(
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app):
         sess = app.state.sessions.create(workspace_id="ws_default", title="p", mode="plan")
-        tool = _tool(ws, "research-sub", agent_id="main")
+        tool = _tool(ws, "research-sub", agent_id="main", spawn=True)
         tok_a = _ctx.set_app(app)
         tok_s = _ctx.set_session_id(sess.id)
         try:
-            out = tool.func(skill_id="research-sub")
+            out = tool.func(
+                skill_id="research-sub",
+                task="Research the requested topic without changing files.",
+            )
         finally:
             _ctx.reset(tok_s)
             _ctx.reset(tok_a)

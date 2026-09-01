@@ -43,7 +43,21 @@ from typing import TYPE_CHECKING, Any, Optional
 from clio_agent.gact.events import Event
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.providers.config import _provider_runtime_kind
-from clio_agent.gact.runtime.capabilities import _STREAM_FALLBACK_REASON_DEFINITIONS
+from clio_agent.gact.stream_fallbacks import (
+    peek_stream_fallback as _peek_stream_fallback,  # noqa: F401
+)
+from clio_agent.gact.stream_fallbacks import (
+    pop_stream_fallback as _pop_stream_fallback,  # noqa: F401
+)
+from clio_agent.gact.stream_fallbacks import (
+    record_stream_fallback as _record_stream_fallback,
+)
+from clio_agent.gact.stream_fallbacks import (
+    stream_fallback_payload as _stream_fallback_payload,  # noqa: F401
+)
+from clio_agent.gact.stream_fallbacks import (
+    stream_fallback_reasons as _stream_fallback_reasons,  # noqa: F401
+)
 from clio_agent.runtime import trace
 from clio_agent.runtime.stream_audit import stream_audit
 
@@ -162,45 +176,6 @@ def _run_dynamic_agent_compat(
 
 class _StreamingOutputError(RuntimeError):
     """Raised when live streaming fails after user-visible output was emitted."""
-
-
-def _stream_fallback_payload(reason: str, message: str = "") -> dict[str, Any]:
-    """Build structured metadata for a batch text delivery path."""
-
-    definition = _STREAM_FALLBACK_REASON_DEFINITIONS.get(reason)
-    if definition is None:
-        raise ValueError(f"Unknown stream fallback reason: {reason}")
-    payload: dict[str, Any] = {
-        "reason": reason,
-        **{
-            key: list(value) if isinstance(value, list) else value
-            for key, value in definition.items()
-        },
-    }
-    if message:
-        payload["message"] = message
-    return payload
-
-
-def _stream_fallback_reasons(app: "FastAPI") -> dict[str, dict[str, Any]]:
-    reasons = getattr(app.state, "stream_fallback_reasons", None)
-    if not isinstance(reasons, dict):
-        reasons = {}
-        app.state.stream_fallback_reasons = reasons
-    return reasons
-
-
-def _record_stream_fallback(
-    app: "FastAPI",
-    sid: str,
-    reason: str,
-    message: str = "",
-) -> None:
-    _stream_fallback_reasons(app)[sid] = _stream_fallback_payload(reason, message)
-
-
-def _pop_stream_fallback(app: "FastAPI", sid: str) -> dict[str, Any]:
-    return _stream_fallback_reasons(app).pop(sid, {})
 
 
 # --- ambient-LM fallback reason catalog (per-expert-provider sweep, #818) ----
@@ -450,23 +425,17 @@ def _build_stream_listeners(agent: Any, stream_listener_cls: Any) -> list[Any]:
 def _agent_streaming_unsupported_reason(agent: Any) -> str:
     """Return a fallback reason when the active provider cannot stream live.
 
-    Only the CLI-backed custom transports (``codex`` JSON-RPC, ``claude_code``
-    exec) are genuinely non-streaming. Argonne/ALCF (Sophia + Metis) is a plain
-    OpenAI-compatible SSE endpoint: it streams at the provider AND through LiteLLM
-    (verified: multi-chunk incremental deltas), so it must NOT be force-classified
-    as batch. Hardcoding it here bypassed the streamify pump for EVERY ALCF run
-    (iowarp/clio-agent#160). The streamify path below has its own graceful
-    try/except fallback to sync, so letting argonne attempt streaming can only
-    improve on the previous always-batch behaviour.
+    Codex and Claude Code both have real SDK streaming transports. Codex's SDK
+    produces text and reasoning notifications through ``astreaming``;
+    force-classifying it as batch bypassed that path and left the UI silent for an
+    entire model call. Argonne/ALCF (Sophia + Metis) is also a plain
+    OpenAI-compatible SSE endpoint and must not be force-classified as batch.
     """
 
     provider_config = getattr(agent, "_provider_config", None)
     provider = str(getattr(provider_config, "provider", "") or "")
     provider_kind = _provider_runtime_kind(provider)
-    # claude_code always streams: the sdk transport is the only one since the
-    # v0.8.0 cleanup (the batch `claude -p` exec transport was deleted).
-    if provider_kind == "codex":
-        return "provider_streaming_unsupported"
+    # claude_code and codex always stream through their SDK transports.
     # iowarp/clio-agent#639: normalize the preset id (argonne_sophia/_metis) to
     # the provider kind (argonne) BEFORE the capability check. Reasoning models on
     # the ALCF gateways stream their answer on the reasoning_content channel,

@@ -1,7 +1,7 @@
-"""Wiring pins for the stateful-delta transport across the three #891 seams.
+"""Wiring pins for Codex routing and the Claude SDK stateful-delta transport.
 
 These lock the three fixes whose *wiring* (not the shared detector, proved in
-``test_claude_code_stateful`` / ``test_codex_stateful``) is the deliverable:
+``test_claude_code_stateful``) is the deliverable:
 
 * **T1 — V2+codex routing.** A codex model id that collides with a litellm-registered
   OpenAI model name (``gpt-5.6-sol``) must reach the codex ``CustomLLM`` handler, NOT
@@ -13,7 +13,7 @@ These lock the three fixes whose *wiring* (not the shared detector, proved in
 
 * **T2 — ops_reset.** When ARC autocompaction rewrites the History prefix
   (``_RetainingReActV2._maybe_autocompact`` → ``arc.summarize_segments``), the active
-  stateful scope must be flagged for a typed ``ops_reset`` on BOTH provider legs so the
+  stateful scope must be flagged for a typed ``ops_reset`` so the
   next send classifies precisely instead of the generic ``prefix_mismatch``.
   **Sabotage:** unwire the ``note_prefix_reset_for_active_scope`` call → the next plan
   returns ``prefix_mismatch``/``delta`` → red.
@@ -21,8 +21,7 @@ These lock the three fixes whose *wiring* (not the shared detector, proved in
 * **T3 — Tier-1-shaped delta.** The legacy ``ClioAgent.forward`` planner-loop
   scope binding was deleted with the planner (#948 S4b); the delta mechanism it
   relied on (append-only sends under an active ``stateful_scope`` classify as a
-  delta over the retained prefix) is pinned below directly on the shared codex
-  registry, which does not depend on the deleted loop.
+  delta over the retained prefix) is pinned below on the Claude SDK registry.
 """
 
 from __future__ import annotations
@@ -33,7 +32,6 @@ import dspy
 import pytest
 
 from clio_agent.providers import claude_code_stateful as ccs
-from clio_agent.providers import codex_stateful as cst
 from clio_agent.providers.stateful_common import (
     active_stateful_scope,
     note_prefix_reset_for_active_scope,
@@ -101,32 +99,25 @@ def test_codex_colliding_model_reaches_custom_handler(monkeypatch: pytest.Monkey
 
 
 # --------------------------------------------------------------------------- #
-# T2 — ops_reset: the shared hook flags BOTH legs; the V2 compaction op wires it.
+# T2 — ops_reset: the shared hook flags the Claude SDK stateful registry.
 # --------------------------------------------------------------------------- #
-def test_note_prefix_reset_flags_both_provider_registries() -> None:
-    """The shared ARC-op hook flags the active scope in the codex AND claude registries.
+def test_note_prefix_reset_flags_claude_sdk_registry() -> None:
+    """The shared ARC-op hook flags the active Claude SDK scope.
 
     An ARC compact/delete rewrites the prefix for whichever leg the active loop drives,
-    so the hook must mark every registered registry (not just one). Both legs' next
-    plan over a would-be-valid extension is then a typed ``ops_reset`` full send.
+    so the hook must mark its registered stateful registry. Its next plan over a
+    would-be-valid extension is then a typed ``ops_reset`` full send.
     """
-    cst.codex_stateful_registry().reset_for_tests()
     ccs.stateful_registry().reset_for_tests()
     with stateful_scope("s"):
-        # Prime a live session on each leg (call 1 = full/first_call).
-        cst.codex_stateful_registry().plan(
-            session_key=_key("s"), scope_token="s", messages=_m("a", "b")
-        )
+        # Prime a live Claude SDK session (call 1 = full/first_call).
         ccs.stateful_registry().plan(session_key=_key("s"), scope_token="s", messages=_m("a", "b"))
         assert note_prefix_reset_for_active_scope("ops_reset") is True
-        # An append-only extension that WOULD be a delta is forced full=ops_reset on both.
-        for reg in (cst.codex_stateful_registry(), ccs.stateful_registry()):
-            plan, _handle = reg.plan(
-                session_key=_key("s"), scope_token="s", messages=_m("a", "b", "c")
-            )
-            assert plan.mode == "full"
-            assert plan.reason == "ops_reset"
-    cst.codex_stateful_registry().reset_for_tests()
+        plan, _handle = ccs.stateful_registry().plan(
+            session_key=_key("s"), scope_token="s", messages=_m("a", "b", "c")
+        )
+        assert plan.mode == "full"
+        assert plan.reason == "ops_reset"
     ccs.stateful_registry().reset_for_tests()
 
 
@@ -143,7 +134,7 @@ def test_maybe_autocompact_wires_ops_reset_through_the_v2_loop(
 
     Integration-shaped: drives ``_RetainingReActV2._maybe_autocompact`` with its ARC /
     runtime dependencies stubbed to trigger a real ``arc.summarize_segments`` (the
-    History-prefix rewrite), then asserts the next send on both legs is a typed
+    History-prefix rewrite), then asserts the next Claude SDK send is a typed
     ``ops_reset``. Sabotage: delete the ``note_prefix_reset_for_active_scope`` call in
     ``_maybe_autocompact`` → the next plan is ``delta`` (or ``prefix_mismatch``) → red.
     """
@@ -184,22 +175,16 @@ def test_maybe_autocompact_wires_ops_reset_through_the_v2_loop(
 
     agent = retaining_reactv2_cls()(_Sig, tools=[_tool], max_iters=1)
 
-    cst.codex_stateful_registry().reset_for_tests()
     ccs.stateful_registry().reset_for_tests()
     with stateful_scope("s"):
-        cst.codex_stateful_registry().plan(
-            session_key=_key("s"), scope_token="s", messages=_m("a", "b")
-        )
         ccs.stateful_registry().plan(session_key=_key("s"), scope_token="s", messages=_m("a", "b"))
         agent._maybe_autocompact()
         assert summarized.get("ids") == ["s0", "s1"]  # the op really fired
-        for reg in (cst.codex_stateful_registry(), ccs.stateful_registry()):
-            plan, _handle = reg.plan(
-                session_key=_key("s"), scope_token="s", messages=_m("a", "b", "c")
-            )
-            assert plan.mode == "full"
-            assert plan.reason == "ops_reset"
-    cst.codex_stateful_registry().reset_for_tests()
+        plan, _handle = ccs.stateful_registry().plan(
+            session_key=_key("s"), scope_token="s", messages=_m("a", "b", "c")
+        )
+        assert plan.mode == "full"
+        assert plan.reason == "ops_reset"
     ccs.stateful_registry().reset_for_tests()
 
 
@@ -215,8 +200,8 @@ def test_maybe_autocompact_wires_ops_reset_through_the_v2_loop(
 #     orchestrator-level binding (remove the ``with`` and it goes red), restored
 #     in the new world to replace the deleted planner-loop guard.
 #   * ``test_tier1_shaped_forward_deltas_on_call_two`` pins the delta MECHANISM
-#     the binding unlocks, directly on the shared codex registry (append-only
-#     growing message list under an active scope), independent of the deleted loop.
+#     the binding unlocks, directly on the Claude SDK registry (append-only
+#     growing message list under an active scope).
 # --------------------------------------------------------------------------- #
 def test_reactv2_forward_binds_stateful_scope(monkeypatch: pytest.MonkeyPatch) -> None:
     """The V2 orchestrator forward binds a per-forward stateful scope for its LM sends.
@@ -266,11 +251,11 @@ def test_tier1_shaped_forward_deltas_on_call_two(monkeypatch: pytest.MonkeyPatch
 
     The mechanism the T3 binding unlocks: bound stateful scope + an append-only growing
     message list ⇒ the second send is a delta over the retained prefix. Pinned on the
-    real codex registry (the same shared detector the claude leg uses).
+    real Claude SDK registry.
     """
-    monkeypatch.setattr(cst, "codex_stateful_delta_enabled", lambda: True)
-    cst.codex_stateful_registry().reset_for_tests()
-    reg = cst.codex_stateful_registry()
+    monkeypatch.setattr(ccs, "stateful_delta_enabled", lambda: True)
+    ccs.stateful_registry().reset_for_tests()
+    reg = ccs.stateful_registry()
     with stateful_scope("tier1"):
         plan1, _h1 = reg.plan(session_key=_key("tier1"), scope_token="tier1", messages=_m("q", "a"))
         assert plan1.mode == "full" and plan1.reason == "first_call"
@@ -281,7 +266,7 @@ def test_tier1_shaped_forward_deltas_on_call_two(monkeypatch: pytest.MonkeyPatch
         assert plan2.mode == "delta"
         assert plan2.prefix_len == 2
         assert plan2.messages == _m("b")  # only the appended tail is sent
-    cst.codex_stateful_registry().reset_for_tests()
+    ccs.stateful_registry().reset_for_tests()
 
 
 # --------------------------------------------------------------------------- #

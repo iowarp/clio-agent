@@ -18,12 +18,100 @@ import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Optional
 
 from clio_agent.gact.workspace_scope import resolve_workspace_storage_root
 
 _WORKSPACE_ID_PREFIX = "ws_"
+
+
+def workspace_path_basename(value: str) -> str:
+    """Return a path basename using the syntax carried by ``value``.
+
+    Workspace paths describe the connected agent host, which can use a
+    different operating system from the GACT server.  Selecting the pure path
+    parser from the wire value keeps a Windows workspace label stable when the
+    server or CI runner is Linux, and vice versa.
+    """
+
+    path = value.strip()
+    if not path:
+        return ""
+    if "\\" in path or (len(path) >= 2 and path[1] == ":"):
+        return PureWindowsPath(path).name
+    return PurePosixPath(path).name
+
+
+def workspace_display_name(
+    *,
+    workspace_id: str,
+    name: str,
+    root_path: str,
+    metadata: Optional[dict[str, Any]] = None,
+    configured_display_name: str = "",
+) -> str:
+    """Return the server-authoritative short label for a workspace.
+
+    Explicit display metadata wins, followed by an already-short configured
+    name and finally the filesystem basename.  Full paths are deliberately not
+    promoted into the primary label; clients can read them from ``path``.
+    """
+
+    candidates = [
+        configured_display_name,
+        str((metadata or {}).get("display_name") or ""),
+        name,
+    ]
+    for candidate in candidates:
+        label = candidate.strip()
+        if label and "/" not in label and "\\" not in label:
+            return label
+    if root_path.strip():
+        basename = workspace_path_basename(root_path)
+        if basename:
+            return basename
+    for candidate in candidates:
+        label = workspace_path_basename(candidate)
+        if label:
+            return label
+    return workspace_id
+
+
+def _without_legacy_derived_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """Strip the derived keys a legacy ``to_wire()`` flush wrote into a stored row.
+
+    ``path`` and ``storage_root`` are emitted only by :meth:`Workspace.to_wire`, so
+    ``path``'s presence identifies a row written by the superseded wire-shaped flush.
+    Such a row also carries the DERIVED label in ``display_name``, the field whose
+    semantics are "deliberately configured": leaving it there freezes a computed
+    label and makes a later rename silently fail to move the displayed name. A
+    configured label that the derivation does not reproduce is preserved.
+
+    Args:
+        row: One persisted workspace row as read from ``workspaces.json``.
+
+    Returns:
+        A new row carrying only source-of-truth :class:`Workspace` fields.
+    """
+
+    cleaned = {key: value for key, value in row.items() if key not in {"path", "storage_root"}}
+    if "path" not in row:
+        return cleaned
+    configured = str(cleaned.get("display_name") or "").strip()
+    if not configured:
+        return cleaned
+    metadata = cleaned.get("metadata")
+    derived = workspace_display_name(
+        workspace_id=str(cleaned.get("id") or ""),
+        name=str(cleaned.get("name") or ""),
+        root_path=str(cleaned.get("root_path") or ""),
+        metadata=metadata if isinstance(metadata, dict) else None,
+        configured_display_name="",
+    )
+    if configured == derived:
+        cleaned["display_name"] = ""
+    return cleaned
 
 
 def _utcnow_iso() -> str:
@@ -53,6 +141,8 @@ class Workspace:
     id: str
     name: str
     root_path: str = ""
+    display_name: str = ""
+    connection_id: str = "local"
     created_at: str = field(default_factory=_utcnow_iso)
     updated_at: str = field(default_factory=_utcnow_iso)
     config: dict[str, Any] = field(default_factory=dict)
@@ -60,6 +150,14 @@ class Workspace:
 
     def to_wire(self) -> dict[str, Any]:
         row = asdict(self)
+        row["display_name"] = workspace_display_name(
+            workspace_id=self.id,
+            name=self.name,
+            root_path=self.root_path,
+            metadata=self.metadata,
+            configured_display_name=self.display_name,
+        )
+        row["path"] = self.root_path
         row["storage_root"] = str(resolve_workspace_storage_root(self))
         return row
 
@@ -103,7 +201,7 @@ class WorkspaceStore:
         for row in data.get("workspaces", []):
             try:
                 if isinstance(row, dict):
-                    row = {key: value for key, value in row.items() if key != "storage_root"}
+                    row = _without_legacy_derived_fields(row)
                 ws = Workspace(**row)
                 self._workspaces[ws.id] = ws
             except Exception:  # noqa: BLE001 - malformed workspace row skipped
@@ -115,7 +213,10 @@ class WorkspaceStore:
         import json
 
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        rows = [w.to_wire() for w in self._workspaces.values()]
+        # Persist the RECORD, never ``to_wire()``: the wire projection overwrites
+        # ``display_name`` with the derived label, which reloads as a deliberately
+        # configured one and freezes every later rename.
+        rows = [asdict(w) for w in self._workspaces.values()]
         tmp = self._path.with_suffix(self._path.suffix + ".tmp")
         tmp.write_text(
             json.dumps({"workspaces": rows}, indent=2),
@@ -152,7 +253,9 @@ class WorkspaceStore:
             root_path=root_path,
             created_at=now,
             updated_at=now,
-            config={"storage_root": storage_root} if storage_root else _config_with_storage_root(root_path, metadata),
+            config={"storage_root": storage_root}
+            if storage_root
+            else _config_with_storage_root(root_path, metadata),
             metadata=dict(metadata or {}),
         )
         with self._lock:
@@ -192,6 +295,7 @@ class WorkspaceStore:
         wid: str,
         *,
         name: Optional[str] = None,
+        display_name: Optional[str] = None,
         root_path: Optional[str] = None,
         storage_root: Optional[str] = None,
         metadata_patch: Optional[dict[str, Any]] = None,
@@ -201,7 +305,15 @@ class WorkspaceStore:
             if ws is None:
                 return None
             if name is not None:
+                # A default/derived display label follows a rename. Preserve a
+                # deliberately distinct display name, but never leave the old
+                # generated label (for example "default") as the primary UI
+                # identity after the workspace itself was renamed.
+                if not ws.display_name or ws.display_name == ws.name:
+                    ws.display_name = name
                 ws.name = name
+            if display_name is not None:
+                ws.display_name = display_name
             if root_path is not None:
                 ws.root_path = root_path
             if storage_root is not None:

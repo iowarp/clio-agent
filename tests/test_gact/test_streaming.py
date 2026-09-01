@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -93,7 +94,28 @@ class _FakeStreamListener:
 def app_client(tmp_path: Path):
     answer = "X" * 200  # 200 chars -> 4 chunks at 64-char window.
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent(answer))
-    return app, TestClient(app), answer
+    # Keep one app-lifetime portal for the fixture. Constructing TestClient
+    # without entering it gives each request a transient portal; a turn that
+    # correctly outlives POST /messages can then race that portal's teardown.
+    with TestClient(app) as client:
+        yield app, client, answer
+
+
+def _wait_for_turn_settlement(app: Any, sid: str, timeout: float = 5.0) -> None:
+    """Wait on the owned turn task without polling or changing turn semantics."""
+
+    task = app.state.in_flight_turns.get(sid)
+    if task is None:
+        return
+
+    settled = threading.Event()
+
+    def _observe() -> None:
+        task.add_done_callback(lambda _finished: settled.set())
+
+    app.state.turn_runner.call_soon_threadsafe(_observe)
+    assert settled.wait(timeout), "background turn did not settle before event assertions"
+    assert not app.state.turn_runner.busy(sid)
 
 
 def _assert_structured_stream_fallback(payload: dict[str, Any], reason: str) -> None:
@@ -116,6 +138,7 @@ def test_batch_text_is_delivered_without_deltas(app_client) -> None:
         f"/v1/sessions/{sid}/messages",
         json={"parts": [{"type": "text", "text": "stream me"}]},
     )
+    _wait_for_turn_settlement(app, sid)
 
     history = app.state.bus._history.get(sid, [])
     added = [
@@ -245,8 +268,8 @@ def test_argonne_streaming_is_not_force_classified_as_batch() -> None:
     """iowarp/clio-agent#160: ALCF (Sophia + Metis) is a plain OpenAI-compatible
     SSE endpoint that streams at the provider AND through LiteLLM (verified with a
     live multi-chunk probe). CLIO must NOT force-classify it as batch -- doing so
-    bypassed the streamify pump for every ALCF run. Only the CLI-backed custom
-    transport (codex JSON-RPC) stays force-classified as batch."""
+    bypassed the streamify pump for every ALCF run. Codex's official SDK is also
+    a real streaming transport."""
 
     from clio_agent.gact.app import _agent_streaming_unsupported_reason
 
@@ -271,30 +294,24 @@ def test_argonne_streaming_is_not_force_classified_as_batch() -> None:
         == ""
     )
 
-    # Codex JSON-RPC remains force-classified as batch.
-    assert _agent_streaming_unsupported_reason(_agent("codex")) == "provider_streaming_unsupported"
+    # Codex SDK emits text/reasoning notifications and must use the stream pump.
+    assert _agent_streaming_unsupported_reason(_agent("codex")) == ""
 
 
 @pytest.mark.asyncio
-async def test_dynamic_agent_module_carries_non_streaming_provider_config(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_dynamic_agent_module_carries_streaming_codex_provider_config(
     tmp_path: Path,
 ) -> None:
-    def fail_streamify(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        raise AssertionError("streamify should not be called for Codex dynamic agents")
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-    monkeypatch.setattr(streamify_module, "streamify", fail_streamify)
     from clio_agent.config import LMProviderConfig
+    from clio_agent.gact.app import _agent_streaming_unsupported_reason
 
     base_agent = SimpleNamespace(
         _provider_config=LMProviderConfig(
             provider="codex",
-            api_base="codex://app-server",
+            api_base="codex://sdk",
             model="gpt-5.5",
             api_key="x",
-            codex_transport="app_server",
+            codex_transport="sdk",
         )
     )
     module = _build_prompt_user_agent_module(
@@ -306,19 +323,9 @@ async def test_dynamic_agent_module_carries_non_streaming_provider_config(
             system_prompt="Review reference evidence.",
         ),
     )
-    app = build_app(sessions_path=tmp_path / "s.json", agent=base_agent)
-
-    result = await _try_streamed_forward(
-        app,
-        "review the file",
-        "sid",
-        lambda text: None,
-        agent_override=module,
-    )
-
-    assert result is None
-    fallback = _pop_stream_fallback(app, "sid")
-    assert fallback["reason"] == "provider_streaming_unsupported"
+    assert module._provider_config.provider == "codex"
+    assert module._provider_config.codex_transport == "sdk"
+    assert _agent_streaming_unsupported_reason(module) == ""
 
 
 def test_dynamic_agent_lm_config_preserves_claude_code_transport() -> None:
@@ -841,6 +848,7 @@ def test_message_events_carry_turn_id_and_stream_source_batch(app_client) -> Non
         f"/v1/sessions/{sid}/messages",
         json={"parts": [{"type": "text", "text": "correlate me"}]},
     )
+    _wait_for_turn_settlement(app, sid)
 
     history = app.state.bus._history.get(sid, [])
     turn_id = _turn_id_of(history)

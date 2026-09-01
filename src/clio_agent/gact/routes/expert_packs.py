@@ -31,6 +31,11 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import FastAPI, HTTPException
 
+from clio_agent.gact.agent_blueprints import (
+    discover_agent_blueprints,
+    load_agent_blueprints,
+    validate_agent_hierarchy,
+)
 from clio_agent.gact.agents.resolution import (
     _runtime_active_session_expert_pack_id,
     _runtime_active_session_expert_pack_path,
@@ -60,7 +65,19 @@ def register_expert_packs_routes(app: FastAPI, deps: "GactDeps") -> None:
     @app.get("/v1/expert-packs")
     async def list_expert_packs(workspace_id: Optional[str] = None) -> dict[str, Any]:
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id or "")
-        packs = [pack.to_wire() for pack in discover_expert_packs(cwd=cwd)]
+        packs = []
+        for pack in discover_expert_packs(cwd=cwd):
+            wire = pack.to_wire()
+            wire["metadata"] = {**dict(wire.get("metadata") or {}), "lifecycle": "manual"}
+            packs.append(wire)
+        known_ids = {str(pack.get("id") or "") for pack in packs}
+        for candidate in discover_agent_blueprints(cwd=cwd):
+            wire = candidate.to_wire()
+            if wire.get("kind") != "pack" or candidate.id in known_ids:
+                continue
+            wire["metadata"] = {**dict(wire.get("metadata") or {}), "lifecycle": "service"}
+            packs.append(wire)
+            known_ids.add(candidate.id)
         return {"expert_packs": packs}
 
     @app.get("/v1/expert-packs/{pack_id:path}")
@@ -69,10 +86,28 @@ def register_expert_packs_routes(app: FastAPI, deps: "GactDeps") -> None:
         for pack in discover_expert_packs(cwd=cwd):
             if pack.id == pack_id:
                 agents = validate_expert_hierarchy(load_expert_packs(cwd=cwd, pack_id=pack_id))
+                wire = pack.to_wire()
+                wire["metadata"] = {
+                    **dict(wire.get("metadata") or {}),
+                    "lifecycle": "manual",
+                }
                 return {
-                    "expert_pack": pack.to_wire(),
+                    "expert_pack": wire,
                     "agents": [row.model_dump(exclude_none=True) for row in agents],
                 }
+        for blueprint in discover_agent_blueprints(cwd=cwd):
+            wire = blueprint.to_wire()
+            if blueprint.id != pack_id or wire.get("kind") != "pack":
+                continue
+            wire["metadata"] = {**dict(wire.get("metadata") or {}), "lifecycle": "service"}
+            agents = validate_agent_hierarchy(
+                load_agent_blueprints(cwd=cwd, blueprint_id=pack_id),
+                blueprint=blueprint,
+            )
+            return {
+                "expert_pack": wire,
+                "agents": [row.model_dump(exclude_none=True) for row in agents],
+            }
         raise HTTPException(
             status_code=404,
             detail=ErrorEnvelope(

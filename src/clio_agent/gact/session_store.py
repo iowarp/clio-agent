@@ -158,7 +158,19 @@ def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
         on_ledger_deleted,
     )
 
-    on_ledger_deleted(app, session_id)
+    try:
+        on_ledger_deleted(app, session_id)
+    except RuntimeError as exc:
+        # The session row and durable message ledger are already deleted at this
+        # point. A native ARC cleanup failure must not turn that completed delete
+        # into a misleading HTTP 500 or make the caller retry a now-missing row.
+        # The unreachable atom lane is orphan cleanup, not authorization to
+        # resurrect the user-visible session.
+        logger.warning(
+            "session transcript atom cleanup failed session_id=%s reason=%s",
+            session_id,
+            exc,
+        )
 
 
 def _release_session_arc(app: "FastAPI", session_id: str) -> None:

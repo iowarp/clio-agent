@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Live gate for #1000 observe_agent_tasks (OBSERVE posture).
+"""Live gate for #1000 ``observe_agent_tasks`` (OBSERVE posture).
 
-Boots a gact server (claude_code/sonnet/sdk, ARC-CTE default), pre-allows
-permissions, activates the earthscope-flat Agent Blueprint by path, and posts a
-prompt where acting on INTERMEDIATE evidence is naturally advantageous — WITHOUT
-naming any tool. PASS = the main uses observe_agent_tasks (or an observe-shaped
-pattern) to surface the selected station id from intermediate typed state BEFORE
-the child's terminal.
+Boots a GACT server with the Claude SDK transport, inherits the provider's
+selected model, pre-allows permissions, activates the marketplace
+``earthscope-flat`` Agent Blueprint by path, and posts a prompt where acting on
+INTERMEDIATE evidence is naturally advantageous — WITHOUT naming any tool. PASS
+= the main uses ``observe_agent_tasks`` (or an observe-shaped pattern) to surface
+the selected station id from intermediate typed state BEFORE the child's terminal.
 
 Run detached; it writes a verdict JSON to --out.
 """
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -30,6 +31,20 @@ PROMPT = (
 )
 
 
+def build_parser() -> argparse.ArgumentParser:
+    """Build the live-gate CLI without introducing a model override."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=17818)
+    parser.add_argument("--transport", default="sdk")
+    parser.add_argument(
+        "--blueprint-path",
+        default="external/clio-agent-marketplace/earthscope-flat",
+    )
+    parser.add_argument("--out", default="out/live_gate_observe_1000.json")
+    parser.add_argument("--turn-timeout-s", type=float, default=900.0)
+    return parser
+
+
 def _client(base: str):
     import requests
 
@@ -43,34 +58,34 @@ def _client(base: str):
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=17818)
-    ap.add_argument("--model", default="sonnet")
-    ap.add_argument("--transport", default="sdk")
-    ap.add_argument("--blueprint-path", default="out/haiku-experiment/earthscope-flat")
-    ap.add_argument("--out", default="out/live_gate_observe_1000.json")
-    ap.add_argument("--turn-timeout-s", type=float, default=900.0)
-    args = ap.parse_args()
-
-    import os
+    args = build_parser().parse_args()
 
     base = f"http://127.0.0.1:{args.port}"
     out_path = (REPO / args.out).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    blueprint_path = (REPO / args.blueprint_path).resolve()
+    if not (blueprint_path / "AGENT.md").is_file():
+        raise FileNotFoundError(
+            f"marketplace blueprint is unavailable: {blueprint_path / 'AGENT.md'}"
+        )
 
     env = dict(os.environ)
     env["CLIO_LM_PROVIDER"] = "claude_code"
-    env["CLIO_LM_MODEL"] = args.model
+    env.pop("CLIO_LM_MODEL", None)
     env["CLIO_CLAUDE_CODE_TRANSPORT"] = args.transport
     env["CLIO_STREAM_AUDIT_LOG"] = str((REPO / "out/live_gate_sse.log").resolve())
     env.pop("CLIO_LM_THINKING_LEVEL", None)
 
     proc = subprocess.Popen(
-        [sys.executable, "-c",
-         f"from clio_agent.gact.app import run_server; run_server(host='127.0.0.1', port={args.port})"],
-        env=env, cwd=str(REPO),
+        [
+            sys.executable,
+            "-c",
+            f"from clio_agent.gact.app import run_server; run_server(host='127.0.0.1', port={args.port})",
+        ],
+        env=env,
+        cwd=str(REPO),
     )
-    verdict: dict = {"prompt": PROMPT, "model": args.model}
+    verdict: dict = {"prompt": PROMPT}
     try:
         call = _client(base)
         # wait for port
@@ -82,11 +97,23 @@ def main() -> int:
             except Exception:
                 time.sleep(2)
         # bind provider
-        call("PUT", "/v1/providers/lm", {"provider": "claude_code", "api_base": "", "model": args.model})
-        call("GET", "/v1/providers/lm/wait", params={"timeout": 120}, ok=(200, 503))
+        call(
+            "PUT",
+            "/v1/providers/lm",
+            {"provider": "claude_code", "api_base": "", "model": ""},
+        )
+        provider = call("GET", "/v1/providers/lm/wait", params={"timeout": 120}, ok=(200, 503))
+        verdict["provider"] = {
+            "id": provider.get("provider"),
+            "model": provider.get("model"),
+            "model_source": "provider_default",
+        }
         # pre-allow permissions FIRST
-        call("PUT", "/v1/policies",
-             {"policies": [{"scope": "workspace", "action": "allow", "tool_name_pattern": "*"}]})
+        call(
+            "PUT",
+            "/v1/policies",
+            {"policies": [{"scope": "workspace", "action": "allow", "tool_name_pattern": "*"}]},
+        )
         # workspace + session
         ws_root = (REPO / "out/live_gate_ws").resolve()
         ws_root.mkdir(parents=True, exist_ok=True)
@@ -95,7 +122,11 @@ def main() -> int:
         sess = call("POST", "/v1/sessions", {"title": "observe-gate", "workspace_id": wsid})
         sid = sess["id"]
         # activate the earthscope-flat blueprint by path
-        act = call("POST", f"/v1/sessions/{sid}/agent-blueprint", {"path": args.blueprint_path})
+        act = call(
+            "POST",
+            f"/v1/sessions/{sid}/agent-blueprint",
+            {"path": str(blueprint_path)},
+        )
         verdict["activation"] = {k: act.get(k) for k in ("active_agent_blueprint_id",)}
         # post the prompt
         call("POST", f"/v1/sessions/{sid}/messages", {"text": PROMPT}, ok=(200, 201, 202))
@@ -117,15 +148,17 @@ def main() -> int:
             for p in m.get("parts", []) or []:
                 blob = json.dumps(p, default=str)
                 if "observe_agent_tasks" in blob:
-                    observe_calls.append({"role": m.get("role"), "type": p.get("type"),
-                                          "excerpt": blob[:400]})
+                    observe_calls.append(
+                        {"role": m.get("role"), "type": p.get("type"), "excerpt": blob[:400]}
+                    )
         verdict["observe_tool_used"] = bool(observe_calls)
         verdict["observe_calls"] = observe_calls[:10]
         verdict["session_id"] = sid
         verdict["workspace_id"] = wsid
         # dump the full transcript for manual audit
         (out_path.parent / "live_gate_messages.json").write_text(
-            json.dumps(msgs, indent=2, default=str), encoding="utf-8")
+            json.dumps(msgs, indent=2, default=str), encoding="utf-8"
+        )
         verdict["pass"] = bool(observe_calls) and status in ("idle", "completed")
     except Exception as exc:  # noqa: BLE001
         verdict["error"] = f"{type(exc).__name__}: {exc}"

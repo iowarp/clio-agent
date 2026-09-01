@@ -60,70 +60,12 @@ def build_artifact_provenance_backend(
 
         provider: ArtifactProvenanceProvider = NativeArtifactProvenanceProvider(app)
     else:
-        from clio_agent.gact.artifacts.provenance.cmf import (
-            CMFArtifactProvenanceProvider,
-            CMFProviderConfig,
-        )
+        # The CMF write mode is decided by the declaration alone -- server mode
+        # (server_url), local worker (python), both, or a typed refusal. Owned
+        # by cmf_mode so this factory stays a thin selector.
+        from clio_agent.gact.artifacts.provenance.cmf_mode import build_cmf_provider
 
-        raw_metadata = conf.resolve(
-            "provenance.artifacts.cmf.metadata_path",
-            env="CLIO_CMF_METADATA_PATH",
-            default="",
-            cast=conf.as_str,
-        ).strip()
-        raw_artifacts = conf.resolve(
-            "provenance.artifacts.cmf.artifact_root",
-            env="CLIO_CMF_ARTIFACT_ROOT",
-            default="",
-            cast=conf.as_str,
-        ).strip()
-        provider = CMFArtifactProvenanceProvider(
-            CMFProviderConfig(
-                python=conf.resolve(
-                    "provenance.artifacts.cmf.python",
-                    env="CLIO_CMF_PYTHON",
-                    default="",
-                    cast=conf.as_str,
-                ).strip(),
-                metadata_path=(
-                    Path(raw_metadata).expanduser()
-                    if raw_metadata
-                    else default_root / "cmf" / "mlmd.sqlite"
-                ),
-                artifact_root=(
-                    Path(raw_artifacts).expanduser()
-                    if raw_artifacts
-                    else default_root / "cmf" / "artifacts"
-                ),
-                artifact_store=conf.resolve(
-                    "provenance.artifacts.cmf.artifact_store",
-                    env="CLIO_CMF_ARTIFACT_STORE",
-                    default="reference",
-                    cast=conf.as_str,
-                )
-                .strip()
-                .lower(),
-                pipeline_name=conf.resolve(
-                    "provenance.artifacts.cmf.pipeline_name",
-                    env="CLIO_CMF_PIPELINE_NAME",
-                    default="clio-agent",
-                    cast=conf.as_str,
-                ).strip()
-                or "clio-agent",
-                server_url=conf.resolve(
-                    "provenance.artifacts.cmf.server_url",
-                    env="CLIO_CMF_SERVER_URL",
-                    default="",
-                    cast=conf.as_str,
-                ).strip(),
-                publish_timeout_s=conf.resolve(
-                    "provenance.artifacts.cmf.publish_timeout_s",
-                    env="CLIO_CMF_PUBLISH_TIMEOUT_S",
-                    default=30.0,
-                    cast=conf.as_float,
-                ),
-            )
-        )
+        provider = build_cmf_provider(default_root)
     include_events = frozenset(
         conf.resolve(
             "provenance.artifacts.include_events",

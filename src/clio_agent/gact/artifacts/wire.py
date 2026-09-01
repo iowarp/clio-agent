@@ -294,6 +294,10 @@ def append_turn_child_resource_links(
                 if producer_sid not in session_ids or version.artifact_id in already:
                     continue
                 rows.append((record.workspace_id, record.name, version))
+        # Immutable artifact IDs, not workspace/name, define wire identity. Two
+        # child runs can intentionally produce same-named outputs; both causal
+        # results must remain visible in the parent conversation. Exact IDs
+        # already present on the message are still skipped above.
         rows.sort(key=lambda row: row[2].created_at or "")
 
         for workspace_id, name, version in rows:

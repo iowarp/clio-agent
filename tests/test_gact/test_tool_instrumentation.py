@@ -548,6 +548,10 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
             # alert_card_no_parent error rather than raising; the tool_call part
             # still lands unconditionally (that is exactly the invariant here).
             "raise_alert_card": {"title": "t", "body": "b"},
+            "create_a2ui_surface": {
+                "surface_id": "test-surface",
+                "components": [{"id": "root", "component": "Text", "text": "Ready"}],
+            },
             # #1211 review R6/S2: auto-attached ONLY for a tier-1 MAIN session
             # (this harness's agent_def has no parent_id, so it qualifies).
             # Scans configured providers only (is_provider_configured) and each

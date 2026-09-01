@@ -26,10 +26,96 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from clio_agent.runtime import trace
 from clio_agent.tools.execution import get_active_tool_blueprint_path
 
+_BLUEPRINT_RESOLUTION_REASON_DEFINITIONS: dict[str, dict[str, str]] = {
+    "active_blueprint_path_lookup_failed": {
+        "category": "state_unavailable",
+        "description": "The active session Agent Blueprint path could not be resolved.",
+    },
+    "active_blueprint_path_parse_failed": {
+        "category": "configuration_invalid",
+        "description": "The explicitly activated Agent Blueprint could not be parsed.",
+    },
+    "active_blueprint_identity_mismatch": {
+        "category": "configuration_invalid",
+        "description": "The explicitly activated Agent Blueprint id did not match the session.",
+    },
+    "active_blueprint_disabled": {
+        "category": "configuration_invalid",
+        "description": "The explicitly activated Agent Blueprint is disabled.",
+    },
+    "installed_blueprint_discovery_failed": {
+        "category": "capability_unavailable",
+        "description": "Installed Agent Blueprint discovery failed.",
+    },
+}
 
-def blueprint_mcp_servers(blueprint_id: str, *, verbose: bool = False) -> dict[str, Any]:
+
+def _reason_catalog(app: Any) -> dict[str, list[dict[str, str]]]:
+    """Return the per-session structured blueprint-resolution reason catalog."""
+
+    reasons = getattr(app.state, "blueprint_resolution_reasons", None)
+    if not isinstance(reasons, dict):
+        reasons = {}
+        app.state.blueprint_resolution_reasons = reasons
+    return reasons
+
+
+def blueprint_resolution_reasons(app: Any, sid: str) -> list[dict[str, str]]:
+    """Return typed Agent Blueprint resolution degradations recorded for ``sid``."""
+
+    return list(_reason_catalog(app).get(sid, []))
+
+
+def _record_resolution_reason(
+    reason: str,
+    blueprint_id: str,
+    *,
+    exception: Exception | None = None,
+) -> None:
+    """Record one closed-set resolution reason on trace and the live session API."""
+
+    definition = _BLUEPRINT_RESOLUTION_REASON_DEFINITIONS.get(reason)
+    if definition is None:
+        raise ValueError(f"Unknown Agent Blueprint resolution reason: {reason}")
+    from clio_agent.gact import context as gact_context  # noqa: PLC0415
+
+    row = {"reason": reason, **definition, "blueprint_id": blueprint_id}
+    app = gact_context.active_app()
+    sid = gact_context.active_session_id()
+    if app is not None and sid:
+        _reason_catalog(app).setdefault(sid, []).append(row)
+        from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
+
+        _emit_semantic_event(
+            app,
+            sid,
+            "blueprint.resolution.degraded",
+            turn_id=gact_context.active_turn_id(),
+            trace_id=gact_context.active_trace_id(),
+            status="failed",
+            summary=definition["description"],
+            blueprint={"id": blueprint_id},
+            payload=row,
+        )
+    trace.event(
+        "BLUEPRINT-RESOLUTION",
+        "degraded reason=%s blueprint_id=%s exception_type=%s exception=%s",
+        reason,
+        blueprint_id,
+        type(exception).__name__ if exception is not None else "",
+        str(exception or ""),
+    )
+
+
+def blueprint_mcp_servers(
+    blueprint_id: str,
+    *,
+    cwd: Path | None = None,
+    verbose: bool = False,
+) -> dict[str, Any]:
     """Declared MCP servers for ONE activated blueprint — path-first, then installed.
 
     The complete decision behind ``ClioAgent._discover_pack_servers``: an
@@ -46,8 +132,13 @@ def blueprint_mcp_servers(blueprint_id: str, *, verbose: bool = False) -> dict[s
     from clio_agent.gact.agent_blueprints import discover_agent_blueprints  # noqa: PLC0415
 
     try:
-        blueprints = discover_agent_blueprints()
-    except Exception as exc:  # noqa: BLE001 - discovery is best-effort
+        blueprints = (
+            discover_agent_blueprints(cwd=cwd) if cwd is not None else discover_agent_blueprints()
+        )
+    except Exception as exc:  # noqa: BLE001 - degradation is typed and served
+        _record_resolution_reason(
+            "installed_blueprint_discovery_failed", blueprint_id, exception=exc
+        )
         if verbose:
             print(f"[ClioAgent] blueprint discovery failed: {exc}")
         return {}
@@ -90,18 +181,26 @@ def resolve_active_blueprint_servers(
                 else None
             )
             blueprint_path = str(active_path or "").strip()
-        except Exception as exc:  # noqa: BLE001 - installed discovery remains available
+        except Exception as exc:  # noqa: BLE001 - degradation is typed and served
+            _record_resolution_reason(
+                "active_blueprint_path_lookup_failed", blueprint_id, exception=exc
+            )
             if verbose:
                 print(f"[ClioAgent] active session blueprint path lookup failed: {exc}")
     if not blueprint_path:
         return None
     try:
         blueprint = parse_agent_blueprint_root(Path(blueprint_path), scope="session")
-    except Exception as exc:  # noqa: BLE001 - explicit path degrades to no servers
+    except Exception as exc:  # noqa: BLE001 - degradation is typed and served
+        _record_resolution_reason("active_blueprint_path_parse_failed", blueprint_id, exception=exc)
         if verbose:
             print(f"[ClioAgent] active blueprint path parse failed: {exc}")
         return {}
-    if blueprint.id != blueprint_id or not blueprint.enabled:
+    if blueprint.id != blueprint_id:
+        _record_resolution_reason("active_blueprint_identity_mismatch", blueprint_id)
+        return {}
+    if not blueprint.enabled:
+        _record_resolution_reason("active_blueprint_disabled", blueprint_id)
         return {}
     servers = blueprint_server_map(blueprint)
     if servers:

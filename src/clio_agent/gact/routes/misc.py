@@ -34,6 +34,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from clio_agent.gact.events import Event, heartbeat_event
+from clio_agent.gact.protocol_v3 import format_sse_v3, project_for_request
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.constants import GACT_BACKEND_VERSION
 from clio_agent.gact.runtime.globals import _format_sse
@@ -92,6 +93,7 @@ def _sse_wire_tap(sid: str, frame: bytes, event: Event | None = None) -> None:
         except OSError:
             pass
     stream_audit("sse.write", **row)
+
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -389,6 +391,20 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
 
+        use_v3 = project_for_request(request, v3=lambda: True, v2=lambda: False)
+
+        def _format_event(event: Event, session: Any) -> bytes:
+            formatter = project_for_request(
+                request,
+                v3=lambda: format_sse_v3(
+                    event,
+                    session=session,
+                    workspace_id=str(getattr(session, "workspace_id", "") or ""),
+                ),
+                v2=lambda: _format_sse(event),
+            )
+            return formatter
+
         async def event_stream() -> AsyncIterator[bytes]:
             sess_snapshot = app.state.sessions.get(sid)
             # Initial server.connected event so clients can flip
@@ -409,7 +425,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 payload={"server_version": GACT_BACKEND_VERSION},
             )
             connected.id = _PREAMBLE_EVENT_ID
-            _frame = _format_sse(connected)
+            _frame = _format_event(connected, sess_snapshot)
             _sse_wire_tap(sid, _frame, connected)
             yield _frame
             if sess_snapshot is not None:
@@ -424,13 +440,35 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                     },
                 )
                 snapshot.id = _PREAMBLE_EVENT_ID
-                _frame = _format_sse(snapshot)
+                _frame = _format_event(snapshot, sess_snapshot)
                 _sse_wire_tap(sid, _frame, snapshot)
                 yield _frame
 
             try:
                 last_event_id = int(request.headers.get("last-event-id", "0"))
             except (TypeError, ValueError):
+                last_event_id = 0
+            if use_v3 and last_event_id > app.state.bus.highest_event_id:
+                # A process restart resets the in-memory timeline. Waiting for
+                # the new process to count past an old Last-Event-ID leaves the
+                # client live-looking but permanently stale. GACT 0.3 makes the
+                # epoch mismatch explicit so the client can reconcile from REST
+                # and then resume this new timeline from its beginning. Keep the
+                # connection-local marker at id 0 like the other preamble frames;
+                # it is a state transition, not a durable session event.
+                gap = Event(
+                    type="stream.gap",
+                    session_id=sid,
+                    payload={
+                        "reason": "cursor_epoch_reset",
+                        "requested_cursor": str(last_event_id),
+                        "new_timeline_head": str(app.state.bus.highest_event_id),
+                    },
+                )
+                gap.id = _PREAMBLE_EVENT_ID
+                _frame = _format_event(gap, app.state.sessions.get(sid))
+                _sse_wire_tap(sid, _frame, gap)
+                yield _frame
                 last_event_id = 0
             sub = app.state.bus.subscribe(sid, last_event_id=last_event_id)
             heartbeat_task: Optional[asyncio.Task] = None
@@ -448,7 +486,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 heartbeat_task = asyncio.create_task(_heartbeat())
 
                 async for event in sub:
-                    _frame = _format_sse(event)
+                    _frame = _format_event(event, app.state.sessions.get(sid))
                     _sse_wire_tap(sid, _frame, event)
                     yield _frame
             except asyncio.CancelledError:

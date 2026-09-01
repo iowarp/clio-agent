@@ -159,6 +159,16 @@ def test_resolve_timeout_retries_reads_bound_probe_server_context(
     assert resolve_timeout_retries() == 3  # context released on exit
 
 
+def test_declared_probe_retry_budget_wins_over_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIO_MCP_PROBE_TIMEOUT_RETRIES__GEO", "5")
+    monkeypatch.setenv("CLIO_MCP_PROBE_TIMEOUT_RETRIES", "3")
+    with probe_server_context("geo", timeout_retries=9):
+        assert resolve_timeout_retries() == 9
+    assert resolve_timeout_retries("geo") == 5
+
+
 @pytest.mark.asyncio
 async def test_hardened_negotiate_auto_uses_the_bound_servers_retry_budget(
     monkeypatch: pytest.MonkeyPatch,

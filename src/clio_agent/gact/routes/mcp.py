@@ -47,11 +47,13 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 
-from clio_agent.gact.agent_blueprints import (
-    discover_agent_blueprints,
-    load_mcp_descriptors,
+from clio_agent.gact.agent_blueprints import discover_agent_blueprints, load_mcp_descriptors
+from clio_agent.gact.agents.resolution import (
+    _runtime_active_agent_blueprint_id,
+    _runtime_active_agent_blueprint_path,
+    _runtime_workspace_catalog_cwd,
 )
-from clio_agent.gact.agents.resolution import _runtime_workspace_catalog_cwd
+from clio_agent.gact.blueprint_activation import blueprint_mcp_servers
 from clio_agent.gact.events import Event
 from clio_agent.gact.mcp_apps import call_tool_result_to_observer
 from clio_agent.gact.permission_gate import (
@@ -65,6 +67,7 @@ from clio_agent.gact.routes.mcp_rows import (
     mcp_inventory_row,
     mcp_prompt_result_row,
 )
+from clio_agent.gact.routes.mcp_server_specs import stdio_server_spec
 from clio_agent.gact.runtime.globals import _tool_session_context
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.execution import notify_tool_observer
@@ -229,26 +232,6 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             pass
         return rows
 
-    def _declared_mcp_specs(cwd: Path | None = None) -> dict[str, Any]:
-        """Assemble the declared MCP server specs the runtime would mount.
-
-        Mirrors ``ClioAgent._build_tool_gateway``: merge each active blueprint's
-        ``mcp_servers`` frontmatter (pack scope) with user/workspace ``mcp.yaml``
-        via ``load_mcp_servers``. Returns ``{name: MCPServerSpec}``; discovery
-        failures degrade to the mcp.yaml-only set (best-effort), never raising.
-        """
-        from clio_agent.tools.mcp_config import load_mcp_servers  # noqa: PLC0415
-
-        pack_servers: dict[str, dict[str, Any]] = {}
-        try:
-            for blueprint in discover_agent_blueprints(cwd=cwd):
-                servers = blueprint.metadata.get("mcp_servers")
-                if isinstance(servers, Mapping) and servers:
-                    pack_servers[blueprint.id] = {str(k): v for k, v in servers.items()}
-        except Exception:  # noqa: BLE001,S110 - pack discovery is best-effort
-            pass
-        return load_mcp_servers(cwd=cwd, pack_servers=pack_servers)
-
     @app.get("/v1/mcp/handshake")
     async def mcp_handshake(workspace_id: str = "", session_id: str = "") -> dict[str, Any]:
         """Live readiness handshake for every DECLARED MCP tool server.
@@ -267,10 +250,18 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         flaky. The TUI calls this when it wants live tool-server status.
         """
         from clio_agent.gact.routes.mcp_rows import handshake_server_row  # noqa: PLC0415
+        from clio_agent.gact.routes.mcp_specs import declared_mcp_specs  # noqa: PLC0415
         from clio_agent.providers.handshake import handshake_mcp_servers  # noqa: PLC0415
 
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
-        specs = _declared_mcp_specs(cwd=cwd)
+        specs = declared_mcp_specs(
+            app,
+            cwd=cwd,
+            session_id=session_id,
+            active_blueprint_id=_runtime_active_agent_blueprint_id,
+            active_blueprint_path=_runtime_active_agent_blueprint_path,
+            load_blueprint_servers=blueprint_mcp_servers,
+        )
         reports = await handshake_mcp_servers(list(specs.values()))
         return {"servers": [handshake_server_row(report) for report in reports]}
 
@@ -311,26 +302,8 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             ) from None
 
         if transport_kind == "stdio":
-            command = body.get("command")
-            args = body.get("args") or []
-            env = body.get("env") or {}
-            if not command:
-                raise HTTPException(
-                    status_code=422,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="bad_request",
-                            message="stdio transport requires 'command'",
-                            recoverable=True,
-                        )
-                    ).model_dump(exclude_none=True),
-                )
-            # Build via the single canonical helper (pdeathsig-wrapped on Linux);
-            # store the same normalized spec shape callers already expect.
-            transport = transport_from_spec(
-                {"transport": "stdio", "command": command, "args": list(args), "env": dict(env)}
-            )
-            spec = {"transport": "stdio", "command": command, "args": list(args)}
+            spec = stdio_server_spec(body)
+            transport = transport_from_spec(spec)
         elif transport_kind in {"http", "streamable-http"}:
             url = body.get("url")
             if not url:

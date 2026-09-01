@@ -916,3 +916,31 @@ def test_prompt_agent_empty_answer_raises_typed_failure(
     finally:
         ctx.reset(session_token)
         ctx.reset(app_token)
+
+
+def test_module_docstring_frontmatter_example_is_loadable(tmp_path: Path) -> None:
+    """The documented expert-file shape must be one the loader actually accepts.
+
+    The module docstring is the in-code reference an author copies from, so it
+    cannot document a file ``_parse_frontmatter`` rejects. **Sabotage:** drop the
+    ``---`` fences from the example -> the row comes back disabled with
+    "missing required frontmatter field: id" -> red.
+    """
+
+    import textwrap
+
+    from clio_agent.gact import expert_packs
+
+    docstring = expert_packs.__doc__ or ""
+    block = docstring.split("::\n", 1)[1].split("\n\nThe loader", 1)[0]
+    example = textwrap.dedent(block).strip() + "\n"
+    path = tmp_path / "ndp_catalog.md"
+    path.write_text(example, encoding="utf-8")
+
+    row = parse_expert_file(path, scope="workspace")
+
+    assert row.validation_errors == []
+    assert row.enabled is True
+    assert row.id == "ndp_catalog"
+    assert row.keywords == ["ndp"]
+    assert row.tools == ["ndp.search"]

@@ -1,27 +1,25 @@
 """Markdown expert-pack discovery for GACT agent catalog.
 
-Expert files are Markdown with a flat frontmatter block:
+Expert files are Markdown with a flat frontmatter block fenced by ``---``::
 
----
-id: ndp_catalog
-title: NDP Catalog Expert
-parent_id: data
-tier: 3
-keywords:
-- ndp
-- earthscope
-tools:
-- ndp.search
-prompt_id: clio.expert.ndp_catalog
-prompt_profile: heavy
-provider: openai
-model: gpt-5.1
----
-System prompt body...
+    ---
+    id: ndp_catalog
+    title: NDP Catalog Expert
+    parent_id: data
+    tier: 3
+    keywords:
+    - ndp
+    tools:
+    - ndp.search
+    prompt_id: clio.expert.ndp_catalog
+    prompt_profile: heavy
+    provider: openai
+    model: gpt-5.1
+    ---
+    System prompt body...
 
-The loader is intentionally non-executing and dependency-free. Invalid files are
-returned as disabled AgentDef rows with validation_errors so Doctor/TUI can show
-users what broke without silently dropping an expert file.
+The loader is non-executing and dependency-free. Invalid files come back as
+disabled AgentDef rows with validation_errors instead of being silently dropped.
 """
 
 from __future__ import annotations
@@ -317,7 +315,9 @@ def parse_expert_file(
         default_provider=_pick(meta, defaults, ("provider", "default_provider"), "provider"),
         default_model=_pick(meta, defaults, ("model", "default_model"), "model"),
         api_base=_pick(meta, defaults, ("api_base", "api-base"), "api_base"),
-        credential_ref=_pick(meta, defaults, ("credential_ref", "credential-ref"), "credential_ref"),
+        credential_ref=_pick(
+            meta, defaults, ("credential_ref", "credential-ref"), "credential_ref"
+        ),
         transport=_pick(meta, defaults, ("transport",), "transport"),
         parameters=_parameters_from_meta(meta),
         module=module,

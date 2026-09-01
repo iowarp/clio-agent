@@ -27,6 +27,7 @@ from typing import Any
 
 from clio_agent import conf
 from clio_agent.arc.segments import _encode_safe
+from clio_agent.gact.context_preferences_types import DEFAULT_AUTOCOMPACT_PCT
 
 
 def _arc_obs_value(value: Any) -> Any:
@@ -56,22 +57,47 @@ def _arc_obs_value(value: Any) -> Any:
 def _autocompact_threshold() -> float:
     """The configurable 90%-style auto-compaction trigger fraction (0..1].
 
-    Resolved via the config store (file → env ``CLIO_AUTOCOMPACT_PCT`` → default
-    0.85); the design recommends compacting below 0.90 so the summary is built
-    from fuller context. A non-numeric or out-of-range value falls back to the
-    default (lenient by design: this is a soft tuning knob, not a hard contract,
-    and a typo must never wedge the auto-compaction path).
+    Resolved via the config store (file → env ``CLIO_AUTOCOMPACT_PCT`` → the
+    shared :data:`DEFAULT_AUTOCOMPACT_PCT`); the design recommends compacting
+    below 0.90 so the summary is built from fuller context. A non-numeric or
+    out-of-range value falls back to that same constant (lenient by design: this
+    is a soft tuning knob, not a hard contract, and a typo must never wedge the
+    auto-compaction path).
     """
     raw = conf.resolve(
         "autocompact.pct",
         env="CLIO_AUTOCOMPACT_PCT",
-        default=0.85,
+        default=DEFAULT_AUTOCOMPACT_PCT,
     )
     try:
         v = conf.as_float(raw)
     except (ValueError, TypeError):
-        return 0.85
-    return v if 0.0 < v <= 1.0 else 0.85
+        return DEFAULT_AUTOCOMPACT_PCT
+    return v if 0.0 < v <= 1.0 else DEFAULT_AUTOCOMPACT_PCT
+
+
+def _session_autocompact_preferences(
+    metadata: Mapping[str, Any] | None,
+) -> tuple[bool, float]:
+    """Resolve the effective automatic-compaction controls for one session.
+
+    Session metadata is the durable override plane; deployments still retain the
+    configured global threshold as the fallback. Invalid persisted values are ignored
+    defensively so an older or manually edited session record cannot wedge a turn.
+    """
+
+    preferences = metadata.get("context_preferences") if isinstance(metadata, Mapping) else None
+    if not isinstance(preferences, Mapping):
+        return True, _autocompact_threshold()
+    enabled = preferences.get("automatic_compaction", True)
+    enabled = enabled if isinstance(enabled, bool) else True
+    try:
+        threshold = conf.as_float(preferences.get("autocompact_pct"))
+    except (ValueError, TypeError):
+        threshold = _autocompact_threshold()
+    if not 0.0 < threshold <= 1.0:
+        threshold = _autocompact_threshold()
+    return enabled, threshold
 
 
 # OpenAI/tiktoken-native model markers. For these, ``litellm.token_counter`` uses a
@@ -122,7 +148,9 @@ def _heuristic_message_tokens(messages: Any) -> int:
     total = 0
     try:
         for msg in messages or []:
-            content = msg.get("content") if isinstance(msg, Mapping) else getattr(msg, "content", "")
+            content = (
+                msg.get("content") if isinstance(msg, Mapping) else getattr(msg, "content", "")
+            )
             if isinstance(content, str):
                 total += len(content)
             elif isinstance(content, (list, tuple)):

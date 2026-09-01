@@ -58,8 +58,22 @@ from __future__ import annotations
 import argparse
 import ast
 import sys
+import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# The curated operator documentation for ``config.defaults.yaml``: which named
+# section each key belongs to, and the one-line note explaining what it does,
+# in what unit, and when an operator would change it. Kept in its own module so
+# the prose is reviewable on its own and this generator stays mechanical.
+# Two import paths are both correct and reach the same module: the file is run
+# directly (``python scripts/gen_env_reference.py`` -- ``scripts/`` is sys.path[0])
+# and imported by the drift test as ``scripts.gen_env_reference`` (repo root on
+# the path, ``scripts`` an implicit namespace package).
+try:  # pragma: no cover - exercised by whichever entry point is used
+    from scripts.config_key_notes import KEY_NOTES, SECTIONS
+except ImportError:  # pragma: no cover
+    from config_key_notes import KEY_NOTES, SECTIONS
 
 # --------------------------------------------------------------------------- #
 # Location + classification constants
@@ -270,6 +284,53 @@ def _module_constants(tree: ast.Module) -> dict[str, object]:
             if resolved is not _UNRESOLVED:
                 consts[name] = resolved
     return consts
+
+
+def _module_path_for(module: str, src: Path) -> Path | None:
+    """Return the file backing a dotted ``clio_agent.*`` module name, if any."""
+    if not module.startswith("clio_agent."):
+        return None
+    relative = module.split(".")[1:]
+    candidate = src.joinpath(*relative).with_suffix(".py")
+    if candidate.is_file():
+        return candidate
+    package_init = src.joinpath(*relative, "__init__.py")
+    return package_init if package_init.is_file() else None
+
+
+def _imported_constants(tree: ast.Module, src: Path) -> dict[str, object]:
+    """Resolve constants this module binds via a MODULE-LEVEL ``from ... import NAME``.
+
+    A shared in-code default is frequently owned by one module and imported by the
+    ``conf.resolve`` call site that documents it (``DEFAULT_AUTOCOMPACT_PCT`` lives
+    in ``gact/context_preferences_types.py`` and is imported by
+    ``gact/runtime/context_tokens.py``). Without this hop such a default renders as
+    an opaque ``_(computed)_`` expression and drops out of the committed base layer,
+    even though it is perfectly static.
+
+    Deliberately ONE hop and MODULE-LEVEL only (``tree.body``, not ``ast.walk``): the
+    binding is then exactly what the importing module holds at import time, with no
+    transitive chain to follow and no lazy, function-local import — which may exist to
+    break a cycle or to defer a heavy dependency — silently promoted to a static fact.
+    Names from outside ``src/clio_agent`` are never resolved.
+    """
+    out: dict[str, object] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.ImportFrom) or node.level:
+            continue
+        path = _module_path_for(node.module or "", src)
+        if path is None:
+            continue
+        try:
+            owner = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError):
+            continue
+        owner_consts = _module_constants(owner)
+        for alias in node.names:
+            value = owner_consts.get(alias.name, _UNRESOLVED)
+            if value is not _UNRESOLVED:
+                out[alias.asname or alias.name] = value
+    return out
 
 
 def _class_attr_defaults(tree: ast.Module, consts: dict[str, object]) -> dict[str, object]:
@@ -633,7 +694,8 @@ def collect(root: Path | None = None) -> tuple[list[ResolvedVar], list[EnvOnlyVa
             continue
         rel = path.relative_to(repo_root).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        consts = _module_constants(tree)
+        # Own module-level constants win over an imported binding of the same name.
+        consts = {**_imported_constants(tree, src), **_module_constants(tree)}
         class_attr_consts = {**consts, **_class_attr_defaults(tree, consts)}
         resolve_names, conf_aliases = _conf_import_aliases(tree)
         wrappers = _env_wrapper_functions(tree)
@@ -784,6 +846,16 @@ def render_markdown(resolved: list[ResolvedVar], env_only: list[EnvOnlyVar]) -> 
 
     lines += [
         "",
+        "### Codex SDK transport",
+        "",
+        "Codex runs through the official Python SDK and its venv-bundled binary, "
+        "with one SDK-owned cancellation path. This deliberately replaces the "
+        "former stateful-delta/subprocess transport in exchange for an observed "
+        "roughly 2.5x time-to-first-token cost. "
+        "`CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S` is a progress deadline: it resets "
+        "after every SDK event rather than imposing a fixed wall-clock cap on a "
+        "healthy long-running exchange.",
+        "",
         "## Environment-only variables",
         "",
         "These deliberately bypass the config store (a shared file must not be "
@@ -892,17 +964,58 @@ def _yaml_quote(value: str) -> str:
     return f'"{escaped}"'
 
 
+_SECTION_RULE = "# " + "=" * 74
+
+
+def section_for(key: str) -> str:
+    """Return the curated section name owning ``key``, or ``""`` when unassigned.
+
+    Matched on the key's FIRST dotted segment against each section's prefix
+    tuple, in :data:`SECTIONS` order. An unassigned key is a documentation gap
+    the drift test fails on rather than a rendering decision made here.
+    """
+    head = key.split(".")[0]
+    for name, prefixes, _description in SECTIONS:
+        if head in prefixes:
+            return name
+    return ""
+
+
+def _defaults_entry_lines(record: ResolvedVar) -> list[str]:
+    """Render one knob: provenance header, curated note, then the key line."""
+    lines = [f"# {record.env}  ({record.type_})  <- {record.source}"]
+    note = KEY_NOTES.get(record.key, "")
+    if note:
+        lines.extend(f"# {piece}" for piece in textwrap.wrap(note, width=74))
+    if record.dynamic_expr:
+        lines.append(f"# {record.key}:  # computed at runtime: {record.dynamic_expr}")
+    elif record.default == "":
+        lines.append(f"# {record.key}:  # default unset; resolved in code")
+    else:
+        lines.append(f"{record.key}: {_yaml_scalar(record.type_, record.default)}")
+    lines.append("")
+    return lines
+
+
 def render_defaults_yaml(resolved: list[ResolvedVar]) -> str:
     """Render the committed ``src/clio_agent/config.defaults.yaml`` base layer.
 
     A flat, dotted-key YAML mapping of every ``conf.resolve`` knob to its in-code
     default, each preceded by a comment carrying the environment override name,
-    the coercion type and the defining module. Knobs whose default is computed at
-    runtime (``dynamic_expr``) or unset (empty) are emitted as *comments* only —
-    they carry no value, so :meth:`clio_agent.conf.ConfigStore.resolve` falls
-    through to the operative in-code ``default=`` for them. The keys are literal
-    dotted strings (``arc.store: cte``) matched by exact key in the below-env
-    defaults layer, deliberately NOT the nested shape ``config.yaml`` uses.
+    the coercion type and the defining module, plus the curated one-line note
+    from :data:`KEY_NOTES` (what it does, its unit, when an operator changes it).
+    Knobs whose default is computed at runtime (``dynamic_expr``) or unset
+    (empty) are emitted as *comments* only — they carry no value, so
+    :meth:`clio_agent.conf.ConfigStore.resolve` falls through to the operative
+    in-code ``default=`` for them. The keys are literal dotted strings
+    (``arc.store: cte``) matched by exact key in the below-env defaults layer,
+    deliberately NOT the nested shape ``config.yaml`` uses.
+
+    Keys are grouped into the named :data:`SECTIONS` and sorted alphabetically
+    WITHIN each section. Grouping is a readability decision only and is safe to
+    change: the sole runtime consumer is ``ConfigStore.resolve``'s exact-key
+    ``dict.get`` on the parsed mapping, which never iterates the document, so no
+    behaviour depends on key order.
     """
     lines: list[str] = [
         _GENERATED_DEFAULTS_BANNER,
@@ -912,27 +1025,37 @@ def render_defaults_yaml(resolved: list[ResolvedVar]) -> str:
         "# above the in-code default (which stays the operative fallback). Every",
         "# key mirrors an in-code conf.resolve default; a drift test regenerates",
         "# this file and fails CI if they diverge. Comment lines carry the env",
-        "# override name, the coercion type and the defining module. Regenerate",
-        "# with: uv run python scripts/gen_env_reference.py",
+        "# override name, the coercion type, the defining module and a one-line",
+        "# note on what the knob does and when to change it. Keys are grouped",
+        "# into named sections purely for readability -- the runtime looks each",
+        "# one up by exact key and never iterates, so order carries no meaning.",
+        "# Regenerate with: uv run python scripts/gen_env_reference.py",
         "",
     ]
-    for r in sorted(resolved, key=lambda r: r.key):
-        if not r.key:
+    by_section: dict[str, list[ResolvedVar]] = {name: [] for name, _, _ in SECTIONS}
+    unassigned: list[ResolvedVar] = []
+    for record in resolved:
+        if not record.key:
             continue
-        header = f"# {r.env}  ({r.type_})  <- {r.source}"
-        if r.dynamic_expr:
-            lines.append(header)
-            lines.append(f"# {r.key}:  # computed at runtime: {r.dynamic_expr}")
-            lines.append("")
+        section = section_for(record.key)
+        (by_section[section] if section else unassigned).append(record)
+
+    for name, _prefixes, description in SECTIONS:
+        members = sorted(by_section[name], key=lambda r: r.key)
+        if not members:
             continue
-        if r.default == "":
-            lines.append(header)
-            lines.append(f"# {r.key}:  # default unset; resolved in code")
-            lines.append("")
-            continue
-        lines.append(header)
-        lines.append(f"{r.key}: {_yaml_scalar(r.type_, r.default)}")
+        lines += [_SECTION_RULE, f"# {name}", _SECTION_RULE]
+        lines += [f"# {piece}" for piece in textwrap.wrap(description, width=74)]
         lines.append("")
+        for record in members:
+            lines += _defaults_entry_lines(record)
+
+    if unassigned:
+        # A knob under a brand-new top-level namespace. Emitted (never dropped)
+        # under an explicit heading; the drift test fails until it is filed.
+        lines += [_SECTION_RULE, "# Unassigned -- add these to scripts/config_key_notes.py", ""]
+        for record in sorted(unassigned, key=lambda r: r.key):
+            lines += _defaults_entry_lines(record)
     return "\n".join(lines)
 
 

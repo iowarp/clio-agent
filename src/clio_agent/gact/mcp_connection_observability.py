@@ -61,8 +61,7 @@ def emit_downgrade_events_for_executor(app: "FastAPI", sid: str, executor: Any) 
             "mcp.connection.downgraded",
             status="completed",
             summary=(
-                f"MCP server {server_id!r} negotiated the legacy protocol era "
-                "under auto mode."
+                f"MCP server {server_id!r} negotiated the legacy protocol era under auto mode."
             ),
             actor={"server_id": server_id},
             subject={"server_id": server_id},

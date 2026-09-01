@@ -121,7 +121,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # six jarvis_* tools bricked custom_agent_tools_unavailable with an
     # empty mount_failures map on every cold boot). The listing logic itself
     # lives in the owner module tools/gateway.py; only the call site is here.
-    "src/clio_agent/agent.py": 1028,  # blueprint activation moved to gact/blueprint_activation.py
+    # The campaign's blueprint extraction offsets six lines from that merged
+    # seam; the synchronized owner is measured at 1022 lines.
+    "src/clio_agent/agent.py": 1022,  # blueprint activation moved to gact/blueprint_activation.py
     "src/clio_agent/arc/memory.py": 1389,  # provider ladder moved to provenance_config.py
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -148,7 +150,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # disabled as "unknown tool reference" and took its whole root down by
     # hierarchy. The ratchet was not bumped in that commit; recorded here as
     # pre-existing CI-blocking debt this change closes (P5 adversarial review [A]).
-    "src/clio_agent/gact/agent_blueprints.py": 1060,
+    # Ratchet down (PR #1255 review): the uninstall-tombstone bookkeeping moved to
+    # its owner module gact/agent_blueprint_refresh.py.
+    "src/clio_agent/gact/agent_blueprints.py": 1058,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -201,7 +205,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # module tools/mcp_discovery.py (ensure_namespace); only the expert-
     # resolve-specific decision (which namespace, how to merge into THIS
     # executor, how to name the failure) belongs here.
-    "src/clio_agent/gact/agents/builders.py": 2030,
+    "src/clio_agent/gact/agents/builders.py": 1997,
     # #948 S4/S5/S6 growth already carried this file past the flat 800 cap (to 842)
     # before it was ever added to this baseline — a pre-existing gap this change
     # did not introduce (it was silently exempt from the ratchet, not under it).
@@ -222,7 +226,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # own treatment) at its one return site; the tally/format logic lives in the new
     # owner module agents/task_summary.py (shared with observe_agent_tasks), so only
     # the two-import + one-call declaration site landed here.
-    "src/clio_agent/gact/agents/spawn_runtime.py": 933,
+    "src/clio_agent/gact/agents/spawn_runtime.py": 927,
     # (invoker.py's entry retired 2026-08: RelayExpertInvoker moved to its own
     # owner module agents/relay_expert_invoker.py, dropping invoker.py under the
     # 800 default cap — the #1221/#1222 contract-alignment growth that broke the
@@ -288,7 +292,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # days" bug). All reap logic lives in the owner module
     # runtime/process_census.py (reap_orphaned_processes/boot_reap_off_loop);
     # only the sequencing wrapper + its one call site land here.
-    "src/clio_agent/gact/app.py": 2574,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
+    "src/clio_agent/gact/app.py": 2540,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -360,7 +364,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # merge DECISION itself is a one-line call into the owner module
     # ``artifacts/dedup_enrichment.py`` (``merged_annotation``) — only the
     # threading landed here. Ratchets back with the #714 decomposition.
-    "src/clio_agent/gact/routes/artifacts.py": 940,  # provider-owned serve rung (logic in artifacts/storage.py) (#1247)
+    "src/clio_agent/gact/routes/artifacts.py": 928,  # provider-owned serve rung (logic in artifacts/storage.py) (#1247)
     # #948 S4: +10 for round-tripping the module: declaration in the overlay
     # export (an exported react parent re-loaded as predict and failed the new
     # hierarchy validation).
@@ -376,14 +380,16 @@ RATCHET_BASELINE: dict[str, int] = {
     # resolution) lives in the new owner module gact/agent_blueprint_files.py; only
     # the two thin route handlers + their docstrings + the import block land here.
     # Ratchets back with the mcp_app_* / #714 route decomposition.
-    "src/clio_agent/gact/routes/blueprints.py": 978,
-    "src/clio_agent/gact/routes/catalog.py": 938,  # +4: /goal command dispatch wiring (#1080; logic in gact/goal.py)
+    # Ratchet down (PR #1255 review): the source-ledger read-modify-writes and the
+    # workspace-cwd refusal moved into gact/agent_blueprint_sources.py.
+    "src/clio_agent/gact/routes/blueprints.py": 881,
+    "src/clio_agent/gact/routes/catalog.py": 898,  # +4: /goal command dispatch wiring (#1080; logic in gact/goal.py)
     # #1201 (adversarial review, PR #1202): +6 for two direct-connect era-
     # classification call sites (call_external_mcp_tool + _external_mcp_inventory's
     # prompt/list branches) -- the classification logic itself lives in the owner
     # module tools/mcp_connection_era.py; only the server_id= threading + one
     # instrument_client_era() wrap for the bare-Client list branch land here.
-    "src/clio_agent/gact/routes/mcp.py": 985,  # -14: handshake row shaping moved to routes/mcp_rows.py (#1111)
+    "src/clio_agent/gact/routes/mcp.py": 958,  # declared MCP assembly moved to routes/mcp_specs.py
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
     # develop with the check job red). Recording current counts makes the debt
@@ -452,7 +458,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # the base commit's file already failed `ruff format --check`) -- no
     # additional logic, only canonical line-wrapping of untouched code. All
     # timer/registry logic lives in the owner module gact/runtime/bringup_timing.py.
-    "src/clio_agent/gact/routes/sessions.py": 1587,
+    "src/clio_agent/gact/routes/sessions.py": 1545,
     # #1215 S5: crossed the 800 new-file cap (793 -> 809) for enrich_turn_context —
     # a thin timed combinator wrapping the TWO existing enrichment calls
     # (_enrich_with_context_files + _enrich_with_requested_memory_search) in ONE
@@ -479,7 +485,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # can name a declared tool's server + reason -- turn.py's except handler
     # is the only reader; the mount decision lives in gact/agents/builders.py.
     "src/clio_agent/gact/runtime/globals.py": 986,  # blueprint-path arg threading (#1247)
-    "src/clio_agent/gact/streaming.py": 995,
+    "src/clio_agent/gact/streaming.py": 964,
     # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
     # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
     # merge(main->develop): +10 (932 -> 942) integrating main's #964 structured
@@ -569,7 +575,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # the server + typed reason in the user-facing message/details when the
     # unavailability came from a failed on-demand mount attempt; the
     # mount_failures map itself is built in gact/agents/builders.py.
-    "src/clio_agent/gact/turn.py": 868,
+    "src/clio_agent/gact/turn.py": 863,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the
@@ -610,7 +616,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # Create/Update requests) + a 3-line doc comment; the enum + enforcement live in
     # sessions.py + permission_gate.py, so only the field declarations land here.
     # P0.1a (#1102): move Part + CapabilityFlags to gact/parts.py; 1170 -> 958 lines.
-    "src/clio_agent/gact/types.py": 958,
+    "src/clio_agent/gact/types.py": 942,
     # -120 (#891): the SDK-session machinery moved out to sibling owner modules —
     # the blocking-path pool to providers/claude_code_sdk_pool.py and the per-expert
     # streaming session/delta transport to providers/claude_code_sessions.py; this
@@ -708,7 +714,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # thin sync delegate to AsyncMCPToolExecutor.merge_namespace_tools
     # (mcp_executor.py), the actual live-tool-table merge target for an
     # on-demand mount (gact/agents/builders.py).
-    "src/clio_agent/tools/execution.py": 1245,  # _ACTIVE_TOOL_BLUEPRINT_PATH contextvar trio - this IS the owner module (#1247)
+    "src/clio_agent/tools/execution.py": 1206,  # structured result parsing moved to tools/result_errors.py
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.
@@ -735,8 +741,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # the owner module tools/launcher_cache_lock.py: FileLock's default
     # thread_local=True silently orphans the OS lock when acquire/release
     # run on different threads, as they do here via asyncio.to_thread).
-    "src/clio_agent/tools/mcp_executor.py": 847,
-    "src/clio_agent/tools/mcp_config.py": 821,
+    "src/clio_agent/tools/mcp_executor.py": 827,
+    "src/clio_agent/tools/mcp_config.py": 817,
     # #1231 Part 1/2 (consumer half of the live-console feature): not previously
     # baselined -- this file was ALREADY 7 lines over the 800 cap before this
     # change (unbaselined pre-existing debt), i.e. 807 -> 820. Part 1 (+6 net):

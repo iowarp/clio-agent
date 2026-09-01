@@ -240,11 +240,32 @@ def _lenient_chat_adapter_cls() -> Any:
         def parse(self, signature: Any, completion: str) -> dict:
             try:
                 return super().parse(signature, completion)
-            except Exception as primary_exc:
+            except (AdapterParseError, TypeError, ValueError) as primary_exc:
+                from clio_agent.runtime.lm_stream import (  # noqa: PLC0415
+                    normalize_escaped_section_boundaries,
+                )
+
+                normalized_completion = normalize_escaped_section_boundaries(completion)
+                if normalized_completion != completion:
+                    try:
+                        parsed = super().parse(signature, normalized_completion)
+                    except (AdapterParseError, TypeError, ValueError):
+                        logger.debug(
+                            "normalized adapter parse did not recover output; "
+                            "continuing with structured-value repair"
+                        )
+                    else:
+                        from clio_agent.runtime import trace  # noqa: PLC0415
+
+                        trace.event(
+                            "LENIENT-ADAPTER RECOVERY",
+                            "restored escaped ChatAdapter section boundary",
+                        )
+                        return parsed
                 # Re-section exactly like ChatAdapter, but coerce a failing field's
                 # constructor-repr value into JSON before re-parsing it.
                 sections: list[tuple[Any, list[str]]] = [(None, [])]
-                for line in completion.splitlines():
+                for line in normalized_completion.splitlines():
                     match = field_header_pattern.match(line.strip())
                     if match:
                         header = match.group(1)
@@ -270,7 +291,11 @@ def _lenient_chat_adapter_cls() -> Any:
                                 recovered = _recover_malformed_structured_value(str(k), v)
                             except Exception as recover_exc:
                                 _dump_unparseable_completion(
-                                    signature, completion, str(k), v, str(recover_exc)
+                                    signature,
+                                    normalized_completion,
+                                    str(k),
+                                    v,
+                                    str(recover_exc),
                                 )
                                 raise
                             fields[k] = parse_value(_json.dumps(recovered, default=str), annotation)
@@ -482,6 +507,18 @@ def _parse_retry_attempts(config: LMProviderConfig) -> int:
             return max(0, conf.as_int(raw))
         except (ValueError, TypeError):
             pass
+    # Providers declare this transport capability on their resolved config. The
+    # official Codex SDK already returns a complete, expensive reasoning turn, so a
+    # parse failure is surfaced after one attempt unless an operator explicitly
+    # overrides the policy above.
+    if getattr(config, "parse_retry_capability", "bounded") == "single_attempt":
+        logger.info(
+            "LM parse retry suppressed reason=provider_single_attempt_capability "
+            "provider=%s model=%s",
+            config.provider,
+            config.model,
+        )
+        return 0
     return 2 if _reasoning_model_capability(config) else 0
 
 

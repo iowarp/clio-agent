@@ -526,7 +526,7 @@ def finalize_turn(
     # completion hook (turn_spawn._child_workflow_state, reading metadata["workflow_state"])
     # threads it back — root seam, all kinds (a chain_of_thought LEAF's field was dropped here).
     produced_wf = _produced_turn_workflow_state(
-        state.pred, state.expert_handoffs, schema=state.workflow_schema
+        state.pred, state.expert_handoffs, state.app, state.sid, schema=state.workflow_schema
     )
     if produced_wf:
         state.assistant_metadata["workflow_state"] = produced_wf

@@ -109,7 +109,13 @@ class CMFEventStore:
         body = payload if isinstance(payload, dict) else {}
         if event_type in {"artifact.created", "artifact.version.added"}:
             artifact = self._record_artifact(event, body)
-            return {"artifact_mlmd_id": int(artifact.id)}
+            attached = self._attach_to_producer(artifact, body)
+            result: dict[str, Any] = {"artifact_mlmd_id": int(artifact.id)}
+            if not attached:
+                # The caller turns this into a typed refusal. An artifact with
+                # no event is invisible to CMF however well it is stored here.
+                result["unattached"] = True
+            return result
         if event_type == "artifact.transform.recorded":
             execution = self._record_transform(event, body)
             return {"execution_mlmd_id": int(execution.id)}
@@ -174,6 +180,87 @@ class CMFEventStore:
         attribution = mlpb.Attribution(context_id=self.stage.id, artifact_id=artifact.id)
         self.store.put_attributions_and_associations([attribution], [])
         return artifact
+
+    def _attach_to_producer(self, artifact: Any, body: dict[str, Any]) -> bool:
+        """Attach a freshly recorded artifact to the call that produced it.
+
+        CMF's push document carries artifacts ONLY as
+        ``execution.events[].artifact`` -- there is no free-standing artifact
+        list -- so an artifact with no event is invisible to a CMF server no
+        matter how correctly it sits in the local store. Most artifacts arrive
+        as ``artifact.created`` from a tool that emits no separate transform
+        record, which is how a live push carried 13 executions, zero artifacts
+        and zero events (sess_3c2660f69bd5).
+
+        The producer CLIO already carries names that call, so the artifact is
+        attached to it, minting the named execution when it does not exist yet.
+        Attaching HERE (rather than only when a transform arrives) also removes
+        the ordering dependency: whichever event lands first, the edge is
+        written exactly once.
+
+        Args:
+            artifact: The MLMD artifact just recorded.
+            body: The artifact event payload.
+
+        Returns:
+            ``True`` when an edge now exists, ``False`` when the artifact has no
+            producing call to anchor it to.
+        """
+        producer = body.get("producer")
+        producer = producer if isinstance(producer, dict) else {}
+        call_id = str(producer.get("call_id") or "")
+        if not call_id:
+            return False
+        execution = self._creation_execution(call_id, producer)
+        self._link_edges(
+            execution.id,
+            [
+                {
+                    "artifact_id": str(body.get("artifact_id") or ""),
+                    "name": str(body.get("name") or artifact.name),
+                }
+            ],
+            input_event=False,
+        )
+        return True
+
+    def _creation_execution(self, call_id: str, producer: dict[str, Any]) -> Any:
+        """Get or mint the named execution ``clio:{call_id}``.
+
+        The SAME name a transform record uses, created with
+        ``create_new_execution=False``, so a later ``artifact.transform.recorded``
+        for that call merges into this row instead of duplicating it (and the
+        server merges it by ``(Context_Type, name)`` for the same reason).
+        """
+        custom = {
+            "clio_call_id": call_id,
+            "clio_tool": str(producer.get("tool") or ""),
+            "clio_kind": "creation",
+            "clio_synthesized": "creation_execution",
+            "clio_mapping_version": "clio.cmf.v1",
+        }
+        execution = self._api["create_execution"](
+            store=self.store,
+            execution_type_name=self.stage.name,
+            execution_name=f"clio:{call_id}",
+            context_id=self.stage.id,
+            execution=str(producer.get("tool") or "clio artifact creation"),
+            pipeline_id=self.parent.id,
+            pipeline_type=self.parent.name,
+            git_repo="",
+            git_start_commit="",
+            custom_properties=custom,
+            create_new_execution=False,
+        )
+        for key, item in custom.items():
+            # Never overwrite what a real transform record already stated; this
+            # only fills a row nothing richer has described yet.
+            existing = execution.custom_properties.get(key)
+            if existing is None or not str(_value(existing) or ""):
+                execution.custom_properties[key].CopyFrom(self._api["value"](item))
+        execution.properties["Execution_uuid"].CopyFrom(self._api["value"](call_id))
+        self.store.put_executions([execution])
+        return execution
 
     def _record_transform(self, event: dict[str, Any], body: dict[str, Any]) -> Any:
         call_id = str(body.get("call_id") or "")

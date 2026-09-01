@@ -72,6 +72,32 @@ async def relay_tool_surfaces_for_app(app: FastAPI) -> Any:
     return surfaces
 
 
+def invalidate_relay_tool_surfaces(app: FastAPI, *, status: dict[str, Any]) -> None:
+    """Remove stale relay owners after a runtime connection change.
+
+    The next configured turn performs normal lazy discovery.  The live agent is
+    rebuilt immediately without the old tools so disconnect never leaves a
+    previously authenticated relay usable through a resident gateway.
+
+    Args:
+        app: The serving GACT application.
+        status: Non-secret transitional status applied to the live agent.
+    """
+
+    from clio_agent.tools.relay_factory import RelayToolSurfaces  # noqa: PLC0415
+
+    app.state.relay_tool_surfaces = None
+    app.state.relay_tool_status = dict(status)
+    app.state.relay_tool_surfaces_discovered_at = None
+    agent = getattr(app.state, "agent", None)
+    if agent is not None:
+        _refresh_agent_relay_tool_surfaces(
+            agent,
+            RelayToolSurfaces(None, None, dict(status)),
+            force=True,
+        )
+
+
 async def refresh_relay_tool_surfaces_if_stale(app: FastAPI) -> Any:
     """Re-discover the relay catalog once its TTL has elapsed (#1227 D2).
 
@@ -155,7 +181,7 @@ async def refresh_relay_tool_surfaces_if_stale(app: FastAPI) -> Any:
     return surfaces
 
 
-def _refresh_agent_relay_tool_surfaces(agent: Any, surfaces: Any) -> None:
+def _refresh_agent_relay_tool_surfaces(agent: Any, surfaces: Any, *, force: bool = False) -> None:
     """Rebuild the singleton agent's default gateway from a fresh catalog.
 
     agent.py stays a pure runtime HOST with no relay-refresh method of its
@@ -188,7 +214,7 @@ def _refresh_agent_relay_tool_surfaces(agent: Any, surfaces: Any) -> None:
         and old_revision == new_revision
         and (old_jarvis is None) == (new_jarvis is None)
     )
-    if unchanged:
+    if not force and unchanged:
         return
     agent._remote_mcp_federation = new_federation  # noqa: SLF001
     agent._jarvis_jobs = new_jarvis  # noqa: SLF001
@@ -206,6 +232,13 @@ def _refresh_agent_relay_tool_surfaces(agent: Any, surfaces: Any) -> None:
     # ``_build_tool_gateway`` rebuilds ``_tool_definitions`` from scratch;
     # this direct update is what a test double -- or any caller whose
     # ``_build_tool_gateway`` does not reassign the dict -- observes).
+    # Remove the old projections first so disappearing tools cannot survive a
+    # disconnect in callers whose gateway double keeps this dictionary alive.
+    for tool_name in (
+        *list_relay_tool_definitions(old_federation),
+        *list_jarvis_tool_definitions(old_jarvis),
+    ):
+        agent._tool_definitions.pop(tool_name, None)  # noqa: SLF001
     agent._tool_definitions.update(list_relay_tool_definitions(new_federation))  # noqa: SLF001
     agent._tool_definitions.update(list_jarvis_tool_definitions(new_jarvis))  # noqa: SLF001
     # #1236: bump the federation epoch so RESIDENT per-workspace executors

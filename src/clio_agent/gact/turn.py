@@ -61,6 +61,7 @@ from clio_agent.gact.messaging import (
     _image_part_summaries,
     _user_message_parts,
 )
+from clio_agent.gact.permission_delivery import publish_permission_event
 from clio_agent.gact.plan_mode import inject_plan_mode_reminder
 from clio_agent.gact.replanning import inject_replan_suggestion
 from clio_agent.gact.runtime import bringup_timing
@@ -94,6 +95,7 @@ from clio_agent.gact.tool_observer import (
     _merge_tool_call_rows,
     _tool_calls_from_handoff_rows,
 )
+from clio_agent.gact.turn_cancellation import settle_asyncio_cancellation
 from clio_agent.gact.turn_finalize import (
     finalize_turn,
     maybe_pause_for_user,
@@ -555,12 +557,11 @@ async def _run_turn_in_background(
                 subject={"permission_id": pid},
                 payload=row,
             )
-            state.bus.publish(
-                Event(
-                    type="permission.requested",
-                    session_id=state.sid,
-                    payload=row,
-                )
+            publish_permission_event(
+                state.app,
+                "permission.requested",
+                owner_session_id=state.sid,
+                payload=row,
             )
         if state.sid in state.app.state.cancel_flags:
             state.app.state.cancel_flags.discard(state.sid)
@@ -576,13 +577,7 @@ async def _run_turn_in_background(
         state.answer_text = ""
         state.tools_called = []
     except asyncio.CancelledError:
-        state.error_info = _cancelled_error_info(
-            state.sid,
-            execution_cancellation="best_effort",
-            executor_work_may_continue=True,
-        )
-        state.answer_text = ""
-        state.tools_called = []
+        settle_asyncio_cancellation(state)
     except _StreamingOutputError as exc:
         original = exc.__cause__ or exc
         partial_answer = state.transcript.raw_streamed_text()

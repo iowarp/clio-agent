@@ -36,6 +36,15 @@ from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import skill_runtime as _skill_runtime
 from clio_agent.gact.agents import toolset_inventory
 from clio_agent.gact.agents.auto_tools import build_auto_react_tools
+from clio_agent.gact.agents.blueprint_tool_recording import (
+    recorded_load_skill_tool as _recorded_load_skill_tool,
+)
+from clio_agent.gact.agents.blueprint_tool_recording import (
+    recorded_spawn_skill_task_tool as _recorded_spawn_skill_task_tool,
+)
+from clio_agent.gact.agents.blueprint_tool_recording import (
+    recording_blueprint_tool as _recording_blueprint_tool,
+)
 from clio_agent.gact.agents.composition import (
     _runtime_active_workspace_context,
     _runtime_dynamic_agent_children_context,
@@ -43,6 +52,9 @@ from clio_agent.gact.agents.composition import (
 from clio_agent.gact.agents.resolution import _active_workflow_state_schema
 from clio_agent.gact.agents.runtime import (
     _retaining_react_cls,
+)
+from clio_agent.gact.agents.tool_executor_resolution import (
+    resolve_active_base_agent_tool_executor,
 )
 from clio_agent.gact.events import Event
 from clio_agent.gact.permission_gate import (
@@ -552,18 +564,12 @@ def _active_base_agent_tool_executor(base_agent: Any) -> Any:
     when no workspace is active or the per-workspace seam is unavailable.
     """
 
-    resolver = getattr(base_agent, "_active_tool_executor", None)
-    if callable(resolver):
-        try:
-            executor = resolver()
-        except Exception:  # noqa: BLE001 - degrade to default executor
-            executor = None
-        if executor is not None:
-            _emit_mcp_downgrade_events(executor)
-            return executor
-    executor = getattr(base_agent, "tool_executor", None)
-    _emit_mcp_downgrade_events(executor)
-    return executor
+    return resolve_active_base_agent_tool_executor(
+        base_agent,
+        app=_ctx.active_app(),
+        session_id=_ctx.active_session_id() or _ctx.active_tool_session_id(),
+        emit_downgrade=_emit_mcp_downgrade_events,
+    )
 
 
 def _emit_mcp_downgrade_events(executor: Any) -> None:
@@ -579,17 +585,6 @@ def _emit_mcp_downgrade_events(executor: Any) -> None:
     emit_downgrade_events_for_executor(app, _ctx.active_session_id(), executor)
 
 
-def _mount_failure_reason(exc: BaseException) -> str:
-    """Typed reason for an on-demand mount attempt's failure (#1237), reusing
-    the SAME classification the discovery pass uses so the reason a tool is
-    unavailable is byte-identical whether it degraded at discovery or at an
-    on-demand call-time mount."""
-
-    from clio_agent.tools.mcp_discovery import _classify_degrade_reason  # noqa: PLC0415
-
-    return _classify_degrade_reason(exc)
-
-
 def _resolve_declared_tools_with_on_demand_mount(
     tool_executor: Any, requested_tools: list[str]
 ) -> tuple[dict[str, Any], dict[str, str]]:
@@ -599,16 +594,23 @@ def _resolve_declared_tools_with_on_demand_mount(
     A namespace is DECLARED when it appears on the executor's
     ``_clio_namespace_specs`` map (stamped by ``ClioAgent._active_tool_executor``
     at gateway-build time -- #1237 Gap 1 means this is routinely non-empty on
-    a cold workspace/blueprint, since activation mounts nothing eagerly).
-    Mounting goes through ``tools.mcp_discovery.ensure_namespace``: single-
-    flight (concurrent resolves for the SAME namespace join one attempt) and
-    liveness-driven (never a bounded retry ladder). A failed attempt is
-    reported in the returned ``mount_failures`` map (namespace -> typed
-    reason) for THIS resolve only -- it is never remembered, so the very
-    next resolve/call re-attempts.
+    a cold workspace/blueprint, since activation mounts nothing eagerly). A
+    process-wide listing cache can make a tool name available before this
+    workspace owns the persistent namespace connection; both conditions are
+    checked before a turn is released.
+    Mounting goes through the session-readiness boundary, which joins the
+    discovery layer's single-flight attempt, reports lifecycle updates over
+    GACT, and applies a short increasing-wait retry ladder. A terminal failure
+    is reported in the returned ``mount_failures`` map (namespace -> typed
+    reason) for THIS resolve only -- it is never remembered, so a later
+    resolve/call can still re-attempt after the underlying condition changes.
     """
 
-    from clio_agent.tools.mcp_discovery import ensure_namespace  # noqa: PLC0415
+    from clio_agent.gact.mcp_readiness import (  # noqa: PLC0415
+        mount_failure_reason,
+        mount_namespace_for_session,
+        namespaces_requiring_preparation,
+    )
 
     available_tools = {
         name: tool
@@ -618,19 +620,22 @@ def _resolve_declared_tools_with_on_demand_mount(
     }
     declared_specs: Mapping[str, Any] = getattr(tool_executor, "_clio_namespace_specs", None) or {}
     mount_failures: dict[str, str] = {}
-    needed_namespaces: set[str] = set()
-    for name in requested_tools:
-        if name in available_tools:
-            continue
-        namespace, sep, bare = name.partition("_")
-        if sep and bare and namespace in declared_specs:
-            needed_namespaces.add(namespace)
+    needed_namespaces = namespaces_requiring_preparation(
+        tool_executor,
+        requested_tools,
+        available_tools,
+        declared_specs,
+    )
     merged_any = False
     for namespace in sorted(needed_namespaces):
         try:
-            mounted_tools = ensure_namespace(namespace, declared_specs[namespace])
+            mounted_tools = mount_namespace_for_session(
+                tool_executor,
+                namespace,
+                declared_specs[namespace],
+            )
         except Exception as exc:  # noqa: BLE001 - typed + named, never cached (next call retries)
-            mount_failures[namespace] = _mount_failure_reason(exc)
+            mount_failures[namespace] = mount_failure_reason(exc)
             logger.warning(
                 "on_demand_mount_failed namespace=%s reason=%s error=%s",
                 namespace,
@@ -638,9 +643,7 @@ def _resolve_declared_tools_with_on_demand_mount(
                 exc,
             )
             continue
-        merger = getattr(tool_executor, "merge_namespace_tools", None)
-        if callable(merger):
-            merger(namespace, mounted_tools)
+        if mounted_tools:
             merged_any = True
     if merged_any:
         available_tools = {
@@ -658,7 +661,23 @@ def _dynamic_agent_tools(
     """Resolve the exact DSPy tools a tool-declaring dynamic agent may use."""
 
     requested_tools = [str(t).strip() for t in agent_def.tools if str(t).strip()]
-    tool_executor = _active_base_agent_tool_executor(base_agent)
+    try:
+        tool_executor = _active_base_agent_tool_executor(base_agent)
+    except Exception as exc:  # noqa: BLE001 - preserve the typed agent boundary
+        from clio_agent.gact.mcp_readiness import mount_failure_reason  # noqa: PLC0415
+
+        resolution_failures = {"workspace_fleet": mount_failure_reason(exc)}
+        logger.exception(
+            "custom_agent_tool_executor_unavailable agent=%s tools=%s",
+            agent_def.id,
+            requested_tools,
+        )
+        raise _UnsupportedSessionAgent(
+            agent_def.id,
+            reason="custom_agent_tool_executor_unavailable",
+            tools=requested_tools,
+            mount_failures=resolution_failures,
+        ) from exc
     mount_failures: dict[str, str] = {}
     if tool_executor is None or not hasattr(tool_executor, "to_dspy_tools"):
         if requested_tools:
@@ -706,70 +725,6 @@ def _dynamic_agent_tools(
             app, agent_def.id, missing_tools, mount_failures=mount_failures
         )
     return [_recording_blueprint_tool(available_tools[name]) for name in resolved_tools]
-
-
-def _recorded_load_skill_tool(agent_def: "AgentDef", skill_rt: Any) -> Any:
-    """The auto-attached ``load_skill`` tool, recorded like a declared tool.
-
-    A skill load is loop evidence: the tool_call must reach the blueprint
-    tool rows (and through them the transcript wire), not just the trace log.
-    """
-
-    return _recording_blueprint_tool(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
-
-
-def _recording_blueprint_tool(tool: Any) -> Any:
-    """Wrap a DSPy tool so blueprint ReAct predictions retain tool evidence."""
-
-    from clio_agent.gact.agents.tool_instrumentation import rebuilt_tool  # noqa: PLC0415
-    from clio_agent.gact.app import (  # noqa: PLC0415
-        _bounded_tool_call_result,
-        _tool_result_is_error,
-    )
-
-    name = str(getattr(tool, "name", "") or "").strip()
-    desc = str(getattr(tool, "desc", "") or getattr(tool, "__doc__", "") or name)
-    args = getattr(tool, "args", None) or {}
-
-    def call_tool(**kwargs: Any) -> Any:
-        started_at = time.perf_counter()
-        rows = _ctx.active_blueprint_tool_rows()
-        try:
-            result = tool(**kwargs)
-        except BaseException as exc:  # noqa: BLE001
-            if isinstance(exc, _BlueprintTerminalWorkflowState):
-                raise
-            if rows is not None:
-                rows.append(
-                    {
-                        "name": name,
-                        "args": dict(kwargs),
-                        "ok": False,
-                        "duration_ms": (time.perf_counter() - started_at) * 1000,
-                        "error": str(exc),
-                        "telemetry_source": "blueprint_react_tool_wrapper",
-                    }
-                )
-            raise
-        row_result = _bounded_tool_call_result(result)
-        if rows is not None:
-            rows.append(
-                {
-                    "name": name,
-                    "args": dict(kwargs),
-                    "ok": not _tool_result_is_error(result),
-                    "duration_ms": (time.perf_counter() - started_at) * 1000,
-                    "result": row_result,
-                    "telemetry_source": "blueprint_react_tool_wrapper",
-                }
-            )
-        return result
-
-    call_tool.__name__ = name
-    call_tool.__doc__ = desc
-    # Re-construction around a new callable: propagate the inner callable's
-    # instrumentation markers (a re-wrapped boundary tool stays exactly-once).
-    return rebuilt_tool(tool, call_tool, name=name, desc=desc, args=args)
 
 
 def _tool_names(tools: Iterable[Any]) -> list[str]:
@@ -1385,7 +1340,13 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 _declared_tools = _dynamic_agent_tools(
                     base_agent, agent_def, (_sources := cast(dict[str, str], {}))
                 )
-                _spawn_tools = build_spawn_runtime_tools(base_agent, agent_def)
+                _spawn_tools = build_spawn_runtime_tools(
+                    base_agent,
+                    agent_def,
+                    enable_skill_task_collection=_skill_runtime.skill_runtime_spawns_subagents(
+                        skill_rt
+                    ),
+                )
                 toolset_inventory.register_tool_sources(_sources, _spawn_tools, "spawn-runtime")
                 tools = [
                     *_declared_tools,
@@ -1397,6 +1358,12 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     _skill_tool = _recorded_load_skill_tool(agent_def, skill_rt)
                     toolset_inventory.register_tool_sources(_sources, [_skill_tool], "native")
                     tools.append(_skill_tool)
+                    if _skill_runtime.skill_runtime_spawns_subagents(skill_rt):
+                        _spawn_skill_tool = _recorded_spawn_skill_task_tool(agent_def, skill_rt)
+                        toolset_inventory.register_tool_sources(
+                            _sources, [_spawn_skill_tool], "spawn-runtime"
+                        )
+                        tools.append(_spawn_skill_tool)
                 # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
                 _auto_tools = build_auto_react_tools(agent_def)
                 toolset_inventory.register_tool_sources(_sources, _auto_tools, "native")

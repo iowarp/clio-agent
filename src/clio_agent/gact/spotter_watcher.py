@@ -21,18 +21,12 @@ PUSH-WAKE shape:
   arm time**. Called after a session TRANSITIONS into ``spotter-ai`` mode
   (never on an unrelated PATCH to an already-armed session — see
   :func:`sync_watcher_for_mode`).
-* :func:`wake_on_parent_activity` / :func:`on_turn_finalized` — the PUSH: real
-  activity on the PARENT session (a tool call completing, or its turn
-  finishing) pushes a short factual wake message into the watcher's session
-  via the loop-inbox machinery (:mod:`clio_agent.gact.loop_inbox`), which
-  starts a "check turn" immediately if the watcher is idle, or coalesces onto
-  an already-pending wake if one is buffered (never more than one queued wake
-  behind a running check turn). ``on_turn_finalized`` ALSO flips the standing
-  task's ``live_state`` back to ``"waiting"`` when the watcher's OWN check
-  turn ends. Because the first check turn can only ever follow REAL parent
-  activity, the workspace's MCP tool fleet is already warm by construction
-  when it runs — the cold-start race a timer-based retry would have had to
-  work around simply cannot occur.
+* :func:`wake_on_parent_activity` / :func:`on_turn_finalized` — real parent
+  activity pushes a factual wake through the loop inbox. An idle watcher starts
+  a check turn immediately; a busy watcher retains at most one coalesced wake.
+  Finalizing the watcher's own check returns its standing task to ``waiting``.
+  The first check always follows real parent activity, after workspace tools
+  have warmed, so no timer-based cold-start workaround is needed.
 * :func:`disarm_spotter_watcher` — targeted cancel of the parent's live watcher
   task(s) ONLY (never the parent's other children) via the existing targeted
   per-task cancel primitive (:func:`clio_agent.gact.turn_spawn.cancel_agent_task`),
@@ -56,6 +50,17 @@ reason=...`` / ``spotter_watcher_skip reason=...`` / ``spotter_watcher_arm_faile
 reason=...`` / ``spotter_wake_started`` / ``spotter_wake_enqueued`` /
 ``spotter_wake_coalesced reason=...``) through both the module logger and
 :mod:`clio_agent.runtime.trace`.
+
+Arming is GATED before it happens: :func:`sync_watcher_for_mode` refuses a
+transition into ``spotter-ai`` whose watcher could never execute (typed
+``spotter_watcher_arm_refused reason=...``, HTTP 422). That static
+arm-time check lives in its own owner module,
+:mod:`clio_agent.gact.spotter_arming`.
+
+The PROTECTED-PARENT half of the barrier — the clearance event this module
+signals, the typed fail-closed reasons, and the per-exchange progress wait a
+mutating tool call performs — lives in its own owner module,
+:mod:`clio_agent.gact.spotter_clearance`.
 """
 
 from __future__ import annotations
@@ -63,9 +68,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import replace
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact.agent_tasks import STATUS_RUNNING
+from clio_agent.gact.spotter_clearance import release_clearance_event, signal_clearance
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
@@ -114,12 +121,34 @@ _WAKE_COALESCED_TEXT = (
 )
 
 
+def _structural_item_identity(value: Any) -> str:
+    """Return a bounded identity copied from one typed result item.
+
+    The wake lane must distinguish successive equal-sized batches without
+    authoring a semantic summary. Prefer explicit identifier fields on
+    mapping-shaped items; scalar list entries are already their own identity.
+    """
+
+    if isinstance(value, Mapping):
+        for key in ("run_id", "task_id", "artifact_id", "verdict_id", "id"):
+            candidate = str(value.get(key) or "").strip()
+            if candidate:
+                return candidate[:80]
+        return ""
+    if isinstance(value, str):
+        return str(value).strip()[:80]
+    return ""
+
+
 def _tool_outcome_fact(structured_result: Any) -> str:
     """A short, STRUCTURAL fact drawn from a completed tool's own typed result
     (#1218 e) — never an authored/inferred summary. When the result is a
     mapping, the first list-valued entry's length is reported using that
     entry's OWN key as the noun (e.g. ``{"verdicts": [...]*5}`` -> ``"5
     verdicts reported"``), so the fact is always traceable to real wire data.
+    When the items expose structural identifiers, the first/last identifiers
+    are included. This keeps equal-sized successive batches causally distinct
+    without re-narrating or inferring anything from their contents.
     Returns ``""`` when the result carries no list-shaped evidence (a tool
     that returns scalars/None yields no fabricated count — never a guess).
     """
@@ -129,8 +158,35 @@ def _tool_outcome_fact(structured_result: Any) -> str:
     for key, value in structured_result.items():
         if isinstance(value, (list, tuple)):
             noun = str(key).replace("_", " ").strip() or "items"
-            return f"{len(value)} {noun} reported"
+            fact = f"{len(value)} {noun} reported"
+            identities = [
+                identity for item in value if (identity := _structural_item_identity(item))
+            ]
+            if identities:
+                if len(identities) == 1 or identities[0] == identities[-1]:
+                    return f"{fact}: {identities[0]}"
+                return f"{fact}: {identities[0]} through {identities[-1]}"
+            return fact
     return ""
+
+
+def on_turn_runner_idle(app: "FastAPI", session_id: str) -> None:
+    """Wake a clearance waiter after the watcher slot is actually released."""
+
+    session = app.state.sessions.get(session_id)
+    parent_id = str(getattr(session, "parent_session_id", "") or "") if session else ""
+    if not parent_id:
+        return
+    task = next(
+        (
+            item
+            for item in _live_watcher_tasks(app, parent_id)
+            if item.child_session_id == session_id
+        ),
+        None,
+    )
+    if task is not None:
+        signal_clearance(app, parent_id)
 
 
 def _wake_text(*, tool_name: str = "", tool_ok: bool = True, tool_result: Any = None) -> str:
@@ -203,7 +259,9 @@ def _live_watcher_tasks(app: "FastAPI", parent_session_id: str) -> list["AgentTa
     ]
 
 
-def _set_live_state(app: "FastAPI", task_id: str, live_state: str) -> Optional["AgentTask"]:
+def _set_live_state(
+    app: "FastAPI", task_id: str, live_state: str, *, error_reason: str = ""
+) -> Optional["AgentTask"]:
     """Flip a standing watcher task's ``live_state`` WITHOUT a status transition.
 
     ``AgentTaskRegistry.transition()`` always forces ``live_state == new_status``
@@ -220,7 +278,7 @@ def _set_live_state(app: "FastAPI", task_id: str, live_state: str) -> Optional["
     record, never a queued/terminal one.
     """
 
-    from clio_agent.gact.agent_tasks import persist_agent_task  # noqa: PLC0415
+    from clio_agent.gact.agent_tasks import ERROR_REASONS, persist_agent_task  # noqa: PLC0415
 
     registry = app.state.agent_task_registry
     current = registry.get(task_id)
@@ -231,9 +289,17 @@ def _set_live_state(app: "FastAPI", task_id: str, live_state: str) -> Optional["
             live_state,
         )
         return None
-    if current.live_state == live_state:
+    normalized_reason = error_reason if error_reason in ERROR_REASONS else ""
+    if live_state == "error" and not normalized_reason:
+        normalized_reason = "agent_error"
+    if current.live_state == live_state and current.error_reason == normalized_reason:
         return current  # already there -- idempotent, no redundant persist/publish
-    updated = replace(current, live_state=live_state)
+    updated = replace(
+        current,
+        live_state=live_state,
+        error_reason=normalized_reason,
+        updated_at=datetime.now(timezone.utc).isoformat(),
+    )
     registry.register(updated)
     persist_agent_task(app, updated)
     return updated
@@ -262,6 +328,7 @@ def _arm_watcher(app: "FastAPI", session: "Session") -> Optional["AgentTask"]:
         skip_declared_check=True,
         run_label=WATCHER_RUN_LABEL,
         session_scope_metadata={"active_agent_blueprint_id": _watcher_blueprint_id()},
+        session_approval_profile="spotter-watcher",
         start_turn=False,
     )
     try:
@@ -366,11 +433,26 @@ def sync_watcher_for_mode(
     unrelated PATCH (mode unchanged, spotter-ai before and after — e.g. a
     title rename, a pin toggle) is a true no-op: neither branch runs.
 
+    An arming transition is GATED first (:mod:`clio_agent.gact.spotter_arming`,
+    which carries the full case): the watcher blueprint's declared MCP servers
+    must statically resolve. When they do not, the transition is REFUSED with a
+    typed 422 instead of arming a watcher that cannot execute — whose only
+    downstream signal would be the clearance barrier denying every mutating tool
+    call. A transition AWAY from spotter-ai is never gated: disarm must always
+    be possible, including on a deployment that broke after arming.
+
     Args:
         app: The GACT app.
         session: The just-created-or-patched session, already persisted.
         prior_approval_mode: The session's approval_mode BEFORE this call (empty
             for a fresh create, where there is no prior mode).
+
+    Raises:
+        fastapi.HTTPException: 422 when the session transitions INTO spotter-ai
+            but its watcher could not execute. The persisted transition is
+            rolled back first (a refused create deletes the just-minted row; a
+            refused patch restores the prior mode), so a refusal never leaves a
+            half-armed session behind.
     """
 
     entered_spotter_ai = (
@@ -382,6 +464,14 @@ def sync_watcher_for_mode(
         and session.approval_mode != SPOTTER_APPROVAL_MODE
     )
     if entered_spotter_ai:
+        from clio_agent.gact.spotter_arming import (  # noqa: PLC0415
+            refuse_watcher_arming,
+            validate_watcher_arming,
+        )
+
+        refusal = validate_watcher_arming(app, session_id=session.id)
+        if refusal is not None:
+            refuse_watcher_arming(app, session, refusal, prior_approval_mode=prior_approval_mode)
         ensure_spotter_watcher(app, session)
     elif left_spotter_ai:
         disarm_spotter_watcher(app, session)
@@ -426,6 +516,9 @@ def disarm_spotter_watcher(
     from clio_agent.gact.turn_spawn import cancel_agent_task  # noqa: PLC0415
 
     cancelled = sum(1 for task in live if cancel_agent_task(app, task.task_id))
+    # Bounded retention: the parent's clearance event outlives nothing — release
+    # it here (waiters wake and fail closed typed, since no watcher is live).
+    release_clearance_event(app, session_id)
     logger.info(
         "spotter_watcher_disarmed reason=%s session=%s count=%s", reason, session_id, cancelled
     )
@@ -583,6 +676,7 @@ def _push_wake(app: "FastAPI", parent_session_id: str, task: "AgentTask", wake_t
                 child_sid,
                 task.task_id,
             )
+        signal_clearance(app, parent_session_id)
         return
 
     child_session = app.state.sessions.get(child_sid)
@@ -591,6 +685,7 @@ def _push_wake(app: "FastAPI", parent_session_id: str, task: "AgentTask", wake_t
 
     _start_check_turn_on_app_loop(app, child_sid, child_session, wake_text)
     _set_live_state(app, task.task_id, "running")
+    signal_clearance(app, parent_session_id)
     logger.info(
         "spotter_wake_started session=%s watcher=%s task=%s",
         parent_session_id,
@@ -619,12 +714,17 @@ def on_turn_finalized(app: "FastAPI", session_id: str) -> None:
     * ``session_id`` IS a watcher's OWN child session (a live standing task
       whose ``child_session_id`` matches): its CHECK turn (or a direct
       "Discuss" user turn — both are ordinary turns on this session) just
-      ended — flip ``live_state`` back to ``"waiting"``. Never a ``status``
-      transition; disarm stays the only path to terminal.
+      ended — inspect its authoritative final assistant message. A successful
+      check returns to ``"waiting"``; a typed failure remains armed but enters
+      ``live_state="error"`` and blocks protected mutations until a later
+      successful recovery check. Never a ``status`` transition; disarm stays
+      the only path to terminal.
 
-    A session is never both (the watcher's own session's ``approval_mode``
-    defaults to ``"ask"`` — it is never itself armed into spotter-ai — see
-    the self-wake guard test), so these are mutually exclusive branches.
+    A session is never both (the watcher's own session keeps the public
+    ``approval_mode="ask"`` and carries only the server-owned narrow
+    ``approval_profile="spotter-watcher"`` — it is never itself armed into
+    spotter-ai; see the self-wake guard test), so these are mutually exclusive
+    branches.
     """
 
     session = app.state.sessions.get(session_id)
@@ -642,18 +742,37 @@ def on_turn_finalized(app: "FastAPI", session_id: str) -> None:
     )
     if task is None:
         return
-    updated = _set_live_state(app, task.task_id, "waiting")
+    messages = app.state.messages.get(session_id, []) or []
+    user_messages = [message for message in messages if getattr(message, "role", "") == "user"]
+    latest_turn_id = (
+        str(getattr(user_messages[-1], "turn_id", "") or getattr(user_messages[-1], "id", "") or "")
+        if user_messages
+        else ""
+    )
+    finals = [
+        message
+        for message in messages
+        if getattr(message, "role", "") == "assistant"
+        and not (getattr(message, "metadata", {}) or {}).get("live")
+        and (not latest_turn_id or str(getattr(message, "turn_id", "") or "") == latest_turn_id)
+    ]
+    final = finals[-1] if finals else None
+    error_info = getattr(final, "error_info", None) if final is not None else None
+    if latest_turn_id and (final is None or error_info is not None):
+        from clio_agent.gact.turn_spawn_failures import (  # noqa: PLC0415
+            child_task_error_reason,
+        )
+
+        reason = child_task_error_reason(error_info)
+        updated = _set_live_state(app, task.task_id, "error", error_reason=reason)
+        event_name = "spotter_watcher_check_turn_failed"
+    else:
+        reason = ""
+        updated = _set_live_state(app, task.task_id, "waiting")
+        event_name = "spotter_watcher_check_turn_ended"
     if updated is not None:
-        logger.info(
-            "spotter_watcher_check_turn_ended session=%s watcher=%s task=%s",
-            parent_id,
-            session_id,
-            task.task_id,
-        )
-        trace.event(
-            "SPOTTER",
-            "spotter_watcher_check_turn_ended session=%s watcher=%s task=%s",
-            parent_id,
-            session_id,
-            task.task_id,
-        )
+        signal_clearance(app, parent_id)
+        detail = f" reason={reason}" if reason else ""
+        message = f"{event_name}{detail} session=%s watcher=%s task=%s"
+        logger.info(message, parent_id, session_id, task.task_id)
+        trace.event("SPOTTER", message, parent_id, session_id, task.task_id)

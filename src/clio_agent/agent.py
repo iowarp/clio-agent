@@ -36,6 +36,7 @@ from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.retrieval import ContextRetriever
 from clio_agent.arc.schema import Conversation
 from clio_agent.arc.storage import make_arc_store
+from clio_agent.blueprint_server_resolution import discover_blueprint_servers
 from clio_agent.config import (
     LMProviderConfig,
     create_chat_adapter,
@@ -303,23 +304,12 @@ class ClioAgent(dspy.Module):
         self._planner_lm = create_planner_lm(provider_config)
         self._dspy_adapter = create_chat_adapter(provider_config)
 
-    def _discover_pack_servers(self, blueprint_id: str = "") -> dict[str, dict[str, Any]]:
-        """Return declared ``mcp_servers`` for ONE ACTIVATED blueprint (#1232 pt 1).
+    def _discover_pack_servers(
+        self, blueprint_id: str = "", *, cwd: str | None = None
+    ) -> dict[str, dict[str, Any]]:
+        """Return declared MCP servers for one activated blueprint."""
 
-        Reads a SINGLE blueprint's ``AGENT.md`` frontmatter ``mcp_servers`` map —
-        the blueprint currently activated for the calling session/workspace (see
-        ``tools.execution.tool_blueprint_context``, bound per turn by
-        ``gact.runtime.globals._tool_session_context``). ``blueprint_id`` empty
-        (the boot-time default gateway, or a session with no blueprint activated)
-        returns ``{}`` — an INSTALLED-but-inactive blueprint's declared servers
-        never mount. Discovery failures degrade to "no pack servers" (pure
-        reasoning / built-ins only); path-activated packs decide outright via
-        ``gact.blueprint_activation`` (``None`` -> installed discovery).
-        """
-
-        from clio_agent.gact.blueprint_activation import blueprint_mcp_servers  # noqa: PLC0415
-
-        return blueprint_mcp_servers(blueprint_id, verbose=self.verbose)
+        return discover_blueprint_servers(blueprint_id, cwd=cwd, verbose=self.verbose)
 
     def _build_tool_gateway(
         self, *, cwd: str | None = None, set_catalog: bool = False, blueprint_id: str = ""
@@ -347,7 +337,11 @@ class ClioAgent(dspy.Module):
                 always passes ``""`` — see ``__init__``).
         """
 
-        pack_servers = self._discover_pack_servers(blueprint_id)
+        # Workspace-scoped blueprints live under ``<workspace>/.clio``. Discovery
+        # must therefore use the same cwd as the per-workspace gateway; using the
+        # server process cwd silently found no blueprint, minted a toolless fleet,
+        # and rejected every declared child before inference.
+        pack_servers = self._discover_pack_servers(blueprint_id, cwd=cwd)
         specs = load_mcp_servers(pack_servers=pack_servers)
         # #1113: wire the receive-loop elicitation handler onto every declared-server
         # backend so a mid-tool-call elicitation reaches the HITL surface. The hook is

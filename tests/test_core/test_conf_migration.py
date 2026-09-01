@@ -118,10 +118,10 @@ class TestReasoningModelCapability:
     explicit file/env value forces the flag; absence falls through to detection."""
 
     @staticmethod
-    def _cfg(is_reasoning=False):
+    def _cfg(is_reasoning=False, provider="openai"):
         from types import SimpleNamespace
 
-        return SimpleNamespace(provider="openai", model="gpt-4o", is_reasoning=is_reasoning)
+        return SimpleNamespace(provider=provider, model="gpt-4o", is_reasoning=is_reasoning)
 
     def test_default_falls_through_to_detection(self, monkeypatch):
         from clio_agent.config import _reasoning_model_capability
@@ -149,10 +149,15 @@ class TestParseRetryAttempts:
     """``limits.lm_parse_retry_attempts`` / ``CLIO_LM_PARSE_RETRY_ATTEMPTS``."""
 
     @staticmethod
-    def _cfg(is_reasoning=False):
+    def _cfg(is_reasoning=False, provider="openai"):
         from types import SimpleNamespace
 
-        return SimpleNamespace(provider="openai", model="gpt-4o", is_reasoning=is_reasoning)
+        return SimpleNamespace(
+            provider=provider,
+            model="gpt-4o",
+            is_reasoning=is_reasoning,
+            parse_retry_capability="single_attempt" if provider == "codex" else "bounded",
+        )
 
     def test_default(self, monkeypatch):
         from clio_agent.config import _parse_retry_attempts
@@ -160,6 +165,7 @@ class TestParseRetryAttempts:
         monkeypatch.delenv("CLIO_LM_PARSE_RETRY_ATTEMPTS", raising=False)
         assert _parse_retry_attempts(self._cfg(is_reasoning=False)) == 0
         assert _parse_retry_attempts(self._cfg(is_reasoning=True)) == 2
+        assert _parse_retry_attempts(self._cfg(is_reasoning=True, provider="codex")) == 0
 
     def test_env(self, monkeypatch):
         from clio_agent.config import _parse_retry_attempts

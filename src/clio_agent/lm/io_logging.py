@@ -362,6 +362,8 @@ def _io_logging_lm_cls() -> Any:
             dspy = _dspy()
 
             async def _drive() -> Any:
+                send: Any
+                recv: Any
                 send, recv = _anyio.create_memory_object_stream(float("inf"))
                 holder: dict[str, Any] = {}
 

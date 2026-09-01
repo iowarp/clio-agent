@@ -14,11 +14,16 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from clio_agent.agent import ClioAgent
 from clio_agent.gact.agent_blueprints import AgentBlueprintDefinition
+from clio_agent.gact.blueprint_activation import (
+    blueprint_resolution_reasons,
+    resolve_active_blueprint_servers,
+)
 from clio_agent.tools.execution import (
     get_active_tool_blueprint_id,
     get_active_tool_blueprint_path,
@@ -52,12 +57,21 @@ def agent():
 
 
 class TestDiscoverPackServers:
+    @staticmethod
+    def _resolution_context() -> tuple[SimpleNamespace, Any, Any, Any]:
+        from clio_agent.gact import context as gact_context
+
+        app = SimpleNamespace(state=SimpleNamespace(sessions={}))
+        app_token = gact_context.set_app(app)
+        session_token = gact_context.set_session_id("session-1")
+        return app, gact_context, app_token, session_token
+
     def test_empty_blueprint_id_returns_no_pack_servers(
         self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """SABOTAGE: revert to unconditional discovery and this returns the heavy pack too."""
 
-        def _fake_discover():
+        def _fake_discover(**_kwargs: object):
             return [_blueprint("heavy-pack", {"heavy": "uvx heavy-science-mcp serve"})]
 
         monkeypatch.setattr(
@@ -69,7 +83,7 @@ class TestDiscoverPackServers:
     def test_active_blueprint_id_returns_only_that_blueprints_servers(
         self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def _fake_discover():
+        def _fake_discover(**_kwargs: object):
             return [
                 _blueprint("pack-a", {"a-server": "uvx a-mcp serve"}),
                 _blueprint("pack-b", {"b-server": "uvx b-mcp serve"}),
@@ -119,14 +133,169 @@ class TestDiscoverPackServers:
         )
         assert agent._discover_pack_servers("not-installed") == {}
 
+    def test_workspace_blueprint_is_discovered_from_gateway_cwd(
+        self, agent: ClioAgent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The activated workspace copy, not the server process cwd, owns MCPs."""
+
+        root = tmp_path / ".clio" / "agent-blueprints" / "workspace-pack"
+        root.mkdir(parents=True)
+        (root / "AGENT.md").write_text(
+            "---\nid: workspace-pack\ntitle: Workspace\n"
+            "mcp_servers:\n  geo: clio-kit mcp-server geo\n---\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "clio_agent.gact.agent_blueprint_refresh.ensure_default_registry_bootstrap",
+            lambda **_kwargs: "",
+        )
+
+        servers = agent._discover_pack_servers("workspace-pack", cwd=str(tmp_path))
+
+        assert servers == {"workspace-pack": {"geo": "clio-kit mcp-server geo"}}
+
     def test_discovery_failure_degrades_to_no_pack_servers(
         self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def _boom():
+        def _boom(**_kwargs: object):
             raise RuntimeError("discovery unavailable")
 
         monkeypatch.setattr("clio_agent.gact.agent_blueprints.discover_agent_blueprints", _boom)
-        assert agent._discover_pack_servers("pack-a") == {}
+        app = SimpleNamespace(state=SimpleNamespace(sessions={}))
+        from clio_agent.gact import context as gact_context
+
+        app_token = gact_context.set_app(app)
+        session_token = gact_context.set_session_id("session-1")
+        try:
+            assert agent._discover_pack_servers("pack-a") == {}
+        finally:
+            gact_context.reset(session_token)
+            gact_context.reset(app_token)
+
+        assert blueprint_resolution_reasons(app, "session-1") == [
+            {
+                "reason": "installed_blueprint_discovery_failed",
+                "category": "capability_unavailable",
+                "description": "Installed Agent Blueprint discovery failed.",
+                "blueprint_id": "pack-a",
+            }
+        ]
+
+    def test_active_blueprint_path_lookup_failure_is_typed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _boom(*_args: object) -> None:
+            raise RuntimeError("session path unavailable")
+
+        monkeypatch.setattr(
+            "clio_agent.gact.agents.resolution._runtime_active_agent_blueprint_path",
+            _boom,
+        )
+        app, gact_context, app_token, session_token = self._resolution_context()
+        try:
+            assert resolve_active_blueprint_servers("pack-a") is None
+        finally:
+            gact_context.reset(session_token)
+            gact_context.reset(app_token)
+
+        assert blueprint_resolution_reasons(app, "session-1")[0]["reason"] == (
+            "active_blueprint_path_lookup_failed"
+        )
+
+    def test_active_blueprint_path_parse_failure_is_typed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        invalid = tmp_path / "AGENT.md"
+        invalid.write_text("---\nid: pack-a\n---\n", encoding="utf-8")
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise ValueError("invalid blueprint")
+
+        monkeypatch.setattr(
+            "clio_agent.gact.agent_blueprints.parse_agent_blueprint_root",
+            _boom,
+        )
+        app, gact_context, app_token, session_token = self._resolution_context()
+        try:
+            with tool_blueprint_context("pack-a", invalid):
+                assert resolve_active_blueprint_servers("pack-a") == {}
+        finally:
+            gact_context.reset(session_token)
+            gact_context.reset(app_token)
+
+        assert blueprint_resolution_reasons(app, "session-1")[0]["reason"] == (
+            "active_blueprint_path_parse_failed"
+        )
+
+    def test_active_blueprint_identity_mismatch_is_typed(self, tmp_path: Path) -> None:
+        blueprint = tmp_path / "AGENT.md"
+        blueprint.write_text("---\nid: pack-b\ntitle: Pack B\n---\n", encoding="utf-8")
+        app, gact_context, app_token, session_token = self._resolution_context()
+        try:
+            with tool_blueprint_context("pack-a", blueprint):
+                assert resolve_active_blueprint_servers("pack-a") == {}
+        finally:
+            gact_context.reset(session_token)
+            gact_context.reset(app_token)
+
+        assert blueprint_resolution_reasons(app, "session-1")[0]["reason"] == (
+            "active_blueprint_identity_mismatch"
+        )
+
+    def test_disabled_active_blueprint_is_typed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        blueprint = tmp_path / "AGENT.md"
+        blueprint.write_text("---\nid: pack-a\ntitle: Pack A\n---\n", encoding="utf-8")
+        disabled = _blueprint("pack-a", {})
+        disabled.enabled = False
+        monkeypatch.setattr(
+            "clio_agent.gact.agent_blueprints.parse_agent_blueprint_root",
+            lambda *_args, **_kwargs: disabled,
+        )
+        app, gact_context, app_token, session_token = self._resolution_context()
+        try:
+            with tool_blueprint_context("pack-a", blueprint):
+                assert resolve_active_blueprint_servers("pack-a") == {}
+        finally:
+            gact_context.reset(session_token)
+            gact_context.reset(app_token)
+
+        assert blueprint_resolution_reasons(app, "session-1")[0]["reason"] == (
+            "active_blueprint_disabled"
+        )
+
+    def test_explicit_session_path_precedes_cwd_discovery(
+        self, agent: ClioAgent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The explicit session activation is authoritative over a cwd copy."""
+
+        explicit_root = tmp_path / "explicit"
+        explicit_root.mkdir()
+        explicit_blueprint = explicit_root / "AGENT.md"
+        explicit_blueprint.write_text(
+            "---\nid: workspace-pack\ntitle: Explicit\n"
+            "mcp_servers:\n  explicit: clio-kit mcp-server explicit\n---\n",
+            encoding="utf-8",
+        )
+        cwd_root = tmp_path / "workspace" / ".clio" / "agent-blueprints" / "workspace-pack"
+        cwd_root.mkdir(parents=True)
+        (cwd_root / "AGENT.md").write_text(
+            "---\nid: workspace-pack\ntitle: Workspace\n"
+            "mcp_servers:\n  cwd: clio-kit mcp-server cwd\n---\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "clio_agent.gact.agent_blueprint_refresh.ensure_default_registry_bootstrap",
+            lambda **_kwargs: "",
+        )
+
+        with tool_blueprint_context("workspace-pack", explicit_blueprint):
+            servers = agent._discover_pack_servers(
+                "workspace-pack", cwd=str(tmp_path / "workspace")
+            )
+
+        assert servers == {"workspace-pack": {"explicit": "clio-kit mcp-server explicit"}}
 
     def test_path_activated_blueprint_exposes_its_declared_server(
         self, agent: ClioAgent, tmp_path: Path
@@ -214,7 +383,7 @@ class TestBootGatewayNeverMountsPackServers:
         """The acceptance test verbatim: an installed blueprint declaring a
         server does NOT appear in the boot gateway."""
 
-        def _fake_discover():
+        def _fake_discover(**_kwargs: object):
             return [_blueprint("heavy-pack", {"heavy": "uvx heavy-science-mcp serve"})]
 
         monkeypatch.setattr(
@@ -286,7 +455,7 @@ class TestActiveToolExecutorBlueprintScoping:
         executor's namespace-spec map (the on-demand-mount seam) must still
         carry both declared namespaces even though neither was ever listed."""
 
-        def _fake_discover():
+        def _fake_discover(**_kwargs: object):
             return [
                 _blueprint("pack-a", {"geo": "uvx geo-mcp serve", "pandas": "uvx pandas-mcp serve"})
             ]
@@ -323,7 +492,7 @@ class TestActiveToolExecutorBlueprintScoping:
     ) -> None:
         """Activating a blueprint in a session mounts it (per-workspace)."""
 
-        def _fake_discover():
+        def _fake_discover(**_kwargs: object):
             return [
                 _blueprint("pack-a", {"a-server": "uvx a-mcp serve"}),
                 _blueprint("pack-b", {"b-server": "uvx b-mcp serve"}),
@@ -360,7 +529,7 @@ class TestActiveToolExecutorBlueprintScoping:
         close it — #1232's close-and-rebuild killed the other session's live
         turn (``SyncMCPToolExecutor is closed`` mid-campaign, 2026-08-21)."""
 
-        def _fake_discover():
+        def _fake_discover(**_kwargs: object):
             return [
                 _blueprint("pack-a", {"a-server": "uvx a-mcp serve"}),
                 _blueprint("pack-b", {"b-server": "uvx b-mcp serve"}),
@@ -405,7 +574,7 @@ class TestActiveToolExecutorBlueprintScoping:
         """``blueprint_id == \"\"`` declares no servers: the resident fleet is
         reused as-is (reachability is the agent build's ACL, not residency)."""
 
-        def _fake_discover():
+        def _fake_discover(**_kwargs: object):
             return [_blueprint("pack-a", {"a-server": "uvx a-mcp serve"})]
 
         monkeypatch.setattr(
@@ -435,7 +604,7 @@ class TestActiveToolExecutorBlueprintScoping:
         the first mounted spec wins; the conflict is a typed report entry,
         never a silent override of a live namespace."""
 
-        def _fake_discover():
+        def _fake_discover(**_kwargs: object):
             return [
                 _blueprint("pack-a", {"shared": "uvx a-mcp serve"}),
                 _blueprint("pack-b", {"shared": "uvx b-mcp serve", "b-only": "uvx b2 serve"}),
@@ -473,7 +642,7 @@ class TestActiveToolExecutorBlueprintScoping:
         reaper's idle pass. Pre-fix this closed inline (no busy/lease check),
         killing the in-flight campaign turn."""
 
-        def _fake_discover():
+        def _fake_discover(**_kwargs: object):
             return [_blueprint("pack-a", {"a-server": "uvx a-mcp serve"})]
 
         monkeypatch.setattr(
@@ -510,7 +679,7 @@ class TestActiveToolExecutorBlueprintScoping:
         resident one kept serving a toolless snapshot, so every custom-agent
         ACL bricked custom_agent_tools_unavailable with federation=present."""
 
-        def _fake_discover():
+        def _fake_discover(**_kwargs: object):
             return [_blueprint("pack-a", {"a-server": "uvx a-mcp serve"})]
 
         monkeypatch.setattr(

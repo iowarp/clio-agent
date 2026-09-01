@@ -309,6 +309,89 @@ def test_result_to_text_still_prefers_json_for_encodable_values() -> None:
     assert _result_to_text([{"a": 1}, {"b": 2}]) == json.dumps([{"a": 1}, {"b": 2}])
 
 
+def test_result_to_text_bounds_only_the_model_lane_with_typed_head_and_tail() -> None:
+    """A huge tabular result cannot multiply across every later ReAct prompt."""
+
+    from clio_agent.tools.mcp_executor import (
+        MODEL_TOOL_RESULT_TRUNCATED_REASON,
+        _result_to_text,
+        model_tool_result_chars,
+    )
+
+    payload = {
+        "summary": {"rows": 1101, "status": "success"},
+        "rows": [f"row-{index:05d}-{'x' * 80}" for index in range(1101)],
+        "completion": {"output_file": "earthscope_stations_clean.csv"},
+    }
+
+    text = _result_to_text(payload)
+    bounded = json.loads(text)
+
+    assert len(text) <= model_tool_result_chars()
+    assert bounded["_clio"]["reason"] == MODEL_TOOL_RESULT_TRUNCATED_REASON
+    assert bounded["_clio"]["original_chars"] > model_tool_result_chars()
+    assert '"rows": 1101' in bounded["head"]
+    assert "earthscope_stations_clean.csv" in bounded["tail"]
+
+
+def test_result_to_text_bounds_a_quote_dense_tabular_result() -> None:
+    """The head/tail slices are re-escaped by json.dumps AFTER being measured.
+
+    A row-dict payload (the station/geocode shape this bound was built for)
+    carries ~18% quote density, so 11,360 sliced chars gained ~2,000 escape
+    characters and the "bounded" result overran the declared cap. The low-quote
+    fixture above lands just under the threshold and cannot see it.
+    """
+
+    from clio_agent.tools.mcp_executor import _result_to_text, model_tool_result_chars
+
+    payload = {
+        "summary": {"rows": 4000, "status": "success"},
+        "rows": [
+            {"net": "IU", "sta": f"ANM{index:04d}", "lat": 34.9459, "lon": -106.4572}
+            for index in range(4000)
+        ],
+        "completion": {"output_file": "earthscope_stations_clean.csv"},
+    }
+
+    text = _result_to_text(payload)
+    bounded = json.loads(text)
+
+    assert len(text) <= model_tool_result_chars()
+    # The stamped head/tail counts describe the slices actually returned.
+    assert bounded["_clio"]["head_chars"] == len(bounded["head"])
+    assert bounded["_clio"]["tail_chars"] == len(bounded["tail"])
+    assert bounded["_clio"]["original_chars"] == len(json.dumps(payload))
+
+
+def test_result_to_text_bounds_an_escape_dense_result() -> None:
+    """Control characters expand 6:1 (\\u0007), the worst escaping case."""
+
+    from clio_agent.tools.mcp_executor import _result_to_text, model_tool_result_chars
+
+    text = _result_to_text("\x07" * 40_000)
+
+    assert len(text) <= model_tool_result_chars()
+    assert len(json.loads(text)["head"]) > 0
+
+
+def test_result_to_text_never_returns_more_than_it_was_given() -> None:
+    """Just over the cap at high escape density, truncation used to INFLATE."""
+
+    from clio_agent.tools.mcp_executor import _result_to_text, model_tool_result_chars
+
+    source = '"' * (model_tool_result_chars() + 1)
+    text = _result_to_text(source)
+
+    assert len(text) <= model_tool_result_chars()
+
+
+def test_result_to_text_leaves_small_string_results_verbatim() -> None:
+    from clio_agent.tools.mcp_executor import _result_to_text
+
+    assert _result_to_text("complete: 12 rows") == "complete: 12 rows"
+
+
 def test_result_to_text_pydantic_model_serializes_to_json_without_repr_fallback(
     caplog,
 ) -> None:

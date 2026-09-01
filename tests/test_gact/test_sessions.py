@@ -7,6 +7,8 @@ and resilience to corrupted on-disk state.
 from __future__ import annotations
 
 import json
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -36,6 +38,7 @@ def test_create_returns_session_with_id_and_timestamps(mem_store: SessionStore) 
     assert sess.status == "idle"
     assert sess.created_at  # non-empty
     assert sess.updated_at == sess.created_at  # matches on creation
+    assert sess.last_interaction_at == sess.created_at
     assert sess.message_count == 0
     assert sess.metadata == {}
     assert sess.agent == {"id": "main"}
@@ -100,6 +103,7 @@ def test_update_patches_fields_and_bumps_updated_at(
 ) -> None:
     sess = mem_store.create(workspace_id="ws", title="old")
     original_updated = sess.updated_at
+    original_interaction = sess.last_interaction_at
 
     patched = mem_store.update(
         sess.id,
@@ -118,6 +122,40 @@ def test_update_patches_fields_and_bumps_updated_at(
     # updated_at at least not earlier than creation (clock could be
     # equal if called in the same second — allow equality).
     assert patched.updated_at >= original_updated
+    assert patched.last_interaction_at == original_interaction
+
+    interacted = mem_store.update(sess.id, message_count=2)
+    assert interacted is not None
+    assert interacted.last_interaction_at == interacted.updated_at
+    assert interacted.last_interaction_at > original_interaction
+
+
+def test_legacy_session_recovers_last_interaction_from_message_ledger(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    messages_path = tmp_path / "messages"
+    messages_path.mkdir()
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "sess_legacy": {
+                    "id": "sess_legacy",
+                    "workspace_id": "ws",
+                    "title": "legacy",
+                    "created_at": "2026-08-01T00:00:00+00:00",
+                    "updated_at": "2026-08-23T03:00:00+00:00",
+                }
+            }
+        )
+    )
+    ledger = messages_path / "sess_legacy.json"
+    ledger.write_text("[]")
+    observed = datetime(2026, 8, 22, 18, 21, tzinfo=timezone.utc).timestamp()
+    os.utime(ledger, (observed, observed))
+
+    session = SessionStore(path=sessions_path).get("sess_legacy")
+
+    assert session is not None
+    assert session.last_interaction_at == "2026-08-22T18:21:00+00:00"
 
 
 def test_update_unknown_returns_none(mem_store: SessionStore) -> None:

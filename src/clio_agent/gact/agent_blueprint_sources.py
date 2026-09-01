@@ -14,6 +14,17 @@ gained self-healing:
   remote (``host:path``) must never be deleted by a read (review 2026-08-13).
 * **Atomic persistence** — the ledger is written via tmp + ``os.replace`` so a
   crash mid-write can never truncate it to zero sources.
+* **One writer at a time** — every read-modify-write of the ledger (the boot
+  recorder AND the routes) goes through :func:`upsert_agent_blueprint_source` /
+  :func:`delete_agent_blueprint_source`, which hold ``_SOURCE_REGISTRY_LOCK``
+  across load+save. Discovery runs on turn executor threads while the routes run
+  on the event loop, so an unlocked read-modify-write loses a just-added row.
+
+Installing a source is a bulk operation, so it also owns the two guards that
+keep it from undoing durable user decisions:
+:func:`source_install_skip_ids` (uninstall tombstones + locally edited installs)
+and :func:`source_install_cwd` (an unresolvable workspace is refused, never
+silently redirected at the server's own working directory).
 """
 
 from __future__ import annotations
@@ -23,11 +34,15 @@ import hashlib
 import json
 import logging
 import os
+import subprocess
 import tempfile
+import threading
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, Mapping
 
 logger = logging.getLogger(__name__)
+_SOURCE_REGISTRY_LOCK = threading.Lock()
 
 
 def sources_path() -> Path:
@@ -43,6 +58,84 @@ def source_registry_id(source: str, ref: str = "") -> str:
 
     digest = hashlib.sha256(f"{source}\n{ref}".encode("utf-8")).hexdigest()[:12]
     return f"src_{digest}"
+
+
+def blueprint_source_clone_timeout_s() -> float:
+    """Seconds the temporary ``git clone`` of a remote source may take.
+
+    Config: ``gact.blueprint_source.clone_timeout_s`` /
+    ``CLIO_BLUEPRINT_SOURCE_CLONE_TIMEOUT_S`` (default 30.0). This bounds a
+    single shallow clone during a source refresh; raise it for a large
+    marketplace repo or a slow link, lower it to keep the refresh snappy.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "gact.blueprint_source.clone_timeout_s",
+        env="CLIO_BLUEPRINT_SOURCE_CLONE_TIMEOUT_S",
+        default=30.0,
+        cast=conf.as_float,
+    )
+
+
+def refresh_agent_blueprint_source(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Inspect a source, cloning remotes temporarily, and list its blueprints."""
+
+    from clio_agent.gact.routes.blueprint_candidates import (  # noqa: PLC0415
+        agent_blueprint_candidates,
+    )
+
+    source = str(row.get("source") or "").strip()
+    ref = str(row.get("ref") or "").strip()
+    refreshed = {**dict(row), "ref": ref, "available_blueprints": []}
+    if not source:
+        return {**refreshed, "status": "error", "error": "source is empty"}
+    source_path = Path(source).expanduser()
+    refreshed.update(
+        source_kind="path" if source_path.exists() else "git",
+        status="ready",
+        error="",
+    )
+    try:
+        if source_path.exists():
+            try:
+                refreshed["commit"] = subprocess.check_output(
+                    ["git", "-C", str(source_path), "rev-parse", "HEAD"],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                ).strip()
+            except Exception:  # noqa: BLE001 - commit is optional display metadata
+                refreshed["commit"] = ""
+            refreshed["available_blueprints"] = agent_blueprint_candidates(source_path)
+            return refreshed
+        with tempfile.TemporaryDirectory(prefix="clio-agent-blueprint-source-") as tmp:
+            clone_target = Path(tmp) / "repo"
+            command = ["git", "clone", "--depth", "1"]
+            if ref:
+                command.extend(["--branch", ref])
+            command.extend([source, str(clone_target)])
+            subprocess.run(
+                command,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=blueprint_source_clone_timeout_s(),
+                env={
+                    **os.environ,
+                    "GIT_TERMINAL_PROMPT": "0",
+                    "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
+                },
+            )
+            refreshed["commit"] = subprocess.check_output(
+                ["git", "-C", str(clone_target), "rev-parse", "HEAD"], text=True
+            ).strip()
+            refreshed["available_blueprints"] = agent_blueprint_candidates(clone_target)
+            return refreshed
+    except Exception as exc:  # noqa: BLE001 - source diagnostics belong on the source row
+        refreshed.update(status="error", error=str(exc))
+        return refreshed
 
 
 def _is_prunable_dead_fixture(source: str) -> bool:
@@ -107,9 +200,7 @@ def save_agent_blueprint_sources(rows: list[dict[str, Any]]) -> None:
     path = sources_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps({"sources": rows}, indent=2, sort_keys=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=path.name + ".", suffix=".tmp", dir=str(path.parent)
-    )
+    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(payload)
@@ -118,3 +209,284 @@ def save_agent_blueprint_sources(rows: list[dict[str, Any]]) -> None:
         with contextlib.suppress(OSError):
             os.unlink(tmp_name)
         raise
+
+
+def upsert_agent_blueprint_source(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Replace (or append) one source row under the shared ledger lock.
+
+    Args:
+        row: The full source row to persist; matched against existing rows by ``id``.
+
+    Returns:
+        The persisted row.
+    """
+
+    persisted = dict(row)
+    source_id = persisted.get("id")
+    with _SOURCE_REGISTRY_LOCK:
+        rows = [item for item in load_agent_blueprint_sources() if item.get("id") != source_id]
+        rows.append(persisted)
+        save_agent_blueprint_sources(rows)
+    return persisted
+
+
+def delete_agent_blueprint_source(source_id: str) -> bool:
+    """Remove one source row under the shared ledger lock.
+
+    Args:
+        source_id: The ``src_*`` id to remove.
+
+    Returns:
+        ``True`` when a row was removed, ``False`` when the id was not registered.
+    """
+
+    with _SOURCE_REGISTRY_LOCK:
+        rows = load_agent_blueprint_sources()
+        kept = [row for row in rows if row.get("id") != source_id]
+        if len(kept) == len(rows):
+            return False
+        save_agent_blueprint_sources(kept)
+    return True
+
+
+def source_install_cwd(app: Any, *, scope: str, workspace_id: str) -> Path:
+    """Resolve the install directory for a source registration.
+
+    A workspace-scoped install writes ``<cwd>/.clio/agent-blueprints/<id>`` and
+    destroys whatever sits there, so an unresolvable workspace must be refused
+    rather than substituted with the server process's own working directory
+    (which is commonly the default workspace root).
+
+    Args:
+        app: The FastAPI app holding the workspace store.
+        scope: ``global`` or ``workspace``.
+        workspace_id: The workspace the caller named (empty for global).
+
+    Returns:
+        The directory the install should resolve workspace scope against.
+
+    Raises:
+        HTTPException: 404 when ``scope`` is ``workspace`` and the workspace does
+            not resolve to a root path.
+    """
+
+    from fastapi import HTTPException  # noqa: PLC0415 - route-facing refusal only
+
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415 - avoid an import cycle
+        _runtime_workspace_catalog_cwd,
+    )
+    from clio_agent.gact.types import ErrorEnvelope, ErrorInfo  # noqa: PLC0415
+
+    cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id)
+    if scope != "workspace":
+        return cwd or Path.cwd()
+    if cwd is None:
+        raise HTTPException(
+            status_code=404,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="workspace_unresolved",
+                    message=(
+                        "workspace-scoped agent blueprint sources require a workspace with a "
+                        f"root path: {workspace_id or '(none)'}"
+                    ),
+                    details={"workspace_id": workspace_id, "scope": scope},
+                    recoverable=True,
+                )
+            ).model_dump(exclude_none=True),
+        )
+    return cwd
+
+
+def source_install_skip_ids(*, scope: str, cwd: Path, home: Path | None = None) -> dict[str, str]:
+    """Blueprint ids a bulk source install must NOT overwrite, with typed reasons.
+
+    Two durable user decisions outrank a marketplace re-install:
+
+    * ``user_uninstalled`` — the id sits in the uninstall tombstone ledger, so
+      reinstalling it would silently undo an explicit delete;
+    * ``local_edits_present`` — the installed tree no longer matches the checksum
+      recorded at install time (the blueprint file-write route edited it), so the
+      reinstall's ``rmtree``+``copytree`` would discard the user's edits.
+
+    Args:
+        scope: Install scope of the pending source installation.
+        cwd: Workspace directory used to resolve the workspace install root.
+        home: Per-user home (test DI; production ``Path.home()``).
+
+    Returns:
+        Mapping of blueprint id to its typed skip reason.
+    """
+
+    from clio_agent.gact.agent_blueprint_refresh import (  # noqa: PLC0415 - avoid a cycle
+        read_uninstalled_tombstones,
+    )
+    from clio_agent.gact.agent_blueprints import (  # noqa: PLC0415 - avoid a cycle
+        _install_root,
+        _tree_checksum,
+        read_install_metadata,
+    )
+
+    home = home or Path.home()
+    skip: dict[str, str] = {}
+    if scope == "global":
+        for blueprint_id in read_uninstalled_tombstones(home=home, cwd=cwd):
+            skip[blueprint_id] = "user_uninstalled"
+    try:
+        install_root = _install_root(home=home, cwd=cwd, scope=scope)
+        installed_roots = sorted(install_root.iterdir()) if install_root.is_dir() else []
+    except (OSError, ValueError) as exc:
+        logger.warning("blueprint_local_edit_scan_failed scope=%s error=%r", scope, exc)
+        return skip
+    for installed in installed_roots:
+        if not installed.is_dir() or not installed.joinpath("AGENT.md").exists():
+            continue
+        recorded = str(read_install_metadata(installed).get("checksum") or "").strip()
+        if recorded and recorded != _tree_checksum(installed):
+            skip.setdefault(installed.name, "local_edits_present")
+    return skip
+
+
+def record_default_agent_blueprint_source(
+    *,
+    source: str,
+    ref: str,
+    pinned_commit: str,
+    install_root: Path,
+) -> dict[str, Any]:
+    """Persist the bundled marketplace alongside its installed blueprints.
+
+    The default marketplace is installed automatically, so it must also be
+    visible through the same source ledger as user-added marketplaces. Build
+    the catalog from the installed, source-matching snapshots instead of
+    cloning the remote a second time during first-run bootstrap.
+
+    Discovery calls this on every invocation (including per-turn agent
+    resolution), so the ledger is rewritten only when the recorded row actually
+    changes — ``updated_at`` alone is not a change.
+    """
+
+    from clio_agent.gact.agent_blueprints import read_install_metadata  # noqa: PLC0415
+    from clio_agent.gact.routes.blueprint_candidates import (  # noqa: PLC0415
+        agent_blueprint_candidates,
+    )
+
+    source = str(source).strip()
+    now = datetime.now(UTC).isoformat()
+    available: list[dict[str, Any]] = []
+    commit = ""
+    source_kind = "path" if Path(source).expanduser().exists() else "git"
+    for candidate in sorted(install_root.iterdir()) if install_root.is_dir() else ():
+        if not candidate.is_dir() or not candidate.joinpath("AGENT.md").exists():
+            continue
+        metadata = read_install_metadata(candidate)
+        if str(metadata.get("source") or "").strip() != source:
+            continue
+        available.extend(agent_blueprint_candidates(candidate))
+        commit = commit or str(metadata.get("commit") or "").strip()
+        source_kind = str(metadata.get("source_kind") or source_kind).strip() or source_kind
+
+    source_id = source_registry_id(source, ref)
+    with _SOURCE_REGISTRY_LOCK:
+        rows = load_agent_blueprint_sources()
+        existing = next((row for row in rows if row.get("id") == source_id), {})
+        row = {
+            **existing,
+            "id": source_id,
+            "name": "CLIO Agent Marketplace",
+            "source": source,
+            "ref": ref,
+            "commit": commit,
+            "pinned_commit": pinned_commit,
+            "source_kind": source_kind,
+            "status": "ready" if available else "degraded",
+            "error": "" if available else "installed marketplace exposed no blueprints",
+            "added_at": str(existing.get("added_at") or now),
+            "updated_at": now,
+            "available_blueprints": available,
+            "install_scope": "global",
+            "is_default": True,
+        }
+        if existing and {**existing, "updated_at": now} == row:
+            return dict(existing)
+        save_agent_blueprint_sources(
+            [existing_row for existing_row in rows if existing_row.get("id") != source_id] + [row]
+        )
+    return row
+
+
+def install_agent_blueprint_source(
+    row: Mapping[str, Any],
+    *,
+    cwd: Path,
+    scope: Literal["global", "workspace"] = "global",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Install every valid blueprint exposed by a refreshed marketplace source.
+
+    Marketplace registration is an installation operation, not merely catalog
+    discovery.  Invalid entries remain visible in the returned ``skipped`` list
+    and degrade the source row; an installation failure marks the row as an
+    error.  Callers can therefore never advertise a ready marketplace whose
+    blueprints are unusable.
+
+    Blueprints the user uninstalled or edited in place are skipped rather than
+    overwritten (:func:`source_install_skip_ids`); every skipped entry carries a
+    typed ``reason`` in the returned payload and on the persisted source row, and
+    only ``validation_errors`` entries degrade the source.
+    """
+
+    refreshed = dict(row)
+    refreshed["install_scope"] = scope
+    if str(refreshed.get("status") or "") != "ready":
+        return refreshed, {"installed": [], "skipped": []}
+
+    source = str(refreshed.get("source") or "").strip()
+    if not source:
+        refreshed.update(status="error", error="source is empty")
+        return refreshed, {"installed": [], "skipped": []}
+
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint  # noqa: PLC0415
+
+    try:
+        result = install_agent_blueprint(
+            source=source,
+            scope=scope,
+            cwd=cwd,
+            ref=str(refreshed.get("ref") or ""),
+            pinned_commit=str(refreshed.get("pinned_commit") or ""),
+            skip_invalid=True,
+            skip_blueprint_ids=source_install_skip_ids(scope=scope, cwd=cwd),
+        )
+    except Exception as exc:  # noqa: BLE001 - persisted as an explicit source failure
+        logger.warning("blueprint_source_install_failed source=%s error=%r", source, exc)
+        refreshed.update(status="error", error=f"blueprint installation failed: {exc}")
+        return refreshed, {"installed": [], "skipped": [], "error": str(exc)}
+
+    installed = [dict(item) for item in result.get("installed") or [] if isinstance(item, dict)]
+    skipped = [
+        {"reason": "validation_errors", **dict(item)}
+        for item in result.get("skipped") or []
+        if isinstance(item, dict)
+    ]
+    refreshed["installed_blueprints"] = [
+        {
+            "id": str(item.get("id") or ""),
+            "version": str(item.get("version") or ""),
+            "scope": str(item.get("scope") or scope),
+        }
+        for item in installed
+    ]
+    refreshed["skipped_blueprints"] = [
+        {"id": str(item.get("id") or ""), "reason": str(item.get("reason") or "")}
+        for item in skipped
+    ]
+    invalid = [item for item in skipped if item.get("reason") == "validation_errors"]
+    if invalid:
+        skipped_ids = ", ".join(str(item.get("id") or "unknown") for item in invalid)
+        refreshed.update(
+            status="degraded",
+            error=f"invalid blueprint entries were not installed: {skipped_ids}",
+        )
+    else:
+        refreshed.update(status="ready", error="")
+    return refreshed, {"installed": installed, "skipped": skipped}

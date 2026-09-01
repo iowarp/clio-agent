@@ -456,3 +456,50 @@ def test_resolve_waited_task_rows_resolves_known_and_falls_back_for_unknown(
         "child_session_id": "",
         "name": "task_never_spawned",
     }
+
+
+def test_seeded_child_inherits_parent_session_scoped_ask_policy(tmp_path: Path) -> None:
+    """The seed path narrows the child exactly as ``spawn_child_turn`` does.
+
+    ``seed_agent_task`` mints the child session with the parent's widening
+    ``approval_mode``; the parent's session-scoped ``ask``/``deny`` rows have to
+    compose onto the new session id too, or the relay invoker's child auto-approves
+    a call the parent would have prompted for.
+    """
+    from clio_agent.gact.permission_gate import _policy_action_for_tool
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p", "approval_mode": "bypass"}).json()[
+            "id"
+        ]
+        assert (
+            client.put(
+                "/v1/policies",
+                json={
+                    "policies": [
+                        {
+                            "scope": "session",
+                            "scope_id": parent,
+                            "tool_name_pattern": "shell.exec",
+                            "action": "ask",
+                        }
+                    ]
+                },
+            ).status_code
+            == 200
+        )
+
+        task = seed_agent_task(app, parent_session_id=parent, agent_ref={"expert_id": "hpc"})
+        child = app.state.sessions.get(task.child_session_id)
+
+        assert child.approval_mode == "bypass"
+        action = _policy_action_for_tool(
+            app,
+            session_id=child.id,
+            session=child,
+            tool_name="shell.exec",
+            args={"cmd": "rm -rf /"},
+            mode=child.mode,
+        )
+        assert action == "ask", f"the parent's ask row must gate the seeded child, got {action!r}"

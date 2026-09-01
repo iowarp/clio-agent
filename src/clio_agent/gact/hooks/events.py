@@ -125,9 +125,7 @@ MODEL_EVENTS: frozenset[str] = frozenset({BEFORE_MODEL, AFTER_MODEL})
 #: than silently letting an un-vetted request through. ``AfterModel`` is
 #: deliberately EXCLUDED — its call already ran, so its outcome can only rewrite the
 #: observed response, never un-run the request (mirrors ``PostToolUse``).
-DENY_CAPABLE_EVENTS: frozenset[str] = frozenset(
-    {PRE_TOOL_USE, USER_PROMPT_SUBMIT, BEFORE_MODEL}
-)
+DENY_CAPABLE_EVENTS: frozenset[str] = frozenset({PRE_TOOL_USE, USER_PROMPT_SUBMIT, BEFORE_MODEL})
 
 
 def is_deny_capable(event: str) -> bool:

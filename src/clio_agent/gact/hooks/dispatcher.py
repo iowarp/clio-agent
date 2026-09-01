@@ -109,9 +109,7 @@ class HookDispatcher:
 
         with self._lock:
             entries = list(self._entries)
-        return any(
-            entry.enabled and entry.is_trusted and event in entry.on for entry in entries
-        )
+        return any(entry.enabled and entry.is_trusted and event in entry.on for entry in entries)
 
     def dispatch(self, event: str, envelope: HookEnvelope) -> HookOutcome:
         """Run every matching hook for ``event`` and merge to one outcome.

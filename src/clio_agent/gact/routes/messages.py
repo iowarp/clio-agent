@@ -30,14 +30,17 @@ unsupported-override error, and the agent-not-available error) travel on
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 
+from clio_agent.gact.agent_tasks import display_run_name
 from clio_agent.gact.events import Event
 from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.message_wire import normalize_thought_ownership
 from clio_agent.gact.messaging import _user_message_parts, raise_on_reserved_metadata
+from clio_agent.gact.protocol_v3 import project_for_request, transcript_entities
 from clio_agent.gact.providers.config import (
     _active_lm_supports_vision,
     _effective_lm_config,
@@ -45,6 +48,7 @@ from clio_agent.gact.providers.config import (
     _model_ref_is_empty,
     _model_ref_matches_active,
 )
+from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui
 from clio_agent.gact.runtime.globals import _iso_from_epoch, _new_message_id
 from clio_agent.gact.turn_runner import session_busy_error_payload
 from clio_agent.gact.types import (
@@ -114,10 +118,15 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
                 summary=f"delete message {message_id} from session {sid}",
                 reason="user_requested_message_delete",
             )
-            msgs.pop(i)
-            deps.replace_session_messages(app, sid, msgs)
+            # A2UI surfaces are transcript-owned: dropping the message that
+            # carries their parts would delete a live surface as a side effect
+            # of a prose edit, with no lifecycle event. Preserve them the way
+            # compaction and rollback do (routes/session_a2ui_preservation.py).
+            removed = msgs.pop(i)
+            retained = preserve_a2ui(sid, msgs, [removed], "message_delete")
+            deps.replace_session_messages(app, sid, retained)
             if sess is not None:
-                app.state.sessions.update(sid, message_count=len(msgs))
+                app.state.sessions.update(sid, message_count=len(retained))
             app.state.bus.publish(
                 Event(
                     type="message.deleted",
@@ -284,19 +293,15 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         if not _model_ref_is_empty(sess.model) and not _model_ref_matches_active(sess.model, app):
             active_model = deps.active_lm_model_ref(app)
-            if active_model.get("model_id"):
-                app.state.sessions.update(sid, model={})
-                sess = app.state.sessions.get(sid) or sess
-            else:
-                raise HTTPException(
-                    status_code=501,
-                    detail=deps.unsupported_model_ref_error(
-                        session_id=sid,
-                        source="session",
-                        model_ref=sess.model,
-                        active_model=active_model,
-                    ).model_dump(exclude_none=True),
-                )
+            raise HTTPException(
+                status_code=501,
+                detail=deps.unsupported_model_ref_error(
+                    session_id=sid,
+                    source="session",
+                    model_ref=sess.model,
+                    active_model=active_model,
+                ).model_dump(exclude_none=True),
+            )
 
         user_text = req.extract_text()
         turn_agent_id = req.extract_agent_id().strip()
@@ -378,6 +383,15 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
                 accepted_at=created_at,
             )
 
+        # Cancellation belongs to the turn that was active when /cancel was
+        # requested.  An idle cancellation (including recovery after a server
+        # restart, where the persisted session may still say ``running`` but no
+        # executor exists) must not poison the next user-authored turn.  The busy
+        # branch above preserves genuine mid-turn cancellation/steering races;
+        # once it reports idle, this POST is an explicit request to begin fresh.
+        app.state.cancel_flags.discard(sid)
+        app.state.cancel_events.pop(sid, None)
+
         # Persist + publish the user message synchronously so by the
         # time the ack returns, GET /messages reflects it. Then mark
         # the session running, then schedule the turn in the
@@ -401,13 +415,14 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
             accepted_at=user_msg.created_at,
         )
 
-    @app.get("/v1/sessions/{sid}/messages")
+    @app.get("/v1/sessions/{sid}/messages", response_model=None)
     async def list_messages(
         sid: str,
+        request: Request,
         include_system: bool = True,
         limit: int | None = None,
         before: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | JSONResponse:
         """List messages in a session, newest-first, with optional paging (#232).
 
         Today: in-memory log populated by POST /messages; returns
@@ -455,7 +470,24 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         # at read time. Apply filters against the chronological list
         # first, then reverse, then truncate — see the docstring for
         # the exact ordering contract.
-        chronological_rows = list(app.state.messages.get(sid, []))
+        # A newly created session has no ledger blob yet. Native stores may
+        # surface that missing blob as a transport failure instead of applying
+        # the mapping default. Preserve a first turn already staged in the
+        # resident set, but never materialize an absent durable ledger while the
+        # authoritative session count is still zero.
+        messages = app.state.messages
+        message_store = getattr(app.state, "message_store", None)
+        has_persisted_ledger = bool(message_store is not None and message_store.has_session(sid))
+        if sess.message_count == 0 and not has_persisted_ledger:
+            get_if_resident = getattr(messages, "get_if_resident", None)
+            if callable(get_if_resident):
+                chronological_rows = list(get_if_resident(sid) or [])
+            elif isinstance(messages, dict):
+                chronological_rows = list(messages.get(sid, []))
+            else:
+                chronological_rows = []
+        else:
+            chronological_rows = list(messages.get(sid, []))
 
         # (1) Resolve ``before`` against the chronological list. The cursor names
         # a real stored message; return only rows strictly older than it. The
@@ -511,10 +543,36 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         # pre-S2 message carrying BOTH a next_thought text row and a populated
         # tool_call.thought reloads with the redundant copy cleared (op-identity,
         # never a string compare); a no-op for post-S2 rows.
-        return {
-            "messages": [normalize_thought_ownership(m).to_wire() for m in rows],
-            "next_cursor": next_cursor,
-        }
+        def project_v3() -> JSONResponse:
+            task_registry = getattr(app.state, "agent_task_registry", None)
+            subagent_links: dict[str, dict[str, Any]] = {}
+            if task_registry is not None:
+                for task in task_registry.for_parent(sid):
+                    agent_id = str(task.agent_ref.get("expert_id") or "")
+                    result = task.result if isinstance(task.result, Mapping) else {}
+                    answer_excerpt = str(result.get("answer_excerpt") or "")
+                    subagent_links[task.task_id] = {
+                        "child_session_id": str(task.child_session_id or ""),
+                        "agent_id": agent_id,
+                        "title": display_run_name(agent_id, task.run_index, task.run_label),
+                        "state": str(task.live_state or task.status),
+                        "parent_run_id": str(task.parent_turn_id or ""),
+                        "created_at": str(task.created_at or ""),
+                        "summary": str(task.error_reason or answer_excerpt),
+                        "result": answer_excerpt,
+                    }
+            snapshot = transcript_entities(rows, sid, subagent_links=subagent_links)
+            snapshot["cursor"] = str(app.state.bus.latest_event_id(sid))
+            return JSONResponse(content=snapshot)
+
+        return project_for_request(
+            request,
+            v3=project_v3,
+            v2=lambda: {
+                "messages": [normalize_thought_ownership(m).to_wire() for m in rows],
+                "next_cursor": next_cursor,
+            },
+        )
 
     @app.get("/v1/sessions/{sid}/messages/{message_id}")
     async def get_message(sid: str, message_id: str) -> dict[str, Any]:

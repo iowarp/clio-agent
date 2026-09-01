@@ -1,9 +1,19 @@
-"""Optional CMF artifact-provenance and DVC-local custody adapter.
+"""LOCAL-worker CMF artifact-provenance and DVC-local custody adapter.
 
 CMF 0.1.0 declares Python below 3.12 and pins ``ml-metadata==1.15.0``.  CLIO
 targets Python 3.12, so the real CMF/MLMD writer runs in a configured, isolated
 CMF-compatible interpreter.  The parent process never imports ``cmflib`` and
 the worker never changes CLIO's cwd or Git branch.
+
+That interpreter is **local**, and only local.  ``ssh host /opt/cmf/bin/python``
+is not product surface: CLIO cannot assume shell or SSH reach out of its own
+container, so a deployment whose CMF/MLMD runtime cannot exist on this host
+(no ml-metadata wheels for win32, say) uses **server mode** instead --
+``provenance.artifacts.cmf.server_url`` alone, see
+:mod:`clio_agent.gact.artifacts.provenance.cmf_server_mode`, which needs no
+local CMF at all and is the release path.  Every unsupported combination here
+refuses with a typed reason from
+:mod:`clio_agent.gact.artifacts.provenance.cmf_reasons`.
 """
 
 from __future__ import annotations
@@ -22,6 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO
 
 from clio_agent.gact.artifacts.cas import IngestedIdentity, ingest_identity
+from clio_agent.gact.artifacts.provenance.cmf_reasons import CMFRefusal
 from clio_agent.gact.artifacts.provenance.protocol import StorageReceipt
 from clio_agent.gact.artifacts.records import Custody, EvidenceClass, IdentityEvidence
 from clio_agent.gact.provenance.protocol import ProviderReceipt
@@ -35,11 +46,20 @@ if TYPE_CHECKING:
 _CHUNK_BYTES = 1024 * 1024
 _DVC_OBJECT_PREFIX = "files/md5/"
 
+#: Executables that start a runtime on ANOTHER host. Naming one as the "local"
+#: interpreter is a configuration error with a typed reason, not a feature:
+#: CLIO cannot assume shell or SSH reach out of its own container.
+_REMOTE_LAUNCHERS = frozenset({"ssh", "docker", "podman", "srun", "sbatch", "kubectl", "wsl"})
+
 
 @dataclass(frozen=True)
 class CMFProviderConfig:
     """All CMF-specific runtime, metadata, and custody configuration."""
 
+    #: A LOCAL interpreter path. Never a launcher command: CLIO cannot assume
+    #: shell reach into another host, so ``ssh host python`` is not product
+    #: surface (it is refused as ``cmf_local_runtime_unavailable``). A CMF
+    #: runtime that cannot exist on this host is reached through server mode.
     python: str
     metadata_path: Path
     artifact_root: Path
@@ -123,39 +143,23 @@ class CMFBridge:
         process = self._process
         if process is not None and process.poll() is None:
             return process
-        executable = _resolve_python(self.config.python)
-        if not executable:
-            raise CMFBridgeError(
-                "CMF requires an isolated compatible Python runtime; configure "
-                "provenance.artifacts.cmf.python or CLIO_CMF_PYTHON"
-            )
-        worker = Path(__file__).with_name("cmf_worker.py")
+        launcher = resolve_local_worker_command(self.config.python)
+        argv = _worker_argv(self.config, launcher)
+        # The worker always runs on THIS machine, so the stores it opens are
+        # ours to create.
         self.config.metadata_path.parent.mkdir(parents=True, exist_ok=True)
         self.config.artifact_root.mkdir(parents=True, exist_ok=True)
-        # sys.platform narrowing as an IF-STATEMENT (not a conditional
-        # expression): statement-level narrowing is the form mypy reliably
-        # skips on non-win32 platforms — the expression form flaked in CI.
-        creationflags = 0
-        if sys.platform == "win32":
-            creationflags = subprocess.CREATE_NO_WINDOW
         process = subprocess.Popen(  # noqa: S603 - fixed worker with configured interpreter
-            [
-                executable,
-                str(worker),
-                "--metadata",
-                str(self.config.metadata_path),
-                "--artifact-root",
-                str(self.config.artifact_root),
-                "--pipeline",
-                self.config.pipeline_name,
-            ],
+            argv,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             bufsize=1,
-            creationflags=creationflags,
+            # No creationflags branch: local mode refuses win32 outright
+            # (cmf_local_runtime_unsupported_platform), so this Popen is only
+            # ever reached on a POSIX host.
         )
         self._process = process
         assert process.stderr is not None
@@ -187,6 +191,101 @@ def _resolve_python(configured: str) -> str:
         # configured executable path while still making a relative path absolute.
         return str(path.absolute())
     return shutil.which(value) or ""
+
+
+def resolve_local_worker_command(configured: str, *, platform: str = sys.platform) -> list[str]:
+    """Resolve ``provenance.artifacts.cmf.python`` into a LOCAL argv prefix.
+
+    The setting names one local interpreter, and nothing else. A launcher
+    *command* that reaches another host (``ssh host python``, ``docker exec``,
+    ``srun``) is deliberately NOT product surface: CLIO cannot assume shell or
+    SSH reach out of its own container, so a deployment whose CMF/MLMD runtime
+    cannot exist on this host uses server mode instead, which needs no local
+    CMF at all.
+
+    Args:
+        configured: The configured interpreter path.
+        platform: The platform to judge against; a parameter (not a read of
+            ``sys.platform``) so both branches are asserted on any host.
+
+    Returns:
+        The single-element argv prefix that starts the worker.
+
+    Raises:
+        CMFRefusal: ``cmf_no_write_target`` when nothing is configured;
+            ``cmf_local_runtime_unavailable`` for a launcher command or an
+            unresolvable path; ``cmf_local_runtime_unsupported_platform`` where
+            no ml-metadata wheels exist.
+    """
+    value = configured.strip()
+    if not value:
+        raise CMFRefusal(
+            "cmf_no_write_target",
+            "provenance.artifacts.cmf.python is unset and no server_url was declared",
+        )
+    if any(character.isspace() for character in value) and not Path(value).expanduser().is_file():
+        raise CMFRefusal(
+            "cmf_local_runtime_unavailable",
+            (
+                "provenance.artifacts.cmf.python names a LOCAL interpreter path only; "
+                "a launcher command is not supported because CLIO cannot assume "
+                "shell reach into another host. Use server_url for an off-host CMF."
+            ),
+            configured=value,
+        )
+    stem = Path(value).stem.lower()
+    if stem in _REMOTE_LAUNCHERS:
+        raise CMFRefusal(
+            "cmf_local_runtime_unavailable",
+            (
+                f"{stem!r} launches a runtime on another host; "
+                "provenance.artifacts.cmf.python names a LOCAL interpreter only. "
+                "Use server_url for an off-host CMF."
+            ),
+            configured=value,
+        )
+    if platform == "win32":
+        raise CMFRefusal(
+            "cmf_local_runtime_unsupported_platform",
+            "ml-metadata publishes no wheels for win32, so no local CMF runtime "
+            "can exist on this host",
+            platform=platform,
+            configured=value,
+        )
+    executable = _resolve_python(value)
+    if not executable:
+        raise CMFRefusal(
+            "cmf_local_runtime_unavailable",
+            "the configured interpreter does not exist and is not on PATH",
+            configured=value,
+        )
+    return [executable]
+
+
+def _worker_argv(config: CMFProviderConfig, launcher: list[str]) -> list[str]:
+    """Build the full worker argv from a resolved interpreter and the stores.
+
+    Args:
+        config: The CMF provider configuration naming the stores.
+        launcher: The resolved argv prefix from
+            :func:`resolve_local_worker_command`.
+
+    Returns:
+        The complete argv for :class:`subprocess.Popen`.
+    """
+    # Always the bundled worker: local mode runs on THIS filesystem, so there is
+    # no second host whose copy of the script would need naming.
+    worker = str(Path(__file__).with_name("cmf_worker.py"))
+    return [
+        *launcher,
+        worker,
+        "--metadata",
+        config.metadata_path.as_posix(),
+        "--artifact-root",
+        config.artifact_root.as_posix(),
+        "--pipeline",
+        config.pipeline_name,
+    ]
 
 
 class CMFArtifactStore:
@@ -336,9 +435,29 @@ class CMFArtifactProvenanceProvider:
         self._bridge = bridge or CMFBridge(config)
 
     def emit(self, event: "SemanticEvent") -> ProviderReceipt:
-        """Submit one explicit artifact event to the isolated CMF runtime."""
-        response = self._bridge.request("record", event=event.to_dict("full"))
-        if self.config.server_url and not response.get("filtered"):
+        """Submit one explicit artifact event to the isolated CMF runtime.
+
+        Reports the worker's OWN outcome. Returning ``ACCEPTED`` for an event
+        the worker filtered is what let provider health show 26 accepted, zero
+        filtered and zero failed while MLMD received nothing for half of them
+        (live qualification, sess_3c2660f69bd5): the counter described the
+        hand-off, not the write.
+        """
+        payload = event.to_dict("full")
+        response = self._bridge.request("record", event=payload)
+        if response.get("filtered"):
+            return ProviderReceipt.FILTERED
+        if response.get("unattached"):
+            # Stored locally, but invisible to any CMF server: the push document
+            # carries artifacts only inside an execution's events.
+            body = payload.get("payload")
+            raise CMFRefusal(
+                "cmf_artifact_not_attached_to_execution",
+                "the artifact has no producing call to attach it to, so it cannot "
+                "appear in a CMF metadata push",
+                artifact_id=str((body or {}).get("artifact_id") or ""),
+            )
+        if self.config.server_url:
             self._publish()
         return ProviderReceipt.ACCEPTED
 
@@ -396,4 +515,5 @@ __all__ = [
     "CMFBridge",
     "CMFBridgeError",
     "CMFProviderConfig",
+    "resolve_local_worker_command",
 ]

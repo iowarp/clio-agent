@@ -168,6 +168,31 @@ def test_cancel_cascade_from_parent(tmp_path: Path, monkeypatch) -> None:
         assert _bus(app, parent, "agent.task.cancelled"), "no cascade cancel event on parent"
 
 
+def test_late_child_spawn_after_parent_cancel_is_refused(tmp_path: Path, monkeypatch) -> None:
+    """A late executor result cannot create a child after the cancel snapshot."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        assert client.post(f"/v1/sessions/{parent}/cancel").status_code == 204
+        before = len(app.state.agent_task_registry.snapshot())
+
+        with pytest.raises(SpawnError) as exc:
+            spawn_child_turn_threadsafe(
+                app,
+                TaskSpec(
+                    child_expert_id="main",
+                    task_text="late",
+                    parent_session_id=parent,
+                    parent_turn_id="msg_cancelled",
+                ),
+            )
+
+        assert exc.value.reason == "parent_turn_cancelled"
+        assert len(app.state.agent_task_registry.snapshot()) == before
+
+
 def test_cancel_frees_slot_and_admits_queued(tmp_path: Path, monkeypatch) -> None:
     """Cancelling a parent frees its child's concurrency slot and admits a QUEUED
     task of ANOTHER parent — it must not strand forever (the completion hook won't
@@ -626,6 +651,186 @@ def test_edit_mode_parent_spawns_edit_mode_child_unchanged(tmp_path: Path, monke
         assert action in ("", "allow"), (
             f"an edit-mode child must not be plan-acl-denied (got {action!r})"
         )
+
+
+def test_child_inherits_parent_approval_mode(tmp_path: Path, monkeypatch) -> None:
+    """A child keeps the parent's user-selected confirmation posture.
+
+    This prevents effectful MCP calls from silently falling back to ``ask`` in a
+    child while the parent session is explicitly configured for unattended work.
+    """
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post(
+            "/v1/sessions",
+            json={"title": "p", "mode": "edit", "approval_mode": "bypass"},
+        ).json()["id"]
+
+        task = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(
+                child_expert_id="main",
+                task_text="do something",
+                parent_session_id=parent,
+                requesting_expert_id="main",
+            ),
+        )
+
+        child = app.state.sessions.get(task.child_session_id)
+        assert child.approval_mode == "bypass"
+
+
+def test_child_inherits_parent_session_scoped_ask_policy(tmp_path: Path, monkeypatch) -> None:
+    """A child inherits the parent's NARROWING axis, not just its widening one.
+
+    A session-scoped ``ask`` row is the explicit "always confirm this tool" escape
+    hatch that survives even ``bypass``. It is keyed to the parent's session id, so
+    without projection onto the child the same call auto-approves in the child.
+    """
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post(
+            "/v1/sessions",
+            json={"title": "p", "mode": "edit", "approval_mode": "bypass"},
+        ).json()["id"]
+        assert (
+            client.put(
+                "/v1/policies",
+                json={
+                    "policies": [
+                        {
+                            "scope": "session",
+                            "scope_id": parent,
+                            "tool_name_pattern": "shell.exec",
+                            "action": "ask",
+                        }
+                    ]
+                },
+            ).status_code
+            == 200
+        )
+
+        task = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(
+                child_expert_id="main",
+                task_text="do something",
+                parent_session_id=parent,
+                requesting_expert_id="main",
+            ),
+        )
+        child = app.state.sessions.get(task.child_session_id)
+
+        assert child.approval_mode == "bypass"
+        action = _policy_action_for_tool(
+            app,
+            session_id=child.id,
+            session=child,
+            tool_name="shell.exec",
+            args={"cmd": "rm -rf /"},
+            mode=child.mode,
+        )
+        assert action == "ask", (
+            f"the parent's explicit ask row must still gate the child's call, got {action!r}"
+        )
+
+
+def test_child_inherits_parent_session_scoped_deny_policy(tmp_path: Path, monkeypatch) -> None:
+    """A parent session-scoped ``deny`` row narrows the child the same way."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post(
+            "/v1/sessions",
+            json={"title": "p", "mode": "edit", "approval_mode": "bypass"},
+        ).json()["id"]
+        client.put(
+            "/v1/policies",
+            json={
+                "policies": [
+                    {
+                        "scope": "session",
+                        "scope_id": parent,
+                        "tool_name_pattern": "shell.exec",
+                        "action": "deny",
+                    }
+                ]
+            },
+        )
+
+        task = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(
+                child_expert_id="main",
+                task_text="do something",
+                parent_session_id=parent,
+                requesting_expert_id="main",
+            ),
+        )
+        child = app.state.sessions.get(task.child_session_id)
+
+        action = _policy_action_for_tool(
+            app,
+            session_id=child.id,
+            session=child,
+            tool_name="shell.exec",
+            args={"cmd": "rm -rf /"},
+            mode=child.mode,
+        )
+        assert action == "deny", f"a parent deny row must survive the spawn, got {action!r}"
+
+
+def test_child_does_not_inherit_parent_session_scoped_allow_policy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Only the NARROWING rows compose: an inherited ``allow`` would WIDEN the child."""
+
+    _declare(monkeypatch, "main")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post(
+            "/v1/sessions",
+            json={"title": "p", "mode": "edit", "approval_mode": "ask"},
+        ).json()["id"]
+        client.put(
+            "/v1/policies",
+            json={
+                "policies": [
+                    {
+                        "scope": "session",
+                        "scope_id": parent,
+                        "tool_name_pattern": "shell.exec",
+                        "action": "allow",
+                    }
+                ]
+            },
+        )
+
+        task = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(
+                child_expert_id="main",
+                task_text="do something",
+                parent_session_id=parent,
+                requesting_expert_id="main",
+            ),
+        )
+        child = app.state.sessions.get(task.child_session_id)
+
+        action = _policy_action_for_tool(
+            app,
+            session_id=child.id,
+            session=child,
+            tool_name="shell.exec",
+            args={"cmd": "rm -rf /"},
+            mode=child.mode,
+        )
+        assert action == "", f"an allow row must not be projected onto the child, got {action!r}"
 
 
 def _spawn_scope(metadata: dict[str, Any]) -> dict[str, Any]:

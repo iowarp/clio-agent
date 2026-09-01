@@ -1,5 +1,7 @@
 ---
 id: clio.runtime.prompt_user_agent
+title: Agent without tools
+description: Runs a registered agent that answers from its instructions and delegated expertise.
 profile: default
 ---
 Run a registered CLIO user agent.

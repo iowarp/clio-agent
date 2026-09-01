@@ -38,6 +38,42 @@ read), `OUTPUT -> b.csv` (turn 2 write). Failures on the CMF path surface as
 `provenance provider cmf degraded on emit ...` WARNINGs in the serve log
 (first failure per worker is loud by design — never rely on silence).
 
+### Native-wheel host mismatch
+
+If the host cannot install the locked `iowarp-core` wheel (for example, an
+older glibc), do not reuse an older venv or select LocalFS. Build the exact
+qualification image from the repository root:
+
+```bash
+docker build -f scripts/provenance_qualification/Dockerfile \
+  -t clio-provenance-qualification:exact .
+```
+
+Run it with host networking and bind only the isolated qualification runtime,
+Flowcept settings, and provider authentication required for the run. The pinned
+`iowarp-core` runtime uses `io_uring`; Docker's default seccomp profile denies
+`io_uring_setup`, so the qualification container must include the explicit
+`--security-opt seccomp=unconfined` option:
+
+```bash
+docker run --rm --network host \
+  --security-opt seccomp=unconfined \
+  --ulimit core=0 \
+  --env-file deployment.env \
+  --mount type=bind,src="$CLIO_PQ_RUNTIME",dst=/qualification \
+  clio-provenance-qualification:exact
+```
+
+This exception is limited to the disposable qualification container; it is not
+a general host security change. Core dumps are disabled for the disposable run
+so a native shutdown cannot silently consume the qualification disk. The image
+contains the frozen CLIO/Flowcept environment, CTE, and a separate Python 3.9
+CMF worker. Use a new, empty runtime mount for every acceptance run, then remove
+it after its evidence is captured.
+The startup preflight probes `io_uring` before starting CTE and reports this
+missing container option directly instead of surfacing iowarp-core's misleading
+`Failed to open file` message.
+
 ## Prerequisites
 
 - The backing services (per `infrastructure/`): CMF server + PostgreSQL for
@@ -46,6 +82,10 @@ read), `OUTPUT -> b.csv` (turn 2 write). Failures on the CMF path surface as
 - An isolated CMF-compatible Python (3.9, `cmflib==0.1.0`,
   `ml-metadata==1.15.0`) at `$CLIO_PQ_CMF_PYTHON` — CLIO's own interpreter
   never imports cmflib.
+- A lock-synchronized CLIO interpreter containing the pinned `clio-schemas`,
+  LiteLLM, `psutil`, and `iowarp-core` runtime. `serve-qualification.sh`
+  verifies these before binding a port and rejects LocalFS; an overlay or a
+  host with an incompatible `iowarp-core` wheel is not qualification evidence.
 - A fresh `$CLIO_PQ_CMF_METADATA_PATH` per qualification run: MLMD types are
   first-writer-wins per name, so re-using a store predating the consistent
   type-schema fix (#1247) rejects typed mints.

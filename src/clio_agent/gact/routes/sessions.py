@@ -26,13 +26,10 @@ session-scoped ask-user / retry protocol.
   ``POST /v1/sessions/{sid}/messages/{message_id}/retry``: record/execute a turn
   retry, optionally kicking a background turn off the source user message.
 
-The fork, question-answer and retry routes drive a background user turn through
-``deps.start_background_user_turn`` (the turn engine in
-:mod:`clio_agent.gact.turn`). The module imports only leaf packages (events,
-runtime, types, stdlib) and never loads :mod:`clio_agent.gact.app`; the shared
-cross-concern helpers (ledger replace, ARC release, model-ref
-errors, evidence index, resume text) travel on :class:`GactDeps`. The session-
-private rollback + ask-user/retry helpers live here.
+Fork, question-answer and retry routes use ``deps.start_background_user_turn``.
+This module loads only leaf packages and never :mod:`clio_agent.gact.app`; shared
+cross-concern helpers (ledger replace, ARC release, model-ref errors, evidence index,
+resume text) travel on :class:`GactDeps`; private rollback and retry helpers stay here.
 """
 
 from __future__ import annotations
@@ -54,8 +51,11 @@ from clio_agent.gact.goal import stop_session_goal
 from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
 from clio_agent.gact.messaging import raise_on_reserved_metadata
+from clio_agent.gact.protocol_v3 import project_for_request, session_to_v3
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
 from clio_agent.gact.routes.compaction import build_compact_summary_message
+from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui, split_preserved_a2ui
+from clio_agent.gact.routes.session_cancellation import cancel_session_state
 from clio_agent.gact.routes.session_rows import filter_session_rows, rows_to_wire
 from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.constants import _installed_clio_agent_version
@@ -63,7 +63,6 @@ from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
     _emit_semantic_event,
     _new_attempt_id,
-    _new_cancellation_attempt_id,
     _new_memory_event_id,
     _new_question_id,
 )
@@ -120,9 +119,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
 
     # ---- /v1/sessions CRUD -----------------------------------------
-
     @app.post("/v1/sessions", response_model=Session)
-    async def create_session(req: CreateSessionRequest) -> Session:
+    async def create_session(req: CreateSessionRequest, request: Request) -> Session | JSONResponse:
         wid = req.workspace_id or "ws_default"
         if app.state.workspaces.get(wid) is None:
             raise HTTPException(
@@ -136,30 +134,51 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
+        defaults = app.state.session_defaults.get()
+        supplied = req.model_fields_set
+        metadata = dict(req.metadata)
+        if "effort" not in metadata and "thinking_level" not in metadata:
+            metadata["effort"] = defaults.effort
+        if defaults.blueprint_id and "active_agent_blueprint_id" not in metadata:
+            metadata["active_agent_blueprint_id"] = defaults.blueprint_id
+        if "model" in supplied:
+            model = req.model.model_dump(exclude_none=True) if req.model else None
+        elif defaults.provider_id or defaults.model_id:
+            model = {
+                "provider_id": defaults.provider_id,
+                "model_id": defaults.model_id,
+            }
+        else:
+            model = None
         sess = app.state.sessions.create(
             workspace_id=wid,
             title=req.title,
-            metadata=req.metadata,
-            model=req.model.model_dump(exclude_none=True) if req.model else None,
+            metadata=metadata,
+            model=model,
             agent=req.agent.model_dump(exclude_none=True) if req.agent else None,
-            mode=req.mode,
-            edit_mode=req.edit_mode,
-            routing_mode=req.routing_mode,
-            approval_mode=req.approval_mode,
+            mode=req.mode if "mode" in supplied else defaults.mode,
+            edit_mode=req.edit_mode if "edit_mode" in supplied else defaults.edit_mode,
+            routing_mode=(
+                req.routing_mode if "routing_mode" in supplied else defaults.routing_mode
+            ),
+            approval_mode=(
+                req.approval_mode if "approval_mode" in supplied else defaults.approval_mode
+            ),
         )
-        # #1215 S5: first-turn bring-up timing starts here (the session did not
-        # exist to key a timer on before this point; SessionStore.create()'s own
-        # cost is a fast local write, not separately measured).
         bringup_timing.timer_for_session(app, sess.id).start_phase("session.create")
-        # B5 #979.2 (⚑): session-create INHERITS existing territory — no grant made, so it
-        # emits NO boundary event (a fabricated grantor=user would violate ⚑ + precede
-        # turn.started; workspace-create / PATCH root_path / explicit grants record it).
+        # Session creation inherits territory and emits no fabricated grant (#979.2).
         sync_watcher_for_mode(app, sess)
         bringup_timing.timer_for_session(app, sess.id).end_phase("session.create")
-        return Session(**sess.to_wire())
+        return project_for_request(
+            request,
+            v3=lambda: JSONResponse(content=session_to_v3(sess), status_code=201),
+            v2=lambda: Session(**sess.to_wire()),
+        )
 
     @app.patch("/v1/sessions/{sid}", response_model=Session)
-    async def patch_session(sid: str, req: UpdateSessionRequest) -> Session:
+    async def patch_session(
+        sid: str, req: UpdateSessionRequest, request: Request
+    ) -> Session | JSONResponse:
         """Update mutable session fields (title + mode + edit_mode).
 
         Lets the TUI flip plan ↔ edit ↔ architect mid-session
@@ -201,15 +220,20 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 payload=Session(**sess.to_wire()).model_dump(exclude_none=True),
             )
         )
-        return Session(**sess.to_wire())
+        return project_for_request(
+            request,
+            v3=lambda: JSONResponse(content=session_to_v3(sess)),
+            v2=lambda: Session(**sess.to_wire()),
+        )
 
     @app.get("/v1/sessions", response_model=ListSessionsResponse)
     async def list_sessions(
+        request: Request,
         workspace_id: Optional[str] = None,
         include_all_workspaces: bool = False,
         archived: Optional[bool] = None,
         parent_session_id: Optional[str] = None,
-    ) -> ListSessionsResponse:
+    ) -> ListSessionsResponse | JSONResponse:
         """List sessions, filtered by workspace scope, archive bucket (audit E-14),
         and optionally fork lineage — ``parent_session_id`` non-empty restricts to
         that parent's direct sub-sessions (#232); omitted/empty is unchanged."""
@@ -217,7 +241,11 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         effective_workspace_id = workspace_id or (None if include_all_workspaces else "ws_default")
         rows = app.state.sessions.list(workspace_id=effective_workspace_id)
         rows = filter_session_rows(rows, archived=archived, parent_session_id=parent_session_id)
-        return ListSessionsResponse(sessions=rows_to_wire(rows))
+        return project_for_request(
+            request,
+            v3=lambda: JSONResponse(content={"sessions": [session_to_v3(row) for row in rows]}),
+            v2=lambda: ListSessionsResponse(sessions=rows_to_wire(rows)),
+        )
 
     @app.get("/v1/sessions/{sid}", response_model=Session)
     async def get_session(sid: str, workspace_id: Optional[str] = None) -> Session:
@@ -368,11 +396,12 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         target_message_id: str = "",
         include_target: bool = False,
     ) -> dict[str, Any]:
-        deps.replace_session_messages(app, sid, kept_messages)
+        replacement_messages = preserve_a2ui(sid, kept_messages, deleted_messages, operation)
+        deps.replace_session_messages(app, sid, replacement_messages)
         deleted_ids = [m.id for m in deleted_messages]
         updated = app.state.sessions.update(
             sid,
-            message_count=len(kept_messages),
+            message_count=len(replacement_messages),
             status="idle",
             metadata_patch={
                 "last_rollback": {
@@ -402,7 +431,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             "deleted_message_ids": deleted_ids,
             "deleted_messages": deleted_ids,
             "reverted_message_ids": deleted_ids,
-            "message_count": len(kept_messages),
+            "message_count": len(replacement_messages),
             "memory_scope": "gact_visible_transcript_only",
             "session": session_payload,
         }
@@ -451,9 +480,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        messages = list(app.state.messages.get(sid, []))
+        messages, carried = split_preserved_a2ui(list(app.state.messages.get(sid, [])))
         deleted = messages[-count:]
-        kept = messages[: max(0, len(messages) - count)]
+        kept = [*messages[: max(0, len(messages) - count)], *carried]
         deps.guard_direct_destructive_action(
             app,
             session_id=sid,
@@ -843,7 +872,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             event_id=event_id,
             compacted_message_ids=[mid for m in ledger if (mid := _attr(m, "id", ""))],
         )
-        deps.replace_session_messages(app, sid, [compact_message])
+        replacement_messages = preserve_a2ui(sid, [compact_message], ledger, "compact")
+        deps.replace_session_messages(app, sid, replacement_messages)
         memory_event = {
             "id": event_id,
             "version": 1,
@@ -1491,6 +1521,10 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
         return attempt
 
+    # A2UI actions use this exact service seam so retry provenance, busy gates,
+    # provider checks, and source-user recovery cannot drift from the REST route.
+    app.state.retry_turn_action = retry_turn
+
     # ---- POST /v1/sessions/{sid}/cancel (BBB20) -----------------------
 
     @app.post("/v1/sessions/{sid}/cancel")
@@ -1507,81 +1541,5 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         was running (the TUI fires this speculatively on Esc/Ctrl+C).
         """
 
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        # Set the cancellation flag. Cooperative agent/tool paths check
-        # it between expensive boundaries; the turn handler also checks
-        # it after forward() returns so non-cooperative agents still
-        # produce a truthful cancelled envelope.
-        app.state.cancel_flags.add(sid)
-        event = app.state.cancel_events.get(sid)
-        if event is not None:
-            event.set()
-        # #948 S3: cancel cascade — a cancelled parent cancels its spawned children
-        # so no child turn outlives the parent that spawned it.
-        from clio_agent.gact.turn_spawn import cancel_children_of  # noqa: PLC0415
-
-        cancel_children_of(app, sid)
-        stop_session_loop(app, sid)  # P4.1 #1079 cancel-both: no orphaned loop wakeup
-        stop_session_goal(app, sid)  # P4.2 #1080: abandon any active goal on cancel
-        in_flight = app.state.in_flight_turns.get(sid)
-        cancellation_pending = False
-        if in_flight is not None and not in_flight.done():
-            cancellation_pending = True
-        attempt = {
-            "id": _new_cancellation_attempt_id(),
-            "session_id": sid,
-            "requested_at": datetime.now(timezone.utc).isoformat(),
-            "in_flight": cancellation_pending,
-            "cooperative_signal_sent": event is not None,
-            "asyncio_task_cancel_scheduled": cancellation_pending,
-            "asyncio_task_cancel_sent": False,
-            "hard_abort_supported": False,
-            "upstream_abort": "not_supported",
-            "executor_work_may_continue": cancellation_pending,
-        }
-        app.state.cancel_attempts[sid] = attempt
-        if cancellation_pending:
-
-            async def _cancel_after_grace(task: asyncio.Task, session_id: str) -> None:
-                await asyncio.sleep(0.1)
-                if session_id in app.state.cancel_flags and not task.done():
-                    latest_attempt = app.state.cancel_attempts.get(session_id)
-                    if latest_attempt is attempt:
-                        attempt["asyncio_task_cancel_sent"] = True
-                        attempt["asyncio_task_cancelled_at"] = datetime.now(
-                            timezone.utc
-                        ).isoformat()
-                    task.cancel()
-
-            asyncio.create_task(_cancel_after_grace(in_flight, sid))
-        app.state.sessions.update(sid, status="cancelled")
-        app.state.bus.publish(
-            Event(
-                type="session.status_changed",
-                session_id=sid,
-                payload={
-                    "session_id": sid,
-                    "status": "cancelled",
-                    "prev_status": sess.status,
-                    "execution_cancellation": (
-                        "cooperative_pending" if cancellation_pending else "none"
-                    ),
-                    "executor_work_may_continue": cancellation_pending,
-                    "cancellation_attempt": deps.cancellation_attempt_summary(attempt),
-                },
-            )
-        )
+        cancel_session_state(app, deps, sid)
         return Response(status_code=204)

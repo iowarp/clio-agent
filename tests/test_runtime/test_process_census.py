@@ -119,6 +119,7 @@ def test_reap_kills_provably_orphaned_process() -> None:
         server_root_pid=_SERVER,
         daemon_root_pid=_DAEMON,
         kill=killed.append,
+        parent_alive=lambda _pid: False,
     )
     assert killed == [700]
     assert len(reaped) == 1
@@ -144,6 +145,7 @@ def test_reap_excludes_daemon_root_by_construction() -> None:
         server_root_pid=_SERVER,
         daemon_root_pid=_DAEMON,
         kill=killed.append,
+        parent_alive=lambda _pid: False,
     )
     assert _DAEMON not in killed
     assert killed == [700]
@@ -174,6 +176,7 @@ def test_reap_never_kills_any_clio_core_daemon_kind_row() -> None:
         server_root_pid=_SERVER,
         daemon_root_pid=_DAEMON,
         kill=killed.append,
+        parent_alive=lambda _pid: False,
     )
     # It still surfaces as a reportable orphan (unchanged doctor visibility)...
     rows = pc.classify_parentage(nodes, server_root_pid=_SERVER, daemon_root_pid=_DAEMON)
@@ -185,16 +188,19 @@ def test_reap_never_kills_any_clio_core_daemon_kind_row() -> None:
     assert reaped == []
 
 
-def test_reap_skips_when_parent_alive_at_kill_time(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_reap_skips_when_parent_alive_at_kill_time() -> None:
     """A parent that came back alive between snapshot and kill is NEVER reaped."""
     nodes = [
         _node(_SERVER, 1, "python.exe"),
         _node(700, 650, "clio-kit.exe"),  # snapshot says parent 650 is dead
     ]
-    monkeypatch.setattr(pc, "_pid_alive", lambda pid: pid == 650)  # ...but it is alive NOW
     killed: list[int] = []
     reaped = pc.reap_orphaned_processes(
-        nodes=nodes, server_root_pid=_SERVER, daemon_root_pid=None, kill=killed.append
+        nodes=nodes,
+        server_root_pid=_SERVER,
+        daemon_root_pid=None,
+        kill=killed.append,
+        parent_alive=lambda pid: pid == 650,
     )
     assert killed == []
     assert reaped == []
@@ -227,7 +233,11 @@ def test_reap_continues_after_one_kill_failure() -> None:
             raise ProcessLookupError("already exited")
 
     reaped = pc.reap_orphaned_processes(
-        nodes=nodes, server_root_pid=_SERVER, daemon_root_pid=None, kill=_flaky_kill
+        nodes=nodes,
+        server_root_pid=_SERVER,
+        daemon_root_pid=None,
+        kill=_flaky_kill,
+        parent_alive=lambda _pid: False,
     )
     assert [r.pid for r in reaped] == [701]
 

@@ -36,6 +36,8 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.agents.spawn_events import _started_handoff_part as _started_handoff_part
+from clio_agent.gact.agents.spawn_events import emit_spawn_started as _emit_spawn_started
 from clio_agent.gact.agents.spawn_group import (
     failed_spawn_metadata_row,
     spawn_group_fields,
@@ -55,6 +57,29 @@ if TYPE_CHECKING:
     from clio_agent.gact.agents.types import AgentDef
 
 logger = logging.getLogger(__name__)
+
+
+def emit_spawn_started(
+    app: Any,
+    session_id: str,
+    agent_def: "AgentDef",
+    child_id: str,
+    task_text: str,
+    depth: int,
+    spawned: Any,
+) -> None:
+    """Publish a child launch through the patchable runtime event seams."""
+    _emit_spawn_started(
+        app,
+        session_id,
+        agent_def,
+        child_id,
+        task_text,
+        depth,
+        spawned,
+        emit_semantic_event=_emit_semantic_event,
+        append_live_part=_append_live_assistant_part,
+    )
 
 
 def _fanout_batch_bound(agent_def: "AgentDef") -> int:
@@ -210,43 +235,6 @@ def _completion_payload(app: Any, task: Any) -> dict[str, Any]:
     }
     payload.update(markers)
     return payload
-
-
-def _started_handoff_part(
-    agent_def: "AgentDef", child_id: str, task_text: str, depth: int, spawned: Any
-) -> Part:
-    """The ``delegate.started`` expert_handoff Part appended to the PARENT transcript
-    when a child is spawned (#948 S4 finding [7]). The transcript renderer drives the
-    delegation header/depth/nesting off ``type=='expert_handoff'`` Parts — NOT the
-    semantic events — so without this Part a spawned child renders nothing."""
-
-    started_row = {
-        "agent_id": child_id,
-        "parent_id": agent_def.id,
-        "status": "running",
-        "stage": "delegate.started",
-        "question": task_text,
-        "depth": depth,
-        "run_index": spawned.run_index,
-    }
-    started_row.update(spawn_group_fields(spawned))
-    handle_fields = run_handle_fields(spawned, child_id)
-    return Part(
-        id=f"live_handoff_{uuid.uuid4().hex[:12]}",
-        type="expert_handoff",
-        agent_id=agent_def.id,
-        parent_agent=agent_def.id,
-        child_agent=child_id,
-        stage="delegate.started",
-        handle_id=handle_fields["handle_id"],
-        run_label=handle_fields["run_label"],
-        live_state=handle_fields["live_state"],
-        host=handle_fields["host"],
-        placement=handle_fields["placement"],
-        status="running",
-        text=f"{agent_def.id} -> {child_id}",
-        metadata={**_handoff_part_metadata(started_row), "stream_source": "live"},
-    )
 
 
 def _failed_spawn_handoff_part(
@@ -431,9 +419,20 @@ def emit_workflow_step_return(app: Any, session_id: str, agent_def: "AgentDef", 
         _emit_delegation_terminal(app, session_id, agent_def, task)
 
 
-def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[Any]:
+def build_spawn_runtime_tools(
+    base_agent: Any,
+    agent_def: "AgentDef",
+    *,
+    enable_skill_task_collection: bool = False,
+) -> list[Any]:
     """Build the react-main spawn tools bound to ``agent_def`` as the requesting
-    (parent) expert. Resolved lazily against the active app/session at call time."""
+    (parent) expert. Resolved lazily against the active app/session at call time.
+
+    A skill effect may create a temporary child without declaring a static child
+    blueprint. In that case ``enable_skill_task_collection`` exposes only the
+    wait/check/message/observe tools needed to collect that real child task. It
+    does not expose the declared-child spawn or workflow controls.
+    """
 
     from clio_agent.gact.agent_messaging import build_message_agent_tool  # noqa: PLC0415
     from clio_agent.gact.agents.invoker import (  # noqa: PLC0415
@@ -452,11 +451,19 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
     from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
     from clio_agent.gact.spawn_context import bind_task_spec_to_parent  # noqa: PLC0415
 
-    # Only an agent with DECLARED children gets the routing surface — a leaf expert
-    # has nothing to spawn (and spawn would reject an undeclared child anyway).
+    # Declared children own the complete routing surface. A spawn-effect skill can
+    # independently mint a real child task through ``spawn_skill_task``, so it
+    # needs the collector half of the surface even when the blueprint is otherwise
+    # a leaf. A true leaf with neither capability still gets no routing tools.
     _app = _ctx.active_app()
     _sid = _ctx.active_session_id()
-    if _app is None or not _runtime_declared_child_ids(_app, agent_def.id, session_id=_sid):
+    declared_child_ids = (
+        _runtime_declared_child_ids(_app, agent_def.id, session_id=_sid)
+        if _app is not None
+        else set()
+    )
+    has_declared_children = bool(declared_child_ids)
+    if _app is None or (not has_declared_children and not enable_skill_task_collection):
         return []
 
     def _ctx_app_session() -> tuple[Any, str]:
@@ -526,29 +533,7 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
                     _failed_spawn_handoff_part(agent_def, agent, spawn_group_id, group_size, exc),
                 )
             return json.dumps({"error": exc.reason, "message": str(exc)}, sort_keys=True)
-        _emit_semantic_event(
-            app,
-            session_id,
-            "blueprint.delegation.started",
-            turn_id=_active_semantic_turn_id(),
-            trace_id=_active_semantic_trace_id(),
-            status="running",
-            summary=f"{agent_def.id} spawned {agent}",
-            actor={"agent_id": agent_def.id, "role": "parent_expert"},
-            subject={"agent_id": agent, "role": "child_expert"},
-            blueprint=_blueprint_block(agent_def, agent),
-            payload={"run_index": spawned.run_index},
-        )
-        # Transcript render parity (#948 S4 finding [7]): the delegation header /
-        # nesting is driven off the expert_handoff Part, not the semantic event.
-        # Spawn happens once per task, so the started Part is inherently once-per-task.
-        # The ensemble run_index (#948 S5) rides the Part so a same-child ensemble's
-        # started rows are distinguishable.
-        _append_live_assistant_part(
-            app,
-            session_id,
-            _started_handoff_part(agent_def, agent, task, depth, spawned),
-        )
+        emit_spawn_started(app, session_id, agent_def, agent, task, depth, spawned)
         return json.dumps(
             {
                 "task_id": spawned.task_id,
@@ -910,11 +895,20 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: "AgentDef") -> list[An
             },
         ),
     ]
+    if not has_declared_children:
+        collection_names = {
+            "wait_agent_tasks",
+            "check_agent_tasks",
+            "message_agent",
+            "observe_agent_tasks",
+        }
+        tools = [tool for tool in tools if getattr(tool, "name", "") in collection_names]
+
     # run_workflow is gated on a DECLARED workflow (mirroring the children-gated
     # toolset above): a blueprint with no ``workflow:`` block never sees the tool.
     from clio_agent.gact.workflows import parse_workflow  # noqa: PLC0415
 
-    if parse_workflow(agent_def) is not None:
+    if has_declared_children and parse_workflow(agent_def) is not None:
         tools.append(
             native_tool(
                 run_workflow,

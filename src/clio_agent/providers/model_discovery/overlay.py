@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
 
-CODEX_SOURCE = "codex_app_server"
+CODEX_SOURCE = "codex_sdk"
 CLAUDE_CODE_SOURCE = "claude_code_alias_probe"
 HTTP_SOURCE = "live_handshake"
 
