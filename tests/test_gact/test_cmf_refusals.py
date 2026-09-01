@@ -79,6 +79,6 @@ def test_refusal_exception_rejects_an_unknown_reason() -> None:
 def test_projection_is_a_copy_callers_cannot_mutate_the_catalog() -> None:
     projection = cmf_refusal_reasons()
     projection["cmf_no_write_target"]["recovery_actions"].append("sabotage")
-    assert "sabotage" not in CMF_REFUSAL_REASON_DEFINITIONS["cmf_no_write_target"][
-        "recovery_actions"
-    ]
+    assert (
+        "sabotage" not in CMF_REFUSAL_REASON_DEFINITIONS["cmf_no_write_target"]["recovery_actions"]
+    )

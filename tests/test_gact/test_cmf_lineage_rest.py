@@ -165,7 +165,10 @@ def test_lineage_parents_become_used_edges_through_the_producing_activity() -> N
         _artifact_row("artifact_out", "b.csv", call_id="call_1", cmf_id=2),
     ]
     surface.executions = [_execution_row("call_1")]
-    surface.layers = [[{"id": "a.csv:v1", "parents": []}], [{"id": "b.csv:v1", "parents": ["a.csv:v1"]}]]
+    surface.layers = [
+        [{"id": "a.csv:v1", "parents": []}],
+        [{"id": "b.csv:v1", "parents": ["a.csv:v1"]}],
+    ]
     graph = _reader(surface).lineage("artifact_out", direction="both", depth=3, complete=True)
 
     assert graph is not None

@@ -154,10 +154,7 @@ def test_a_confirmed_push_clears_the_batch_so_pushes_are_incremental(cmf_server:
     publisher.close()
 
     second = json.loads(cmf_server.requests[1]["body"]["json_payload"])
-    names = [
-        execution["name"]
-        for execution in second["Pipeline"][0]["stages"][0]["executions"]
-    ]
+    names = [execution["name"] for execution in second["Pipeline"][0]["stages"][0]["executions"]]
     assert names == ["clio:call_2"], "the second push must not resend the first batch"
 
 
@@ -183,9 +180,10 @@ def test_re_pushing_the_same_call_id_is_idempotent_by_named_execution(cmf_server
         executions = document["Pipeline"][0]["stages"][0]["executions"]
         assert [execution["name"] for execution in executions] == ["clio:call_1"]
         assert executions[0]["properties"]["Execution_uuid"] == "call_1"
-    assert documents[1]["Pipeline"][0]["stages"][0]["executions"][0]["events"][0]["artifact"][
-        "uri"
-    ] == "clio://artifact/artifact_2"
+    assert (
+        documents[1]["Pipeline"][0]["stages"][0]["executions"][0]["events"][0]["artifact"]["uri"]
+        == "clio://artifact/artifact_2"
+    )
 
 
 def test_server_reporting_exists_is_accepted_as_an_idempotent_repush(cmf_server: Any) -> None:

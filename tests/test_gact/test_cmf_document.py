@@ -131,9 +131,7 @@ def _document(**kwargs: Any) -> dict[str, Any]:
 def test_golden_document_matches_the_shape_the_merger_reads() -> None:
     in_event, in_body = _artifact_event("artifact_in", "a.csv")
     out_event, out_body = _artifact_event("artifact_out", "b.csv")
-    t_event, t_body = _transform_event(
-        "call_1", used=["artifact_in"], generated=["artifact_out"]
-    )
+    t_event, t_body = _transform_event("call_1", used=["artifact_in"], generated=["artifact_out"])
     artifacts = {
         "artifact_in": artifact_entry(in_event, in_body),
         "artifact_out": artifact_entry(out_event, out_body),
@@ -205,8 +203,9 @@ def test_model_kind_narrows_to_model_and_always_carries_the_uri_property() -> No
     assert entry.custom_properties["clio_kind"] == "model"
 
 
-@pytest.mark.parametrize("kind", ["dataset", "image", "report", "plan", "script", "config",
-                                  "ui_payload", "other"])
+@pytest.mark.parametrize(
+    "kind", ["dataset", "image", "report", "plan", "script", "config", "ui_payload", "other"]
+)
 def test_representable_kinds_narrow_to_dataset_with_the_real_kind_preserved(kind: str) -> None:
     event, body = _artifact_event("artifact_1", "f.bin", kind=kind)
     entry = artifact_entry(event, body)
@@ -233,9 +232,7 @@ def test_unattached_artifact_gets_a_synthesized_creation_execution() -> None:
     zero artifacts and zero events while health showed no failures.
     """
     event, body = _artifact_event("artifact_orphan", "a3.csv", call_id="call_mint")
-    document = _document(
-        artifacts={"artifact_orphan": artifact_entry(event, body)}, executions=[]
-    )
+    document = _document(artifacts={"artifact_orphan": artifact_entry(event, body)}, executions=[])
     executions = document["Pipeline"][0]["stages"][0]["executions"]
     assert len(executions) == 1
     synthesized = executions[0]

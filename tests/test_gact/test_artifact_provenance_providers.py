@@ -19,13 +19,12 @@ from clio_agent.gact.artifacts.provenance import cmf_worker
 from clio_agent.gact.artifacts.provenance.cmf import (
     CMFArtifactProvenanceProvider,
     CMFArtifactStore,
-    CMFBridgeError,
     CMFProviderConfig,
     _resolve_python,
-    _resolve_worker_command,
-    _split_command,
     _worker_argv,
+    resolve_local_worker_command,
 )
+from clio_agent.gact.artifacts.provenance.cmf_reasons import CMFRefusal
 from clio_agent.gact.artifacts.provenance.selector import ArtifactProvenanceDispatcher
 from clio_agent.gact.artifacts.records import (
     ArtifactKind,
@@ -74,11 +73,15 @@ def test_cmf_python_keeps_virtualenv_launcher_path(
     assert _resolve_python(str(launcher)) == str(launcher.absolute())
 
 
-def test_cmf_python_accepts_a_launcher_command_not_only_an_interpreter_path(
+def test_cmf_python_refuses_a_launcher_command_naming_another_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A multi-word interpreter runs the worker through a launcher (e.g. ssh)."""
+    """``ssh host python`` is not product surface -- CLIO has no reach off-host.
+
+    The multi-token launcher form was removed: a CMF runtime that cannot exist
+    on this host is reached through server mode, not by shelling out.
+    """
     ssh = tmp_path / "ssh"
     ssh.write_bytes(b"")
     monkeypatch.setattr(
@@ -86,82 +89,55 @@ def test_cmf_python_accepts_a_launcher_command_not_only_an_interpreter_path(
         lambda value: str(ssh) if value == "ssh" else None,
     )
 
-    command = _resolve_worker_command("ssh homelab /opt/cmf/bin/python")
+    with pytest.raises(CMFRefusal) as excinfo:
+        resolve_local_worker_command("ssh homelab /opt/cmf/bin/python", platform="linux")
 
-    assert command == [str(ssh), "homelab", "/opt/cmf/bin/python"]
-
-
-def test_cmf_launcher_command_is_empty_when_its_first_token_is_unresolvable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An unresolvable launcher stays typed-empty rather than half-built argv."""
-    monkeypatch.setattr(
-        "clio_agent.gact.artifacts.provenance.cmf.shutil.which",
-        lambda _value: None,
-    )
-
-    assert _resolve_worker_command("no-such-launcher homelab /opt/cmf/bin/python") == []
+    assert excinfo.value.reason == "cmf_local_runtime_unavailable"
+    assert "LOCAL interpreter" in excinfo.value.payload["message"]
 
 
-def test_cmf_launcher_split_keeps_a_windows_interpreter_path_intact() -> None:
-    """POSIX-mode shlex would eat the backslashes out of a Windows launcher."""
-    command = r'"D:\Program Files\venv\Scripts\python.exe" -X utf8'
-
-    assert _split_command(command, windows=True) == [
-        r"D:\Program Files\venv\Scripts\python.exe",
-        "-X",
-        "utf8",
-    ]
-    assert _split_command("ssh homelab /opt/cmf/bin/python", windows=True) == [
-        "ssh",
-        "homelab",
-        "/opt/cmf/bin/python",
-    ]
-    assert _split_command("ssh homelab /opt/cmf/bin/python", windows=False) == [
-        "ssh",
-        "homelab",
-        "/opt/cmf/bin/python",
-    ]
-
-
-def test_cmf_worker_script_override_and_store_paths_survive_a_remote_launcher(
+def test_cmf_python_refuses_a_single_token_remote_launcher(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A remote worker gets the overridden script and POSIX store paths verbatim."""
-    ssh = tmp_path / "ssh"
-    ssh.write_bytes(b"")
+    """A bare ``ssh``/``docker`` resolves on PATH but still starts another host."""
+    launcher = tmp_path / "docker"
+    launcher.write_bytes(b"")
     monkeypatch.setattr(
         "clio_agent.gact.artifacts.provenance.cmf.shutil.which",
-        lambda value: str(ssh) if value == "ssh" else None,
-    )
-    config = CMFProviderConfig(
-        python="ssh homelab /home/u/cmf-venv/bin/python",
-        metadata_path=Path("/home/u/qual/mlmd.sqlite"),
-        artifact_root=Path("/home/u/qual/artifacts"),
-        worker_script="/home/u/qual/cmf_worker.py",
-        pipeline_name="clio-qual",
+        lambda value: str(launcher) if value == "docker" else None,
     )
 
-    launcher = _resolve_worker_command(config.python)
-    argv = _worker_argv(config, launcher)
+    with pytest.raises(CMFRefusal) as excinfo:
+        resolve_local_worker_command("docker", platform="linux")
 
-    assert argv == [
-        str(ssh),
-        "homelab",
-        "/home/u/cmf-venv/bin/python",
-        "/home/u/qual/cmf_worker.py",
-        "--metadata",
-        "/home/u/qual/mlmd.sqlite",
-        "--artifact-root",
-        "/home/u/qual/artifacts",
-        "--pipeline",
-        "clio-qual",
+    assert excinfo.value.reason == "cmf_local_runtime_unavailable"
+
+
+def test_cmf_local_mode_refuses_win32_where_no_mlmd_wheels_exist(tmp_path: Path) -> None:
+    """The platform is a PARAMETER, so this is asserted on any host."""
+    interpreter = tmp_path / "python"
+    interpreter.write_bytes(b"")
+
+    with pytest.raises(CMFRefusal) as excinfo:
+        resolve_local_worker_command(str(interpreter), platform="win32")
+
+    assert excinfo.value.reason == "cmf_local_runtime_unsupported_platform"
+    assert excinfo.value.payload["details"]["platform"] == "win32"
+    assert "configure_server_url" in excinfo.value.payload["recovery_actions"]
+
+
+def test_cmf_local_mode_accepts_a_plain_local_interpreter(tmp_path: Path) -> None:
+    interpreter = tmp_path / "python"
+    interpreter.write_bytes(b"")
+
+    assert resolve_local_worker_command(str(interpreter), platform="linux") == [
+        str(interpreter.absolute())
     ]
 
 
-def test_cmf_worker_script_defaults_to_the_bundled_worker(tmp_path: Path) -> None:
-    """Without an override the bundled worker module is what gets executed."""
+def test_cmf_worker_runs_the_bundled_worker_script(tmp_path: Path) -> None:
+    """There is no worker_script override: local mode runs on THIS filesystem."""
     interpreter = tmp_path / "python"
     interpreter.write_bytes(b"")
     config = CMFProviderConfig(
@@ -170,16 +146,29 @@ def test_cmf_worker_script_defaults_to_the_bundled_worker(tmp_path: Path) -> Non
         artifact_root=tmp_path / "artifacts",
     )
 
-    argv = _worker_argv(config, _resolve_worker_command(config.python))
+    argv = _worker_argv(config, resolve_local_worker_command(config.python, platform="linux"))
 
     assert argv[0] == str(interpreter.absolute())
     assert argv[1] == str(Path(cmf_worker.__file__))
+    assert "--pipeline" in argv
 
 
-def test_cmf_worker_argv_refuses_an_unresolvable_interpreter(tmp_path: Path) -> None:
-    """No interpreter is a typed bridge failure, not a bare-name Popen attempt."""
-    with pytest.raises(CMFBridgeError, match="provenance.artifacts.cmf.python"):
-        _worker_argv(_config(tmp_path), [])
+def test_cmf_config_has_no_worker_script_field() -> None:
+    """The override is gone, not merely unused."""
+    assert "worker_script" not in CMFProviderConfig.__dataclass_fields__
+
+
+def test_cmf_worker_refuses_an_unresolvable_interpreter(tmp_path: Path) -> None:
+    """No interpreter is a typed refusal, not a bare-name Popen attempt."""
+    with pytest.raises(CMFRefusal) as excinfo:
+        resolve_local_worker_command(str(tmp_path / "absent-python"), platform="linux")
+    assert excinfo.value.reason == "cmf_local_runtime_unavailable"
+
+
+def test_cmf_unset_python_is_the_no_write_target_refusal() -> None:
+    with pytest.raises(CMFRefusal) as excinfo:
+        resolve_local_worker_command("   ", platform="linux")
+    assert excinfo.value.reason == "cmf_no_write_target"
 
 
 def test_cmf_worker_posts_server_payload_without_optional_http_dependency(
