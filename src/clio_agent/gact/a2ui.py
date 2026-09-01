@@ -61,6 +61,15 @@ class A2UIValidationError(ValueError):
     """Raised when an A2UI message crosses the trusted catalog boundary."""
 
 
+class A2UITranscriptFrozenError(A2UIValidationError):
+    """Raised when a settled transcript can no longer accept an A2UI part.
+
+    Distinct from a payload rejection: the batch was valid, but the ledger it
+    would land in is closed, so the producer is told ``transcript_frozen``
+    rather than being handed a validation message it cannot act on.
+    """
+
+
 @dataclass
 class A2UISurfaceRecord:
     """Durable ordered messages and compact surface metadata."""
@@ -475,6 +484,7 @@ __all__ = [
     "MAX_A2UI_MESSAGES",
     "SERVER_ACTIONS",
     "A2UISurfaceRecord",
+    "A2UITranscriptFrozenError",
     "A2UIValidationError",
     "apply_batch",
     "project_a2ui_parts",

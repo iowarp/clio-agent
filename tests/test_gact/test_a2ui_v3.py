@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from clio_schemas import A2UIComponent
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch, raises
 
+from clio_agent.gact import a2ui_store as a2ui_store_module
+from clio_agent.gact import a2ui_tools as a2ui_tools_module
 from clio_agent.gact import context as gact_context
 from clio_agent.gact.a2ui import (
     MAX_A2UI_MESSAGES,
@@ -994,3 +997,119 @@ def test_deleted_surface_cannot_resurrect_across_requests_without_create(tmp_pat
     surface = client.app.state.a2ui_store.get(sid, "terminal-surface")
     assert surface is not None
     assert surface.state == "deleted"
+
+
+def _update_data_model(surface_id: str, path: str, value: object) -> dict[str, object]:
+    return {
+        "version": "v0.9.1",
+        "updateDataModel": {"surfaceId": surface_id, "path": path, "value": value},
+    }
+
+
+def test_http_part_written_during_a_live_surface_folds_after_its_create(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    app = client.app
+    monkeypatch.setattr(gact_context, "active_app", lambda: app)
+    monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
+    build_create_a2ui_surface_tool()(
+        surface_id="live-surface",
+        components=[{"id": "root", "component": "Text", "text": "Live"}],
+    )
+    assert app.state.messages.get(sid, []) == []
+
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_update_data_model("live-surface", "/ack", True)]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert app.state.a2ui_store.projection_degradations(sid) == []
+    surface = app.state.a2ui_store.get(sid, "live-surface")
+    assert surface is not None
+    assert surface.messages[-1]["updateDataModel"]["path"] == "/ack"
+
+
+def test_repeated_correlation_part_id_is_rejected_with_a_typed_error(tmp_path: Path) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    first = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message("dup-surface")], "correlation": {"part_id": "p1"}},
+    )
+    second = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={
+            "messages": [_update_data_model("dup-surface", "/late", True)],
+            "correlation": {"part_id": "p1"},
+        },
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 422, second.text
+    assert second.json()["error"]["error"] == "a2ui_validation_failed"
+    assert "part_id" in second.json()["error"]["message"]
+    surface = client.app.state.a2ui_store.get(sid, "dup-surface")
+    assert surface is not None and surface.revision == 1
+    assert client.app.state.a2ui_store.projection_degradations(sid) == []
+
+
+def test_concurrent_producers_cannot_double_create_one_surface(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    store = client.app.state.a2ui_store
+    real_fold = a2ui_store_module.apply_batch
+    results: list[str] = []
+    racer: list[threading.Thread] = []
+
+    def produce() -> None:
+        try:
+            store.apply_batch(sid, [_create_message("raced-surface")])
+            results.append("applied")
+        except A2UIValidationError as exc:
+            results.append(str(exc))
+
+    def gated(*args: object, **kwargs: object) -> object:
+        if not racer:
+            # Inside the first producer's read->validate->persist window: start a
+            # second producer and give it time to read the same projection.
+            thread = threading.Thread(target=produce)
+            racer.append(thread)
+            thread.start()
+            thread.join(timeout=0.5)
+        return real_fold(*args, **kwargs)
+
+    monkeypatch.setattr(a2ui_store_module, "apply_batch", gated)
+    produce()
+    racer[0].join(timeout=5.0)
+
+    assert not racer[0].is_alive()
+    assert sorted(results) == ["A2UI surface already exists", "applied"]
+    assert store.projection_degradations(sid) == []
+
+
+def test_frozen_transcript_returns_the_typed_tool_reason(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    app = client.app
+    monkeypatch.setattr(gact_context, "active_app", lambda: app)
+    monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
+    monkeypatch.setattr(a2ui_tools_module, "_emit_surface_part", lambda *_a, **_k: False)
+
+    result = build_create_a2ui_surface_tool()(
+        surface_id="frozen-surface",
+        components=[{"id": "root", "component": "Text", "text": "Frozen"}],
+    )
+
+    assert result == {
+        "rendered": False,
+        "reason": "transcript_frozen",
+        "session_id": sid,
+        "surface_id": "frozen-surface",
+    }
+    assert app.state.a2ui_store.get(sid, "frozen-surface") is None

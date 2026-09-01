@@ -6,7 +6,11 @@ import uuid
 from typing import Any, Optional
 
 from clio_agent.gact import context as _ctx
-from clio_agent.gact.a2ui import A2UIValidationError, trusted_component_names
+from clio_agent.gact.a2ui import (
+    A2UITranscriptFrozenError,
+    A2UIValidationError,
+    trusted_component_names,
+)
 from clio_agent.gact.agents.tool_instrumentation import native_tool
 from clio_agent.gact.parts import Part
 from clio_agent.gact.protocol_v3 import A2UI_V091_WIRE, CLIO_A2UI_CATALOG_ID
@@ -164,31 +168,38 @@ def build_create_a2ui_surface_tool() -> Any:
                     },
                 }
             )
+
         # Both the HTTP producer and this model tool cross the same atomic
         # validate-then-append service. Updates still write a projection-only
         # A2UI part, so replay remains complete without rendering duplicate cards.
-        emitted = False
-
         def persist_part(candidate: Part) -> bool:
-            nonlocal emitted
-            emitted = _emit_surface_part(app, session_id, candidate)
-            return emitted
+            return _emit_surface_part(app, session_id, candidate)
 
-        surfaces = app.state.a2ui_store.apply_batch(
-            session_id,
-            messages,
-            part_id=part_id,
-            persist_part=persist_part,
-        )
+        try:
+            surfaces = app.state.a2ui_store.apply_batch(
+                session_id,
+                messages,
+                part_id=part_id,
+                persist_part=persist_part,
+            )
+        except A2UITranscriptFrozenError:
+            # The batch was valid but the turn's ledger is already settled, so
+            # nothing was persisted or published: report the typed reason rather
+            # than a validation message the model cannot act on.
+            return {
+                "rendered": False,
+                "reason": "transcript_frozen",
+                "session_id": session_id,
+                "surface_id": surface_id,
+            }
         surface = surfaces[-1]
         return {
-            "rendered": emitted,
+            "rendered": True,
             "session_id": session_id,
             "surface_id": surface.id,
             "part_id": surface.part_id or part_id,
             "revision": surface.revision,
             "state": surface.state,
-            **({} if emitted else {"reason": "transcript_frozen"}),
         }
 
     create_a2ui_surface.__doc__ = (create_a2ui_surface.__doc__ or "").replace(
