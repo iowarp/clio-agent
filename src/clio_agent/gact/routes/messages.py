@@ -48,6 +48,7 @@ from clio_agent.gact.providers.config import (
     _model_ref_is_empty,
     _model_ref_matches_active,
 )
+from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui
 from clio_agent.gact.runtime.globals import _iso_from_epoch, _new_message_id
 from clio_agent.gact.turn_runner import session_busy_error_payload
 from clio_agent.gact.types import (
@@ -117,10 +118,15 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
                 summary=f"delete message {message_id} from session {sid}",
                 reason="user_requested_message_delete",
             )
-            msgs.pop(i)
-            deps.replace_session_messages(app, sid, msgs)
+            # A2UI surfaces are transcript-owned: dropping the message that
+            # carries their parts would delete a live surface as a side effect
+            # of a prose edit, with no lifecycle event. Preserve them the way
+            # compaction and rollback do (routes/session_a2ui_preservation.py).
+            removed = msgs.pop(i)
+            retained = preserve_a2ui(sid, msgs, [removed], "message_delete")
+            deps.replace_session_messages(app, sid, retained)
             if sess is not None:
-                app.state.sessions.update(sid, message_count=len(msgs))
+                app.state.sessions.update(sid, message_count=len(retained))
             app.state.bus.publish(
                 Event(
                     type="message.deleted",

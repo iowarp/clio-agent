@@ -139,6 +139,38 @@ class A2UIStore:
         rows.sort(key=lambda row: row.created_at)
         return [row.to_wire() for row in rows]
 
+    def announce_ledger_clear(self, session_id: str, reason: str) -> list[str]:
+        """Publish a typed lifecycle deletion for every surface a wipe removes.
+
+        A2UI state is transcript-owned, so clearing a session's ledger destroys
+        its surfaces. Callers that intend that destruction (plan-exit
+        ``clear_context``) announce it here so a connected client stops
+        rendering a surface the server no longer has, with the reason carried on
+        the event instead of the surface silently disappearing on reconnect.
+
+        Args:
+            session_id: Session whose ledger is about to be replaced.
+            reason: Typed reason recorded on each published deletion.
+
+        Returns:
+            The ids of the surfaces announced as deleted, in creation order.
+        """
+
+        announced: list[str] = []
+        with self._session_lock(session_id):
+            for record in sorted(self._project(session_id)[0].values(), key=lambda r: r.created_at):
+                if record.state == "deleted":
+                    continue
+                announced.append(record.id)
+                self._bus.publish(
+                    Event(
+                        type="a2ui.surface.deleted",
+                        session_id=session_id,
+                        payload={"surface_id": record.id, "reason": reason},
+                    )
+                )
+        return announced
+
     def _persist_part(self, session_id: str, part: "Part") -> bool:
         from clio_agent.gact.session_store import _append_session_message  # noqa: PLC0415
         from clio_agent.gact.types import Message  # noqa: PLC0415

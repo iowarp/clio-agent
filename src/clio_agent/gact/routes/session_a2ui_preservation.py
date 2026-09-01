@@ -7,6 +7,32 @@ from datetime import datetime, timezone
 
 from clio_agent.gact.types import Message
 
+PRESERVATION_MARKER = "a2ui_preservation"
+
+
+def split_preserved_a2ui(messages: list[Message]) -> tuple[list[Message], list[Message]]:
+    """Split a ledger into rollback candidates and carried preservation messages.
+
+    A preservation message is this module's own synthetic carrier, so counting
+    it as a rollback target makes an undo delete and immediately re-mint it --
+    the ledger never shrinks and the rollback can never reach the prose behind
+    it. Carrying it aside keeps ``count`` applied to real transcript messages.
+
+    Args:
+        messages: The session ledger in transcript order.
+
+    Returns:
+        ``(candidates, carried)``: the messages a rollback may remove, and the
+        preservation carriers to re-attach after it.
+    """
+
+    candidates: list[Message] = []
+    carried: list[Message] = []
+    for message in messages:
+        target = carried if message.metadata.get("synthetic") == PRESERVATION_MARKER else candidates
+        target.append(message)
+    return candidates, carried
+
 
 def preserve_a2ui(
     session_id: str,
@@ -44,7 +70,7 @@ def preserve_a2ui(
         updated_at=now,
         parts=preserved_parts,
         metadata={
-            "synthetic": "a2ui_preservation",
+            "synthetic": PRESERVATION_MARKER,
             "preserved_by": operation,
         },
     )

@@ -27,6 +27,7 @@ from clio_agent.gact.plan_mode import (
     maybe_pause_for_plan_exit,
     resolve_plan_exit_answer,
 )
+from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
 from clio_agent.gact.types import UserQuestion
 
 
@@ -468,3 +469,48 @@ def test_durable_defer_busy_folds_into_loop_inbox(
     inbox = app.state.loop_inboxes.get(sess.id)
     assert inbox is not None and inbox.peek_nonempty()
     assert app.state.sessions.get(sess.id).mode == "edit"  # transition still fired
+
+
+def test_clear_context_announces_every_surface_it_deletes(tmp_path: Path) -> None:
+    app = _make_app(tmp_path)
+    sess = _plan_session(app, tmp_path)
+    app.state.a2ui_store.apply_batch(
+        sess.id,
+        [
+            {
+                "version": "v0.9.1",
+                "createSurface": {
+                    "surfaceId": "plan_surface",
+                    "catalogId": CLIO_A2UI_CATALOG_ID,
+                },
+            },
+            {
+                "version": "v0.9.1",
+                "updateComponents": {
+                    "surfaceId": "plan_surface",
+                    "components": [
+                        {
+                            "id": "root",
+                            "component": "clio.status.v1",
+                            "label": "Plan",
+                            "state": "completed",
+                        }
+                    ],
+                },
+            },
+        ],
+    )
+    q = _pending_plan_exit_question(app, sess, plan_file=str(tmp_path / "plan.md"))
+    deps = _fake_deps()
+
+    resolve_plan_exit_answer(app, deps, sess.id, _answer(q, selected=["auto", "clear_context"]))
+
+    assert deps._calls["replace"][0]["messages"] == []
+    deletions = [
+        event.payload
+        for event in app.state.bus._history[sess.id]
+        if event.type == "a2ui.surface.deleted"
+    ]
+    assert deletions == [
+        {"surface_id": "plan_surface", "reason": "plan_exit_context_cleared"},
+    ]

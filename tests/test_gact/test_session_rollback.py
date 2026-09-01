@@ -201,3 +201,58 @@ def test_rollback_rejects_running_session(tmp_path: Path) -> None:
 
         assert resp.status_code == 409
         assert [m.id for m in app.state.messages[sid]] == ["msg_1", "msg_2"]
+
+
+def _seed_ready_surface(app: object, sid: str, surface_id: str) -> None:
+    app.state.a2ui_store.apply_batch(
+        sid,
+        [
+            {
+                "version": "v0.9.1",
+                "createSurface": {"surfaceId": surface_id, "catalogId": CLIO_A2UI_CATALOG_ID},
+            },
+            {
+                "version": "v0.9.1",
+                "updateComponents": {
+                    "surfaceId": surface_id,
+                    "components": [
+                        {
+                            "id": "root",
+                            "component": "clio.status.v1",
+                            "label": "Analysis",
+                            "state": "completed",
+                        }
+                    ],
+                },
+            },
+        ],
+    )
+
+
+def test_repeated_undo_past_a_preserved_surface_keeps_making_progress(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "rollback progress"}).json()["id"]
+        _seed_messages(client, sid, ["msg_1", "msg_2"])
+        _seed_ready_surface(app, sid, "analysis_surface")
+
+        first = client.post(f"/v1/sessions/{sid}/undo", json={"count": 1})
+        second = client.post(f"/v1/sessions/{sid}/undo", json={"count": 1})
+        third = client.post(f"/v1/sessions/{sid}/undo", json={"count": 1})
+        exhausted = client.post(f"/v1/sessions/{sid}/undo", json={"count": 1})
+
+        assert first.status_code == 200, first.text
+        assert second.json()["deleted_message_ids"] == ["msg_2"]
+        assert third.json()["deleted_message_ids"] == ["msg_1"]
+        assert [
+            first.json()["message_count"],
+            second.json()["message_count"],
+            third.json()["message_count"],
+        ] == [3, 2, 1]
+        # Nothing is left to undo: the report stays honest instead of claiming
+        # deletions that only re-mint the preserved surface.
+        assert exhausted.json()["deleted_message_ids"] == []
+        assert exhausted.json()["message_count"] == 1
+        surface = app.state.a2ui_store.get(sid, "analysis_surface")
+        assert surface is not None and surface.state == "ready"
+        assert app.state.a2ui_store.projection_degradations(sid) == []

@@ -741,6 +741,9 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
     save_approved_plan(app, sid, plan_file=plan_file)
     cleared = False
     if clear_context:
+        # The wipe destroys transcript-owned A2UI surfaces; announce each one
+        # with its typed reason so no client renders a surface the server lost.
+        app.state.a2ui_store.announce_ledger_clear(sid, "plan_exit_context_cleared")
         deps.replace_session_messages(app, sid, [])
         app.state.sessions.update(
             sid, message_count=0, metadata_patch={"plan_exit_context_cleared": True}

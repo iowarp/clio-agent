@@ -54,7 +54,7 @@ from clio_agent.gact.messaging import raise_on_reserved_metadata
 from clio_agent.gact.protocol_v3 import project_for_request, session_to_v3
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
 from clio_agent.gact.routes.compaction import build_compact_summary_message
-from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui
+from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui, split_preserved_a2ui
 from clio_agent.gact.routes.session_cancellation import cancel_session_state
 from clio_agent.gact.routes.session_rows import filter_session_rows, rows_to_wire
 from clio_agent.gact.runtime import bringup_timing
@@ -480,9 +480,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        messages = list(app.state.messages.get(sid, []))
+        messages, carried = split_preserved_a2ui(list(app.state.messages.get(sid, [])))
         deleted = messages[-count:]
-        kept = messages[: max(0, len(messages) - count)]
+        kept = [*messages[: max(0, len(messages) - count)], *carried]
         deps.guard_direct_destructive_action(
             app,
             session_id=sid,
