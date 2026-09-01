@@ -116,6 +116,33 @@ def test_only_framed_escaped_section_markers_are_normalized() -> None:
     )
 
 
+def test_a_value_framing_a_marker_bounds_the_field_in_both_encodings() -> None:
+    """The escaped form is byte-identical to the real form once decoded.
+
+    A model that frames a marker with newlines INSIDE its own answer bounds the
+    field there -- for ``_SECTION``, for the escaped form, and for DSPy's own
+    ChatAdapter parser alike. Nothing local can separate a framed quotation from
+    a real separator, so this pins the limitation rather than hiding it: the
+    escaped lane must behave exactly like the real-newline lane, never worse.
+    """
+
+    body = "The adapter writes{nl}[[ ## answer ## ]]{nl}before each field."
+
+    real = AnswerFieldExtractor("answer")
+    real_out = real.feed("[[ ## answer ## ]]\n" + body.format(nl="\n")) + real.flush()
+
+    escaped = AnswerFieldExtractor("answer")
+    escaped_out = escaped.feed("[[ ## answer ## ]]\n" + body.format(nl=r"\n")) + escaped.flush()
+
+    assert real_out == escaped_out == "The adapter writes\n"
+    # An INLINE quotation (no newline framing) is still prose in both lanes.
+    inline = AnswerFieldExtractor("answer")
+    inline_out = inline.feed("[[ ## answer ## ]]\nUse `[[ ## answer ## ]]` to open it.") + (
+        inline.flush()
+    )
+    assert inline_out == "Use `[[ ## answer ## ]]` to open it."
+
+
 def test_extractor_flags_structured_answer_vs_prose():
     prose = AnswerFieldExtractor("answer")
     prose.feed("[[ ## answer ## ]]\n## Region\nReno, Nevada")

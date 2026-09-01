@@ -38,8 +38,13 @@ _SECTION = re.compile(r"(?m)^[ \t]*\[\[[ \t]*##[ \t]*([A-Za-z0-9_]+)[ \t]*##[ \t
 # Some SDK-backed models occasionally encode a section line's surrounding newlines
 # as the two literal characters ``\\n``.  The resulting text is still an otherwise
 # valid ChatAdapter contract, but neither DSPy's parser nor the live field extractor
-# sees the next field boundary.  Match only a marker framed by TWO encoded newlines:
-# this cannot reinterpret an inline marker quoted in prose as a structural boundary.
+# sees the next field boundary.  Match only a marker framed by TWO encoded newlines,
+# which decodes to exactly the marker-alone-on-its-line form ``_SECTION`` already
+# treats as a boundary.  A marker merely quoted INLINE stays prose (the "`, then `"
+# truncation above), but one a value frames with newlines -- encoded OR real -- is a
+# boundary to this extractor exactly as it is to DSPy's own ChatAdapter parser.
+# That ambiguity is inherent to the wire format: the two are byte-identical once
+# decoded, so nothing local can tell a framed quotation from a real separator.
 _ESCAPED_SECTION = re.compile(
     r"\\n[ \t]*(\[\[[ \t]*##[ \t]*([A-Za-z0-9_]+)[ \t]*##[ \t]*\]\])[ \t]*\\n"
 )
@@ -50,9 +55,19 @@ _HOLDBACK = len("[[ ## workflow_state ## ]]") + 2
 def normalize_escaped_section_boundaries(text: str) -> str:
     """Restore encoded ChatAdapter section separators without touching prose.
 
-    Only ``\\n<declared-looking marker>\\n`` is normalized.  Inline/quoted markers,
-    ordinary escaped newlines, JSON payloads, and field values remain byte-for-byte
-    unchanged.  The repaired output still goes through DSPy's normal typed parser.
+    Only ``\\n<marker>\\n`` is normalized: its two escaped newlines become real
+    ones.  Inline/quoted markers, ordinary escaped newlines and JSON payloads are
+    left byte-for-byte unchanged.  A marker a field VALUE frames with escaped
+    newlines is normalized too, and then bounds the field -- the same way the
+    real-newline form already bounds it for ``_SECTION`` and for DSPy's own
+    ChatAdapter parser, which the decoded text is byte-identical to.  The
+    repaired output still goes through DSPy's normal typed parser.
+
+    Args:
+        text: Raw accumulated completion text.
+
+    Returns:
+        ``text`` with encoded section separators decoded.
     """
 
     return _ESCAPED_SECTION.sub(lambda match: f"\n{match.group(1)}\n", text)
