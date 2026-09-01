@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from threading import Lock, RLock
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
@@ -22,6 +23,46 @@ if TYPE_CHECKING:
     from clio_agent.gact.parts import Part
 
 _PersistPart = Callable[["Part"], bool]
+
+
+@dataclass(frozen=True)
+class A2UIBatchOutcome:
+    """Server truth about one applied batch, read under the session lock.
+
+    ``created_surface_ids`` is the fold's own verdict — the surfaces this batch
+    brought into existence — not a caller's belief about what it sent. A
+    producer that picks its own operation (``create_a2ui_surface`` emits
+    ``createSurface`` only when the id is absent or deleted) cannot otherwise
+    tell a brand-new surface from a revision, because both end on the same
+    revision/state shape.
+
+    Attributes:
+        surfaces: One record per applied message, in batch order.
+        created_surface_ids: Ids this batch created, in creation order.
+        session_surface_ids: Every live (non-deleted) surface id in the session
+            after the batch, oldest first.
+    """
+
+    surfaces: list[A2UISurfaceRecord]
+    created_surface_ids: tuple[str, ...]
+    session_surface_ids: tuple[str, ...]
+
+
+def _live_surface_ids(surfaces: Mapping[tuple[str, str], A2UISurfaceRecord]) -> tuple[str, ...]:
+    """Return the projection's non-deleted surface ids, oldest first.
+
+    Mirrors :meth:`A2UIStore.list_wire`'s ordering so a producer's registry
+    view and a client's snapshot enumerate the same session in the same order.
+
+    Args:
+        surfaces: A folded projection keyed by ``(session_id, surface_id)``.
+
+    Returns:
+        The live surface ids ordered by creation time.
+    """
+
+    rows = sorted(surfaces.values(), key=lambda row: row.created_at)
+    return tuple(row.id for row in rows if row.state != "deleted")
 
 
 class A2UIStore:
@@ -210,6 +251,47 @@ class A2UIStore:
     ) -> list[A2UISurfaceRecord]:
         """Atomically validate, append one transcript part, and publish a batch."""
 
+        return self.apply_batch_outcome(
+            session_id,
+            messages,
+            run_id=run_id,
+            message_id=message_id,
+            part_id=part_id,
+            persist_part=persist_part,
+        ).surfaces
+
+    def apply_batch_outcome(
+        self,
+        session_id: str,
+        messages: list[Mapping[str, Any]],
+        *,
+        run_id: str = "",
+        message_id: str = "",
+        part_id: str = "",
+        persist_part: _PersistPart | None = None,
+    ) -> A2UIBatchOutcome:
+        """Apply a batch and report what it created plus the session's registry.
+
+        Args:
+            session_id: Session the batch belongs to.
+            messages: The ordered official server messages.
+            run_id: Correlated run id recorded on a created surface.
+            message_id: Correlated message id recorded on a created surface.
+            part_id: Transcript part id; minted when empty.
+            persist_part: Writer for the transcript part; the session message
+                log is used when omitted.
+
+        Returns:
+            The applied records plus the created/live-registry truth, all read
+            inside the session lock that made the fold atomic.
+
+        Raises:
+            A2UIValidationError: If any message is rejected, or the correlation
+                part id is already recorded in this session.
+            A2UITranscriptFrozenError: If the ledger can no longer accept the
+                part; nothing is persisted or published.
+        """
+
         from uuid import uuid4  # noqa: PLC0415
 
         from clio_agent.gact.parts import Part  # noqa: PLC0415
@@ -225,7 +307,7 @@ class A2UIStore:
                 )
             current, _ = self._project(session_id)
             timestamp = utcnow_iso()
-            _, applied = apply_batch(
+            folded, applied = apply_batch(
                 current,
                 session_id,
                 messages,
@@ -266,7 +348,15 @@ class A2UIStore:
                     else surface.to_wire()
                 )
                 self._bus.publish(Event(type=event_type, session_id=session_id, payload=payload))
-            return [surface for _, _, surface in applied]
+            return A2UIBatchOutcome(
+                surfaces=[surface for _, _, surface in applied],
+                created_surface_ids=tuple(
+                    surface_id
+                    for operation, surface_id, _ in applied
+                    if operation == "createSurface"
+                ),
+                session_surface_ids=_live_surface_ids(folded),
+            )
 
 
-__all__ = ["A2UIStore"]
+__all__ = ["A2UIBatchOutcome", "A2UIStore"]

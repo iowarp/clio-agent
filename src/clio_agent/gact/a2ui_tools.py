@@ -15,6 +15,12 @@ from clio_agent.gact.agents.tool_instrumentation import native_tool
 from clio_agent.gact.parts import Part
 from clio_agent.gact.protocol_v3 import A2UI_V091_WIRE, CLIO_A2UI_CATALOG_ID
 
+# The surface registry rides back in the model lane on every production, so it
+# is bounded: a long session's oldest surfaces are the ones least likely to be
+# revised, so the newest ids survive the cut and the drop is stated, never
+# silent.
+MAX_REPORTED_SURFACE_IDS = 32
+
 
 def _emit_surface_part(app: Any, session_id: str, part: Part) -> bool:
     """Append a typed A2UI reference in live transcript order."""
@@ -49,7 +55,13 @@ def build_create_a2ui_surface_tool() -> Any:
         Use this for rendered Mermaid diagrams, highlighted code, compact plots,
         data tables, structured status, workflows, artifacts, diffs, approvals,
         and forms when those representations answer
-        the user's question more clearly than prose. ``components`` uses the A2UI
+        the user's question more clearly than prose.
+        ``surface_id`` selects the surface: to revise one that already exists,
+        pass its EXACT id, listed in every result's ``session_surface_ids``;
+        any other id creates a separate new surface. The result's ``created``
+        reports which happened — ``true`` means a new surface was minted,
+        ``false`` means the existing one was revised in place.
+        ``components`` uses the A2UI
         0.9 component array: each item needs ``id`` and ``component``; containers
         reference child ids. Trusted component names: {trusted_component_names}.
         Bind values with
@@ -176,7 +188,7 @@ def build_create_a2ui_surface_tool() -> Any:
             return _emit_surface_part(app, session_id, candidate)
 
         try:
-            surfaces = app.state.a2ui_store.apply_batch(
+            outcome = app.state.a2ui_store.apply_batch_outcome(
                 session_id,
                 messages,
                 part_id=part_id,
@@ -192,15 +204,25 @@ def build_create_a2ui_surface_tool() -> Any:
                 "session_id": session_id,
                 "surface_id": surface_id,
             }
-        surface = surfaces[-1]
-        return {
+        surface = outcome.surfaces[-1]
+        registry = outcome.session_surface_ids
+        truncated = len(registry) > MAX_REPORTED_SURFACE_IDS
+        result: dict[str, Any] = {
             "rendered": True,
+            # Server truth from the fold, not from what this call intended: a
+            # new surface and a revision otherwise land on the same revision
+            # and state, so this is the only signal that separates them.
+            "created": surface.id in outcome.created_surface_ids,
             "session_id": session_id,
             "surface_id": surface.id,
             "part_id": surface.part_id or part_id,
             "revision": surface.revision,
             "state": surface.state,
+            "session_surface_ids": list(registry[-MAX_REPORTED_SURFACE_IDS:]),
         }
+        if truncated:
+            result["session_surface_ids_truncated"] = True
+        return result
 
     create_a2ui_surface.__doc__ = (create_a2ui_surface.__doc__ or "").replace(
         "{trusted_component_names}", ", ".join(trusted_component_names())
@@ -213,7 +235,11 @@ def build_create_a2ui_surface_tool() -> Any:
         args={
             "surface_id": {
                 "type": "string",
-                "description": "Stable surface id, reused to update the same surface.",
+                "description": (
+                    "Stable surface id. Reuse an id from a previous result's "
+                    "session_surface_ids to revise that surface; any other id "
+                    "creates a new one."
+                ),
             },
             "components": {
                 "type": "array",

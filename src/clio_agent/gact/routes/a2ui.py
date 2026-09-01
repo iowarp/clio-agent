@@ -85,19 +85,22 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
             for message in messages:
                 if not isinstance(message, Mapping):
                     raise A2UIValidationError("A2UI message must be an object")
-            surfaces = [
-                surface.to_wire()
-                for surface in app.state.a2ui_store.apply_batch(
-                    sid,
-                    messages,
-                    run_id=str(correlation.get("run_id") or ""),
-                    message_id=str(correlation.get("message_id") or ""),
-                    part_id=str(correlation.get("part_id") or ""),
-                )
-            ]
+            outcome = app.state.a2ui_store.apply_batch_outcome(
+                sid,
+                messages,
+                run_id=str(correlation.get("run_id") or ""),
+                message_id=str(correlation.get("message_id") or ""),
+                part_id=str(correlation.get("part_id") or ""),
+            )
         except A2UIValidationError as exc:
             raise _error(422, "a2ui_validation_failed", str(exc)) from exc
-        return {"surfaces": surfaces}
+        # Sibling of the model tool's ``created`` flag: the same fold-derived
+        # truth about which ids this batch minted. It rides the envelope rather
+        # than a surface row because the row shape is the renderer's contract.
+        return {
+            "surfaces": [surface.to_wire() for surface in outcome.surfaces],
+            "created_surface_ids": list(outcome.created_surface_ids),
+        }
 
     @app.post("/v1/sessions/{sid}/a2ui/actions")
     async def handle_action(sid: str, request: Request) -> dict[str, Any]:
