@@ -8,6 +8,7 @@ from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from clio_agent.tools.mcp_task_records import TaskRecordStore
@@ -99,15 +100,38 @@ class RelayToolSurfaces:
     relay_install: Any | None = None
 
 
+def _relay_endpoint_origin(url: str) -> tuple[str, str]:
+    """Return the ``(scheme, host:port)`` a relay URL points at.
+
+    Userinfo is stripped and the comparison is exact and case-folded, so a
+    changed port or a scheme downgrade counts as a DIFFERENT endpoint. Only the
+    path may move without re-presenting the credential.
+
+    Args:
+        url: A relay MCP or HTTP endpoint URL.
+
+    Returns:
+        The comparable origin of ``url``.
+    """
+
+    parsed = urlsplit(url.strip())
+    return parsed.scheme.lower(), parsed.netloc.rpartition("@")[2].lower()
+
+
 def configure_runtime_relay(
     *, mcp_url: str, http_url: str, api_token: str | None = None
 ) -> RelayTransportConfig:
     """Apply a complete process-local relay connection.
 
-    An omitted token reuses the currently resolved credential when one exists;
-    a first-time connection must provide it.  The returned object is intended
-    for internal wiring only and must never be serialized because it contains
-    the bearer credential.
+    An omitted token reuses the currently resolved credential ONLY when both
+    doors still point at the endpoint that credential was configured for; a
+    first-time connection, and any redirect to a different endpoint, must
+    present the credential explicitly.  Without that continuity check an
+    unauthenticated caller could redirect the deployment's real bearer token to
+    an endpoint of its choosing -- the token this module keeps process-local and
+    :func:`relay_connection_metadata` withholds from the wire.  The returned
+    object is intended for internal wiring only and must never be serialized
+    because it contains the bearer credential.
 
     Args:
         mcp_url: Authenticated relay control endpoint.
@@ -118,13 +142,28 @@ def configure_runtime_relay(
         The immutable process-local transport configuration.
 
     Raises:
-        ValueError: The connection is incomplete.
+        ValueError: The connection is incomplete, or it redirects the held
+            credential to a different endpoint without re-presenting it.
     """
 
     global _runtime_relay_override
     current = resolve_relay_transport_config()
     credential = (api_token or "").strip()
     if not credential and isinstance(current, RelayTransportConfig):
+        moved = [
+            field
+            for field, requested, held in (
+                ("mcp_url", mcp_url, current.mcp_url),
+                ("http_url", http_url, current.http_url),
+            )
+            if _relay_endpoint_origin(requested) != _relay_endpoint_origin(held)
+        ]
+        if moved:
+            raise ValueError(
+                "relay_credential_endpoint_mismatch: pointing "
+                f"{', '.join(moved)} at a different endpoint requires an "
+                "explicit access credential"
+            )
         credential = current.api_token
     values = {
         "mcp_url": mcp_url.strip(),
