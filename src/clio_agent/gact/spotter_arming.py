@@ -17,14 +17,40 @@ tool call with ``spotter_watcher_check_failed``: an armed session was a total
 write lockout whose first operator signal was a denial storm instead of an
 arm-time diagnosis.
 
+The SECOND live defect this closes (``sess_086cf23a960b``): checking the
+launcher's ``--project`` DIRECTORY is not the same as checking that its ENTRY
+POINT can spawn. ``SPOTTER_IMPL_DIR`` was set and the directory existed, but the
+impl venv had been created and never synced (a bare ``python.exe``, no
+``site-packages``); the gate passed, ``uv run --project <dir> --no-sync
+spotter-mcp`` died "program not found", and the watcher errored
+``custom_agent_tools_unavailable`` on every wake — the same denial storm, one
+layer deeper. So a recognized ``uv run`` launcher now also has its console
+script resolved against the project's virtual environment.
+
 **Static, never a probe.** Nothing is launched here: no subprocess is spawned,
 no handshake runs, no tool is listed. The watcher blueprint's declared servers
 are normalized through the SAME parser the runtime mounts them with
 (:func:`clio_agent.tools.mcp_config.spec_from_declaration`, which performs the
-``${VAR}`` / ``${VAR:-default}`` expansion), and a resolved stdio launcher's
-``--project`` / ``--directory`` argument is stat'd. That is the whole check —
+``${VAR}`` / ``${VAR:-default}`` expansion); a resolved stdio launcher's
+``--project`` / ``--directory`` argument is stat'd, and — for the ``uv run``
+shape :mod:`clio_agent.tools.uv_launcher` recognizes — so is the entry point
+that argument's ``.venv`` must provide. That is the whole check —
 deterministic, sub-millisecond, and it fails for exactly the deployment reason
 the operator must fix.
+
+**The entry-point half never guesses.** It applies only where its answer is
+binding, and records a typed skip (never a silent pass) everywhere else:
+
+* a launcher that is not the modeled ``uv run <console-script>`` shape — a
+  ``node`` / ``npx`` / ``python -m`` server, or a ``uv`` argv carrying a flag
+  the parser does not model — keeps the directory-only behavior, because
+  mistaking a flag's value for an entry point would manufacture a FALSE
+  refusal of a working deployment;
+* a ``uv run`` WITHOUT ``--no-sync`` provisions its own environment before
+  exec, so an absent or half-populated venv is not a static precondition
+  failure and is not refused;
+* a launcher that redirects the environment via ``UV_PROJECT_ENVIRONMENT``
+  does not use ``<project>/.venv``, so there is nothing this module can stat.
 
 **Fail closed AT ARMING.** A refusal REFUSES THE TRANSITION into ``spotter-ai``
 with a typed HTTP 422 (:data:`SPOTTER_ARMING_REASONS`) carrying the stable
@@ -52,6 +78,7 @@ resolve and is NOT refused — arming for such a deployment is unchanged).
 from __future__ import annotations
 
 import logging
+import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -59,11 +86,19 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, Optional
 
 from clio_agent.runtime import trace
+from clio_agent.tools.uv_launcher import (
+    VENV_STATE_ENTRYPOINT_ABSENT,
+    VENV_STATE_MISSING,
+    VENV_STATE_UNSYNCED,
+    entrypoint_venv_state,
+    parse_uv_run_launcher,
+)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from clio_agent.gact.types import Session
+    from clio_agent.tools.mcp_config import MCPServerSpec
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +113,13 @@ REFUSAL_WATCHER_UNMOUNTABLE = "spotter_watcher_unmountable"
 #: :class:`clio_agent.tools.mcp_config.MCPSpawnError` catches at mount time).
 REFUSAL_WATCHER_PROJECT_MISSING = "spotter_watcher_project_missing"
 
+#: The declaration resolves and the project directory exists, but that project's
+#: virtual environment cannot provide the launcher's ENTRY POINT, so ``uv run
+#: --no-sync <entrypoint>`` exits "program not found" before any MCP handshake
+#: (live defect ``sess_086cf23a960b``). Carries a ``venv_state`` naming which of
+#: the three distinct operator fixes applies.
+REFUSAL_WATCHER_ENTRYPOINT_MISSING = "spotter_watcher_entrypoint_missing"
+
 #: Closed set of typed arm-time refusals -> the operator-facing explanation.
 #: Every refusal :func:`validate_watcher_arming` returns is a key here, so a
 #: caller can neither invent a reason nor lose the distinction between them.
@@ -91,12 +133,41 @@ SPOTTER_ARMING_REASONS: dict[str, str] = {
         "SPOTTER surveillance was not armed: the watcher's declared MCP launcher "
         "points at a project directory that does not exist, so its server cannot start."
     ),
+    REFUSAL_WATCHER_ENTRYPOINT_MISSING: (
+        "SPOTTER surveillance was not armed: the watcher's declared MCP launcher names "
+        "an entry point its project environment does not provide, so the server exits "
+        "before it can offer a single tool and every protected tool call would be denied."
+    ),
 }
 
 #: The typed reason emitted (never raised) when there is simply nothing to check.
 _SKIP_BLUEPRINT_NOT_INSTALLED = "watcher_blueprint_not_installed"
 _SKIP_NO_DECLARED_SERVERS = "watcher_blueprint_declares_no_servers"
 _SKIP_DISCOVERY_FAILED = "watcher_blueprint_discovery_failed"
+
+#: The typed reasons the ENTRY-POINT half declines to have an opinion (see the
+#: module docstring): an unmodeled launcher shape, a launcher that provisions
+#: its own environment, and one that redirects the environment elsewhere.
+_SKIP_LAUNCHER_SHAPE_UNMODELED = "watcher_launcher_shape_unmodeled"
+_SKIP_LAUNCHER_SYNCS_ON_START = "watcher_launcher_syncs_on_start"
+_SKIP_LAUNCHER_ENVIRONMENT_REDIRECTED = "watcher_launcher_environment_redirected"
+
+#: ``uv`` honours this variable INSTEAD of ``<project>/.venv``; when a launcher
+#: sets it (or the arming environment carries it) there is no default venv to
+#: stat, so the entry-point check has nothing to say.
+_UV_PROJECT_ENVIRONMENT = "UV_PROJECT_ENVIRONMENT"
+
+#: ``venv_state`` -> the operator fix that state calls for. Each is a DIFFERENT
+#: action, which is why the state is reported rather than collapsed.
+_VENV_STATE_DETAIL: dict[str, str] = {
+    VENV_STATE_MISSING: "the project has no .venv at all",
+    VENV_STATE_UNSYNCED: (
+        "the project's .venv exists but was never synced (no populated site-packages)"
+    ),
+    VENV_STATE_ENTRYPOINT_ABSENT: (
+        "the project's .venv provides no such console script and no matching distribution"
+    ),
+}
 
 #: ``expand_env`` raises exactly this text for an unset required variable; the
 #: variable name is the actionable half of the refusal, so it is lifted back out
@@ -123,7 +194,14 @@ class WatcherArmingRefusal:
         blueprint_id: The watcher Agent Blueprint whose declaration failed.
         server: The declared MCP server name inside that blueprint.
         variable: The unset environment variable, when the failure names one.
-        path: The missing directory, when the failure names one.
+        path: The missing directory, when the failure names one. For an
+            entry-point refusal this is the launcher's project directory, which
+            ``details()`` also republishes under the typed ``project_dir`` key.
+        entrypoint: The console script that does not resolve, when the failure
+            names one.
+        venv_state: Which :mod:`clio_agent.tools.uv_launcher` state the project
+            environment is in, when the failure names one — the half that tells
+            the operator WHICH fix applies.
     """
 
     reason: str
@@ -132,6 +210,8 @@ class WatcherArmingRefusal:
     server: str
     variable: str = ""
     path: str = ""
+    entrypoint: str = ""
+    venv_state: str = ""
 
     @property
     def message(self) -> str:
@@ -154,23 +234,30 @@ class WatcherArmingRefusal:
             payload["environment_variable"] = self.variable
         if self.path:
             payload["path"] = self.path
+        if self.entrypoint:
+            payload["entrypoint"] = self.entrypoint
+        if self.venv_state:
+            payload["venv_state"] = self.venv_state
+            payload["project_dir"] = self.path
         return payload
 
 
-def _record_skip(reason: str, blueprint_id: str, *, error: str = "") -> None:
+def _record_skip(reason: str, blueprint_id: str, *, server: str = "", error: str = "") -> None:
     """Log + trace one typed "nothing to validate" outcome (no silent pass)."""
 
     logger.info(
-        "spotter_watcher_arm_check_skip reason=%s blueprint=%s error=%s",
+        "spotter_watcher_arm_check_skip reason=%s blueprint=%s server=%s error=%s",
         reason,
         blueprint_id,
+        server,
         error,
     )
     trace.event(
         "SPOTTER",
-        "spotter_watcher_arm_check_skip reason=%s blueprint=%s error=%s",
+        "spotter_watcher_arm_check_skip reason=%s blueprint=%s server=%s error=%s",
         reason,
         blueprint_id,
+        server,
         error,
     )
 
@@ -252,6 +339,62 @@ def _project_directories(args: Sequence[str]) -> list[str]:
     return found
 
 
+def _environment_is_redirected(spec: "MCPServerSpec", *, env: Optional[Mapping[str, str]]) -> bool:
+    """True when ``UV_PROJECT_ENVIRONMENT`` moves the venv off ``<project>/.venv``.
+
+    Both the declaration's own ``env`` block (which the subprocess inherits) and
+    the arming environment are consulted, because either one reaches ``uv``.
+    """
+
+    if str(spec.env.get(_UV_PROJECT_ENVIRONMENT, "")).strip():
+        return True
+    source = os.environ if env is None else env
+    return bool(str(source.get(_UV_PROJECT_ENVIRONMENT, "")).strip())
+
+
+def _entrypoint_refusal(
+    blueprint_id: str,
+    name: str,
+    spec: "MCPServerSpec",
+    *,
+    env: Optional[Mapping[str, str]],
+) -> Optional[WatcherArmingRefusal]:
+    """Resolve a recognized ``uv run`` launcher's console script, or decline.
+
+    ``None`` means "this server's entry point is not a static precondition this
+    module can answer" — every such decline is typed-logged with the reason it
+    declined, so a deployment that silently loses the check is still visible in
+    the trace.
+    """
+
+    launcher = parse_uv_run_launcher(spec.command, spec.args)
+    if launcher is None:
+        _record_skip(_SKIP_LAUNCHER_SHAPE_UNMODELED, blueprint_id, server=name)
+        return None
+    if not launcher.sync_disabled:
+        _record_skip(_SKIP_LAUNCHER_SYNCS_ON_START, blueprint_id, server=name)
+        return None
+    if _environment_is_redirected(spec, env=env):
+        _record_skip(_SKIP_LAUNCHER_ENVIRONMENT_REDIRECTED, blueprint_id, server=name)
+        return None
+    state = entrypoint_venv_state(launcher.project_dir, launcher.entrypoint)
+    if not state:
+        return None
+    return WatcherArmingRefusal(
+        reason=REFUSAL_WATCHER_ENTRYPOINT_MISSING,
+        detail=(
+            f"MCP server {name!r}: 'uv run --project {launcher.project_dir} --no-sync "
+            f"{launcher.entrypoint}' cannot start because "
+            f"{_VENV_STATE_DETAIL[state]} (run 'uv sync --project {launcher.project_dir}')"
+        ),
+        blueprint_id=blueprint_id,
+        server=name,
+        path=launcher.project_dir,
+        entrypoint=launcher.entrypoint,
+        venv_state=state,
+    )
+
+
 def _refusal_for_declaration(
     blueprint_id: str,
     name: str,
@@ -288,7 +431,7 @@ def _refusal_for_declaration(
                 server=name,
                 path=candidate,
             )
-    return None
+    return _entrypoint_refusal(blueprint_id, name, spec, env=env)
 
 
 def validate_watcher_arming(
@@ -370,26 +513,30 @@ def refuse_watcher_arming(
         rollback = "session_deleted"
     logger.warning(
         "spotter_watcher_arm_refused reason=%s session=%s blueprint=%s server=%s "
-        "variable=%s path=%s rollback=%s detail=%s",
+        "variable=%s path=%s entrypoint=%s venv_state=%s rollback=%s detail=%s",
         refusal.reason,
         session_id,
         refusal.blueprint_id,
         refusal.server,
         refusal.variable,
         refusal.path,
+        refusal.entrypoint,
+        refusal.venv_state,
         rollback,
         refusal.detail,
     )
     trace.event(
         "SPOTTER",
         "spotter_watcher_arm_refused reason=%s session=%s blueprint=%s server=%s "
-        "variable=%s path=%s rollback=%s detail=%s",
+        "variable=%s path=%s entrypoint=%s venv_state=%s rollback=%s detail=%s",
         refusal.reason,
         session_id,
         refusal.blueprint_id,
         refusal.server,
         refusal.variable,
         refusal.path,
+        refusal.entrypoint,
+        refusal.venv_state,
         rollback,
         refusal.detail,
     )

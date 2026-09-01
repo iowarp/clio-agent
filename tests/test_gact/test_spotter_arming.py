@@ -263,7 +263,9 @@ def test_create_into_spotter_ai_is_refused_when_the_project_venv_is_absent(
 
     assert resp.status_code == 422, resp.text
     error = resp.json()["error"]
-    assert error["error"] == REFUSAL_WATCHER_ENTRYPOINT_MISSING == "spotter_watcher_entrypoint_missing"
+    assert (
+        error["error"] == REFUSAL_WATCHER_ENTRYPOINT_MISSING == "spotter_watcher_entrypoint_missing"
+    )
     details = error["details"]
     assert details["reason"] == REFUSAL_WATCHER_ENTRYPOINT_MISSING
     assert details["entrypoint"] == "spotter-mcp"
