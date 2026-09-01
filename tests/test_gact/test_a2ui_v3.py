@@ -720,6 +720,57 @@ def test_root_agent_tool_bounds_the_reported_surface_registry(
     assert "surface-00" not in result["session_surface_ids"]
 
 
+def test_root_agent_tool_registry_excludes_a_deleted_surface(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    app = client.app
+    monkeypatch.setattr(gact_context, "active_app", lambda: app)
+    monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
+    tool = build_create_a2ui_surface_tool()
+
+    tool(
+        surface_id="retired-view",
+        components=[{"id": "root", "component": "Text", "text": "Retired"}],
+    )
+    deleted = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [{"version": "v0.9.1", "deleteSurface": {"surfaceId": "retired-view"}}]},
+    )
+    current = tool(
+        surface_id="current-view",
+        components=[{"id": "root", "component": "Text", "text": "Current"}],
+    )
+
+    assert deleted.status_code == 200
+    # A deleted id is not revisable, so offering it back would send the model
+    # at a surface whose next production silently starts over.
+    assert current["session_surface_ids"] == ["current-view"]
+
+
+def test_root_agent_tool_registry_is_scoped_to_the_active_session(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    app = client.app
+    other = app.state.sessions.create(workspace_id="ws_default", title="Other A2UI")
+    client.post(
+        f"/v1/sessions/{other.id}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message("other-session-surface")]},
+    )
+    monkeypatch.setattr(gact_context, "active_app", lambda: app)
+    monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
+
+    result = build_create_a2ui_surface_tool()(
+        surface_id="own-surface",
+        components=[{"id": "root", "component": "Text", "text": "Own"}],
+    )
+
+    assert result["session_surface_ids"] == ["own-surface"]
+
+
 def test_root_agent_tool_documents_how_to_revise_an_existing_surface() -> None:
     tool = build_create_a2ui_surface_tool()
     compact_description = " ".join(tool.desc.split())
