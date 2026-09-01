@@ -740,6 +740,7 @@ def install_agent_blueprint(
     blueprint_id: str = "",
     pinned_commit: str = "",
     skip_invalid: bool = False,
+    skip_blueprint_ids: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Install blueprint pack(s) from ``source`` (all packs when ``blueprint_id`` is empty).
 
@@ -748,7 +749,10 @@ def install_agent_blueprint(
     (the registry bootstrap) skips invalid packs with a logged, returned
     ``skipped`` row each, so one broken marketplace entry can never veto the
     rest of the set.
+    ``skip_blueprint_ids`` maps a blueprint id to the typed reason it is not installed.
     """
+    from clio_agent.gact.agent_blueprint_refresh import clear_uninstall_tombstones  # noqa: PLC0415
+
     home = home or Path.home()
     install_root = _install_root(home=home, cwd=cwd, scope=scope)
     install_root.mkdir(parents=True, exist_ok=True)
@@ -850,6 +854,11 @@ def install_agent_blueprint(
         skipped: list[dict[str, Any]] = []
         for candidate in candidates:
             parsed = parse_agent_blueprint_root(candidate, scope=scope)
+            skip_reason = str((skip_blueprint_ids or {}).get(parsed.id, ""))
+            if skip_reason:
+                logger.info("blueprint_install_skipped reason=%s id=%s", skip_reason, parsed.id)
+                skipped.append({"id": parsed.id, "reason": skip_reason})
+                continue
             if not parsed.enabled:
                 if skip_invalid:
                     logger.warning(
@@ -882,18 +891,7 @@ def install_agent_blueprint(
             installed.append(
                 {**parse_agent_blueprint_root(dest, scope=scope).to_wire(), "install": metadata}
             )
-        if scope == "global" and installed:
-            # An explicit install overrides a prior uninstall: clear tombstones
-            # so the registry sync resumes maintaining these ids.
-            from clio_agent.gact.agent_blueprint_refresh import (  # noqa: PLC0415
-                read_uninstalled_tombstones,
-                write_uninstalled_tombstones,
-            )
-
-            tombstones = read_uninstalled_tombstones(home=home, cwd=cwd)
-            reinstalled = {str(row.get("id")) for row in installed} & tombstones
-            if reinstalled:
-                write_uninstalled_tombstones(tombstones - reinstalled, home=home, cwd=cwd)
+        clear_uninstall_tombstones(installed, scope=scope, home=home, cwd=cwd)
         return {"installed": installed, "skipped": skipped}
 
 

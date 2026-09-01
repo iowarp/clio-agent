@@ -8,6 +8,7 @@ routes are registered before the greedy blueprint-id route.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import subprocess
 from collections.abc import Mapping
@@ -26,6 +27,9 @@ from clio_agent.gact.agent_blueprint_files import (
     resolve_blueprint_file_path,
 )
 from clio_agent.gact.agent_blueprint_sources import (
+    delete_agent_blueprint_source as _delete_agent_blueprint_source,
+)
+from clio_agent.gact.agent_blueprint_sources import (
     install_agent_blueprint_source as _install_agent_blueprint_source,
 )
 from clio_agent.gact.agent_blueprint_sources import (
@@ -35,10 +39,13 @@ from clio_agent.gact.agent_blueprint_sources import (
     refresh_agent_blueprint_source as _refresh_agent_blueprint_source,
 )
 from clio_agent.gact.agent_blueprint_sources import (
-    save_agent_blueprint_sources as _save_agent_blueprint_sources,
+    source_install_cwd as _source_install_cwd,
 )
 from clio_agent.gact.agent_blueprint_sources import (
     source_registry_id as _source_registry_id,
+)
+from clio_agent.gact.agent_blueprint_sources import (
+    upsert_agent_blueprint_source as _upsert_agent_blueprint_source,
 )
 from clio_agent.gact.agent_blueprints import (
     DEFAULT_AGENT_BLUEPRINT_ID,
@@ -109,48 +116,37 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             "added_at": now,
             "updated_at": now,
         }
-        if bool(req.get("refresh", True)):
-            row = _refresh_agent_blueprint_source(row)
-            row["updated_at"] = datetime.now(timezone.utc).isoformat()
         scope = str(req.get("scope") or "global").strip()
         if scope not in {"global", "workspace"}:
             raise HTTPException(status_code=422, detail="scope must be global or workspace")
         workspace_id = str(req.get("workspace_id") or "")
         if scope == "workspace":
             row["workspace_id"] = workspace_id
-        cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id)
-        row, installation = _install_agent_blueprint_source(
-            row,
-            cwd=cwd or Path.cwd(),
-            scope=scope,  # type: ignore[arg-type]
+        # Cloning and installing block for tens of seconds; keep them off the loop.
+        cwd = _source_install_cwd(app, scope=scope, workspace_id=workspace_id)
+        if bool(req.get("refresh", True)):
+            row = await asyncio.to_thread(_refresh_agent_blueprint_source, row)
+            row["updated_at"] = datetime.now(timezone.utc).isoformat()
+        row, installation = await asyncio.to_thread(
+            _install_agent_blueprint_source, row, cwd=cwd, scope=scope
         )
-        rows = [
-            existing
-            for existing in _load_agent_blueprint_sources()
-            if existing.get("id") != source_id
-        ]
-        rows.append(row)
-        _save_agent_blueprint_sources(rows)
+        _upsert_agent_blueprint_source(row)
         return {"source": row, **installation}
 
     @app.post("/v1/agent-blueprints/sources/{source_id}/refresh")
     async def refresh_agent_blueprint_source(source_id: str) -> dict[str, Any]:
-        rows = _load_agent_blueprint_sources()
-        for index, row in enumerate(rows):
+        for row in _load_agent_blueprint_sources():
             if row.get("id") == source_id:
-                refreshed = _refresh_agent_blueprint_source(row)
+                scope = str(row.get("install_scope") or "global")
+                cwd = _source_install_cwd(
+                    app, scope=scope, workspace_id=str(row.get("workspace_id") or "")
+                )
+                refreshed = await asyncio.to_thread(_refresh_agent_blueprint_source, row)
                 refreshed["updated_at"] = datetime.now(timezone.utc).isoformat()
-                scope = str(refreshed.get("install_scope") or "global")
-                cwd = _runtime_workspace_catalog_cwd(
-                    app, workspace_id=str(refreshed.get("workspace_id") or "")
+                refreshed, installation = await asyncio.to_thread(
+                    _install_agent_blueprint_source, refreshed, cwd=cwd, scope=scope
                 )
-                refreshed, installation = _install_agent_blueprint_source(
-                    refreshed,
-                    cwd=cwd or Path.cwd(),
-                    scope=scope,  # type: ignore[arg-type]
-                )
-                rows[index] = refreshed
-                _save_agent_blueprint_sources(rows)
+                _upsert_agent_blueprint_source(refreshed)
                 return {"source": refreshed, **installation}
         raise HTTPException(
             status_code=404,
@@ -165,9 +161,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.delete("/v1/agent-blueprints/sources/{source_id}")
     async def delete_agent_blueprint_source(source_id: str) -> dict[str, Any]:
-        rows = _load_agent_blueprint_sources()
-        kept = [row for row in rows if row.get("id") != source_id]
-        if len(kept) == len(rows):
+        if not _delete_agent_blueprint_source(source_id):
             raise HTTPException(
                 status_code=404,
                 detail=ErrorEnvelope(
@@ -178,7 +172,6 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        _save_agent_blueprint_sources(kept)
         return {"deleted": {"id": source_id}}
 
     @app.get("/v1/agent-blueprints")

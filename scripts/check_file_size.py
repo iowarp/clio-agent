@@ -150,7 +150,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # disabled as "unknown tool reference" and took its whole root down by
     # hierarchy. The ratchet was not bumped in that commit; recorded here as
     # pre-existing CI-blocking debt this change closes (P5 adversarial review [A]).
-    "src/clio_agent/gact/agent_blueprints.py": 1060,
+    # Ratchet down (PR #1255 review): the uninstall-tombstone bookkeeping moved to
+    # its owner module gact/agent_blueprint_refresh.py.
+    "src/clio_agent/gact/agent_blueprints.py": 1058,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -378,7 +380,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # resolution) lives in the new owner module gact/agent_blueprint_files.py; only
     # the two thin route handlers + their docstrings + the import block land here.
     # Ratchets back with the mcp_app_* / #714 route decomposition.
-    "src/clio_agent/gact/routes/blueprints.py": 888,
+    # Ratchet down (PR #1255 review): the source-ledger read-modify-writes and the
+    # workspace-cwd refusal moved into gact/agent_blueprint_sources.py.
+    "src/clio_agent/gact/routes/blueprints.py": 881,
     "src/clio_agent/gact/routes/catalog.py": 898,  # +4: /goal command dispatch wiring (#1080; logic in gact/goal.py)
     # #1201 (adversarial review, PR #1202): +6 for two direct-connect era-
     # classification call sites (call_external_mcp_tool + _external_mcp_inventory's

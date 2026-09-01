@@ -4007,3 +4007,260 @@ def test_dead_local_path_sources_are_pruned_on_load(
         user_dir.joinpath("agent-blueprint-sources.json").read_text(encoding="utf-8")
     )
     assert [row["id"] for row in rewritten["sources"]] == ["src_url"]
+
+
+_EDITED_ROOT_MD = """---
+id: root
+title: Genomics Root
+tier: 1
+module:
+  kind: react
+prompt_id: genomics.root
+---
+Coordinate LOCALLY EDITED genomics work.
+"""
+
+
+def _register_local_source(client: TestClient, marketplace: Path) -> str:
+    """Register a local-path marketplace source and return its id."""
+
+    created = client.post(
+        "/v1/agent-blueprints/sources",
+        json={"source": str(marketplace), "name": "Local marketplace"},
+    )
+    assert created.status_code == 201, created.text
+    return str(created.json()["source"]["id"])
+
+
+def test_source_refresh_never_resurrects_an_uninstalled_pack(tmp_path: Path) -> None:
+    """A user uninstall survives a marketplace-source refresh, with a typed reason.
+
+    **Sabotage:** drop ``skip_blueprint_ids`` from the source install -> the pack
+    is reinstalled (and its tombstone cleared) -> red, the review 2026-08-13
+    blocker reappearing on the source-refresh path.
+    """
+
+    marketplace = tmp_path / "marketplace"
+    _write_blueprint(marketplace / "genomics")
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        source_id = _register_local_source(client, marketplace)
+        deleted = client.delete("/v1/agent-blueprints/genomics", params={"scope": "global"})
+        assert deleted.status_code == 200, deleted.text
+
+        refreshed = client.post(f"/v1/agent-blueprints/sources/{source_id}/refresh")
+        assert refreshed.status_code == 200, refreshed.text
+        payload = refreshed.json()
+        assert payload["installed"] == []
+        assert payload["skipped"] == [{"id": "genomics", "reason": "user_uninstalled"}]
+        assert payload["source"]["status"] == "ready"
+        assert payload["source"]["skipped_blueprints"] == [
+            {"id": "genomics", "reason": "user_uninstalled"}
+        ]
+
+        listed = client.get("/v1/agent-blueprints").json()["agent_blueprints"]
+        assert "genomics" not in {row["id"] for row in listed}
+
+
+def test_source_refresh_preserves_a_locally_edited_blueprint(tmp_path: Path) -> None:
+    """Refreshing a source never discards edits made through the file-write route.
+
+    **Sabotage:** stop reporting ``local_edits_present`` -> the reinstall
+    rmtree+copytree's the edited root and the edited text is gone -> red.
+    """
+
+    marketplace = tmp_path / "marketplace"
+    _write_blueprint(marketplace / "genomics")
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        source_id = _register_local_source(client, marketplace)
+        edited = _EDITED_ROOT_MD
+        written = client.put(
+            "/v1/agent-blueprints/genomics/files/write",
+            params={"path": "experts/root.md"},
+            json={"content": edited},
+        )
+        assert written.status_code == 200, written.text
+
+        refreshed = client.post(f"/v1/agent-blueprints/sources/{source_id}/refresh")
+        assert refreshed.status_code == 200, refreshed.text
+        payload = refreshed.json()
+        assert payload["installed"] == []
+        assert payload["skipped"] == [{"id": "genomics", "reason": "local_edits_present"}]
+        assert payload["source"]["status"] == "ready"
+
+        read_back = client.get(
+            "/v1/agent-blueprints/genomics/files/read", params={"path": "experts/root.md"}
+        )
+        assert read_back.status_code == 200, read_back.text
+        assert "Coordinate LOCALLY EDITED genomics work." in read_back.text
+
+
+def test_workspace_scoped_source_refuses_an_unresolvable_workspace(tmp_path: Path) -> None:
+    """A workspace-scoped source is refused when the workspace does not resolve.
+
+    **Sabotage:** restore ``cwd or Path.cwd()`` -> the packs land in the server
+    process's own working directory under ``.clio/agent-blueprints`` and the
+    route reports 201 -> red on both the status code and the stray directory.
+    """
+
+    marketplace = tmp_path / "marketplace"
+    _write_blueprint(marketplace / "genomics")
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/agent-blueprints/sources",
+            json={"source": str(marketplace), "scope": "workspace", "workspace_id": "ws_gone"},
+        )
+        assert created.status_code == 404, created.text
+        detail = created.json()["error"]
+        assert detail["error"] == "workspace_unresolved"
+        assert detail["details"]["workspace_id"] == "ws_gone"
+        assert client.get("/v1/agent-blueprints/sources").json()["sources"] == []
+
+    assert not (Path.cwd() / ".clio" / "agent-blueprints" / "genomics").exists()
+
+
+def test_source_ledger_writers_share_one_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The boot recorder and the route writers cannot lose each other's rows.
+
+    **Sabotage:** drop the lock from ``upsert_agent_blueprint_source`` -> the two
+    read-modify-writes interleave and one row is silently gone -> red.
+    """
+
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from clio_agent.gact import agent_blueprint_sources as sources
+
+    registry = tmp_path / "registry"
+    _write_blueprint(registry / "genomics")
+    install_root = tmp_path / "install"
+    install_root.mkdir()
+    installed = install_root / "genomics"
+    _write_blueprint(installed)
+    installed.joinpath(".clio-install.md").write_text(
+        f"source: {registry}\nsource_kind: path\ncommit: abc123\n", encoding="utf-8"
+    )
+
+    original_save = sources.save_agent_blueprint_sources
+
+    def slow_save(rows: list[dict[str, Any]]) -> None:
+        time.sleep(0.05)
+        original_save(rows)
+
+    monkeypatch.setattr(sources, "save_agent_blueprint_sources", slow_save)
+    started = threading.Barrier(2)
+
+    def record_default() -> None:
+        started.wait(timeout=5)
+        sources.record_default_agent_blueprint_source(
+            source=str(registry), ref="main", pinned_commit="", install_root=install_root
+        )
+
+    def add_user_source() -> None:
+        started.wait(timeout=5)
+        sources.upsert_agent_blueprint_source({"id": "src_user", "source": "https://example/x.git"})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        for future in [pool.submit(record_default), pool.submit(add_user_source)]:
+            future.result(timeout=10)
+
+    ids = {row["id"] for row in sources.load_agent_blueprint_sources()}
+    assert ids == {sources.source_registry_id(str(registry), "main"), "src_user"}
+
+
+def test_default_source_record_writes_only_when_the_row_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Discovery calls the boot recorder constantly; an unchanged row is not rewritten.
+
+    **Sabotage:** always save -> the second call rewrites the ledger -> red.
+    """
+
+    from clio_agent.gact import agent_blueprint_sources as sources
+
+    registry = tmp_path / "registry"
+    _write_blueprint(registry / "genomics")
+    install_root = tmp_path / "install"
+    install_root.mkdir()
+    installed = install_root / "genomics"
+    _write_blueprint(installed)
+    installed.joinpath(".clio-install.md").write_text(
+        f"source: {registry}\nsource_kind: path\ncommit: abc123\n", encoding="utf-8"
+    )
+
+    saves: list[int] = []
+    original_save = sources.save_agent_blueprint_sources
+
+    def counting_save(rows: list[dict[str, Any]]) -> None:
+        saves.append(len(rows))
+        original_save(rows)
+
+    monkeypatch.setattr(sources, "save_agent_blueprint_sources", counting_save)
+    kwargs: dict[str, Any] = {
+        "source": str(registry),
+        "ref": "main",
+        "pinned_commit": "",
+        "install_root": install_root,
+    }
+    first = sources.record_default_agent_blueprint_source(**kwargs)
+    second = sources.record_default_agent_blueprint_source(**kwargs)
+
+    assert saves == [1], "an unchanged default source row must not rewrite the ledger"
+    assert first["id"] == second["id"]
+    assert second["updated_at"] == first["updated_at"]
+
+
+def test_source_routes_run_blocking_installs_off_the_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cloning/installing a source never runs on the server's event loop.
+
+    A git-backed source blocks for up to two clone timeouts; on the loop that
+    stalls every session and SSE stream. **Sabotage:** call the helpers directly
+    from the handler -> ``get_running_loop()`` succeeds inside them -> red.
+    """
+
+    import asyncio
+
+    from clio_agent.gact.routes import blueprints as blueprint_routes
+
+    marketplace = tmp_path / "marketplace"
+    _write_blueprint(marketplace / "genomics")
+    on_loop: list[str] = []
+
+    def _record(name: str) -> None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        on_loop.append(name)
+
+    original_refresh = blueprint_routes._refresh_agent_blueprint_source
+    original_install = blueprint_routes._install_agent_blueprint_source
+
+    def traced_refresh(row: Any) -> Any:
+        _record("refresh")
+        return original_refresh(row)
+
+    def traced_install(row: Any, **kwargs: Any) -> Any:
+        _record("install")
+        return original_install(row, **kwargs)
+
+    monkeypatch.setattr(blueprint_routes, "_refresh_agent_blueprint_source", traced_refresh)
+    monkeypatch.setattr(blueprint_routes, "_install_agent_blueprint_source", traced_install)
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        source_id = _register_local_source(client, marketplace)
+        refreshed = client.post(f"/v1/agent-blueprints/sources/{source_id}/refresh")
+        assert refreshed.status_code == 200, refreshed.text
+
+    assert on_loop == []

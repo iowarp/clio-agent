@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
+from typing import Any
 
 from clio_agent import conf
 from clio_agent.gact.agent_blueprint_sources import record_default_agent_blueprint_source
@@ -226,6 +227,31 @@ def write_uninstalled_tombstones(ids: set[str], *, home: Path, cwd: Path) -> Non
     path = uninstalled_tombstones_path(home=home, cwd=cwd)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_json.dumps({"uninstalled": sorted(ids)}, indent=2), encoding="utf-8")
+
+
+def clear_uninstall_tombstones(
+    installed: list[dict[str, Any]], *, scope: str, home: Path, cwd: Path
+) -> None:
+    """Drop uninstall tombstones for the ids an install actually restored.
+
+    An install that writes a pack back to disk overrides the prior uninstall, so
+    the registry sync resumes maintaining that id. Ids the install SKIPPED never
+    reach ``installed`` and therefore keep their tombstone — that is what makes a
+    bulk source install (which honors the ledger) non-destructive to it.
+
+    Args:
+        installed: The ``installed`` rows returned by ``install_agent_blueprint``.
+        scope: Install scope; only a global install records or clears tombstones.
+        home: Per-user home locating the tombstone ledger.
+        cwd: Workspace directory locating the tombstone ledger.
+    """
+
+    if scope != "global" or not installed:
+        return
+    tombstones = read_uninstalled_tombstones(home=home, cwd=cwd)
+    reinstalled = {str(row.get("id")) for row in installed} & tombstones
+    if reinstalled:
+        write_uninstalled_tombstones(tombstones - reinstalled, home=home, cwd=cwd)
 
 
 # The per-boot registry sync is boot semantics, not per-request semantics: the
