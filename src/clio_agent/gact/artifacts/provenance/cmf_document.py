@@ -161,6 +161,19 @@ class ExecutionEntry:
     #: True when CLIO minted this execution to carry an otherwise-unattachable
     #: artifact rather than reading it from a transform event.
     synthesized: bool = False
+    #: How many publishes this execution has been held back for because an edge
+    #: named an artifact not yet seen. Artifact and transform events have no
+    #: guaranteed order, so a transform can legitimately arrive first; the
+    #: counter bounds how long that excuse lasts.
+    deferrals: int = 0
+
+    def unresolved_edges(self, available: dict[str, Any]) -> list[str]:
+        """Edge artifact ids that ``available`` cannot resolve."""
+        return [
+            artifact_id
+            for artifact_id in (*self.used, *self.generated)
+            if artifact_id not in available
+        ]
 
     @property
     def name(self) -> str:
@@ -368,6 +381,7 @@ def build_push_document(
     artifacts: dict[str, ArtifactEntry],
     executions: list[ExecutionEntry],
     created_ms: int | None = None,
+    known_artifacts: dict[str, ArtifactEntry] | None = None,
 ) -> dict[str, Any]:
     """Assemble the ``{"Pipeline": [...]}`` document for one push batch.
 
@@ -375,20 +389,32 @@ def build_push_document(
     or to a synthesized creation execution built from its producer. An artifact
     that can be attached to neither raises rather than being dropped.
 
+    Edges are resolved against ``known_artifacts`` as well as this batch, which
+    is what makes a CROSS-BATCH edge work: an artifact created in turn 1 is used
+    by a transform in turn 2, by which time it is no longer in the batch dict.
+    Resolving only the batch silently dropped that INPUT event (no ``else``
+    branch), so b=transform(a) lost its input whenever the two landed in
+    different pushes. Re-sending the artifact document is safe and idempotent --
+    the server dedupes on ``uri``.
+
     Args:
         pipeline_name: The CMF pipeline these records belong to.
-        artifacts: Artifact entries by CLIO artifact id.
+        artifacts: Artifact entries minted by THIS batch, by CLIO artifact id.
         executions: Transform executions, in the order they were recorded.
         created_ms: Pipeline/stage creation stamp; defaults to now.
+        known_artifacts: Every artifact the provider has seen, for resolving
+            edges that reach back into earlier batches.
 
     Returns:
         The complete push document.
 
     Raises:
-        CMFRefusal: An artifact could not be attached to any execution.
+        CMFRefusal: An artifact could not be attached to any execution, or an
+            edge names an artifact id nothing knows about.
     """
     stamp = created_ms if created_ms is not None else _now_ms()
     stage_name = f"{pipeline_name}/artifacts"
+    known = known_artifacts or {}
     ordered = list(executions)
     claimed = {
         artifact_id
@@ -400,18 +426,38 @@ def build_push_document(
         if artifact_id in claimed:
             continue
         ordered.append(creation_execution(artifact))
+
+    def _edge(artifact_id: str, entry: ExecutionEntry, direction: str) -> ArtifactEntry:
+        resolved = artifacts.get(artifact_id) or known.get(artifact_id)
+        if resolved is None:
+            raise CMFRefusal(
+                "cmf_artifact_reference_unresolved",
+                (
+                    f"transform {entry.call_id} names artifact {artifact_id!r} as "
+                    f"{direction}, but no artifact record is known for it; the edge "
+                    "cannot be written and must not be dropped silently"
+                ),
+                call_id=entry.call_id,
+                artifact_id=artifact_id,
+                direction=direction,
+            )
+        return resolved
+
     entity_id = _FIRST_ENTITY_ID
     execution_documents: list[dict[str, Any]] = []
     for entry in ordered:
         events: list[dict[str, Any]] = []
         for artifact_id in entry.used:
-            edge_artifact = artifacts.get(artifact_id)
-            if edge_artifact is not None:
-                events.append({"type": EVENT_INPUT, "artifact": edge_artifact.to_document()})
+            events.append(
+                {"type": EVENT_INPUT, "artifact": _edge(artifact_id, entry, "used").to_document()}
+            )
         for artifact_id in entry.generated:
-            edge_artifact = artifacts.get(artifact_id)
-            if edge_artifact is not None:
-                events.append({"type": EVENT_OUTPUT, "artifact": edge_artifact.to_document()})
+            events.append(
+                {
+                    "type": EVENT_OUTPUT,
+                    "artifact": _edge(artifact_id, entry, "generated").to_document(),
+                }
+            )
         execution_documents.append(
             {
                 "id": entity_id,

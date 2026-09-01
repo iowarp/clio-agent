@@ -29,6 +29,7 @@ _EXPECTED_REASONS = {
     "cmf_server_version_incompatible",
     "cmf_server_discarded_entities",
     "cmf_artifact_not_attached_to_execution",
+    "cmf_artifact_reference_unresolved",
     "cmf_artifact_kind_not_representable",
     "cmf_lineage_query_unavailable",
     # Reserved for deployment shape (d); declared, never raised today.

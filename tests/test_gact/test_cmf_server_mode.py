@@ -44,13 +44,33 @@ class _Recorder:
         self.pushed_names: list[str] = []
         #: Status the confirmation read answers with.
         self.confirm_status = 200
+        #: Event types the server holds per execution uuid.
+        self.stored_events: dict[str, list[int]] = {}
+        #: When True the server keeps executions but drops every event -- the
+        #: upstream handle_event swallow, which a uuid-only confirmation misses.
+        self.drop_events = False
+
+    def pull_document(self, exec_uuid: Any) -> dict[str, Any]:
+        """Answer /mlmd_pull in the real shape, honouring exec_uuid scoping."""
+        executions = [
+            {
+                "name": f"clio:{uuid}",
+                "properties": {"Execution_uuid": uuid},
+                "events": [] if self.drop_events else [{"type": t} for t in types],
+            }
+            for uuid, types in self.stored_events.items()
+            if uuid in self.holds() and (not exec_uuid or uuid == exec_uuid)
+        ]
+        return {"Pipeline": [{"stages": [{"executions": executions}]}]}
 
     def holds(self) -> list[str]:
         return self.pushed_names if self.held is None else self.held
 
     def pushes(self) -> list[dict[str, Any]]:
-        """Only the metadata pushes, excluding confirmation reads."""
-        return [item for item in self.requests if item.get("method") != "GET"]
+        """Only the metadata pushes, excluding both kinds of confirmation read."""
+        return [
+            item for item in self.requests if str(item.get("path", "")).endswith("/api/mlmd_push")
+        ]
 
 
 def _handler(recorder: _Recorder) -> type[BaseHTTPRequestHandler]:
@@ -74,13 +94,21 @@ def _handler(recorder: _Recorder) -> type[BaseHTTPRequestHandler]:
                     "body": body,
                 }
             )
+            if self.path.endswith("/mlmd_pull"):
+                self._respond(200, recorder.pull_document(body.get("exec_uuid")))
+                return
             if recorder.status_code == 200:
                 document = json.loads(body.get("json_payload") or "{}")
                 for pipeline in document.get("Pipeline") or []:
                     for stage in pipeline.get("stages") or []:
                         for execution in stage.get("executions") or []:
-                            recorder.pushed_names.append(
-                                str((execution.get("properties") or {}).get("Execution_uuid") or "")
+                            uuid = str(
+                                (execution.get("properties") or {}).get("Execution_uuid") or ""
+                            )
+                            recorder.pushed_names.append(uuid)
+                            recorder.stored_events.setdefault(uuid, []).extend(
+                                int(event.get("type") or 0)
+                                for event in execution.get("events") or []
                             )
             self._respond(recorder.status_code, recorder.body)
 
@@ -385,7 +413,14 @@ class _Event:
 
 def test_provider_accepts_only_after_the_server_confirms(cmf_server: Any) -> None:
     provider = CMFServerModeProvider(_config(cmf_server.url), store=object())
-    receipt = provider.emit(_Event(_transform_event("call_1", ["artifact_1"])))
+    # The transform names an artifact, so it waits for that artifact's event.
+    assert provider.emit(_Event(_transform_event("call_1", ["artifact_1"]))) is (
+        ProviderReceipt.FILTERED
+    )
+    assert cmf_server.pushes() == [], "an unresolved edge must not be pushed"
+
+    receipt = provider.emit(_Event(_artifact_event("artifact_1", "a.csv")))
+
     assert receipt is ProviderReceipt.ACCEPTED
     assert len(cmf_server.pushes()) == 1
     provider.close()
@@ -469,10 +504,11 @@ def test_discarded_entities_are_not_counted_as_accepted(cmf_server: Any) -> None
     dispatcher = ProvenanceDispatcher([provider], queue_size=4)
 
     dispatcher.emit(_Event(_transform_event("call_1", ["artifact_1"])))
+    dispatcher.emit(_Event(_artifact_event("artifact_1", "a.csv")))
     dispatcher.flush()
     health = dispatcher.health()[0]
 
-    assert health["queued"] == 1
+    assert health["queued"] == 2
     assert health["accepted"] == 0, "a 200 that stored nothing is not a write"
     # emit fails, then flush retries the still-pending batch and fails again.
     assert health["failed"] >= 1
@@ -485,6 +521,7 @@ def test_a_push_the_server_really_holds_confirms_and_counts(cmf_server: Any) -> 
     dispatcher = ProvenanceDispatcher([provider], queue_size=4)
 
     dispatcher.emit(_Event(_transform_event("call_1", ["artifact_1"])))
+    dispatcher.emit(_Event(_artifact_event("artifact_1", "a.csv")))
     dispatcher.flush()
     health = dispatcher.health()[0]
     dispatcher.close()
@@ -500,6 +537,7 @@ def test_the_confirmation_read_is_bounded(cmf_server: Any) -> None:
     """One bounded page, not a full pipeline pull."""
     publisher = CMFServerPublisher(_config(cmf_server.url))
     publisher.record(_transform_event("call_1", ["artifact_1"]))
+    publisher.record(_artifact_event("artifact_1", "a.csv"))
     publisher.publish()
     publisher.close()
 
@@ -544,3 +582,131 @@ def test_a_raw_backslash_never_reaches_the_wire(cmf_server: Any) -> None:
             for execution in stage["executions"]:
                 assert "\\" not in json.dumps(list(execution["properties"].values()))
                 assert "\\" not in json.dumps(list(execution["custom_properties"].values()))
+
+
+# --------------------------------------------------------------------------- #
+# Cross-batch edges and event confirmation. Existence of an execution says
+# nothing about its edges: handle_event has its own swallowing `except`, so an
+# INPUT can vanish while the execution looks healthy.
+# --------------------------------------------------------------------------- #
+
+
+def test_an_input_from_an_earlier_batch_survives_the_round_trip(cmf_server: Any) -> None:
+    """Create a5 in turn 1, use it in turn 2: the INPUT must reach the server."""
+    publisher = CMFServerPublisher(_config(cmf_server.url))
+    # Turn 1: mint the artifact and push it.
+    publisher.record(_artifact_event("artifact_a5", "a5.csv"))
+    publisher.publish()
+    assert publisher.pending == 0
+
+    # Turn 2: a transform consumes it. The batch no longer holds the artifact.
+    publisher.record(_transform_event("call_turn2", []))
+    publisher._executions[-1].used.append("artifact_a5")  # noqa: SLF001
+    publisher.publish()
+    publisher.close()
+
+    second = json.loads(cmf_server.pushes()[1]["body"]["json_payload"])
+    events = second["Pipeline"][0]["stages"][0]["executions"][0]["events"]
+    assert [event["type"] for event in events] == [3], "the cross-batch INPUT was dropped"
+    assert events[0]["artifact"]["uri"] == "clio://artifact/artifact_a5"
+    # And the server confirms it holds that event.
+    assert cmf_server.stored_events["call_turn2"] == [3]
+
+
+def test_an_unknown_edge_reference_is_deferred_then_typed(cmf_server: Any) -> None:
+    """Ordering is not load-bearing, but a dangling edge still goes loud.
+
+    Artifact and transform events have no guaranteed order, so the first
+    publishes hold the execution back rather than refusing it; a reference that
+    never resolves becomes a typed refusal instead of deferring forever.
+    """
+    publisher = CMFServerPublisher(_config(cmf_server.url))
+    publisher.record(_transform_event("call_1", []))
+    publisher._executions[-1].used.append("artifact_never_seen")  # noqa: SLF001
+
+    for _ in range(3):
+        assert publisher.publish()["status"] == "deferred"
+        assert publisher.pending == 1, "a deferred execution stays pending"
+
+    with pytest.raises(CMFRefusal) as excinfo:
+        publisher.publish()
+
+    assert excinfo.value.reason == "cmf_artifact_reference_unresolved"
+    assert excinfo.value.payload["details"]["artifact_ids"] == ["artifact_never_seen"]
+    assert cmf_server.pushes() == [], "nothing may reach the wire"
+    publisher.close()
+
+
+def test_a_server_that_keeps_executions_but_drops_events_is_a_typed_failure(
+    cmf_server: Any,
+) -> None:
+    """The handle_event swallow: uuid confirmation alone would call this green."""
+    cmf_server.drop_events = True
+    publisher = CMFServerPublisher(_config(cmf_server.url))
+    publisher.record(_transform_event("call_1", ["artifact_1"]))
+    publisher.record(_artifact_event("artifact_1", "a.csv"))
+
+    with pytest.raises(CMFRefusal) as excinfo:
+        publisher.publish()
+
+    assert excinfo.value.reason == "cmf_server_discarded_entities"
+    assert "missing events" in excinfo.value.payload["message"]
+    assert publisher.pending == 2, "an unconfirmed batch stays pending"
+    publisher.close()
+
+
+def test_dropped_events_are_not_counted_as_accepted(cmf_server: Any) -> None:
+    cmf_server.drop_events = True
+    provider = CMFServerModeProvider(_config(cmf_server.url), store=object())
+    dispatcher = ProvenanceDispatcher([provider], queue_size=4)
+
+    dispatcher.emit(_Event(_transform_event("call_1", ["artifact_1"])))
+    dispatcher.emit(_Event(_artifact_event("artifact_1", "a.csv")))
+    dispatcher.flush()
+    health = dispatcher.health()[0]
+
+    assert health["accepted"] == 0, "an execution with no events is not a written batch"
+    assert health["failed"] >= 1
+    assert "cmf_server_discarded_entities" in health["last_error"]
+
+
+def test_the_event_confirmation_scopes_its_pull_per_execution(cmf_server: Any) -> None:
+    """Bounded: a small batch reads back one execution at a time."""
+    publisher = CMFServerPublisher(_config(cmf_server.url))
+    publisher.record(_transform_event("call_1", ["artifact_1"]))
+    publisher.record(_artifact_event("artifact_1", "a.csv"))
+    publisher.publish()
+    publisher.close()
+
+    pulls = [
+        item for item in cmf_server.requests if str(item.get("path", "")).endswith("mlmd_pull")
+    ]
+    assert pulls, "events must be confirmed, not assumed"
+    assert pulls[0]["body"]["exec_uuid"] == "call_1"
+
+
+def test_an_execution_accumulating_more_edges_later_still_confirms(cmf_server: Any) -> None:
+    """More held events than this batch expected is fine; fewer is not."""
+    publisher = CMFServerPublisher(_config(cmf_server.url))
+    publisher.record(_transform_event("call_1", ["artifact_1"]))
+    publisher.record(_artifact_event("artifact_1", "a.csv"))
+    publisher.publish()
+    # The same call later attaches a second artifact.
+    publisher.record(_transform_event("call_1", ["artifact_2"]))
+    publisher.record(_artifact_event("artifact_2", "b.csv"))
+    publisher.publish()
+    publisher.close()
+
+    assert sorted(cmf_server.stored_events["call_1"]) == [4, 4]
+
+
+def test_known_artifact_memory_is_bounded() -> None:
+    publisher = CMFServerPublisher(
+        CMFServerConfig(
+            server_url="http://127.0.0.1:1", publish_timeout_s=2.0, max_known_artifacts=3
+        )
+    )
+    for index in range(10):
+        publisher.record(_artifact_event(f"artifact_{index}", f"f{index}.csv"))
+    assert len(publisher._known) == 3  # noqa: SLF001
+    publisher.close()

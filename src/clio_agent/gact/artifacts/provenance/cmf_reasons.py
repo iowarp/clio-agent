@@ -123,6 +123,19 @@ CMF_REFUSAL_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "silently absent from the pushed document, so it is refused instead."
         ),
     },
+    "cmf_artifact_reference_unresolved": {
+        "category": "representation_limit",
+        "writes": False,
+        "recovery_actions": ["report_defect", "retry"],
+        "description": (
+            "A transform names an artifact id as a used/generated edge, but no "
+            "artifact record is known for it -- not in the current push batch and "
+            "not in the provider's record of earlier ones. The edge cannot be "
+            "written into CMF's document (an artifact exists there only inside an "
+            "event), and dropping it would silently cost the lineage graph an "
+            "input, so the push is refused instead."
+        ),
+    },
     "cmf_artifact_kind_not_representable": {
         "category": "representation_limit",
         "writes": False,

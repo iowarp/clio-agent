@@ -36,10 +36,10 @@ import logging
 import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote
 
 import httpx
 
+from clio_agent.gact.artifacts.provenance.cmf_confirmation import PushConfirmer
 from clio_agent.gact.artifacts.provenance.cmf_document import (
     CMF_TYPE_DATASET,
     CMF_TYPE_MODEL,
@@ -50,7 +50,6 @@ from clio_agent.gact.artifacts.provenance.cmf_document import (
     execution_entry,
 )
 from clio_agent.gact.artifacts.provenance.cmf_encoding import has_hostile_value
-from clio_agent.gact.artifacts.provenance.cmf_lineage_rest import cmf_property
 from clio_agent.gact.artifacts.provenance.cmf_reasons import CMFRefusal
 from clio_agent.gact.provenance.protocol import ProviderReceipt
 
@@ -73,9 +72,9 @@ _ANNOTATION_EVENTS = frozenset({"artifact.alias.moved", "artifact.enriched", "ar
 _STATUS_WRITTEN = "success"
 _STATUS_EXISTS = "exists"
 
-#: Floor for the confirmation read's page size, so a one-execution batch still
-#: tolerates a few concurrent writers landing between the push and the read.
-_CONFIRM_MIN_ROWS = 20
+#: How many publishes an execution may be held back waiting for an edge's
+#: artifact event before the reference is treated as genuinely unknown.
+_MAX_EDGE_DEFERRALS = 3
 
 
 def verify_push_document(document: dict[str, Any]) -> None:
@@ -170,6 +169,9 @@ class CMFServerConfig:
     #: Bound on records held while the server is unreachable. Eviction is
     #: reported in the refusal payload, never silent.
     max_pending_records: int = 2048
+    #: Bound on the cross-batch artifact memory used to resolve edges that
+    #: reach back into earlier turns.
+    max_known_artifacts: int = 4096
 
     def __post_init__(self) -> None:
         if not self.server_url.strip():
@@ -195,7 +197,12 @@ class CMFServerPublisher:
         self._lock = threading.Lock()
         self._artifacts: dict[str, ArtifactEntry] = {}
         self._executions: list[ExecutionEntry] = []
+        #: Every artifact this provider has seen, kept across batches so an edge
+        #: reaching back to an earlier turn still resolves. Bounded, insertion
+        #: ordered; eviction is counted, never silent.
+        self._known: dict[str, ArtifactEntry] = {}
         self._evicted = 0
+        self._confirmer = PushConfirmer(config, self._http)
         self.last_publication: dict[str, Any] | None = None
 
     @property
@@ -224,6 +231,11 @@ class CMFServerPublisher:
             entry = artifact_entry(event, body)
             with self._lock:
                 self._artifacts[entry.artifact_id] = entry
+                # Remembered beyond this batch so a later turn's transform can
+                # still name it as an input.
+                self._known[entry.artifact_id] = entry
+                while len(self._known) > self.config.max_known_artifacts:
+                    self._known.pop(next(iter(self._known)))
                 self._evict_if_over_bound()
             return True
         if event_type == _TRANSFORM_EVENT:
@@ -258,21 +270,31 @@ class CMFServerPublisher:
         with self._lock:
             artifacts = dict(self._artifacts)
             executions = list(self._executions)
+            known = dict(self._known)
             evicted = self._evicted
         if not artifacts and not executions:
             return {"status": "empty", "artifacts": 0, "executions": 0}
+        executions = self._resolvable(executions, artifacts, known, evicted=evicted)
+        if not artifacts and not executions:
+            # Everything in this batch is waiting on an artifact event that has
+            # not arrived yet; nothing to push, nothing lost.
+            return {"status": "deferred", "artifacts": 0, "executions": 0}
         document = build_push_document(
             pipeline_name=self.config.pipeline_name,
             artifacts=artifacts,
             executions=executions,
+            known_artifacts=known,
         )
         verify_push_document(document)
         status, status_code = self._post(document, evicted=evicted)
-        self._confirm_held(document, evicted=evicted)
+        self._confirmer.confirm(document, evicted=evicted)
         with self._lock:
             for artifact_id in artifacts:
                 self._artifacts.pop(artifact_id, None)
-            del self._executions[: len(executions)]
+            # Remove exactly what was published: a deferred execution stays
+            # pending for the batch whose artifact event unblocks it.
+            published = {id(entry) for entry in executions}
+            self._executions = [entry for entry in self._executions if id(entry) not in published]
             self._evicted = 0
         self.last_publication = {
             "status": status,
@@ -283,87 +305,67 @@ class CMFServerPublisher:
         }
         return dict(self.last_publication)
 
-    def _confirm_held(self, document: dict[str, Any], *, evicted: int) -> None:
-        """Verify the server actually HOLDS what it just answered success to.
+    def _resolvable(
+        self,
+        executions: list[ExecutionEntry],
+        artifacts: dict[str, ArtifactEntry],
+        known: dict[str, ArtifactEntry],
+        *,
+        evicted: int,
+    ) -> list[ExecutionEntry]:
+        """Split off executions whose edges cannot be resolved yet.
 
-        A 200 is not evidence. The server's ingest swallows per-entity failures
-        (``cmf_merger.handle_execution`` wraps the write in
-        ``except Exception: logger.error(...)``), so a push can report success
-        having stored nothing -- which is exactly how a live run recorded 13
-        executions, zero artifacts and zero events against a green counter.
+        Artifact and transform events have no guaranteed order, so a transform
+        can name an artifact whose ``artifact.created`` has not been emitted
+        yet. Refusing that outright would make event ordering load-bearing, and
+        pushing it would drop the edge silently -- so the execution is HELD in
+        the pending buffer and retried on the next publish, which costs nothing
+        and resolves as soon as the artifact lands.
 
-        One bounded read of the stage's most recent executions, checking the
-        names just pushed are present, is what makes ``accepted`` structural
-        rather than aspirational.
+        The excuse is bounded: after :data:`_MAX_EDGE_DEFERRALS` publishes the
+        reference is treated as genuinely unknown and refused with a typed
+        reason, so a real dangling edge stays loud instead of being deferred
+        forever.
 
         Args:
-            document: The document that was just pushed.
+            executions: The pending executions.
+            artifacts: Artifacts minted by this batch.
+            known: Artifacts seen in earlier batches.
             evicted: Records dropped from the pending bound, for the refusal.
 
+        Returns:
+            The executions whose edges all resolve now.
+
         Raises:
-            CMFRefusal: ``cmf_server_discarded_entities`` -- entities are
-                missing; ``cmf_server_unreachable`` -- the read-back failed.
+            CMFRefusal: An edge stayed unresolved past the deferral bound.
         """
-        # Match on Execution_uuid, not on the execution name: the dashboard's
-        # execution rows carry only ``execution_id`` plus an
-        # ``execution_properties`` list of {name, value} pairs -- there is no
-        # ``name`` key to match (verified against a live cmf-server).
-        expected = {
-            str((execution.get("properties") or {}).get("Execution_uuid") or "")
-            for pipeline in document.get("Pipeline") or []
-            for stage in pipeline.get("stages") or []
-            for execution in stage.get("executions") or []
-        }
-        expected.discard("")
-        if not expected:
-            return
-        stage_name = f"{self.config.pipeline_name}/artifacts"
-        try:
-            response = self._http().get(
-                f"{self.config.server_url.strip().rstrip('/')}"
-                f"/api/executions-by-stage/{quote(self.config.pipeline_name, safe='')}",
-                params={
-                    "stage_name": stage_name,
-                    "active_page": 1,
-                    # Bounded: the just-pushed rows are the most recent, so one
-                    # page sized to the batch (plus headroom for concurrent
-                    # writers) is enough to see them.
-                    "record_per_page": max(len(expected) * 2, _CONFIRM_MIN_ROWS),
-                    "sort_order": "DESC",
-                    "filter_value": "",
-                },
-                timeout=self.config.publish_timeout_s,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise CMFRefusal(
-                "cmf_server_unreachable",
-                f"push confirmation read failed: {type(exc).__name__}: {exc}",
-                server_url=self.config.server_url,
-                evicted_records=evicted,
-            ) from exc
-        rows = payload.get("items") if isinstance(payload, dict) else payload
-        held: set[str] = set()
-        for row in rows if isinstance(rows, list) else []:
-            if not isinstance(row, dict):
+        available: dict[str, Any] = {**known, **artifacts}
+        ready: list[ExecutionEntry] = []
+        for entry in executions:
+            unresolved = entry.unresolved_edges(available)
+            if not unresolved:
+                ready.append(entry)
                 continue
-            # A merged execution's uuid property is a comma-joined union.
-            uuids = str(cmf_property(row, "Execution_uuid") or "")
-            held.update(part for part in uuids.split(",") if part)
-        missing = sorted(expected - held)
-        if missing:
-            raise CMFRefusal(
-                "cmf_server_discarded_entities",
-                (
-                    f"the CMF server answered success but does not hold "
-                    f"{len(missing)} of {len(expected)} pushed executions"
-                ),
-                missing=missing[:10],
-                missing_count=len(missing),
-                pipeline_name=self.config.pipeline_name,
-                evicted_records=evicted,
+            entry.deferrals += 1
+            if entry.deferrals > _MAX_EDGE_DEFERRALS:
+                raise CMFRefusal(
+                    "cmf_artifact_reference_unresolved",
+                    (
+                        f"transform {entry.call_id} still names unknown artifact(s) "
+                        f"after {entry.deferrals} publishes; the edge cannot be "
+                        "written and must not be dropped silently"
+                    ),
+                    call_id=entry.call_id,
+                    artifact_ids=unresolved[:10],
+                    deferrals=entry.deferrals,
+                    evicted_records=evicted,
+                )
+            logger.debug(
+                "cmf server-mode deferring execution %s: waiting on artifact events %s",
+                entry.call_id,
+                unresolved[:5],
             )
+        return ready
 
     def _post(self, document: dict[str, Any], *, evicted: int) -> tuple[str, int]:
         """POST one document and map the answer onto the refusal catalog."""
@@ -463,7 +465,14 @@ class CMFServerModeProvider:
         """
         if not self._publisher.record(event.to_dict("full")):
             return ProviderReceipt.FILTERED
-        self._publisher.publish()
+        result = self._publisher.publish()
+        if str(result.get("status") or "") == "deferred":
+            # Recorded, but nothing was written: this batch is waiting on an
+            # artifact event that has not arrived. Claiming ACCEPTED here would
+            # put the counter back in front of reality. The record is pushed by
+            # a later emit, which UNDER-counts rather than over-counts -- the
+            # safe direction for a "did CMF really get it" number.
+            return ProviderReceipt.FILTERED
         return ProviderReceipt.ACCEPTED
 
     def flush(self) -> None:

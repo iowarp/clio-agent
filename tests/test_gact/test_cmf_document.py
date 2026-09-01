@@ -304,10 +304,16 @@ def test_transform_without_a_call_id_is_refused() -> None:
     assert excinfo.value.reason == "cmf_server_rejected_payload"
 
 
-def test_edges_naming_an_unknown_artifact_do_not_emit_a_null_event() -> None:
+def test_edges_naming_an_unknown_artifact_refuse_rather_than_vanish() -> None:
+    """Superseded contract: this used to emit an execution with events: [].
+
+    Skipping the edge looked harmless but is the cross-batch data loss -- the
+    push reports success having quietly dropped an input from the graph.
+    """
     t_event, t_body = _transform_event("call_1", used=["artifact_missing"])
-    document = _document(artifacts={}, executions=[execution_entry(t_event, t_body)])
-    assert document["Pipeline"][0]["stages"][0]["executions"][0]["events"] == []
+    with pytest.raises(CMFRefusal) as excinfo:
+        _document(artifacts={}, executions=[execution_entry(t_event, t_body)])
+    assert excinfo.value.reason == "cmf_artifact_reference_unresolved"
 
 
 def test_entry_documents_are_copies_so_one_push_cannot_mutate_the_next() -> None:
@@ -316,3 +322,100 @@ def test_entry_documents_are_copies_so_one_push_cannot_mutate_the_next() -> None
     first = entry.to_document()
     first["custom_properties"]["clio_kind"] = "tampered"
     assert entry.to_document()["custom_properties"]["clio_kind"] == "dataset"
+
+
+# --------------------------------------------------------------------------- #
+# Cross-batch edges (#residual): server mode pushes per emit batch and clears
+# the batch on success, so an artifact created in turn 1 is NOT in the batch
+# dict when turn 2's transform names it as an input. Resolving edges against
+# the batch alone dropped that INPUT event silently -- b=transform(a) lost its
+# input whenever the two landed in different pushes.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_used_edge_reaching_into_an_earlier_batch_still_lands() -> None:
+    in_event, in_body = _artifact_event("artifact_a5", "a5.csv")
+    earlier = {"artifact_a5": artifact_entry(in_event, in_body)}
+    t_event, t_body = _transform_event("call_turn2", used=["artifact_a5"])
+
+    # Turn 2's batch mints no artifacts; the input belongs to turn 1.
+    document = build_push_document(
+        pipeline_name="clio-agent",
+        artifacts={},
+        executions=[execution_entry(t_event, t_body)],
+        known_artifacts=earlier,
+        created_ms=1_700_000_000_000,
+    )
+
+    events = document["Pipeline"][0]["stages"][0]["executions"][0]["events"]
+    assert [event["type"] for event in events] == [EVENT_INPUT]
+    assert events[0]["artifact"]["uri"] == "clio://artifact/artifact_a5"
+
+
+def test_a_generated_edge_reaching_into_an_earlier_batch_still_lands() -> None:
+    out_event, out_body = _artifact_event("artifact_old", "b.csv")
+    earlier = {"artifact_old": artifact_entry(out_event, out_body)}
+    t_event, t_body = _transform_event("call_turn2", generated=["artifact_old"])
+
+    document = build_push_document(
+        pipeline_name="clio-agent",
+        artifacts={},
+        executions=[execution_entry(t_event, t_body)],
+        known_artifacts=earlier,
+        created_ms=1_700_000_000_000,
+    )
+
+    events = document["Pipeline"][0]["stages"][0]["executions"][0]["events"]
+    assert [event["type"] for event in events] == [EVENT_OUTPUT]
+
+
+def test_the_batch_wins_over_stale_knowledge_for_the_same_id() -> None:
+    stale_event, stale_body = _artifact_event("artifact_1", "old-name.csv")
+    fresh_event, fresh_body = _artifact_event("artifact_1", "new-name.csv")
+    t_event, t_body = _transform_event("call_1", generated=["artifact_1"])
+
+    document = build_push_document(
+        pipeline_name="clio-agent",
+        artifacts={"artifact_1": artifact_entry(fresh_event, fresh_body)},
+        executions=[execution_entry(t_event, t_body)],
+        known_artifacts={"artifact_1": artifact_entry(stale_event, stale_body)},
+        created_ms=1_700_000_000_000,
+    )
+
+    artifact = document["Pipeline"][0]["stages"][0]["executions"][0]["events"][0]["artifact"]
+    assert artifact["name"] == "new-name.csv:v1"
+
+
+def test_an_edge_naming_an_unknown_artifact_is_typed_not_dropped() -> None:
+    """The old code had no else branch: the event simply vanished."""
+    t_event, t_body = _transform_event("call_1", used=["artifact_never_seen"])
+
+    with pytest.raises(CMFRefusal) as excinfo:
+        build_push_document(
+            pipeline_name="clio-agent",
+            artifacts={},
+            executions=[execution_entry(t_event, t_body)],
+            created_ms=1_700_000_000_000,
+        )
+
+    assert excinfo.value.reason == "cmf_artifact_reference_unresolved"
+    assert excinfo.value.payload["details"]["artifact_id"] == "artifact_never_seen"
+    assert excinfo.value.payload["details"]["direction"] == "used"
+    assert excinfo.value.payload["details"]["call_id"] == "call_1"
+
+
+def test_a_cross_batch_artifact_does_not_get_a_second_creation_execution() -> None:
+    """It was already attached when its own batch was pushed."""
+    in_event, in_body = _artifact_event("artifact_a5", "a5.csv")
+    t_event, t_body = _transform_event("call_turn2", used=["artifact_a5"])
+
+    document = build_push_document(
+        pipeline_name="clio-agent",
+        artifacts={},
+        executions=[execution_entry(t_event, t_body)],
+        known_artifacts={"artifact_a5": artifact_entry(in_event, in_body)},
+        created_ms=1_700_000_000_000,
+    )
+
+    executions = document["Pipeline"][0]["stages"][0]["executions"]
+    assert [execution["name"] for execution in executions] == ["clio:call_turn2"]
