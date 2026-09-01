@@ -443,9 +443,20 @@ class CMFArtifactProvenanceProvider:
         (live qualification, sess_3c2660f69bd5): the counter described the
         hand-off, not the write.
         """
-        response = self._bridge.request("record", event=event.to_dict("full"))
+        payload = event.to_dict("full")
+        response = self._bridge.request("record", event=payload)
         if response.get("filtered"):
             return ProviderReceipt.FILTERED
+        if response.get("unattached"):
+            # Stored locally, but invisible to any CMF server: the push document
+            # carries artifacts only inside an execution's events.
+            body = payload.get("payload")
+            raise CMFRefusal(
+                "cmf_artifact_not_attached_to_execution",
+                "the artifact has no producing call to attach it to, so it cannot "
+                "appear in a CMF metadata push",
+                artifact_id=str((body or {}).get("artifact_id") or ""),
+            )
         if self.config.server_url:
             self._publish()
         return ProviderReceipt.ACCEPTED
