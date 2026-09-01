@@ -58,6 +58,14 @@ from clio_agent.gact.artifacts.minting import (
     mint_pack_declared_paths,
     mint_tool_declared_outputs,
 )
+from clio_agent.gact.artifacts.model_identity import (
+    ARTIFACTS_RESULT_KEY,
+    annotate_workflow_state_artifacts,
+    artifact_id_uri,
+    merge_artifact_identity,
+    record_call_artifacts,
+    resolve_registered_version,
+)
 from clio_agent.gact.artifacts.proposals import (
     Proposal,
     ProposalOutcome,
@@ -163,9 +171,15 @@ __all__ = [
     "reconcile_designated_path",
     "record_transform",
     "workspace_lease_clean",
+    "ARTIFACTS_RESULT_KEY",
     "ProposalOutcome",
     "RejectionReason",
+    "annotate_workflow_state_artifacts",
+    "artifact_id_uri",
     "artifact_uri",
+    "merge_artifact_identity",
+    "record_call_artifacts",
+    "resolve_registered_version",
     "build_create_artifact_tool",
     "compute_identity",
     "drain_turn_artifacts",

@@ -38,7 +38,7 @@ from clio_agent.tools.mcp_executor import (
 from clio_agent.tools.mcp_namespace_executor import SyncNamespacePreparationMixin
 from clio_agent.tools.mcp_results import call_tool_result_to_observer
 from clio_agent.tools.result_errors import structured_tool_result_error
-from clio_agent.tools.tool_hooks import InterceptDecision, PostToolHook, apply_post_tool_hook
+from clio_agent.tools.tool_hooks import InterceptDecision, PostToolHook, assemble_model_observation
 
 logger = logging.getLogger(__name__)
 
@@ -760,7 +760,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             self._record_tool_success(name)
             if return_raw:
                 return intercept.result  # MCP Apps bridge is not model-facing: no PostToolUse
-            return apply_post_tool_hook(
+            return assemble_model_observation(
                 hooks.post_tool,
                 name,
                 effective_args,
@@ -859,9 +859,9 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             return outcome.raw_result  # MCP Apps bridge is not model-facing: no PostToolUse
         drained = hooks.loop_inbox_drain() if hooks.loop_inbox_drain is not None else None
         result = _prepend_repair_notes(repair_records, result) if repair_records else result
-        # P2.3 PostToolUse: rewrite the model-visible observation / feed a deny reason,
-        # AFTER the observer recorded the real effect (trace keeps the actual result).
-        result = apply_post_tool_hook(
+        # The model-visible observation (minted artifact identity, then P2.3 PostToolUse),
+        # assembled AFTER the observer recorded the real effect (the trace keeps the result).
+        result = assemble_model_observation(
             hooks.post_tool,
             name,
             effective_args,

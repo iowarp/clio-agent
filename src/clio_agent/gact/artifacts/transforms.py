@@ -604,6 +604,22 @@ def observe_tool_transform(
             call_started_at=started,
             result=result,
         )
+        # The MODEL lane's half of designation: publish this call's registry-resolved
+        # artifact ids so the execution boundary can merge them into the result the
+        # model reads back (the wire lane already carries them as artifact.created +
+        # a resource_link part). Guarded internally — never raises into the record.
+        from clio_agent.gact.artifacts.model_identity import (  # noqa: PLC0415
+            record_call_artifacts,
+        )
+
+        record_call_artifacts(
+            app,
+            call_id=call_id,
+            workspace_id=workspace_id,
+            effective_args=effective_args,
+            result=result,
+            minted=minted,
+        )
         # B4 (#978): resolve the confined child that SERVED this call so the ingest join can
         # attribute egress deterministically (``egress → child → call-window → transform``).
         # ``""`` when no child link is recorded (the floor / unattributed) — the step-2 mint
