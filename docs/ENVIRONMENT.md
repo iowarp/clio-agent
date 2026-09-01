@@ -209,6 +209,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SHELL_MAX_OUTPUT_BYTES` | `limits.shell_max_output_bytes` | int | `131072` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SHELL_MAX_TIMEOUT_S` | `limits.shell_max_timeout_s` | float | `30.0` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SPOTTER_BLUEPRINT_ID` | `spotter.watcher_blueprint_id` | str | `spotter-ai` | `src/clio_agent/gact/spotter_watcher.py` |
+| `CLIO_SPOTTER_CLEARANCE_PROGRESS_TIMEOUT_S` | `spotter.clearance_progress_timeout_s` | float | `180.0` | `src/clio_agent/gact/spotter_clearance.py` |
 | `CLIO_SPOTTER_EXPERT_ID` | `spotter.watcher_expert_id` | str | `spotter_watcher` | `src/clio_agent/gact/spotter_watcher.py` |
 | `CLIO_SSE_EVENT_LOG` | `debug.sse_event_log` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
 | `CLIO_SSE_WIRE_TAP` | `debug.sse_wire_tap` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |

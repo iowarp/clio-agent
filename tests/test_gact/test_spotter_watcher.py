@@ -36,6 +36,11 @@ from clio_agent.gact.agent_tasks import STATUS_CANCELLED, STATUS_RUNNING
 from clio_agent.gact.app import build_app
 from clio_agent.gact.permission_gate import _make_permission_gate
 from clio_agent.gact.runtime.globals import _tool_session_context
+from clio_agent.gact.spotter_clearance import (
+    CLEARANCE_GRANTED,
+    CLEARANCE_WATCHER_FAILED,
+    wait_for_spotter_clearance,
+)
 from clio_agent.gact.spotter_watcher import (
     _WAKE_COALESCED_TEXT,
     _WAKE_TURN_FINAL_TEXT,
@@ -44,7 +49,6 @@ from clio_agent.gact.spotter_watcher import (
     _wake_text,
     ensure_spotter_watcher,
     on_turn_finalized,
-    wait_for_spotter_clearance,
     wake_on_parent_activity,
 )
 
@@ -533,7 +537,10 @@ def test_failed_watcher_turn_stays_armed_but_blocks_clearance(tmp_path: Path) ->
         assert failed.status == STATUS_RUNNING
         assert failed.error_reason == "custom_agent_tools_unavailable"
         assert not failed.is_terminal
-        assert wait_for_spotter_clearance(app, sid, timeout_s=0.01) is False
+        assert (
+            wait_for_spotter_clearance(app, sid, progress_timeout_s=0.01)
+            == CLEARANCE_WATCHER_FAILED
+        )
 
 
 @pytest.mark.usefixtures("host_agent_executor")
@@ -561,7 +568,9 @@ def test_clearance_waits_until_running_watcher_releases_its_turn(tmp_path: Path)
 
         result: list[bool] = []
         waiter = threading.Thread(
-            target=lambda: result.append(wait_for_spotter_clearance(app, sid, timeout_s=10.0))
+            target=lambda: result.append(
+                wait_for_spotter_clearance(app, sid, progress_timeout_s=10.0)
+            )
         )
         waiter.start()
         time.sleep(0.1)
@@ -570,7 +579,7 @@ def test_clearance_waits_until_running_watcher_releases_its_turn(tmp_path: Path)
         block.set()
         waiter.join(timeout=10.0)
         assert not waiter.is_alive()
-        assert result == [True]
+        assert result == [CLEARANCE_GRANTED]
 
 
 @pytest.mark.usefixtures("host_agent_executor")

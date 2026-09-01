@@ -50,18 +50,22 @@ reason=...`` / ``spotter_watcher_skip reason=...`` / ``spotter_watcher_arm_faile
 reason=...`` / ``spotter_wake_started`` / ``spotter_wake_enqueued`` /
 ``spotter_wake_coalesced reason=...``) through both the module logger and
 :mod:`clio_agent.runtime.trace`.
+
+The PROTECTED-PARENT half of the barrier — the clearance event this module
+signals, the typed fail-closed reasons, and the per-exchange progress wait a
+mutating tool call performs — lives in its own owner module,
+:mod:`clio_agent.gact.spotter_clearance`.
 """
 
 from __future__ import annotations
 
 import logging
-import threading
-import time
 from collections.abc import Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact.agent_tasks import STATUS_RUNNING
+from clio_agent.gact.spotter_clearance import release_clearance_event, signal_clearance
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
@@ -159,68 +163,6 @@ def _tool_outcome_fact(structured_result: Any) -> str:
     return ""
 
 
-def _clearance_event(app: "FastAPI", parent_session_id: str) -> threading.Event:
-    """Return the process-local condition event for one protected session."""
-
-    events = getattr(app.state, "spotter_clearance_events", None)
-    if events is None:
-        events = {}
-        app.state.spotter_clearance_events = events
-    return events.setdefault(parent_session_id, threading.Event())
-
-
-def _watcher_clearance_pending(app: "FastAPI", parent_session_id: str) -> bool:
-    """Whether the standing watcher still has active or buffered evidence."""
-
-    task = next(iter(_live_watcher_tasks(app, parent_session_id)), None)
-    if task is None:
-        return False
-    runner = getattr(app.state, "turn_runner", None)
-    if runner is not None and runner.busy(task.child_session_id):
-        return True
-    from clio_agent.gact.loop_inbox import inbox_for  # noqa: PLC0415
-
-    return inbox_for(app, task.child_session_id).peek_nonempty()
-
-
-def _watcher_clearance_failed(app: "FastAPI", parent_session_id: str) -> bool:
-    """Whether the armed watcher most recently failed its check turn."""
-
-    task = next(iter(_live_watcher_tasks(app, parent_session_id)), None)
-    return task is not None and task.live_state == "error"
-
-
-def wait_for_spotter_clearance(
-    app: "FastAPI", parent_session_id: str, *, timeout_s: float = 180.0
-) -> bool:
-    """Wait until all watcher evidence preceding a protected call is settled.
-
-    The watcher remains asynchronous while the parent renders/reasons, but a
-    subsequent mutating tool call cannot overtake an active check or a
-    coalesced wake. Returns ``False`` on timeout so the permission boundary can
-    fail closed instead of silently running unobserved work.
-    """
-
-    session = app.state.sessions.get(parent_session_id)
-    if session is None or session.approval_mode != SPOTTER_APPROVAL_MODE:
-        return True
-    event = _clearance_event(app, parent_session_id)
-    deadline = time.monotonic() + max(0.0, timeout_s)
-    if _watcher_clearance_failed(app, parent_session_id):
-        return False
-    while _watcher_clearance_pending(app, parent_session_id):
-        event.clear()
-        if _watcher_clearance_failed(app, parent_session_id):
-            return False
-        if not _watcher_clearance_pending(app, parent_session_id):
-            return not _watcher_clearance_failed(app, parent_session_id)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return False
-        event.wait(remaining)
-    return not _watcher_clearance_failed(app, parent_session_id)
-
-
 def on_turn_runner_idle(app: "FastAPI", session_id: str) -> None:
     """Wake a clearance waiter after the watcher slot is actually released."""
 
@@ -237,7 +179,7 @@ def on_turn_runner_idle(app: "FastAPI", session_id: str) -> None:
         None,
     )
     if task is not None:
-        _clearance_event(app, parent_id).set()
+        signal_clearance(app, parent_id)
 
 
 def _wake_text(*, tool_name: str = "", tool_ok: bool = True, tool_result: Any = None) -> str:
@@ -539,6 +481,9 @@ def disarm_spotter_watcher(
     from clio_agent.gact.turn_spawn import cancel_agent_task  # noqa: PLC0415
 
     cancelled = sum(1 for task in live if cancel_agent_task(app, task.task_id))
+    # Bounded retention: the parent's clearance event outlives nothing — release
+    # it here (waiters wake and fail closed typed, since no watcher is live).
+    release_clearance_event(app, session_id)
     logger.info(
         "spotter_watcher_disarmed reason=%s session=%s count=%s", reason, session_id, cancelled
     )
@@ -696,7 +641,7 @@ def _push_wake(app: "FastAPI", parent_session_id: str, task: "AgentTask", wake_t
                 child_sid,
                 task.task_id,
             )
-        _clearance_event(app, parent_session_id).set()
+        signal_clearance(app, parent_session_id)
         return
 
     child_session = app.state.sessions.get(child_sid)
@@ -705,7 +650,7 @@ def _push_wake(app: "FastAPI", parent_session_id: str, task: "AgentTask", wake_t
 
     _start_check_turn_on_app_loop(app, child_sid, child_session, wake_text)
     _set_live_state(app, task.task_id, "running")
-    _clearance_event(app, parent_session_id).set()
+    signal_clearance(app, parent_session_id)
     logger.info(
         "spotter_wake_started session=%s watcher=%s task=%s",
         parent_session_id,
@@ -791,7 +736,7 @@ def on_turn_finalized(app: "FastAPI", session_id: str) -> None:
         updated = _set_live_state(app, task.task_id, "waiting")
         event_name = "spotter_watcher_check_turn_ended"
     if updated is not None:
-        _clearance_event(app, parent_id).set()
+        signal_clearance(app, parent_id)
         detail = f" reason={reason}" if reason else ""
         message = f"{event_name}{detail} session=%s watcher=%s task=%s"
         logger.info(message, parent_id, session_id, task.task_id)

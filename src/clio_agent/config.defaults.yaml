@@ -548,6 +548,13 @@ scheduler.min_interval_s: 60
 # CLIO_SPOTTER_BLUEPRINT_ID  (str)  <- src/clio_agent/gact/spotter_watcher.py
 spotter.watcher_blueprint_id: "spotter-ai"
 
+# CLIO_SPOTTER_CLEARANCE_PROGRESS_TIMEOUT_S  (float)  <- src/clio_agent/gact/spotter_clearance.py
+# A NO-PROGRESS window, not a wall clock: it bounds the gap BETWEEN observable
+# watcher progress signals while a protected tool call waits for clearance, and
+# restarts on every signal. A long-but-progressing watcher check runs to
+# completion; only a watcher silent for a whole window fails closed.
+spotter.clearance_progress_timeout_s: 180.0
+
 # CLIO_SPOTTER_EXPERT_ID  (str)  <- src/clio_agent/gact/spotter_watcher.py
 spotter.watcher_expert_id: "spotter_watcher"
 
