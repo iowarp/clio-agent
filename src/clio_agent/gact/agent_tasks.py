@@ -27,9 +27,13 @@ from __future__ import annotations
 
 import logging
 import threading
+import uuid
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
+
+from clio_agent.gact.runtime.permission_policies import inherit_child_session_policies
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -561,8 +565,6 @@ def settle_interrupted_agent_tasks(app: "FastAPI") -> int:
     number settled. Idempotent: a second boot finds nothing non-terminal to settle.
     """
 
-    from datetime import datetime, timezone  # noqa: PLC0415
-
     reg = app.state.agent_task_registry
     now = datetime.now(timezone.utc).isoformat()
     settled = 0
@@ -632,9 +634,6 @@ def seed_agent_task(
     live-gate probe use it to seed a task without a running child.
     """
 
-    import uuid  # noqa: PLC0415
-    from datetime import datetime, timezone  # noqa: PLC0415
-
     now = datetime.now(timezone.utc).isoformat()
     tid = task_id or ("task_" + uuid.uuid4().hex[:12])
     parent = app.state.sessions.get(parent_session_id)
@@ -652,6 +651,7 @@ def seed_agent_task(
         mode=session_mode or getattr(parent, "mode", "edit"),
         approval_mode=getattr(parent, "approval_mode", "ask"),
     )
+    inherit_child_session_policies(app, parent_session_id, child.id)
     task = AgentTask(
         task_id=tid,
         parent_session_id=parent_session_id,
@@ -754,8 +754,6 @@ def consume_notification(app: "FastAPI", task_id: str) -> Optional[AgentTask]:
     task = reg.get(task_id)
     if task is None or not task.is_terminal:
         return None
-    from datetime import datetime, timezone  # noqa: PLC0415
-
     updated = reg.mark_consumed(task_id, datetime.now(timezone.utc).isoformat())
     if updated is None:
         # Already consumed by a concurrent/earlier caller (the atomic once-guard).
