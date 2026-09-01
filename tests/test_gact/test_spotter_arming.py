@@ -14,11 +14,20 @@ These tests pin the arm-time gate that closes it: a STATIC resolvability check
 of the watcher blueprint's declared MCP specs (never a launch, never a
 handshake) that REFUSES the transition into spotter-ai with a typed HTTP 422
 instead of arming a watcher that cannot run.
+
+Second live defect (``sess_086cf23a960b``): the gate stat'd the launcher's
+``--project`` DIRECTORY but never its ENTRY POINT. With ``SPOTTER_IMPL_DIR``
+pointed at a real directory whose venv had been created but never synced (a
+bare ``python.exe``, no ``site-packages``), the gate PASSED, ``uv run --project
+<dir> --no-sync spotter-mcp`` then failed "program not found", and the watcher
+errored ``custom_agent_tools_unavailable`` on every wake — the exact denial
+storm the gate exists to prevent. The entry-point cases below pin that closure.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -26,6 +35,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
 from clio_agent.gact.spotter_arming import (
+    REFUSAL_WATCHER_ENTRYPOINT_MISSING,
     REFUSAL_WATCHER_PROJECT_MISSING,
     REFUSAL_WATCHER_UNMOUNTABLE,
     SPOTTER_ARMING_REASONS,
@@ -59,6 +69,25 @@ experts:
 SPOTTER AI watcher blueprint fixture.
 """
 
+#: Same launcher WITHOUT ``--no-sync``: ``uv run`` provisions the environment
+#: itself before exec, so its venv contents are not a static precondition.
+_AGENT_MD_SYNC_ENABLED = _AGENT_MD.replace("      - --no-sync\n", "")
+
+#: A launcher that is not ``uv run`` at all — the shape the static entry-point
+#: resolution deliberately does not model.
+_AGENT_MD_NON_UV = _AGENT_MD.replace("    command: uv\n", "    command: node\n").replace(
+    """      - run
+      - --project
+      - ${SPOTTER_IMPL_DIR}
+      - --no-sync
+      - spotter-mcp
+""",
+    """      - --project
+      - ${SPOTTER_IMPL_DIR}
+      - server.js
+""",
+)
+
 _WATCHER_EXPERT_MD = """---
 id: spotter_watcher
 title: SPOTTER Forensic Watcher
@@ -74,7 +103,7 @@ You protect the parent session while it works.
 """
 
 
-def _install_watcher_blueprint(tmp_path: Path) -> Path:
+def _install_watcher_blueprint(tmp_path: Path, agent_md: str = _AGENT_MD) -> Path:
     """Install the watcher Agent Blueprint into this test's isolated config root.
 
     ``tests/conftest.py::allow_pytest_tmp_path`` repoints ``CLIO_USER_DIR`` /
@@ -84,9 +113,47 @@ def _install_watcher_blueprint(tmp_path: Path) -> Path:
 
     root = tmp_path / "xdg" / "clio-agent" / "agent-blueprints" / _BLUEPRINT_ID
     (root / "experts").mkdir(parents=True, exist_ok=True)
-    root.joinpath("AGENT.md").write_text(_AGENT_MD, encoding="utf-8")
+    root.joinpath("AGENT.md").write_text(agent_md, encoding="utf-8")
     root.joinpath("experts", "spotter_watcher.md").write_text(_WATCHER_EXPERT_MD, encoding="utf-8")
     return root
+
+
+def _install_impl_venv(
+    impl: Path, *, entrypoint: str = "spotter-mcp", synced: bool = True, distribution: str = ""
+) -> Path:
+    """Build the on-disk shape ``uv run --no-sync`` needs, with plain dirs/files.
+
+    No real ``uv`` runs here: the check is a stat, so the fixture only has to
+    reproduce the LAYOUT — ``.venv/{Scripts,bin}`` for the console script and
+    ``.venv/{Lib,lib/pythonX.Y}/site-packages`` for the distribution fallback.
+    Both platform layouts are laid down so the assertions do not fork on
+    ``os.name`` (the resolver probes both for the same reason).
+
+    Args:
+        impl: The project directory the launcher's ``--project`` names.
+        entrypoint: The console script to install; empty installs none.
+        synced: When false the venv exists but carries NO ``site-packages`` —
+            the live ``sess_086cf23a960b`` topology (a bare interpreter).
+        distribution: An extra ``<name>-<version>.dist-info`` to drop into
+            site-packages, for the "distribution present, console script not
+            yet linked" path.
+    """
+
+    venv = impl / ".venv"
+    for bindir in (venv / "Scripts", venv / "bin"):
+        bindir.mkdir(parents=True, exist_ok=True)
+        # Every venv has an interpreter; the live defect had ONLY this.
+        bindir.joinpath("python.exe" if os.name == "nt" else "python").write_bytes(b"")
+        if entrypoint:
+            suffix = ".exe" if bindir.name == "Scripts" else ""
+            bindir.joinpath(f"{entrypoint}{suffix}").write_bytes(b"")
+    if synced:
+        for site in (venv / "Lib" / "site-packages", venv / "lib" / "python3.12" / "site-packages"):
+            site.mkdir(parents=True, exist_ok=True)
+            site.joinpath("_marker.pth").write_text("", encoding="utf-8")
+            if distribution:
+                site.joinpath(f"{distribution}-0.1.0.dist-info").mkdir(exist_ok=True)
+    return venv
 
 
 def _clear_deployment_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -96,11 +163,15 @@ def _clear_deployment_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SPOTTER_CLIO_CONFIG", raising=False)
 
 
-def _set_deployment_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Set the pack's deployment inputs to a real impl dir + clio config file."""
+def _set_deployment_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, install_venv: bool = True
+) -> Path:
+    """Set the pack's deployment inputs to a real, SYNCED impl dir + config file."""
 
     impl = tmp_path / "spotter-impl"
     impl.mkdir(parents=True, exist_ok=True)
+    if install_venv:
+        _install_impl_venv(impl)
     config = tmp_path / "clio.yaml"
     config.write_text("providers: {}\n", encoding="utf-8")
     monkeypatch.setenv("SPOTTER_IMPL_DIR", str(impl))
@@ -166,6 +237,168 @@ def test_create_into_spotter_ai_is_refused_when_project_dir_is_missing(
     assert error["details"]["path"] == str(tmp_path / "not-installed")
     assert error["details"]["mcp_server"] == "spotter"
     assert app.state.sessions.list() == []
+
+
+# --------------------------------------------------------------------------- #
+# 1b. The ENTRY POINT, not just the directory (live defect sess_086cf23a960b)
+# --------------------------------------------------------------------------- #
+
+
+def test_create_into_spotter_ai_is_refused_when_the_project_venv_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The declared ``--project`` directory EXISTS but has no venv at all.
+
+    ``uv run --no-sync`` cannot provision one, so the entry point can never
+    resolve — the directory stat that used to pass here is not enough.
+    """
+
+    _install_watcher_blueprint(tmp_path)
+    impl = _set_deployment_env(monkeypatch, tmp_path, install_venv=False)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        with caplog.at_level(logging.WARNING, logger="clio_agent.gact.spotter_arming"):
+            resp = client.post("/v1/sessions", json={"title": "t", "approval_mode": "spotter-ai"})
+
+    assert resp.status_code == 422, resp.text
+    error = resp.json()["error"]
+    assert error["error"] == REFUSAL_WATCHER_ENTRYPOINT_MISSING == "spotter_watcher_entrypoint_missing"
+    details = error["details"]
+    assert details["reason"] == REFUSAL_WATCHER_ENTRYPOINT_MISSING
+    assert details["entrypoint"] == "spotter-mcp"
+    assert details["project_dir"] == str(impl)
+    assert details["venv_state"] == "missing_venv"
+    assert details["mcp_server"] == "spotter"
+    assert "spotter-mcp" in details["detail"]
+
+    # Fail-closed AT ARMING: the refused create left no session behind.
+    assert app.state.sessions.list() == []
+    assert any(
+        "spotter_watcher_arm_refused" in record.getMessage()
+        and REFUSAL_WATCHER_ENTRYPOINT_MISSING in record.getMessage()
+        for record in caplog.records
+    ), [record.getMessage() for record in caplog.records]
+
+
+def test_create_into_spotter_ai_is_refused_when_the_venv_is_unsynced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reproduced live topology: a venv holding ONLY an interpreter.
+
+    ``SPOTTER_IMPL_DIR`` was set, the directory existed, the old gate passed —
+    and ``uv run --no-sync spotter-mcp`` then died "program not found".
+    """
+
+    _install_watcher_blueprint(tmp_path)
+    impl = _set_deployment_env(monkeypatch, tmp_path, install_venv=False)
+    _install_impl_venv(impl, entrypoint="", synced=False)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        resp = client.post("/v1/sessions", json={"title": "t", "approval_mode": "spotter-ai"})
+
+    assert resp.status_code == 422, resp.text
+    details = resp.json()["error"]["details"]
+    assert details["reason"] == REFUSAL_WATCHER_ENTRYPOINT_MISSING
+    assert details["venv_state"] == "unsynced"
+    assert app.state.sessions.list() == []
+
+
+def test_create_into_spotter_ai_is_refused_when_the_entrypoint_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fully synced venv that simply does not provide THIS console script."""
+
+    _install_watcher_blueprint(tmp_path)
+    impl = _set_deployment_env(monkeypatch, tmp_path, install_venv=False)
+    _install_impl_venv(impl, entrypoint="some-other-tool")
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        resp = client.post("/v1/sessions", json={"title": "t", "approval_mode": "spotter-ai"})
+
+    assert resp.status_code == 422, resp.text
+    details = resp.json()["error"]["details"]
+    assert details["reason"] == REFUSAL_WATCHER_ENTRYPOINT_MISSING
+    assert details["venv_state"] == "entrypoint_absent"
+    assert details["entrypoint"] == "spotter-mcp"
+    assert app.state.sessions.list() == []
+
+
+def test_create_into_spotter_ai_arms_when_the_entrypoint_is_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The console script IS in the project venv -> the launcher can spawn."""
+
+    _install_watcher_blueprint(tmp_path)
+    impl = _set_deployment_env(monkeypatch, tmp_path)
+    assert (impl / ".venv" / ("Scripts" if os.name == "nt" else "bin")).is_dir()
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        resp = client.post("/v1/sessions", json={"title": "t", "approval_mode": "spotter-ai"})
+
+    assert resp.status_code == 200, resp.text
+    assert len(app.state.agent_task_registry.for_parent(resp.json()["id"])) == 1
+
+
+def test_a_matching_distribution_satisfies_the_entrypoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No console script, but site-packages carries the matching distribution.
+
+    The name is normalized PEP-503 style (``spotter-mcp`` -> ``spotter_mcp``),
+    and this fallback can only ever make the gate MORE permissive — it never
+    invents a refusal.
+    """
+
+    _install_watcher_blueprint(tmp_path)
+    impl = _set_deployment_env(monkeypatch, tmp_path, install_venv=False)
+    _install_impl_venv(impl, entrypoint="", distribution="spotter_mcp")
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        resp = client.post("/v1/sessions", json={"title": "t", "approval_mode": "spotter-ai"})
+
+    assert resp.status_code == 200, resp.text
+
+
+def test_a_sync_enabled_uv_launcher_is_not_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without ``--no-sync``, ``uv run`` PROVISIONS the venv before exec.
+
+    An absent venv is therefore not a static precondition failure, so refusing
+    would be a false refusal of a working deployment. The skip is typed-logged,
+    never silent.
+    """
+
+    _install_watcher_blueprint(tmp_path, agent_md=_AGENT_MD_SYNC_ENABLED)
+    _set_deployment_env(monkeypatch, tmp_path, install_venv=False)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        resp = client.post("/v1/sessions", json={"title": "t", "approval_mode": "spotter-ai"})
+
+    assert resp.status_code == 200, resp.text
+    assert len(app.state.agent_task_registry.for_parent(resp.json()["id"])) == 1
+
+
+def test_a_non_uv_launcher_shape_keeps_todays_behaviour(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``node ... server.js`` has no venv to model, so only the directory is checked."""
+
+    _install_watcher_blueprint(tmp_path, agent_md=_AGENT_MD_NON_UV)
+    _set_deployment_env(monkeypatch, tmp_path, install_venv=False)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        resp = client.post("/v1/sessions", json={"title": "t", "approval_mode": "spotter-ai"})
+
+    assert resp.status_code == 200, resp.text
+    assert len(app.state.agent_task_registry.for_parent(resp.json()["id"])) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -309,6 +542,7 @@ def test_validate_watcher_arming_reads_an_injected_env(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     impl = tmp_path / "spotter-impl"
     impl.mkdir()
+    _install_impl_venv(impl)
 
     unset = validate_watcher_arming(app, env={})
     assert unset is not None
@@ -364,10 +598,38 @@ def test_project_directory_scan_only_reads_declared_directory_flags(
     assert _project_directories(args) == expected
 
 
+def test_validate_watcher_arming_flags_a_missing_entrypoint(tmp_path: Path) -> None:
+    """The validator names the entry point, the project, and the venv state."""
+
+    _install_watcher_blueprint(tmp_path)
+    app = build_app(sessions_path=tmp_path / "s.json")
+    impl = tmp_path / "spotter-impl"
+    impl.mkdir()
+    env = {"SPOTTER_IMPL_DIR": str(impl), "SPOTTER_CLIO_CONFIG": str(tmp_path / "clio.yaml")}
+
+    missing = validate_watcher_arming(app, env=env)
+    assert missing is not None
+    assert missing.reason == REFUSAL_WATCHER_ENTRYPOINT_MISSING
+    assert missing.entrypoint == "spotter-mcp"
+    assert missing.venv_state == "missing_venv"
+    assert missing.path == str(impl)
+    assert missing.variable == ""
+
+    _install_impl_venv(impl, entrypoint="", synced=False)
+    assert (validate_watcher_arming(app, env=env) or missing).venv_state == "unsynced"
+
+    _install_impl_venv(impl, entrypoint="")
+    assert (validate_watcher_arming(app, env=env) or missing).venv_state == "entrypoint_absent"
+
+    _install_impl_venv(impl)
+    assert validate_watcher_arming(app, env=env) is None
+
+
 def test_every_refusal_reason_is_in_the_closed_set() -> None:
     assert set(SPOTTER_ARMING_REASONS) == {
         REFUSAL_WATCHER_UNMOUNTABLE,
         REFUSAL_WATCHER_PROJECT_MISSING,
+        REFUSAL_WATCHER_ENTRYPOINT_MISSING,
     }
     assert all(SPOTTER_ARMING_REASONS.values())
 
