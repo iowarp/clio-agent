@@ -68,6 +68,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import replace
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact.agent_tasks import STATUS_RUNNING
@@ -293,7 +294,12 @@ def _set_live_state(
         normalized_reason = "agent_error"
     if current.live_state == live_state and current.error_reason == normalized_reason:
         return current  # already there -- idempotent, no redundant persist/publish
-    updated = replace(current, live_state=live_state, error_reason=normalized_reason)
+    updated = replace(
+        current,
+        live_state=live_state,
+        error_reason=normalized_reason,
+        updated_at=datetime.now(timezone.utc).isoformat(),
+    )
     registry.register(updated)
     persist_agent_task(app, updated)
     return updated
