@@ -87,6 +87,44 @@ def test_surface_lifecycle_persists_and_reconciles(tmp_path: Path) -> None:
     assert persisted.messages == [_create_message(), update]
 
 
+def _update_root_message(surface_id: str, text: str) -> dict[str, object]:
+    return {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": surface_id,
+            "components": [{"id": "root", "component": "Text", "text": text}],
+        },
+    }
+
+
+def test_http_producer_reports_which_surfaces_the_batch_created(tmp_path: Path) -> None:
+    client, sid, _ = _session_client(tmp_path)
+
+    created = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={
+            "messages": [
+                _create_message("http-surface"),
+                _update_root_message("http-surface", "First draft"),
+            ]
+        },
+    )
+    revised = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_update_root_message("http-surface", "Revised")]},
+    )
+
+    assert created.status_code == 200
+    assert created.json()["created_surface_ids"] == ["http-surface"]
+    assert revised.status_code == 200
+    assert revised.json()["created_surface_ids"] == []
+    # The surface wire shape is the frontend's contract: the created truth
+    # rides the response envelope and never mutates a surface row.
+    assert all("created" not in surface for surface in revised.json()["surfaces"])
+
+
 def test_legacy_a2ui_ledger_is_retained_and_reported_as_superseded(tmp_path: Path) -> None:
     path = tmp_path / "a2ui-surfaces.json"
     original = '{"surfaces": [broken]}'
@@ -599,6 +637,97 @@ def test_root_agent_tool_updates_one_stable_transcript_reference(
     assert surface.messages[-1]["updateComponents"]["components"][0]["text"] == "Updated"
 
 
+def _tool_in_session(tmp_path: Path, monkeypatch: MonkeyPatch) -> tuple[Any, Any, str]:
+    """Return a context-bound ``create_a2ui_surface`` tool plus its app/session."""
+
+    client, sid, _ = _session_client(tmp_path)
+    app = client.app
+    monkeypatch.setattr(gact_context, "active_app", lambda: app)
+    monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
+    return build_create_a2ui_surface_tool(), app, sid
+
+
+def test_root_agent_tool_reports_creation_and_the_session_surface_registry(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    tool, _, _ = _tool_in_session(tmp_path, monkeypatch)
+
+    created = tool(
+        surface_id="pipeline-diagram",
+        components=[{"id": "root", "component": "Text", "text": "First draft"}],
+    )
+
+    assert created["created"] is True
+    assert created["revision"] == 2
+    assert created["session_surface_ids"] == ["pipeline-diagram"]
+    assert "session_surface_ids_truncated" not in created
+
+
+def test_root_agent_tool_reports_an_update_of_an_existing_surface_id(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    tool, _, _ = _tool_in_session(tmp_path, monkeypatch)
+
+    created = tool(
+        surface_id="pipeline-diagram",
+        components=[{"id": "root", "component": "Text", "text": "First draft"}],
+    )
+    revised = tool(
+        surface_id="pipeline-diagram",
+        components=[{"id": "root", "component": "Text", "text": "Revised"}],
+    )
+
+    assert created["created"] is True
+    assert revised["created"] is False
+    assert revised["surface_id"] == created["surface_id"]
+    assert revised["revision"] > created["revision"]
+    assert revised["session_surface_ids"] == ["pipeline-diagram"]
+
+
+def test_root_agent_tool_lists_every_live_surface_id_in_the_session(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    tool, _, _ = _tool_in_session(tmp_path, monkeypatch)
+
+    tool(
+        surface_id="pipeline-diagram",
+        components=[{"id": "root", "component": "Text", "text": "Diagram"}],
+    )
+    second = tool(
+        surface_id="station-table",
+        components=[{"id": "root", "component": "Text", "text": "Table"}],
+    )
+
+    assert second["created"] is True
+    assert second["session_surface_ids"] == ["pipeline-diagram", "station-table"]
+
+
+def test_root_agent_tool_bounds_the_reported_surface_registry(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    tool, _, _ = _tool_in_session(tmp_path, monkeypatch)
+
+    result: dict[str, Any] = {}
+    for index in range(34):
+        result = tool(
+            surface_id=f"surface-{index:02d}",
+            components=[{"id": "root", "component": "Text", "text": f"View {index}"}],
+        )
+
+    assert result["session_surface_ids_truncated"] is True
+    assert len(result["session_surface_ids"]) == 32
+    assert result["session_surface_ids"][-1] == "surface-33"
+    assert "surface-00" not in result["session_surface_ids"]
+
+
+def test_root_agent_tool_documents_how_to_revise_an_existing_surface() -> None:
+    tool = build_create_a2ui_surface_tool()
+    compact_description = " ".join(tool.desc.split())
+
+    assert "session_surface_ids" in compact_description
+    assert "``created``" in compact_description
+
+
 def test_root_agent_tool_documents_the_valid_button_action_envelope() -> None:
     tool = build_create_a2ui_surface_tool()
     compact_description = " ".join(tool.desc.split())
@@ -945,6 +1074,11 @@ def test_root_agent_tool_recreates_a_deleted_surface(
     )
 
     assert result["rendered"] is True
+    # A deleted surface is gone as far as production is concerned: reusing its
+    # id mints a new surface, and the result says so rather than reading as an
+    # update of the surface the client stopped rendering.
+    assert result["created"] is True
+    assert result["session_surface_ids"] == ["recreated-surface"]
     surface = app.state.a2ui_store.get(sid, "recreated-surface")
     assert surface is not None
     assert surface.state == "ready"
