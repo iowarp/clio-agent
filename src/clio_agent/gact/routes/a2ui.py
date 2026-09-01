@@ -96,7 +96,9 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
             raise _error(422, "a2ui_validation_failed", str(exc)) from exc
         # Sibling of the model tool's ``created`` flag: the same fold-derived
         # truth about which ids this batch minted. It rides the envelope rather
-        # than a surface row because the row shape is the renderer's contract.
+        # than a surface row because the row shape is the renderer's contract
+        # (the frontend decodes surfaces with a non-strict schema that would
+        # drop an unknown row key, so a row-level flag would be invisible).
         return {
             "surfaces": [surface.to_wire() for surface in outcome.surfaces],
             "created_surface_ids": list(outcome.created_surface_ids),
