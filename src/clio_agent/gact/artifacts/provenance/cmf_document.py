@@ -397,13 +397,13 @@ def build_push_document(
     for entry in ordered:
         events: list[dict[str, Any]] = []
         for artifact_id in entry.used:
-            artifact = artifacts.get(artifact_id)
-            if artifact is not None:
-                events.append({"type": EVENT_INPUT, "artifact": artifact.to_document()})
+            edge_artifact = artifacts.get(artifact_id)
+            if edge_artifact is not None:
+                events.append({"type": EVENT_INPUT, "artifact": edge_artifact.to_document()})
         for artifact_id in entry.generated:
-            artifact = artifacts.get(artifact_id)
-            if artifact is not None:
-                events.append({"type": EVENT_OUTPUT, "artifact": artifact.to_document()})
+            edge_artifact = artifacts.get(artifact_id)
+            if edge_artifact is not None:
+                events.append({"type": EVENT_OUTPUT, "artifact": edge_artifact.to_document()})
         execution_documents.append(
             {
                 "id": entity_id,

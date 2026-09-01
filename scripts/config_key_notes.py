@@ -661,6 +661,10 @@ KEY_NOTES: dict[str, str] = {
         "URL of the CMF metadata server to write artifact provenance to. Set this alone for the "
         "supported deployment: it needs no local CMF runtime on any client OS."
     ),
+    "provenance.artifacts.cmf.worker_url": (
+        "Reserved for a future in-stack CMF write service; setting it is refused today. Use "
+        "server_url."
+    ),
     "provenance.artifacts.include_events": (
         "Which artifact event types (created, version.added, proposed, ...) reach the selected "
         "provenance provider; narrow to cut writes."

@@ -569,6 +569,39 @@ def test_lineage_http_surface_is_artifact_provider_independent() -> None:
     }
 
 
+def test_lineage_route_reports_a_typed_refusal_verbatim() -> None:
+    """A typed reason must reach the caller, not a stringified traceback.
+
+    The catalog entry names the recovery actions, so collapsing it into
+    "CMFRefusal: ..." would force the client to parse prose to learn that the
+    fix is to configure a reader.
+    """
+
+    class _RefusingProvider:
+        name = "cmf"
+        provider_name = "cmf"
+
+        def lineage(self, artifact_id: str, **_kwargs: Any) -> dict[str, Any] | None:
+            raise CMFRefusal(
+                "cmf_lineage_query_unavailable",
+                "no reader configured",
+                artifact_id=artifact_id,
+            )
+
+    app = FastAPI()
+    app.state.artifact_provenance_backend = _RefusingProvider()
+    register_artifact_lineage_routes(app)
+
+    response = TestClient(app).get("/v1/artifacts/artifact_1/lineage")
+
+    assert response.status_code == 503
+    details = response.json()["detail"]["error"]["details"]
+    assert details["reason"] == "cmf_lineage_query_unavailable"
+    assert details["category"] == "capability_gap"
+    assert "configure_server_url" in details["recovery_actions"]
+    assert details["artifact_id"] == "artifact_1"
+
+
 # --------------------------------------------------------------------------- #
 # Golden edge tests (#1247): the transform path had ZERO coverage, so a worker
 # failure was invisible (dispatcher health captured it; nothing read it) and

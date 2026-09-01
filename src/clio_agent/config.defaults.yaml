@@ -1097,42 +1097,47 @@ provenance.agentic.query_default: "native"
 # backpressure; raise on high event-rate sessions.
 provenance.agentic.queue_size: 4096
 
-# CLIO_CMF_ARTIFACT_ROOT  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+# CLIO_CMF_ARTIFACT_ROOT  (str)  <- src/clio_agent/gact/artifacts/provenance/cmf_mode.py
 # Filesystem path where the CMF artifact-provenance backend stores artifact
 # data (default under the app data dir); relocates the store.
 # provenance.artifacts.cmf.artifact_root:  # default unset; resolved in code
 
-# CLIO_CMF_ARTIFACT_STORE  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+# CLIO_CMF_ARTIFACT_STORE  (str)  <- src/clio_agent/gact/artifacts/provenance/cmf_mode.py
 # CMF backend's storage mode for artifact bytes (default 'reference': tracks
 # by path, no duplication); rarely changed.
 provenance.artifacts.cmf.artifact_store: "reference"
 
-# CLIO_CMF_METADATA_PATH  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+# CLIO_CMF_METADATA_PATH  (str)  <- src/clio_agent/gact/artifacts/provenance/cmf_mode.py
 # Filesystem path to the CMF metadata SQLite database (default under the app
 # data dir); set to relocate or share the store.
 # provenance.artifacts.cmf.metadata_path:  # default unset; resolved in code
 
-# CLIO_CMF_PIPELINE_NAME  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+# CLIO_CMF_PIPELINE_NAME  (str)  <- src/clio_agent/gact/artifacts/provenance/cmf_mode.py
 # Pipeline name CMF records against tracked artifacts (default 'clio-
 # agent'); change to separate deployments sharing one CMF store.
 provenance.artifacts.cmf.pipeline_name: "clio-agent"
 
-# CLIO_CMF_PUBLISH_TIMEOUT_S  (float)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+# CLIO_CMF_PUBLISH_TIMEOUT_S  (float)  <- src/clio_agent/gact/artifacts/provenance/cmf_mode.py
 # Seconds the CMF backend waits for a publish call to a CMF server to
 # complete; raise if publishing to a remote server times out.
 provenance.artifacts.cmf.publish_timeout_s: 30.0
 
-# CLIO_CMF_PYTHON  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+# CLIO_CMF_PYTHON  (str)  <- src/clio_agent/gact/artifacts/provenance/cmf_mode.py
 # Path of a LOCAL interpreter that can import cmflib, for the optional
 # local-worker write mode; unsupported on Windows. Prefer server_url, which
 # needs no local CMF.
 # provenance.artifacts.cmf.python:  # default unset; resolved in code
 
-# CLIO_CMF_SERVER_URL  (str)  <- src/clio_agent/gact/artifacts/provenance/factory.py
+# CLIO_CMF_SERVER_URL  (str)  <- src/clio_agent/gact/artifacts/provenance/cmf_mode.py
 # URL of the CMF metadata server to write artifact provenance to. Set this
 # alone for the supported deployment: it needs no local CMF runtime on any
 # client OS.
 # provenance.artifacts.cmf.server_url:  # default unset; resolved in code
+
+# CLIO_CMF_WORKER_URL  (str)  <- src/clio_agent/gact/artifacts/provenance/cmf_mode.py
+# Reserved for a future in-stack CMF write service; setting it is refused
+# today. Use server_url.
+# provenance.artifacts.cmf.worker_url:  # default unset; resolved in code
 
 # CLIO_ARTIFACT_PROVENANCE_EVENTS  (list)  <- src/clio_agent/gact/artifacts/provenance/factory.py
 # Which artifact event types (created, version.added, proposed, ...) reach

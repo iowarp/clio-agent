@@ -118,11 +118,20 @@ def register_artifact_lineage_routes(app: FastAPI) -> None:
                 )
                 provider_name = "native"
         except Exception as exc:
+            # A provider that refused with a TYPED reason reports that reason
+            # verbatim (its catalog entry names the recovery actions), instead
+            # of collapsing into a stringified traceback the caller must parse.
+            details: dict[str, Any] = {"artifact_id": artifact_id}
+            payload = getattr(exc, "payload", None)
+            if isinstance(payload, dict) and payload.get("reason"):
+                details.update(payload)
+            else:
+                details["reason"] = f"{type(exc).__name__}: {exc}"
             raise _lineage_error(
                 status_code=503,
                 error="artifact_provenance_query_failed",
                 message="selected artifact provenance provider could not answer lineage",
-                details={"artifact_id": artifact_id, "reason": f"{type(exc).__name__}: {exc}"},
+                details=details,
             ) from exc
         if graph is None:
             raise _lineage_error(
