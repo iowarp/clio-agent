@@ -31,9 +31,9 @@ from clio_agent.gact.spotter_clearance import (
     CLEARANCE_PROGRESS_STALLED,
     CLEARANCE_WATCHER_FAILED,
     CLEARANCE_WATCHER_UNAVAILABLE,
-    MAX_CLEARANCE_EVENTS,
     SPOTTER_CLEARANCE_REASONS,
     clearance_event,
+    max_clearance_events,
     release_clearance_event,
     signal_clearance,
     wait_for_spotter_clearance,
@@ -231,7 +231,7 @@ def test_clearance_event_map_prunes_sessions_with_no_live_watcher() -> None:
     app, registry, _runner = _fake_app()
     registry.tasks["sess_parent"] = [_FakeTask("sess_watcher")]
     clearance_event(app, "sess_parent")
-    for index in range(MAX_CLEARANCE_EVENTS):
+    for index in range(max_clearance_events()):
         clearance_event(app, f"sess_dead_{index}")
     events = app.state.spotter_clearance_events
 
