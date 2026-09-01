@@ -59,7 +59,7 @@ def build_create_a2ui_surface_tool() -> Any:
         ``surface_id`` selects the surface: to revise one that already exists,
         pass its EXACT id, listed in every result's ``session_surface_ids``;
         any other id creates a separate new surface. The result's ``created``
-        reports which happened — ``true`` means a new surface was minted,
+        reports which happened: ``true`` means a new surface was minted and
         ``false`` means the existing one was revised in place.
         ``components`` uses the A2UI
         0.9 component array: each item needs ``id`` and ``component``; containers
