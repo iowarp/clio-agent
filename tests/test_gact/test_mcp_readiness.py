@@ -1,21 +1,23 @@
-"""Session-visible MCP preparation lifecycle coverage."""
+"""Bounded cold-MCP preparation coverage.
+
+The readiness ladder used to publish an ``infrastructure.dependency.changed``
+bus event per attempt -- a vocabulary no client, schema or route consumed, and
+one every generic bus reader filters out. The retry is now recorded the way
+every other bounded retry in the tree is: a typed loud warning. The lane that
+reaches a consumer is unchanged (a terminal failure raises into
+``builders._resolve_requested_tools``, which records the typed
+``mount_failures`` reason the ``_UnsupportedSessionAgent`` boundary carries).
+"""
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from clio_agent.gact import mcp_readiness
-
-
-class _Bus:
-    def __init__(self) -> None:
-        self.events: list[Any] = []
-
-    def publish(self, event: Any) -> None:
-        self.events.append(event)
 
 
 class _Executor:
@@ -38,19 +40,9 @@ class _Executor:
             raise ConnectionRefusedError("private endpoint detail")
 
 
-def _capture_bus(monkeypatch: pytest.MonkeyPatch) -> _Bus:
-    bus = _Bus()
-    app = SimpleNamespace(state=SimpleNamespace(bus=bus))
-    monkeypatch.setattr(mcp_readiness._ctx, "active_app", lambda: app)
-    monkeypatch.setattr(mcp_readiness._ctx, "active_session_id", lambda: "sess_demo")
-    monkeypatch.setattr(mcp_readiness._ctx, "active_tool_session_id", lambda: "")
-    return bus
-
-
-def test_mount_retries_persistent_connect_and_emits_causal_lifecycle(
-    monkeypatch: pytest.MonkeyPatch,
+def test_mount_retries_persistent_connect_with_a_typed_reason(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    bus = _capture_bus(monkeypatch)
     executor = _Executor(fail_connect_once=True)
     sleeps: list[float] = []
     monkeypatch.setattr(
@@ -59,34 +51,37 @@ def test_mount_retries_persistent_connect_and_emits_causal_lifecycle(
     )
     monkeypatch.setattr(mcp_readiness.time, "sleep", sleeps.append)
 
-    tools = mcp_readiness.mount_namespace_for_session(
-        executor,
-        "geo",
-        SimpleNamespace(name="Geospatial tools"),
-        retry_delays_s=(0.25,),
-    )
+    with caplog.at_level(logging.WARNING, logger="clio_agent.gact.mcp_readiness"):
+        tools = mcp_readiness.mount_namespace_for_session(
+            executor,
+            "geo",
+            SimpleNamespace(name="Geospatial tools"),
+            retry_delays_s=(0.25,),
+        )
 
     assert set(tools) == {"geo_geocode"}
     assert executor.connect_attempts == 2
     assert executor.connect_timeouts == [10.0, 30.0]
     assert sleeps == [0.25]
-    payloads = [event.payload for event in bus.events]
-    assert [(row["phase"], row["state"]) for row in payloads] == [
-        ("launch", "running"),
-        ("connect", "running"),
-        ("connect", "retrying"),
-        ("launch", "running"),
-        ("connect", "running"),
-        ("connect", "ready"),
+
+    retries = [
+        record
+        for record in caplog.records
+        if mcp_readiness.MCP_MOUNT_RETRY_REASON in record.getMessage()
     ]
-    assert payloads[-1]["tool_count"] == 1
-    assert all("private endpoint detail" not in str(row) for row in payloads)
+    assert len(retries) == 1
+    message = retries[0].getMessage()
+    assert "namespace=geo" in message
+    assert "phase=connect" in message
+    assert "attempt=1/2" in message
+    assert "retry_in_ms=250" in message
+    # The raw subprocess/endpoint detail never rides the readiness reason.
+    assert "private endpoint detail" not in message
 
 
-def test_terminal_launcher_failure_is_visible_without_retry(
-    monkeypatch: pytest.MonkeyPatch,
+def test_terminal_launcher_failure_raises_without_retrying(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    bus = _capture_bus(monkeypatch)
     executor = _Executor()
 
     def _missing_launcher(namespace: str, spec: Any) -> dict[str, Any]:
@@ -98,17 +93,29 @@ def test_terminal_launcher_failure_is_visible_without_retry(
         _missing_launcher,
     )
 
-    with pytest.raises(FileNotFoundError):
-        mcp_readiness.mount_namespace_for_session(
-            executor,
-            "geo",
-            SimpleNamespace(name="Geospatial tools"),
-            retry_delays_s=(0.25, 1.0),
-        )
+    with caplog.at_level(logging.WARNING, logger="clio_agent.gact.mcp_readiness"):
+        with pytest.raises(FileNotFoundError):
+            mcp_readiness.mount_namespace_for_session(
+                executor,
+                "geo",
+                SimpleNamespace(name="Geospatial tools"),
+                retry_delays_s=(0.25, 1.0),
+            )
 
-    payloads = [event.payload for event in bus.events]
-    assert [(row["phase"], row["state"]) for row in payloads] == [
-        ("launch", "running"),
-        ("launch", "failed"),
-    ]
-    assert all("private path" not in str(row) for row in payloads)
+    # A non-retryable launcher failure is raised on attempt 1, never retried,
+    # and is reported by the caller's typed mount_failures map -- not here.
+    assert [
+        record
+        for record in caplog.records
+        if mcp_readiness.MCP_MOUNT_RETRY_REASON in record.getMessage()
+    ] == []
+
+
+def test_readiness_publishes_no_bus_event_vocabulary() -> None:
+    """No dead wire vocabulary: the module owns no event type at all."""
+
+    source = mcp_readiness.__file__
+    with open(source, encoding="utf-8") as handle:
+        body = handle.read()
+    assert "infrastructure.dependency" not in body
+    assert "bus.publish" not in body
