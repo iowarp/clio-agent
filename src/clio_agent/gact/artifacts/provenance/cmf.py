@@ -188,6 +188,31 @@ def _resolve_python(configured: str) -> str:
     return shutil.which(value) or ""
 
 
+def _split_command(value: str, *, windows: bool) -> list[str]:
+    """Split a launcher command the way the host platform writes command lines.
+
+    Args:
+        value: The whole configured command.
+        windows: Whether to apply Windows command-line quoting rules.
+
+    Returns:
+        The command's tokens, with any surrounding quote pair removed.
+    """
+    if not windows:
+        return shlex.split(value)
+    # POSIX-mode shlex treats a backslash as an escape and would silently eat
+    # a Windows interpreter path (``D:\venv\Scripts\python.exe -X utf8`` ->
+    # ``D:venvScriptspython.exe``). Non-POSIX mode keeps backslashes but leaves
+    # the quotes Windows puts around a path with spaces on the token, so strip
+    # the matching pair back off.
+    tokens = []
+    for token in shlex.split(value, posix=False):
+        if len(token) >= 2 and token[0] == token[-1] and token[0] in {'"', "'"}:
+            token = token[1:-1]
+        tokens.append(token)
+    return tokens
+
+
 def _resolve_worker_command(configured: str) -> list[str]:
     """Resolve ``provenance.artifacts.cmf.python`` into an argv prefix.
 
@@ -216,7 +241,7 @@ def _resolve_worker_command(configured: str) -> list[str]:
     if Path(value).expanduser().is_file():
         # A real local interpreter whose path merely contains spaces.
         return [_resolve_python(value)]
-    tokens = shlex.split(value)
+    tokens = _split_command(value, windows=os.name == "nt")
     if not tokens:
         return []
     launcher = _resolve_python(tokens[0])

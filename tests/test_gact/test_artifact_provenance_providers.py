@@ -23,6 +23,7 @@ from clio_agent.gact.artifacts.provenance.cmf import (
     CMFProviderConfig,
     _resolve_python,
     _resolve_worker_command,
+    _split_command,
     _worker_argv,
 )
 from clio_agent.gact.artifacts.provenance.selector import ArtifactProvenanceDispatcher
@@ -100,6 +101,27 @@ def test_cmf_launcher_command_is_empty_when_its_first_token_is_unresolvable(
     )
 
     assert _resolve_worker_command("no-such-launcher homelab /opt/cmf/bin/python") == []
+
+
+def test_cmf_launcher_split_keeps_a_windows_interpreter_path_intact() -> None:
+    """POSIX-mode shlex would eat the backslashes out of a Windows launcher."""
+    command = r'"D:\Program Files\venv\Scripts\python.exe" -X utf8'
+
+    assert _split_command(command, windows=True) == [
+        r"D:\Program Files\venv\Scripts\python.exe",
+        "-X",
+        "utf8",
+    ]
+    assert _split_command("ssh homelab /opt/cmf/bin/python", windows=True) == [
+        "ssh",
+        "homelab",
+        "/opt/cmf/bin/python",
+    ]
+    assert _split_command("ssh homelab /opt/cmf/bin/python", windows=False) == [
+        "ssh",
+        "homelab",
+        "/opt/cmf/bin/python",
+    ]
 
 
 def test_cmf_worker_script_override_and_store_paths_survive_a_remote_launcher(
