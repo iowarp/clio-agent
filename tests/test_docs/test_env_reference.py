@@ -16,6 +16,7 @@ from pathlib import Path
 
 import yaml
 
+from scripts.config_key_notes import KEY_NOTES, SECTIONS
 from scripts.gen_env_reference import (
     BOOTSTRAP_VARS,
     DEFAULTS_RELPATH,
@@ -27,6 +28,7 @@ from scripts.gen_env_reference import (
     collect,
     generate,
     generate_defaults,
+    section_for,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -343,6 +345,113 @@ def test_write_only_env_file_loaded_marker_is_not_a_knob() -> None:
     resolved, env_only = collect(ROOT)
     discovered = {r.env for r in resolved} | {e.env for e in env_only}
     assert "CLIO_ENV_FILE_LOADED" not in discovered
+
+
+# --------------------------------------------------------------------------- #
+# config.defaults.yaml grooming: every knob is filed and explained
+# --------------------------------------------------------------------------- #
+
+
+def test_every_configured_knob_carries_an_operator_note() -> None:
+    """A new knob must document itself, and a note may not outlive its key.
+
+    ``config.defaults.yaml`` is the operator-facing catalogue, so an entry with
+    no note is a documentation gap and a note with no entry is stale prose
+    describing something that no longer exists. Both fail here rather than
+    rotting silently in a generated file nobody re-reads.
+    """
+    resolved, _ = collect(ROOT)
+    keys = {r.key for r in resolved if r.key}
+    documented = set(KEY_NOTES)
+
+    assert not (keys - documented), (
+        f"knobs with no note in scripts/config_key_notes.py: {sorted(keys - documented)}"
+    )
+    assert not (documented - keys), (
+        f"notes in scripts/config_key_notes.py with no live knob: {sorted(documented - keys)}"
+    )
+
+
+def test_every_configured_knob_lands_in_a_named_section() -> None:
+    """No knob may fall through to the ``Unassigned`` heading."""
+    resolved, _ = collect(ROOT)
+    unassigned = sorted(r.key for r in resolved if r.key and not section_for(r.key))
+    assert not unassigned, f"knobs under an unfiled namespace: {unassigned}"
+    assert "Unassigned" not in generate_defaults(ROOT)
+
+
+def test_defaults_sections_are_rendered_in_order_with_headers() -> None:
+    """Each non-empty section is announced once, in the curated order."""
+    committed = (ROOT / DEFAULTS_RELPATH).read_text(encoding="utf-8")
+    positions = []
+    for name, _prefixes, description in SECTIONS:
+        header = f"\n# {name}\n"
+        assert header in committed, f"section header missing: {name}"
+        assert committed.count(header) == 1, f"section header repeated: {name}"
+        # The curated blurb is wrapped, so match on its opening words.
+        assert description.split(",")[0][:40] in committed, f"section blurb missing: {name}"
+        positions.append(committed.index(header))
+    assert positions == sorted(positions), "sections are not rendered in SECTIONS order"
+
+
+def test_defaults_notes_do_not_disturb_the_parsed_mapping() -> None:
+    """Grouping and prose are comments only: the parsed key/value set is unchanged.
+
+    The sole runtime consumer is ``ConfigStore.resolve``'s exact-key lookup on
+    this mapping, so the reorganisation is safe precisely because the mapping it
+    parses to still carries every knob with a concrete default.
+    """
+    committed = yaml.safe_load((ROOT / DEFAULTS_RELPATH).read_text(encoding="utf-8")) or {}
+    resolved, _ = collect(ROOT)
+    expected = {r.key for r in resolved if r.key and not r.dynamic_expr and r.default != ""}
+    assert set(committed) == expected
+
+
+def test_module_level_imported_constant_defaults_resolve(tmp_path) -> None:
+    """A default bound by a module-level ``from clio_agent.x import NAME`` is static.
+
+    Regression guard for the one-hop import resolution: without it a shared
+    in-code default (the ``DEFAULT_AUTOCOMPACT_PCT`` that the wire model and the
+    ``autocompact.pct`` resolver both derive from) renders as an opaque computed
+    expression and silently drops out of the committed base layer. A
+    FUNCTION-LOCAL import stays unresolved on purpose -- it is a deferred or
+    cycle-breaking binding, not an import-time fact.
+    """
+    pkg = tmp_path / "src" / "clio_agent"
+    pkg.mkdir(parents=True)
+    (pkg / "owner.py").write_text("SHARED_DEFAULT = 0.85\nLAZY_DEFAULT = 12\n", encoding="utf-8")
+    (pkg / "reader.py").write_text(
+        "from clio_agent import conf\n"
+        "from clio_agent.owner import SHARED_DEFAULT\n"
+        "\n"
+        "EAGER = conf.resolve('fixture.eager', env='CLIO_FIXTURE_EAGER',\n"
+        "                     default=SHARED_DEFAULT, cast=conf.as_float)\n"
+        "\n"
+        "def lazy() -> int:\n"
+        "    from clio_agent.owner import LAZY_DEFAULT\n"
+        "    return conf.resolve('fixture.lazy', env='CLIO_FIXTURE_LAZY',\n"
+        "                        default=LAZY_DEFAULT, cast=conf.as_int)\n",
+        encoding="utf-8",
+    )
+
+    resolved, _ = collect(tmp_path)
+    by_env = {r.env: r for r in resolved}
+
+    eager = by_env["CLIO_FIXTURE_EAGER"]
+    assert eager.default == "0.85", "a module-level imported default must render concretely"
+    assert eager.dynamic_expr == ""
+
+    lazy = by_env["CLIO_FIXTURE_LAZY"]
+    assert lazy.default == "", "a function-local import must stay unresolved"
+    assert lazy.dynamic_expr == "LAZY_DEFAULT"
+
+
+def test_shared_autocompact_default_survives_into_the_base_layer() -> None:
+    """The live case the import hop exists for, asserted on the committed file."""
+    from clio_agent.gact.context_preferences_types import DEFAULT_AUTOCOMPACT_PCT
+
+    committed = yaml.safe_load((ROOT / DEFAULTS_RELPATH).read_text(encoding="utf-8")) or {}
+    assert float(committed["autocompact.pct"]) == DEFAULT_AUTOCOMPACT_PCT
 
 
 def test_owned_elsewhere_vars_are_not_read_in_source() -> None:
