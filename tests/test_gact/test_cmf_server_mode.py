@@ -252,14 +252,29 @@ def test_every_other_refusal_maps_to_rejected_payload(
     publisher.close()
 
 
-def test_an_unrepresentable_kind_never_reaches_the_wire(cmf_server: Any) -> None:
-    """The server would drop it silently and still answer success."""
+def test_a_source_or_environment_ontology_is_pushed_not_refused(cmf_server: Any) -> None:
+    """Sources and environments are artifacts too -- different ontology, same push.
+
+    They ride as Dataset (the storage class) with their own kind preserved, so
+    user-submitted sources are tracked the moment they exist.
+    """
     publisher = CMFServerPublisher(_config(cmf_server.url))
-    with pytest.raises(CMFRefusal) as excinfo:
-        publisher.record(_artifact_event("artifact_1", "m.json", kind="metrics"))
-    assert excinfo.value.reason == "cmf_artifact_kind_not_representable"
-    assert cmf_server.requests == []
+    publisher.record(_artifact_event("artifact_src", "upload.csv", kind="source"))
+    publisher.record(_artifact_event("artifact_env", "env.txt", kind="environment"))
+    publisher.publish()
     publisher.close()
+
+    document = json.loads(cmf_server.requests[0]["body"]["json_payload"])
+    artifacts = [
+        event["artifact"]
+        for execution in document["Pipeline"][0]["stages"][0]["executions"]
+        for event in execution["events"]
+    ]
+    assert {artifact["type"] for artifact in artifacts} == {"Dataset"}
+    assert {artifact["custom_properties"]["clio_kind"] for artifact in artifacts} == {
+        "source",
+        "environment",
+    }
 
 
 def test_verification_refuses_a_type_the_server_would_drop_in_its_else_branch() -> None:

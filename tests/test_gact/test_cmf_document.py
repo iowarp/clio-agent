@@ -204,24 +204,47 @@ def test_model_kind_narrows_to_model_and_always_carries_the_uri_property() -> No
 
 
 @pytest.mark.parametrize(
-    "kind", ["dataset", "image", "report", "plan", "script", "config", "ui_payload", "other"]
+    "kind",
+    [
+        # CLIO's ArtifactKind today ...
+        "dataset",
+        "image",
+        "report",
+        "plan",
+        "script",
+        "config",
+        "ui_payload",
+        "other",
+        # ... and the ontologies that share the artifact substream: user-
+        # submitted sources, captured environments, metrics. Every one is a
+        # byte-backed artifact that differs in MEANING, not in how CMF holds it.
+        "source",
+        "environment",
+        "metrics",
+        "table",
+        "label",
+        "dataslice",
+        "step_metrics",
+        # A kind CLIO has not invented yet must not break the write path.
+        "some_future_ontology",
+    ],
 )
-def test_representable_kinds_narrow_to_dataset_with_the_real_kind_preserved(kind: str) -> None:
+def test_every_ontology_is_trackable_as_dataset_with_the_kind_preserved(kind: str) -> None:
+    """``kind`` is an ONTOLOGY; the CMF type is a storage class.
+
+    Narrowing the storage class must never cost trackability: a source file or
+    an environment capture is as much an artifact as a dataset, so it is
+    written as a Dataset with its own kind preserved verbatim -- never refused.
+    """
     event, body = _artifact_event("artifact_1", "f.bin", kind=kind)
     entry = artifact_entry(event, body)
     assert entry.cmf_type == "Dataset"
-    # Narrowing must not LOSE the kind -- that is the whole fidelity bargain.
     assert entry.custom_properties["clio_kind"] == kind
 
 
-@pytest.mark.parametrize(
-    "kind", ["metrics", "step_metrics", "dataslice", "environment", "label", "table"]
-)
-def test_unrepresentable_kinds_refuse_instead_of_narrowing_silently(kind: str) -> None:
-    with pytest.raises(CMFRefusal) as excinfo:
-        narrow_artifact_type(kind)
-    assert excinfo.value.reason == "cmf_artifact_kind_not_representable"
-    assert excinfo.value.payload["details"]["kind"] == kind
+def test_only_a_model_takes_the_other_storage_class() -> None:
+    assert narrow_artifact_type("model") == "Model"
+    assert narrow_artifact_type("dataset") == "Dataset"
 
 
 def test_unattached_artifact_gets_a_synthesized_creation_execution() -> None:

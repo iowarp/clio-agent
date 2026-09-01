@@ -27,13 +27,17 @@ Three consequences drive the design and are not negotiable:
   failures. Unattached artifacts get a synthesized creation execution from their
   own ``producer.call_id``; one with no producer at all is refused
   (``cmf_artifact_not_attached_to_execution``) rather than silently dropped.
-* **Only Dataset and Model survive the push faithfully.** ``handle_event``
-  branches on seven type strings and ends in ``else: pass``; of those, Metrics
-  needs a ``label:uri:execution_id`` name and carries no bytes, Environment and
-  Label need a second multipart upload, and Dataslice/Step_Metrics need
-  constructors this document does not reach. CLIO narrows to Dataset/Model and
-  preserves the real kind in ``clio_kind`` (``cmf_artifact_kind_not_representable``
-  refuses the rest).
+* **Only Dataset and Model survive the push faithfully**, so those are the only
+  two STORAGE CLASSES CLIO writes. ``handle_event`` branches on seven type
+  strings and ends in ``else: pass``; of those, Metrics needs a
+  ``label:uri:execution_id`` name and carries no bytes, Environment and Label
+  need a second multipart upload, and Dataslice/Step_Metrics need constructors
+  this document does not reach. This is a narrowing of storage class, NOT of
+  what CLIO can track: ``kind`` is an ontology (dataset, source, environment,
+  report, plan, ...) preserved verbatim in ``clio_kind``, so every artifact
+  stays trackable and nothing is refused for being the "wrong kind".
+  ``cmf_artifact_kind_not_representable`` guards the WIRE instead, refusing a
+  type the server would drop in its ``else`` branch.
 * **``properties.Execution_uuid`` is mandatory on every execution.** The
   server's federation layer indexes it unconditionally
   (``cmf_federation.update_mlmd``), so omitting it is a 500, and a missing key
@@ -66,14 +70,6 @@ EVENT_OUTPUT = 4
 CMF_TYPE_DATASET = "Dataset"
 CMF_TYPE_MODEL = "Model"
 
-#: Kinds whose CMF type cannot be written faithfully through the push document.
-#: Not CLIO ``ArtifactKind`` members -- they can only arrive as a free-form kind
-#: string on an event payload -- but named explicitly so the refusal is typed
-#: rather than a silent narrowing to Dataset.
-NON_REPRESENTABLE_KINDS = frozenset(
-    {"metrics", "step_metrics", "dataslice", "environment", "label", "table"}
-)
-
 #: Synthetic MLMD ids. The server resolves identity by name/uri and assigns its
 #: own ids; these are only read on its concurrent-push AlreadyExists branches.
 _PIPELINE_ID = 1
@@ -84,26 +80,31 @@ _FIRST_ENTITY_ID = 100
 def narrow_artifact_type(kind: str) -> str:
     """Map a CLIO artifact kind onto the CMF artifact type CLIO will write.
 
+    CLIO's ``kind`` is an **ontology**, not a storage class: a dataset, a
+    user-submitted source, a captured environment, a report and a plan are all
+    byte-backed artifacts that differ in what they MEAN, not in how CMF must
+    hold them. CMF's artifact type is the storage class, and it has exactly two
+    that the metadata push can carry end to end -- Dataset and Model. So the
+    ontology is preserved verbatim in ``clio_kind`` and the storage class is
+    narrowed, which keeps every kind trackable, including ones CLIO has not
+    minted yet.
+
+    The deliberate consequence: nothing is refused for being the "wrong kind".
+    CMF's other types (Metrics, Environment, Label, Dataslice, Step_Metrics)
+    are storage classes needing constructors or second multipart uploads the
+    push document never reaches -- CLIO simply does not use them, rather than
+    refusing the artifacts that would have mapped onto them.
+    ``cmf_artifact_kind_not_representable`` guards the wire instead
+    (:func:`~clio_agent.gact.artifacts.provenance.cmf_server_mode.verify_push_document`),
+    where a type outside these two would be dropped silently by the server.
+
     Args:
-        kind: The CLIO ``ArtifactKind`` value (or a free-form kind string).
+        kind: The CLIO artifact kind (ontology), free-form.
 
     Returns:
-        ``"Model"`` for a model, ``"Dataset"`` for every other representable
-        kind. The caller preserves the real kind in ``clio_kind``.
-
-    Raises:
-        CMFRefusal: ``cmf_artifact_kind_not_representable`` -- the kind maps onto
-            a CMF type this document cannot carry faithfully.
+        ``"Model"`` for a model, ``"Dataset"`` for everything else.
     """
-    normalized = kind.strip().lower()
-    if normalized in NON_REPRESENTABLE_KINDS:
-        raise CMFRefusal(
-            "cmf_artifact_kind_not_representable",
-            f"CMF cannot represent artifact kind {kind!r} through the metadata push",
-            kind=kind,
-            writable_types=[CMF_TYPE_DATASET, CMF_TYPE_MODEL],
-        )
-    return CMF_TYPE_MODEL if normalized == "model" else CMF_TYPE_DATASET
+    return CMF_TYPE_MODEL if kind.strip().lower() == "model" else CMF_TYPE_DATASET
 
 
 def _now_ms() -> int:
@@ -468,7 +469,6 @@ __all__ = [
     "CMF_TYPE_MODEL",
     "EVENT_INPUT",
     "EVENT_OUTPUT",
-    "NON_REPRESENTABLE_KINDS",
     "ArtifactEntry",
     "ExecutionEntry",
     "artifact_entry",

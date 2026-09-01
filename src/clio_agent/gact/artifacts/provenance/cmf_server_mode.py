@@ -127,9 +127,10 @@ def _verify_execution(execution: dict[str, Any]) -> None:
                 "artifact carries no uri; the server cannot key or dedupe it",
                 artifact=str(artifact.get("name") or ""),
             )
-        if artifact_type == CMF_TYPE_MODEL and not str(
-            (artifact.get("properties") or {}).get("uri") or ""
-        ).strip():
+        if (
+            artifact_type == CMF_TYPE_MODEL
+            and not str((artifact.get("properties") or {}).get("uri") or "").strip()
+        ):
             raise CMFRefusal(
                 "cmf_server_rejected_payload",
                 (

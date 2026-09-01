@@ -126,15 +126,16 @@ CMF_REFUSAL_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
     "cmf_artifact_kind_not_representable": {
         "category": "representation_limit",
         "writes": False,
-        "recovery_actions": ["record_as_dataset_kind", "report_defect"],
+        "recovery_actions": ["report_defect"],
         "description": (
-            "The artifact's kind maps onto a CMF artifact type CLIO cannot write "
-            "faithfully through the metadata push alone. Metrics needs a "
-            "'label:uri:execution_id' name and carries no bytes; Environment and "
-            "Label need a second multipart upload (/api/python-env, /api/label); "
-            "Dataslice and Step_Metrics need constructors the push document does "
-            "not reach. CLIO writes Dataset and Model only, and preserves the "
-            "real kind in the clio_kind custom property."
+            "A document reached the wire carrying a CMF artifact TYPE outside "
+            "{Dataset, Model}, which the server drops in handle_event's "
+            "'else: pass' while still answering success. Note this is about the "
+            "storage class, never about CLIO's artifact kind: kind is an "
+            "ontology (dataset, source, environment, report, plan, ...) that is "
+            "preserved verbatim in clio_kind and narrowed to a storage class, so "
+            "every artifact stays trackable. Reaching this reason means the "
+            "narrowing was bypassed -- a CLIO defect, not a configuration issue."
         ),
     },
     "cmf_lineage_query_unavailable": {
