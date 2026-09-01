@@ -29,13 +29,13 @@ from clio_agent.tools.mcp_errors import typed_mcp_call_error, typed_mcp_protocol
 from clio_agent.tools.mcp_namespace_executor import AsyncNamespacePreparationMixin
 from clio_agent.tools.mcp_result_json import pydantic_json_default
 from clio_agent.tools.mcp_result_projection import (
-    MAX_MODEL_TOOL_RESULT_CHARS as MAX_MODEL_TOOL_RESULT_CHARS,
-)
-from clio_agent.tools.mcp_result_projection import (
     MODEL_TOOL_RESULT_TRUNCATED_REASON as MODEL_TOOL_RESULT_TRUNCATED_REASON,
 )
 from clio_agent.tools.mcp_result_projection import (
     bounded_model_tool_result as _bounded_model_tool_result,
+)
+from clio_agent.tools.mcp_result_projection import (
+    model_tool_result_chars as model_tool_result_chars,
 )
 from clio_agent.tools.mcp_runtime import make_mcp_client
 from clio_agent.tools.mcp_timeout_budget import component_declared_timeout_seconds

@@ -60,6 +60,25 @@ def source_registry_id(source: str, ref: str = "") -> str:
     return f"src_{digest}"
 
 
+def blueprint_source_clone_timeout_s() -> float:
+    """Seconds the temporary ``git clone`` of a remote source may take.
+
+    Config: ``gact.blueprint_source.clone_timeout_s`` /
+    ``CLIO_BLUEPRINT_SOURCE_CLONE_TIMEOUT_S`` (default 30.0). This bounds a
+    single shallow clone during a source refresh; raise it for a large
+    marketplace repo or a slow link, lower it to keep the refresh snappy.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "gact.blueprint_source.clone_timeout_s",
+        env="CLIO_BLUEPRINT_SOURCE_CLONE_TIMEOUT_S",
+        default=30.0,
+        cast=conf.as_float,
+    )
+
+
 def refresh_agent_blueprint_source(row: Mapping[str, Any]) -> dict[str, Any]:
     """Inspect a source, cloning remotes temporarily, and list its blueprints."""
 
@@ -102,7 +121,7 @@ def refresh_agent_blueprint_source(row: Mapping[str, Any]) -> dict[str, Any]:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=30,
+                timeout=blueprint_source_clone_timeout_s(),
                 env={
                     **os.environ,
                     "GIT_TERMINAL_PROMPT": "0",

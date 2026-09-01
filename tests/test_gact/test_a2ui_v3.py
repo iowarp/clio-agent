@@ -15,9 +15,9 @@ from clio_agent.gact import a2ui_store as a2ui_store_module
 from clio_agent.gact import a2ui_tools as a2ui_tools_module
 from clio_agent.gact import context as gact_context
 from clio_agent.gact.a2ui import (
-    MAX_A2UI_MESSAGES,
     A2UIValidationError,
     apply_batch,
+    max_a2ui_messages,
     trusted_component_names,
     validate_server_message,
 )
@@ -149,13 +149,13 @@ def test_a2ui_message_eviction_preserves_create_and_reports_typed_count() -> Non
                 "value": index,
             },
         }
-        for index in range(MAX_A2UI_MESSAGES + 3)
+        for index in range(max_a2ui_messages() + 3)
     )
 
     surfaces, _ = apply_batch({}, "sess_1", messages)
 
     surface = surfaces[("sess_1", "surface_1")]
-    assert len(surface.messages) == MAX_A2UI_MESSAGES
+    assert len(surface.messages) == max_a2ui_messages()
     assert "createSurface" in surface.messages[0]
     assert surface.eviction_reason == "a2ui_message_limit"
     assert surface.evicted_messages == 4

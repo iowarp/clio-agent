@@ -26,7 +26,26 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-MAX_LIVE_CODEX_HOMES = 4
+
+def codex_credential_home_capacity() -> int:
+    """Maximum simultaneous private ``CODEX_HOME`` credential copies.
+
+    Config: ``providers.codex.credential_home_capacity`` /
+    ``CLIO_CODEX_CREDENTIAL_HOME_CAPACITY`` (default 4). Each live home holds a
+    0600 copy of the user's real Codex credentials, so this is a SECURITY bound
+    before it is a resource one: raise it only as far as the concurrent Codex
+    turn count a deployment genuinely needs.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "providers.codex.credential_home_capacity",
+        env="CLIO_CODEX_CREDENTIAL_HOME_CAPACITY",
+        default=4,
+        cast=conf.as_int,
+    )
+
 
 _CODEX_HOME_LOCK = threading.Lock()
 _LIVE_CODEX_HOMES: set[Path] = set()
@@ -149,7 +168,7 @@ class IsolatedCodexHome:
 
         with _CODEX_HOME_LOCK:
             _reap_orphaned_codex_homes()
-            if len(_LIVE_CODEX_HOMES) >= MAX_LIVE_CODEX_HOMES:
+            if len(_LIVE_CODEX_HOMES) >= codex_credential_home_capacity():
                 raise _capacity_error()
             home = _mint_owned_codex_home()
             _LIVE_CODEX_HOMES.add(home)
@@ -239,7 +258,7 @@ class IsolatedCodexHome:
 
 
 __all__ = [
-    "MAX_LIVE_CODEX_HOMES",
+    "codex_credential_home_capacity",
     "IsolatedCodexHome",
     "_reap_orphaned_codex_homes",
 ]

@@ -14,9 +14,50 @@ from clio_agent.gact.artifacts.records import ArtifactRecord, ArtifactVersion, C
 from clio_agent.gact.artifacts.registry import get_registry
 
 _DEFAULT_LIMIT = 1_000
-_MAX_LIMIT = 2_000
 _MAX_COLUMNS = 6
-_MAX_SOURCE_BYTES = 256 * 1024 * 1024
+
+
+def table_preview_max_rows() -> int:
+    """Ceiling on the rows one table-preview response may sample.
+
+    Config: ``artifacts.table_preview_max_rows`` /
+    ``CLIO_ARTIFACTS_TABLE_PREVIEW_MAX_ROWS`` (default 2000). Raise it for a
+    denser chart, lower it to shrink the JSON a browser has to hold.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "artifacts.table_preview_max_rows",
+        env="CLIO_ARTIFACTS_TABLE_PREVIEW_MAX_ROWS",
+        default=2_000,
+        cast=conf.as_int,
+    )
+
+
+def table_preview_max_source_bytes() -> int:
+    """Largest CSV artifact, in bytes, the preview route will read.
+
+    Config: ``artifacts.table_preview_max_source_bytes`` /
+    ``CLIO_ARTIFACTS_TABLE_PREVIEW_MAX_SOURCE_BYTES`` (default 268435456 = 256
+    MiB). The route streams the file twice, so this bounds preview LATENCY,
+    not memory; raise it on a fast filesystem with genuinely larger artifacts.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "artifacts.table_preview_max_source_bytes",
+        env="CLIO_ARTIFACTS_TABLE_PREVIEW_MAX_SOURCE_BYTES",
+        default=256 * 1024 * 1024,
+        cast=conf.as_int,
+    )
+
+
+def _bounded_preview_limit(limit: int) -> int:
+    """Clamp a requested row count into ``[1, table_preview_max_rows()]``."""
+
+    return max(1, min(int(limit), table_preview_max_rows()))
 
 
 def _error(status_code: int, code: str, message: str, **details: Any) -> HTTPException:
@@ -140,14 +181,15 @@ def _csv_preview(
 
     source = _artifact_source(app, record, version)
     source_size = source.stat().st_size
-    if source_size > _MAX_SOURCE_BYTES:
+    max_source_bytes = table_preview_max_source_bytes()
+    if source_size > max_source_bytes:
         raise _error(
             413,
             "artifact_too_large",
             "CSV artifact exceeds the bounded preview size",
             artifact_id=version.artifact_id,
             size_bytes=source_size,
-            max_bytes=_MAX_SOURCE_BYTES,
+            max_bytes=max_source_bytes,
         )
     if Path(record.name).suffix.lower() != ".csv":
         raise _error(
@@ -218,7 +260,7 @@ def register_artifact_table_preview_routes(app: FastAPI) -> None:
         limit: int = _DEFAULT_LIMIT,
     ) -> dict[str, Any]:
         selected = _parse_columns(columns)
-        bounded_limit = max(1, min(int(limit), _MAX_LIMIT))
+        bounded_limit = _bounded_preview_limit(limit)
         registry = await asyncio.to_thread(get_registry, app)
         found = registry.get_by_artifact_id(artifact_id)
         if found is None:

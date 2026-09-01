@@ -45,6 +45,7 @@ from clio_agent.providers._cli_provider import (
     register_custom_provider,
 )
 from clio_agent.providers.codex_stream import (
+    DEFAULT_TURN_TIMEOUT_S,
     CodexSDKError,
     _next_call_index,
     astream_sdk,
@@ -197,7 +198,7 @@ class CodexLLM(CustomLLM):
             model=clean_model,
             cwd=_resolve_codex_cwd(params),
             effort=_resolve_effort(params),
-            timeout=float(timeout) if timeout else 180.0,
+            timeout=float(timeout) if timeout else DEFAULT_TURN_TIMEOUT_S,
             call_index=_next_call_index(),
         )
         return _build_model_response(text=text, model=clean_model, usage_payload=usage)
@@ -231,7 +232,7 @@ class CodexLLM(CustomLLM):
             model=clean_model,
             cwd=_resolve_codex_cwd(params),
             effort=_resolve_effort(params),
-            timeout=float(timeout) if timeout else 180.0,
+            timeout=float(timeout) if timeout else DEFAULT_TURN_TIMEOUT_S,
             call_index=_next_call_index(),
         ):
             parts.append(str(chunk.get("text") or ""))
@@ -279,7 +280,7 @@ class CodexLLM(CustomLLM):
             model=clean_model,
             cwd=_resolve_codex_cwd(params),
             effort=_resolve_effort(params),
-            timeout=float(timeout) if timeout else 180.0,
+            timeout=float(timeout) if timeout else DEFAULT_TURN_TIMEOUT_S,
             call_index=_next_call_index(),
         )
         yield GenericStreamingChunk(
@@ -325,7 +326,7 @@ class CodexLLM(CustomLLM):
             model=clean_model,
             cwd=_resolve_codex_cwd(params),
             effort=_resolve_effort(params),
-            timeout=float(timeout) if timeout else 180.0,
+            timeout=float(timeout) if timeout else DEFAULT_TURN_TIMEOUT_S,
             call_index=_next_call_index(),
         ):
             yield chunk  # type: ignore[misc]  # dict satisfies litellm's runtime chunk contract

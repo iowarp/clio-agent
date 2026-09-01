@@ -313,9 +313,9 @@ def test_result_to_text_bounds_only_the_model_lane_with_typed_head_and_tail() ->
     """A huge tabular result cannot multiply across every later ReAct prompt."""
 
     from clio_agent.tools.mcp_executor import (
-        MAX_MODEL_TOOL_RESULT_CHARS,
         MODEL_TOOL_RESULT_TRUNCATED_REASON,
         _result_to_text,
+        model_tool_result_chars,
     )
 
     payload = {
@@ -327,9 +327,9 @@ def test_result_to_text_bounds_only_the_model_lane_with_typed_head_and_tail() ->
     text = _result_to_text(payload)
     bounded = json.loads(text)
 
-    assert len(text) <= MAX_MODEL_TOOL_RESULT_CHARS
+    assert len(text) <= model_tool_result_chars()
     assert bounded["_clio"]["reason"] == MODEL_TOOL_RESULT_TRUNCATED_REASON
-    assert bounded["_clio"]["original_chars"] > MAX_MODEL_TOOL_RESULT_CHARS
+    assert bounded["_clio"]["original_chars"] > model_tool_result_chars()
     assert '"rows": 1101' in bounded["head"]
     assert "earthscope_stations_clean.csv" in bounded["tail"]
 
@@ -343,7 +343,7 @@ def test_result_to_text_bounds_a_quote_dense_tabular_result() -> None:
     fixture above lands just under the threshold and cannot see it.
     """
 
-    from clio_agent.tools.mcp_executor import MAX_MODEL_TOOL_RESULT_CHARS, _result_to_text
+    from clio_agent.tools.mcp_executor import _result_to_text, model_tool_result_chars
 
     payload = {
         "summary": {"rows": 4000, "status": "success"},
@@ -357,7 +357,7 @@ def test_result_to_text_bounds_a_quote_dense_tabular_result() -> None:
     text = _result_to_text(payload)
     bounded = json.loads(text)
 
-    assert len(text) <= MAX_MODEL_TOOL_RESULT_CHARS
+    assert len(text) <= model_tool_result_chars()
     # The stamped head/tail counts describe the slices actually returned.
     assert bounded["_clio"]["head_chars"] == len(bounded["head"])
     assert bounded["_clio"]["tail_chars"] == len(bounded["tail"])
@@ -367,23 +367,23 @@ def test_result_to_text_bounds_a_quote_dense_tabular_result() -> None:
 def test_result_to_text_bounds_an_escape_dense_result() -> None:
     """Control characters expand 6:1 (\\u0007), the worst escaping case."""
 
-    from clio_agent.tools.mcp_executor import MAX_MODEL_TOOL_RESULT_CHARS, _result_to_text
+    from clio_agent.tools.mcp_executor import _result_to_text, model_tool_result_chars
 
     text = _result_to_text("\x07" * 40_000)
 
-    assert len(text) <= MAX_MODEL_TOOL_RESULT_CHARS
+    assert len(text) <= model_tool_result_chars()
     assert len(json.loads(text)["head"]) > 0
 
 
 def test_result_to_text_never_returns_more_than_it_was_given() -> None:
     """Just over the cap at high escape density, truncation used to INFLATE."""
 
-    from clio_agent.tools.mcp_executor import MAX_MODEL_TOOL_RESULT_CHARS, _result_to_text
+    from clio_agent.tools.mcp_executor import _result_to_text, model_tool_result_chars
 
-    source = '"' * (MAX_MODEL_TOOL_RESULT_CHARS + 1)
+    source = '"' * (model_tool_result_chars() + 1)
     text = _result_to_text(source)
 
-    assert len(text) <= MAX_MODEL_TOOL_RESULT_CHARS
+    assert len(text) <= model_tool_result_chars()
 
 
 def test_result_to_text_leaves_small_string_results_verbatim() -> None:

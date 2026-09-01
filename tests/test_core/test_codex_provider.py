@@ -24,6 +24,7 @@ from clio_agent.providers.codex_litellm import (
     CodexUnsupportedMultimodalError,
     _messages_to_codex_prompt,
 )
+from tests._config_layer import set_config
 
 
 def _event(method: str, **payload: Any) -> SimpleNamespace:
@@ -156,7 +157,7 @@ def test_sdk_home_reaps_orphan_and_caps_live_copies(
     personal_home.mkdir()
     (personal_home / "auth.json").write_text("{}", encoding="utf-8")
     monkeypatch.setenv("CODEX_HOME", str(personal_home))
-    monkeypatch.setattr(codex_credential_home, "MAX_LIVE_CODEX_HOMES", 1)
+    set_config("providers", {"codex": {"credential_home_capacity": 1}})
     first = codex_credential_home.IsolatedCodexHome()
     first.start()
     try:

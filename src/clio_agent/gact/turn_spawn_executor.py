@@ -9,6 +9,12 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+#: The one in-code fallback for ``agent_tasks.max_concurrent``. Both the
+#: resolver below and the lazy per-depth pool read it, so a pool built before
+#: :func:`install_agent_task_executor` ran cannot pick a different number than
+#: the knob documents.
+DEFAULT_MAX_CONCURRENT_AGENT_TASKS = 3
+
 
 def install_agent_task_executor(app: "FastAPI") -> None:
     """Install the dedicated child-forward executor state on ``app``.
@@ -22,10 +28,10 @@ def install_agent_task_executor(app: "FastAPI") -> None:
     cap = conf.resolve(
         "agent_tasks.max_concurrent",
         env="CLIO_MAX_CONCURRENT_AGENT_TASKS",
-        default=3,
+        default=DEFAULT_MAX_CONCURRENT_AGENT_TASKS,
         cast=conf.as_int,
     )
-    cap = max(1, int(cap or 3))
+    cap = max(1, int(cap or DEFAULT_MAX_CONCURRENT_AGENT_TASKS))
     app.state.max_concurrent_agent_tasks = cap
     app.state.agent_task_executors = {}
     app.state.agent_task_executor_lock = threading.Lock()
@@ -42,7 +48,9 @@ def agent_task_executor_for_depth(
     with lock:
         pool = pools.get(depth)
         if pool is None:
-            cap = getattr(app.state, "max_concurrent_agent_tasks", 3)
+            cap = getattr(
+                app.state, "max_concurrent_agent_tasks", DEFAULT_MAX_CONCURRENT_AGENT_TASKS
+            )
             pool = concurrent.futures.ThreadPoolExecutor(
                 max_workers=cap, thread_name_prefix=f"clio-agent-task-d{depth}"
             )

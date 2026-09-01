@@ -76,11 +76,27 @@ SPOTTER_CLEARANCE_REASONS: dict[str, str] = {
     ),
 }
 
-#: Retention bound for the per-session clearance-event map. Reaching it triggers
-#: a prune of every session with no live watcher left (bounded-memory doctrine);
-#: entries for sessions that ARE armed are never evicted, so the residual bound
-#: is the live armed-watcher count, not the process's session history.
-MAX_CLEARANCE_EVENTS = 256
+
+def max_clearance_events() -> int:
+    """Retention bound for the per-session clearance-event map.
+
+    Config: ``spotter.max_clearance_events`` /
+    ``CLIO_SPOTTER_MAX_CLEARANCE_EVENTS`` (default 256, in entries). Reaching it
+    triggers a prune of every session with no live watcher left (bounded-memory
+    doctrine); entries for sessions that ARE armed are never evicted, so the
+    residual bound is the live armed-watcher count, not the process's session
+    history. Raise it only for a deployment running many concurrent protected
+    sessions.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "spotter.max_clearance_events",
+        env="CLIO_SPOTTER_MAX_CLEARANCE_EVENTS",
+        default=256,
+        cast=conf.as_int,
+    )
 
 
 def _clearance_events(app: "FastAPI") -> dict[str, threading.Event]:
@@ -140,7 +156,7 @@ def clearance_event(app: "FastAPI", parent_session_id: str) -> threading.Event:
 
     Returns:
         The session's clearance event, created on demand. Creating an entry past
-        :data:`MAX_CLEARANCE_EVENTS` first prunes every session with no live
+        :func:`max_clearance_events` first prunes every session with no live
         watcher left.
     """
 
@@ -148,7 +164,7 @@ def clearance_event(app: "FastAPI", parent_session_id: str) -> threading.Event:
     existing = events.get(parent_session_id)
     if existing is not None:
         return existing
-    if len(events) >= MAX_CLEARANCE_EVENTS:
+    if len(events) >= max_clearance_events():
         _prune_clearance_events(app, events)
     return events.setdefault(parent_session_id, threading.Event())
 

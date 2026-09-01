@@ -27,6 +27,7 @@ from typing import Any
 
 from clio_agent import conf
 from clio_agent.arc.segments import _encode_safe
+from clio_agent.gact.context_preferences_types import DEFAULT_AUTOCOMPACT_PCT
 
 
 def _arc_obs_value(value: Any) -> Any:
@@ -56,22 +57,23 @@ def _arc_obs_value(value: Any) -> Any:
 def _autocompact_threshold() -> float:
     """The configurable 90%-style auto-compaction trigger fraction (0..1].
 
-    Resolved via the config store (file → env ``CLIO_AUTOCOMPACT_PCT`` → default
-    0.85); the design recommends compacting below 0.90 so the summary is built
-    from fuller context. A non-numeric or out-of-range value falls back to the
-    default (lenient by design: this is a soft tuning knob, not a hard contract,
-    and a typo must never wedge the auto-compaction path).
+    Resolved via the config store (file → env ``CLIO_AUTOCOMPACT_PCT`` → the
+    shared :data:`DEFAULT_AUTOCOMPACT_PCT`); the design recommends compacting
+    below 0.90 so the summary is built from fuller context. A non-numeric or
+    out-of-range value falls back to that same constant (lenient by design: this
+    is a soft tuning knob, not a hard contract, and a typo must never wedge the
+    auto-compaction path).
     """
     raw = conf.resolve(
         "autocompact.pct",
         env="CLIO_AUTOCOMPACT_PCT",
-        default=0.85,
+        default=DEFAULT_AUTOCOMPACT_PCT,
     )
     try:
         v = conf.as_float(raw)
     except (ValueError, TypeError):
-        return 0.85
-    return v if 0.0 < v <= 1.0 else 0.85
+        return DEFAULT_AUTOCOMPACT_PCT
+    return v if 0.0 < v <= 1.0 else DEFAULT_AUTOCOMPACT_PCT
 
 
 def _session_autocompact_preferences(

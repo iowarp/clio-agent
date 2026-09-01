@@ -25,11 +25,64 @@ def utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-MAX_A2UI_MESSAGE_BYTES = 256 * 1024
 MAX_A2UI_COMPONENTS = 256
-MAX_A2UI_MESSAGES = 512
 MAX_A2UI_DEPTH = 20
-MAX_A2UI_STRING = 16 * 1024
+
+
+def max_a2ui_message_bytes() -> int:
+    """Byte ceiling for one encoded A2UI server-to-client message.
+
+    Config: ``a2ui.max_message_bytes`` / ``CLIO_A2UI_MAX_MESSAGE_BYTES``
+    (default 262144). Raise it only for a deployment whose trusted producers
+    legitimately emit larger single surface updates.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "a2ui.max_message_bytes",
+        env="CLIO_A2UI_MAX_MESSAGE_BYTES",
+        default=256 * 1024,
+        cast=conf.as_int,
+    )
+
+
+def max_a2ui_string_chars() -> int:
+    """Character ceiling for any single string inside an A2UI payload.
+
+    Config: ``a2ui.max_string_chars`` / ``CLIO_A2UI_MAX_STRING_CHARS``
+    (default 16384). Resolved once per validated component and threaded through
+    the recursive walk, never re-resolved per node.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "a2ui.max_string_chars",
+        env="CLIO_A2UI_MAX_STRING_CHARS",
+        default=16 * 1024,
+        cast=conf.as_int,
+    )
+
+
+def max_a2ui_messages() -> int:
+    """Retention bound for the ordered message log of one A2UI surface.
+
+    Config: ``gact.ledger_retention.a2ui_messages.max`` /
+    ``CLIO_LEDGER_A2UI_MESSAGES_MAX`` (default 512). Reaching it evicts the
+    oldest non-``createSurface`` message with a typed ``a2ui_message_limit``
+    reason, so replay never loses the surface's constructor.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "gact.ledger_retention.a2ui_messages.max",
+        env="CLIO_LEDGER_A2UI_MESSAGES_MAX",
+        default=512,
+        cast=conf.as_int,
+    )
+
 
 SERVER_ACTIONS = frozenset(
     {"agent.submit", "approval.respond", "form.submit", "run.retry", "run.cancel"}
@@ -165,18 +218,24 @@ def _validate_action(value: Any) -> None:
         raise A2UIValidationError(message)
 
 
-def _validate_value(value: Any, *, key: str = "", depth: int = 0) -> None:
+def _validate_value(
+    value: Any, *, key: str = "", depth: int = 0, max_string: int | None = None
+) -> None:
+    if max_string is None:
+        # Resolved ONCE at the top of the walk and threaded down: the recursion
+        # visits every string node, which is no place for a config lookup.
+        max_string = max_a2ui_string_chars()
     if depth > MAX_A2UI_DEPTH:
         raise A2UIValidationError("A2UI value exceeds the nesting limit")
     if isinstance(value, str):
-        if len(value) > MAX_A2UI_STRING:
+        if len(value) > max_string:
             raise A2UIValidationError("A2UI string exceeds the size limit")
         if key.lower() in _URL_KEYS:
             _validate_url(value)
         return
     if isinstance(value, list):
         for item in value:
-            _validate_value(item, key=key, depth=depth + 1)
+            _validate_value(item, key=key, depth=depth + 1, max_string=max_string)
         return
     if not isinstance(value, Mapping):
         return
@@ -208,7 +267,7 @@ def _validate_value(value: Any, *, key: str = "", depth: int = 0) -> None:
             action = str(child_value.get("name") or "")
             if action not in SERVER_ACTIONS | CLIENT_ACTIONS:
                 raise A2UIValidationError(f"A2UI action is not registered: {action}")
-        _validate_value(child_value, key=child_key, depth=depth + 1)
+        _validate_value(child_value, key=child_key, depth=depth + 1, max_string=max_string)
 
 
 def _validate_accessibility(component: Mapping[str, Any], component_name: str) -> None:
@@ -260,7 +319,7 @@ def validate_server_message(message: Mapping[str, Any]) -> tuple[str, str]:
     """Validate an official server-to-client message and return operation/id."""
 
     encoded = json.dumps(message, separators=(",", ":")).encode()
-    if len(encoded) > MAX_A2UI_MESSAGE_BYTES:
+    if len(encoded) > max_a2ui_message_bytes():
         raise A2UIValidationError("A2UI message exceeds the byte limit")
     operation, payload = _message_operation(message)
     allowed_payload_keys = {
@@ -415,7 +474,7 @@ def _apply_staged_message(
             for existing in surface.messages
             if "updateComponents" not in existing or not _component_ids(existing) <= superseded
         ]
-    if len(surface.messages) >= MAX_A2UI_MESSAGES:
+    if len(surface.messages) >= max_a2ui_messages():
         removable = next(
             (
                 index
@@ -618,12 +677,14 @@ def project_a2ui_parts(
 
 __all__ = [
     "CLIENT_ACTIONS",
-    "MAX_A2UI_MESSAGES",
     "SERVER_ACTIONS",
     "A2UISurfaceRecord",
     "A2UITranscriptFrozenError",
     "A2UIValidationError",
     "apply_batch",
+    "max_a2ui_message_bytes",
+    "max_a2ui_messages",
+    "max_a2ui_string_chars",
     "project_a2ui_parts",
     "trusted_component_names",
     "validate_client_action",

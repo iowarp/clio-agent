@@ -272,6 +272,53 @@ def _module_constants(tree: ast.Module) -> dict[str, object]:
     return consts
 
 
+def _module_path_for(module: str, src: Path) -> Path | None:
+    """Return the file backing a dotted ``clio_agent.*`` module name, if any."""
+    if not module.startswith("clio_agent."):
+        return None
+    relative = module.split(".")[1:]
+    candidate = src.joinpath(*relative).with_suffix(".py")
+    if candidate.is_file():
+        return candidate
+    package_init = src.joinpath(*relative, "__init__.py")
+    return package_init if package_init.is_file() else None
+
+
+def _imported_constants(tree: ast.Module, src: Path) -> dict[str, object]:
+    """Resolve constants this module binds via a MODULE-LEVEL ``from ... import NAME``.
+
+    A shared in-code default is frequently owned by one module and imported by the
+    ``conf.resolve`` call site that documents it (``DEFAULT_AUTOCOMPACT_PCT`` lives
+    in ``gact/context_preferences_types.py`` and is imported by
+    ``gact/runtime/context_tokens.py``). Without this hop such a default renders as
+    an opaque ``_(computed)_`` expression and drops out of the committed base layer,
+    even though it is perfectly static.
+
+    Deliberately ONE hop and MODULE-LEVEL only (``tree.body``, not ``ast.walk``): the
+    binding is then exactly what the importing module holds at import time, with no
+    transitive chain to follow and no lazy, function-local import — which may exist to
+    break a cycle or to defer a heavy dependency — silently promoted to a static fact.
+    Names from outside ``src/clio_agent`` are never resolved.
+    """
+    out: dict[str, object] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.ImportFrom) or node.level:
+            continue
+        path = _module_path_for(node.module or "", src)
+        if path is None:
+            continue
+        try:
+            owner = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError):
+            continue
+        owner_consts = _module_constants(owner)
+        for alias in node.names:
+            value = owner_consts.get(alias.name, _UNRESOLVED)
+            if value is not _UNRESOLVED:
+                out[alias.asname or alias.name] = value
+    return out
+
+
 def _class_attr_defaults(tree: ast.Module, consts: dict[str, object]) -> dict[str, object]:
     """Map class-body attribute defaults (``NAME[: ann] = <expr>``) to their value.
 
@@ -633,7 +680,8 @@ def collect(root: Path | None = None) -> tuple[list[ResolvedVar], list[EnvOnlyVa
             continue
         rel = path.relative_to(repo_root).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        consts = _module_constants(tree)
+        # Own module-level constants win over an imported binding of the same name.
+        consts = {**_imported_constants(tree, src), **_module_constants(tree)}
         class_attr_consts = {**consts, **_class_attr_defaults(tree, consts)}
         resolve_names, conf_aliases = _conf_import_aliases(tree)
         wrappers = _env_wrapper_functions(tree)

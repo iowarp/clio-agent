@@ -7,6 +7,7 @@ from typing import Any, Never, Optional
 from fastapi import FastAPI, HTTPException
 
 from clio_agent.gact.agent_blueprint_files import (
+    _BLUEPRINT_TEXT_FILE_LIMIT_BYTES,
     BlueprintFileNotTextError,
     BlueprintFileTooLargeError,
     BlueprintPathEscapesRootError,
@@ -18,6 +19,20 @@ from clio_agent.gact.agent_blueprints import (
     validate_agent_blueprint_path,
 )
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
+
+
+def _too_large_message() -> str:
+    """Render the 413 prose FROM the limit the writer actually enforces.
+
+    The size is never restated as a literal here: a change to
+    :data:`~clio_agent.gact.agent_blueprint_files._BLUEPRINT_TEXT_FILE_LIMIT_BYTES`
+    moves the refusal and this message together.
+    """
+
+    return (
+        "blueprint text files are limited to "
+        f"{_BLUEPRINT_TEXT_FILE_LIMIT_BYTES // (1024 * 1024)} MiB"
+    )
 
 
 def register_blueprint_file_write_route(app: FastAPI) -> None:
@@ -53,7 +68,7 @@ def register_blueprint_file_write_route(app: FastAPI) -> None:
                 False,
             )
         except BlueprintFileTooLargeError:
-            _raise(413, "content_too_large", "blueprint text files are limited to 2 MiB", True)
+            _raise(413, "content_too_large", _too_large_message(), True)
         except OSError as exc:
             raise HTTPException(
                 status_code=500,

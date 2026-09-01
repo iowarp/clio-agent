@@ -24,8 +24,48 @@ logger = logging.getLogger(__name__)
 #: Typed reason for one retried cold mount (queryable in logs/trace).
 MCP_MOUNT_RETRY_REASON = "mcp_mount_retry"
 
-MCP_MOUNT_RETRY_DELAYS_S: tuple[float, ...] = (0.5, 1.5)
 MCP_MOUNT_TIMEOUT_MULTIPLIERS: tuple[float, ...] = (1.0, 3.0, 6.0)
+
+
+def mcp_mount_retry_delays_s() -> tuple[float, ...]:
+    """The increasing waits between cold-mount attempts, in seconds.
+
+    Config: ``tools.mcp.mount_retry_delays_s`` /
+    ``CLIO_MCP_MOUNT_RETRY_DELAYS_S`` (default ``0.5,1.5``). The ladder's
+    LENGTH is the retry budget -- one attempt more than there are delays -- so
+    lengthen it for a slow-launching server fleet and shorten it to fail fast.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return tuple(
+        float(delay)
+        for delay in conf.resolve(
+            "tools.mcp.mount_retry_delays_s",
+            env="CLIO_MCP_MOUNT_RETRY_DELAYS_S",
+            default=[0.5, 1.5],
+            cast=conf.as_csv,
+        )
+    )
+
+
+def mcp_mount_setup_timeout_s() -> float:
+    """The base per-namespace connect timeout when the executor exposes none.
+
+    Resolved from the SAME key the executor's own default comes from
+    (``tools.mcp.setup_timeout_s`` / ``CLIO_MCP_SETUP_TIMEOUT_S``), so this
+    boundary can never diverge from the timeout the live executor was built
+    with (there is one source for the semantic, not two).
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "tools.mcp.setup_timeout_s",
+        env="CLIO_MCP_SETUP_TIMEOUT_S",
+        default=10.0,
+        cast=conf.as_float,
+    )
 
 
 def namespaces_requiring_preparation(
@@ -67,7 +107,7 @@ def mount_namespace_for_session(
     namespace: str,
     spec: Any,
     *,
-    retry_delays_s: tuple[float, ...] = MCP_MOUNT_RETRY_DELAYS_S,
+    retry_delays_s: tuple[float, ...] | None = None,
 ) -> Mapping[str, Any]:
     """Mount one declared namespace with bounded readiness semantics.
 
@@ -80,7 +120,8 @@ def mount_namespace_for_session(
         namespace: Declared namespace to mount.
         spec: The declared server spec for ``namespace``.
         retry_delays_s: Increasing waits between attempts; one attempt more
-            than there are delays is made.
+            than there are delays is made. ``None`` resolves the configured
+            ladder (:func:`mcp_mount_retry_delays_s`).
 
     Returns:
         The tools mounted for ``namespace``.
@@ -94,8 +135,15 @@ def mount_namespace_for_session(
         ensure_namespace,
     )
 
+    if retry_delays_s is None:
+        retry_delays_s = mcp_mount_retry_delays_s()
     max_attempts = len(retry_delays_s) + 1
-    base_setup_timeout = float(getattr(tool_executor, "_setup_timeout", 10.0))
+    configured_setup_timeout = getattr(tool_executor, "_setup_timeout", None)
+    base_setup_timeout = (
+        float(configured_setup_timeout)
+        if configured_setup_timeout is not None
+        else mcp_mount_setup_timeout_s()
+    )
     for attempt in range(1, max_attempts + 1):
         phase = "launch"
         try:

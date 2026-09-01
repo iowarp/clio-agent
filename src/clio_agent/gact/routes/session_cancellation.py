@@ -18,6 +18,25 @@ if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
 
 
+def cancellation_grace_s() -> float:
+    """Seconds a cooperative cancel gets before the turn task is hard-cancelled.
+
+    Config: ``gact.cancellation_grace_s`` / ``CLIO_GACT_CANCELLATION_GRACE_S``
+    (default 0.1). The executor is asked to stop cooperatively first; only a
+    task still running after this window is cancelled outright. Raise it to
+    give a mid-tool-call turn longer to unwind cleanly.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "gact.cancellation_grace_s",
+        env="CLIO_GACT_CANCELLATION_GRACE_S",
+        default=0.1,
+        cast=conf.as_float,
+    )
+
+
 def cancel_session_state(app: FastAPI, deps: "GactDeps", sid: str) -> dict[str, Any]:
     """Apply the canonical best-effort cancellation transition for a session."""
 
@@ -81,7 +100,7 @@ async def _cancel_after_grace(
     session_id: str,
     attempt: dict[str, Any],
 ) -> None:
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(cancellation_grace_s())
     if session_id in app.state.cancel_flags and not task.done():
         if app.state.cancel_attempts.get(session_id) is attempt:
             attempt["asyncio_task_cancel_sent"] = True

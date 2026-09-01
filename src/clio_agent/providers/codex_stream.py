@@ -46,6 +46,13 @@ from clio_agent.providers.codex_credential_home import IsolatedCodexHome
 logger = logging.getLogger(__name__)
 
 DEFAULT_SDK_PROGRESS_TIMEOUT_S = 120.0
+
+#: The requested per-turn ceiling every LiteLLM entry point passes in when the
+#: caller supplies no ``timeout``. It is a CEILING, not the operative deadline:
+#: :func:`_sdk_progress_timeout_s` clamps it with the configured
+#: ``limits.codex_sdk_progress_timeout_s``, which is what actually governs how
+#: long one exchange may go without progress. Kept as a single named constant so
+#: the four ``codex_litellm`` entry points cannot drift apart from it.
 DEFAULT_TURN_TIMEOUT_S = 180.0
 
 
