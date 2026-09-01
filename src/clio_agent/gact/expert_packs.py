@@ -1,25 +1,25 @@
 """Markdown expert-pack discovery for GACT agent catalog.
 
-Expert files are Markdown with a flat frontmatter block::
+Expert files are Markdown with a flat frontmatter block fenced by ``---``::
 
-id: ndp_catalog
-title: NDP Catalog Expert
-parent_id: data
-tier: 3
-keywords:
-- ndp
-- earthscope
-tools:
-- ndp.search
-prompt_id: clio.expert.ndp_catalog
-prompt_profile: heavy
-provider: openai
-model: gpt-5.1
-System prompt body...
+    ---
+    id: ndp_catalog
+    title: NDP Catalog Expert
+    parent_id: data
+    tier: 3
+    keywords:
+    - ndp
+    tools:
+    - ndp.search
+    prompt_id: clio.expert.ndp_catalog
+    prompt_profile: heavy
+    provider: openai
+    model: gpt-5.1
+    ---
+    System prompt body...
 
-The loader is intentionally non-executing and dependency-free. Invalid files are
-returned as disabled AgentDef rows with validation_errors so Doctor/TUI can show
-users what broke without silently dropping an expert file.
+The loader is non-executing and dependency-free. Invalid files come back as
+disabled AgentDef rows with validation_errors instead of being silently dropped.
 """
 
 from __future__ import annotations
