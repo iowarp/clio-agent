@@ -78,6 +78,42 @@ def workspace_display_name(
     return workspace_id
 
 
+def _without_legacy_derived_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """Strip the derived keys a legacy ``to_wire()`` flush wrote into a stored row.
+
+    ``path`` and ``storage_root`` are emitted only by :meth:`Workspace.to_wire`, so
+    ``path``'s presence identifies a row written by the superseded wire-shaped flush.
+    Such a row also carries the DERIVED label in ``display_name``, the field whose
+    semantics are "deliberately configured": leaving it there freezes a computed
+    label and makes a later rename silently fail to move the displayed name. A
+    configured label that the derivation does not reproduce is preserved.
+
+    Args:
+        row: One persisted workspace row as read from ``workspaces.json``.
+
+    Returns:
+        A new row carrying only source-of-truth :class:`Workspace` fields.
+    """
+
+    cleaned = {key: value for key, value in row.items() if key not in {"path", "storage_root"}}
+    if "path" not in row:
+        return cleaned
+    configured = str(cleaned.get("display_name") or "").strip()
+    if not configured:
+        return cleaned
+    metadata = cleaned.get("metadata")
+    derived = workspace_display_name(
+        workspace_id=str(cleaned.get("id") or ""),
+        name=str(cleaned.get("name") or ""),
+        root_path=str(cleaned.get("root_path") or ""),
+        metadata=metadata if isinstance(metadata, dict) else None,
+        configured_display_name="",
+    )
+    if configured == derived:
+        cleaned["display_name"] = ""
+    return cleaned
+
+
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -165,11 +201,7 @@ class WorkspaceStore:
         for row in data.get("workspaces", []):
             try:
                 if isinstance(row, dict):
-                    row = {
-                        key: value
-                        for key, value in row.items()
-                        if key not in {"path", "storage_root"}
-                    }
+                    row = _without_legacy_derived_fields(row)
                 ws = Workspace(**row)
                 self._workspaces[ws.id] = ws
             except Exception:  # noqa: BLE001 - malformed workspace row skipped
@@ -181,7 +213,10 @@ class WorkspaceStore:
         import json
 
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        rows = [w.to_wire() for w in self._workspaces.values()]
+        # Persist the RECORD, never ``to_wire()``: the wire projection overwrites
+        # ``display_name`` with the derived label, which reloads as a deliberately
+        # configured one and freezes every later rename.
+        rows = [asdict(w) for w in self._workspaces.values()]
         tmp = self._path.with_suffix(self._path.suffix + ".tmp")
         tmp.write_text(
             json.dumps({"workspaces": rows}, indent=2),

@@ -217,3 +217,94 @@ def test_workspace_file_read_sniffs_unknown_binary_as_octet_stream(tmp_path: Pat
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/octet-stream"
     assert resp.content == blob
+
+
+def test_create_workspace_rejects_unmakeable_root(tmp_path: Path) -> None:
+    """An unmakeable root fails with a typed 400 and creates no workspace."""
+    c = _client(tmp_path)
+    blocker = tmp_path / "afile"
+    blocker.write_text("not a directory", encoding="utf-8")
+    before = {w["id"] for w in c.get("/v1/workspaces").json()["workspaces"]}
+
+    response = c.post(
+        "/v1/workspaces",
+        json={"name": "blocked", "root_path": str(blocker / "sub")},
+    )
+
+    assert response.status_code == 400
+    envelope = response.json()["error"]
+    assert envelope["error"] == "invalid_request"
+    assert envelope["details"]["root_path"] == str(blocker / "sub")
+    assert envelope["details"]["reason"]
+    after = {w["id"] for w in c.get("/v1/workspaces").json()["workspaces"]}
+    assert after == before
+
+
+def test_patch_workspace_materializes_new_root(tmp_path: Path) -> None:
+    """Repointing a workspace root makes it usable as a tool cwd, like create does."""
+    c = _client(tmp_path)
+    wid = c.post(
+        "/v1/workspaces",
+        json={"name": "movable", "root_path": str(tmp_path / "first")},
+    ).json()["id"]
+    moved = tmp_path / "second" / "nested"
+
+    response = c.patch(f"/v1/workspaces/{wid}", json={"root_path": str(moved)})
+
+    assert response.status_code == 200
+    assert response.json()["root_path"] == str(moved)
+    assert moved.is_dir()
+
+
+def test_patch_workspace_rejects_unmakeable_root(tmp_path: Path) -> None:
+    """An unmakeable PATCH root is refused with a typed 400 and does not repoint."""
+    c = _client(tmp_path)
+    original = tmp_path / "original"
+    wid = c.post(
+        "/v1/workspaces",
+        json={"name": "pinned", "root_path": str(original)},
+    ).json()["id"]
+    blocker = tmp_path / "bfile"
+    blocker.write_text("not a directory", encoding="utf-8")
+
+    response = c.patch(f"/v1/workspaces/{wid}", json={"root_path": str(blocker / "sub")})
+
+    assert response.status_code == 400
+    envelope = response.json()["error"]
+    assert envelope["error"] == "invalid_request"
+    assert envelope["details"]["root_path"] == str(blocker / "sub")
+    assert c.get(f"/v1/workspaces/{wid}").json()["root_path"] == str(original)
+
+
+def test_persisted_workspace_rename_still_moves_derived_display_name(tmp_path: Path) -> None:
+    """A reload must not freeze a DERIVED label into the configured display name."""
+    from clio_agent.gact.workspaces import WorkspaceStore
+
+    store_path = tmp_path / "workspaces.json"
+    project = tmp_path / "proj"
+    first = WorkspaceStore(path=store_path)
+    ws = first.create(name=str(project), root_path=str(project))
+    assert ws.to_wire()["display_name"] == "proj"
+
+    reloaded = WorkspaceStore(path=store_path)
+    renamed = reloaded.update(ws.id, name="My Project")
+
+    assert renamed is not None
+    assert renamed.to_wire()["display_name"] == "My Project"
+
+
+def test_persisted_workspace_keeps_configured_display_name(tmp_path: Path) -> None:
+    """A deliberately configured label survives the reload and outranks a rename."""
+    from clio_agent.gact.workspaces import WorkspaceStore
+
+    store_path = tmp_path / "workspaces.json"
+    first = WorkspaceStore(path=store_path)
+    ws = first.create(name="raw", root_path=str(tmp_path / "raw"))
+    first.update(ws.id, display_name="Chosen Label")
+
+    reloaded = WorkspaceStore(path=store_path)
+    renamed = reloaded.update(ws.id, name="Renamed")
+
+    assert renamed is not None
+    assert renamed.display_name == "Chosen Label"
+    assert renamed.to_wire()["display_name"] == "Chosen Label"

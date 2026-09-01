@@ -37,6 +37,7 @@ from clio_agent.gact.routes.workspace_file_policy import (
     skip_workspace_file_directory,
 )
 from clio_agent.gact.routes.workspace_grant_delete import register_workspace_grant_delete_route
+from clio_agent.gact.routes.workspace_root_materialization import materialize_workspace_root
 from clio_agent.gact.types import (
     CreateWorkspaceRequest,
     ErrorEnvelope,
@@ -265,22 +266,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
     ) -> Workspace | JSONResponse:
         """SPEC §6.1 — create a workspace pinned to ``root_path``."""
 
-        if req.root_path:
-            try:
-                Path(req.root_path).expanduser().mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                raise HTTPException(
-                    status_code=400,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="invalid_request",
-                            message=f"workspace root could not be created: {req.root_path}",
-                            details={"root_path": req.root_path, "reason": str(exc)},
-                            recoverable=True,
-                        )
-                    ).model_dump(exclude_none=True),
-                ) from exc
-
+        materialize_workspace_root(req.root_path)
         ws = app.state.workspaces.create(
             name=req.name,
             root_path=req.root_path,
@@ -340,6 +326,11 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         prior = app.state.workspaces.get(wid)
         prior_root = str(getattr(prior, "root_path", "") or "") if prior is not None else ""
         new_root = root_path.strip() if isinstance(root_path, str) and root_path.strip() else None
+        # Repointing a root carries the same guarantee create does: the pinned root
+        # exists on disk before the workspace advertises it (and before the boundary
+        # event below records a grant over it).
+        if new_root is not None and new_root != prior_root:
+            materialize_workspace_root(new_root)
         # Route the mutation through the store so it serialises under the
         # WorkspaceStore lock (no torn write / flush racing a concurrent
         # create) and bumps ``updated_at`` — never mutate the live object
