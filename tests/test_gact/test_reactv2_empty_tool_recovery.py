@@ -117,3 +117,81 @@ def test_default_repair_budget_allows_three_consecutive_provider_reasks(
     # Initial response + three bounded recoveries + one forced-submit attempt.
     assert len(observed) == 5
     assert prediction.termination_reason == "empty_tool_calls"
+
+
+def test_recovered_empty_tool_blip_does_not_poison_a_later_max_iters_exhaustion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A RECOVERED tool-less blip must not relabel a later, healthy cap exhaustion.
+
+    A blueprint-declared ``max_iters`` cap is an ordinary runaway backstop, not a
+    provider protocol failure. Exhausting it after the model already recovered
+    from an early empty-tool response must terminate as ``max_iters`` and carry
+    no ``provider_protocol_error`` payload -- otherwise the turn settles failed
+    and the user is told the provider repeatedly returned no structured call.
+    """
+    monkeypatch.setenv("CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS", "1")
+    monkeypatch.setenv("CLIO_SUBMIT_REPAIR_ATTEMPTS", "0")
+    from clio_agent import conf
+
+    conf.reload()
+    agent = retaining_reactv2_cls()(
+        "question -> answer",
+        tools=[dspy.Tool(lambda q: q, name="search")],
+        max_iters=3,
+    )
+    responses: list[dspy.Prediction] = [
+        # Iteration 0: a tool-less blip -- recovered by the bounded retry.
+        dspy.Prediction(next_thought="still planning", tool_calls={"tool_calls": []}),
+        # Iterations 1 and 2: healthy tool work that simply never submits.
+        dspy.Prediction(
+            next_thought="working",
+            tool_calls={"tool_calls": [{"name": "search", "args": {"q": "a"}}]},
+        ),
+        dspy.Prediction(
+            next_thought="working",
+            tool_calls={"tool_calls": [{"name": "search", "args": {"q": "b"}}]},
+        ),
+    ]
+    seen: list[dict[str, Any]] = []
+
+    def react(**kwargs: Any) -> dspy.Prediction:
+        seen.append(kwargs)
+        if responses:
+            return responses.pop(0)
+        return dspy.Prediction(next_thought="done", tool_calls={"tool_calls": []})
+
+    monkeypatch.setattr(agent, "react", react)
+    prediction = agent(question="find it")
+
+    # Three loop iterations (0 empty + recovery at 1 and 2) then the forced submit.
+    assert len(seen) == 4
+    assert prediction.termination_reason == "max_iters"
+    assert getattr(prediction, "error_info", None) is None
+
+
+def test_unresolvable_repair_budget_reports_a_typed_reason(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A discarded operator configuration is a degradation, not a silent default.
+
+    ``conf.as_int`` raises on garbage by design, so a malformed
+    ``CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS`` reaches the fallback. The committed
+    default still bounds recovery, but the ignored configuration must be
+    reported with a typed reason rather than swallowed.
+    """
+    from clio_agent.gact.agents import reactv2_events
+
+    monkeypatch.setenv("CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS", "not-a-number")
+    from clio_agent import conf
+
+    conf.reload()
+
+    with caplog.at_level("WARNING", logger="clio_agent.gact.agents.reactv2_events"):
+        assert reactv2_events._empty_tool_repair_attempts() == 3
+
+    assert any(
+        "empty_tool_repair_budget_unresolved" in record.message
+        and "reason=config_resolve_failed" in record.message
+        for record in caplog.records
+    ), [record.message for record in caplog.records]
