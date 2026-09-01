@@ -543,16 +543,27 @@ def probe_cte_cold_tier_disk(*, env: Mapping[str, str] | None = None) -> list[In
 def probe_clio_core_write_health(
     *, env: Mapping[str, str] | None = None
 ) -> list[IntegrationStatus]:
-    """Fail health after this process observes a permanent clio-core write error."""
+    """Fail health while clio-core is currently losing required writes.
+
+    Live state, never a latch: the row is present only while a write was lost
+    and NO write has succeeded since (see
+    :func:`clio_agent.arc.clio_core_retry.last_lost_put_write`), so a recovered
+    backend stops reporting hard-down on its next successful write rather than
+    for the rest of the process lifetime.
+
+    Args:
+        env: Environment mapping; defaults to the process environment.
+
+    Returns:
+        One required ``clio_core_write`` row, or an empty list.
+    """
     env = env if env is not None else os.environ
     if env.get("CLIO_ARC_STORE", "cte").strip().lower() != "cte":
         return []
 
-    from clio_agent.arc.clio_core_retry import (  # noqa: PLC0415
-        last_permanent_put_failure,
-    )
+    from clio_agent.arc.clio_core_retry import last_lost_put_write  # noqa: PLC0415
 
-    failure = last_permanent_put_failure()
+    failure = last_lost_put_write()
     if failure is None:
         return []
     details = failure.to_details()
@@ -561,13 +572,13 @@ def probe_clio_core_write_health(
             name="clio_core_write",
             state=IntegrationState.UNAVAILABLE,
             summary=(
-                "clio-core rejected a required persistent write; new transcript "
-                f"state is not durable ({details['error']})."
+                "clio-core rejected a required persistent write and none has "
+                f"succeeded since; new transcript state is not durable ({details['error']})."
             ),
             config_source="runtime:clio_core_put_failure",
             next_action=(
-                "Repair or expand the active clio-core tier, then restart the "
-                "backend and verify a write/read/delete sentinel before resuming work."
+                "Repair or expand the active clio-core tier. This row clears itself "
+                "on the next successful write — no backend restart is required."
             ),
             fallback="none",
             details=details,
