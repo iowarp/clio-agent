@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from copy import deepcopy
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Mapping
 from urllib.parse import urlsplit
@@ -115,6 +114,9 @@ def _message_operation(message: Mapping[str, Any]) -> tuple[str, Mapping[str, An
     return operations[0], payload
 
 
+_URL_KEYS = frozenset({"url", "uri", "datauri"})
+
+
 def _validate_url(value: str) -> None:
     parsed = urlsplit(value)
     if parsed.scheme.lower() not in {"https", "artifact", "resource"}:
@@ -169,12 +171,12 @@ def _validate_value(value: Any, *, key: str = "", depth: int = 0) -> None:
     if isinstance(value, str):
         if len(value) > MAX_A2UI_STRING:
             raise A2UIValidationError("A2UI string exceeds the size limit")
-        if key.lower() in {"url", "uri", "datauri"}:
+        if key.lower() in _URL_KEYS:
             _validate_url(value)
         return
     if isinstance(value, list):
         for item in value:
-            _validate_value(item, depth=depth + 1)
+            _validate_value(item, key=key, depth=depth + 1)
         return
     if not isinstance(value, Mapping):
         return
@@ -187,6 +189,17 @@ def _validate_value(value: Any, *, key: str = "", depth: int = 0) -> None:
             raise A2UIValidationError("A2UI object keys must be strings")
         if child_key in _FORBIDDEN_KEYS:
             raise A2UIValidationError(f"A2UI property is prohibited: {child_key}")
+        if (
+            child_key.lower() in _URL_KEYS
+            and child_value is not None
+            and not isinstance(child_value, str)
+        ):
+            # A data binding or function call resolves in the renderer, after
+            # this boundary ran, so the scheme allowlist would never see the URL
+            # it ends up fetching. Require the literal instead.
+            raise A2UIValidationError(
+                f"A2UI {child_key} must be a literal string so its scheme can be checked"
+            )
         if child_key == "functionCall" or child_key == "call":
             raise A2UIValidationError("A2UI client function calls are not trusted")
         if child_key == "action":
@@ -317,6 +330,45 @@ def validate_client_action(message: Mapping[str, Any], *, surface_id: str) -> di
     return action
 
 
+def _component_ids(message: Mapping[str, Any]) -> set[str]:
+    """Return the component ids an ``updateComponents`` message declares.
+
+    Args:
+        message: One validated server message.
+
+    Returns:
+        The declared component ids, or an empty set for any other operation.
+    """
+
+    payload = message.get("updateComponents")
+    if not isinstance(payload, Mapping):
+        return set()
+    components = payload.get("components")
+    if not isinstance(components, list):
+        return set()
+    return {
+        str(component.get("id") or "") for component in components if isinstance(component, Mapping)
+    }
+
+
+def _copy_record(record: A2UISurfaceRecord) -> A2UISurfaceRecord:
+    """Return an independently foldable copy of one surface record.
+
+    The fold only ever rebinds scalars and appends/removes whole message dicts,
+    never mutates a stored message in place, so copying the message *list* is
+    enough. A deep copy would duplicate every persisted byte of every surface on
+    every projection read, which is what made the fold quadratic.
+
+    Args:
+        record: The surface record to copy.
+
+    Returns:
+        A copy whose message list can be folded without touching ``record``.
+    """
+
+    return replace(record, messages=list(record.messages))
+
+
 def _apply_staged_message(
     surfaces: dict[tuple[str, str], A2UISurfaceRecord],
     session_id: str,
@@ -354,8 +406,14 @@ def _apply_staged_message(
     elif surface.state == "deleted":
         raise A2UIValidationError("A2UI deleteSurface is terminal until a new createSurface")
     if operation == "updateComponents":
+        # Compaction is only lossless for the components this message redefines:
+        # an incremental upsert must not erase sibling definitions the client
+        # still needs, or replay would render a surface the live view never had.
+        superseded = _component_ids(message)
         surface.messages = [
-            existing for existing in surface.messages if "updateComponents" not in existing
+            existing
+            for existing in surface.messages
+            if "updateComponents" not in existing or not _component_ids(existing) <= superseded
         ]
     if len(surface.messages) >= MAX_A2UI_MESSAGES:
         removable = next(
@@ -384,6 +442,77 @@ def _apply_staged_message(
     return operation, surface_id, surface
 
 
+def _batch_surface_keys(session_id: str, messages: list[Mapping[str, Any]]) -> set[tuple[str, str]]:
+    """Return the surface keys a batch can touch, before it is validated.
+
+    Args:
+        session_id: Session the batch belongs to.
+        messages: The raw ordered batch.
+
+    Returns:
+        Every ``(session_id, surface_id)`` key the fold could create or mutate.
+    """
+
+    keys: set[tuple[str, str]] = set()
+    for message in messages:
+        if not isinstance(message, Mapping):
+            continue
+        for operation in ("createSurface", "updateComponents", "updateDataModel", "deleteSurface"):
+            payload = message.get(operation)
+            if isinstance(payload, Mapping):
+                keys.add((session_id, str(payload.get("surfaceId") or "")))
+    return keys
+
+
+def _fold_batch(
+    surfaces: dict[tuple[str, str], A2UISurfaceRecord],
+    session_id: str,
+    messages: list[Mapping[str, Any]],
+    *,
+    run_id: str,
+    message_id: str,
+    part_id: str,
+    observed_at: str,
+    capture: bool,
+) -> list[tuple[str, str, A2UISurfaceRecord]]:
+    """Fold one ordered batch into ``surfaces`` in place.
+
+    Args:
+        surfaces: Working projection, mutated as the batch applies.
+        session_id: Session the batch belongs to.
+        messages: The ordered batch.
+        run_id: Correlated run id recorded on a created surface.
+        message_id: Correlated message id recorded on a created surface.
+        part_id: Transcript part id recorded on a created surface.
+        observed_at: Timestamp stamped on every record this batch touches.
+        capture: Snapshot each applied record (publication needs the per-message
+            state); readers that discard the result pass ``False``.
+
+    Returns:
+        One ``(operation, surface_id, record)`` row per applied message.
+
+    Raises:
+        A2UIValidationError: If any message is rejected; ``surfaces`` is then
+            partially folded and the caller owns the rollback.
+    """
+
+    deleted_in_batch: set[str] = set()
+    applied: list[tuple[str, str, A2UISurfaceRecord]] = []
+    for message in messages:
+        operation, surface_id, record = _apply_staged_message(
+            surfaces,
+            session_id,
+            message,
+            deleted_in_batch=deleted_in_batch,
+            run_id=run_id,
+            message_id=message_id,
+            part_id=part_id,
+            observed_at=observed_at,
+        )
+        applied.append((operation, surface_id, _copy_record(record) if capture else record))
+    return applied
+
+
 def apply_batch(
     surfaces: Mapping[tuple[str, str], A2UISurfaceRecord],
     session_id: str,
@@ -401,22 +530,17 @@ def apply_batch(
 
     if not messages:
         raise A2UIValidationError("A2UI message batch must not be empty")
-    staged = deepcopy(dict(surfaces))
-    deleted_in_batch: set[str] = set()
-    applied: list[tuple[str, str, A2UISurfaceRecord]] = []
-    timestamp = observed_at or utcnow_iso()
-    for message in messages:
-        result = _apply_staged_message(
-            staged,
-            session_id,
-            message,
-            deleted_in_batch=deleted_in_batch,
-            run_id=run_id,
-            message_id=message_id,
-            part_id=part_id,
-            observed_at=timestamp,
-        )
-        applied.append((result[0], result[1], deepcopy(result[2])))
+    staged = {key: _copy_record(record) for key, record in surfaces.items()}
+    applied = _fold_batch(
+        staged,
+        session_id,
+        messages,
+        run_id=run_id,
+        message_id=message_id,
+        part_id=part_id,
+        observed_at=observed_at or utcnow_iso(),
+        capture=True,
+    )
     return staged, applied
 
 
@@ -457,8 +581,15 @@ def project_a2ui_parts(
             continue
         raw_metadata = part.get("metadata")
         metadata: Mapping[str, Any] = raw_metadata if isinstance(raw_metadata, Mapping) else {}
+        # Fold in place and keep only the records this batch can touch, so one
+        # read stays linear in the transcript instead of copying every surface
+        # once per part. A rejected batch is rolled back to that snapshot.
+        snapshot = {
+            key: (_copy_record(surfaces[key]) if key in surfaces else None)
+            for key in _batch_surface_keys(session_id, messages)
+        }
         try:
-            surfaces, _ = apply_batch(
+            _fold_batch(
                 surfaces,
                 session_id,
                 messages,
@@ -466,8 +597,14 @@ def project_a2ui_parts(
                 message_id=str(metadata.get("message_id") or ""),
                 part_id=part_id,
                 observed_at=str(metadata.get("recorded_at") or utcnow_iso()),
+                capture=False,
             )
         except A2UIValidationError as exc:
+            for key, record in snapshot.items():
+                if record is None:
+                    surfaces.pop(key, None)
+                else:
+                    surfaces[key] = record
             degradations.append(
                 {
                     "code": "a2ui_persisted_payload_invalid",

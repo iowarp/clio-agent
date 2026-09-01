@@ -10,6 +10,7 @@ from clio_schemas import A2UIComponent
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch, raises
 
+from clio_agent.gact import a2ui as a2ui_module
 from clio_agent.gact import a2ui_store as a2ui_store_module
 from clio_agent.gact import a2ui_tools as a2ui_tools_module
 from clio_agent.gact import context as gact_context
@@ -1229,3 +1230,110 @@ def test_agent_submit_clears_a_stale_cancel_flag_before_staging(
     assert response.json()["status"] == "accepted"
     assert sid not in app.state.cancel_flags
     assert sid not in app.state.cancel_events
+
+
+def test_partial_component_update_keeps_earlier_definitions_on_replay(tmp_path: Path) -> None:
+    client, sid, sessions_path = _session_client(tmp_path)
+    full = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [
+                {"id": "root", "component": "Column", "children": ["panel"]},
+                {"id": "panel", "component": "Text", "text": "First"},
+            ],
+        },
+    }
+    partial = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [{"id": "panel", "component": "Text", "text": "Second"}],
+        },
+    }
+
+    created = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message(), full]},
+    )
+    updated = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages", headers=HEADERS, json={"messages": [partial]}
+    )
+
+    assert created.status_code == 200
+    assert updated.status_code == 200, updated.text
+    live = updated.json()["surfaces"][-1]
+    declared = {
+        component["id"]
+        for message in live["messages"]
+        if "updateComponents" in message
+        for component in message["updateComponents"]["components"]
+    }
+    assert declared == {"root", "panel"}
+    replayed = build_app(sessions_path=sessions_path).state.a2ui_store.get(sid, "surface_1")
+    assert replayed is not None
+    assert replayed.to_wire() == live
+
+
+def test_url_properties_cannot_be_data_bound(tmp_path: Path) -> None:
+    """A bound URL resolves after validation, so the scheme allowlist could not
+    have seen it -- the boundary refuses the indirection instead."""
+
+    client, sid, _ = _session_client(tmp_path)
+    bound_url = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [{"id": "root", "component": "Image", "url": {"path": "/target"}}],
+        },
+    }
+    smuggled = _update_data_model("surface_1", "/target", "javascript:alert(1)")
+
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message(), bound_url, smuggled]},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["error"] == "a2ui_validation_failed"
+    assert "literal" in response.json()["error"]["message"]
+    assert client.app.state.a2ui_store.get(sid, "surface_1") is None
+
+
+def test_projection_copies_surface_records_a_bounded_number_of_times(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message("counted-surface")]},
+    )
+    parts = 12
+    for index in range(parts):
+        assert (
+            client.post(
+                f"/v1/sessions/{sid}/a2ui/messages",
+                headers=HEADERS,
+                json={"messages": [_update_data_model("counted-surface", f"/step{index}", index)]},
+            ).status_code
+            == 200
+        )
+    copies = 0
+    real_copy = a2ui_module._copy_record
+
+    def counted(record: object) -> object:
+        nonlocal copies
+        copies += 1
+        return real_copy(record)
+
+    monkeypatch.setattr(a2ui_module, "_copy_record", counted)
+
+    surface = client.app.state.a2ui_store.get(sid, "counted-surface")
+
+    assert surface is not None and surface.revision == parts + 1
+    # One projection folds P+1 persisted parts; a quadratic fold would copy the
+    # whole surface map once per part plus once per message.
+    assert copies <= parts + 2
