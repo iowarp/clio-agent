@@ -152,6 +152,32 @@ def test_reap_excludes_daemon_root_by_construction() -> None:
     assert all(r.pid != _DAEMON for r in reaped)
 
 
+def test_reap_excludes_live_server_launcher_ancestor() -> None:
+    """A bootstrap launcher above the server root is not an orphaned child.
+
+    Windows venv launchers can outlive their shell while owning the Job Object
+    that contains the real interpreter. Killing that launcher during server
+    startup also kills the server, so the current server's ancestor chain must
+    never enter the reap candidate set.
+    """
+    launcher_pid = 90
+    nodes = [
+        _node(launcher_pid, 1, "python.exe"),
+        _node(_SERVER, launcher_pid, "python.exe"),
+        _node(700, 650, "clio-kit.exe"),  # genuine dead-parent orphan
+    ]
+    killed: list[int] = []
+    reaped = pc.reap_orphaned_processes(
+        nodes=nodes,
+        server_root_pid=_SERVER,
+        daemon_root_pid=None,
+        kill=killed.append,
+        parent_alive=lambda _pid: False,
+    )
+    assert killed == [700]
+    assert [row.pid for row in reaped] == [700]
+
+
 def test_reap_never_kills_any_clio_core_daemon_kind_row() -> None:
     """#1232 pt 4 safety hardening: a live test caught this exact scenario killing a
     REAL, in-use clio-core daemon holding live session data.

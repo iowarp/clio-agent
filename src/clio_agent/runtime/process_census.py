@@ -103,9 +103,20 @@ def classify_parentage(
     if daemon_root_pid is not None:
         roots.add(daemon_root_pid)
 
+    # A venv or package-manager launcher may remain as the live server's parent
+    # after its own shell has exited.  It is part of the bootstrap chain, not an
+    # orphaned child.  Reaping it can close a Windows Job Object and terminate
+    # the just-started server along with it, so exclude the server's ancestors
+    # from child classification.
+    server_ancestors: set[int] = set()
+    cursor = by_pid.get(server_root_pid).ppid if server_root_pid in by_pid else 0
+    while cursor in by_pid and cursor not in server_ancestors:
+        server_ancestors.add(cursor)
+        cursor = by_pid[cursor].ppid
+
     rows: list[ParentageRow] = []
     for node in by_pid.values():
-        if node.pid in roots or node.kind == "other":
+        if node.pid in roots or node.pid in server_ancestors or node.kind == "other":
             continue
         chain: list[int] = []
         verdict = ORPHANED_FROM_TREE
