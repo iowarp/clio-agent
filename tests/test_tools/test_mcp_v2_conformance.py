@@ -21,11 +21,16 @@ Three layers, each load-bearing for the campaign:
 
 from __future__ import annotations
 
+import asyncio
 import sys
+from collections.abc import Mapping
+from types import SimpleNamespace
 from typing import Any
 
+import dspy
 import psutil
 import pytest
+from dspy.utils.dummies import DummyLM
 from fastmcp import Client
 from fastmcp.exceptions import MCPError
 from fastmcp.server import create_proxy
@@ -743,3 +748,90 @@ def test_capability_demotion_guard_refuses_a_downgraded_false() -> None:
     demoted = record_task_capability(namespace, task_capable=False, source="none", era="modern")
     assert demoted.task_capable is False
     assert latest_task_capability(namespace) == demoted
+
+
+# --------------------------------------------------------------------------
+# Layer 5: C1-S2 (#1282) -- protocol refusals terminal-fast through the react
+# loop (resolves #1275: the 15+ minute silent evidence_leaf hang)
+# --------------------------------------------------------------------------
+
+
+def test_permanent_protocol_refusal_terminates_the_react_loop_fast() -> None:
+    """#1275 failing-first repro: a task=required tool reached through a
+    client that never declares the tasks extension (``_NoExtensionClient`` --
+    the suppressed-declaration control, the SAME permanent-refusal shape a
+    proxy-routed declared server produces) refuses -32021 on EVERY call:
+    never healable, never worth retrying.
+
+    Before the D1 fix, ``dspy.ReActV2._execute_tool_calls`` (upstream,
+    vendored) caught the typed refusal exactly like any transient tool error,
+    turned it into a text observation, and let the loop continue -- an LM
+    that does not recognize the refusal as permanent can keep re-invoking the
+    SAME doomed tool turn after turn (the #1275 hang: 15+ minutes of exactly
+    that, reproduced here with a ``DummyLM`` scripted to keep calling
+    ``task_echo`` for five turns). Bounded by BEHAVIOR, not wall-clock (the
+    slice spec's own instruction): the assertion is that the terminal typed
+    outcome arrives on the FIRST tool call, not that some clock fires.
+
+    Pre-fix this is RED: the tool is invoked all five scripted times (no
+    exception ever reaches ``agent(...)``, which instead exhausts the
+    DummyLM's script forcing a submit). Post-fix it is GREEN: invoked exactly
+    once, and ``MCPMissingRequiredClientCapabilityError`` -- never a generic
+    string the model could keep retrying -- propagates out of ``forward()``.
+    """
+    from clio_agent.gact.agents.reactv2 import retaining_reactv2_cls
+    from clio_agent.tools.execution import _make_dspy_tool
+
+    call_count = 0
+
+    async def _refuse(payload: str) -> str:
+        async with _NoExtensionClient(build_exerciser_server()) as client:
+            try:
+                await client.call_tool("task_echo", {"payload": payload})
+            except Exception as exc:  # noqa: BLE001 - the executor's own boundary translation
+                typed = typed_mcp_protocol_error(exc)
+                if typed is not None:
+                    raise typed from exc
+                raise
+        raise AssertionError("unreachable: task_echo always refuses without tasks capability")
+
+    def _call_tool(tool_name: str, args: Mapping[str, Any]) -> str:
+        nonlocal call_count
+        call_count += 1
+        assert tool_name == "task_echo"
+        return asyncio.run(_refuse(str(args.get("payload", ""))))
+
+    tool = _make_dspy_tool(
+        "task_echo",
+        SimpleNamespace(
+            description="echo through a REQUIRED task",
+            input_schema={"properties": {"payload": {"type": "string"}}},
+        ),
+        _call_tool,
+    )
+
+    # Five scripted turns, each re-calling the SAME permanently-refusing tool
+    # -- the #1275 shape (a model unaware the refusal can never succeed).
+    # Only turn 1 may actually be consumed.
+    lm = DummyLM(
+        [
+            {
+                "next_thought": f"t{i}",
+                "tool_calls": {"tool_calls": [{"name": "task_echo", "args": {"payload": "x"}}]},
+            }
+            for i in range(5)
+        ]
+    )
+
+    cls = retaining_reactv2_cls()
+    agent = cls("question -> answer", tools=[tool], max_iters=5)
+    with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        with pytest.raises(MCPMissingRequiredClientCapabilityError) as excinfo:
+            agent(question="ping")
+
+    assert call_count == 1, (
+        "the react loop must terminate on the FIRST protocol refusal instead of "
+        "retrying a structurally-unresolvable call turn after turn"
+    )
+    # #1282 D2: the message carries the actionable re-dial hint.
+    assert TASKS_EXTENSION_ID in str(excinfo.value)

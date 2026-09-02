@@ -246,12 +246,51 @@ class MCPProtocolError(ToolError):
         )
 
 
+def _required_extensions_hint(protocol_data: Any) -> str:
+    """#1282 D2: extract the -32021 ``requiredCapabilities.extensions`` id list.
+
+    ``protocol_data`` is the raw JSON-RPC error ``data`` payload
+    (``{"requiredCapabilities": {"extensions": {"<id>": {...}, ...}}}``, per
+    SEP-2663/``fastmcp_tasks.models``) -- a plain mapping, never a model class,
+    so this reads defensively and returns ``""`` (no hint appended) on any
+    shape that does not match rather than guessing.
+    """
+
+    if not isinstance(protocol_data, dict):
+        return ""
+    required = protocol_data.get("requiredCapabilities")
+    extensions = required.get("extensions") if isinstance(required, dict) else None
+    if not isinstance(extensions, dict) or not extensions:
+        return ""
+    names = ", ".join(sorted(str(name) for name in extensions))
+    return f" Re-dial declaring the client extension(s): {names}."
+
+
+def _supported_versions_hint(protocol_data: Any) -> str:
+    """#1282 D2: extract the -32022 ``supportedVersions`` list."""
+
+    if not isinstance(protocol_data, dict):
+        return ""
+    versions = protocol_data.get("supportedVersions")
+    if not isinstance(versions, list) or not versions:
+        return ""
+    named = ", ".join(str(v) for v in versions)
+    return f" Re-dial negotiating one of the server's supported protocol version(s): {named}."
+
+
 class MCPMissingRequiredClientCapabilityError(MCPProtocolError):
-    """The MCP server refused a request because a required client capability is absent."""
+    """The MCP server refused a request because a required client capability is absent.
+
+    #1282 (C1-S2 D2): the message carries the -32021 payload's own
+    ``requiredCapabilities.extensions`` naming exactly what to re-dial with —
+    every typed refusal carries what-to-do-next semantics wherever ``message``
+    is rendered (a child result, a tool-error observation, a user-facing
+    string), with no per-call-site changes needed.
+    """
 
     def __init__(self, message: str, protocol_data: Any = None) -> None:
         super().__init__(
-            message,
+            message + _required_extensions_hint(protocol_data),
             code=-32021,
             reason=MCP_CAPABILITY_REFUSED,
             error_type="mcp_missing_required_client_capability",
@@ -260,11 +299,15 @@ class MCPMissingRequiredClientCapabilityError(MCPProtocolError):
 
 
 class MCPUnsupportedProtocolVersionError(MCPProtocolError):
-    """The MCP server refused the negotiated protocol version."""
+    """The MCP server refused the negotiated protocol version.
+
+    #1282 (C1-S2 D2): the message carries the -32022 payload's own
+    ``supportedVersions`` naming exactly what to re-dial with.
+    """
 
     def __init__(self, message: str, protocol_data: Any = None) -> None:
         super().__init__(
-            message,
+            message + _supported_versions_hint(protocol_data),
             code=-32022,
             reason=MCP_PROTOCOL_REFUSED,
             error_type="mcp_unsupported_protocol_version",

@@ -106,9 +106,78 @@ REACT_SUBMIT_REPAIR_ATTEMPTED = "react_submit_repair_attempted"
 # which is author intent, not fabrication).
 REACT_SUBMIT_REPAIR_EXHAUSTED = "react_submit_repair_exhausted"
 
+#: Idempotency marker (#1275/#901 C1-S2 D1): a callable already carrying this
+#: attribute has already been wrapped by :func:`_mark_refusals_on_tool_calls`
+#: and is never wrapped a second time (defensive, in case a tool object is
+#: ever shared/reused across two agent instances).
+_REFUSAL_MARK_WRAPPED_ATTR = "_clio_refusal_mark_wrapped"
+
+
+def _mark_refusals_on_tool_calls(tools: dict[str, Any]) -> None:
+    """Wrap every tool's callable so a raised MCP protocol refusal is marked.
+
+    THE ONE CHOKEPOINT (#1275/#901 C1-S2 D1): rather than hunting down every
+    call site that constructs a ``dspy.Tool`` a react loop might use (an
+    MCP-bridged tool, an instrumented native tool, a dynamic-agent external
+    tool, or a plain ``dspy.Tool(fn)`` a caller builds by hand -- all
+    DOCUMENTED, valid ways to add a tool, per CLAUDE.md's own
+    ``dspy.Tool.from_mcp_tool`` pattern), this wraps EVERY callable that will
+    ever run through ``self.tools`` right here, where they all funnel through
+    on construction. Handles both sync and (the coroutine-returning) async
+    callables -- ``dspy.Tool.__call__`` itself awaits/bridges an async
+    ``func``'s result AFTER this wrapper returns it, so the await is guarded
+    too, not just the synchronous call.
+
+    Mirrors ``tools/mcp_errors.py``'s :func:`~clio_agent.tools.mcp_errors.
+    mark_terminal_refusal` contract exactly: classify, stash if it IS a
+    protocol refusal, then always re-raise the ORIGINAL exception unchanged
+    -- this function only records, :meth:`_RetainingReActV2._execute_tool_calls`
+    is what escalates.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from clio_agent.tools.mcp_errors import mark_terminal_refusal  # noqa: PLC0415
+
+    async def _await_marked(coro: Any) -> Any:
+        try:
+            return await coro
+        except Exception as exc:  # noqa: BLE001 - marked, then re-raised unchanged
+            mark_terminal_refusal(exc)
+            raise
+
+    def _wrap(inner: Any) -> Any:
+        def _marked(**kwargs: Any) -> Any:
+            try:
+                result = inner(**kwargs)
+            except Exception as exc:  # noqa: BLE001 - marked, then re-raised unchanged
+                mark_terminal_refusal(exc)
+                raise
+            return _await_marked(result) if asyncio.iscoroutine(result) else result
+
+        setattr(_marked, _REFUSAL_MARK_WRAPPED_ATTR, True)
+        return _marked
+
+    for tool in tools.values():
+        func = getattr(tool, "func", None)
+        if func is None or getattr(func, _REFUSAL_MARK_WRAPPED_ATTR, False):
+            continue
+        tool.func = _wrap(func)
+
 
 class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
     """clio subclass of dspy's experimental ``ReActV2`` (see module docstring)."""
+
+    def __init__(
+        self, signature: type[dspy.Signature], tools: list[Any], max_iters: int = 20
+    ) -> None:
+        """Build the V2 loop, then mark-wrap every tool for terminal refusal (#1275 D1).
+
+        ``self.tools`` (user tools + the internal ``submit``) only exists once
+        upstream's ``__init__`` returns, so the wrap happens AFTER
+        ``super().__init__`` — see :func:`_mark_refusals_on_tool_calls`.
+        """
+        super().__init__(signature, tools, max_iters)
+        _mark_refusals_on_tool_calls(self.tools)
 
     def _make_react_signature(self) -> type[dspy.Signature]:
         """Build the ReAct-internal predict signature, retyping ``next_thought``.
@@ -375,8 +444,26 @@ class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
         chokepoint the ``submit`` tool runs through for BOTH the normal loop
         (``forward``) and the forced tail (``_forced_submit``), so the audit fires
         wherever a final output is produced — no forward mirror is needed.
+
+        #1275 / C1-S2 D1: upstream's per-call ``except Exception`` (the loop just
+        below, in ``dspy.predict.react_v2``) treats a typed, deterministic MCP
+        protocol refusal (-32021/-32022) exactly like any transient tool error —
+        a text observation the LM may keep re-triggering turn after turn (the
+        #1275 hang: 15+ minutes of an LM retrying a call that can never succeed).
+        A refusal recorded via ``mcp_errors.mark_terminal_refusal`` at the tool
+        boundary during THIS step's calls is popped here, right after the
+        swallow, and re-raised — propagating straight out of ``forward()``
+        instead of back into the loop. Never called for an ordinary tool error
+        (``pop_pending_terminal_refusal`` returns ``None``): the model stays the
+        router/decider for everything except this one deterministic, structural
+        fact (CLAUDE.md superseding principle #1).
         """
+        from clio_agent.tools.mcp_errors import pop_pending_terminal_refusal  # noqa: PLC0415
+
         results, final_outputs = super()._execute_tool_calls(tool_calls)
+        refusal = pop_pending_terminal_refusal()
+        if refusal is not None:
+            raise refusal
         self._audit_submit_tool_calls(tool_calls, results, final_outputs)
         return results, final_outputs
 
