@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
+from clio_agent.gact.context_references import authorize_context_reference_parts
 from clio_agent.gact.events import Event
 from clio_agent.gact.message_intents import (
     QueueCapacityError,
@@ -22,6 +23,7 @@ from clio_agent.gact.types import (
     ModelRef,
     Part,
     PostMessageRequest,
+    Session,
 )
 
 if TYPE_CHECKING:
@@ -74,9 +76,11 @@ class PromoteQueuedMessageRequest(BaseModel):
 def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register server-authoritative pending-steer and queue lifecycle routes."""
 
-    def require_session(sid: str) -> None:
-        if app.state.sessions.get(sid) is None:
+    def require_session(sid: str) -> Session:
+        session = app.state.sessions.get(sid)
+        if session is None:
             raise HTTPException(status_code=404, detail=f"session not found: {sid}")
+        return session
 
     def publish(event_type: str, sid: str, payload: dict[str, Any]) -> None:
         app.state.bus.publish(Event(type=event_type, session_id=sid, payload=payload))
@@ -188,7 +192,7 @@ def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.post("/v1/sessions/{sid}/queued-messages", status_code=201)
     async def create_queued_message(sid: str, req: CreateQueuedMessageRequest) -> QueuedMessage:
-        require_session(sid)
+        session = require_session(sid)
         parts = req.normalized_parts()
         if not parts:
             raise HTTPException(status_code=400, detail="queued message has no parts")
@@ -201,6 +205,7 @@ def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
         existing = app.state.message_intents.get_queued(sid, message_id)
         if existing is not None:
             return existing
+        parts = await authorize_context_reference_parts(app, session, parts)
         try:
             row = app.state.message_intents.create_queued(
                 QueuedMessage(
@@ -243,13 +248,18 @@ def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def update_queued_message(
         sid: str, message_id: str, req: UpdateQueuedMessageRequest
     ) -> QueuedMessage:
-        require_session(sid)
+        session = require_session(sid)
+        parts = (
+            await authorize_context_reference_parts(app, session, req.parts)
+            if req.parts is not None
+            else None
+        )
         try:
             row = app.state.message_intents.update_queued(
                 sid,
                 message_id,
                 req.revision,
-                parts=req.parts,
+                parts=parts,
                 metadata=req.metadata,
                 behavior=req.behavior,
                 model=req.model,

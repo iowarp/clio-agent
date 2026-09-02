@@ -7,6 +7,11 @@ from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, HTTPException
 
+from clio_agent.gact.context_references import (
+    authorize_context_reference_parts_sync,
+    context_reference_deliveries,
+    enrich_with_context_references,
+)
 from clio_agent.gact.events import Event
 from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.message_intents import DuplicateIntentError, PendingSteer
@@ -24,7 +29,11 @@ from clio_agent.gact.resource_delivery import (
     live_model_modalities,
     plan_resource_delivery,
 )
-from clio_agent.gact.runtime.globals import _iso_from_epoch, _new_message_id
+from clio_agent.gact.runtime.globals import (
+    _ContextFileAccessError,
+    _iso_from_epoch,
+    _new_message_id,
+)
 from clio_agent.gact.turn_runner import session_busy_error_payload
 from clio_agent.gact.types import (
     ErrorEnvelope,
@@ -237,6 +246,7 @@ def _validate_provider_and_payload(
     text = req.extract_text()
     images = req.image_parts()
     resources = req.resource_parts()
+    context_references = [part for part in req.parts if part.type == "context_ref"]
     selected_modalities, selected_evidence, _generated_at = live_model_modalities(
         app, selected_model
     )
@@ -260,7 +270,7 @@ def _validate_provider_and_payload(
                 },
             ).model_dump(exclude_none=True),
         )
-    if not text and not images and not resources:
+    if not text and not images and not resources and not context_references:
         raise HTTPException(
             status_code=400,
             detail=ErrorEnvelope(
@@ -268,7 +278,7 @@ def _validate_provider_and_payload(
                     error="validation_error",
                     message=(
                         "request body carried no recognizable message parts: expected text, image, "
-                        "or resource_ref"
+                        "resource_ref, or context_ref"
                     ),
                     details={"session_id": sid},
                     recoverable=True,
@@ -357,6 +367,7 @@ def _validate_provider_and_payload(
                 }
             )
         )
+    resolved_parts = authorize_context_reference_parts_sync(app, sess, resolved_parts)
     return sess, selected_model, text, images, resolved_parts
 
 
@@ -433,6 +444,9 @@ def accept_message(
             "effective_model": effective_model.model_dump(),
         }
     )
+    reference_deliveries = context_reference_deliveries(resolved_parts)
+    if reference_deliveries:
+        metadata["context_reference_deliveries"] = reference_deliveries
     if model_selection_source != "global_active":
         metadata["model_selection_source"] = model_selection_source
     if busy:
@@ -461,6 +475,14 @@ def accept_message(
             parts=parts,
             metadata=metadata,
         )
+        try:
+            model_text = enrich_with_context_references(app, sid, user_text, message)
+        except _ContextFileAccessError as exc:
+            status_code = 409 if exc.error_info.error == "context_ref_stale" else 404
+            raise HTTPException(
+                status_code=status_code,
+                detail=ErrorEnvelope(error=exc.error_info).model_dump(exclude_none=True),
+            ) from exc
         ack = PostMessageResponse(
             message_id=message_id,
             accepted_at=accepted_at,
@@ -482,6 +504,7 @@ def accept_message(
                 steer_message_id=message_id,
                 steer_created_at=accepted_at,
                 steer_parts=parts,
+                model_text=model_text,
             )
             app.state.bus.publish(
                 Event(

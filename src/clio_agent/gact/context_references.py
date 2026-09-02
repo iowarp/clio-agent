@@ -9,6 +9,7 @@ values before the part reaches the durable message ledger.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import mimetypes
@@ -16,7 +17,7 @@ import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.artifacts.storage import resolve_owned_artifact_path
@@ -32,7 +33,28 @@ from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Message, Part
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-    from clio_agent.gact.sessions import Session
+
+class _WorkspaceSession(Protocol):
+    """Minimum session ownership surface required at reference admission."""
+
+    @property
+    def id(self) -> str: ...
+
+    @property
+    def workspace_id(self) -> str: ...
+
+    @property
+    def title(self) -> str: ...
+
+    @property
+    def status(self) -> str: ...
+
+    @property
+    def message_count(self) -> int: ...
+
+    @property
+    def updated_at(self) -> str: ...
+
 
 ContextReferenceKind = Literal["workspace_file", "artifact", "session", "agent_run"]
 ReferenceSearchKind = Literal["workspace_file", "resource", "artifact", "session", "agent_run"]
@@ -75,6 +97,15 @@ class ContextReferenceError(Exception):
         )
 
 
+@dataclass(frozen=True)
+class _BoundedFileSnapshot:
+    """One bounded prefix plus the digest of the exact bytes read."""
+
+    data: bytes
+    sha256: str
+    size_bytes: int
+
+
 def _failure(
     *,
     status_code: int,
@@ -100,6 +131,26 @@ def _sha256_file(path: Path) -> str:
         while chunk := handle.read(_FILE_CHUNK_BYTES):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _read_bounded_file(path: Path) -> _BoundedFileSnapshot:
+    """Read at most the context limit while hashing the same file-handle stream."""
+
+    digest = hashlib.sha256()
+    prefix = bytearray()
+    size = 0
+    with path.open("rb") as handle:
+        while chunk := handle.read(_FILE_CHUNK_BYTES):
+            digest.update(chunk)
+            size += len(chunk)
+            remaining = _CTX_MAX_BYTES - len(prefix)
+            if remaining > 0:
+                prefix.extend(chunk[:remaining])
+    return _BoundedFileSnapshot(
+        data=bytes(prefix),
+        sha256=digest.hexdigest(),
+        size_bytes=size,
+    )
 
 
 def _file_media_type(path: Path) -> str:
@@ -182,6 +233,23 @@ def _reference_result(
         "revision": revision,
         "navigation": dict(navigation),
     }
+
+
+def _disambiguate_duplicate_labels(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Make duplicate labels visibly distinguishable without changing their identities."""
+
+    counts: dict[tuple[str, str], int] = {}
+    for row in results:
+        key = (str(row["kind"]), str(row["label"]).casefold())
+        counts[key] = counts.get(key, 0) + 1
+    disambiguated: list[dict[str, Any]] = []
+    for row in results:
+        key = (str(row["kind"]), str(row["label"]).casefold())
+        if counts[key] <= 1 or str(row["id"]) in str(row["detail"]):
+            disambiguated.append(row)
+            continue
+        disambiguated.append({**row, "detail": f"{row['detail']} · {row['id']}"})
+    return disambiguated
 
 
 def _walk_workspace_files(app: "FastAPI", workspace_id: str) -> list[dict[str, Any]]:
@@ -385,6 +453,7 @@ async def search_workspace_references(
     if "agent_run" in selected:
         results.extend(_agent_run_results(app, workspace_id))
 
+    results = _disambiguate_duplicate_labels(results)
     needle = query.strip().casefold()
     if needle:
         results = [
@@ -411,7 +480,7 @@ def _message_excerpt(message: Message) -> str:
     )
 
 
-def _session_summary(app: "FastAPI", session: "Session") -> dict[str, Any]:
+def _session_summary(app: "FastAPI", session: _WorkspaceSession) -> dict[str, Any]:
     messages = list(app.state.messages.get(session.id, []))[-_SUMMARY_MESSAGE_LIMIT:]
     return {
         "session_id": session.id,
@@ -441,7 +510,7 @@ def _agent_run_summary(task: Any) -> dict[str, Any]:
         "child_session_id": task.child_session_id,
         "status": task.status,
         "expert_id": str((task.agent_ref or {}).get("expert_id") or ""),
-        "error_reason": task.error_reason,
+        "error_reason": _summary_excerpt(str(task.error_reason or "")),
         "answer_excerpt": _summary_excerpt(str(result.get("answer_excerpt") or "")),
         "updated_at": task.updated_at,
         "provenance": {
@@ -732,10 +801,10 @@ def _resolve_part_sync(
     return _resolve_agent_run(app, workspace_id, part)
 
 
-async def authorize_context_reference_parts(
-    app: "FastAPI", session: "Session", parts: Iterable[Part]
+def authorize_context_reference_parts_sync(
+    app: "FastAPI", session: _WorkspaceSession, parts: Iterable[Part]
 ) -> list[Part]:
-    """Authorize and canonicalize every ``context_ref`` before persistence."""
+    """Synchronously authorize and canonicalize every ``context_ref`` before persistence."""
 
     resolved: list[Part] = []
     for part in parts:
@@ -743,8 +812,7 @@ async def authorize_context_reference_parts(
             resolved.append(part)
             continue
         try:
-            canonical, _metadata = await asyncio.to_thread(
-                _resolve_part_sync,
+            canonical, _metadata = _resolve_part_sync(
                 app,
                 session.workspace_id,
                 part,
@@ -756,6 +824,47 @@ async def authorize_context_reference_parts(
     return resolved
 
 
+async def authorize_context_reference_parts(
+    app: "FastAPI", session: _WorkspaceSession, parts: Iterable[Part]
+) -> list[Part]:
+    """Authorize references off the event loop using the synchronous admission seam."""
+
+    return await asyncio.to_thread(
+        authorize_context_reference_parts_sync, app, session, list(parts)
+    )
+
+
+def context_reference_deliveries(parts: Iterable[Part]) -> list[dict[str, Any]]:
+    """Copy server-resolved delivery records from canonical message parts."""
+
+    deliveries: list[dict[str, Any]] = []
+    for part in parts:
+        if part.type != "context_ref":
+            continue
+        metadata = part.metadata.get("context_reference")
+        if isinstance(metadata, Mapping):
+            deliveries.append(copy.deepcopy(dict(metadata)))
+    return deliveries
+
+
+def _recorded_delivery_metadata(
+    part: Part, workspace_id: str, current: dict[str, Any]
+) -> tuple[dict[str, Any], bool]:
+    """Use the admitted summary snapshot after rechecking current ownership."""
+
+    recorded = part.metadata.get("context_reference")
+    if not isinstance(recorded, Mapping):
+        return current, False
+    if (
+        recorded.get("kind") != part.ref_kind
+        or recorded.get("ref_id") != part.ref_id
+        or recorded.get("workspace_id") != workspace_id
+        or recorded.get("resolved_revision") != part.revision
+    ):
+        return current, False
+    return copy.deepcopy(dict(recorded)), True
+
+
 def enrich_with_context_references(
     app: "FastAPI", sid: str, user_text: str, user_message: Message
 ) -> str:
@@ -765,15 +874,21 @@ def enrich_with_context_references(
     if session is None:
         return user_text
     blocks: list[str] = []
-    deliveries: list[dict[str, Any]] = []
     try:
         for part in user_message.parts:
             if part.type != "context_ref":
                 continue
-            canonical, metadata = _resolve_part_sync(
+            canonical, current_metadata = _resolve_part_sync(
                 app, session.workspace_id, part, enforce_revision=True
             )
-            deliveries.append(metadata)
+            if canonical.ref_kind in {"session", "agent_run"}:
+                metadata, uses_recorded_snapshot = _recorded_delivery_metadata(
+                    part, session.workspace_id, current_metadata
+                )
+                if uses_recorded_snapshot:
+                    canonical = part
+            else:
+                metadata = current_metadata
             delivery = metadata["delivery"]
             if canonical.ref_kind in {"session", "agent_run"}:
                 summary = delivery["summary"]
@@ -793,13 +908,22 @@ def enrich_with_context_references(
                     assert found is not None
                     content_path = _artifact_path(app, found[0], found[1])
                 if content_path is not None:
-                    data = content_path.read_bytes()
-                    text = data[:_CTX_MAX_BYTES].decode("utf-8", errors="replace")
-                    suffix = (
-                        f"\n... ({len(data) - _CTX_MAX_BYTES} more bytes truncated)"
-                        if len(data) > _CTX_MAX_BYTES
-                        else ""
-                    )
+                    snapshot = _read_bounded_file(content_path)
+                    expected_sha = str(delivery.get("sha256") or "")
+                    if expected_sha and snapshot.sha256 != expected_sha:
+                        raise _failure(
+                            status_code=409,
+                            error="context_ref_stale",
+                            message="context reference changed while preparing delivery",
+                            ref_kind=canonical.ref_kind,
+                            ref_id=canonical.ref_id,
+                            recoverable=True,
+                            expected_sha256=expected_sha,
+                            actual_sha256=snapshot.sha256,
+                        )
+                    text = snapshot.data.decode("utf-8", errors="replace")
+                    truncated = snapshot.size_bytes - len(snapshot.data)
+                    suffix = f"\n... ({truncated} more bytes truncated)" if truncated > 0 else ""
                     blocks.append(
                         f"### {canonical.ref_kind}: {canonical.label} "
                         f"[{canonical.ref_id}@{canonical.revision}]\n```\n{text}{suffix}\n```"
@@ -829,7 +953,6 @@ def enrich_with_context_references(
         raise _ContextFileAccessError(info) from exc
     if not blocks:
         return user_text
-    user_message.metadata["context_reference_deliveries"] = deliveries
     return (
         "## Structured context references (server-resolved)\n\n"
         + "\n\n".join(blocks)
@@ -877,6 +1000,8 @@ __all__ = [
     "REFERENCE_SEARCH_KINDS",
     "ContextReferenceError",
     "authorize_context_reference_parts",
+    "authorize_context_reference_parts_sync",
+    "context_reference_deliveries",
     "context_reference_frame_items",
     "enrich_with_context_references",
     "search_workspace_references",

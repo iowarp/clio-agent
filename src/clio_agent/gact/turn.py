@@ -800,6 +800,13 @@ def _start_background_user_turn(
         request_parts=list(request_parts or []),
         user_text=user_text,
     )
+    from clio_agent.gact.context_references import (  # noqa: PLC0415
+        context_reference_deliveries,
+    )
+
+    reference_deliveries = context_reference_deliveries(user_parts)
+    if reference_deliveries:
+        user_metadata["context_reference_deliveries"] = reference_deliveries
     image_count = sum(1 for part in user_parts if part.type == "image")
     if image_count:
         native_dispatch = _agent_accepts_images(app.state.agent)

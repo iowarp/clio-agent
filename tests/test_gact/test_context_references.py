@@ -13,6 +13,8 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from clio_agent.gact import context as gact_context
+from clio_agent.gact import context_references as context_reference_module
 from clio_agent.gact.agent_tasks import AgentTask, AgentTaskRegistry
 from clio_agent.gact.app import build_app
 from clio_agent.gact.artifacts.records import (
@@ -27,10 +29,16 @@ from clio_agent.gact.context_references import (
     enrich_with_context_references,
     search_workspace_references,
 )
-from clio_agent.gact.loop_inbox import enqueue_user_steer
+from clio_agent.gact.loop_inbox import (
+    drain_active_session_inbox,
+    enqueue_user_steer,
+)
 from clio_agent.gact.messaging import _user_message_parts
 from clio_agent.gact.routes.references import register_reference_routes
+from clio_agent.gact.runtime.constants import _CTX_MAX_BYTES
+from clio_agent.gact.runtime.globals import _ContextFileAccessError, _gact_app_context
 from clio_agent.gact.types import Message, Part
+from tests.test_gact.test_post_messages import SlowClioAgent
 
 
 class _Agent:
@@ -73,7 +81,13 @@ class _Resources:
                 name="observations.csv",
                 revision="rev_7",
                 detected_mime="text/csv",
-            )
+            ),
+            SimpleNamespace(
+                id="res_2",
+                name="observations.csv",
+                revision="rev_8",
+                detected_mime="text/csv",
+            ),
         ]
 
 
@@ -112,6 +126,19 @@ def _app(tmp_path: Path) -> SimpleNamespace:
             updated_at="2026-09-02T12:00:00+00:00",
         )
     )
+    registry.register(
+        AgentTask(
+            task_id="task_2",
+            parent_session_id="sess_a",
+            child_session_id="sess_b",
+            agent_ref={"expert_id": "analysis"},
+            run_label="Analysis run",
+            status="failed",
+            error_reason="failure " + "z" * 900,
+            created_at="2026-09-02T11:30:00+00:00",
+            updated_at="2026-09-02T12:30:00+00:00",
+        )
+    )
     message_rows = [
         Message(
             id=f"msg_{index}",
@@ -135,12 +162,18 @@ def _app(tmp_path: Path) -> SimpleNamespace:
     return SimpleNamespace(state=state)
 
 
-def _mint_artifact(app: SimpleNamespace, path: Path) -> str:
+def _mint_artifact(
+    app: SimpleNamespace,
+    path: Path,
+    *,
+    workspace_id: str = "ws_a",
+    event_id: str = "event_1",
+) -> str:
     data = path.read_bytes()
     outcome = app.state.artifact_registry.mint(
-        workspace_id="ws_a",
+        workspace_id=workspace_id,
         name=path.name,
-        event_id="event_1",
+        event_id=event_id,
         kind=ArtifactKind.REPORT,
         custody=Custody.WORKSPACE_REFERENCED,
         mechanism=Mechanism.TOOL_SCHEMA,
@@ -184,7 +217,11 @@ def test_search_aggregates_repositories_with_exact_shape_and_duplicate_labels(
     first = tmp_path / "a" / "one" / "observations.csv"
     second = tmp_path / "a" / "two" / "observations.csv"
     artifact = tmp_path / "a" / "report.md"
-    for path, body in ((first, "one"), (second, "two"), (artifact, "report")):
+    for path, body in (
+        (first, "one"),
+        (second, "two"),
+        (artifact, "report"),
+    ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(body, encoding="utf-8")
     artifact_id = _mint_artifact(app, artifact)
@@ -212,7 +249,30 @@ def test_search_aggregates_repositories_with_exact_shape_and_duplicate_labels(
         "two/observations.csv",
     }
     assert all(row["id"] in row["detail"] for row in duplicate_files)
-    assert next(row for row in results if row["kind"] == "artifact")["id"] == artifact_id
+    assert any(row["kind"] == "artifact" and row["id"] == artifact_id for row in results)
+    for kind, label in (
+        ("resource", "observations.csv"),
+        ("session", "Shared title"),
+        ("agent_run", "Analysis run"),
+    ):
+        duplicates = [row for row in results if row["kind"] == kind and row["label"] == label]
+        assert len(duplicates) == 2
+        assert all(row["id"] in row["detail"] for row in duplicates)
+    duplicate_artifacts = context_reference_module._disambiguate_duplicate_labels(
+        [
+            {
+                "kind": "artifact",
+                "id": artifact_ref,
+                "label": "report.md",
+                "detail": "report.md v1 (report)",
+                "media_type": "text/markdown",
+                "revision": "v1",
+                "navigation": {},
+            }
+            for artifact_ref in ("artifact_a", "artifact_b")
+        ]
+    )
+    assert all(row["id"] in row["detail"] for row in duplicate_artifacts)
 
 
 def test_reference_route_accepts_csv_kinds_and_query(tmp_path: Path) -> None:
@@ -394,6 +454,15 @@ def test_session_and_agent_run_deliver_only_bounded_summaries(tmp_path: Path) ->
     assert "message 0" not in enriched
     assert "bounded result" in enriched
     assert "provenance" in enriched
+    failed_run = asyncio.run(
+        authorize_context_reference_parts(
+            app,
+            session,
+            [Part(type="context_ref", ref_kind="agent_run", ref_id="task_2")],
+        )
+    )[0]
+    failure_summary = failed_run.metadata["context_reference"]["delivery"]["summary"]
+    assert len(failure_summary["error_reason"]) <= 600
 
 
 def test_typed_parts_survive_message_builder_and_busy_queue(tmp_path: Path) -> None:
@@ -472,3 +541,296 @@ def test_normal_submission_and_retry_preserve_context_ref(
         assert queued_ref["ref_id"] == "source.txt"
         assert queued_ref["revision"] == source_ref["revision"]
         assert queued_ref["id"] != source_ref["id"]
+
+        deliveries = source["metadata"]["context_reference_deliveries"]
+        assert deliveries == [source_ref["metadata"]["context_reference"]]
+        persisted = app.state.message_store.load_session(session_id)
+        assert persisted is not None
+        persisted_source = next(message for message in persisted if message.id == source_message_id)
+        assert persisted_source.metadata["context_reference_deliveries"] == deliveries
+        frame = next(
+            frame
+            for frame in app.state.context_frames[session_id]
+            if frame["user_message_id"] == source_message_id
+        )
+        frame_reference = next(item for item in frame["items"] if item["kind"] == "context_ref")
+        assert frame_reference["metadata"]["delivery"] == deliveries[0]["delivery"]
+
+
+def test_composer_busy_context_only_steer_is_canonical_and_model_ready(
+    tmp_path: Path, host_agent_executor: object
+) -> None:
+    del host_agent_executor
+    target = tmp_path / "workspace" / "steer.txt"
+    target.parent.mkdir(parents=True)
+    target.write_text("authoritative steer context", encoding="utf-8")
+    agent = SlowClioAgent(delay_s=1.0)
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
+    app.state.workspaces.update("ws_default", root_path=str(target.parent))
+
+    with TestClient(app) as client:
+        session_id = client.post("/v1/sessions", json={"title": "Busy context"}).json()["id"]
+        assert (
+            client.post(
+                f"/v1/sessions/{session_id}/messages",
+                json={"parts": [{"type": "text", "text": "first"}]},
+            ).status_code
+            == 200
+        )
+        deadline = time.monotonic() + 3
+        while not app.state.turn_runner.busy(session_id) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert app.state.turn_runner.busy(session_id)
+
+        steer = client.post(
+            f"/v1/sessions/{session_id}/messages",
+            json={
+                "delivery": "steer",
+                "parts": [
+                    {
+                        "type": "context_ref",
+                        "ref_kind": "workspace_file",
+                        "ref_id": "steer.txt",
+                        "label": "spoofed label",
+                    }
+                ],
+            },
+        )
+        assert steer.status_code == 202, steer.text
+
+        with _gact_app_context(app):
+            token = gact_context.set_session_id(session_id)
+            try:
+                block = drain_active_session_inbox(app)
+            finally:
+                gact_context.reset(token)
+        assert "## Structured context references (server-resolved)" in block
+        assert "authoritative steer context" in block
+
+        messages = client.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
+        persisted = next(row for row in messages if row["id"] == steer.json()["message_id"])
+        reference = next(part for part in persisted["parts"] if part["type"] == "context_ref")
+        assert reference["label"] == "steer.txt"
+        assert reference["revision"].startswith("sha256:")
+        assert persisted["metadata"]["context_reference_deliveries"][0]["ref_id"] == "steer.txt"
+
+
+def test_queue_context_refs_authorize_edit_reorder_and_retain_stale_promotion(
+    tmp_path: Path, host_agent_executor: object
+) -> None:
+    del host_agent_executor
+    target = tmp_path / "workspace" / "queued.txt"
+    target.parent.mkdir(parents=True)
+    target.write_text("first revision", encoding="utf-8")
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=_Agent())
+    app.state.workspaces.update("ws_default", root_path=str(target.parent))
+
+    with TestClient(app) as client:
+        session_id = client.post("/v1/sessions", json={"title": "Queued context"}).json()["id"]
+        created = client.post(
+            f"/v1/sessions/{session_id}/queued-messages",
+            json={
+                "client_message_id": "queued_context",
+                "idempotency_key": "queued_context",
+                "parts": [
+                    {
+                        "type": "context_ref",
+                        "ref_kind": "workspace_file",
+                        "ref_id": "queued.txt",
+                        "label": "untrusted",
+                    }
+                ],
+            },
+        )
+        assert created.status_code == 201, created.text
+        queued = created.json()
+        reference = queued["parts"][0]
+        assert reference["label"] == "queued.txt"
+        assert reference["revision"].startswith("sha256:")
+
+        updated = client.patch(
+            f"/v1/sessions/{session_id}/queued-messages/{queued['id']}",
+            json={
+                "revision": queued["revision"],
+                "parts": [
+                    {"type": "text", "text": "Use the queued context"},
+                    {**reference, "label": "spoofed again"},
+                ],
+            },
+        )
+        assert updated.status_code == 200, updated.text
+        queued = updated.json()
+        assert queued["parts"][1]["label"] == "queued.txt"
+
+        second = client.post(
+            f"/v1/sessions/{session_id}/queued-messages",
+            json={"text": "second row", "client_message_id": "queued_second"},
+        ).json()
+        reordered = client.post(
+            f"/v1/sessions/{session_id}/queued-messages/reorder",
+            json={
+                "ordered_ids": [second["id"], queued["id"]],
+                "revisions": {
+                    second["id"]: second["revision"],
+                    queued["id"]: queued["revision"],
+                },
+            },
+        )
+        assert reordered.status_code == 200, reordered.text
+        reordered_context = reordered.json()["queued_messages"][1]
+        assert reordered_context["parts"] == queued["parts"]
+
+        target.write_text("changed after queueing", encoding="utf-8")
+        promoted = client.post(
+            f"/v1/sessions/{session_id}/queued-messages/{queued['id']}/promote",
+            json={"revision": reordered_context["revision"], "delivery": "auto"},
+        )
+        assert promoted.status_code == 409, promoted.text
+        assert promoted.json()["error"]["error"] == "context_ref_stale"
+        remaining = client.get(f"/v1/sessions/{session_id}/queued-messages").json()[
+            "queued_messages"
+        ]
+        assert any(row["id"] == queued["id"] for row in remaining)
+
+
+def test_context_only_busy_steer_idle_redrive_preserves_parts_and_model_text(
+    tmp_path: Path, host_agent_executor: object
+) -> None:
+    del host_agent_executor
+    target = tmp_path / "workspace" / "redrive.txt"
+    target.parent.mkdir(parents=True)
+    target.write_text("idle redrive context", encoding="utf-8")
+    agent = SlowClioAgent(delay_s=0.35)
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
+    app.state.workspaces.update("ws_default", root_path=str(target.parent))
+
+    with TestClient(app) as client:
+        session_id = client.post("/v1/sessions", json={"title": "Idle redrive"}).json()["id"]
+        assert (
+            client.post(
+                f"/v1/sessions/{session_id}/messages",
+                json={"parts": [{"type": "text", "text": "first"}]},
+            ).status_code
+            == 200
+        )
+        deadline = time.monotonic() + 3
+        while not app.state.turn_runner.busy(session_id) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert app.state.turn_runner.busy(session_id)
+        steer = client.post(
+            f"/v1/sessions/{session_id}/messages",
+            json={
+                "delivery": "steer",
+                "parts": [
+                    {
+                        "type": "context_ref",
+                        "ref_kind": "workspace_file",
+                        "ref_id": "redrive.txt",
+                    }
+                ],
+            },
+        )
+        assert steer.status_code == 202, steer.text
+
+        deadline = time.monotonic() + 5
+        while len(agent.calls) < 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert len(agent.calls) >= 2
+        assert "idle redrive context" in agent.calls[1][0]
+        messages = client.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
+        redriven = next(row for row in messages if row["id"] == steer.json()["message_id"])
+        reference = next(part for part in redriven["parts"] if part["type"] == "context_ref")
+        assert reference["ref_id"] == "redrive.txt"
+        assert reference["revision"].startswith("sha256:")
+
+
+def test_delivery_reads_bounded_bytes_and_rejects_hash_disagreement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _app(tmp_path)
+    target = tmp_path / "a" / "large.txt"
+    artifact_path = tmp_path / "a" / "artifact-large.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"a" * (_CTX_MAX_BYTES + 1024))
+    artifact_path.write_bytes(b"b" * (_CTX_MAX_BYTES + 1024))
+    artifact_id = _mint_artifact(app, artifact_path, event_id="event_large")
+    session = app.state.sessions.get("sess_a")
+    assert session is not None
+    parts = asyncio.run(
+        authorize_context_reference_parts(
+            app,
+            session,
+            [
+                Part(type="context_ref", ref_kind="workspace_file", ref_id="large.txt"),
+                Part(
+                    type="context_ref",
+                    ref_kind="artifact",
+                    ref_id=artifact_id,
+                    revision="v1",
+                ),
+            ],
+        )
+    )
+    message = Message(
+        id="msg_large",
+        session_id="sess_a",
+        role="user",
+        created_at="2026-09-02T12:00:00+00:00",
+        updated_at="2026-09-02T12:00:00+00:00",
+        parts=parts,
+    )
+
+    enriched = enrich_with_context_references(app, "sess_a", "inspect", message)
+    assert enriched.count("1024 more bytes truncated") == 2
+    assert len(enriched) < (_CTX_MAX_BYTES * 2) + 2000
+
+    original_read = context_reference_module._read_bounded_file
+
+    def changed_read(path: Path) -> object:
+        if path == target:
+            path.write_text("changed during delivery", encoding="utf-8")
+        return original_read(path)
+
+    monkeypatch.setattr(context_reference_module, "_read_bounded_file", changed_read)
+    with pytest.raises(_ContextFileAccessError) as stale:
+        enrich_with_context_references(app, "sess_a", "inspect", message)
+    assert stale.value.error_info.error == "context_ref_stale"
+
+
+def test_context_reference_errors_cover_invalid_missing_revision_and_ownership(
+    tmp_path: Path,
+) -> None:
+    app = _app(tmp_path)
+    session = app.state.sessions.get("sess_a")
+    assert session is not None
+    artifact_path = tmp_path / "a" / "pinned.md"
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text("pinned", encoding="utf-8")
+    artifact_id = _mint_artifact(app, artifact_path, event_id="event_pinned")
+    private_file = tmp_path / "b" / "private.txt"
+    private_file.parent.mkdir(parents=True, exist_ok=True)
+    private_file.write_text("private", encoding="utf-8")
+
+    cases = [
+        (
+            Part(type="context_ref", ref_kind="unknown", ref_id="x"),
+            400,
+            "context_ref_kind_invalid",
+        ),
+        (Part(type="context_ref", ref_kind="session", ref_id=""), 400, "context_ref_invalid"),
+        (
+            Part(type="context_ref", ref_kind="artifact", ref_id=artifact_id),
+            400,
+            "context_ref_revision_required",
+        ),
+        (
+            Part(type="context_ref", ref_kind="workspace_file", ref_id="../b/private.txt"),
+            403,
+            "context_ref_inaccessible",
+        ),
+    ]
+    for part, status_code, error in cases:
+        with pytest.raises(HTTPException) as failure:
+            asyncio.run(authorize_context_reference_parts(app, session, [part]))
+        assert failure.value.status_code == status_code
+        assert failure.value.detail["error"]["error"] == error
