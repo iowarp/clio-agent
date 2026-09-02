@@ -376,6 +376,15 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
         Per SPEC §7.1: streams forever until the client disconnects.
         Emits ``server.connected`` immediately so clients can confirm
         the wire is healthy before any real event arrives.
+
+        **Cursor convention (one convention, server-wide).** A cursor is always
+        *the highest event id the client already holds* — resume is EXCLUSIVE,
+        replaying ``id > cursor``. ``Last-Event-ID`` on this route,
+        ``cursor`` on ``GET /v1/sessions/{sid}/messages`` (0.3), and
+        ``next_cursor`` on ``GET /v1/sessions/{sid}/message-state`` all speak
+        that same convention, so any one of them can be fed straight back in
+        here. Heartbeats are framed without an ``id:`` line and therefore never
+        move the cursor.
         """
 
         if app.state.sessions.get(sid) is None:
@@ -393,13 +402,16 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         use_v3 = project_for_request(request, v3=lambda: True, v2=lambda: False)
 
-        def _format_event(event: Event, session: Any) -> bytes:
+        def _format_event(
+            event: Event, session: Any, *, entity_revision: int | None = None
+        ) -> bytes:
             formatter = project_for_request(
                 request,
                 v3=lambda: format_sse_v3(
                     event,
                     session=session,
                     workspace_id=str(getattr(session, "workspace_id", "") or ""),
+                    entity_revision=entity_revision,
                 ),
                 v2=lambda: _format_sse(event),
             )
@@ -440,7 +452,15 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                     },
                 )
                 snapshot.id = _PREAMBLE_EVENT_ID
-                _frame = _format_event(snapshot, sess_snapshot)
+                # The wire id stays pinned at 0 (monotonic served order), but the
+                # ENVELOPE carries the session's real revision — its timeline head.
+                # Stamping 0 there made a revision-guarding client discard the one
+                # authoritative snapshot it is handed on reconnect.
+                _frame = _format_event(
+                    snapshot,
+                    sess_snapshot,
+                    entity_revision=app.state.bus.latest_event_id(sid),
+                )
                 _sse_wire_tap(sid, _frame, snapshot)
                 yield _frame
 
@@ -449,23 +469,36 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
             except (TypeError, ValueError):
                 last_event_id = 0
             if use_v3 and last_event_id > app.state.bus.highest_event_id:
-                # A process restart resets the in-memory timeline. Waiting for
-                # the new process to count past an old Last-Event-ID leaves the
-                # client live-looking but permanently stale. GACT 0.3 makes the
-                # epoch mismatch explicit so the client can reconcile from REST
-                # and then resume this new timeline from its beginning. Keep the
-                # connection-local marker at id 0 like the other preamble frames;
-                # it is a state transition, not a durable session event.
+                # A cursor ABOVE this process's timeline head is genuinely
+                # impossible against this bus: only a restart (a new in-memory
+                # timeline) can produce one, since heartbeats no longer carry an
+                # id line and every real event advances ``highest_event_id``.
+                # Waiting for the new process to count past an old Last-Event-ID
+                # would leave the client live-looking but permanently stale, so
+                # GACT 0.3 makes the epoch mismatch explicit: the client
+                # reconciles from REST, then resumes this timeline from its
+                # beginning. Keep the connection-local marker at id 0 like the
+                # other preamble frames; it is a state transition, not a durable
+                # session event. The typed reason ALSO lands on the stream audit
+                # so a forced replay is diagnosable after the fact.
+                head = app.state.bus.highest_event_id
                 gap = Event(
                     type="stream.gap",
                     session_id=sid,
                     payload={
                         "reason": "cursor_epoch_reset",
                         "requested_cursor": str(last_event_id),
-                        "new_timeline_head": str(app.state.bus.highest_event_id),
+                        "new_timeline_head": str(head),
                     },
                 )
                 gap.id = _PREAMBLE_EVENT_ID
+                stream_audit(
+                    "sse.stream_gap",
+                    session_id=sid,
+                    reason="cursor_epoch_reset",
+                    requested_cursor=last_event_id,
+                    new_timeline_head=head,
+                )
                 _frame = _format_event(gap, app.state.sessions.get(sid))
                 _sse_wire_tap(sid, _frame, gap)
                 yield _frame

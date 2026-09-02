@@ -33,6 +33,17 @@ plausible-but-wrong claims, and found Codex's claimed blocker fixes 13/15 genuin
 8. **Qualification is validation, not discovery.** Live cases run ONCE cleanly at the exact heads;
    judge sensibly. Re-grinding many session versions over semantic nitpicks is expressly wrong
    (owner ruling 2026-08-31).
+9. **Companion-repo sweep BEFORE scoping.** Codex handoff summaries understate scope: the 2026-09
+   composer wave was handed off as "all UI, one PR" and actually spanned FIVE repos (an unmentioned
+   +12k-line clio-agent server PR the UI's contract ledger depended on, a web-search PR, and
+   marketplace/kit branches). Before scoping any review: (a) list the local worktree dirs for
+   same-named siblings (`ls -d /d/Libraries/Documents/projects/*<branch-suffix>*`), (b) check every
+   CLIO repo for a same-named `codex/*` branch and open PRs (`gh pr list` + `git branch -r`), (c)
+   verify the handoff's claims against CI at the exact head yourself — "checks running
+   asynchronously" has meant "already red", "verified locally" has meant "the suite was never run",
+   and headline features have shipped with no implementation behind them. Review the WAVE, order
+   the merges by contract dependency (server before the client that grades its events
+   `implemented`), and pin gitlinks only to merged-branch SHAs.
 
 ## Codex failure signatures (what to hunt, in priority order)
 

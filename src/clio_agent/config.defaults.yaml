@@ -346,6 +346,13 @@ agent_tasks.max_concurrent: 3
 # the waiting child task; defaults to the elicitation window.
 # agents.child_forward_deadline_s:  # computed at runtime: DEFAULT_ELICITATION_TIMEOUT_S
 
+# CLIO_DEFAULT_AGENT_BLUEPRINT_ID  (str)  <- src/clio_agent/gact/agent_blueprint_refresh.py
+# Installed marketplace Agent Blueprint a fresh deployment bootstraps and
+# binds as its default (base-agent: one react root over CLIO's native
+# workspace tools); set it to ship a different agent, never to define one in
+# code.
+agents.default_blueprint_id: "base-agent"
+
 # CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP  (bool)  <- src/clio_agent/gact/agent_blueprint_refresh.py
 # Disables auto-installing the default marketplace Agent-Blueprint registry
 # on first boot; set true for an offline deployment.
@@ -496,6 +503,29 @@ gact.ledger_retention.turn_attempts.max: 2000
 # Experimental flag enabling live-edge SSE atom sealing (default off); only
 # meaningful with the S5 atoms regime, leave off normally.
 gact.live_edge_streaming: false
+
+# CLIO_GACT_LOOP_INBOX_MAX_EVENTS  (int)  <- src/clio_agent/gact/loop_inbox.py
+# Per-session bound on buffered mid-turn wakes (child completions and user
+# steers) before the oldest recoverable one is evicted; raise for very fan-
+# out-heavy turns.
+gact.loop_inbox.max_events: 64
+
+# CLIO_GACT_MAX_ACCEPTANCES_PER_SESSION  (int)  <- src/clio_agent/gact/message_intents.py
+# Per-session cap on retained message-acceptance records used for idempotent
+# POST replay; raise for clients that retry over long windows, lower to
+# shrink the intent store.
+gact.message_intents.max_acceptances_per_session: 200
+
+# CLIO_GACT_MAX_QUEUED_MESSAGES_PER_SESSION  (int)  <- src/clio_agent/gact/message_intents.py
+# Per-session cap on durable queued (future) messages; a create past it is
+# REFUSED with a typed 429, never evicted. Raise for heavy queue use.
+gact.message_intents.max_queued_per_session: 100
+
+# CLIO_GACT_MAX_SETTLED_STEERS_PER_SESSION  (int)  <- src/clio_agent/gact/message_intents.py
+# Per-session cap on retained SETTLED (consumed/cancelled) pending-steer
+# rows; undelivered steers are never evicted. Lower to shrink the intent
+# store.
+gact.message_intents.max_settled_steers_per_session: 100
 
 # CLIO_RESIDENT_LEDGERS_TTL_S  (float)  <- src/clio_agent/gact/resident_ledgers.py
 # Seconds an idle session's in-memory transcript ledger may sit resident
@@ -733,6 +763,116 @@ artifacts.table_preview_max_rows: 2000
 # Largest CSV artifact, in bytes, the table-preview route will read; the
 # file streams twice so this bounds latency, not memory.
 artifacts.table_preview_max_source_bytes: 268435456
+
+# ==========================================================================
+# Workspace resources
+# ==========================================================================
+# The immutable workspace resource service: the upload byte ceiling and the
+# optional document-processor used to derive structured views.
+
+# CLIO_RESOURCE_DELIVERY_LEDGER_MAX_RECORDS  (int)  <- src/clio_agent/gact/resource_delivery.py
+# Rows of resource-delivery provenance kept in resource_deliveries.json
+# before the oldest are compacted away; raise to retain a longer attachment
+# audit trail.
+resources.delivery_ledger_max_records: 2000
+
+# CLIO_RESOURCE_DERIVATIVE_NAME_MAX_CHARS  (int)  <- src/clio_agent/gact/resource_processing.py
+# Longest derivative id stored under its own filename before it is hashed to
+# a short digest name; lower on Windows deployments with deep state
+# directories (MAX_PATH).
+resources.derivative_name_max_chars: 48
+
+# CLIO_DOCUMENT_PROCESSOR_URL  (str)  <- src/clio_agent/gact/composer_runtime.py
+# Base URL of the optional document-processing service used to derive
+# structured views of uploaded resources; unset leaves resources served as
+# originals.
+# resources.document_processor_url:  # default unset; resolved in code
+
+# CLIO_RESOURCE_LIST_MAX_RECORDS  (int)  <- src/clio_agent/gact/resource_tools.py
+# Resource rows one workspace listing returns before it reports truncation;
+# raise for workspaces holding many uploads, lower to keep tool results
+# small.
+resources.list_max_records: 100
+
+# CLIO_RESOURCE_MAX_BYTES  (int)  <- src/clio_agent/gact/composer_runtime.py
+# Byte ceiling on a single uploaded workspace resource; raise for large
+# scientific inputs, lower to bound per-workspace disk use.
+resources.max_bytes: 262144000
+
+# CLIO_RESOURCE_PROCESSOR_CANCEL_TIMEOUT_S  (float)  <- src/clio_agent/gact/resource_processing.py
+# Seconds to wait for the document processor to acknowledge a cancellation;
+# raise only if the service cancels slowly under load.
+resources.processor_cancel_timeout_s: 30.0
+
+# CLIO_RESOURCE_PROCESSOR_CONNECT_TIMEOUT_S  (float)  <- src/clio_agent/gact/resource_processing.py
+# Seconds to wait for a TCP connection to the document processor; raise on a
+# slow or congested link to the service.
+resources.processor_connect_timeout_s: 5.0
+
+# CLIO_RESOURCE_PROCESSOR_POOL_TIMEOUT_S  (float)  <- src/clio_agent/gact/resource_processing.py
+# Seconds to wait for a free connection from the document-processor client
+# pool; raise when many uploads convert concurrently.
+resources.processor_pool_timeout_s: 5.0
+
+# CLIO_RESOURCE_PROCESSOR_READ_TIMEOUT_S  (float)  <- src/clio_agent/gact/resource_processing.py
+# Seconds to wait for the document processor's response headers/body on a
+# submit; raise when the service queues submissions behind long conversions.
+resources.processor_read_timeout_s: 60.0
+
+# CLIO_RESOURCE_PROCESSOR_STATUS_TIMEOUT_S  (float)  <- src/clio_agent/gact/resource_processing.py
+# Seconds to wait for one document-processor status poll; raise only if
+# status responses are genuinely slow, since every poll pays it.
+resources.processor_status_timeout_s: 30.0
+
+# CLIO_RESOURCE_PROCESSOR_WRITE_TIMEOUT_S  (float)  <- src/clio_agent/gact/resource_processing.py
+# Seconds to stream one upload body to the document processor; 0 derives it
+# from resources.max_bytes at 1 MiB/s (floor 60s) so a raised ceiling is not
+# cut off mid-body.
+resources.processor_write_timeout_s: 0.0
+
+# CLIO_RESOURCE_SEARCH_EXCERPT_CHARS  (int)  <- src/clio_agent/gact/resource_tools.py
+# Characters of each matching line returned by a bounded resource search;
+# raise for more context per hit, lower to shrink tool output.
+resources.search_excerpt_chars: 500
+
+# CLIO_RESOURCE_SEARCH_MATCH_LIMIT  (int)  <- src/clio_agent/gact/resource_tools.py
+# Matches one bounded resource search returns before reporting truncation;
+# raise for broader sweeps, lower to keep tool results small.
+resources.search_match_limit: 50
+
+# CLIO_RESOURCE_STATUS_POLL_FAILURE_THRESHOLD  (int)  <- src/clio_agent/gact/resource_lifecycle.py
+# Consecutive failed converter status polls tolerated before the resource is
+# marked failed with converter_status_unavailable; lower to give up on a
+# vanished converter sooner.
+resources.status_poll_failure_threshold: 5
+
+# CLIO_RESOURCE_STRUCTURE_NODE_MAX_BYTES  (int)  <- src/clio_agent/gact/resource_processing.py
+# Byte ceiling on ONE structured node (a page, table, picture or text block)
+# served from a derived view; raise for documents with very large single
+# nodes.
+resources.structure_node_max_bytes: 2097152
+
+# CLIO_RESOURCE_TEXT_PREVIEW_BYTES  (int)  <- src/clio_agent/gact/routes/resources.py
+# Byte ceiling on a text resource served inline through the preview route;
+# raise to preview larger documents in a client.
+resources.text_preview_bytes: 2097152
+
+# CLIO_RESOURCE_TEXT_READ_CHARS  (int)  <- src/clio_agent/gact/resource_tools.py
+# Characters returned by one bounded resource text read before truncation;
+# raise to hand the model more of a document per call.
+resources.text_read_chars: 65536
+
+# CLIO_RESOURCE_TEXT_SCAN_BYTES  (int)  <- src/clio_agent/gact/resource_tools.py
+# Byte ceiling on text CLIO will linearly scan for a resource search or
+# direct read; raise for larger plain-text inputs, lower to bound per-call
+# CPU.
+resources.text_scan_bytes: 2097152
+
+# CLIO_RESOURCE_UPLOAD_CHUNK_BYTES  (int)  <- src/clio_agent/gact/routes/resources.py
+# Largest single resumable-upload chunk the server accepts, enforced while
+# the body streams; raise for fewer round-trips on fast links, lower to
+# bound per-request memory.
+resources.upload_chunk_bytes: 8388608
 
 # ==========================================================================
 # Tools + MCP

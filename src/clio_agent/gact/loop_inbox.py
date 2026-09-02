@@ -18,7 +18,9 @@ Design invariants (this slice, #1035):
 * **At-least-once, never at-most-once.** The inbox is a latency optimization, not
   a delivery guarantee: ``notify_pending`` stays set on the task, so if the mid-turn
   wake is dropped (bounded-overflow, no active turn, unknown session) the next-turn
-  injection still delivers it. Overflow drops the OLDEST with a TYPED log reason.
+  injection still delivers it. Overflow evicts the oldest RECOVERABLE event first
+  (a durable steer has no such fallback), with a TYPED log reason AND a
+  ``loop_inbox.overflow`` event.
 * **No double-surface.** A completion drained mid-turn is marked consumed through
   the EXISTING once-gate (``agent_tasks.consume_notification`` →
   ``AgentTaskRegistry.mark_consumed``), so the next-turn injection skips it — and
@@ -31,16 +33,19 @@ Design invariants (this slice, #1035):
 
 #1036 (Producer B) adds a second event kind — ``user_message`` — the mid-turn
 *steer*: a user POST that lands while a turn is already running is no longer a 409;
-the message is persisted (marked ``mid_turn_steer``) and a data-carrying
-:class:`InboxEvent` (``kind="user_message"``, its ``text`` + ``metadata``) is
-enqueued. The running turn's next tool boundary drains it and surfaces a
+acceptance durably persists the human transcript message + its pending-steer
+intent BEFORE returning, then enqueues a data-carrying :class:`InboxEvent`
+(``kind="user_message"``, its ``text`` + ``metadata``). The running turn's next
+tool boundary drains it and surfaces a
 ``### steer`` grounding block (USER-authored, trusted, but off the model-output
-lane) in the SAME turn. A steer that is never drained mid-turn (the turn ended
-first) is re-driven by the idle hook into EXACTLY ONE new turn
-(``drain_inbox_to_new_turn``). The ``deferred_resumes`` stash (an ask-user
-answer that arrived while busy) is folded into this same carrier. De-dup is
-inherent in the atomic pop-all :meth:`LoopInbox.drain` — a steer surfaces exactly
-once (mid-turn OR idle, whichever drains first).
+lane) in the SAME turn, settling that same record as consumed. A steer that is
+never drained mid-turn (the turn ended first) is re-driven by the idle hook into
+its own new turn, later accepted steers keeping their identities for subsequent
+boundaries (``drain_inbox_to_new_turn``). The ``deferred_resumes`` stash (an
+ask-user answer that arrived while busy) is folded into this same carrier. De-dup
+is inherent in the atomic pop-all :meth:`LoopInbox.drain` plus the intent store's
+``claim_pending`` — a steer surfaces exactly once (mid-turn OR idle, whichever
+claims first).
 
 Out of scope here (deferred): the live handle (#1037).
 """
@@ -50,11 +55,23 @@ from __future__ import annotations
 import logging
 import threading
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
 
 from clio_agent.gact.agent_tasks import STATUS_COMPLETED, STATUS_FAILED
+
+# How a steer is composed for the model and settled lives in its own owner
+# module; this carrier only buffers and drains. USER_STEER_MARKER is re-exported
+# because it is part of this module's long-standing public surface.
+from clio_agent.gact.steer_delivery import (
+    USER_STEER_MARKER as USER_STEER_MARKER,  # noqa: PLC0414 - re-export
+)
+from clio_agent.gact.steer_delivery import (
+    compose_steer_block,
+    mark_steer_consumed,
+)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -63,18 +80,29 @@ logger = logging.getLogger(__name__)
 
 # Bound on buffered wakes per session. A parent turn drains at every tool
 # boundary, so this only needs to absorb a burst of children finishing between
-# two boundaries; on overflow the OLDEST is dropped with a typed reason and the
-# next-turn ``notify_pending`` fallback still carries it (never silent loss).
-_INBOX_MAXLEN = 64
+# two boundaries. It became LOAD-BEARING once durable steers started riding this
+# queue (#1036/#1052): a dropped child wake is recoverable (its next-turn
+# ``notify_pending`` still delivers it), but a dropped steer's durable intent
+# stays ``pending`` with nothing left to deliver it until a restart re-enqueues
+# it. So the bound is configurable, the eviction policy protects steers, and
+# every drop emits a typed reason naming which kind was lost.
+_DEFAULT_INBOX_MAXLEN = 64
+
+
+def _inbox_maxlen() -> int:
+    """Per-session buffered-wake bound (config: ``gact.loop_inbox.max_events``)."""
+
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    return conf.resolve(
+        "gact.loop_inbox.max_events",
+        env="CLIO_GACT_LOOP_INBOX_MAX_EVENTS",
+        default=_DEFAULT_INBOX_MAXLEN,
+        cast=conf.as_int,
+    )
+
 
 InboxKind = Literal["child_completed", "child_failed", "user_message"]
-
-# Grounding-block header for a mid-turn user steer (#1036). Its OWN marker, NOT the
-# task-notification marker: a steer is USER-authored (trusted) but still rides the
-# server-grounding lane (surfaced in the model's tool-observation string), never the
-# model-output lane, so it is unambiguously labelled as an out-of-band user message
-# that arrived while the turn was running.
-USER_STEER_MARKER = "## Mid-turn user steer (a message the user sent while this turn was running)"
 
 
 def _now_iso() -> str:
@@ -96,14 +124,15 @@ class InboxEvent:
     ask-user-resume bookkeeping when the fold re-drives an answer). ``enqueued_at``
     is a stamp for ordering/diagnostics only.
 
-    #1052 (persist-at-CONSUMPTION): a POST-route steer additionally carries a
-    pre-minted ``steer_message_id`` + ``steer_created_at`` + ``steer_parts`` (the
+    A POST-route steer additionally carries an already-persisted
+    ``steer_message_id`` + ``steer_created_at`` + ``steer_parts`` (the
     route-built :class:`~clio_agent.gact.types.Part` list, as wire dicts or Part
-    objects, so multimodal/image steers are not regressed). When
-    ``steer_message_id`` is non-empty the drain persists the ``mid_turn_steer``
-    Message at consumption — the route no longer persists it, so the atomic
-    pop-all drain yields exactly ONE record. These are DEDICATED fields (not folded
-    into ``metadata``) so ``drain_inbox_to_new_turn``'s ``metadata.update()`` merge
+    objects, so multimodal/resource steers are not regressed). When
+    ``steer_message_id`` is non-empty the drain SETTLES that existing
+    ``mid_turn_steer`` Message rather than creating one, and the intent store's
+    ``claim_pending`` keeps mid-turn and idle consumers from both taking it.
+    These are DEDICATED fields (not folded
+    into ``metadata``) so ``drain_inbox_to_new_turn``'s ``metadata`` merge
     never leaks them into a new turn's metadata. The ask-user-resume fold supplies
     NO ``steer_message_id`` (it persists only via the idle new-turn), so its
     mid-turn behavior is unchanged: surface the block, do NOT persist.
@@ -125,34 +154,54 @@ class LoopInbox:
     Writers are child done-callback threads (``turn_spawn._on_child_done`` →
     Producer A); the reader is the parent's tool-executor thread (the drain
     step-hook). One :class:`threading.RLock` guards a bounded
-    ``deque(maxlen=_INBOX_MAXLEN)``; :meth:`put` and :meth:`drain` are the only
+    ``deque`` (see :func:`_inbox_maxlen`); :meth:`put` and :meth:`drain` are the only
     mutators, so put-vs-drain across those threads is race-free.
     """
 
-    def __init__(self, maxlen: int = _INBOX_MAXLEN) -> None:
+    def __init__(
+        self,
+        maxlen: int | None = None,
+        *,
+        on_overflow: "Callable[[InboxEvent], None] | None" = None,
+    ) -> None:
         self._lock = threading.RLock()
-        self._events: deque[InboxEvent] = deque(maxlen=maxlen)
+        self._events: deque[InboxEvent] = deque(maxlen=maxlen or _inbox_maxlen())
+        self._on_overflow = on_overflow
 
     def put(self, event: InboxEvent) -> None:
-        """Append ``event``; on overflow drop the OLDEST with a TYPED reason.
+        """Append ``event``; on overflow evict with a TYPED reason.
 
         A ``deque(maxlen=...)`` silently discards the leftmost element when full,
-        which would be an unlogged degrade (a no-silent-fallback violation). We
-        detect the full condition first and emit a structured reason naming the
-        dropped task; the dropped completion still has its next-turn
-        ``notify_pending`` fallback, so this is latency, never loss.
+        which would be an unlogged degrade (a no-silent-fallback violation), so
+        the full condition is detected first.
+
+        Eviction protects the irreplaceable: a child wake is RECOVERABLE (its
+        next-turn ``notify_pending`` still delivers it) while a durable steer is
+        not (its intent stays ``pending`` with nothing left to deliver it), so the
+        oldest recoverable event goes first and a steer is only evicted when the
+        buffer holds nothing but steers. Either way the drop is announced through
+        ``on_overflow`` and named in the log.
         """
 
         with self._lock:
             if len(self._events) == self._events.maxlen:
-                dropped = self._events[0]
+                victim = next(
+                    (row for row in self._events if not row.steer_message_id),
+                    self._events[0],
+                )
+                self._events.remove(victim)
+                recoverable = not victim.steer_message_id
                 logger.warning(
-                    "loop_inbox overflow reason=inbox_full dropped_task=%s dropped_kind=%s "
-                    "maxlen=%s (next-turn notify_pending fallback still delivers it)",
-                    dropped.task_id,
-                    dropped.kind,
+                    "loop_inbox overflow reason=inbox_full dropped_kind=%s dropped_task=%s "
+                    "dropped_steer=%s recoverable=%s maxlen=%s",
+                    victim.kind,
+                    victim.task_id,
+                    victim.steer_message_id,
+                    recoverable,
                     self._events.maxlen,
                 )
+                if self._on_overflow is not None:
+                    self._on_overflow(victim)
             self._events.append(event)
 
     def drain(self) -> list[InboxEvent]:
@@ -196,6 +245,50 @@ class LoopInbox:
         with self._lock:
             return len(self._events) > 0
 
+    def cancel_user_message(self, message_id: str) -> bool:
+        """Remove an unclaimed user steer from this inbox by stable message id."""
+
+        with self._lock:
+            before = len(self._events)
+            self._events = deque(
+                (
+                    event
+                    for event in self._events
+                    if not (event.kind == "user_message" and event.steer_message_id == message_id)
+                ),
+                maxlen=self._events.maxlen,
+            )
+            return len(self._events) != before
+
+
+def _overflow_reporter(app: "FastAPI", session_id: str) -> "Callable[[InboxEvent], None]":
+    """Publish one typed ``loop_inbox.overflow`` per evicted wake."""
+
+    def report(dropped: InboxEvent) -> None:
+        try:
+            from clio_agent.gact.events import Event  # noqa: PLC0415
+
+            app.state.bus.publish(
+                Event(
+                    type="loop_inbox.overflow",
+                    session_id=session_id,
+                    payload={
+                        "session_id": session_id,
+                        "reason": "inbox_full",
+                        "dropped_kind": dropped.kind,
+                        "dropped_task_id": dropped.task_id,
+                        "dropped_steer_message_id": dropped.steer_message_id,
+                        # A child wake still rides the next-turn notify_pending
+                        # feed; a durable steer does not.
+                        "recoverable": not dropped.steer_message_id,
+                    },
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - telemetry must not break a put
+            logger.warning("loop_inbox overflow publish failed reason=publish_error err=%r", exc)
+
+    return report
+
 
 def inbox_for(app: "FastAPI", session_id: str) -> LoopInbox:
     """Get-or-create the :class:`LoopInbox` for ``session_id`` on ``app.state``.
@@ -208,7 +301,9 @@ def inbox_for(app: "FastAPI", session_id: str) -> LoopInbox:
     existing = inboxes.get(session_id)
     if existing is not None:
         return existing
-    return inboxes.setdefault(session_id, LoopInbox())
+    return inboxes.setdefault(
+        session_id, LoopInbox(on_overflow=_overflow_reporter(app, session_id))
+    )
 
 
 def enqueue_completion_wake(app: "FastAPI", task: object) -> None:
@@ -295,16 +390,19 @@ def enqueue_user_steer(
 
 
 def drain_inbox_to_new_turn(app: "FastAPI", sid: str) -> None:
-    """Re-drive residual mid-turn user *steers* into EXACTLY ONE new turn (#1036).
+    """Promote ONE residual steer identity at each safe idle boundary (#1036).
 
-    The turn-runner idle-hook body (installed in ``app.py``), fired when ``sid``'s
-    turn slot clears. A steer (a mid-turn POST, or a folded ask-user resume) that
-    the running turn never drained is still buffered here; we drain and start ONE
-    new turn for all residual steers so the user's message is never dropped. Non-
-    steer events (Producer A child wakes enqueued at the boundary) are put back —
-    they are not turn-drivers and their next-turn ``notify_pending`` fallback still
-    delivers them. If the session is gone / agent unavailable / a turn re-acquired
-    the slot, every event stays buffered for the next idle transition.
+    The turn-runner idle-hook body (installed by ``app.py`` and composed with the
+    queue promoter in ``composer_runtime``), fired when ``sid``'s turn slot
+    clears. A steer (a mid-turn POST, or a folded ask-user resume) that the
+    running turn never drained is still buffered here; we drain and start a new
+    turn for the oldest PROMOTABLE steer, requeueing the later accepted identities
+    for the boundaries after it, so the user's message is never dropped and never
+    loses its accepted id. Non-steer events (Producer A child wakes enqueued at
+    the boundary) are put back — they are not turn-drivers and their next-turn
+    ``notify_pending`` fallback still delivers them. If the session is gone /
+    agent unavailable / cancelled / a turn re-acquired the slot, every event stays
+    buffered for the next idle transition.
     """
 
     inbox = app.state.loop_inboxes.get(sid)
@@ -315,6 +413,15 @@ def drain_inbox_to_new_turn(app: "FastAPI", sid: str) -> None:
         return  # session gone; nothing to resume into
     if app.state.agent is None or app.state.turn_runner.busy(sid):
         return  # not ready — leave buffered for the next idle transition
+    from clio_agent.gact.composer_runtime import session_autostart_suspended  # noqa: PLC0415
+
+    if session_autostart_suspended(app, sid):
+        # /cancel means STOP. Re-driving a residual steer here would restart the
+        # very agent the user just stopped. The steer stays buffered AND its
+        # durable intent stays listed/cancellable; the user's next explicit send
+        # lifts the suspension and the next idle boundary promotes it.
+        logger.info("loop_inbox steer re-drive suspended session=%s reason=session_cancelled", sid)
+        return
     events = inbox.drain()
     steers = [e for e in events if e.kind == "user_message"]
     for residual in events:
@@ -326,44 +433,75 @@ def drain_inbox_to_new_turn(app: "FastAPI", sid: str) -> None:
     from clio_agent.gact.events import Event  # noqa: PLC0415
     from clio_agent.gact.turn import _start_background_user_turn  # noqa: PLC0415
 
-    # One turn total: concatenate residual steer texts in arrival order; merge their
-    # metadata (later wins) so a folded ask-user resume carries its ask_user_* keys.
-    metadata: dict = {}
-    for e in steers:
-        metadata.update(e.metadata or {})
-    # #1052: honor the pre-minted id the mid-turn POST already returned in its 202,
-    # so the id handed to the client resolves to exactly one persisted message in the
-    # turn-ended-first (idle re-drive) path too — not just the mid-turn-drain path.
-    # Only when EXACTLY ONE steer is promoted: when several coalesce into one turn a
-    # single message can carry only one id, so we mint a fresh one (the coalesced 202
-    # ids are inherently un-resolvable — the documented multi-steer edge). An
-    # ask-user-resume steer carries no steer_message_id and mints as before.
-    promote_id = steers[0].steer_message_id if len(steers) == 1 else ""
-    resumed_msg = _start_background_user_turn(
-        app,
-        sid,
-        sess,
-        "\n\n".join(e.text for e in steers if e.text),
-        metadata=metadata,
-        prev_status=str(getattr(sess, "status", "idle") or "idle"),
-        user_msg_id=promote_id,
-    )
-    # A folded ask-user resume still publishes user_question.resumed so the answer's
-    # delivery is observable on the trace/API exactly as the live path emits it.
-    for e in steers:
-        if e.metadata.get("ask_user_resume"):
+    # ONE accepted identity per turn. A steer accepted through the message-intent
+    # path already OWNS a durable transcript row + pending intent, so several of
+    # them can no longer be concatenated into one message (a single row can carry
+    # only one id, and the others' durable intents would never be consumed). The
+    # oldest promotable one wins; the rest are requeued, keeping their own ids,
+    # for the next idle boundary. An ask-user-resume steer carries no
+    # ``steer_message_id`` and no intent row, so it mints as before.
+    #
+    # The loop matters: an UNCLAIMABLE oldest steer (a live mid-turn drain already
+    # took it) used to abort the whole pass, leaving every steer behind it
+    # requeued with no boundary left to promote them. Now the pass simply moves on
+    # to the next identity.
+    while steers:
+        promoted = steers.pop(0)
+        if promoted.steer_message_id:
+            # Claiming is the single-consumer gate: a live mid-turn drain that
+            # already took this steer leaves nothing to claim.
+            if app.state.message_intents.claim_pending(sid, promoted.steer_message_id) is None:
+                continue
+        metadata = dict(promoted.metadata or {})
+        if promoted.steer_message_id:
+            metadata["pending_steer"] = False
+            metadata["mid_turn_steer"] = True
+            metadata["consumed_at"] = _now_iso()
+        try:
+            resumed_msg = _start_background_user_turn(
+                app,
+                sid,
+                sess,
+                promoted.text,
+                request_parts=list(promoted.steer_parts or []),
+                metadata=metadata,
+                prev_status=str(getattr(sess, "status", "idle") or "idle"),
+                user_msg_id=promoted.steer_message_id,
+                user_created_at=promoted.steer_created_at,
+                replace_existing_user_message=bool(promoted.steer_message_id),
+            )
+        except Exception as exc:  # noqa: BLE001 - an aborted promotion must not lose the steer
+            logger.warning(
+                "loop_inbox steer promotion failed reason=steer_promotion_error steer_id=%s "
+                "err=%r (intent released; retried at the next idle boundary)",
+                promoted.steer_message_id,
+                exc,
+            )
+            if promoted.steer_message_id:
+                app.state.message_intents.release_claim(sid, promoted.steer_message_id)
+            steers.insert(0, promoted)
+            break
+        if promoted.steer_message_id:
+            app.state.message_intents.mark_consumed(sid, promoted.steer_message_id)
+        # A folded ask-user resume still publishes user_question.resumed so the
+        # answer's delivery is observable on the trace/API exactly as the live
+        # path emits it.
+        if promoted.metadata.get("ask_user_resume"):
             app.state.bus.publish(
                 Event(
                     type="user_question.resumed",
                     session_id=sid,
                     payload={
-                        "question_id": e.metadata.get("question_id", ""),
+                        "question_id": promoted.metadata.get("question_id", ""),
                         "session_id": sid,
                         "queued_user_message_id": resumed_msg.id,
                         "deferred": True,
                     },
                 )
             )
+        break
+    for remaining in steers:
+        inbox_for(app, sid).put(remaining)
 
 
 def drain_active_session_inbox(app: "FastAPI") -> str:
@@ -405,17 +543,37 @@ def drain_active_session_inbox(app: "FastAPI") -> str:
         task_events = []
         for event in events:
             if event.kind == "user_message":
-                steer_text = (event.text or "").strip()
-                if steer_text:
-                    steer_blocks.append(USER_STEER_MARKER + "\n\n" + steer_text)
-                    # #1052: a POST-route steer carries a pre-minted id — persist the
-                    # mid_turn_steer Message HERE (persist-at-CONSUMPTION), the point
-                    # the running turn folds it in. The route no longer persists, so
-                    # the atomic drain yields exactly ONE record. An ask-user-resume
-                    # steer carries NO steer_message_id — it persists only via the idle
-                    # new-turn, so we surface its block WITHOUT persisting.
-                    if event.steer_message_id:
-                        _persist_steer_at_consumption(app, sid, event, steer_text)
+                block = compose_steer_block(app, sid, event)
+                if not event.steer_message_id:
+                    # An ask-user-resume steer owns no durable intent and persists
+                    # only via the idle new-turn: surface its block, settle nothing.
+                    if block:
+                        steer_blocks.append(block)
+                    continue
+                # Claiming is the single-consumer gate against the idle re-drive:
+                # whichever path claims first owns this steer.
+                if app.state.message_intents.claim_pending(sid, event.steer_message_id) is None:
+                    continue
+                if not block:
+                    # Nothing describable to surface. The claim is a delivery
+                    # reservation, so give it back rather than stranding the row
+                    # ``claimed`` forever (uncancellable, never re-driven).
+                    app.state.message_intents.release_claim(sid, event.steer_message_id)
+                    logger.warning(
+                        "loop_inbox steer skip reason=steer_not_describable steer_id=%s",
+                        event.steer_message_id,
+                    )
+                    continue
+                # A POST-route steer carries a pre-minted, ALREADY persisted id
+                # (acceptance wrote the pending row before returning its 202); settle
+                # that same transcript record HERE, the point the running turn folds
+                # it in. CONSUMPTION is the gate, not the claim: if the settle does
+                # not land (the row was cancelled between claim and settle, or the
+                # transcript identity is gone) the block is NOT surfaced and the
+                # reservation is released, so the steer stays exactly-once.
+                if not mark_steer_consumed(app, sid, event):
+                    continue
+                steer_blocks.append(block)
                 continue
             task_events.append(event)
 
@@ -487,53 +645,6 @@ def drain_active_session_inbox(app: "FastAPI") -> str:
     except Exception as exc:  # noqa: BLE001 - a drain must never break a tool call
         logger.warning("loop_inbox drain failed reason=drain_error err=%r", exc)
         return ""
-
-
-def _persist_steer_at_consumption(
-    app: "FastAPI", sid: str, event: InboxEvent, steer_text: str
-) -> None:
-    """Persist a POST-route mid-turn steer at the drain — persist-at-CONSUMPTION (#1052).
-
-    The POST route pre-mints the id / stamp / parts and carries them on ``event``;
-    we materialize the ``mid_turn_steer`` Message HERE (the point the running turn
-    actually folds the steer in) and publish ``message.created`` so SSE clients see
-    the steer arrive when it takes effect. Because the route no longer persists and
-    the atomic pop-all :meth:`LoopInbox.drain` guarantees a single consumer, exactly
-    ONE record exists. Runs on the tool-executor thread (thread-safe, exactly as
-    this module already publishes ``loop_inbox.drained`` + the delegation terminals).
-    Wrapped in its OWN typed-reason try/except so a persist hiccup still lets the
-    ``### steer`` block surface to the model — the steer is never lost to the turn.
-    """
-
-    try:
-        from clio_agent.gact.events import Event  # noqa: PLC0415
-        from clio_agent.gact.session_store import _append_session_message  # noqa: PLC0415
-        from clio_agent.gact.types import Message, Part  # noqa: PLC0415
-
-        parts = [Part(**p) if isinstance(p, dict) else p for p in event.steer_parts] or [
-            Part(type="text", text=steer_text)
-        ]
-        stamp = event.steer_created_at or _now_iso()
-        metadata = dict(event.metadata or {})
-        metadata["mid_turn_steer"] = True
-        msg = Message(
-            id=event.steer_message_id,
-            turn_id="",
-            session_id=sid,
-            role="user",
-            created_at=stamp,
-            updated_at=stamp,
-            parts=parts,
-            metadata=metadata,
-        )
-        _append_session_message(app, sid, msg)
-        app.state.bus.publish(Event(type="message.created", session_id=sid, payload=msg.to_wire()))
-    except Exception as exc:  # noqa: BLE001 - a persist hiccup must not drop the steer block
-        logger.warning(
-            "loop_inbox steer persist failed reason=steer_persist_error steer_id=%s err=%r",
-            event.steer_message_id,
-            exc,
-        )
 
 
 def _publish_drain_progress(app: "FastAPI", sid: str, drained: int, surfaced: int) -> None:

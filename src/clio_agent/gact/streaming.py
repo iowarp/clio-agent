@@ -40,6 +40,16 @@ import inspect
 import time
 from typing import TYPE_CHECKING, Any, Optional
 
+# The registered-agent invocation shim (arity-compatible runner dispatch) is
+# OWNED by gact/agent_invocation.py; re-exported here so existing
+# ``from clio_agent.gact.streaming import _run_dynamic_agent_compat`` callers
+# (turn_forward.py, app.py's re-export block, tests) keep resolving.
+from clio_agent.gact.agent_invocation import (
+    _callable_positional_slots as _callable_positional_slots,
+)
+from clio_agent.gact.agent_invocation import (
+    _run_dynamic_agent_compat as _run_dynamic_agent_compat,
+)
 from clio_agent.gact.events import Event
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.providers.config import _provider_runtime_kind
@@ -94,30 +104,6 @@ def _select_accepted_kwargs(func: Any, candidate: dict[str, Any]) -> dict[str, A
     return {name: value for name, value in candidate.items() if name in accepted}
 
 
-def _callable_positional_slots(func: Any, count: int) -> bool:
-    """Whether ``func`` accepts at least ``count`` positional arguments.
-
-    Signature-inspection replacement for the old positional/argument message
-    sniffing in :func:`_run_dynamic_agent_compat`. Uninspectable callables are
-    assumed to accept the full arg list (single best-effort attempt).
-    """
-
-    try:
-        sig = inspect.signature(func)
-    except (ValueError, TypeError):
-        return True
-    slots = 0
-    for param in sig.parameters.values():
-        if param.kind is inspect.Parameter.VAR_POSITIONAL:
-            return True
-        if param.kind in (
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        ):
-            slots += 1
-    return slots >= count
-
-
 async def _try_streamed_forward_compat(
     app: "FastAPI",
     enriched_text: str,
@@ -150,28 +136,6 @@ async def _try_streamed_forward_compat(
     if selected is None:
         return await _try_streamed_forward(app, enriched_text, sid, emit_chunk, **candidate)
     return await _try_streamed_forward(app, enriched_text, sid, emit_chunk, **selected)
-
-
-def _run_dynamic_agent_compat(
-    runner: Any,
-    base_agent: Any,
-    dynamic_agent: Any,
-    question: str,
-    sid: str,
-    cancel_requested: Any | None,
-) -> Any:
-    """Run a dynamic agent while preserving older runner call signatures.
-
-    The runner's arity is inspected up front so it is invoked exactly once:
-    5-arg runners receive ``cancel_requested``, legacy 4-arg runners do not.
-    No positional/argument message sniffing, no double-run — an internal
-    ``TypeError`` propagates on the single call.
-    """
-
-    args: list[Any] = [base_agent, dynamic_agent, question, sid, cancel_requested]
-    if not _callable_positional_slots(runner, len(args)):
-        args = args[:-1]
-    return runner(*args)
 
 
 class _StreamingOutputError(RuntimeError):

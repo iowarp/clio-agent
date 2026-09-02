@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from tests.test_gact.test_post_messages import FakeClioAgent
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
 # test's ``build_app(agent=...)`` host fake.
@@ -205,3 +206,48 @@ def test_permission_list_metadata_reports_truncation_and_recent_first(
         recent = client.get("/v1/permissions?status=all&limit=2").json()["permissions"]
         assert len(recent) == 2
         assert recent[0]["created_at"] >= recent[1]["created_at"]
+
+
+# ---- GET /v1/questions (unscoped attention lane) --------------------------
+#
+# The ask-user half of the same cross-session "what is waiting on me?" surface
+# GET /v1/permissions serves, and registered from the same concern module.
+
+
+def test_unscoped_questions_route_spans_sessions_and_filters_by_status(
+    tmp_path: Path,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json", agent=FakeClioAgent(answer="ok"))
+    with TestClient(app) as client:
+        first = client.post("/v1/sessions", json={"title": "one"}).json()["id"]
+        second = client.post("/v1/sessions", json={"title": "two"}).json()["id"]
+        created: list[str] = []
+        for sid in (first, second):
+            row = client.post(
+                f"/v1/sessions/{sid}/questions",
+                json={"prompt": f"what next in {sid}?", "kind": "confirmation"},
+            )
+            assert row.status_code == 201, row.text
+            created.append(row.json()["id"])
+
+        answered = client.post(
+            f"/v1/sessions/{first}/questions/{created[0]}/answer",
+            json={"value": "yes"},
+        )
+        assert answered.status_code == 200, answered.text
+
+        every = client.get("/v1/questions")
+        assert every.status_code == 200, every.text
+        assert {row["id"] for row in every.json()["questions"]} == set(created)
+
+        pending = client.get("/v1/questions?status=pending").json()
+        assert [row["id"] for row in pending["questions"]] == [created[1]]
+        assert pending["metadata"]["status"] == "pending"
+        assert pending["metadata"]["total"] == 1
+
+        # Identical wire shape to the per-session route.
+        scoped = client.get(f"/v1/sessions/{second}/questions?status=pending").json()
+        assert scoped["questions"] == pending["questions"]
+
+        narrowed = client.get(f"/v1/questions?session_id={first}").json()
+        assert [row["id"] for row in narrowed["questions"]] == [created[0]]

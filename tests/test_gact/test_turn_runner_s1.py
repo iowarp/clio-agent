@@ -260,13 +260,12 @@ def _post_message(client: TestClient, sid: str, text: str = "hi"):
 
 
 def test_second_post_while_running_steers_with_202(tmp_path: Path) -> None:
-    """#1036/#1052: a second POST while a turn runs is NO LONGER a 409 — it is a
-    mid-turn STEER. It returns 202 and does NOT start a second turn (the running turn
-    keeps its slot). Under #1052 persist-at-CONSUMPTION the route no longer persists
-    the steer itself — it enqueues it and the running turn's next drain (or the idle
-    re-drive) persists it EXACTLY ONCE; so right after the 202 the steer is buffered,
-    not yet in GET /messages. The busy-gate 409 payload survives for other producers
-    (mcp_apps, retry)."""
+    """A busy-session steer is durable and visible before its safe boundary.
+
+    The route returns 202 without starting a second turn. The real human message
+    appears immediately with ``pending_steer`` metadata and the same identity is
+    retained when the running loop consumes it.
+    """
 
     app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowAgent(sleep_s=1.5))
     with TestClient(app) as client:
@@ -283,12 +282,14 @@ def test_second_post_while_running_steers_with_202(tmp_path: Path) -> None:
         assert second.status_code == 202, "a mid-turn POST must be accepted as a steer, not 409'd"
         steer_id = second.json()["message_id"]
 
-        # #1052: the route no longer persists — the steer is NOT yet in GET /messages
-        # (it appears when a drain consumes it), but it IS buffered on the inbox with
-        # the pre-minted id the 202 handed back (which that drain will persist under).
+        # Acceptance is durable before the HTTP response: the actual human message
+        # is already in the transcript and the inbox carries that same identity.
         by_id = {m["id"]: m for m in client.get(f"/v1/sessions/{sid}/messages").json()["messages"]}
-        assert steer_id not in by_id, "persist-at-consumption: the route must not persist the steer"
-        assert app.state.loop_inboxes[sid].peek_nonempty(), "the steer was not buffered for the drain"
+        assert by_id[steer_id]["metadata"]["pending_steer"] is True
+        assert by_id[steer_id]["metadata"]["delivery"] == "steer"
+        assert app.state.loop_inboxes[sid].peek_nonempty(), (
+            "the steer was not buffered for the drain"
+        )
 
         # It did NOT start a second turn: the running turn still owns the slot and
         # its id is unchanged.
@@ -300,6 +301,47 @@ def test_second_post_while_running_steers_with_202(tmp_path: Path) -> None:
         # The busy-gate 409 payload is still available for the producers that keep it.
         payload = session_busy_error_payload(app.state.turn_runner, sid)
         assert payload is not None and payload["error"]["error"] == BUSY_ERROR_CODE
+
+
+def test_three_accepted_steers_keep_three_identities_through_idle_boundaries(
+    tmp_path: Path,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowAgent(sleep_s=0.4))
+    with TestClient(app) as client:
+        sid = _new_session(client)
+        assert _post_message(client, sid, "first").status_code == 200
+        _wait_busy(app, sid)
+
+        accepted_ids: list[str] = []
+        for index in range(3):
+            message_id = f"msg_steer_{index}"
+            response = client.post(
+                f"/v1/sessions/{sid}/messages",
+                json={
+                    "client_message_id": message_id,
+                    "idempotency_key": f"steer-{index}",
+                    "delivery": "steer",
+                    "parts": [{"type": "text", "text": f"steer {index}"}],
+                },
+            )
+            assert response.status_code == 202, response.text
+            assert response.json()["message_id"] == message_id
+            accepted_ids.append(message_id)
+
+        deadline = time.monotonic() + 6.0
+        while time.monotonic() < deadline:
+            pending = client.get(f"/v1/sessions/{sid}/pending-steers").json()["pending_steers"]
+            if not pending and not app.state.turn_runner.busy(sid):
+                break
+            time.sleep(0.05)
+        assert pending == []
+
+        messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        by_id = {row["id"]: row for row in messages}
+        assert set(accepted_ids) <= set(by_id)
+        for message_id in accepted_ids:
+            assert by_id[message_id]["metadata"]["pending_steer"] is False
+            assert by_id[message_id]["metadata"]["mid_turn_steer"] is True
 
 
 def _wait_busy(app, sid: str, timeout: float = 3.0) -> None:

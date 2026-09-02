@@ -1,6 +1,7 @@
-"""Permission + permission-policy CRUD routes for the GACT server (#714).
+"""Permission, policy, and unscoped-attention routes for the GACT server (#714).
 
-This concern owns two related vendor surfaces the gact-tui drives:
+This concern owns the UNSCOPED (cross-session) "something needs the user"
+surfaces the gact-tui attention lane polls, plus the policy CRUD behind them:
 
 * **Permissions** (SPEC BBB23) -- the human-in-the-loop ledger of tool-call
   permission requests. ``GET /v1/permissions`` lists/filters them;
@@ -8,6 +9,13 @@ This concern owns two related vendor surfaces the gact-tui drives:
   (``allow`` | ``deny`` | ``allow_session`` | ``allow_workspace``), wakes any
   ``MCPToolBridge`` thread blocked on the request's event, and -- for the
   ``allow_session``/``allow_workspace`` actions -- derives a sticky policy.
+* **Questions** -- ``GET /v1/questions`` is the ask-user half of the same
+  attention lane: the pending ``UserQuestion`` rows across EVERY session, in the
+  same wire shape the per-session ``GET /v1/sessions/{sid}/questions`` serves.
+  It lives beside ``/v1/permissions`` because a client polling "what is waiting
+  on me right now?" needs both halves and gets them from one concern; the
+  per-session question CRUD stays in ``routes/sessions.py`` with the session
+  lifecycle it belongs to.
 * **Policies** (SPEC §6.11.b) -- the declarative ``allow``/``deny``/``ask``
   rules consulted at the permission boundary.
   ``GET /v1/policies`` lists them; ``PUT /v1/policies`` atomically replaces the
@@ -96,6 +104,51 @@ def register_permissions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 "truncated": total_after_status_filter > limit,
                 "total_before_filters": total_before_filters,
                 "total_after_session_filter": total_after_session_filter,
+            },
+        }
+
+    # ---- /v1/questions (unscoped attention lane) ----------------------
+
+    @app.get("/v1/questions")
+    async def list_all_user_questions(
+        status: str = "",
+        session_id: str = "",
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """List ask-user questions across every session, newest first.
+
+        The unscoped sibling of ``GET /v1/sessions/{sid}/questions`` and of
+        ``GET /v1/permissions``: the gact-tui attention lane needs "what is
+        waiting on me anywhere?" without fanning out one request per session.
+        The row shape is IDENTICAL to the per-session route (same
+        ``UserQuestion.model_dump(exclude_none=True)``), so a client renders
+        either response with one code path.
+
+        ``?status=pending`` narrows to unanswered questions; ``?session_id=``
+        narrows to one session (the same filter ``/v1/permissions`` accepts).
+        """
+
+        rows = list(app.state.user_questions.values())
+        total_before_filters = len(rows)
+        if session_id:
+            rows = [q for q in rows if q.session_id == session_id]
+        if status:
+            rows = [q for q in rows if q.status == status]
+        total = len(rows)
+        rows.sort(key=lambda q: str(q.created_at or ""), reverse=True)
+        if limit <= 0:
+            limit = 100
+        limit = min(limit, 500)
+        return {
+            "questions": [q.model_dump(exclude_none=True) for q in rows[:limit]],
+            "metadata": {
+                "session_id": session_id,
+                "status": status or "all",
+                "limit": limit,
+                "total": total,
+                "returned": min(total, limit),
+                "truncated": total > limit,
+                "total_before_filters": total_before_filters,
             },
         }
 

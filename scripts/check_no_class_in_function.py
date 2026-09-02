@@ -42,7 +42,7 @@ from typing import NamedTuple
 # (or drop the entry once the file reaches zero) in the same change. Paths are
 # relative to the repository root, forward slashes.
 RATCHET_BASELINE: dict[str, int] = {
-    "src/clio_agent/gact/agents/builders.py": 5,
+    "src/clio_agent/gact/agents/builders.py": 3,
     "src/clio_agent/gact/app.py": 1,
     "src/clio_agent/lm/adapters.py": 2,
     "src/clio_agent/lm/io_logging.py": 1,

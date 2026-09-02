@@ -406,6 +406,18 @@ def _dynamic_agent_runtime_provenance(
     active_model = _active_lm_model_ref(app)
     provider_id = agent_def.default_provider or active_model.get("provider_id", "")
     model_id = agent_def.default_model or active_model.get("model_id", "")
+    # A per-message/session model route accepted by ``message_submission`` is
+    # overlaid onto this turn's local agent copy (turn_forward
+    # ._apply_turn_model_selection) and stamps its own source, so the provenance
+    # names the layer that actually chose the model rather than reporting the
+    # overlay as the agent's own default.
+    turn_model_source = str(agent_def.metadata.get("turn_model_selection_source") or "")
+    provider_source = turn_model_source or (
+        "agent_default" if agent_def.default_provider else "global_active"
+    )
+    model_source = turn_model_source or (
+        "agent_default" if agent_def.default_model else "global_active"
+    )
     payload: dict[str, Any] = {
         "kind": "dynamic_agent",
         "agent_id": agent_def.id,
@@ -423,9 +435,10 @@ def _dynamic_agent_runtime_provenance(
         "model": {
             "provider_id": provider_id,
             "model_id": model_id,
-            "provider_source": ("agent_default" if agent_def.default_provider else "global_active"),
-            "model_source": "agent_default" if agent_def.default_model else "global_active",
-            "fallback_to_global": not (agent_def.default_provider and agent_def.default_model),
+            "provider_source": provider_source,
+            "model_source": model_source,
+            "fallback_to_global": not turn_model_source
+            and not (agent_def.default_provider and agent_def.default_model),
         },
     }
     blueprint_id = str(agent_def.metadata.get("agent_blueprint_id") or "").strip()
