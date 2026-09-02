@@ -18,6 +18,48 @@ ATTACHMENT_PREAMBLE = (
     "private custody paths in the response."
 )
 
+# The tool an agent uses to inspect a conversion that has not produced
+# derivatives yet. A constant, not per-record state: it is the same tool for
+# every resource, so carrying it on ResourceProcessingRecord only invited drift.
+PROCESSING_QUERY_TOOL = "workspace_resource_inspect"
+
+
+def _conversion_warnings(manifest: Mapping | None) -> str:
+    """Return the processor's own warnings about the conversion it produced.
+
+    The document service reports honest limits on its result — a truncated
+    derivative manifest (``derivative_entries_truncated``), missing HTML, failed
+    scholarly enrichment. Those change what the model should DO (fall back to
+    the structure collections rather than assume the derivative list is
+    complete), so they belong in the grounding block rather than sitting unread
+    in the manifest.
+    """
+
+    document = (manifest or {}).get("document")
+    warnings = document.get("warnings") if isinstance(document, Mapping) else None
+    if not isinstance(warnings, list):
+        return ""
+    sentences = [
+        f"{str(row.get('code') or 'processor_warning')}: {str(row.get('message') or '').strip()}"
+        for row in warnings
+        if isinstance(row, Mapping) and (row.get("code") or row.get("message"))
+    ]
+    if not sentences:
+        return ""
+    return " Conversion warnings — " + "; ".join(sentences)
+
+
+def _derivative_suffix(manifest: Mapping | None) -> str:
+    """Name the available derivatives and any warning the processor attached."""
+
+    derivative_ids = [
+        str(entry.get("id"))
+        for entry in (manifest or {}).get("entries", [])
+        if isinstance(entry, Mapping) and entry.get("id")
+    ]
+    suffix = f" Available derivatives: {', '.join(derivative_ids)}." if derivative_ids else ""
+    return suffix + _conversion_warnings(manifest)
+
 
 def describe_resource_parts(app: "FastAPI", sid: str, parts: list) -> list[str]:
     """Return one trusted grounding line per ``resource_ref`` part.
@@ -60,14 +102,7 @@ def describe_resource_parts(app: "FastAPI", sid: str, parts: list) -> list[str]:
         )
         manifest = app.state.resource_processing_store.manifest(record)
         if processing.derivatives_available and manifest is not None:
-            derivative_ids = [
-                str(entry.get("id"))
-                for entry in manifest.get("entries", [])
-                if isinstance(entry, Mapping) and entry.get("id")
-            ]
-            suffix = (
-                f" Available derivatives: {', '.join(derivative_ids)}." if derivative_ids else ""
-            )
+            suffix = _derivative_suffix(manifest)
             refresh_note = (
                 " A newer conversion refresh is still running; the existing derivatives remain "
                 "available."
@@ -96,19 +131,11 @@ def describe_resource_parts(app: "FastAPI", sid: str, parts: list) -> list[str]:
                 header
                 + f" Structured conversion is still {state_label} as task "
                 + f"{task_id!r}; query resource {record.id!r} with "
-                + f"{processing.query_tool} before reading non-text content."
+                + f"{PROCESSING_QUERY_TOOL} before reading non-text content."
             )
             continue
         if processing.state == "complete":
-            manifest = manifest or {}
-            derivative_ids = [
-                str(entry.get("id"))
-                for entry in manifest.get("entries", [])
-                if isinstance(entry, Mapping) and entry.get("id")
-            ]
-            suffix = (
-                f" Available derivatives: {', '.join(derivative_ids)}." if derivative_ids else ""
-            )
+            suffix = _derivative_suffix(manifest)
             blocks.append(
                 header
                 + " Structured conversion is ready; inspect it with workspace_resource_inspect, "
@@ -164,6 +191,7 @@ def enrich_with_workspace_resources(
 __all__ = [
     "ATTACHMENT_MARKER",
     "ATTACHMENT_PREAMBLE",
+    "PROCESSING_QUERY_TOOL",
     "describe_resource_parts",
     "enrich_with_workspace_resources",
 ]

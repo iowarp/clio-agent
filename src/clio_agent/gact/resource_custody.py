@@ -88,6 +88,57 @@ class ResourceLimitError(ValueError):
     """Raised when an upload exceeds a deployment boundary."""
 
 
+class ResourceDeleteError(RuntimeError):
+    """Raised when a resource's bytes could not be removed.
+
+    The index record is deliberately KEPT when this is raised: dropping it
+    first (as the original delete order did) loses the resource from memory
+    while its bytes survive on disk, so memory and disk disagree until the next
+    restart re-reads the index.
+    """
+
+    def __init__(self, message: str, record: ResourceRecord, reason: str) -> None:
+        super().__init__(message)
+        self.record = record
+        self.reason = reason
+
+
+def quarantine_corrupt_index(path: Path, exc: BaseException, *, kind: str) -> dict[str, str]:
+    """Move an unreadable index aside and return the typed degradation reason.
+
+    A composer index that fails to parse used to raise out of ``build_app``, so
+    ONE corrupt JSON file took down the whole server — no sessions at all. The
+    graceful-degradation chain instead quarantines the file (it is evidence, so
+    it is renamed rather than deleted), starts from an empty store, and reports
+    WHY through this typed reason so the loss is never silent.
+    """
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    quarantined = path.with_name(f"{path.name}.corrupt-{stamp}")
+    reason = {
+        "reason": "composer_index_unreadable",
+        "kind": kind,
+        "path": str(path),
+        "quarantined_path": str(quarantined),
+        "error": type(exc).__name__,
+        "detail": str(exc),
+    }
+    try:
+        os.replace(path, quarantined)
+    except OSError as move_error:
+        reason["quarantined_path"] = ""
+        reason["quarantine_error"] = type(move_error).__name__
+    logger.warning(
+        "composer index unreadable reason=composer_index_unreadable kind=%s path=%s "
+        "quarantined=%s error=%s",
+        kind,
+        path,
+        reason["quarantined_path"],
+        type(exc).__name__,
+    )
+    return reason
+
+
 class ResourceStore:
     """Thread-safe original-byte custody with atomic metadata persistence."""
 
@@ -97,6 +148,7 @@ class ResourceStore:
         self._index_path = root / "resources.json"
         self._lock = threading.RLock()
         self._records: dict[str, ResourceRecord] = {}
+        self.load_degradation: dict[str, str] | None = None
         self._load()
 
     def _load(self) -> None:
@@ -104,14 +156,20 @@ class ResourceStore:
             return
         try:
             payload = json.loads(self._index_path.read_text(encoding="utf-8"))
+            loaded: dict[str, ResourceRecord] = {}
             for row in payload.get("resources", []):
                 record = ResourceRecord(**row)
                 if record.state == "uploading":
                     upload = self._upload_path(record)
                     record.received_size = upload.stat().st_size if upload.exists() else 0
-                self._records[record.id] = record
+                loaded[record.id] = record
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"resource custody index is unreadable: {exc}") from exc
+            self.load_degradation = quarantine_corrupt_index(
+                self._index_path, exc, kind="resource_custody_index"
+            )
+            self._records = {}
+            return
+        self._records = loaded
 
     def _flush_locked(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -132,26 +190,6 @@ class ResourceStore:
         if record.state != "ready":
             raise ResourceConflictError("resource content is not ready", record)
         return self._revision_dir(record) / "original"
-
-    def create(
-        self,
-        *,
-        workspace_id: str,
-        name: str,
-        declared_size: int,
-        claimed_mime: str = "",
-        client_upload_id: str = "",
-    ) -> ResourceRecord:
-        """Create one resumable upload record without accepting bytes yet."""
-
-        record, _ = self.create_or_resume(
-            workspace_id=workspace_id,
-            name=name,
-            declared_size=declared_size,
-            claimed_mime=claimed_mime,
-            client_upload_id=client_upload_id,
-        )
-        return record
 
     def create_or_resume(
         self,
@@ -285,16 +323,35 @@ class ResourceStore:
             )
 
     def delete(self, workspace_id: str, resource_id: str) -> bool:
-        """Delete the original, upload residue, derivatives, and index record."""
+        """Delete the original, upload residue, derivatives, and index record.
+
+        BYTES FIRST, then the record. A concurrent reader holding the original
+        open makes ``rmtree`` raise ``PermissionError`` on Windows; popping the
+        record first would have lost it from memory (with no flush) while the
+        bytes survived on disk, so memory and disk disagreed until a restart.
+        Failing before the pop keeps the record authoritative and surfaces the
+        error typed.
+
+        Raises:
+            ResourceDeleteError: The bytes could not be removed. The index
+                record is unchanged and the resource stays listed.
+        """
 
         with self._lock:
             record = self._records.get(resource_id)
             if record is None or record.workspace_id != workspace_id:
                 return False
-            self._records.pop(resource_id, None)
             resource_root = self.root / workspace_id / resource_id
             if resource_root.exists():
-                shutil.rmtree(resource_root)
+                try:
+                    shutil.rmtree(resource_root)
+                except OSError as exc:
+                    raise ResourceDeleteError(
+                        f"resource bytes could not be removed: {exc}",
+                        record.model_copy(deep=True),
+                        type(exc).__name__,
+                    ) from exc
+            self._records.pop(resource_id, None)
             workspace_root = self.root / workspace_id
             if workspace_root.exists() and not any(workspace_root.iterdir()):
                 workspace_root.rmdir()
@@ -302,7 +359,12 @@ class ResourceStore:
             return True
 
     def delete_workspace(self, workspace_id: str) -> int:
-        """Delete every resource owned by a deleted workspace."""
+        """Delete every resource owned by a deleted workspace.
+
+        Same ordering rule as :meth:`delete`: the bytes go first, so a failed
+        removal leaves the index records intact and the error visible to the
+        caller rather than dropping every record while the tree survives.
+        """
 
         with self._lock:
             ids = [
@@ -310,11 +372,11 @@ class ResourceStore:
                 for resource_id, record in self._records.items()
                 if record.workspace_id == workspace_id
             ]
-            for resource_id in ids:
-                self._records.pop(resource_id, None)
             workspace_root = self.root / workspace_id
             if workspace_root.exists():
                 shutil.rmtree(workspace_root)
+            for resource_id in ids:
+                self._records.pop(resource_id, None)
             self._flush_locked()
             return len(ids)
 
@@ -327,7 +389,9 @@ class ResourceStore:
 
 __all__ = [
     "ResourceConflictError",
+    "ResourceDeleteError",
     "ResourceLimitError",
     "ResourceRecord",
     "ResourceStore",
+    "quarantine_corrupt_index",
 ]
