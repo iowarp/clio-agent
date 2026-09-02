@@ -31,7 +31,11 @@ from clio_agent.gact.resource_processing import (
     ResourceCustodyGone,
     ResourceProcessingRecord,
 )
-from clio_agent.gact.resource_tools import read_workspace_resource_structure
+from clio_agent.gact.resource_tools import (
+    ResourceQueryError,
+    list_workspace_resources,
+    read_workspace_resource_structure,
+)
 from clio_agent.gact.types import ModelRef
 from tests._config_layer import set_config
 from tests.test_gact.test_post_messages import FakeClioAgent
@@ -836,3 +840,70 @@ def test_a_truncated_derivative_manifest_is_announced_in_the_attachment_block(
             f"/v1/workspaces/{workspace_id}/resources/{resource['id']}/derivatives"
         ).json()
         assert listed["truncated"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Slice A4 sweep - the last two resource bounds are config, not literals
+# --------------------------------------------------------------------------- #
+
+
+def test_the_workspace_resource_listing_cap_is_configurable(tmp_path: Path) -> None:
+    """``resources.list_max_records`` bounds the listing and reports truncation.
+
+    Was a bare ``rows[:100]`` literal in ``resource_tools``. **Sabotage:**
+    restore the literal -> both rows come back and ``truncated`` stays False.
+    """
+
+    set_config("resources.list_max_records", 1)
+    app = _app(tmp_path)
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+        _upload(client, workspace_id, name="one.md", content=b"# one\n")
+        _upload(client, workspace_id, name="two.md", content=b"# two\n")
+
+        listed = list_workspace_resources(app, workspace_id)
+
+    assert len(listed["resources"]) == 1
+    assert listed["truncated"] is True
+
+
+def test_the_structured_node_ceiling_is_configurable(tmp_path: Path) -> None:
+    """``resources.structure_node_max_bytes`` bounds ONE structured node.
+
+    Was a bare ``_MAX_NODE_BYTES = 2 * 1024 * 1024`` module literal. The node
+    below is ~4 KiB encoded: it passes under the shipped 2 MiB default and must
+    be refused once the deployment lowers the ceiling to the 1 KiB floor.
+    **Sabotage:** restore the literal -> the refusal never fires and the node
+    is served.
+    """
+
+    big_text = "x" * 4096
+    result = {
+        **_STRUCTURED_RESULT,
+        "document": {
+            **_STRUCTURED_RESULT["document"],
+            "structure": {"texts": [{"text": big_text}], "tables": []},
+        },
+    }
+
+    class _BigNodeConverter(_MarkdownConverter):
+        async def submit(self, record: Any, content_path: Path) -> dict[str, Any]:
+            del record, content_path
+            return {"id": "job_1", "status": "complete", "result": result}
+
+    app = _with_converter(tmp_path, _BigNodeConverter())
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+        resource = _upload(client, workspace_id, name="big.md", content=b"# big\n")
+        resource_id = str(resource["id"])
+
+        # Under the shipped default the node is served...
+        served = read_workspace_resource_structure(app, workspace_id, resource_id, "texts", 0)
+        assert served["node"]["text"] == big_text
+
+        # ...and the deployment can refuse it by lowering the ceiling.
+        set_config("resources.structure_node_max_bytes", 1024)
+        with pytest.raises(ResourceQueryError) as excinfo:
+            read_workspace_resource_structure(app, workspace_id, resource_id, "texts", 0)
+
+    assert excinfo.value.code == "structure_node_too_large"
