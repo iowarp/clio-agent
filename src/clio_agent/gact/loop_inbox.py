@@ -362,51 +362,71 @@ def drain_inbox_to_new_turn(app: "FastAPI", sid: str) -> None:
     # path already OWNS a durable transcript row + pending intent, so several of
     # them can no longer be concatenated into one message (a single row can carry
     # only one id, and the others' durable intents would never be consumed). The
-    # oldest is promoted here; the rest are requeued, keeping their own ids, for
-    # the next idle boundary. An ask-user-resume steer carries no
+    # oldest promotable one wins; the rest are requeued, keeping their own ids,
+    # for the next idle boundary. An ask-user-resume steer carries no
     # ``steer_message_id`` and no intent row, so it mints as before.
-    promoted = steers[0]
-    for remaining in steers[1:]:
-        inbox_for(app, sid).put(remaining)
-    if promoted.steer_message_id:
-        # Claiming is the single-consumer gate: a live mid-turn drain that already
-        # took this steer leaves nothing to claim, so we must not re-drive it.
-        if app.state.message_intents.claim_pending(sid, promoted.steer_message_id) is None:
-            return
-    metadata = dict(promoted.metadata or {})
-    if promoted.steer_message_id:
-        metadata["pending_steer"] = False
-        metadata["mid_turn_steer"] = True
-        metadata["consumed_at"] = _now_iso()
-    resumed_msg = _start_background_user_turn(
-        app,
-        sid,
-        sess,
-        promoted.text,
-        request_parts=list(promoted.steer_parts or []),
-        metadata=metadata,
-        prev_status=str(getattr(sess, "status", "idle") or "idle"),
-        user_msg_id=promoted.steer_message_id,
-        user_created_at=promoted.steer_created_at,
-        replace_existing_user_message=bool(promoted.steer_message_id),
-    )
-    if promoted.steer_message_id:
-        app.state.message_intents.mark_consumed(sid, promoted.steer_message_id)
-    # A folded ask-user resume still publishes user_question.resumed so the answer's
-    # delivery is observable on the trace/API exactly as the live path emits it.
-    if promoted.metadata.get("ask_user_resume"):
-        app.state.bus.publish(
-            Event(
-                type="user_question.resumed",
-                session_id=sid,
-                payload={
-                    "question_id": promoted.metadata.get("question_id", ""),
-                    "session_id": sid,
-                    "queued_user_message_id": resumed_msg.id,
-                    "deferred": True,
-                },
+    #
+    # The loop matters: an UNCLAIMABLE oldest steer (a live mid-turn drain already
+    # took it) used to abort the whole pass, leaving every steer behind it
+    # requeued with no boundary left to promote them. Now the pass simply moves on
+    # to the next identity.
+    while steers:
+        promoted = steers.pop(0)
+        if promoted.steer_message_id:
+            # Claiming is the single-consumer gate: a live mid-turn drain that
+            # already took this steer leaves nothing to claim.
+            if app.state.message_intents.claim_pending(sid, promoted.steer_message_id) is None:
+                continue
+        metadata = dict(promoted.metadata or {})
+        if promoted.steer_message_id:
+            metadata["pending_steer"] = False
+            metadata["mid_turn_steer"] = True
+            metadata["consumed_at"] = _now_iso()
+        try:
+            resumed_msg = _start_background_user_turn(
+                app,
+                sid,
+                sess,
+                promoted.text,
+                request_parts=list(promoted.steer_parts or []),
+                metadata=metadata,
+                prev_status=str(getattr(sess, "status", "idle") or "idle"),
+                user_msg_id=promoted.steer_message_id,
+                user_created_at=promoted.steer_created_at,
+                replace_existing_user_message=bool(promoted.steer_message_id),
             )
-        )
+        except Exception as exc:  # noqa: BLE001 - an aborted promotion must not lose the steer
+            logger.warning(
+                "loop_inbox steer promotion failed reason=steer_promotion_error steer_id=%s "
+                "err=%r (intent released; retried at the next idle boundary)",
+                promoted.steer_message_id,
+                exc,
+            )
+            if promoted.steer_message_id:
+                app.state.message_intents.release_claim(sid, promoted.steer_message_id)
+            steers.insert(0, promoted)
+            break
+        if promoted.steer_message_id:
+            app.state.message_intents.mark_consumed(sid, promoted.steer_message_id)
+        # A folded ask-user resume still publishes user_question.resumed so the
+        # answer's delivery is observable on the trace/API exactly as the live
+        # path emits it.
+        if promoted.metadata.get("ask_user_resume"):
+            app.state.bus.publish(
+                Event(
+                    type="user_question.resumed",
+                    session_id=sid,
+                    payload={
+                        "question_id": promoted.metadata.get("question_id", ""),
+                        "session_id": sid,
+                        "queued_user_message_id": resumed_msg.id,
+                        "deferred": True,
+                    },
+                )
+            )
+        break
+    for remaining in steers:
+        inbox_for(app, sid).put(remaining)
 
 
 def drain_active_session_inbox(app: "FastAPI") -> str:

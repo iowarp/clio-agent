@@ -80,6 +80,21 @@ def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
             },
         )
 
+    def redrive_queue(sid: str) -> None:
+        """Re-attempt the head after any queue mutation.
+
+        The queue's only auto-promoter used to be the turn-done hook, so a
+        message queued while the session was IDLE sat forever (no turn was
+        running, so no turn could end), and a promotion that failed once stayed
+        frozen until some unrelated turn happened to finish. Every mutation is a
+        moment the head may have become promotable, so every mutation re-drives.
+        A busy or cancelled session is a no-op inside ``promote_queue_head``.
+        """
+
+        from clio_agent.gact.composer_runtime import promote_queue_head  # noqa: PLC0415
+
+        promote_queue_head(app, deps, sid)
+
     @app.get("/v1/sessions/{sid}/pending-steers")
     async def list_pending_steers(sid: str) -> dict[str, Any]:
         require_session(sid)
@@ -188,6 +203,7 @@ def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         )
         publish("queued_message.created", sid, row.model_dump())
+        redrive_queue(sid)
         return row
 
     @app.patch("/v1/sessions/{sid}/queued-messages/{message_id}")
@@ -210,6 +226,7 @@ def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
         if row is None:
             raise HTTPException(status_code=404, detail="queued message not found")
         publish("queued_message.updated", sid, row.model_dump())
+        redrive_queue(sid)
         return row
 
     @app.delete("/v1/sessions/{sid}/queued-messages/{message_id}", status_code=204)
@@ -224,6 +241,7 @@ def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
         if row is None:
             raise HTTPException(status_code=404, detail="queued message not found")
         publish("queued_message.deleted", sid, row.model_dump())
+        redrive_queue(sid)
         response.status_code = 204
 
     @app.post("/v1/sessions/{sid}/queued-messages/reorder")
@@ -239,6 +257,7 @@ def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         payload = {"queued_messages": [row.model_dump() for row in rows]}
         publish("queued_message.reordered", sid, payload)
+        redrive_queue(sid)
         return payload
 
     @app.post("/v1/sessions/{sid}/queued-messages/{message_id}/promote")

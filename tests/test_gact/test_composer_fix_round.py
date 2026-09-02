@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -28,6 +29,19 @@ from tests.test_gact.test_post_messages import FakeClioAgent
 from tests.test_gact.test_resources import _upload, _workspace
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
+
+class _RecordingSlowAgent:
+    """Holds a turn open long enough to steer/queue against, and records calls."""
+
+    def __init__(self, delay_s: float = 1.0) -> None:
+        self.delay_s = delay_s
+        self.calls: list[tuple[str, str]] = []
+
+    def forward(self, question: str, session_id: str) -> Any:
+        self.calls.append((question, session_id))
+        time.sleep(self.delay_s)
+        return SimpleNamespace(answer="done", selected_expert="", routing_rationale="")
 
 
 def _user_messages(client: TestClient, sid: str) -> list[dict[str, Any]]:
@@ -299,9 +313,19 @@ def _projected(app: Any, sid: str, event_type: str) -> list[dict[str, Any]]:
 def test_every_composer_event_carries_an_entity_and_a_v3_payload(tmp_path: Path) -> None:
     """The queue events project; none ships a 0.2 payload or a null entity id."""
 
-    app = build_app(sessions_path=tmp_path / "s.json", agent=FakeClioAgent(answer="ok"))
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowAgent(sleep_s=4.0))
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "v3"}).json()["id"]
+        # Queueing is a while-busy affordance: hold a turn so the rows survive
+        # long enough to be edited, reordered and deleted.
+        assert (
+            client.post(
+                f"/v1/sessions/{sid}/messages",
+                json={"parts": [{"type": "text", "text": "hold the slot"}]},
+            ).status_code
+            == 200
+        )
+        _wait_busy(app, sid)
         first = client.post(
             f"/v1/sessions/{sid}/queued-messages",
             json={"text": "one", "client_message_id": "queued_one"},
@@ -359,11 +383,13 @@ def test_every_composer_event_carries_an_entity_and_a_v3_payload(tmp_path: Path)
         promotion = _projected(app, sid, "queued_message.promoted")
         assert promotion and promotion[0]["entity_id"] == "queued_one"
         assert promotion[0]["payload"]["message_id"] == "queued_one"
-        assert promotion[0]["payload"]["state"] == "started"
+        # Promoted against a running turn, so acceptance lands as a steer.
+        assert promotion[0]["payload"]["state"] == "pending_steer"
 
         for row in created + edited + order + deleted + promotion:
             assert row["protocol_version"] == "0.3"
             assert row["entity_revision"] > 0
+        _wait_idle(app, sid)
 
 
 def test_message_accepted_is_uniform_across_start_and_steer(tmp_path: Path) -> None:
@@ -500,3 +526,160 @@ def test_a_recovered_pending_steer_is_delivered_after_a_restart(tmp_path: Path) 
     assert restarted.state.message_intents.get_pending(sid, steer_id) is None or (
         restarted.state.message_intents.get_pending(sid, steer_id).state == "consumed"  # type: ignore[union-attr]
     )
+
+
+# --------------------------------------------------------------------------- #
+# F6 — the queue must never freeze with promotable work in it.                  #
+# --------------------------------------------------------------------------- #
+
+
+def test_queueing_on_an_idle_session_starts_the_head_immediately(tmp_path: Path) -> None:
+    """The only auto-promoter used to be the turn-done hook.
+
+    A message queued while the session is idle therefore sat forever: no turn was
+    running, so no turn could end and promote it.
+    """
+
+    agent = FakeClioAgent(answer="promoted from idle")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "idle queue"}).json()["id"]
+        created = client.post(
+            f"/v1/sessions/{sid}/queued-messages",
+            json={"text": "start me", "client_message_id": "msg_idle_queue"},
+        )
+        assert created.status_code == 201, created.text
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and agent.calls == []:
+            time.sleep(0.03)
+        assert agent.calls, "a queued message on an idle session was never promoted"
+        assert "start me" in agent.calls[0][0]
+        assert client.get(f"/v1/sessions/{sid}/queued-messages").json()["queued_messages"] == []
+        assert any(row["id"] == "msg_idle_queue" for row in _user_messages(client, sid))
+
+
+def test_a_revision_race_retries_once_instead_of_freezing_the_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A racing edit bumps the head's revision between the read and the promote."""
+
+    from clio_agent.gact.message_intents import MessageIntentStore, RevisionConflictError
+
+    agent = FakeClioAgent(answer="won the retry")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "race"}).json()["id"]
+        real = MessageIntentStore.promote_queued
+        state = {"raised": False}
+
+        def flaky(self: Any, session_id: str, message_id: str, revision: int, promote: Any) -> Any:
+            if not state["raised"]:
+                state["raised"] = True
+                current = self.get_queued(session_id, message_id)
+                raise RevisionConflictError(current)
+            return real(self, session_id, message_id, revision, promote)
+
+        monkeypatch.setattr(MessageIntentStore, "promote_queued", flaky)
+        created = client.post(
+            f"/v1/sessions/{sid}/queued-messages",
+            json={"text": "retry me", "client_message_id": "msg_race"},
+        )
+        assert created.status_code == 201, created.text
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and agent.calls == []:
+            time.sleep(0.03)
+
+    assert state["raised"], "the conflict path never ran"
+    assert agent.calls, "the queue froze on a stale revision instead of re-reading the head"
+    assert "retry me" in agent.calls[0][0]
+
+
+def test_a_failed_promotion_stays_typed_and_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A promotion failure must not freeze the queue until an unrelated turn ends."""
+
+    from clio_agent.gact import composer_runtime
+
+    agent = FakeClioAgent(answer="second chance")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "failed"}).json()["id"]
+        state = {"fail": True}
+        import clio_agent.gact.message_submission as submission
+
+        real_accept = submission.accept_message
+
+        def flaky_accept(*args: Any, **kwargs: Any) -> Any:
+            if state["fail"]:
+                state["fail"] = False
+                raise RuntimeError("simulated acceptance failure")
+            return real_accept(*args, **kwargs)
+
+        monkeypatch.setattr(submission, "accept_message", flaky_accept)
+        created = client.post(
+            f"/v1/sessions/{sid}/queued-messages",
+            json={"text": "eventually", "client_message_id": "msg_failed_once"},
+        )
+        assert created.status_code == 201, created.text
+        assert state["fail"] is False, "the failing promotion never ran"
+        rows = client.get(f"/v1/sessions/{sid}/queued-messages").json()["queued_messages"]
+        assert [row["id"] for row in rows] == ["msg_failed_once"], "the durable row was lost"
+
+        failures = _projected(app, sid, "queued_message.promotion_failed")
+        assert failures, "a failed promotion published no typed reason"
+        assert failures[0]["entity_id"] == "msg_failed_once"
+        assert failures[0]["payload"]["recoverable"] is True
+        assert "queue_mutation" in failures[0]["payload"]["retry_on"]
+
+        # A later queue MUTATION re-drives it rather than waiting for a turn that
+        # may never run.
+        head = rows[0]
+        patched = client.patch(
+            f"/v1/sessions/{sid}/queued-messages/{head['id']}",
+            json={"revision": head["revision"], "metadata": {"nudge": True}},
+        )
+        assert patched.status_code == 200, patched.text
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and agent.calls == []:
+            time.sleep(0.03)
+        assert agent.calls, "the queue never retried after the typed failure"
+        assert client.get(f"/v1/sessions/{sid}/queued-messages").json()["queued_messages"] == []
+    del composer_runtime
+
+
+def test_an_unclaimable_steer_does_not_strand_the_steers_behind_it(tmp_path: Path) -> None:
+    """The idle re-drive used to `return` on a claim miss, freezing the rest."""
+
+    agent = _RecordingSlowAgent(delay_s=0.8)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "strand"}).json()["id"]
+        assert (
+            client.post(
+                f"/v1/sessions/{sid}/messages",
+                json={"parts": [{"type": "text", "text": "first"}]},
+            ).status_code
+            == 200
+        )
+        _wait_busy(app, sid)
+        first_steer = client.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "s1"}]},
+        ).json()["message_id"]
+        client.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "s2"}]},
+        )
+        # A concurrent consumer owns the oldest steer; the idle re-drive must move
+        # on to the next identity rather than giving up on the whole pass.
+        assert app.state.message_intents.claim_pending(sid, first_steer) is not None
+
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline and len(agent.calls) < 2:
+            time.sleep(0.05)
+
+    assert len(agent.calls) >= 2, "the steers behind an unclaimable one were stranded"
+    assert "s2" in agent.calls[1][0]

@@ -223,12 +223,32 @@ def test_corrupt_intent_state_fails_closed(tmp_path: Path) -> None:
 def test_queue_routes_keep_future_messages_out_of_transcript_until_promoted(
     tmp_path: Path,
 ) -> None:
+    """A queued row is intent, not transcript state, until something promotes it.
+
+    Queueing is a while-BUSY affordance: on an idle session the head auto-starts
+    immediately (a queued message nothing could ever promote was the lifecycle
+    gap the composer fix round closed), so this drives the deferred case with a
+    turn holding the slot.
+    """
+
     app = build_app(
         sessions_path=tmp_path / "sessions.json",
-        agent=FakeClioAgent(answer="promoted"),
+        agent=SlowClioAgent(delay_s=2.0),
     )
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "queue"}).json()["id"]
+        assert (
+            client.post(
+                f"/v1/sessions/{sid}/messages",
+                json={"parts": [{"type": "text", "text": "hold the slot"}]},
+            ).status_code
+            == 200
+        )
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not app.state.turn_runner.busy(sid):
+            time.sleep(0.02)
+        assert app.state.turn_runner.busy(sid)
+
         created = client.post(
             f"/v1/sessions/{sid}/queued-messages",
             json={
@@ -245,7 +265,8 @@ def test_queue_routes_keep_future_messages_out_of_transcript_until_promoted(
         assert created.status_code == 201, created.text
         queued = created.json()
         assert queued["position"] == 0
-        assert client.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []
+        messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        assert all(row["id"] != "msg_client_future" for row in messages)
 
         replay = client.post(
             f"/v1/sessions/{sid}/queued-messages",
@@ -312,10 +333,20 @@ def test_message_state_snapshot_reconciles_transcript_pending_queue_and_cursor(
 ) -> None:
     app = build_app(
         sessions_path=tmp_path / "sessions.json",
-        agent=FakeClioAgent(answer="snapshot"),
+        agent=SlowClioAgent(delay_s=2.0),
     )
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "snapshot"}).json()["id"]
+        assert (
+            client.post(
+                f"/v1/sessions/{sid}/messages",
+                json={"parts": [{"type": "text", "text": "hold the slot"}]},
+            ).status_code
+            == 200
+        )
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not app.state.turn_runner.busy(sid):
+            time.sleep(0.02)
         queued = client.post(
             f"/v1/sessions/{sid}/queued-messages",
             json={"text": "later", "client_message_id": "queued_client"},
@@ -328,8 +359,10 @@ def test_message_state_snapshot_reconciles_transcript_pending_queue_and_cursor(
         assert payload["protocol_version"] == "0.3"
         assert payload["authoritative"] is True
         assert payload["session"]["id"] == sid
-        assert payload["messages"] == []
+        assert [row["role"] for row in payload["messages"]] == ["user"]
         assert payload["pending_steers"] == []
         assert [row["id"] for row in payload["queued_messages"]] == [queued.json()["id"]]
-        assert payload["next_cursor"] > 1
+        # The cursor is directly usable as Last-Event-ID: the highest event id
+        # this snapshot already accounts for.
+        assert payload["next_cursor"] == app.state.bus.latest_event_id(sid)
         assert payload["dropped_events"] == 0
