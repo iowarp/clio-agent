@@ -100,6 +100,8 @@ def maybe_pause_for_user(
             **pending,
             "surfaced": True,
             "question_id": question.id,
+            "created_at": question.created_at,
+            "question_record": question.model_dump(exclude_none=True),
         }
     updated = state.app.state.sessions.update(
         state.sid,

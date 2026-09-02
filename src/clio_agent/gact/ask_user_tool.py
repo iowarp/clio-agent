@@ -10,6 +10,7 @@ from typing import Any
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents.tool_instrumentation import native_tool
 from clio_agent.gact.permission_delivery import attended_session_id
+from clio_agent.gact.types import UserQuestion, UserQuestionOption
 
 PENDING_ASK_USER_META = "pending_ask_user"
 _KINDS = frozenset({"freeform", "choice", "confirmation"})
@@ -154,6 +155,95 @@ def build_ask_user_tool(agent_def: Any) -> Any:
     )
 
 
+def restore_pending_ask_user_questions(app: Any) -> int:
+    """Rehydrate surfaced native questions from durable session metadata.
+
+    ``user_questions`` remains the live authoritative ledger.  The surfaced
+    question snapshot stored on its owning session is the crash-recovery seam:
+    it restores the same question identity after a process restart instead of
+    manufacturing a forwarded copy or losing the interaction entirely.
+    """
+
+    restored = 0
+    terminal_statuses = {"answered", "cancelled", "expired"}
+    for session in app.state.sessions.list():
+        session_metadata = session.metadata if isinstance(session.metadata, Mapping) else {}
+        pending_raw = session_metadata.get(PENDING_ASK_USER_META)
+        if not isinstance(pending_raw, Mapping) or not pending_raw.get("surfaced"):
+            continue
+        if str(pending_raw.get("resolved_status") or "") in terminal_statuses:
+            continue
+        question_id = str(
+            pending_raw.get("question_id")
+            or session_metadata.get("pending_user_question_id")
+            or ""
+        )
+        if not question_id or question_id in app.state.user_questions:
+            continue
+
+        snapshot = pending_raw.get("question_record")
+        question: UserQuestion | None = None
+        if isinstance(snapshot, Mapping):
+            try:
+                question = UserQuestion.model_validate(snapshot)
+            except ValueError:
+                question = None
+        if question is None:
+            prompt = str(pending_raw.get("question") or "").strip()
+            if not prompt:
+                continue
+            kind_raw = str(pending_raw.get("kind") or "freeform")
+            kind = kind_raw if kind_raw in _KINDS else "freeform"
+            options: list[UserQuestionOption] = []
+            for raw_option in pending_raw.get("choices") or []:
+                if not isinstance(raw_option, Mapping):
+                    continue
+                label = str(raw_option.get("label") or "").strip()
+                if not label:
+                    continue
+                options.append(
+                    UserQuestionOption(
+                        label=label,
+                        value=str(raw_option.get("value") or label),
+                        description=str(raw_option.get("description") or ""),
+                    )
+                )
+            caller = pending_raw.get("caller")
+            caller = caller if isinstance(caller, Mapping) else {}
+            created_at = str(
+                pending_raw.get("created_at") or session.updated_at or session.created_at
+            )
+            question = UserQuestion(
+                id=question_id,
+                session_id=session.id,
+                owner_session_id=str(pending_raw.get("owner_session_id") or session.id),
+                attended_session_id=str(
+                    pending_raw.get("attended_session_id") or session.id
+                ),
+                prompt=prompt,
+                kind=kind,  # type: ignore[arg-type]
+                options=options,
+                allow_freeform=bool(pending_raw.get("allow_freeform", False)),
+                created_at=created_at,
+                updated_at=created_at,
+                expires_at=str(pending_raw.get("expires_at") or ""),
+                source="native",
+                metadata={
+                    "reason": str(pending_raw.get("reason") or ""),
+                    "caller": dict(caller),
+                    "task_id": str(pending_raw.get("task_id") or ""),
+                    "invocation_id": str(pending_raw.get("invocation_id") or ""),
+                    "resume_on_answer": True,
+                    "selected_agent": str(caller.get("agent_id") or ""),
+                },
+            )
+
+        app.state.user_questions[question.id] = question
+        arm_ask_user_deadline(app, question)
+        restored += 1
+    return restored
+
+
 def arm_ask_user_deadline(app: Any, question: Any) -> None:
     """Expire one surfaced native question at its declared deadline.
 
@@ -242,4 +332,5 @@ __all__ = [
     "PENDING_ASK_USER_META",
     "arm_ask_user_deadline",
     "build_ask_user_tool",
+    "restore_pending_ask_user_questions",
 ]

@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 
 from clio_agent.gact.a2ui import SERVER_ACTIONS
 from clio_agent.gact.agent_tasks import descendant_session_ids
+from clio_agent.gact.ask_user_tool import restore_pending_ask_user_questions
 from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
 from clio_agent.gact.types import (
@@ -309,6 +310,7 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register normalized list/respond routes without introducing a state store."""
 
     del deps
+    restore_pending_ask_user_questions(app)
 
     @app.get("/v1/sessions/{root_session_id}/interactions")
     async def list_interactions(

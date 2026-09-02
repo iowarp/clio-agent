@@ -280,6 +280,73 @@ def test_interactions_aggregate_children_and_route_question_and_permission(
         assert late.status_code == 409
 
 
+def test_pending_native_question_survives_backend_restart(tmp_path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    first_app = build_app(sessions_path=sessions_path)
+    session = first_app.state.sessions.create(workspace_id="ws_default", title="restart")
+    now = datetime.now(timezone.utc)
+    question_id = "ques_restart"
+    first_app.state.sessions.update(
+        session.id,
+        status="waiting_user",
+        metadata_patch={
+            "pending_user_question_id": question_id,
+            "pending_ask_user": {
+                "action": "ask_user",
+                "question": "Which physical system should I simulate?",
+                "kind": "freeform",
+                "choices": [],
+                "allow_freeform": True,
+                "reason": "The study needs a physical system.",
+                "created_at": now.isoformat(),
+                "expires_at": (now + timedelta(minutes=10)).isoformat(),
+                "owner_session_id": session.id,
+                "attended_session_id": session.id,
+                "task_id": "",
+                "invocation_id": "turn_before_restart:main:ask_user",
+                "caller": {"agent_id": "main"},
+                "surfaced": True,
+                "question_id": question_id,
+            },
+        },
+    )
+
+    restarted_app = build_app(sessions_path=sessions_path)
+    routed: list[tuple[str, str]] = []
+    original_answer = restarted_app.state.answer_user_question
+
+    async def record_answer(
+        session_id: str, restored_question_id: str, request: object
+    ) -> UserQuestion:
+        routed.append((session_id, restored_question_id))
+        return await original_answer(session_id, restored_question_id, request)
+
+    restarted_app.state.answer_user_question = record_answer
+
+    with TestClient(restarted_app) as client:
+        interactions = client.get(
+            f"/v1/sessions/{session.id}/interactions",
+            headers=HEADERS,
+        )
+        assert interactions.status_code == 200
+        rows = interactions.json()["interactions"]
+        assert [row["id"] for row in rows] == [f"question:{question_id}"]
+        assert rows[0]["prompt"] == "Which physical system should I simulate?"
+        assert rows[0]["source"]["invocation_id"] == "turn_before_restart:main:ask_user"
+
+        answered = client.post(
+            f"/v1/sessions/{session.id}/interactions/question:{question_id}/respond",
+            headers=HEADERS,
+            json={"action": "answer", "answer": "A cantilever beam."},
+        )
+        assert answered.status_code == 200
+
+    assert routed == [(session.id, question_id)]
+    assert restarted_app.state.user_questions[question_id].status == "answered"
+    assert restarted_app.state.sessions.get(session.id).status == "idle"
+    assert restarted_app.state.sessions.get(session.id).metadata["pending_user_question_id"] == ""
+
+
 def test_legacy_forwarded_question_hydrates_owner_and_attended_ids() -> None:
     row = UserQuestion.model_validate(
         {
