@@ -559,6 +559,15 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
             # may raise (e.g. no providers configured) -- the invariant under
             # test holds regardless.
             "refresh_provider_models": {},
+            # Bounded workspace-resource reads, auto-attached to every react
+            # expert. Called against a missing resource id on purpose: each
+            # returns a typed not-found row rather than raising, and the
+            # tool_call part must land either way.
+            "workspace_resource_list": {},
+            "workspace_resource_inspect": {"resource_id": "missing"},
+            "workspace_resource_read": {"resource_id": "missing"},
+            "workspace_resource_search": {"resource_id": "missing", "query": "proof"},
+            "workspace_resource_structure": {"resource_id": "missing"},
         }
         assert set(calls) == set(auto_tools), (
             "auto_tools.build_auto_react_tools grew/shrank — update this sabotage test's "

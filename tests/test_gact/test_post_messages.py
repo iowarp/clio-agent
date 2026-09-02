@@ -1429,6 +1429,64 @@ def test_post_message_model_override_returns_structured_501(
     assert msgs == []
 
 
+def test_post_message_live_discovered_model_override_executes_and_records_route(
+    client: TestClient,
+    fake_agent: FakeClioAgent,
+) -> None:
+    """A picker choice backed by live catalog evidence is an executable turn route."""
+
+    from .conftest import complete_turn
+
+    client.app.state.provider_catalog = {
+        "providers": [
+            {
+                "id": "codex",
+                "health": "ready",
+                "models": [
+                    {
+                        "model_id": "gpt-5.3-codex-spark",
+                        "availability": "available",
+                        "modalities": ["text"],
+                        "evidence": {
+                            "live": True,
+                            "generated_at": "2026-09-01T12:00:00+00:00",
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+    sid = _create_session(client)
+
+    assistant = complete_turn(
+        client,
+        sid,
+        "route this turn",
+        json_override={
+            "client_message_id": "msg_spark_route",
+            "model": {"provider_id": "codex", "model_id": "gpt-5.3-codex-spark"},
+        },
+    )
+    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    user = next(row for row in messages if row["id"] == "msg_spark_route")
+
+    assert fake_agent.calls == [("route this turn", sid)]
+    assert user["metadata"]["effective_model"] == {
+        "provider_id": "codex",
+        "model_id": "gpt-5.3-codex-spark",
+        "variant": "",
+    }
+    assert user["metadata"]["model_selection_source"] == "per_message"
+    runtime_model = assistant["metadata"]["agent_runtime"]["model"]
+    assert runtime_model == {
+        "provider_id": "codex",
+        "model_id": "gpt-5.3-codex-spark",
+        "provider_source": "per_message",
+        "model_source": "per_message",
+        "fallback_to_global": False,
+    }
+
+
 def test_post_message_session_model_mismatch_returns_structured_501(
     client: TestClient,
     fake_agent: FakeClioAgent,

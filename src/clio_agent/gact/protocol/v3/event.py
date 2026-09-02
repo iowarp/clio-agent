@@ -3,13 +3,23 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from clio_agent.gact.events import Event
-from clio_agent.gact.protocol.v3 import CONNECTION_ID, GACT_V3
+from clio_agent.gact.protocol.v3 import CONNECTION_ID, GACT_V3, Projection
+from clio_agent.gact.protocol.v3.composer import COMPOSER_PROJECTORS
 from clio_agent.gact.protocol.v3.message import message_to_v3, part_to_v3_block
 from clio_agent.gact.protocol.v3.session import session_to_v3
+
+# Cancellation facts that live ONLY on a session.status_changed payload (they are
+# per-attempt, so the Session record cannot carry them) and must ride the v3
+# session projection rather than being discarded with the rest of the payload.
+_CANCELLATION_FIELDS = (
+    "execution_cancellation",
+    "executor_work_may_continue",
+    "cancellation_attempt",
+    "composer_autostart",
+)
 
 _LIVE_WORK_STATE = {
     "queued": "queued",
@@ -40,6 +50,14 @@ def _event_identity(event_type: str, payload: Mapping[str, Any]) -> str | None:
         "task": ("task_id", "handle_id", "id"),
         "artifact": ("artifact_id", "uri", "id"),
         "a2ui": ("surface_id", "id"),
+        # Composer lanes. Without an entry each of these falls back to a bare
+        # "id" the payload does not carry, so the v3 envelope would ship a null
+        # entity_id and a client could not correlate the update with the row it
+        # already holds.
+        "resource": ("resource_id", "id"),
+        "queued_message": ("queued_message_id", "id"),
+        "pending_steer": ("message_id", "id"),
+        "provider_catalog": ("catalog_id", "id"),
     }
     family = event_type.split(".", 1)[0]
     for key in keys_by_type.get(family, ("id",)):
@@ -49,12 +67,7 @@ def _event_identity(event_type: str, payload: Mapping[str, Any]) -> str | None:
     return None
 
 
-@dataclass(frozen=True)
-class _Projection:
-    event_type: str
-    payload: dict[str, Any]
-    entity_id: str | None = None
-
+_Projection = Projection
 
 _Projector = Callable[[Event, dict[str, Any], Any], _Projection | None]
 
@@ -65,10 +78,20 @@ def _stream_live(event: Event, payload: dict[str, Any], session: Any) -> _Projec
 
 
 def _session_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Projection | None:
-    del event, payload
+    del event
     if session is None:
         return None
     projected = session_to_v3(session)
+    # The cancellation envelope is computed by the SAME transition that publishes
+    # this event and lives ONLY on its payload (the Session record cannot carry
+    # it -- it is per-attempt, not per-session). Dropping it made the v3 wire
+    # claim a clean `state: cancelled` while the 0.2 wire honestly reported that
+    # executor work may still be running.
+    cancellation = {
+        key: payload[key] for key in _CANCELLATION_FIELDS if payload.get(key) is not None
+    }
+    if cancellation:
+        projected["cancellation"] = cancellation
     return _Projection("session.upserted", projected, str(projected["id"]))
 
 
@@ -254,6 +277,7 @@ _EVENT_PROJECTORS: dict[str, _Projector] = {
     "tool.call.completed": _tool_completed,
     "permission.requested": _permission_requested,
     "permission.resolved": _permission_resolved,
+    **COMPOSER_PROJECTORS,
 }
 
 _PREFIX_PROJECTORS: tuple[tuple[str, _Projector], ...] = (
@@ -272,8 +296,22 @@ def _projector_for(event_type: str) -> _Projector | None:
     )
 
 
-def event_to_v3(event: Event, *, session: Any = None, workspace_id: str = "") -> dict[str, Any]:
-    """Translate a live 0.2 event into the canonical scoped 0.3 envelope."""
+def event_to_v3(
+    event: Event,
+    *,
+    session: Any = None,
+    workspace_id: str = "",
+    entity_revision: int | None = None,
+) -> dict[str, Any]:
+    """Translate a live 0.2 event into the canonical scoped 0.3 envelope.
+
+    ``entity_revision`` defaults to the event's own timeline id. A caller that
+    emits a connection-local frame ABOUT an entity — the reconnect preamble's
+    ``session.snapshot``, whose wire id is pinned to 0 so the served frames stay
+    monotonic — passes the entity's real revision here instead, so a
+    revision-guarding client does not discard the authoritative snapshot as older
+    than what it already holds.
+    """
 
     payload: dict[str, Any] = dict(event.payload)
     event_type = event.type
@@ -304,7 +342,7 @@ def event_to_v3(event: Event, *, session: Any = None, workspace_id: str = "") ->
         "type": event_type,
         "occurred_at": event.occurred_at,
         "scope": scope,
-        "entity_revision": event.id,
+        "entity_revision": event.id if entity_revision is None else int(entity_revision),
         "payload": payload,
     }
     if entity_id:
@@ -314,12 +352,29 @@ def event_to_v3(event: Event, *, session: Any = None, workspace_id: str = "") ->
     return envelope
 
 
-def format_sse_v3(event: Event, *, session: Any = None, workspace_id: str = "") -> bytes:
-    """Render an event as an SSE frame containing a GACT 0.3 envelope."""
+def format_sse_v3(
+    event: Event,
+    *,
+    session: Any = None,
+    workspace_id: str = "",
+    entity_revision: int | None = None,
+) -> bytes:
+    """Render an event as an SSE frame containing a GACT 0.3 envelope.
 
-    envelope = event_to_v3(event, session=session, workspace_id=workspace_id)
+    A TRANSIENT event (the ``server.heartbeat`` keepalive) is framed WITHOUT an
+    ``id:`` line, and ``runtime.globals._format_sse`` mirrors it for 0.2. Per the
+    SSE spec a frame with no id leaves the client's ``lastEventId`` untouched,
+    which is exactly right for a keepalive: it never enters the replay history
+    and never advances ``bus.highest_event_id``, so putting its id on the wire
+    pushed the client's resume cursor PAST the timeline head and made the next
+    reconnect look like a process-epoch reset.
+    """
+
+    envelope = event_to_v3(
+        event, session=session, workspace_id=workspace_id, entity_revision=entity_revision
+    )
     event_type = str(envelope["type"])
+    id_line = "" if event.transient else f"id: {event.id}\n"
     return (
-        f"event: {event_type}\nid: {event.id}\ndata: "
-        f"{json.dumps(envelope, separators=(',', ':'))}\n\n"
+        f"event: {event_type}\n{id_line}data: {json.dumps(envelope, separators=(',', ':'))}\n\n"
     ).encode()

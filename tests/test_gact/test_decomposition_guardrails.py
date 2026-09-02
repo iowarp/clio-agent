@@ -86,7 +86,20 @@ from clio_agent.gact.app import build_app
 # surface/message/action (3), artifact table preview (1), blueprint file write
 # (1), context preferences (2), relay configuration (2), session defaults (2),
 # and workspace grant removal (1). No route is registered inline in app.py.
-EXPECTED_ROUTE_METHOD_PAIRS = 205
+# 205 -> 231 (PR #1278 re-land): +26 pairs across the three composer lanes, all
+# registered by composer_runtime.register_composer_routes from their own concern
+# modules (nothing inline in app.py). +16 routes/resources.py (the immutable
+# workspace resource service: CRUD, resumable content PUT/HEAD/GET, preview,
+# search, structure, derivatives, reprocess and processing-cancel), +9
+# routes/message_intents.py (pending-steer list/cancel and the queued-message
+# list/create/patch/delete/reorder/promote surface), +1
+# routes/provider_catalog.py (GET /v1/provider-catalog). Counts are pairs, not
+# paths: Starlette registers HEAD alongside every GET.
+#
+# +1 for GET /v1/questions -- the unscoped attention lane's ask-user half,
+# registered by routes/permissions.py beside the unscoped GET /v1/permissions it
+# mirrors (measured: this app's GET routes contribute one method pair each).
+EXPECTED_ROUTE_METHOD_PAIRS = 232
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

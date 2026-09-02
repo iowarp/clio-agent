@@ -3,7 +3,20 @@
     {
       "payload": {
         "id": "<msg#1>",
-        "metadata": {},
+        "metadata": {
+          "behavior": {
+            "confirmation_policy": "ask",
+            "execution_mode": "execute",
+            "reasoning_effort": "medium"
+          },
+          "client_message_id": "",
+          "delivery": "start",
+          "effective_model": {
+            "model_id": "",
+            "provider_id": "",
+            "variant": ""
+          }
+        },
         "parts": [
           {
             "agent_id": "",

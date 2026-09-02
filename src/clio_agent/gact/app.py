@@ -54,7 +54,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clio_agent import conf
-from clio_agent.gact import context as _ctx
+from clio_agent.gact import composer_runtime
 from clio_agent.gact.auth import configure_bearer_auth
 from clio_agent.gact.cors import gact_cors_origins as _gact_cors_origins
 from clio_agent.gact.error_middleware import install_error_envelope
@@ -368,6 +368,11 @@ from clio_agent.gact.agents.resolution import (  # noqa: E402, F401
     _runtime_session_agent_overlay,
     _runtime_workspace_catalog_cwd,
 )
+from clio_agent.gact.agents.runners import (  # noqa: E402
+    _run_blueprint_dspy_agent,
+    _run_prompt_user_agent,
+    _run_tool_user_agent,
+)
 from clio_agent.gact.agents.runtime import (  # noqa: E402,F401
     _prediction_structured_metadata,
     _retaining_react_cls,
@@ -612,69 +617,10 @@ from clio_agent.gact.workflow_state.merge import (  # noqa: E402,F401
 )
 
 
-def _run_blueprint_dspy_agent(
-    base_agent: Any,
-    agent_def: "AgentDef",
-    question: str,
-    session_id: str,
-    cancel_requested: Any | None = None,
-) -> Any:
-    token = _ctx.set_session_id(session_id)
-    try:
-        module = _build_blueprint_dspy_module(base_agent, agent_def)
-        return module(
-            question=question,
-            session_id=session_id,
-            cancel_requested=cancel_requested,
-        )
-    finally:
-        _ctx.reset(token)
-
-
 def _blueprint_runner_for_agent(agent_def: "AgentDef") -> Any:
     if _agent_definition_uses_blueprint_runtime(agent_def):
         return _run_blueprint_dspy_agent
     return _run_tool_user_agent if agent_def.tools else _run_prompt_user_agent
-
-
-def _run_prompt_user_agent(
-    base_agent: Any,
-    agent_def: "AgentDef",
-    question: str,
-    session_id: str,
-    cancel_requested: Any | None = None,
-) -> Any:
-    """Execute a prompt-only user/skill agent through DSPy/LiteLLM."""
-    token = _ctx.set_session_id(session_id)
-    try:
-        module = _build_prompt_user_agent_module(base_agent, agent_def)
-        return module.forward(
-            question=question,
-            session_id=session_id,
-            cancel_requested=cancel_requested,
-        )
-    finally:
-        _ctx.reset(token)
-
-
-def _run_tool_user_agent(
-    base_agent: Any,
-    agent_def: "AgentDef",
-    question: str,
-    session_id: str,
-    cancel_requested: Any | None = None,
-) -> Any:
-    """Execute a tool-declaring user/skill agent through DSPy ReAct."""
-    token = _ctx.set_session_id(session_id)
-    try:
-        module = _build_tool_user_agent_module(base_agent, agent_def)
-        return module.forward(
-            question=question,
-            session_id=session_id,
-            cancel_requested=cancel_requested,
-        )
-    finally:
-        _ctx.reset(token)
 
 
 def _clear_session_model_refs(app: "FastAPI") -> None:
@@ -1276,6 +1222,7 @@ def build_app(
     # #889: BOUNDED (LRU + byte cap + idle-TTL) resident projection over the store —
     # boots empty (index only), materializes lazily. See gact.resident_ledgers.
     app.state.messages = build_resident_ledger_set(app)
+    composer_runtime.initialize_composer_state(app, session_store_path)
     # cooperative cancellation flags. POST /cancel
     # adds a sid; the POST-message handler checks + clears after the
     # agent returns. Set (not dict) because the flag's presence IS
@@ -1851,6 +1798,9 @@ def build_app(
         metadata: Optional[dict[str, Any]] = None,
         prev_status: str = "idle",
         turn_agent_id: str = "",
+        user_msg_id: str = "",
+        user_created_at: str = "",
+        replace_existing_user_message: bool = False,
     ) -> Message:
         """Stage + drive a user turn (thin ``build_app`` wrapper, #714).
 
@@ -1868,6 +1818,9 @@ def build_app(
             metadata=metadata,
             prev_status=prev_status,
             turn_agent_id=turn_agent_id,
+            user_msg_id=user_msg_id,
+            user_created_at=user_created_at,
+            replace_existing_user_message=replace_existing_user_message,
         )
 
     # ---- POST /v1/sessions/{sid}/cancel (BBB20) -----------------------
@@ -2169,6 +2122,7 @@ def build_app(
     # replace, active-model ref + override error and the agent-not-available
     # error travel on ``deps``.
     register_messages_routes(app, deps)
+    composer_runtime.register_composer_routes(app, deps)
     register_a2ui_routes(app, deps)
 
     # ---- /v1/agent-tasks + /v1/sessions/{sid}/agent-tasks (#948 S2 / #950) ----

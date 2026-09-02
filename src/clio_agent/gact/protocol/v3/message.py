@@ -52,6 +52,30 @@ def _action_cards(part: Mapping[str, Any]) -> list[dict[str, Any]]:
     return projected
 
 
+def _resource_delivery(metadata: Mapping[str, Any]) -> dict[str, str] | None:
+    """Project the persisted delivery decision without exposing private metadata."""
+
+    raw = metadata.get("delivery")
+    if not isinstance(raw, Mapping):
+        return None
+    representation = str(raw.get("representation") or "")
+    if representation not in {
+        "native",
+        "bounded_tools",
+        "structured_document",
+        "sandbox",
+        "retrieval",
+        "metadata_only",
+    }:
+        return None
+    delivery = {"representation": representation}
+    for key in ("evidence_source", "reason"):
+        value = str(raw.get(key) or "")
+        if value:
+            delivery[key] = value
+    return delivery
+
+
 def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
     """Project one GACT part into a CLIO message block.
 
@@ -138,6 +162,20 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "id": part_id,
             "type": "artifact",
             "artifact_id": str(metadata.get("artifact_id") or part.get("uri") or part_id),
+            **common,
+        }
+    if part_type == "resource_ref":
+        metadata = _mapping(part.get("metadata"))
+        delivery = _resource_delivery(metadata)
+        return {
+            "id": part_id,
+            "type": "resource",
+            "resource_id": str(part.get("resource_id") or ""),
+            "resource_revision": str(part.get("resource_revision") or ""),
+            "workspace_id": str(metadata.get("workspace_id") or ""),
+            "name": str(part.get("name") or "Attachment"),
+            "media_type": str(part.get("media_type") or "application/octet-stream"),
+            **({"delivery": delivery} if delivery is not None else {}),
             **common,
         }
     if part_type == "action_card":
@@ -385,9 +423,23 @@ def transcript_entities(
     *,
     subagent_links: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Return a normalized transcript snapshot and its referenced entities."""
+    """Return a normalized transcript snapshot and its referenced entities.
+
+    ``messages`` MUST arrive in ledger order (oldest first) and that order is
+    PRESERVED. The projection used to re-sort by the ``created_at`` string, which
+    made a wall-clock timestamp -- not the append order the server actually
+    recorded -- decide the conversation's shape: two rows stamped in the same
+    millisecond ordered arbitrarily, and a row with no ``created_at`` (defaulted
+    to *now* by :func:`message_to_v3`) jumped to the end of the transcript.
+
+    The synthetic ``child-relation`` rows are the one exception: they describe a
+    child task the parent has not persisted a handoff part for, so they have no
+    ledger position. They follow the real transcript, ordered among themselves by
+    their link's ``created_at`` with insertion order as a stable tiebreak.
+    """
 
     projected_messages: list[dict[str, Any]] = []
+    child_relations: list[tuple[str, int, dict[str, Any]]] = []
     tools: dict[str, dict[str, Any]] = {}
     tasks: dict[str, dict[str, Any]] = {}
     subagents: dict[str, dict[str, Any]] = {}
@@ -457,26 +509,31 @@ def transcript_entities(
                 else {}
             ),
         }
-        projected_messages.append(
-            {
-                "id": f"child-relation:{subagent_id}",
-                "session_id": session_id,
-                **({"run_id": str(link["parent_run_id"])} if link.get("parent_run_id") else {}),
-                "role": "system",
-                "created_at": created_at,
-                "blocks": [
-                    {
-                        "id": f"child-relation-block:{subagent_id}",
-                        "type": "subagent",
-                        "subagent_id": subagent_id,
-                    }
-                ],
-                "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
-                "cost_usd": 0.0,
-            }
+        child_relations.append(
+            (
+                created_at,
+                len(child_relations),
+                {
+                    "id": f"child-relation:{subagent_id}",
+                    "session_id": session_id,
+                    **({"run_id": str(link["parent_run_id"])} if link.get("parent_run_id") else {}),
+                    "role": "system",
+                    "created_at": created_at,
+                    "blocks": [
+                        {
+                            "id": f"child-relation-block:{subagent_id}",
+                            "type": "subagent",
+                            "subagent_id": subagent_id,
+                        }
+                    ],
+                    "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+                    "cost_usd": 0.0,
+                },
+            )
         )
 
-    projected_messages.sort(key=lambda message: str(message.get("created_at") or ""))
+    child_relations.sort(key=lambda entry: (entry[0], entry[1]))
+    projected_messages.extend(row for _created_at, _index, row in child_relations)
 
     transcript_parts.sort(key=lambda row: (row[0], row[1]))
     surface_records, a2ui_degradations = project_a2ui_parts(

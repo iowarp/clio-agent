@@ -91,6 +91,13 @@ class CapabilityFlags(DocumentCapabilityFields):
     x_clio_hook_events: dict[str, Any] = Field(default_factory=dict)
     x_clio_capability_gaps: dict[str, dict[str, Any]] = Field(default_factory=dict)
     x_clio_task_record_store: dict[str, Any] = Field(default_factory=dict)
+    # Composer lanes: explicit start-or-steer delivery on POST, the durable
+    # pending-steer identity, the idle-promoted queue, and the immutable
+    # workspace resource service (limits + converter inventory).
+    x_clio_message_delivery: bool = False
+    x_clio_pending_steers: bool = False
+    x_clio_queued_messages: bool = False
+    x_clio_resources: dict[str, Any] = Field(default_factory=dict)
 
 
 class Part(DocumentPartFields):
@@ -130,6 +137,15 @@ class Part(DocumentPartFields):
     data: Optional[str] = None
     url: Optional[str] = None
     media_type: Optional[str] = None
+
+    # resource_ref — an immutable workspace resource reference. The resource
+    # service owns the bytes and their revisions; a message carries only this
+    # authorization-scoped handle plus the client's delivery preference, so the
+    # transcript never inlines attachment bytes. ``name`` is shared with
+    # ``resource_link`` below.
+    resource_id: str = ""
+    resource_revision: str = ""
+    delivery_preference: str = ""
 
     # routing_decision (v0.2 §4.5)
     selected_agent: str = ""

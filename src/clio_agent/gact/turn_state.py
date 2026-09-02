@@ -157,7 +157,11 @@ def new_turn_state(
     _ctx.set_turn_identity(app=app, session_id=sid, turn_id=turn_id, trace_id=trace_id)
     from clio_agent.gact.app import _dspy_images_from_parts  # noqa: PLC0415
 
-    native_images = _dspy_images_from_parts(user_msg.parts)
+    native_images = _dspy_images_from_parts(
+        user_msg.parts,
+        app=app,
+        workspace_id=str(getattr(sess, "workspace_id", "") or ""),
+    )
     return TurnState(
         app=app,
         sid=sid,

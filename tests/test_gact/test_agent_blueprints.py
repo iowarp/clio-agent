@@ -4264,3 +4264,72 @@ def test_source_routes_run_blocking_installs_off_the_event_loop(
         assert refreshed.status_code == 200, refreshed.text
 
     assert on_loop == []
+
+
+def test_missing_default_registry_still_serves_a_session_on_the_builtin_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RULE 2 degradation chain for the ``base-agent`` marketplace default.
+
+    The committed ``agents.default_blueprint_id`` names a MARKETPLACE artifact
+    (``DEFAULT_AGENT_BLUEPRINT_ID`` == ``base-agent``), so a box that cannot
+    reach the registry has no default blueprint on disk. That must NOT break the
+    product: session creation still succeeds and the turn runs the code-shipped
+    builtin react ``main`` (``catalog._builtin_main_agent``), while the failed
+    bootstrap is surfaced as a TYPED, disabled discovery row naming the
+    configured id and carrying the diagnostic -- never a silent fallback and
+    never an implicit substitution of some other installed pack.
+
+    **Sabotage:** (a) drop the ``bootstrap_diagnostic`` row from
+    ``discover_agent_blueprints`` -> the typed-reason assertions go red; (b) let
+    session create raise (or resolve ``main`` from a discovered pack) -> the
+    builtin-main assertions go red.
+    """
+
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        _resolve_runtime_dynamic_agent,
+        _runtime_active_agent_blueprint_id,
+    )
+
+    # A registry URL that resolves to nothing: the clone fails fast, so the box
+    # reaches discovery with NO default blueprint installed.
+    missing_registry = (tmp_path / "no-such-registry").as_uri()
+    _install_root, home = _prepare_default_store(
+        tmp_path, monkeypatch, registry_url=missing_registry
+    )
+    cwd = tmp_path / "cwd"
+    cwd.mkdir(parents=True, exist_ok=True)
+
+    diagnostic = ensure_default_registry_bootstrap(home=home, cwd=cwd)
+    assert diagnostic, "an unreachable registry must produce a diagnostic, not silence"
+
+    rows = {row.id: row for row in discover_agent_blueprints(home=home, cwd=cwd)}
+    default_row = rows.get(DEFAULT_AGENT_BLUEPRINT_ID)
+    assert default_row is not None, "the configured default must be reported, not omitted"
+    assert default_row.enabled is False
+    assert default_row.validation_errors, "the failure must carry its reason"
+    assert default_row.metadata["bootstrap"]["status"] == "failed"
+    # The row's typed reason IS the bootstrap diagnostic (same text in both
+    # places); the tail carries a per-attempt clone temp dir, so pin the stable
+    # head naming the unreachable registry rather than the whole string.
+    row_diagnostic = default_row.metadata["bootstrap"]["diagnostic"]
+    assert row_diagnostic == default_row.validation_errors[0]
+    assert row_diagnostic.startswith("unable to install default registry ")
+    assert "no-such-registry" in row_diagnostic
+    assert diagnostic.startswith("unable to install default registry ")
+    assert default_row.metadata["install"]["default_agent_blueprint_id"] == "base-agent"
+
+    # ...and the product still works: a bare session runs the builtin main.
+    monkeypatch.chdir(cwd)
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        created = client.post("/v1/sessions", json={"title": "no-marketplace"})
+        assert created.status_code in (200, 201), created.text
+        sid = created.json()["id"]
+
+        assert _runtime_active_agent_blueprint_id(app, sid) == ""
+        runtime_main = _resolve_runtime_dynamic_agent(app, "main", session_id=sid)
+
+    assert runtime_main is not None
+    assert runtime_main.source == "builtin"
+    assert runtime_main.metadata.get("definition_kind") == "builtin_main"
