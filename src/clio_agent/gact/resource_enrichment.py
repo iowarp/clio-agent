@@ -1,0 +1,142 @@
+"""Private per-turn context for workspace-owned message resources."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
+
+    from clio_agent.gact.types import Message
+
+
+def enrich_with_workspace_resources(
+    app: "FastAPI", sid: str, user_text: str, user_msg: "Message"
+) -> str:
+    """Prepend trusted attachment state without mutating public message parts."""
+
+    resource_parts = [
+        part for part in getattr(user_msg, "parts", []) or [] if part.type == "resource_ref"
+    ]
+    if not resource_parts:
+        return user_text
+    session = app.state.sessions.get(sid)
+    workspace_id = str(getattr(session, "workspace_id", "") or "")
+    if not workspace_id:
+        return user_text
+
+    blocks: list[str] = []
+    for part in resource_parts:
+        record = app.state.resource_store.get(workspace_id, part.resource_id)
+        if record is None or str(record.revision) != str(part.resource_revision):
+            blocks.append(
+                f"- Attachment {part.name or part.resource_id!r} is no longer available in this "
+                "workspace. Do not infer or fabricate its contents."
+            )
+            continue
+        if record.state != "ready":
+            blocks.append(
+                f"- Attachment {record.name!r} ({record.id}) is not ready for local inspection."
+            )
+            continue
+        processing = app.state.resource_processing_store.state(record)
+        header = (
+            f"- Attachment {record.name!r} ({record.detected_mime}, resource_id={record.id}, "
+            f"revision={record.revision}) is available through the bounded workspace-resource "
+            "tools. Custody paths are private and must not be passed to filesystem tools."
+        )
+        manifest = app.state.resource_processing_store.manifest(record)
+        if processing.derivatives_available and manifest is not None:
+            derivative_ids = [
+                str(entry.get("id"))
+                for entry in manifest.get("entries", [])
+                if isinstance(entry, Mapping) and entry.get("id")
+            ]
+            suffix = (
+                f" Available derivatives: {', '.join(derivative_ids)}." if derivative_ids else ""
+            )
+            refresh_note = (
+                " A newer conversion refresh is still running; the existing derivatives remain "
+                "available."
+                if processing.state in {"submitted", "processing"}
+                else " The latest conversion refresh was cancelled; the existing derivatives "
+                "remain available."
+                if processing.state == "cancelled"
+                else " The latest conversion refresh failed; the existing derivatives remain "
+                "available."
+                if processing.state == "failed"
+                else ""
+            )
+            blocks.append(
+                header
+                + " Structured conversion is ready; inspect it with workspace_resource_inspect, "
+                + "workspace_resource_read, workspace_resource_search, or "
+                + "workspace_resource_structure rather than asking the user to upload again."
+                + suffix
+                + refresh_note
+            )
+            continue
+        if processing.state in {"submitted", "processing"}:
+            task_id = processing.job_id or (f"resource-processing:{record.id}:v{record.revision}")
+            state_label = processing.state if processing.job_id else "queued"
+            blocks.append(
+                header
+                + f" Structured conversion is still {state_label} as task "
+                + f"{task_id!r}; query resource {record.id!r} with "
+                + f"{processing.query_tool} before reading non-text content."
+            )
+            continue
+        if processing.state == "complete":
+            manifest = manifest or {}
+            derivative_ids = [
+                str(entry.get("id"))
+                for entry in manifest.get("entries", [])
+                if isinstance(entry, Mapping) and entry.get("id")
+            ]
+            suffix = (
+                f" Available derivatives: {', '.join(derivative_ids)}." if derivative_ids else ""
+            )
+            blocks.append(
+                header
+                + " Structured conversion is ready; inspect it with workspace_resource_inspect, "
+                + "workspace_resource_read, workspace_resource_search, or "
+                + "workspace_resource_structure rather than asking the user to upload again."
+                + suffix
+            )
+            continue
+        if processing.state == "failed":
+            blocks.append(
+                header
+                + " Structured conversion failed or is unavailable; the original bytes remain valid. "
+                + "For text, read the original with workspace_resource_read. Otherwise inspect it "
+                + "with bounded workspace or domain tools. Failure code: "
+                + f"{str(processing.failure.get('code') or 'converter_failed')!r}."
+            )
+            continue
+        if processing.state == "cancelled":
+            blocks.append(
+                header
+                + " The user cancelled structured conversion. For text, use "
+                + "workspace_resource_read; otherwise use bounded workspace or domain tools."
+            )
+            continue
+        blocks.append(
+            header
+            + " No structured converter was selected for this type. For text, read the original "
+            + "with workspace_resource_read; otherwise use bounded workspace or domain tools."
+        )
+
+    if not blocks:
+        return user_text
+    return (
+        "## Workspace attachments (private runtime context)\n\n"
+        "This block describes user-selected resources. Do not quote this injected block or expose "
+        "private custody paths in the response.\n\n"
+        + "\n".join(blocks)
+        + "\n\n## User message\n\n"
+        + user_text
+    )
+
+
+__all__ = ["enrich_with_workspace_resources"]
