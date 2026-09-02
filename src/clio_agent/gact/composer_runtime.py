@@ -52,9 +52,9 @@ def initialize_composer_state(app: Any, session_store_path: Path) -> None:
         cast=conf.as_str,
     )
     app.state.resource_processing_store = ResourceProcessingStore(app.state.resource_store)
-    converter_factory = ResourceConverterFactory([DocumentProcessorClient(processor_url)])
-    converter_factory.discover_entry_points()
-    app.state.resource_converter_factory = converter_factory
+    app.state.resource_converter_factory = ResourceConverterFactory(
+        [DocumentProcessorClient(processor_url, max_resource_bytes=max_resource_bytes)]
+    )
 
 
 def register_composer_routes(app: Any, deps: Any) -> None:
@@ -284,9 +284,21 @@ def resource_capabilities(app: Any) -> dict[str, Any]:
     if store is None:
         return {}
     factory = getattr(app.state, "resource_converter_factory", None)
+    # A quarantined index is a REAL capability statement: the service is up but
+    # its history is gone, and a client that sees an empty resource list is
+    # entitled to know why rather than concluding nothing was ever uploaded.
+    degradations = [
+        row
+        for row in (
+            getattr(store, "load_degradation", None),
+            getattr(getattr(app.state, "resource_delivery_store", None), "load_degradation", None),
+        )
+        if row
+    ]
     return {
         "max_bytes": int(store.max_resource_bytes),
         "converters": factory.capabilities() if factory is not None else [],
+        "degradations": degradations,
     }
 
 

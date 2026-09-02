@@ -76,6 +76,16 @@ def build_auto_react_tools(agent_def: Any) -> list[Any]:
         # names these tools, and a spawned child working the attachment needs
         # the same doors. They read only, and read only within the session's own
         # workspace, so there is no billed or destructive action to scope.
+        #
+        # Attached UNCONDITIONALLY rather than "only when the workspace already
+        # holds a resource" (RULE 5 curation was weighed and this is the
+        # decision): the agent is built ONCE per turn, but a resource can arrive
+        # DURING one — an attachment-only steer folds the same enrichment block
+        # into the live turn (resource_enrichment.describe_resource_parts). A
+        # build-time attachment test would therefore hand the model a block
+        # naming five tools it does not have, and would also make the react tool
+        # prefix vary with mutable workspace state, breaking the prompt-cache
+        # stability the fixed order above exists to protect.
         *build_resource_tools(agent_def),
     ]
     if not (getattr(agent_def, "parent_id", "") or ""):

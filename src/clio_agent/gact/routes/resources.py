@@ -1,24 +1,39 @@
-"""Workspace resource custody and resumable upload routes."""
+"""Workspace resource custody and resumable upload routes.
+
+HTTP only. The converter lifecycle lives in
+:mod:`clio_agent.gact.resource_lifecycle` and the bounded read operations
+(search, direct read, structure, nodes) live in
+:mod:`clio_agent.gact.resource_tools` — these routes call those owners rather
+than carrying second copies with their own bounds and readiness gates.
+"""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
-from clio_agent.gact.events import Event
+from clio_agent import conf
 from clio_agent.gact.resource_custody import (
     ResourceConflictError,
+    ResourceDeleteError,
     ResourceLimitError,
     ResourceRecord,
 )
-from clio_agent.gact.resource_processing import (
-    ResourceConverterUnavailable,
-    ResourceProcessingRecord,
+from clio_agent.gact.resource_lifecycle import (
+    cancel_remote_job,
+    emit_workspace_event,
+    refresh_processing,
+    schedule_processing,
+    submit_processing,
+)
+from clio_agent.gact.resource_processing import ResourceConverterUnavailable
+from clio_agent.gact.resource_tools import (
+    ResourceQueryError,
+    read_workspace_resource_structure,
+    search_workspace_resource,
 )
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
@@ -26,8 +41,6 @@ from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
 
-_MAX_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
-_MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024
 _PREVIEWABLE_APPLICATION_TYPES = {
     "application/json",
     "application/javascript",
@@ -35,6 +48,27 @@ _PREVIEWABLE_APPLICATION_TYPES = {
     "application/xml",
     "application/yaml",
     "application/x-yaml",
+}
+
+# Media types that execute in the viewer's origin when served inline. An
+# uploaded document is untrusted input, so serving one same-origin without a
+# policy is stored XSS against the authenticated API — the derivative route
+# already knew this; the preview route did not.
+_ACTIVE_INLINE_TYPES = {"text/html", "application/xhtml+xml", "image/svg+xml"}
+_INLINE_SANDBOX_CSP = "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'"
+
+# ``ResourceQueryError.code`` -> HTTP status. Bounded refusals from the owner
+# implementations keep their exact status instead of surfacing as a 500.
+_QUERY_ERROR_STATUS: dict[str, int] = {
+    "not_found": 404,
+    "invalid_request": 400,
+    "search_unavailable": 415,
+    "resource_not_decodable": 415,
+    "search_input_too_large": 413,
+    "read_input_too_large": 413,
+    "derivative_not_found": 404,
+    "structure_node_not_found": 404,
+    "structure_node_too_large": 413,
 }
 
 
@@ -49,6 +83,15 @@ def _error(status: int, code: str, message: str, **details: Any) -> HTTPExceptio
                 recoverable=status < 500,
             )
         ).model_dump(exclude_none=True),
+    )
+
+
+def _query_error(exc: ResourceQueryError) -> HTTPException:
+    return _error(
+        _QUERY_ERROR_STATUS.get(exc.code, 422),
+        exc.code,
+        str(exc),
+        **exc.details,
     )
 
 
@@ -73,15 +116,6 @@ def _resource(app: FastAPI, workspace_id: str, resource_id: str) -> ResourceReco
     return record
 
 
-def _emit_workspace_event(
-    app: FastAPI, workspace_id: str, event_type: str, payload: dict[str, Any]
-) -> None:
-    """Publish lifecycle events to every session that belongs to the workspace."""
-
-    for session in app.state.sessions.list(workspace_id=workspace_id):
-        app.state.bus.publish(Event(type=event_type, session_id=session.id, payload=payload))
-
-
 def _previewable(record: ResourceRecord) -> bool:
     media_type = record.detected_mime
     return (
@@ -93,10 +127,66 @@ def _previewable(record: ResourceRecord) -> bool:
     )
 
 
+def _inline_response(
+    path: Any, *, media_type: str, filename: str, disposition: str = "inline"
+) -> FileResponse:
+    """Serve custody bytes with the inline-safety headers applied uniformly."""
+
+    response = FileResponse(
+        path=path,
+        media_type=media_type or "application/octet-stream",
+        filename=filename,
+        content_disposition_type=disposition,
+    )
+    if disposition != "inline":
+        return response
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    if media_type in _ACTIVE_INLINE_TYPES:
+        response.headers["Content-Security-Policy"] = _INLINE_SANDBOX_CSP
+    return response
+
+
+async def _read_capped_body(request: Request, cap: int) -> bytes:
+    """Read the request body, enforcing ``cap`` DURING the read.
+
+    ``await request.body()`` buffers the whole body before any check, so a
+    chunked upload with no ``Content-Length`` sailed past the declared chunk
+    ceiling and was only rejected after the server had already held it in
+    memory. Streaming makes the cap real for every transfer encoding.
+    """
+
+    chunks: list[bytes] = []
+    received = 0
+    async for piece in request.stream():
+        received += len(piece)
+        if received > cap:
+            raise _error(
+                413,
+                "upload_chunk_too_large",
+                f"upload chunks are limited to {cap} bytes",
+                max_chunk_bytes=cap,
+            )
+        chunks.append(piece)
+    return b"".join(chunks)
+
+
 def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register workspace-scoped resource custody routes."""
 
     del deps
+
+    max_upload_chunk_bytes = conf.resolve(
+        "resources.upload_chunk_bytes",
+        env="CLIO_RESOURCE_UPLOAD_CHUNK_BYTES",
+        default=8 * 1024 * 1024,
+        cast=conf.as_int,
+    )
+    max_text_preview_bytes = conf.resolve(
+        "resources.text_preview_bytes",
+        env="CLIO_RESOURCE_TEXT_PREVIEW_BYTES",
+        default=2 * 1024 * 1024,
+        cast=conf.as_int,
+    )
 
     def resource_wire(record: ResourceRecord) -> dict[str, Any]:
         """Project resource identity with its current converter lifecycle state."""
@@ -105,211 +195,27 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
         payload["processing"] = app.state.resource_processing_store.state(record).model_dump()
         return payload
 
-    def persist_completed_processing(
-        record: ResourceRecord,
-        state: ResourceProcessingRecord,
-        result: dict[str, Any],
-    ) -> ResourceProcessingRecord:
-        """Persist a converter result without letting malformed output break resource reads."""
+    def lifecycle_payload(
+        record: ResourceRecord, *, workspace_id: str, idempotent_replay: bool
+    ) -> dict[str, Any]:
+        """The ONE ``resource.created`` / ``resource.ready`` body.
 
-        try:
-            completed = app.state.resource_processing_store.save_result(record, state, result)
-        except ValueError:
-            failed = state.model_copy(
-                update={
-                    "state": "failed",
-                    "failure": {"code": "processor_result_invalid"},
-                }
-            )
-            app.state.resource_processing_store.save_state(record, failed)
-            _emit_workspace_event(
-                app,
-                record.workspace_id,
-                "resource.processing_failed",
-                failed.model_dump(),
-            )
-            return failed
-        _emit_workspace_event(
-            app,
-            record.workspace_id,
-            "resource.processing_completed",
-            completed.model_dump(),
-        )
-        return completed
+        Both completion paths (a zero-byte create and the final append) publish
+        this exact shape; they used to differ, so a client had to know which
+        path produced the event before it could read it.
+        """
 
-    async def refresh_processing(record: ResourceRecord) -> ResourceProcessingRecord:
-        state = app.state.resource_processing_store.state(record)
-        if state.state not in {"submitted", "processing"} or not state.job_id:
-            return state
-        try:
-            payload = await app.state.resource_converter_factory.status(state)
-        except (httpx.HTTPError, ResourceConverterUnavailable, RuntimeError, ValueError):
-            return state
-        remote_state = str(payload.get("status") or "processing")
-        if remote_state == "complete":
-            result = payload.get("result")
-            if not isinstance(result, dict):
-                failed = state.model_copy(
-                    update={
-                        "state": "failed",
-                        "failure": {"code": "processor_result_invalid"},
-                    }
-                )
-                app.state.resource_processing_store.save_state(record, failed)
-                return failed
-            return persist_completed_processing(record, state, result)
-        if remote_state in {"failed", "cancelled"}:
-            failure = payload.get("failure")
-            failed = state.model_copy(
-                update={
-                    "state": "failed",
-                    "failure": failure if isinstance(failure, dict) else {"code": remote_state},
-                }
-            )
-            app.state.resource_processing_store.save_state(record, failed)
-            _emit_workspace_event(
-                app,
-                record.workspace_id,
-                "resource.processing_failed",
-                failed.model_dump(),
-            )
-            return failed
-        progress = payload.get("progress", state.progress)
-        updated = state.model_copy(
-            update={
-                "state": "processing",
-                "progress": int(progress) if isinstance(progress, int | float) else state.progress,
-            }
-        )
-        app.state.resource_processing_store.save_state(record, updated)
-        return updated
-
-    async def submit_processing(
-        record: ResourceRecord,
-        *,
-        raise_unavailable: bool,
-        reprocess: bool = False,
-    ) -> ResourceProcessingRecord:
-        """Select and submit through the converter registry, preserving lifecycle events."""
-
-        current = app.state.resource_processing_store.state(record)
-        queued_locally = current.state == "submitted" and not current.job_id
-        if (current.state in {"submitted", "processing"} and not queued_locally) or (
-            current.state == "complete" and not reprocess
-        ):
-            return current
-        if current.state == "cancelled" and not reprocess:
-            return current
-        try:
-            submission = await app.state.resource_converter_factory.submit(
-                record,
-                app.state.resource_store.content_path(record),
-                reprocess=reprocess,
-            )
-        except ResourceConverterUnavailable as exc:
-            if raise_unavailable:
-                raise
-            failed = current.model_copy(
-                update={
-                    "state": "failed",
-                    "failure": {
-                        "code": "resource_converter_unavailable",
-                        "media_type": record.detected_mime,
-                        "attempted": [converter_id for converter_id, _error in exc.failures],
-                    },
-                }
-            )
-            app.state.resource_processing_store.save_state(record, failed)
-            _emit_workspace_event(
-                app,
-                record.workspace_id,
-                "resource.processing_failed",
-                failed.model_dump(),
-            )
-            return failed
-
-        converter = submission.converter
-        submitted = submission.payload
-        processing = ResourceProcessingRecord(
-            workspace_id=record.workspace_id,
-            resource_id=record.id,
-            resource_revision=record.revision,
-            source_sha256=record.sha256,
-            processor=converter.id,
-            processor_url=converter.endpoint,
-            job_id=str(submitted["id"]),
-            state="submitted",
-            derivatives_available=current.derivatives_available,
-        )
-        latest = app.state.resource_processing_store.state(record)
-        if latest.state == "cancelled" and not reprocess:
-            try:
-                remote = await app.state.resource_converter_factory.cancel(processing)
-            except (
-                httpx.HTTPError,
-                ResourceConverterUnavailable,
-                OSError,
-                RuntimeError,
-                ValueError,
-            ) as exc:
-                remote = {
-                    "remote_cancelled": False,
-                    "remote_error": type(exc).__name__,
-                }
-            cancelled = latest.model_copy(
-                update={
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                    "cancellation": {**latest.cancellation, **remote},
-                }
-            )
-            app.state.resource_processing_store.save_state(record, cancelled)
-            return cancelled
-        app.state.resource_processing_store.save_state(record, processing)
-        if not queued_locally:
-            _emit_workspace_event(
-                app,
-                record.workspace_id,
-                "resource.processing_started",
-                processing.model_dump(),
-            )
-        if str(submitted.get("status")) == "complete" and isinstance(submitted.get("result"), dict):
-            processing = persist_completed_processing(record, processing, submitted["result"])
-        return processing
-
-    def schedule_processing(record: ResourceRecord, background_tasks: BackgroundTasks) -> None:
-        """Start automatic conversion only when a registered converter supports the MIME."""
-
-        converter = app.state.resource_converter_factory.get_converter(record)
-        if converter is None:
-            return
-        current = app.state.resource_processing_store.state(record)
-        if current.state in {"submitted", "processing", "complete"}:
-            return
-        queued = ResourceProcessingRecord(
-            workspace_id=record.workspace_id,
-            resource_id=record.id,
-            resource_revision=record.revision,
-            source_sha256=record.sha256,
-            processor=converter.id,
-            processor_url=converter.endpoint,
-            state="submitted",
-            derivatives_available=current.derivatives_available,
-        )
-        app.state.resource_processing_store.save_state(record, queued)
-        _emit_workspace_event(
-            app,
-            record.workspace_id,
-            "resource.processing_started",
-            queued.model_dump(),
-        )
-        background_tasks.add_task(submit_processing, record, raise_unavailable=False)
+        payload = resource_wire(record)
+        payload["idempotent_replay"] = idempotent_replay
+        payload["upload_url"] = f"/v1/workspaces/{workspace_id}/resources/{record.id}/content"
+        return payload
 
     @app.get("/v1/workspaces/{workspace_id}/resources")
     async def list_resources(workspace_id: str) -> dict[str, Any]:
         _workspace(app, workspace_id)
         resources = app.state.resource_store.list(workspace_id)
         for record in resources:
-            await refresh_processing(record)
+            await refresh_processing(app, record)
         return {"resources": [resource_wire(row) for row in resources]}
 
     @app.get("/v1/workspaces/{workspace_id}/resource-deliveries")
@@ -354,15 +260,15 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
             ) from exc
         except (TypeError, ValueError) as exc:
             raise _error(400, "invalid_request", str(exc)) from exc
-        payload = resource_wire(record)
-        payload["idempotent_replay"] = idempotent_replay
-        payload["upload_url"] = f"/v1/workspaces/{workspace_id}/resources/{record.id}/content"
+        payload = lifecycle_payload(
+            record, workspace_id=workspace_id, idempotent_replay=idempotent_replay
+        )
         if not idempotent_replay:
-            _emit_workspace_event(app, workspace_id, "resource.created", payload)
+            emit_workspace_event(app, workspace_id, "resource.created", payload)
             if record.state == "ready":
-                _emit_workspace_event(app, workspace_id, "resource.ready", payload)
+                emit_workspace_event(app, workspace_id, "resource.ready", payload)
         if record.state == "ready":
-            schedule_processing(record, background_tasks)
+            schedule_processing(app, record, background_tasks)
         return payload
 
     @app.head("/v1/workspaces/{workspace_id}/resources/{resource_id}/content")
@@ -392,23 +298,19 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
         content_length = request.headers.get("Content-Length")
         if content_length:
             try:
-                if int(content_length) > _MAX_UPLOAD_CHUNK_BYTES:
-                    raise _error(
-                        413,
-                        "upload_chunk_too_large",
-                        f"upload chunks are limited to {_MAX_UPLOAD_CHUNK_BYTES} bytes",
-                    )
+                declared_chunk = int(content_length)
             except ValueError as exc:
                 raise _error(
                     400, "invalid_content_length", "Content-Length must be an integer"
                 ) from exc
-        data = await request.body()
-        if len(data) > _MAX_UPLOAD_CHUNK_BYTES:
-            raise _error(
-                413,
-                "upload_chunk_too_large",
-                f"upload chunks are limited to {_MAX_UPLOAD_CHUNK_BYTES} bytes",
-            )
+            if declared_chunk > max_upload_chunk_bytes:
+                raise _error(
+                    413,
+                    "upload_chunk_too_large",
+                    f"upload chunks are limited to {max_upload_chunk_bytes} bytes",
+                    max_chunk_bytes=max_upload_chunk_bytes,
+                )
+        data = await _read_capped_body(request, max_upload_chunk_bytes)
         try:
             updated = app.state.resource_store.append(resource_id, offset=offset, data=data)
         except KeyError as exc:
@@ -422,10 +324,16 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
                 str(exc),
                 current=exc.record.to_wire(),
             ) from exc
-        event_type = "resource.ready" if updated.state == "ready" else "resource.upload_progress"
-        _emit_workspace_event(app, workspace_id, event_type, updated.to_wire())
         if updated.state == "ready":
-            schedule_processing(updated, background_tasks)
+            emit_workspace_event(
+                app,
+                workspace_id,
+                "resource.ready",
+                lifecycle_payload(updated, workspace_id=workspace_id, idempotent_replay=False),
+            )
+            schedule_processing(app, updated, background_tasks)
+        else:
+            emit_workspace_event(app, workspace_id, "resource.upload_progress", updated.to_wire())
         return Response(
             status_code=204,
             headers={
@@ -438,7 +346,7 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
     @app.get("/v1/workspaces/{workspace_id}/resources/{resource_id}")
     async def get_resource(workspace_id: str, resource_id: str) -> dict[str, Any]:
         record = _resource(app, workspace_id, resource_id)
-        await refresh_processing(record)
+        await refresh_processing(app, record)
         return resource_wire(record)
 
     @app.get("/v1/workspaces/{workspace_id}/resources/{resource_id}/content")
@@ -448,11 +356,11 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
             path = app.state.resource_store.content_path(record)
         except ResourceConflictError as exc:
             raise _error(409, "resource_not_ready", str(exc), resource=record.to_wire()) from exc
-        return FileResponse(
-            path=path,
-            media_type=record.detected_mime or "application/octet-stream",
+        return _inline_response(
+            path,
+            media_type=record.detected_mime,
             filename=record.name,
-            content_disposition_type="attachment",
+            disposition="attachment",
         )
 
     @app.get("/v1/workspaces/{workspace_id}/resources/{resource_id}/preview")
@@ -470,53 +378,28 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
         path = app.state.resource_store.content_path(record)
         if (
             record.detected_mime.startswith("text/")
-            and path.stat().st_size > _MAX_TEXT_PREVIEW_BYTES
+            and path.stat().st_size > max_text_preview_bytes
         ):
             raise _error(
                 413,
                 "preview_too_large",
                 "text preview exceeds the bounded preview limit",
-                max_preview_bytes=_MAX_TEXT_PREVIEW_BYTES,
+                max_preview_bytes=max_text_preview_bytes,
             )
-        return FileResponse(
-            path=path,
-            media_type=record.detected_mime,
-            filename=record.name,
-            content_disposition_type="inline",
-        )
+        return _inline_response(path, media_type=record.detected_mime, filename=record.name)
 
     @app.get("/v1/workspaces/{workspace_id}/resources/{resource_id}/search")
     async def search_resource(workspace_id: str, resource_id: str, q: str) -> dict[str, Any]:
-        record = _resource(app, workspace_id, resource_id)
-        if not record.detected_mime.startswith("text/"):
-            raise _error(415, "search_unavailable", "bounded search requires textual content")
-        path: Path = app.state.resource_store.content_path(record)
-        if path.stat().st_size > _MAX_TEXT_PREVIEW_BYTES:
-            raise _error(
-                413,
-                "search_input_too_large",
-                "resource exceeds the bounded direct-search limit; use a structured processor",
-            )
-        needle = q.strip().casefold()
-        if not needle:
-            raise _error(400, "invalid_request", "search query cannot be empty")
-        matches: list[dict[str, Any]] = []
-        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            if needle in line.casefold():
-                matches.append({"line": line_number, "text": line[:500]})
-            if len(matches) == 50:
-                break
-        return {
-            "resource_id": resource_id,
-            "query": q,
-            "matches": matches,
-            "truncated": len(matches) == 50,
-        }
+        _resource(app, workspace_id, resource_id)
+        try:
+            return search_workspace_resource(app, workspace_id, resource_id, q)
+        except ResourceQueryError as exc:
+            raise _query_error(exc) from exc
 
     @app.get("/v1/workspaces/{workspace_id}/resources/{resource_id}/derivatives")
     async def list_resource_derivatives(workspace_id: str, resource_id: str) -> dict[str, Any]:
         record = _resource(app, workspace_id, resource_id)
-        processing = await refresh_processing(record)
+        processing = await refresh_processing(app, record)
         manifest = app.state.resource_processing_store.manifest(record)
         entries: list[dict[str, Any]] = []
         if manifest is not None:
@@ -532,6 +415,7 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
             "resource_id": record.id,
             "revision": record.revision,
             "derivatives": entries,
+            "truncated": bool((manifest or {}).get("entries_truncated")),
             "processor": processing.model_dump(),
         }
 
@@ -552,6 +436,7 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
             return JSONResponse(status_code=202, content=current.model_dump())
         try:
             processing = await submit_processing(
+                app,
                 record,
                 raise_unavailable=True,
                 reprocess=True,
@@ -596,21 +481,9 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
         app.state.resource_processing_store.save_state(record, cancelled)
 
-        remote: dict[str, Any] = {"remote_cancelled": False}
-        if current.job_id:
-            try:
-                remote = await app.state.resource_converter_factory.cancel(current)
-            except (
-                httpx.HTTPError,
-                ResourceConverterUnavailable,
-                OSError,
-                RuntimeError,
-                ValueError,
-            ) as exc:
-                remote = {
-                    "remote_cancelled": False,
-                    "remote_error": type(exc).__name__,
-                }
+        remote = (
+            await cancel_remote_job(app, current) if current.job_id else {"remote_cancelled": False}
+        )
         cancelled = cancelled.model_copy(
             update={
                 "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -618,34 +491,44 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
             }
         )
         app.state.resource_processing_store.save_state(record, cancelled)
-        _emit_workspace_event(
-            app,
-            workspace_id,
-            "resource.processing_cancelled",
-            cancelled.model_dump(),
+        emit_workspace_event(
+            app, workspace_id, "resource.processing_cancelled", cancelled.model_dump()
         )
         return cancelled.model_dump()
 
     @app.get("/v1/workspaces/{workspace_id}/resources/{resource_id}/structure")
     async def resource_structure(workspace_id: str, resource_id: str) -> dict[str, Any]:
         record = _resource(app, workspace_id, resource_id)
-        state = await refresh_processing(record)
-        if not state.derivatives_available:
-            raise _error(409, "resource_processing_incomplete", "document structure is not ready")
-        return app.state.resource_processing_store.structure_outline(record)
+        await refresh_processing(app, record)
+        outline = read_workspace_resource_structure(app, workspace_id, resource_id)
+        if not outline.get("available"):
+            raise _error(
+                409,
+                "resource_processing_incomplete",
+                "document structure is not ready",
+                processing=outline.get("processing", {}),
+            )
+        return outline
 
     @app.get("/v1/workspaces/{workspace_id}/resources/{resource_id}/structure/{collection}/{index}")
     async def resource_structure_node(
         workspace_id: str, resource_id: str, collection: str, index: int
     ) -> dict[str, Any]:
-        record = _resource(app, workspace_id, resource_id)
+        _resource(app, workspace_id, resource_id)
         try:
-            node = app.state.resource_processing_store.node(record, collection, index)
-        except (FileNotFoundError, IndexError, KeyError) as exc:
-            raise _error(404, "structure_node_not_found", "structured node not found") from exc
-        except ValueError as exc:
-            raise _error(413, "structure_node_too_large", str(exc)) from exc
-        return {"collection": collection, "index": index, "node": node}
+            node = read_workspace_resource_structure(
+                app, workspace_id, resource_id, collection, index
+            )
+        except ResourceQueryError as exc:
+            raise _query_error(exc) from exc
+        if not node.get("available"):
+            raise _error(
+                409,
+                "resource_processing_incomplete",
+                "document structure is not ready",
+                processing=node.get("processing", {}),
+            )
+        return {"collection": collection, "index": index, "node": node["node"]}
 
     @app.get(
         "/v1/workspaces/{workspace_id}/resources/{resource_id}/derivatives/{derivative_id}/content"
@@ -658,26 +541,42 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
             path, entry = app.state.resource_processing_store.derivative_path(record, derivative_id)
         except KeyError as exc:
             raise _error(404, "derivative_not_found", "resource derivative not found") from exc
-        media_type = str(entry.get("media_type") or "application/octet-stream")
-        response = FileResponse(
+        return _inline_response(
             path,
-            media_type=media_type,
+            media_type=str(entry.get("media_type") or "application/octet-stream"),
             filename=str(entry.get("name") or derivative_id),
-            content_disposition_type="inline",
         )
-        if media_type == "text/html":
-            response.headers["Content-Security-Policy"] = (
-                "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'"
-            )
-        return response
 
     @app.delete("/v1/workspaces/{workspace_id}/resources/{resource_id}")
     async def delete_resource(workspace_id: str, resource_id: str) -> Response:
         record = _resource(app, workspace_id, resource_id)
-        if not app.state.resource_store.delete(workspace_id, resource_id):
+        # Stop the remote job BEFORE the bytes go, so a converter is not left
+        # working on a resource nobody will ever read, and so its late result
+        # cannot try to re-create the custody tree.
+        processing = app.state.resource_processing_store.state(record)
+        cancellation: dict[str, Any] = {"remote_cancelled": False}
+        if processing.state in {"submitted", "processing"} and processing.job_id:
+            cancellation = await cancel_remote_job(app, processing)
+        try:
+            deleted = app.state.resource_store.delete(workspace_id, resource_id)
+        except ResourceDeleteError as exc:
+            raise _error(
+                409,
+                "resource_delete_failed",
+                str(exc),
+                resource_id=resource_id,
+                reason=exc.reason,
+                recovery_actions=["close_open_readers", "retry"],
+            ) from exc
+        if not deleted:
             raise _error(404, "not_found", f"resource not found: {resource_id}")
         app.state.resource_delivery_store.delete_resource(workspace_id, resource_id)
-        _emit_workspace_event(app, workspace_id, "resource.deleted", record.to_wire())
+        emit_workspace_event(
+            app,
+            workspace_id,
+            "resource.deleted",
+            {**record.to_wire(), "cancellation": cancellation},
+        )
         return Response(status_code=204)
 
 

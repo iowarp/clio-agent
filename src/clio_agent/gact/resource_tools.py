@@ -1,9 +1,22 @@
-"""Bounded native tools for inspecting workspace-owned resources.
+"""Bounded operations over workspace-owned resources — the single owner.
 
-These tools expose resource identity, searchable text, Docling structure, and
-individual structured nodes without revealing custody paths or returning
-unbounded original bytes.  They are deliberately read-only: upload, deletion,
-and provider delivery remain user-authorized HTTP/message operations.
+These functions expose resource identity, searchable text, structured document
+outlines, and individual structured nodes without revealing custody paths or
+returning unbounded original bytes. They are deliberately read-only: upload,
+deletion, and provider delivery remain user-authorized HTTP/message operations.
+
+**One implementation per operation.** The HTTP routes
+(``GET .../search``, ``.../structure``, ``.../structure/{collection}/{index}``)
+call straight into these functions rather than reimplementing them. Two copies
+had already drifted: different byte caps, and — worse — different readiness
+gates, so the enrichment block told the model to use a tool that refused in a
+state the route happily served. The readiness gate is
+``derivatives_available`` on BOTH surfaces: a completed conversion whose LATER
+refresh failed still has usable derivatives, and refusing them because the
+newest attempt failed loses work that is sitting on disk.
+
+Bounds are configuration (``resources.*``), and one key feeds both surfaces of
+the same semantic bound.
 """
 
 from __future__ import annotations
@@ -11,6 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent import conf
 from clio_agent.gact.resource_custody import ResourceRecord
 
 if TYPE_CHECKING:
@@ -18,17 +32,92 @@ if TYPE_CHECKING:
 
     from clio_agent.gact.types import AgentDef
 
-_MAX_DIRECT_TEXT_BYTES = 2 * 1024 * 1024
-_MAX_DIRECT_READ_CHARS = 64 * 1024
-_MAX_MATCHES = 50
-_MAX_EXCERPT_CHARS = 500
+
+class ResourceQueryError(ValueError):
+    """A typed refusal from a bounded resource operation.
+
+    Subclasses :class:`ValueError` so the native tool surface keeps reporting
+    the message to the model unchanged, while the HTTP layer can map ``code`` to
+    an exact status instead of guessing from prose (or returning a 500).
+    """
+
+    def __init__(self, code: str, message: str, **details: Any) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details
+
+
+def text_scan_max_bytes() -> int:
+    """Byte ceiling on text CLIO will linearly scan (search and direct read)."""
+
+    return conf.resolve(
+        "resources.text_scan_bytes",
+        env="CLIO_RESOURCE_TEXT_SCAN_BYTES",
+        default=2 * 1024 * 1024,
+        cast=conf.as_int,
+    )
+
+
+def text_read_max_chars() -> int:
+    """Character ceiling on one direct text read response."""
+
+    return conf.resolve(
+        "resources.text_read_chars",
+        env="CLIO_RESOURCE_TEXT_READ_CHARS",
+        default=64 * 1024,
+        cast=conf.as_int,
+    )
+
+
+def search_match_limit() -> int:
+    """Matches returned by one bounded resource search before truncation."""
+
+    return conf.resolve(
+        "resources.search_match_limit",
+        env="CLIO_RESOURCE_SEARCH_MATCH_LIMIT",
+        default=50,
+        cast=conf.as_int,
+    )
+
+
+def search_excerpt_chars() -> int:
+    """Characters of each matching line returned by a bounded resource search."""
+
+    return conf.resolve(
+        "resources.search_excerpt_chars",
+        env="CLIO_RESOURCE_SEARCH_EXCERPT_CHARS",
+        default=500,
+        cast=conf.as_int,
+    )
 
 
 def _record(app: "FastAPI", workspace_id: str, resource_id: str) -> ResourceRecord:
     record = app.state.resource_store.get(workspace_id, resource_id)
     if record is None:
-        raise ValueError(f"resource not found in this workspace: {resource_id}")
+        raise ResourceQueryError(
+            "not_found",
+            f"resource not found in this workspace: {resource_id}",
+            resource_id=resource_id,
+        )
     return record
+
+
+def _read_text(path: Path) -> str:
+    """Read bounded UTF-8 text, typing a decode failure instead of raising 500.
+
+    The custody MIME sniff only sees the first 8 KiB, so a file that looks like
+    text can still carry an invalid byte later on. That is a typed refusal
+    (``resource_not_decodable``), not a server error.
+    """
+
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ResourceQueryError(
+            "resource_not_decodable",
+            "resource is not valid UTF-8 text beyond its detected prefix",
+            detail=str(exc),
+        ) from exc
 
 
 def list_workspace_resources(app: "FastAPI", workspace_id: str) -> dict[str, Any]:
@@ -69,20 +158,57 @@ def inspect_workspace_resource(
 
 
 def _search_path(path: Path, query: str) -> tuple[list[dict[str, Any]], bool]:
-    if path.stat().st_size > _MAX_DIRECT_TEXT_BYTES:
-        raise ValueError(
-            "text representation exceeds the bounded search limit; use structured nodes"
+    scan_bytes = text_scan_max_bytes()
+    if path.stat().st_size > scan_bytes:
+        raise ResourceQueryError(
+            "search_input_too_large",
+            "text representation exceeds the bounded search limit; use structured nodes",
+            max_scan_bytes=scan_bytes,
         )
     needle = query.strip().casefold()
     if not needle:
-        raise ValueError("search query cannot be empty")
+        raise ResourceQueryError("invalid_request", "search query cannot be empty")
+    match_limit = search_match_limit()
+    excerpt_chars = search_excerpt_chars()
     matches: list[dict[str, Any]] = []
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for line_number, line in enumerate(_read_text(path).splitlines(), start=1):
         if needle in line.casefold():
-            matches.append({"line": line_number, "text": line[:_MAX_EXCERPT_CHARS]})
-        if len(matches) >= _MAX_MATCHES:
+            matches.append({"line": line_number, "text": line[:excerpt_chars]})
+        if len(matches) >= match_limit:
             return matches, True
     return matches, False
+
+
+def _text_path(app: "FastAPI", record: ResourceRecord, derivative_id: str) -> tuple[Path, str]:
+    """Resolve the textual original or one named textual derivative to a path."""
+
+    if not derivative_id:
+        if not record.detected_mime.startswith("text/"):
+            raise ResourceQueryError(
+                "search_unavailable",
+                "original resource is not text; choose a named textual derivative",
+                detected_mime=record.detected_mime,
+            )
+        return app.state.resource_store.content_path(record), "original"
+    try:
+        path, derivative = app.state.resource_processing_store.derivative_path(
+            record, derivative_id
+        )
+    except KeyError as exc:
+        raise ResourceQueryError(
+            "derivative_not_found",
+            f"text derivative not found: {derivative_id}",
+            derivative_id=derivative_id,
+        ) from exc
+    media_type = str(derivative.get("media_type") or "")
+    if not (media_type.startswith("text/") or media_type == "application/json"):
+        raise ResourceQueryError(
+            "search_unavailable",
+            "selected derivative is not textual",
+            derivative_id=derivative_id,
+            media_type=media_type,
+        )
+    return path, derivative_id
 
 
 def search_workspace_resource(
@@ -95,22 +221,7 @@ def search_workspace_resource(
     """Search bounded original text or one named textual derivative."""
 
     record = _record(app, workspace_id, resource_id)
-    representation = "original"
-    if derivative_id:
-        try:
-            path, derivative = app.state.resource_processing_store.derivative_path(
-                record, derivative_id
-            )
-        except KeyError as exc:
-            raise ValueError(f"text derivative not found: {derivative_id}") from exc
-        media_type = str(derivative.get("media_type") or "")
-        if not (media_type.startswith("text/") or media_type in {"application/json"}):
-            raise ValueError("selected derivative is not textual")
-        representation = derivative_id
-    else:
-        if not record.detected_mime.startswith("text/"):
-            raise ValueError("original resource is not text; choose a named textual derivative")
-        path = app.state.resource_store.content_path(record)
+    path, representation = _text_path(app, record, derivative_id)
     matches, truncated = _search_path(path, query)
     return {
         "resource_id": resource_id,
@@ -131,34 +242,23 @@ def read_workspace_resource_text(
     """Read one bounded textual original or named textual derivative."""
 
     record = _record(app, workspace_id, resource_id)
-    representation = "original"
-    if derivative_id:
-        try:
-            path, derivative = app.state.resource_processing_store.derivative_path(
-                record, derivative_id
-            )
-        except KeyError as exc:
-            raise ValueError(f"text derivative not found: {derivative_id}") from exc
-        media_type = str(derivative.get("media_type") or "")
-        if not (media_type.startswith("text/") or media_type == "application/json"):
-            raise ValueError("selected derivative is not textual")
-        representation = derivative_id
-    else:
-        if not record.detected_mime.startswith("text/"):
-            raise ValueError("original resource is not text; choose a named textual derivative")
-        path = app.state.resource_store.content_path(record)
-    if path.stat().st_size > _MAX_DIRECT_TEXT_BYTES:
-        raise ValueError(
-            "text representation exceeds the bounded read limit; use search or structure tools"
+    path, representation = _text_path(app, record, derivative_id)
+    scan_bytes = text_scan_max_bytes()
+    if path.stat().st_size > scan_bytes:
+        raise ResourceQueryError(
+            "read_input_too_large",
+            "text representation exceeds the bounded read limit; use search or structure tools",
+            max_scan_bytes=scan_bytes,
         )
-    content = path.read_text(encoding="utf-8")
+    read_chars = text_read_max_chars()
+    content = _read_text(path)
     return {
         "resource_id": resource_id,
         "revision": record.revision,
         "representation": representation,
-        "content": content[:_MAX_DIRECT_READ_CHARS],
+        "content": content[:read_chars],
         "total_chars": len(content),
-        "truncated": len(content) > _MAX_DIRECT_READ_CHARS,
+        "truncated": len(content) > read_chars,
     }
 
 
@@ -169,11 +269,17 @@ def read_workspace_resource_structure(
     collection: str = "",
     index: int = -1,
 ) -> dict[str, Any]:
-    """Return the structure outline or one bounded Docling node."""
+    """Return the structure outline or one bounded structured node.
+
+    The gate is ``derivatives_available``, matching the HTTP sibling: a resource
+    whose conversion completed and whose LATEST refresh failed or was cancelled
+    still has a persisted structure, and the enrichment block has already told
+    the model to read it.
+    """
 
     record = _record(app, workspace_id, resource_id)
     processing = app.state.resource_processing_store.state(record)
-    if processing.state != "complete":
+    if not processing.derivatives_available:
         return {
             "resource_id": resource_id,
             "revision": record.revision,
@@ -186,11 +292,20 @@ def read_workspace_resource_structure(
             "available": True,
         }
     if index < 0:
-        raise ValueError("index must be zero or greater when collection is supplied")
+        raise ResourceQueryError(
+            "invalid_request", "index must be zero or greater when collection is supplied"
+        )
     try:
         node = app.state.resource_processing_store.node(record, collection, index)
     except (FileNotFoundError, IndexError, KeyError) as exc:
-        raise ValueError(f"structured node not found: {collection}[{index}]") from exc
+        raise ResourceQueryError(
+            "structure_node_not_found",
+            f"structured node not found: {collection}[{index}]",
+            collection=collection,
+            index=index,
+        ) from exc
+    except ValueError as exc:
+        raise ResourceQueryError("structure_node_too_large", str(exc)) from exc
     return {
         "resource_id": resource_id,
         "revision": record.revision,
@@ -322,6 +437,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
 
 
 __all__ = [
+    "ResourceQueryError",
     "build_resource_tools",
     "inspect_workspace_resource",
     "list_workspace_resources",

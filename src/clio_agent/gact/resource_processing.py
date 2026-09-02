@@ -8,6 +8,7 @@ built-in implementation, not a hard-coded processing path.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -16,19 +17,27 @@ import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from importlib import metadata
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
 import httpx
 from pydantic import BaseModel, Field
 
+from clio_agent import conf
 from clio_agent.gact.resource_custody import ResourceRecord, ResourceStore
 
 _SAFE_DERIVATIVE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _MAX_NODE_BYTES = 2 * 1024 * 1024
 _ALLOWED_NODE_COLLECTIONS = {"pages", "tables", "pictures", "texts"}
-RESOURCE_CONVERTER_ENTRY_POINT_GROUP = "clio_agent.resource_converters"
+
+# Floor throughput used to DERIVE the processor's write timeout from
+# ``resources.max_bytes`` when the operator has not pinned one: an upload of the
+# largest permitted resource must not be cut off mid-body just because the
+# ceiling was raised. 1 MiB/s is deliberately pessimistic (a slow shared link);
+# raise ``resources.processor_write_timeout_s`` to pin a value instead.
+_PROCESSOR_MIN_UPLOAD_BYTES_PER_S = 1024 * 1024
+_PROCESSOR_WRITE_TIMEOUT_FLOOR_S = 60.0
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,44 +45,36 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _normalize_docling_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Adapt clio-web-search's completed result to CLIO's derivative contract.
+def _derivative_name_max_chars() -> int:
+    return max(
+        16,
+        conf.resolve(
+            "resources.derivative_name_max_chars",
+            env="CLIO_RESOURCE_DERIVATIVE_NAME_MAX_CHARS",
+            default=48,
+            cast=conf.as_int,
+        ),
+    )
 
-    The document service owns Docling execution and returns its canonical document plus
-    Markdown directly.  Resource custody persists those values through a generic named-
-    derivative manifest, so the built-in converter performs that service-specific adapter
-    step without imposing the Docling response shape on third-party converters.
+
+def _derivative_filename(derivative_id: str) -> str:
+    """Return a length-bounded on-disk name for a derivative id.
+
+    Derivative ids are accepted up to 128 characters, and custody nests them
+    under ``<root>/<workspace>/<resource>/v<rev>/processing/derivatives/`` — on
+    Windows that can cross the 260-character path limit and fail the write. Ids
+    past the bound are stored under a digest name; the manifest keeps the real
+    id, so lookups are unaffected.
     """
 
-    result = payload.get("result")
-    if str(payload.get("status") or "") != "complete" or not isinstance(result, dict):
-        return payload
-    manifest = result.get("derivatives")
-    if isinstance(manifest, dict) and isinstance(manifest.get("entries"), list):
-        return payload
-    document = result.get("document")
-    if not isinstance(document, dict) or not isinstance(document.get("structure"), dict):
-        return payload
-    entries: list[dict[str, Any]] = []
-    markdown = result.get("markdown")
-    if isinstance(markdown, str):
-        entries.append(
-            {
-                "id": "markdown",
-                "name": "document.md",
-                "kind": "markdown",
-                "media_type": "text/markdown",
-                "content": markdown,
-            }
-        )
-    normalized = {
-        **result,
-        "derivatives": {
-            "schema": "clio.resource-derivatives.v1",
-            "entries": entries,
-        },
-    }
-    return {**payload, "result": normalized}
+    bound = _derivative_name_max_chars()
+    if len(derivative_id) <= bound:
+        return derivative_id
+    return hashlib.sha256(derivative_id.encode("utf-8")).hexdigest()[:32]
+
+
+class ResourceCustodyGone(RuntimeError):
+    """Raised when processing state is written for a resource that was deleted."""
 
 
 class ResourceProcessingRecord(BaseModel):
@@ -86,11 +87,14 @@ class ResourceProcessingRecord(BaseModel):
     processor: str = ""
     processor_url: str = ""
     job_id: str = ""
-    query_tool: str = "workspace_resource_inspect"
     state: Literal["not_started", "submitted", "processing", "complete", "failed", "cancelled"] = (
         "not_started"
     )
     progress: int = 0
+    # Consecutive failed status polls. Reset on any answered poll; past
+    # ``resources.status_poll_failure_threshold`` the record degrades to a typed
+    # ``converter_status_unavailable`` failure instead of waiting forever.
+    poll_failures: int = 0
     derivatives_available: bool = False
     failure: dict[str, Any] = Field(default_factory=dict)
     cancellation: dict[str, Any] = Field(default_factory=dict)
@@ -132,9 +136,26 @@ class ResourceProcessingStore:
                 state = state.model_copy(update={"derivatives_available": True})
             return state
 
+    def _require_custody(self, record: ResourceRecord) -> Path:
+        """Return the processing root, refusing once the resource is deleted.
+
+        ``mkdir(parents=True)`` would otherwise RE-CREATE a custody tree that a
+        concurrent DELETE just removed, resurrecting a ghost resource on disk
+        and letting a background submit keep publishing lifecycle events for it.
+        """
+
+        revision_root = (
+            self.resources.root / record.workspace_id / record.id / f"v{record.revision}"
+        )
+        if not revision_root.is_dir():
+            raise ResourceCustodyGone(
+                f"resource custody is gone: {record.workspace_id}/{record.id}"
+            )
+        return revision_root / "processing"
+
     def save_state(self, record: ResourceRecord, state: ResourceProcessingRecord) -> None:
         with self._lock:
-            root = self._root(record)
+            root = self._require_custody(record)
             root.mkdir(parents=True, exist_ok=True)
             path = self._state_path(record)
             temp = path.with_suffix(".json.tmp")
@@ -155,9 +176,9 @@ class ResourceProcessingStore:
         manifest = result.get("derivatives")
         if not isinstance(manifest, dict) or not isinstance(manifest.get("entries"), list):
             raise ValueError("processor result did not contain a derivative manifest")
-        root = self._root(record)
-        derivatives_root = root / "derivatives"
         with self._lock:
+            root = self._require_custody(record)
+            derivatives_root = root / "derivatives"
             derivatives_root.mkdir(parents=True, exist_ok=True)
             (root / "structure.json").write_text(
                 json.dumps(document["structure"], ensure_ascii=False),
@@ -173,12 +194,21 @@ class ResourceProcessingStore:
                     raise ValueError("processor returned an invalid derivative id")
                 content = entry.pop("content", None)
                 if isinstance(content, str):
-                    destination = derivatives_root / derivative_id
+                    destination = derivatives_root / _derivative_filename(derivative_id)
                     destination.write_text(content, encoding="utf-8")
                     entry["content_path"] = destination.name
                     entry["size"] = destination.stat().st_size
                 persisted_entries.append(entry)
             saved_manifest = {
+                # Everything the processor said about the manifest as a WHOLE is
+                # carried through (``entries_truncated`` / ``entry_counts``), so
+                # a partial derivative list stays visible to enrichment instead
+                # of being silently flattened to "here are the derivatives".
+                **{
+                    key: value
+                    for key, value in manifest.items()
+                    if key not in {"schema", "entries"}
+                },
                 "schema": str(manifest.get("schema") or "clio.resource-derivatives.v1"),
                 "source": {
                     "resource_id": record.id,
@@ -332,39 +362,6 @@ class ResourceConverterFactory:
         self._converters.append(converter)
         self._converters.sort(key=lambda row: (row.priority, row.id))
 
-    def discover_entry_points(
-        self, group: str = RESOURCE_CONVERTER_ENTRY_POINT_GROUP
-    ) -> tuple[str, ...]:
-        """Load installed no-argument converter factories from ``group``.
-
-        A third-party package can publish an entry point whose target is either
-        a converter instance or a no-argument callable returning one. Broken
-        extensions are isolated and logged so they cannot prevent CLIO from
-        starting or suppress the built-in fallback chain.
-        """
-
-        registered: list[str] = []
-        for entry_point in metadata.entry_points(group=group):
-            try:
-                loaded = entry_point.load()
-                converter = (
-                    loaded
-                    if not isinstance(loaded, type) and isinstance(loaded, ResourceConverter)
-                    else loaded()
-                )
-                if not isinstance(converter, ResourceConverter):
-                    raise TypeError("entry point did not return a ResourceConverter")
-                self.register(converter)
-            except Exception as exc:  # noqa: BLE001 - installed extension isolation boundary
-                logger.warning(
-                    "Ignoring resource converter entry point %s: %s",
-                    entry_point.name,
-                    exc,
-                )
-                continue
-            registered.append(converter.id)
-        return tuple(registered)
-
     def candidates(self, record: ResourceRecord) -> tuple[ResourceConverter, ...]:
         """Return configured matching converters in authoritative priority order."""
 
@@ -454,6 +451,28 @@ class ResourceConverterFactory:
         ]
 
 
+def _document_service_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Adapt the document service's job body to the converter contract.
+
+    Format-only, no semantic change: the service reports a failed conversion
+    under ``error`` (``{"code", "stage", "message", "retryable", ...}``) while
+    the converter contract — and every consumer of ``ResourceProcessingRecord``
+    — reads ``failure``. Renaming it here, at the one adapter that knows this
+    service, is what keeps the failure REASON reaching the trace instead of
+    being replaced by a bare ``{"code": "failed"}`` placeholder.
+
+    Nothing else is rewritten. A completed result that does not carry a
+    derivative manifest is NOT patched up into one: it fails validation in
+    :meth:`ResourceProcessingStore.save_result` with a typed
+    ``processor_result_invalid``, which is the honest report.
+    """
+
+    error = payload.get("error")
+    if isinstance(error, dict) and "failure" not in payload:
+        return {**payload, "failure": error}
+    return payload
+
+
 class DocumentProcessorClient:
     """CLIO web-search Docling converter registered in the converter factory."""
 
@@ -474,8 +493,63 @@ class DocumentProcessorClient:
         "text/html",
     }
 
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, *, max_resource_bytes: int = 0) -> None:
         self.base_url = base_url.strip().rstrip("/")
+        self.max_resource_bytes = max_resource_bytes
+        self.submit_timeout = httpx.Timeout(
+            connect=conf.resolve(
+                "resources.processor_connect_timeout_s",
+                env="CLIO_RESOURCE_PROCESSOR_CONNECT_TIMEOUT_S",
+                default=5.0,
+                cast=conf.as_float,
+            ),
+            read=conf.resolve(
+                "resources.processor_read_timeout_s",
+                env="CLIO_RESOURCE_PROCESSOR_READ_TIMEOUT_S",
+                default=60.0,
+                cast=conf.as_float,
+            ),
+            write=self._write_timeout(),
+            pool=conf.resolve(
+                "resources.processor_pool_timeout_s",
+                env="CLIO_RESOURCE_PROCESSOR_POOL_TIMEOUT_S",
+                default=5.0,
+                cast=conf.as_float,
+            ),
+        )
+        self.status_timeout = conf.resolve(
+            "resources.processor_status_timeout_s",
+            env="CLIO_RESOURCE_PROCESSOR_STATUS_TIMEOUT_S",
+            default=30.0,
+            cast=conf.as_float,
+        )
+        self.cancel_timeout = conf.resolve(
+            "resources.processor_cancel_timeout_s",
+            env="CLIO_RESOURCE_PROCESSOR_CANCEL_TIMEOUT_S",
+            default=30.0,
+            cast=conf.as_float,
+        )
+
+    def _write_timeout(self) -> float:
+        """Resolve the submit write timeout, DERIVING it from the upload ceiling.
+
+        A pinned write timeout that is shorter than the time it takes to stream
+        ``resources.max_bytes`` at a slow link speed truncates exactly the large
+        scientific uploads the ceiling exists to allow. Left at ``0`` (the
+        default) the timeout is derived from that ceiling at
+        :data:`_PROCESSOR_MIN_UPLOAD_BYTES_PER_S`; any positive value pins it.
+        """
+
+        configured = conf.resolve(
+            "resources.processor_write_timeout_s",
+            env="CLIO_RESOURCE_PROCESSOR_WRITE_TIMEOUT_S",
+            default=0.0,
+            cast=conf.as_float,
+        )
+        if configured > 0:
+            return configured
+        derived = float(self.max_resource_bytes) / _PROCESSOR_MIN_UPLOAD_BYTES_PER_S
+        return max(_PROCESSOR_WRITE_TIMEOUT_FLOOR_S, derived)
 
     @property
     def configured(self) -> bool:
@@ -501,9 +575,8 @@ class DocumentProcessorClient:
     ) -> dict[str, Any]:
         if not self.configured:
             raise RuntimeError("document processor is not configured")
-        timeout = httpx.Timeout(connect=5, read=60, write=60, pool=5)
         with content_path.open("rb") as stream:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with httpx.AsyncClient(timeout=self.submit_timeout) as client:
                 response = await client.post(
                     f"{self.base_url}/v1/documents",
                     files={"file": (record.name, stream, record.detected_mime)},
@@ -513,7 +586,7 @@ class DocumentProcessorClient:
                 value = response.json()
         if not isinstance(value, dict) or not value.get("id"):
             raise ValueError("document processor returned an invalid submission")
-        return _normalize_docling_payload(value)
+        return _document_service_payload(value)
 
     async def submit(self, record: ResourceRecord, content_path: Path) -> dict[str, Any]:
         """Submit normally, allowing the document service to reuse a cached result."""
@@ -528,20 +601,20 @@ class DocumentProcessorClient:
     async def status(self, job_id: str) -> dict[str, Any]:
         if not self.configured:
             raise RuntimeError("document processor is not configured")
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=self.status_timeout) as client:
             response = await client.get(f"{self.base_url}/v1/documents/{job_id}")
             response.raise_for_status()
             value = response.json()
         if not isinstance(value, dict):
             raise ValueError("document processor returned an invalid status")
-        return _normalize_docling_payload(value)
+        return _document_service_payload(value)
 
     async def cancel(self, job_id: str) -> dict[str, Any]:
         """Cancel a queued or active Docling conversion."""
 
         if not self.configured:
             raise RuntimeError("document processor is not configured")
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=self.cancel_timeout) as client:
             response = await client.post(f"{self.base_url}/v1/documents/{job_id}/cancel")
             response.raise_for_status()
             value = response.json()
@@ -556,7 +629,7 @@ __all__ = [
     "ResourceConverter",
     "ResourceConverterFactory",
     "ResourceConverterUnavailable",
-    "RESOURCE_CONVERTER_ENTRY_POINT_GROUP",
+    "ResourceCustodyGone",
     "ResourceProcessingRecord",
     "ResourceProcessingStore",
 ]
