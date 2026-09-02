@@ -131,7 +131,15 @@ RATCHET_BASELINE: dict[str, int] = {
     # existing stamp_fresh_fleet(...) call. All routing/stamping logic lives
     # in the owner modules tools/mcp_task_routing.py and tools/
     # fleet_blueprint_merge.py; only these call-site lines land here.
-    "src/clio_agent/agent.py": 1029,  # blueprint activation moved to gact/blueprint_activation.py
+    # #1281 F5 (adversarial-review fix round): 1029 -> 1030, net +1 despite
+    # DELETING the explicit stamp_direct_factories() call site above and its
+    # import (F5's ruling: fold the stamp into AsyncMCPToolExecutor.__init__
+    # itself, which derives the registry straight off the gateway `server`
+    # argument every construction path already passes -- the one true choke
+    # point, closing the gap where gact/relay_wiring.py's rebuild never
+    # stamped at all). The deletion nets negative; the +1 is docstring/
+    # comment lines explaining why the stamp is deliberately absent here.
+    "src/clio_agent/agent.py": 1030,  # blueprint activation moved to gact/blueprint_activation.py
     "src/clio_agent/arc/memory.py": 1389,  # provider ladder moved to provenance_config.py
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -757,7 +765,23 @@ RATCHET_BASELINE: dict[str, int] = {
     # logic, its typed reasons, and the queryable decision ring all live in
     # the owner module tools/mcp_task_routing.py; only this thin branch +
     # its docstring land here.
-    "src/clio_agent/tools/mcp_executor.py": 843,
+    # #1281 (adversarial-review fix round): +37 (843 -> 880). F5: derive
+    # _clio_namespace_direct_factories straight off `server` at
+    # __init__ -- the one true construction choke point (closes gact/
+    # relay_wiring.py's rebuild, which never stamped it). F2: a new
+    # _namespace_direct_routes field (which route a cached client actually
+    # used) so the heal check (moved to the owner mixin, mcp_namespace_
+    # executor.py) can bound eviction strictly to unknown/False -> direct.
+    # F4/F9: _connect_namespace now calls resolve_and_build_direct_client
+    # (resolve + attempt construction in one step, typed fallback on a
+    # missing/failing factory) and records the decision ACTUALLY taken via
+    # record_namespace_route_decision. F10: skip the duplicate era
+    # classification on a successful direct connect (instrument_client_era
+    # already covered it), reading it back instead. All decision/heal LOGIC
+    # lives in the owner modules tools/mcp_task_routing.py and tools/
+    # mcp_namespace_executor.py; only these thin call sites + docstrings
+    # land here.
+    "src/clio_agent/tools/mcp_executor.py": 880,
     "src/clio_agent/tools/mcp_config.py": 817,
     # #1231 Part 1/2 (consumer half of the live-console feature): not previously
     # baselined -- this file was ALREADY 7 lines over the 800 cap before this
@@ -847,7 +871,15 @@ RATCHET_BASELINE: dict[str, int] = {
     # capability-read helpers, and the factory builder itself all live in the
     # new owner module tools/mcp_task_routing.py (no-accretion); only these
     # thin call sites + the one accessor land here.
-    "src/clio_agent/tools/gateway.py": 926,
+    # #1281 (adversarial-review fix round): +23 (926 -> 949). F3: persist the
+    # capability THIS live listing recorded alongside the cached tools
+    # (capability_cache_fields() call + the store_listing kwargs) so the
+    # NEXT cache hit can replay it -- the definitive read has no other way
+    # to survive a warm cache. F9: skip stamping a namespace's direct
+    # factory when `proxy_factory` was injected (tests: an in-process double
+    # with no real transport behind the spec). Both decision/read logic
+    # stays in tools/mcp_task_routing.py; only these call sites land here.
+    "src/clio_agent/tools/gateway.py": 949,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.
