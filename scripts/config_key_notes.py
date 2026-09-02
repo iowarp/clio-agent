@@ -359,6 +359,10 @@ KEY_NOTES: dict[str, str] = {
         "Experimental flag enabling live-edge SSE atom sealing (default off); only meaningful with "
         "the S5 atoms regime, leave off normally."
     ),
+    "gact.loop_inbox.max_events": (
+        "Per-session bound on buffered mid-turn wakes (child completions and user steers) before "
+        "the oldest recoverable one is evicted; raise for very fan-out-heavy turns."
+    ),
     "gact.message_intents.max_acceptances_per_session": (
         "Per-session cap on retained message-acceptance records used for idempotent POST replay; "
         "raise for clients that retry over long windows, lower to shrink the intent store."
