@@ -513,6 +513,23 @@ def accept_message(
         behavior=req.behavior,
     )
     app.state.message_intents.record_acceptance(sid, key, ack)
+    # Acceptance is UNIFORM across both branches. Publishing this only on the
+    # steer branch left a client watching for acceptance seeing nothing at all
+    # for a start -- it had to infer acceptance from message.created, a
+    # different fact (the transcript row) with a different shape.
+    app.state.bus.publish(
+        Event(
+            type="message.accepted",
+            session_id=sid,
+            payload={
+                "message": user_msg.to_wire(),
+                "delivery": "start",
+                "state": "started",
+                "effective_model": effective_model.model_dump(),
+                "behavior": behavior,
+            },
+        )
+    )
     return ack, 200
 
 

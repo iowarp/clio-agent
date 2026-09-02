@@ -21,6 +21,8 @@ from clio_agent.gact.loop_inbox import (
     drain_active_session_inbox,
     inbox_for,
 )
+from clio_agent.gact.protocol.v3.composer import queue_entity_id
+from clio_agent.gact.protocol.v3.event import event_to_v3
 from tests.test_gact.test_loop_inbox_1036 import _active_turn, _SlowAgent, _wait_busy, _wait_idle
 from tests.test_gact.test_post_messages import FakeClioAgent
 from tests.test_gact.test_resources import _upload, _workspace
@@ -278,3 +280,170 @@ def test_an_explicit_send_after_cancel_resumes_queue_promotion(tmp_path: Path) -
             time.sleep(0.05)
         assert client.get(f"/v1/sessions/{sid}/queued-messages").json()["queued_messages"] == []
         assert any(row["id"] == "msg_queued_resume" for row in _user_messages(client, sid))
+
+
+# --------------------------------------------------------------------------- #
+# F4 — the composer events must reach a 0.3 client as 0.3 envelopes.            #
+# --------------------------------------------------------------------------- #
+
+
+def _projected(app: Any, sid: str, event_type: str) -> list[dict[str, Any]]:
+    session = app.state.sessions.get(sid)
+    return [
+        event_to_v3(event, session=session)
+        for event in app.state.bus.session_events_since(sid, cursor=1)
+        if event.type == event_type
+    ]
+
+
+def test_every_composer_event_carries_an_entity_and_a_v3_payload(tmp_path: Path) -> None:
+    """The queue events project; none ships a 0.2 payload or a null entity id."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=FakeClioAgent(answer="ok"))
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "v3"}).json()["id"]
+        first = client.post(
+            f"/v1/sessions/{sid}/queued-messages",
+            json={"text": "one", "client_message_id": "queued_one"},
+        ).json()
+        second = client.post(
+            f"/v1/sessions/{sid}/queued-messages",
+            json={"text": "two", "client_message_id": "queued_two"},
+        ).json()
+        updated = client.patch(
+            f"/v1/sessions/{sid}/queued-messages/{first['id']}",
+            json={"revision": first["revision"], "metadata": {"note": "edited"}},
+        ).json()
+        reordered = client.post(
+            f"/v1/sessions/{sid}/queued-messages/reorder",
+            json={
+                "ordered_ids": [second["id"], first["id"]],
+                "revisions": {second["id"]: second["revision"], first["id"]: updated["revision"]},
+            },
+        )
+        assert reordered.status_code == 200, reordered.text
+        head = client.get(f"/v1/sessions/{sid}/queued-messages").json()["queued_messages"][0]
+        assert (
+            client.delete(
+                f"/v1/sessions/{sid}/queued-messages/{head['id']}?revision={head['revision']}"
+            ).status_code
+            == 204
+        )
+        survivor = client.get(f"/v1/sessions/{sid}/queued-messages").json()["queued_messages"][0]
+        promoted = client.post(
+            f"/v1/sessions/{sid}/queued-messages/{survivor['id']}/promote",
+            json={"revision": survivor["revision"]},
+        )
+        assert promoted.status_code == 200, promoted.text
+
+        created = _projected(app, sid, "queued_message.created")
+        assert created and created[0]["type"] == "queued_message.upserted"
+        assert created[0]["entity_id"] == "queued_one"
+        assert [block["type"] for block in created[0]["payload"]["blocks"]] == ["text"]
+        assert created[0]["payload"]["revision"] == 1
+
+        edited = _projected(app, sid, "queued_message.updated")
+        assert edited and edited[0]["entity_id"] == "queued_one"
+        assert edited[0]["payload"]["revision"] == 2
+
+        order = _projected(app, sid, "queued_message.reordered")
+        assert order and order[0]["type"] == "queued_message.reordered"
+        assert order[0]["entity_id"] == queue_entity_id(sid)
+        assert order[0]["payload"]["ordered_ids"] == ["queued_two", "queued_one"]
+        assert [row["revision"] for row in order[0]["payload"]["queued_messages"]]
+
+        deleted = _projected(app, sid, "queued_message.deleted")
+        assert deleted and deleted[0]["entity_id"] == "queued_two"
+        assert deleted[0]["payload"]["deleted_at"]
+
+        promotion = _projected(app, sid, "queued_message.promoted")
+        assert promotion and promotion[0]["entity_id"] == "queued_one"
+        assert promotion[0]["payload"]["message_id"] == "queued_one"
+        assert promotion[0]["payload"]["state"] == "started"
+
+        for row in created + edited + order + deleted + promotion:
+            assert row["protocol_version"] == "0.3"
+            assert row["entity_revision"] > 0
+
+
+def test_message_accepted_is_uniform_across_start_and_steer(tmp_path: Path) -> None:
+    """A client listening for acceptance sees it for a start, not only a steer."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowAgent(sleep_s=1.5))
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "accepted"}).json()["id"]
+        started = client.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "start"}], "client_message_id": "msg_start"},
+        )
+        assert started.status_code == 200
+        _wait_busy(app, sid)
+        steered = client.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "steer"}], "client_message_id": "msg_steer"},
+        )
+        assert steered.status_code == 202
+
+        accepted = _projected(app, sid, "message.accepted")
+        by_id = {row["entity_id"]: row for row in accepted}
+        assert set(by_id) == {"msg_start", "msg_steer"}
+        assert by_id["msg_start"]["payload"]["delivery"] == "start"
+        assert by_id["msg_start"]["payload"]["state"] == "started"
+        assert by_id["msg_steer"]["payload"]["delivery"] == "steer"
+        assert by_id["msg_steer"]["payload"]["state"] == "pending_steer"
+        for row in accepted:
+            assert row["type"] == "message.accepted"
+            assert row["payload"]["message"]["blocks"][0]["type"] == "text"
+
+
+def test_cancelled_message_and_steer_intent_both_project(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowAgent(sleep_s=1.5))
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "cancelled"}).json()["id"]
+        assert (
+            client.post(
+                f"/v1/sessions/{sid}/messages",
+                json={"parts": [{"type": "text", "text": "first"}]},
+            ).status_code
+            == 200
+        )
+        _wait_busy(app, sid)
+        steer_id = client.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "drop me"}]},
+        ).json()["message_id"]
+        assert client.delete(f"/v1/sessions/{sid}/pending-steers/{steer_id}").status_code == 200
+
+        cancelled = _projected(app, sid, "message.cancelled")
+        assert cancelled and cancelled[0]["entity_id"] == steer_id
+        assert cancelled[0]["payload"]["cancelled_at"]
+        intent = _projected(app, sid, "pending_steer.cancelled")
+        assert intent and intent[0]["entity_id"] == steer_id
+        assert intent[0]["payload"]["state"] == "cancelled"
+
+
+def test_v3_session_projection_carries_the_cancellation_envelope(tmp_path: Path) -> None:
+    """The typed cancellation honesty the same code computes must reach 0.3."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowAgent(sleep_s=1.5))
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "honesty"}).json()["id"]
+        assert (
+            client.post(
+                f"/v1/sessions/{sid}/messages",
+                json={"parts": [{"type": "text", "text": "first"}]},
+            ).status_code
+            == 200
+        )
+        _wait_busy(app, sid)
+        assert client.post(f"/v1/sessions/{sid}/cancel").status_code == 204
+
+        rows = _projected(app, sid, "session.status_changed")
+        carrying = [row for row in rows if "cancellation" in row["payload"]]
+        assert carrying, "the v3 session projection dropped the cancellation envelope"
+        cancellation = carrying[-1]["payload"]["cancellation"]
+        assert cancellation["execution_cancellation"] == "cooperative_pending"
+        assert cancellation["executor_work_may_continue"] is True
+        assert cancellation["cancellation_attempt"]
+        assert cancellation["composer_autostart"]["reason"] == "session_cancelled"
+        _wait_idle(app, sid)

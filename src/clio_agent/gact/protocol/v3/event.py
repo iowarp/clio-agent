@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from clio_agent.gact.events import Event
-from clio_agent.gact.protocol.v3 import CONNECTION_ID, GACT_V3
+from clio_agent.gact.protocol.v3 import CONNECTION_ID, GACT_V3, Projection
+from clio_agent.gact.protocol.v3.composer import COMPOSER_PROJECTORS
 from clio_agent.gact.protocol.v3.message import message_to_v3, part_to_v3_block
 from clio_agent.gact.protocol.v3.session import session_to_v3
+
+# The composer lanes own their projections in ``protocol.v3.composer``; this
+# module only registers them (see _EVENT_PROJECTORS below).
+_CANCELLATION_FIELDS = (
+    "execution_cancellation",
+    "executor_work_may_continue",
+    "cancellation_attempt",
+    "composer_autostart",
+)
 
 _LIVE_WORK_STATE = {
     "queued": "queued",
@@ -57,12 +66,7 @@ def _event_identity(event_type: str, payload: Mapping[str, Any]) -> str | None:
     return None
 
 
-@dataclass(frozen=True)
-class _Projection:
-    event_type: str
-    payload: dict[str, Any]
-    entity_id: str | None = None
-
+_Projection = Projection
 
 _Projector = Callable[[Event, dict[str, Any], Any], _Projection | None]
 
@@ -73,10 +77,20 @@ def _stream_live(event: Event, payload: dict[str, Any], session: Any) -> _Projec
 
 
 def _session_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Projection | None:
-    del event, payload
+    del event
     if session is None:
         return None
     projected = session_to_v3(session)
+    # The cancellation envelope is computed by the SAME transition that publishes
+    # this event and lives ONLY on its payload (the Session record cannot carry
+    # it -- it is per-attempt, not per-session). Dropping it made the v3 wire
+    # claim a clean `state: cancelled` while the 0.2 wire honestly reported that
+    # executor work may still be running.
+    cancellation = {
+        key: payload[key] for key in _CANCELLATION_FIELDS if payload.get(key) is not None
+    }
+    if cancellation:
+        projected["cancellation"] = cancellation
     return _Projection("session.upserted", projected, str(projected["id"]))
 
 
@@ -262,6 +276,7 @@ _EVENT_PROJECTORS: dict[str, _Projector] = {
     "tool.call.completed": _tool_completed,
     "permission.requested": _permission_requested,
     "permission.resolved": _permission_resolved,
+    **COMPOSER_PROJECTORS,
 }
 
 _PREFIX_PROJECTORS: tuple[tuple[str, _Projector], ...] = (
