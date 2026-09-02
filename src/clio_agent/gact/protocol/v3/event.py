@@ -345,9 +345,13 @@ def format_sse_v3(
 ) -> bytes:
     """Render an event as an SSE frame containing a GACT 0.3 envelope.
 
-    A TRANSIENT event (the keepalive) is framed WITHOUT an ``id:`` line so it
-    leaves the client's ``lastEventId`` alone — see ``runtime.globals._format_sse``
-    for the resume-cursor reasoning this mirrors.
+    A TRANSIENT event (the ``server.heartbeat`` keepalive) is framed WITHOUT an
+    ``id:`` line, and ``runtime.globals._format_sse`` mirrors it for 0.2. Per the
+    SSE spec a frame with no id leaves the client's ``lastEventId`` untouched,
+    which is exactly right for a keepalive: it never enters the replay history
+    and never advances ``bus.highest_event_id``, so putting its id on the wire
+    pushed the client's resume cursor PAST the timeline head and made the next
+    reconnect look like a process-epoch reset.
     """
 
     envelope = event_to_v3(
