@@ -111,6 +111,35 @@ async def _run_turn_setup_off_loop(state: "TurnState", operation: Callable[[], A
     return await loop.run_in_executor(_forward_executor(state), lambda: turn_context.run(operation))
 
 
+def _apply_turn_model_selection(state: "TurnState", agent_def: "AgentDef") -> "AgentDef":
+    """Overlay an accepted per-message/session route onto this turn's local agent.
+
+    ``message_submission.accept_message`` already validated the selection (it
+    executes only when the active LM serves it or the provider catalog holds live
+    handshake evidence) and recorded the deciding layer on the user message. This
+    copies that decision onto a LOCAL copy of the agent definition, so the routed
+    model reaches the forward without mutating the stored agent.
+    """
+
+    source = str(state.user_msg.metadata.get("model_selection_source") or "global_active")
+    raw = state.user_msg.metadata.get("effective_model")
+    if source == "global_active" or not isinstance(raw, dict):
+        return agent_def
+    provider_id = str(raw.get("provider_id") or "").strip()
+    model_id = str(raw.get("model_id") or "").strip()
+    if not provider_id or not model_id:
+        return agent_def
+    metadata = dict(agent_def.metadata)
+    metadata["turn_model_selection_source"] = source
+    return agent_def.model_copy(
+        update={
+            "default_provider": provider_id,
+            "default_model": model_id,
+            "metadata": metadata,
+        }
+    )
+
+
 async def forward_turn(state: "TurnState") -> Any:
     """Run one complete forward/delegation turn under its workspace lease."""
 
@@ -280,6 +309,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
             )
         if dynamic_agent is None:
             raise _UnsupportedSessionAgent(state.active_agent_id)
+        dynamic_agent = _apply_turn_model_selection(state, dynamic_agent)
         state.prompt_resolution = dict(dynamic_agent.metadata.get("prompt_resolution") or {})
         state.dynamic_agent_used = dynamic_agent
         runner = _blueprint_runner_for_agent(dynamic_agent)
