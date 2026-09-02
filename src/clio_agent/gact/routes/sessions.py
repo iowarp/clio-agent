@@ -29,7 +29,6 @@ from clio_agent.gact import context_reference_retry
 from clio_agent.gact.autonomous_loop import stop_session_loop
 from clio_agent.gact.events import Event
 from clio_agent.gact.goal import stop_session_goal
-from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
 from clio_agent.gact.messaging import raise_on_reserved_metadata
 from clio_agent.gact.permission_delivery import attended_session_id
@@ -66,6 +65,7 @@ from clio_agent.gact.types import (
     UserQuestionOption,
     Workspace,
 )
+from clio_agent.gact.user_question_resume import resume_answered_question
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -1206,82 +1206,14 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         # P1.4 #1066 (plan-exit) + P1.3 #1113 (elicitation) dispatch non-default resolution.
         if resolve_answered_question(app, deps, sid, updated):
             return updated
-        if not _pending_user_questions(sid):
-            sess = app.state.sessions.get(sid)
-            should_resume = bool(updated.metadata.get("resume_on_answer")) and sess is not None
-            resume_metadata = {
-                "ask_user_question_id": updated.id,
-                "ask_user_prompt": updated.prompt,
-                "ask_user_answer": updated.answer,
-                "ask_user_selected_options": updated.selected_options,
-                "ask_user_source_turn_id": updated.turn_id,
-                "ask_user_attempt_id": updated.attempt_id,
-                "ask_user_caller": updated.metadata.get("caller", {}),
-                "ask_user_resume": True,
-            }
-            # #1036 (was #948 S1): the busy gate covers the RESUME producer too.
-            # Staging the resume while a turn is in flight would orphan its slot, so
-            # fold it into the loop inbox as a user_message steer (never drop — that
-            # would be a silent-fallback bug): the running turn drains it into a
-            # ``### steer`` block, or the idle hook (drain_inbox_to_new_turn)
-            # re-drives it into ONE new turn. The ask_user_* metadata rides the event
-            # so the re-drive stages a proper resume turn. A typed event hits the API.
-            if should_resume and app.state.agent is not None and app.state.turn_runner.busy(sid):
-                enqueue_user_steer(
-                    app,
-                    sid,
-                    deps.ask_user_resume_text(updated),
-                    {**resume_metadata, "question_id": updated.id},
-                )
-                app.state.sessions.update(sid, metadata_patch={"pending_user_question_id": ""})
-                app.state.bus.publish(
-                    Event(
-                        type="user_question.resume_deferred",
-                        session_id=sid,
-                        payload={
-                            "question_id": updated.id,
-                            "session_id": sid,
-                            "reason": "session_busy",
-                        },
-                    )
-                )
-                logger.info(
-                    "user_question resume deferred reason=session_busy "
-                    "session_id=%s question_id=%s",
-                    sid,
-                    question_id,
-                )
-            elif should_resume and app.state.agent is not None:
-                app.state.sessions.update(
-                    sid,
-                    metadata_patch={"pending_user_question_id": ""},
-                )
-                resumed_msg = deps.start_background_user_turn(
-                    sid,
-                    sess,
-                    deps.ask_user_resume_text(updated),
-                    metadata=resume_metadata,
-                    prev_status=sess.status if sess is not None else "waiting_user",
-                )
-                app.state.bus.publish(
-                    Event(
-                        type="user_question.resumed",
-                        session_id=sid,
-                        payload={
-                            "question_id": updated.id,
-                            "session_id": sid,
-                            "queued_user_message_id": resumed_msg.id,
-                            "source_turn_id": updated.turn_id,
-                        },
-                    )
-                )
-            else:
-                _set_session_status(
-                    sid,
-                    "idle",
-                    prev_status=sess.status if sess is not None else "waiting_user",
-                    metadata_patch={"pending_user_question_id": ""},
-                )
+        resume_answered_question(
+            app,
+            deps,
+            sid,
+            updated,
+            has_pending=bool(_pending_user_questions(sid)),
+            set_session_status=_set_session_status,
+        )
         app.state.bus.publish(
             Event(
                 type="user_question.answered",

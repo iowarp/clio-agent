@@ -8,6 +8,24 @@ from clio_agent.gact.providers.profile_store import ProviderProfileStore
 from clio_agent.providers.lm_spec import spec_from_config
 
 
+def mark_agent_ready(app: Any, agent: Any) -> None:
+    """Publish the live agent and promote inputs deferred during initialization."""
+
+    app.state.agent = agent
+
+    def drain() -> None:
+        from clio_agent.gact.loop_inbox import drain_inbox_to_new_turn  # noqa: PLC0415
+
+        for session_id in list(app.state.loop_inboxes):
+            drain_inbox_to_new_turn(app, session_id)
+
+    loop = getattr(app.state, "mcp_app_loop", None)
+    if loop is not None and loop.is_running():
+        loop.call_soon(drain)
+    else:
+        drain()
+
+
 def record_init_failure(app: Any, exc: BaseException, *, stage: str) -> None:
     """Expose one typed deferred-construction failure without leaving partial state."""
 

@@ -48,6 +48,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.gact.agent_initialization import mark_agent_ready
 from clio_agent.gact.events import Event
 from clio_agent.gact.providers.auth import (
     _is_placeholder_api_key,
@@ -1077,11 +1078,10 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             if isinstance(store, ProviderProfileStore)
             else ProviderProfileStore.seed(default_spec)
         )
-
         # Swap the agent + ARC atomically. Old agent isn't
         # explicitly closed because we don't know what background
         # state it owns; Python's GC will clean up.
-        app.state.agent = agent
+        mark_agent_ready(app, agent)
         # The bind swaps in a freshly-built agent (new ARCMemory); _set_app_arc
         # re-wires the arc.op op-logger (every real run binds — without it the live
         # path stays unobserved).

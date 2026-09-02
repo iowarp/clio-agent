@@ -11,6 +11,7 @@ from dspy.utils.dummies import DummyLM
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as gact_context
+from clio_agent.gact.agent_initialization import mark_agent_ready
 from clio_agent.gact.agent_tasks import AgentTask
 from clio_agent.gact.agents.auto_tools import build_auto_react_tools
 from clio_agent.gact.agents.builders import _dynamic_agent_tools
@@ -344,7 +345,28 @@ def test_pending_native_question_survives_backend_restart(tmp_path) -> None:
     assert routed == [(session.id, question_id)]
     assert restarted_app.state.user_questions[question_id].status == "answered"
     assert restarted_app.state.sessions.get(session.id).status == "idle"
-    assert restarted_app.state.sessions.get(session.id).metadata["pending_user_question_id"] == ""
+    restarted = restarted_app.state.sessions.get(session.id)
+    assert restarted.metadata["pending_user_question_id"] == ""
+    assert restarted.metadata["pending_ask_user"]["resolved_status"] == "answered"
+    assert restarted_app.state.loop_inboxes[session.id].peek_nonempty()
+
+
+def test_agent_ready_promotes_inputs_deferred_during_initialization(tmp_path, monkeypatch) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="deferred")
+    app.state.loop_inboxes[session.id] = object()
+    app.state.mcp_app_loop = None
+    drained: list[str] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.loop_inbox.drain_inbox_to_new_turn",
+        lambda _app, session_id: drained.append(session_id),
+    )
+    agent = object()
+
+    mark_agent_ready(app, agent)
+
+    assert app.state.agent is agent
+    assert drained == [session.id]
 
 
 def test_legacy_forwarded_question_hydrates_owner_and_attended_ids() -> None:

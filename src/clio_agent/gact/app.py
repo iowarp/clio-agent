@@ -683,6 +683,7 @@ _turn_start_background_user_turn = _start_background_user_turn
 # --- re-export shim (#714): skills/commands/catalog loading moved to catalog.py ---
 from typing import Protocol
 
+from clio_agent.gact import agent_initialization
 from clio_agent.gact.agent_blueprints import (
     discover_agent_blueprints,
     load_agent_blueprint_path,
@@ -1029,9 +1030,7 @@ async def _construct_agent_async(app: "FastAPI") -> None:
         # sanctioned env-credential read, design §6), so a GACT booted purely from
         # ``CLIO_LM_*`` still authenticates.
         agent = ClioAgent(verbose=False, arc=arc, provider_config=cfg, **relay_kwargs)
-        from clio_agent.gact.agent_initialization import update_provider_profile  # noqa: PLC0415
-
-        update_provider_profile(app, agent)
+        agent_initialization.update_provider_profile(app, agent)
         return agent
 
     try:
@@ -1053,7 +1052,7 @@ async def _construct_agent_async(app: "FastAPI") -> None:
 
     if not await registry_boot.boot_fold_artifact_registry_offloop(app, loop):
         return  # wedged store — agent stays unready with a typed agent_init_error
-    app.state.agent = agent
+    agent_initialization.mark_agent_ready(app, agent)
 
     # #972: enforce the CAS store byte budget across every workspace at boot (off-loop,
     # #1001 cadence — the registry is now folded, so the reachability scan is ready).
