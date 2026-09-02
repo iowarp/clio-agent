@@ -32,10 +32,11 @@ with different specs) keeps the FIRST mounted spec and emits a typed
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from clio_agent.runtime import trace
-from clio_agent.tools.gateway import namespace_proxies, namespace_specs
+from clio_agent.tools.gateway import namespace_direct_factories, namespace_proxies, namespace_specs
 
 
 def merge_blueprint_namespaces(
@@ -63,6 +64,7 @@ def merge_blueprint_namespaces(
 
     new_specs = dict(namespace_specs(gateway))
     new_proxies = namespace_proxies(gateway)
+    new_direct_factories = namespace_direct_factories(gateway)
 
     existing_specs = getattr(executor, "_clio_namespace_specs", None)
     if existing_specs is None:
@@ -73,6 +75,19 @@ def merge_blueprint_namespaces(
     if inner is not None and inner_specs is None:
         inner_specs = existing_specs
         _stamp(inner, "_clio_namespace_specs", inner_specs)
+    # #1281 (C1-S1): the direct-client factory registry merges the SAME way
+    # specs do -- a namespace joining a resident fleet via a second blueprint
+    # must be routable direct the moment its capability is discovered True.
+    existing_factories = getattr(executor, "_clio_namespace_direct_factories", None)
+    if existing_factories is None:
+        existing_factories = {}
+        _stamp(executor, "_clio_namespace_direct_factories", existing_factories)
+    inner_factories = (
+        getattr(inner, "_clio_namespace_direct_factories", None) if inner is not None else None
+    )
+    if inner is not None and inner_factories is None:
+        inner_factories = existing_factories
+        _stamp(inner, "_clio_namespace_direct_factories", inner_factories)
 
     merged: list[str] = []
     already: list[str] = []
@@ -98,6 +113,11 @@ def merge_blueprint_namespaces(
         existing_specs[namespace] = spec
         if inner_specs is not None and inner_specs is not existing_specs:
             inner_specs[namespace] = spec
+        factory = new_direct_factories.get(namespace)
+        if factory is not None:
+            existing_factories[namespace] = factory
+            if inner_factories is not None and inner_factories is not existing_factories:
+                inner_factories[namespace] = factory
         proxy = new_proxies.get(namespace)
         if inner is not None and proxy is not None:
             # Lazy per-namespace proxy: joins the routing table without
@@ -139,6 +159,7 @@ def stamp_fresh_fleet(
     blueprint_id: str,
     federation_epoch: Any,
     declared_specs: dict[str, Any],
+    direct_factories: Mapping[str, Any] | None = None,
 ) -> None:
     """Stamp a freshly-rebuilt fleet's bookkeeping (agent.py's rebuild path).
 
@@ -146,16 +167,37 @@ def stamp_fresh_fleet(
     #1236 federation epoch, and the #1237 declared-namespace map — the latter
     on BOTH the sync wrapper (``builders.py`` reads it there) and its inner
     async executor (``mcp_executor.py``'s dispatch-time gate reads it there).
-    Best-effort on test doubles that refuse attribute assignment.
+    ``direct_factories`` (#1281 C1-S1) is stamped the same dual way via
+    :func:`stamp_direct_factories`. Best-effort on test doubles that refuse
+    attribute assignment.
     """
 
     _stamp(executor, "_clio_mounted_blueprint_id", blueprint_id)
     _stamp(executor, "_clio_mounted_blueprint_ids", {blueprint_id} if blueprint_id else set())
     _stamp(executor, "_clio_federation_epoch", federation_epoch)
     _stamp(executor, "_clio_namespace_specs", declared_specs)
+    stamp_direct_factories(executor, direct_factories or {})
     inner = getattr(executor, "_async_executor", None)
     if inner is not None:
         _stamp(inner, "_clio_namespace_specs", declared_specs)
+
+
+def stamp_direct_factories(executor: Any, direct_factories: Mapping[str, Any]) -> None:
+    """Stamp the #1281 (C1-S1) direct-client factory registry onto ``executor``.
+
+    Mirrors the ``_clio_namespace_specs`` dual-stamp (sync wrapper + inner
+    async executor) so ``mcp_executor._connect_namespace`` can route a
+    namespace direct once its task capability is discovered True -- on
+    EVERY executor construction path: the default (no-workspace) gateway
+    executor, a freshly rebuilt per-workspace fleet (:func:`stamp_fresh_fleet`),
+    and an additively-merged blueprint (:func:`merge_blueprint_namespaces`).
+    """
+
+    factories = dict(direct_factories)
+    _stamp(executor, "_clio_namespace_direct_factories", factories)
+    inner = getattr(executor, "_async_executor", None)
+    if inner is not None:
+        _stamp(inner, "_clio_namespace_direct_factories", factories)
 
 
 def _mounted_blueprint_ids(executor: Any) -> set[str]:

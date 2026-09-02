@@ -68,6 +68,7 @@ from clio_agent.tools.gateway import (
     list_builtin_tool_definitions,
     list_jarvis_tool_definitions,
     list_relay_tool_definitions,
+    namespace_direct_factories,
     namespace_proxies,
     namespace_specs,
 )
@@ -280,6 +281,11 @@ class ClioAgent(dspy.Module):
             namespace_servers=namespace_proxies(self._tool_gateway),
             server_id="gateway:default",
         )
+        # #1281 (C1-S1): stamp_fresh_fleet only covers per-workspace fleets;
+        # thread the direct-client factory registry here too.
+        from clio_agent.tools.fleet_blueprint_merge import stamp_direct_factories  # noqa: PLC0415
+
+        stamp_direct_factories(self.tool_executor, namespace_direct_factories(self._tool_gateway))
         # Cache of workspace root -> sync tool executor (lazy, one per workspace).
         # Guarded by _workspace_executor_lock (shared with the #933 reaper);
         # _workspace_leases counts LIVE TURNS pinning a root (never reaped).
@@ -626,6 +632,7 @@ class ClioAgent(dspy.Module):
                     blueprint_id=blueprint_id,
                     federation_epoch=current_epoch,
                     declared_specs=declared_specs,
+                    direct_factories=namespace_direct_factories(gateway),
                 )
                 executors[root] = executor
             elif blueprint_missing:
