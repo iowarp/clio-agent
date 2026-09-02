@@ -3049,7 +3049,9 @@ def test_enabled_agent_blueprint_mcp_descriptor_probes_and_calls_tool(
                 )
             ]
 
-        async def call_tool(self, name: str, args: dict[str, Any]) -> Any:
+        async def call_tool(
+            self, name: str, args: dict[str, Any], *, progress_handler: Any = None
+        ) -> Any:
             FakeClient.called_tool = name
             return SimpleNamespace(
                 content=[SimpleNamespace(type="text", text=f"{name}:{args['q']}")],

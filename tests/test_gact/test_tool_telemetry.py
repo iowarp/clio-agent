@@ -372,7 +372,9 @@ class _RootDataClient:
             )
         ]
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any], *, progress_handler: Any = None
+    ) -> Any:
         return SimpleNamespace(
             content=[TextContent(type="text", text=f"Root({self.root!s})")],
             structured_content=None,

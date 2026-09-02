@@ -60,7 +60,9 @@ def _fake_client_factory(captured: list[object]):
         async def list_tools(self) -> list[_FakeTool]:
             return [_FakeTool("sh_tool")]
 
-        async def call_tool(self, name: str, args: dict[str, object]) -> object:
+        async def call_tool(
+            self, name: str, args: dict[str, object], *, progress_handler: object = None
+        ) -> object:
             return SimpleNamespace(
                 content=[SimpleNamespace(type="text", text=f"called {name}")],
                 data=None,
