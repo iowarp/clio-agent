@@ -20,7 +20,6 @@ This concern owns the ``/v1/sessions`` lifecycle and session-scoped ask/retry pr
   cancel) + a ``session.status_changed`` event.
 * Ask-user -- session question CRUD plus background resumption after answers.
 * Retry -- list and execute recorded attempts from a source user message.
-
 Fork, question-answer and retry use ``deps.start_background_user_turn``. This
 module loads only leaf packages and never :mod:`clio_agent.gact.app`; shared
 cross-concern helpers (ledger replace, ARC release, model-ref errors, evidence index,
