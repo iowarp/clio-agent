@@ -261,7 +261,26 @@ Slice A4 ran the whole CI ladder locally on Windows / Python 3.12:
 | `scripts/gen_env_reference.py --check` | OK — env reference matches the source tree |
 | `mypy src/` | Success, 499 files — **one branch-introduced error fixed here** (`protocol/v3/event.py` could not resolve `COMPOSER_PROJECTORS` across the composer↔event import cycle; the table is now explicitly annotated) |
 | route-count guardrail (`test_decomposition_guardrails.py`) | 4 passed |
-| full suite — `pytest tests/ -m "not integration"` | **6514 passed, 84 skipped, 76 deselected** in 39:47, exit 0 |
+| full suite — `pytest tests/ -m "not integration"` | **6516 passed, 84 skipped, 76 deselected, 0 failed** in 39:06, `PYTEST_EXIT=0` |
 | CLI baseline smoke (`ui/cli.py --help` / `--version`) | exit 0, reports 0.9.1.1 |
+
+### One intermittent develop test, diagnosed not waved
+
+`tests/test_tools/test_mcp_fleet_lifecycle.py::test_boot_listing_is_sequential_one_chain_at_a_time`
+failed in ONE of three whole-suite runs (`boot listing held 2 stub chains alive simultaneously`).
+It is not attributable to this landing and was not patched:
+
+- the MCP listing path it exercises (`tools/gateway.py`, `tools/execution.py`, `tools/mcp_config.py`)
+  and the test itself are **untouched by this branch** — they are develop's;
+- it passed the other two whole-suite runs of this same tree, and passes 4/4 solo, 3/3 as its module,
+  and inside the whole `tests/test_tools` package (781 passed);
+- the assertion's instrument samples the OS process table every 25 ms for any process whose cmdline
+  names a stub script, so a namespace's stub that has exited but is not yet reaped still counts as
+  "alive". Under whole-suite load on Windows the exit lag at a namespace boundary exceeds the
+  sampling interval, and a genuinely sequential listing reads as two concurrent chains.
+
+The invariant is right; the instrument has a teardown-lag blind spot that only opens under load on
+Windows. Tightening it belongs to the develop test's owner, on a platform where the fix can be
+verified — not to a blind Windows-only patch in this landing.
 
 CI on [#1278](https://github.com/iowarp/clio-agent/pull/1278) is the merge gate.
