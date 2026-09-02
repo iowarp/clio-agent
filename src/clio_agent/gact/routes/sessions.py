@@ -46,6 +46,7 @@ from fastapi.responses import JSONResponse
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.autonomous_loop import stop_session_loop
+from clio_agent.gact.context_references import authorize_context_reference_parts
 from clio_agent.gact.events import Event
 from clio_agent.gact.goal import stop_session_goal
 from clio_agent.gact.loop_inbox import enqueue_user_steer
@@ -76,6 +77,7 @@ from clio_agent.gact.types import (
     ListSessionsResponse,
     Message,
     ModelRef,
+    Part,
     RetryTurnRequest,
     Session,
     TurnAttempt,
@@ -1106,6 +1108,12 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             return original_text
         return f"{original_text}\n\n[Retry notes]\n{notes}"
 
+    def _retryable_user_message(message: Message | None) -> bool:
+        return message is not None and any(
+            (part.type == "text" and bool(part.text)) or part.type == "context_ref"
+            for part in message.parts
+        )
+
     @app.get("/v1/sessions/{sid}/questions")
     async def list_user_questions(sid: str, status: str = "") -> dict[str, Any]:
         if app.state.sessions.get(sid) is None:
@@ -1429,7 +1437,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                         )
                     ).model_dump(exclude_none=True),
                 )
-            if source_user is None or not _message_text(source_user):
+            if not _retryable_user_message(source_user):
                 execution_blocked_reason = "source_user_message_not_found"
             elif model_changed:
                 envelope = deps.unsupported_model_ref_error(
@@ -1462,6 +1470,12 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         # instead of staging; the client retries once the running turn finishes.
         if req.execute and not execution_blocked_reason and app.state.turn_runner.busy(sid):
             execution_blocked_reason = "session_busy"
+        retry_parts: list[Part] | None = None
+        if req.execute and not execution_blocked_reason and source_user is not None:
+            retry_parts = [part.model_copy(update={"id": ""}) for part in source_user.parts]
+            if req.notes.strip():
+                retry_parts.append(Part(type="text", text=f"[Retry notes]\n{req.notes.strip()}"))
+            retry_parts = await authorize_context_reference_parts(app, sess, retry_parts)
         now_iso = datetime.now(timezone.utc).isoformat()
         attempt = TurnAttempt(
             id=_new_attempt_id(),
@@ -1489,6 +1503,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         app.state.turn_attempts[attempt.id] = attempt
         if req.execute and not execution_blocked_reason and source_user is not None:
             retry_text = _retry_user_text(_message_text(source_user), req.notes)
+            assert retry_parts is not None
             retry_user_msg = deps.start_background_user_turn(
                 sid,
                 sess,
@@ -1501,6 +1516,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     **req.metadata,
                 },
                 prev_status=sess.status,
+                request_parts=retry_parts,
             )
             attempt = attempt.model_copy(
                 update={

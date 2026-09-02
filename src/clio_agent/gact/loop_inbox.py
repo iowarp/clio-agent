@@ -142,6 +142,7 @@ class InboxEvent:
     task_id: str
     enqueued_at: str = field(default_factory=_now_iso)
     text: str = ""
+    model_text: str = ""
     metadata: dict = field(default_factory=dict)
     steer_message_id: str = ""
     steer_created_at: str = ""
@@ -353,6 +354,7 @@ def enqueue_user_steer(
     steer_message_id: str = "",
     steer_created_at: str = "",
     steer_parts: list | None = None,
+    model_text: str = "",
 ) -> None:
     """Producer B: enqueue a mid-turn user *steer* onto ``session_id``'s inbox.
 
@@ -377,6 +379,7 @@ def enqueue_user_steer(
         kind="user_message",
         task_id="",
         text=text,
+        model_text=model_text,
         metadata=dict(metadata or {}),
         steer_message_id=steer_message_id,
         steer_created_at=steer_created_at,

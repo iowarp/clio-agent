@@ -199,6 +199,14 @@ def _record_context_frame(
             }
         )
 
+    from clio_agent.gact.context_references import (  # noqa: PLC0415
+        context_reference_frame_items,
+    )
+
+    reference_items = context_reference_frame_items(user_msg)
+    items.extend(reference_items)
+    token_total += sum(int(item.get("tokens_estimated", 0) or 0) for item in reference_items)
+
     enriched_delta = max(0, len(enriched_text) - len(user_text))
     agent_ref = getattr(sess, "agent", {}) or {}
     frame = {
@@ -610,6 +618,11 @@ def enrich_turn_context(
     with bringup_timing.timer_for_session(app, sid).phase("enrichment"):
         text = _enrich_with_context_files(app, sid, user_text)
         text = enrich_with_workspace_resources(app, sid, text, user_msg)
+        from clio_agent.gact.context_references import (  # noqa: PLC0415
+            enrich_with_context_references,
+        )
+
+        text = enrich_with_context_references(app, sid, text, user_msg)
         return _enrich_with_requested_memory_search(app, sid, text, user_msg)
 
 

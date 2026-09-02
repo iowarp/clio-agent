@@ -504,6 +504,20 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 x_clio_retry_attempts=True,
                 x_clio_context_frames=True,
                 x_clio_semantic_events=True,
+                x_clio_context_references={
+                    "version": "1",
+                    "part_type": "context_ref",
+                    "kinds": ["workspace_file", "artifact", "session", "agent_run"],
+                    "search_kinds": [
+                        "workspace_file",
+                        "resource",
+                        "artifact",
+                        "session",
+                        "agent_run",
+                    ],
+                    "search_route": "/v1/workspaces/{workspace_id}/references",
+                    "revision_pinned_kinds": ["workspace_file", "resource", "artifact"],
+                },
                 x_clio_artifacts=True,  # #968 — /v1/artifacts + artifact.* + resource_link
                 x_clio_document_artifacts={
                     "protocol_version": "0.1.0",

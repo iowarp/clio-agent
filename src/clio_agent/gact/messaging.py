@@ -301,7 +301,13 @@ def _user_message_parts(
     parts: list[Part] = []
     has_text = False
     for part in request_parts:
-        if part.type not in {"text", "image", "artifact_review", "resource_ref"}:
+        if part.type not in {
+            "text",
+            "image",
+            "artifact_review",
+            "resource_ref",
+            "context_ref",
+        }:
             continue
         metadata = dict(part.metadata)
         if part.type == "image":

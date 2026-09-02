@@ -501,6 +501,7 @@ from clio_agent.gact.routes.provider_models_refresh import (
 )
 from clio_agent.gact.routes.providers import register_providers_routes  # noqa: E402
 from clio_agent.gact.routes.relay import register_relay_routes  # noqa: E402
+from clio_agent.gact.routes.references import register_reference_routes  # noqa: E402
 from clio_agent.gact.routes.schedules import (  # noqa: E402
     register_schedules_routes,
 )
@@ -2141,6 +2142,7 @@ def build_app(
     # Workspace store CRUD + file listing/reading are owned by
     # routes/workspaces.py; registered here so they bind to the same app.
     register_workspaces_routes(app, deps)
+    register_reference_routes(app)
 
     # ---- /v1/agent-blueprints/* + /v1/expert-packs/* + session blueprint ---
     # Blueprint source registry, install/update/delete engine, MCP-descriptor
