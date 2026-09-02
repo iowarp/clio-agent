@@ -186,7 +186,13 @@ ONE client pathway for every server (built-in, declared, relay):
   byte-identical (regression-proven).
 - **C1-S2 — refusal + wait semantics (#1275):** protocol-refusal class terminal-fast
   on every path; progress-aware ladder on the direct route; visible waiting.
-  Includes (e)'s MRTR per-path verification.
+  Includes (e)'s MRTR per-path verification. USER-AGENCY rule (owner, 2026-09-01):
+  this is a user-facing system — the user is the unstuck mechanism. No wait may
+  degrade or block the system on a clock's verdict (NFS latency runs beyond any
+  general expectation and such timeouts have literally locked users out); the
+  system retries with expanding windows and SURFACES the wait (what it waits on,
+  attempt count, next retry) so the user can see, judge, and cancel; the terminal
+  give-up on slowness belongs to the user.
 - **C1-S3 — (a) generic extension registry:** extension negotiation (declare + read
   server-declared extensions); tasks becomes a registry entry, not a special case;
   **(d) the ui extension declares here** — align `gact/mcp_apps.py` to the 2026-07-28
