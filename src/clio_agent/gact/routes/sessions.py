@@ -1137,7 +1137,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         row = UserQuestion(
             id=_new_question_id(),
             session_id=sid,
-            **{"owner_session_id": sid, "attended_session_id": attended_session_id(app, sid)},
+            owner_session_id=sid,
+            attended_session_id=attended_session_id(app, sid),
             prompt=prompt,
             kind=req.kind,
             options=_normalize_question_options(req),
