@@ -296,6 +296,7 @@ def resource_capabilities(app: Any) -> dict[str, Any]:
         if row
     ]
     return {
+        "enabled": True,
         "max_bytes": int(store.max_resource_bytes),
         "converters": factory.capabilities() if factory is not None else [],
         "degradations": degradations,

@@ -644,6 +644,7 @@ def test_a_corrupt_resource_index_is_quarantined_and_the_server_still_boots(
     with TestClient(app) as client:
         capabilities = client.get("/v1/capabilities").json()["capabilities"]["x_clio_resources"]
 
+        assert capabilities["enabled"] is True
         reasons = {row["kind"]: row for row in capabilities["degradations"]}
         assert set(reasons) == {"resource_custody_index", "resource_delivery_ledger"}
         for row in reasons.values():
