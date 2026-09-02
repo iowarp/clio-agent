@@ -35,6 +35,8 @@ from clio_agent import conf
 from clio_agent.errors import (
     MCP_PROTOCOL_DOWNGRADED_TO_LEGACY,
     MCP_TASK_CAPABILITY_UNKNOWN,
+    MCP_TASK_DIRECT_FACTORY_CONSTRUCTION_FAILED,
+    MCP_TASK_DIRECT_FACTORY_MISSING,
     MCP_TASKS_DECLARATION_SUPPRESSED,
     MCP_TASKS_DIRECT_ROUTE_SELECTED,
     MCPMissingRequiredClientCapabilityError,
@@ -42,7 +44,6 @@ from clio_agent.errors import (
 from clio_agent.tools.gateway import (
     _list_declared_tools,
     build_gateway,
-    namespace_direct_factories,
     namespace_proxies,
     namespace_specs,
 )
@@ -59,7 +60,9 @@ from clio_agent.tools.mcp_task_extension import tasks_declaration
 from clio_agent.tools.mcp_task_records import InMemoryTaskRecordStore, set_task_record_store
 from clio_agent.tools.mcp_task_routing import (
     record_definitive_capability,
+    record_namespace_route_decision,
     recorded_task_route_decisions,
+    resolve_and_build_direct_client,
     resolve_namespace_route,
 )
 
@@ -235,57 +238,133 @@ async def test_plain_staller_progress_reaches_the_client() -> None:
 # --------------------------------------------------------------------------
 
 
-def _declared_exerciser_executor() -> AsyncMCPToolExecutor:
-    """The exerciser mounted the way a user-declared server mounts: spec ->
-    ``build_gateway`` -> executor namespace route (production wiring:
-    ``agent.py`` passes ``namespace_proxies``; ``_active_tool_executor`` stamps
-    the spec + direct-factory registries the C1-S1 branch reads --
-    ``fleet_blueprint_merge.stamp_direct_factories`` mirrors that here). One
-    deliberate divergence: production also passes ``preloaded_tools`` (#932)
-    so ``start()`` skips the composite listing fan-out -- omitted here, so
-    the exerciser spawns once for that listing and once for the namespace
-    route; assertions are unaffected."""
-
-    spec = MCPServerSpec(
-        name=EXERCISER_NAMESPACE,
+def _exerciser_spec(namespace: str) -> MCPServerSpec:
+    return MCPServerSpec(
+        name=namespace,
         transport="stdio",
         command=sys.executable,
         args=(str(EXERCISER_PATH),),
     )
-    gw = build_gateway({EXERCISER_NAMESPACE: spec})
-    executor = AsyncMCPToolExecutor(gw, namespace_servers=namespace_proxies(gw))
+
+
+def _declared_exerciser_executor(
+    namespace: str = EXERCISER_NAMESPACE, *, preloaded_tools: dict[str, Any] | None = None
+) -> AsyncMCPToolExecutor:
+    """The exerciser mounted the way a user-declared server mounts: spec ->
+    ``build_gateway`` -> executor namespace route (production wiring:
+    ``agent.py`` passes ``namespace_proxies``; ``_active_tool_executor`` stamps
+    the spec registry; ``AsyncMCPToolExecutor.__init__`` derives the
+    direct-factory registry straight off the gateway -- #1281 F5).
+
+    PRODUCTION ALWAYS PASSES ``preloaded_tools`` (#932; agent.py:280/:622,
+    ``gact/relay_wiring.py``) -- adversarial review F1 found the ORIGINAL
+    version of this helper omitted it, so ``start()``'s composite listing
+    fan-out (not any production code path) was what happened to make
+    capability discovery land before the target call. Callers now pass
+    ``preloaded_tools`` explicitly, production-shaped; ``None`` is no longer
+    the default for the acceptance tests (kept only for the probe-pin tests
+    below that intentionally exercise the composite listing).
+    """
+
+    spec = _exerciser_spec(namespace)
+    gw = build_gateway({namespace: spec})
+    executor = AsyncMCPToolExecutor(
+        gw, namespace_servers=namespace_proxies(gw), preloaded_tools=preloaded_tools
+    )
     executor._clio_namespace_specs = namespace_specs(gw)  # noqa: SLF001 - mirrors production stamping
-    executor._clio_namespace_direct_factories = namespace_direct_factories(gw)  # noqa: SLF001
     return executor
 
 
-async def test_declared_path_serves_task_required_tools() -> None:
-    """THE CAMPAIGN TARGET: a user-declared ``task=required`` tool simply works.
+def _preloaded_tools_from_listing(namespace: str, listed: list[Any]) -> dict[str, Any]:
+    """Build the ``preloaded_tools`` dict a real discovery pass would hand
+    the executor (mirrors ``gateway._list_declared_tools``'s callers)."""
 
-    C1-S1 (#1281) fixes this: the declared path's composite ``start()``
-    listing fan-out reaches the exerciser's REAL backend leg (``gateway.
-    _proxy_for_spec``'s per-request clone), whose ``__aenter__`` opportunistically
-    records the tasks extension as a positive capability
-    (``mcp_connection_era``'s ``instrument_client_era`` hook) BEFORE the
-    ``task_echo`` call is dispatched -- so ``_connect_namespace`` routes this
-    namespace direct instead of through the proxy that suppresses the
-    declaration.
-    """
+    return {
+        f"{namespace}_{tool.name}": tool.model_copy(update={"name": f"{namespace}_{tool.name}"})
+        for tool in listed
+    }
 
+
+async def test_declared_path_serves_task_required_tools_readiness_ordered() -> None:
+    """THE CAMPAIGN TARGET, PRODUCTION-WIRED (F1(a)): a user-declared
+    ``task=required`` tool works on the FIRST call when the definitive
+    discovery step (``gateway._list_declared_tools``, what ``gact/
+    mcp_readiness.py``'s ``ensure_namespace``/``_list_one_namespace`` always
+    runs before a session's first turn) has landed BEFORE the call --
+    the readiness-ordered production shape, ``preloaded_tools`` populated
+    from that SAME discovery so ``start()`` never does its own composite
+    listing fan-out (adversarial review F1: the ORIGINAL version of this
+    test passed for a reason production doesn't have)."""
+
+    namespace = "v2exready"
     try:
-        async with _declared_exerciser_executor() as executor:
-            outcome = await executor.call_tool_result(
-                f"{EXERCISER_NAMESPACE}_task_echo", {"payload": "ping"}
-            )
+        spec = _exerciser_spec(namespace)
+        listed = _list_declared_tools(spec)
+        capability = latest_task_capability(namespace)
+        assert capability is not None
+        assert capability.task_capable is True
+        assert capability.source == "capabilities_extensions"
+
+        gw = build_gateway({namespace: spec})
+        executor = AsyncMCPToolExecutor(
+            gw,
+            namespace_servers=namespace_proxies(gw),
+            preloaded_tools=_preloaded_tools_from_listing(namespace, listed),
+        )
+        executor._clio_namespace_specs = namespace_specs(gw)  # noqa: SLF001
+
+        async with executor:
+            outcome = await executor.call_tool_result(f"{namespace}_task_echo", {"payload": "ping"})
             assert outcome.model_text == "echo:ping"
-        era = latest_task_capability(EXERCISER_NAMESPACE)
-        assert era is not None
-        assert era.task_capable is True
-        assert era.source == "capabilities_extensions"
-        decisions = {
-            ns: d for ns, d in recorded_task_route_decisions() if ns == EXERCISER_NAMESPACE
-        }
-        assert decisions, "no route decision recorded for the exerciser namespace"
+        decisions = [d for ns, d in recorded_task_route_decisions() if ns == namespace]
+        assert decisions, "no route decision recorded"
+        assert decisions[-1].use_direct is True
+        assert decisions[-1].reason == MCP_TASKS_DIRECT_ROUTE_SELECTED
+    finally:
+        _reap("mcp_exerciser.py")
+
+
+async def test_declared_path_serves_task_required_tools_cold_race_then_heals() -> None:
+    """THE CAMPAIGN TARGET, PRODUCTION-WIRED (F1(b)): with ``preloaded_tools``
+    passed (production-shaped) but the capability registry COLD (no
+    discovery has landed for this namespace yet -- the readiness race:
+    ``mcp_readiness.py``'s own bounded wait lost, or a caller that skipped
+    it), the FIRST call fails TERMINAL-FAST with the typed -32021 refusal
+    (#1275: a deterministic protocol refusal, never a silent hang) -- the
+    proxy path's OWN backend connect attempt, made during that failed call,
+    opportunistically records the SAME server's capability True
+    (``mcp_connection_era.instrument_client_era``). The SECOND call then
+    HEALS (F2: the stale proxy-cached client is evicted and reconnected
+    direct, typed ``MCP_TASK_ROUTE_HEALED``) and succeeds."""
+
+    namespace = "v2excold"
+    try:
+        executor = _declared_exerciser_executor(
+            namespace, preloaded_tools={f"{namespace}_task_echo": None}
+        )
+        assert latest_task_capability(namespace) is None, "capability must start COLD"
+
+        async with executor:
+            with pytest.raises(MCPMissingRequiredClientCapabilityError) as excinfo:
+                await executor.call_tool_result(f"{namespace}_task_echo", {"payload": "ping"})
+            data = excinfo.value.protocol_data or {}
+            assert TASKS_EXTENSION_ID in data["requiredCapabilities"]["extensions"]
+
+            capability = latest_task_capability(namespace)
+            assert capability is not None
+            assert capability.task_capable is True, (
+                "the proxy backend's own connect attempt (made to dispatch "
+                "the failed call) must opportunistically record capability"
+            )
+            first_decisions = [d for ns, d in recorded_task_route_decisions() if ns == namespace]
+            assert first_decisions[-1].use_direct is False
+            assert first_decisions[-1].reason == MCP_TASK_CAPABILITY_UNKNOWN
+
+            outcome = await executor.call_tool_result(f"{namespace}_task_echo", {"payload": "p2"})
+            assert outcome.model_text == "echo:p2"
+            healed_decisions = [d for ns, d in recorded_task_route_decisions() if ns == namespace]
+            assert healed_decisions[-1].use_direct is True
+            assert healed_decisions[-1].reason == MCP_TASKS_DIRECT_ROUTE_SELECTED
     finally:
         _reap("mcp_exerciser.py")
 
@@ -294,15 +373,27 @@ async def test_declared_path_plain_tools_work_on_a_task_capable_server() -> None
     """Plain tools on a task-capable server work TODAY through the declared
     path -- C1-S1 must not move this. Whole-namespace routing means a plain
     tool on a task-capable server ALSO rides the direct route once capability
-    is known True; the typed reason record says so."""
+    is known True; the typed reason record says so. Production-wired
+    (preloaded_tools + discovery-first, mirroring F1(a))."""
 
+    namespace = "v2explain"
     try:
-        async with _declared_exerciser_executor() as executor:
+        spec = _exerciser_spec(namespace)
+        listed = _list_declared_tools(spec)
+        gw = build_gateway({namespace: spec})
+        executor = AsyncMCPToolExecutor(
+            gw,
+            namespace_servers=namespace_proxies(gw),
+            preloaded_tools=_preloaded_tools_from_listing(namespace, listed),
+        )
+        executor._clio_namespace_specs = namespace_specs(gw)  # noqa: SLF001
+
+        async with executor:
             outcome = await executor.call_tool_result(
-                f"{EXERCISER_NAMESPACE}_plain_echo", {"payload": "ping"}
+                f"{namespace}_plain_echo", {"payload": "ping"}
             )
             assert "plain:ping" in outcome.model_text
-        decisions = [d for ns, d in recorded_task_route_decisions() if ns == EXERCISER_NAMESPACE]
+        decisions = [d for ns, d in recorded_task_route_decisions() if ns == namespace]
         assert decisions, "no route decision recorded for the exerciser namespace"
         assert decisions[-1].use_direct is True
         assert decisions[-1].reason == MCP_TASKS_DIRECT_ROUTE_SELECTED
@@ -414,6 +505,53 @@ async def test_record_definitive_capability_reads_modern_extensions() -> None:
     assert latest_task_capability("unit-modern") == capability
 
 
+async def test_declared_path_serves_a_task_when_capability_came_from_tool_execution() -> None:
+    """#1281 F8 (adversarial review): drive a REAL call through a direct
+    route whose capability was sourced from the LEGACY per-tool marker
+    (``tool_execution``), end to end, and pin what actually happens.
+
+    Probed (2026-09-01): a forced legacy-mode connect+list against the
+    exerciser correctly sources capability ``tool_execution``; the DECLARED
+    PATH's direct-client factory then connects on ITS OWN terms (default
+    auto mode) -- which negotiates MODERN for this genuinely modern,
+    task-capable server -- and the call SUCCEEDS. fastmcp-tasks is not
+    structurally unable to serve a task here: the ``tool_execution`` source
+    only proves capability was DISCOVERED via the legacy key, not that the
+    ACTUAL connection that serves the call is itself legacy-negotiated (a
+    real backend is free to negotiate its own best era on each connect).
+    """
+
+    namespace = "v2exlegacycap"
+    try:
+        # Force a LEGACY-negotiated read so capability sources tool_execution
+        # (mirrors what a genuinely 2025-11-25 server would produce, without
+        # needing a hand-rolled fixture with real task RPCs to dispatch to).
+        async with Client(build_exerciser_server(), mode="legacy") as legacy_client:
+            tools = await legacy_client.list_tools()
+            capability = record_definitive_capability(namespace, legacy_client, tools)
+        assert capability.source == "tool_execution"
+        assert capability.task_capable is True
+
+        spec = _exerciser_spec(namespace)
+        gw = build_gateway({namespace: spec})
+        executor = AsyncMCPToolExecutor(
+            gw,
+            namespace_servers=namespace_proxies(gw),
+            preloaded_tools={f"{namespace}_task_echo": None, f"{namespace}_plain_echo": None},
+        )
+        executor._clio_namespace_specs = namespace_specs(gw)  # noqa: SLF001
+
+        async with executor:
+            outcome = await executor.call_tool_result(f"{namespace}_task_echo", {"payload": "ping"})
+            assert outcome.model_text == "echo:ping"
+        decisions = [d for ns, d in recorded_task_route_decisions() if ns == namespace]
+        assert decisions, "no route decision recorded"
+        assert decisions[-1].use_direct is True
+        assert decisions[-1].reason == MCP_TASKS_DIRECT_ROUTE_SELECTED
+    finally:
+        _reap("mcp_exerciser.py")
+
+
 async def test_record_definitive_capability_reads_legacy_per_tool_marker() -> None:
     """Legacy-mode front over the exerciser: extensions are stripped by the
     version sieve, so the definitive read falls back to the per-tool
@@ -442,26 +580,98 @@ async def test_record_definitive_capability_records_a_genuine_negative() -> None
 
 
 def test_capability_unknown_default_keeps_the_proxy_path() -> None:
-    """Before ANY discovery lands for a namespace, the route decision keeps
+    """Before ANY discovery lands for a namespace, the PURE decision keeps
     the proxy path with the typed capability-unknown reason -- the safe
     default (never a guess) until a listing pass or an opportunistic
-    real-backend connect records a verdict."""
+    real-backend connect records a verdict.
+
+    #1281 F4 (adversarial review): ``resolve_namespace_route`` is READ-ONLY
+    (writes nothing, not even the ring) -- the ring only ever records the
+    decision ACTUALLY TAKEN, via ``record_namespace_route_decision``, called
+    explicitly here to prove that contract.
+    """
 
     namespace = "never-discovered-c1s1-namespace"
     assert latest_task_capability(namespace) is None
     decision = resolve_namespace_route(namespace)
     assert decision.use_direct is False
     assert decision.reason == MCP_TASK_CAPABILITY_UNKNOWN
+    assert (namespace, decision) not in recorded_task_route_decisions()
+    record_namespace_route_decision(namespace, decision)
     assert (namespace, decision) in recorded_task_route_decisions()
 
 
-def test_known_task_capable_namespace_routes_direct() -> None:
-    """A namespace with a recorded True verdict routes direct, typed."""
+def test_known_task_capable_namespace_with_factory_builds_direct_client() -> None:
+    """A namespace with a recorded True verdict AND a mounted direct factory
+    actually builds a client (not just an intent) -- ``resolve_and_build_
+    direct_client`` returns it plus the decision ACTUALLY taken."""
 
     from clio_agent.tools.mcp_connection_era import record_task_capability
 
-    namespace = "unit-known-task-capable"
+    namespace = "unit-known-task-capable-with-factory"
     record_task_capability(namespace, task_capable=True, source="capabilities_extensions")
-    decision = resolve_namespace_route(namespace)
+    built = object()
+    client, decision = resolve_and_build_direct_client(namespace, {namespace: lambda: built})
+    assert client is built
     assert decision.use_direct is True
     assert decision.reason == MCP_TASKS_DIRECT_ROUTE_SELECTED
+
+
+def test_known_task_capable_namespace_with_no_factory_demotes_typed() -> None:
+    """#1281 F4: capability True but NO direct factory threaded onto this
+    executor (a reserved-namespace mount, or a construction path predating
+    C1-S1 stamping) -- the ring must record the decision ACTUALLY TAKEN
+    (proxy), typed ``MCP_TASK_DIRECT_FACTORY_MISSING``, never the
+    unreachable "direct" intent."""
+
+    from clio_agent.tools.mcp_connection_era import record_task_capability
+
+    namespace = "unit-known-task-capable-no-factory"
+    record_task_capability(namespace, task_capable=True, source="capabilities_extensions")
+    client, decision = resolve_and_build_direct_client(namespace, {})
+    assert client is None
+    assert decision.use_direct is False
+    assert decision.reason == MCP_TASK_DIRECT_FACTORY_MISSING
+
+
+def test_direct_factory_construction_failure_falls_back_to_proxy_typed() -> None:
+    """#1281 F9: a direct factory that raises on construction (e.g.
+    ``transport_for`` refusing a malformed spec at call time) must not
+    hard-fail a call the proxy would still serve -- typed fallback, never a
+    raw propagated exception."""
+
+    from clio_agent.tools.mcp_connection_era import record_task_capability
+
+    namespace = "unit-factory-construction-failure"
+    record_task_capability(namespace, task_capable=True, source="capabilities_extensions")
+
+    def _broken_factory() -> Any:
+        raise RuntimeError("simulated transport_for failure")
+
+    client, decision = resolve_and_build_direct_client(namespace, {namespace: _broken_factory})
+    assert client is None
+    assert decision.use_direct is False
+    assert decision.reason == MCP_TASK_DIRECT_FACTORY_CONSTRUCTION_FAILED
+
+
+def test_capability_demotion_guard_refuses_a_downgraded_false() -> None:
+    """#1281 F7: a True verdict sourced from the AUTHORITATIVE modern key
+    (``capabilities_extensions``) must not be clobbered by a False read at a
+    LEGACY-negotiated era (a possible #1186 downgrade race on a genuinely
+    modern, task-capable server) -- the refusal is itself typed + queryable,
+    never a silently dropped write."""
+
+    from clio_agent.tools.mcp_connection_era import record_task_capability
+
+    namespace = "unit-demotion-guard"
+    true_record = record_task_capability(
+        namespace, task_capable=True, source="capabilities_extensions", era="modern"
+    )
+    refused = record_task_capability(namespace, task_capable=False, source="none", era="legacy")
+    assert refused == true_record, "a refused demotion must return the EXISTING record"
+    assert latest_task_capability(namespace) == true_record
+
+    # An EQUALLY authoritative (modern) False legitimately demotes.
+    demoted = record_task_capability(namespace, task_capable=False, source="none", era="modern")
+    assert demoted.task_capable is False
+    assert latest_task_capability(namespace) == demoted

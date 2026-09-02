@@ -394,16 +394,53 @@ def test_latest_task_capability_is_unknown_before_any_record() -> None:
     assert latest_task_capability("never-recorded-capability-server") is None
 
 
-def test_record_task_capability_always_overwrites_the_prior_verdict() -> None:
+def test_record_task_capability_overwrites_when_not_guarded() -> None:
     """Mirrors ``_record_latest``: the surface answers "what do we know right
     now", not "has it ever been true" -- a later record replaces the earlier
-    one for the SAME server_id."""
+    one for the SAME server_id, UNLESS the F7 demotion guard applies (a True
+    sourced ``capabilities_extensions`` being demoted by a non-equally-
+    authoritative False -- see ``test_record_task_capability_demotion_guard*``
+    below). ``tool_execution`` is not the guarded source, so this is a plain
+    overwrite."""
 
-    record_task_capability("cap-server-b", task_capable=True, source="capabilities_extensions")
+    record_task_capability("cap-server-b", task_capable=True, source="tool_execution")
     second = record_task_capability("cap-server-b", task_capable=False, source="none")
 
     assert latest_task_capability("cap-server-b") == second
     assert latest_task_capability("cap-server-b").task_capable is False
+
+
+def test_record_task_capability_demotion_guard_refuses_unauthoritative_false() -> None:
+    """#1281 F7: a True sourced ``capabilities_extensions`` (the authoritative
+    modern key) may not be overwritten by a False whose era is not itself
+    "modern" -- e.g. a legacy-negotiated read, which may just be the #1186
+    downgrade race on a genuinely modern, task-capable server. The refused
+    write returns the EXISTING (unchanged) record."""
+
+    true_record = record_task_capability(
+        "cap-server-guard", task_capable=True, source="capabilities_extensions", era="modern"
+    )
+    refused = record_task_capability(
+        "cap-server-guard", task_capable=False, source="none", era="legacy"
+    )
+    assert refused == true_record
+    assert latest_task_capability("cap-server-guard") == true_record
+
+
+def test_record_task_capability_demotion_guard_permits_equally_authoritative_false() -> None:
+    """#1281 F7: a False read at an EQUALLY authoritative (modern) era DOES
+    demote a prior ``capabilities_extensions`` True -- a real capability
+    change (e.g. the server removed the tasks extension), not a downgrade
+    artifact."""
+
+    record_task_capability(
+        "cap-server-guard-2", task_capable=True, source="capabilities_extensions", era="modern"
+    )
+    demoted = record_task_capability(
+        "cap-server-guard-2", task_capable=False, source="none", era="modern"
+    )
+    assert demoted.task_capable is False
+    assert latest_task_capability("cap-server-guard-2") == demoted
 
 
 def test_all_latest_task_capabilities_snapshots_every_server() -> None:
