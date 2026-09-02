@@ -395,9 +395,52 @@ def test_estimate_bytes_counts_nested_and_image_payloads() -> None:
     # ``content_blocks``; the document-artifacts merge (3347d283, DocumentPartFields
     # mixin -- review_id/artifact_id/artifact_version/artifact_sha256/review_text/
     # anchor); and the action_card part (52387c2e, source/severity/title/body/
-    # actions) -> 1,322. It remains three orders of magnitude lighter than either
-    # heavy payload.
-    assert 1_100 <= light_bytes < 1_400
+    # actions) -> 1,322. The composer re-land's resource_ref fields (resource_id/
+    # resource_revision/delivery_preference) -> 1,449. It remains three orders of
+    # magnitude lighter than either heavy payload.
+    assert 1_100 <= light_bytes < 1_500
+
+
+def test_estimate_bytes_counts_gact_v3_resource_and_a2ui_payloads() -> None:
+    """Optional GACT 0.3 payloads count while their omitted defaults do not."""
+
+    light = _msg("m", "s", text="hi")
+    resource = Message(
+        id="resource-message",
+        session_id="s",
+        role="user",
+        created_at="t",
+        updated_at="t",
+        parts=[
+            Part(
+                id="resource-part",
+                type="resource_ref",
+                resource_id="res_" + "r" * 2_000,
+                resource_revision="sha256:" + "a" * 64,
+                delivery_preference="bounded_tools",
+            )
+        ],
+    )
+    surface = Message(
+        id="surface-message",
+        session_id="s",
+        role="assistant",
+        created_at="t",
+        updated_at="t",
+        parts=[
+            Part(
+                id="surface-part",
+                type="a2ui",
+                surface_id="surface",
+                a2ui_protocol_version="0.9.1",
+                a2ui_messages=[{"updateDataModel": {"value": "v" * 2_000}}],
+            )
+        ],
+    )
+
+    light_bytes = _estimate_bytes([light])
+    assert _estimate_bytes([resource]) > light_bytes + 1_500
+    assert _estimate_bytes([surface]) > light_bytes + 1_500
 
 
 def test_byte_cap_evicts_tool_result_heavy_sessions() -> None:
