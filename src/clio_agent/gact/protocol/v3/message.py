@@ -52,6 +52,30 @@ def _action_cards(part: Mapping[str, Any]) -> list[dict[str, Any]]:
     return projected
 
 
+def _resource_delivery(metadata: Mapping[str, Any]) -> dict[str, str] | None:
+    """Project the persisted delivery decision without exposing private metadata."""
+
+    raw = metadata.get("delivery")
+    if not isinstance(raw, Mapping):
+        return None
+    representation = str(raw.get("representation") or "")
+    if representation not in {
+        "native",
+        "bounded_tools",
+        "structured_document",
+        "sandbox",
+        "retrieval",
+        "metadata_only",
+    }:
+        return None
+    delivery = {"representation": representation}
+    for key in ("evidence_source", "reason"):
+        value = str(raw.get(key) or "")
+        if value:
+            delivery[key] = value
+    return delivery
+
+
 def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
     """Project one GACT part into a CLIO message block.
 
@@ -138,6 +162,20 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "id": part_id,
             "type": "artifact",
             "artifact_id": str(metadata.get("artifact_id") or part.get("uri") or part_id),
+            **common,
+        }
+    if part_type == "resource_ref":
+        metadata = _mapping(part.get("metadata"))
+        delivery = _resource_delivery(metadata)
+        return {
+            "id": part_id,
+            "type": "resource",
+            "resource_id": str(part.get("resource_id") or ""),
+            "resource_revision": str(part.get("resource_revision") or ""),
+            "workspace_id": str(metadata.get("workspace_id") or ""),
+            "name": str(part.get("name") or "Attachment"),
+            "media_type": str(part.get("media_type") or "application/octet-stream"),
+            **({"delivery": delivery} if delivery is not None else {}),
             **common,
         }
     if part_type == "action_card":

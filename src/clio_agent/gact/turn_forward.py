@@ -476,6 +476,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
                             state.enriched_text,
                             state.sid,
                             cancel_cb,
+                            state.native_images,
                         ),
                     ),
                 )

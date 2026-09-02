@@ -37,20 +37,11 @@ from fastapi.responses import JSONResponse
 
 from clio_agent.gact.agent_tasks import display_run_name
 from clio_agent.gact.events import Event
-from clio_agent.gact.loop_inbox import enqueue_user_steer
+from clio_agent.gact.message_submission import accept_message
 from clio_agent.gact.message_wire import normalize_thought_ownership
-from clio_agent.gact.messaging import _user_message_parts, raise_on_reserved_metadata
+from clio_agent.gact.messaging import raise_on_reserved_metadata
 from clio_agent.gact.protocol_v3 import project_for_request, transcript_entities
-from clio_agent.gact.providers.config import (
-    _active_lm_supports_vision,
-    _effective_lm_config,
-    _image_part_error,
-    _model_ref_is_empty,
-    _model_ref_matches_active,
-)
 from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui
-from clio_agent.gact.runtime.globals import _iso_from_epoch, _new_message_id
-from clio_agent.gact.turn_runner import session_busy_error_payload
 from clio_agent.gact.types import (
     ErrorEnvelope,
     ErrorInfo,
@@ -233,187 +224,23 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         streaming UX, and no way to surface progress to the user.
         """
 
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise _session_not_found(sid)
-
         # #1057 B2 (BLOCKER): reject — never strip — any client metadata that
         # collides with an internal turn-control key. A smuggled ``hook_defer_resume``
         # bypasses the UserPromptSubmit hook; the rest are equivalent escalation
         # vectors (plan-exit resume, stop-defer redrive, scheduled/synthetic
-        # markers, ...). Guard sits BEFORE the busy/steer branch so it covers BOTH
-        # the fresh-turn and mid-turn-steer ingest paths. Server-side producers
-        # (`_stage_resume_turn`, the scheduler, the steer fold) build their metadata
-        # internally and never route through this body, so they are unaffected.
+        # markers, ...). Server-side producers (`_stage_resume_turn`, the scheduler,
+        # the steer fold) build their metadata internally and never route through
+        # this body, so they are unaffected.
         raise_on_reserved_metadata(sid, req.metadata)
-
-        lm_status = getattr(app.state, "lm_config_status", {}) or {}
-        if lm_status.get("state") == "configuring":
-            raise HTTPException(
-                status_code=503,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="provider_configuring",
-                        message=(
-                            "LM provider configuration is still in progress; retry after it "
-                            "finishes."
-                        ),
-                        details={
-                            "session_id": sid,
-                            "operation_id": lm_status.get("operation_id", ""),
-                            "provider": lm_status.get("provider", ""),
-                            "model": lm_status.get("model", ""),
-                            "recovery_actions": ["wait", "check_lm_provider_status", "retry"],
-                        },
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        if app.state.agent is None:
-            raise HTTPException(
-                status_code=503,
-                detail=deps.agent_not_available_error(app, sid).model_dump(exclude_none=True),
-            )
-
-        if (
-            req.model is not None
-            and not _model_ref_is_empty(req.model)
-            and not _model_ref_matches_active(req.model, app)
-        ):
-            active_model = deps.active_lm_model_ref(app)
-            raise HTTPException(
-                status_code=501,
-                detail=deps.unsupported_model_ref_error(
-                    session_id=sid,
-                    source="per_message",
-                    model_ref=req.model,
-                    active_model=active_model,
-                ).model_dump(exclude_none=True),
-            )
-
-        if not _model_ref_is_empty(sess.model) and not _model_ref_matches_active(sess.model, app):
-            active_model = deps.active_lm_model_ref(app)
-            raise HTTPException(
-                status_code=501,
-                detail=deps.unsupported_model_ref_error(
-                    session_id=sid,
-                    source="session",
-                    model_ref=sess.model,
-                    active_model=active_model,
-                ).model_dump(exclude_none=True),
-            )
-
-        user_text = req.extract_text()
-        turn_agent_id = req.extract_agent_id().strip()
-        image_parts = req.image_parts()
-        if image_parts and not _active_lm_supports_vision(app):
-            raise HTTPException(
-                status_code=501,
-                detail=_image_part_error(
-                    session_id=sid,
-                    image_count=len(image_parts),
-                    provider=_effective_lm_config(app),
-                ).model_dump(exclude_none=True),
-            )
-        if not user_text and not image_parts:
-            # Round-9 wire defect: a body with no recognizable text (e.g. a
-            # client that sent {"content": "..."} instead of the documented
-            # shape) is a CLIENT input problem, not a server fault -- it must
-            # carry the "validation_error" taxonomy tag (see
-            # ``_error_code_for_status`` in app.py), never "internal_error"
-            # (which implies a >=500 server-side break).
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="validation_error",
-                        message=(
-                            "request body carried no recognizable text: expected "
-                            'either parts[] containing a text part (e.g. {"type": '
-                            '"text", "text": "..."}) or the legacy top-level '
-                            '"text" field; unrecognized fields (e.g. "content") '
-                            "are ignored, not accepted"
-                        ),
-                        details={"session_id": sid},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        # #1036 (epic #1031 Pillar 2): within-session mid-turn STEER. A second POST
-        # while a turn is already in flight is no longer a 409 — it is a user steer.
-        # We do NOT start a second turn (that would orphan the running one's slot,
-        # both writing the same session + ARC — the #948 S1 hazard). Instead we
-        # pre-mint the message id + stamp + parts and enqueue a user_message
-        # InboxEvent carrying them; the running turn's next tool boundary drains it
-        # into a ``### steer`` grounding block AND persists the mid_turn_steer message
-        # at THAT point (#1052 persist-at-CONSUMPTION) — or, if the turn ends first,
-        # the idle hook re-drives it into exactly ONE new turn (which persists it).
-        # The route no longer persists here, so the message is recorded EXACTLY ONCE
-        # regardless of which consumer claims it (the atomic pop-all drain guarantees
-        # a single consumer). The 202's pre-minted message_id resolves to that single
-        # persisted message in BOTH drain paths: the mid-turn drain persists under it,
-        # and the turn-ended-first idle re-drive REUSES it for the promoted turn
-        # (#1052 — no phantom 202 id). Accepted trade-off: between the 202 and the next
-        # drain (usually the next tool boundary) the steer is NOT yet in GET /messages
-        # — it appears when it takes effect. (Edge: if several steers coalesce into one
-        # idle-promoted turn, that single message can carry only one id, so the
-        # coalesced 202 ids beyond the first are inherently un-resolvable.) Ack 202
-        # (accepted-as-steer, distinct from the 200 new-turn ack). The busy-gate 409
-        # payload is still used by other producers (mcp_apps, retry).
-        if session_busy_error_payload(getattr(app.state, "turn_runner", None), sid) is not None:
-            steer_id = _new_message_id("user")
-            created_at = _iso_from_epoch(datetime.now(timezone.utc).timestamp())
-            steer_parts = _user_message_parts(
-                request_parts=list(req.parts or []), user_text=user_text
-            )
-            enqueue_user_steer(
-                app,
-                sid,
-                user_text,
-                req.metadata,
-                steer_message_id=steer_id,
-                steer_created_at=created_at,
-                steer_parts=steer_parts,
-            )
-            del background_tasks
-            response.status_code = 202
-            return PostMessageResponse(
-                message_id=steer_id,
-                accepted_at=created_at,
-            )
-
-        # Cancellation belongs to the turn that was active when /cancel was
-        # requested.  An idle cancellation (including recovery after a server
-        # restart, where the persisted session may still say ``running`` but no
-        # executor exists) must not poison the next user-authored turn.  The busy
-        # branch above preserves genuine mid-turn cancellation/steering races;
-        # once it reports idle, this POST is an explicit request to begin fresh.
-        app.state.cancel_flags.discard(sid)
-        app.state.cancel_events.pop(sid, None)
-
-        # Persist + publish the user message synchronously so by the
-        # time the ack returns, GET /messages reflects it. Then mark
-        # the session running, then schedule the turn in the
-        # background and return.
-        user_msg = deps.start_background_user_turn(
-            sid,
-            sess,
-            user_text,
-            request_parts=req.parts,
-            metadata=req.metadata,
-            prev_status="idle",
-            turn_agent_id=turn_agent_id,
-        )
-        # background_tasks parameter is unused but kept on the
-        # signature so existing callers (and FastAPI's docs) don't
-        # change shape.
+        # The whole acceptance decision — provider readiness, model selection,
+        # part/resource validation, idempotent replay, and start-vs-steer delivery —
+        # lives in the single owner module ``gact.message_submission``, so every
+        # producer (this route, the queued-message promotion, the idle hook) accepts
+        # a message through EXACTLY the same path.
+        ack, status_code = accept_message(app, deps, sid, req)
         del background_tasks
-
-        return PostMessageResponse(
-            message_id=user_msg.id,
-            accepted_at=user_msg.created_at,
-        )
+        response.status_code = status_code
+        return ack
 
     @app.get("/v1/sessions/{sid}/messages", response_model=None)
     async def list_messages(

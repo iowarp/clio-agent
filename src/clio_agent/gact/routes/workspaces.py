@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
+from clio_agent.gact.composer_runtime import delete_workspace_resources
 from clio_agent.gact.protocol_v3 import project_for_request, workspace_to_v3
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.routes.workspace_file_policy import (
@@ -487,6 +488,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             summary=f"delete workspace {wid}",
             reason="user_requested_workspace_delete",
         )
+        delete_workspace_resources(app, wid)
         app.state.workspaces.delete(wid)
         return Response(status_code=204)
 

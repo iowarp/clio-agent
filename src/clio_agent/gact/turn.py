@@ -56,6 +56,7 @@ from clio_agent.gact.enrichment import (
 )
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
 from clio_agent.gact.evidence import _propose_edit_diffs_from_pred
+from clio_agent.gact.message_intents import stage_intent_user_message
 from clio_agent.gact.messaging import (
     _agent_accepts_images,
     _image_part_summaries,
@@ -123,8 +124,8 @@ from clio_agent.gact.usage import _snapshot_lm_history_index
 # that tests monkeypatch as e.g. ``clio_agent.gact.app._build_tool_user_agent_module``)
 # are still read back through ``app`` at call time — via a function-local import at
 # their single call site — to preserve that monkeypatch contract with zero test
-# edits. That is the ONLY ``app`` import in this module, and it is function-local,
-# so the import graph stays acyclic.
+# edits (``stage_intent_user_message`` keeps that contract for the user-message
+# persist seam). Those app imports are function-local, so the graph stays acyclic.
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -777,6 +778,8 @@ def _start_background_user_turn(
     prev_status: str = "idle",
     turn_agent_id: str = "",
     user_msg_id: str = "",
+    user_created_at: str = "",
+    replace_existing_user_message: bool = False,
 ) -> Message:
     """Stage a user turn and drive it off-thread.
 
@@ -786,14 +789,11 @@ def _start_background_user_turn(
     ``app.state.in_flight_turns`` so cancellation reaches it). Returns the staged
     user :class:`Message`. Hoisted out of ``build_app`` (#714) so callers share it
     via ``GactDeps`` with ``app`` an explicit arg. ``user_msg_id`` overrides the
-    minted message/turn id (empty ⇒ mint): the #1052 idle steer re-drive passes the
-    id the mid-turn ``202`` already returned so the promoted turn reuses it — no
-    phantom client-held id (see ``loop_inbox.drain_inbox_to_new_turn``).
+    minted message/turn id (empty ⇒ mint) so an idle steer re-drive reuses the id
+    its ``202`` already returned. The two ``…_existing``/``…_created_at`` args
+    promote an ALREADY persisted pending steer: acceptance wrote that identity
+    durably, so staging replaces that row in place, its accepted stamp kept.
     """
-    # #714 danger set: bind through app at call time so test monkeypatches of
-    # clio_agent.gact.app._append_session_message keep intercepting persistence.
-    from clio_agent.gact.app import _append_session_message  # noqa: PLC0415
-
     now = time.time()
     user_metadata = dict(metadata or {})
     user_parts = _user_message_parts(
@@ -823,13 +823,13 @@ def _start_background_user_turn(
         turn_id=user_msg_id,
         session_id=sid,
         role="user",
-        created_at=_iso_from_epoch(now),
+        created_at=user_created_at or _iso_from_epoch(now),
         updated_at=_iso_from_epoch(now),
         parts=user_parts,
         metadata=user_metadata,
     )
 
-    _append_session_message(app, sid, user_msg)
+    stage_intent_user_message(app, sid, user_msg, replace_existing=replace_existing_user_message)
     app.state.sessions.update(sid, status="running")
     app.state.bus.publish(
         Event(
