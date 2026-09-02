@@ -102,21 +102,35 @@ task support is therefore trapped in a bespoke relay pathway (~7,945 production 
 inventoried below), and a real user's `task=required` server was structurally
 unreachable (-32021 on every call).
 
-The fix key is already on the wire and unread: `Tool.execution.task_support`
-("forbidden" | "optional" | "required", SEP-1686) is present on every tools/list
-entry, is copied intact through FastMCP's proxy (`ProxyTool.from_mcp_tool` preserves
-`execution` even while pinning its own `task_config=forbidden`), and `grep
-task_support src/` returns zero hits. Additionally the -32021 refusal is
-self-describing: `requiredCapabilities` names exactly what to re-dial with.
+The fix key is already on the wire and unread — but WHERE it rides is era-split.
+**C1-S0 PROBE VERDICT (2026-09-01, empirical, fastmcp 4.0.0b1 + mcp_types 2.0.0):**
+- **Modern era (2026-07-28):** per-tool `Tool.execution.taskSupport` is REMOVED from the
+  wire model (`mcp_types/_v2026_07_28` has no `execution` field; listing returns
+  `execution=None` for every tool). The negotiation key is the SERVER-DECLARED
+  extensions: `ServerCapabilities.extensions` carries `io.modelcontextprotocol/tasks`
+  (read off `client.server_capabilities` after initialize/discover). Note fastmcp
+  splices `io.modelcontextprotocol/ui: {}` onto every modern server by default — the
+  read must key on the tasks id, not extension presence generally.
+- **Legacy era (2025-11-25):** the reverse — `capabilities.extensions` is stripped by
+  the version sieve, but per-tool `execution.taskSupport` ("forbidden" | "optional" |
+  "required", SEP-1686) IS present on tools/list entries.
+- **The proxy front strips the backend's tasks declaration entirely** (a
+  `create_proxy(ProxyClient(backend))` front re-advertises only its own extensions):
+  the declared path today cannot even SEE that a backend speaks tasks. Both reads
+  therefore happen at the direct-connecting choke point `gateway._list_declared_tools`
+  (which connects AND lists), never through the mounted proxy.
+`grep task_support src/` returns zero hits either way. Additionally the -32021 refusal
+is self-describing: `requiredCapabilities` names exactly what to re-dial with.
 
 ## Target architecture
 
 ONE client pathway for every server (built-in, declared, relay):
 
-1. **Negotiated capability, never probed**: at discovery/mount, read each tool's
-   `execution.taskSupport`; record the server's task capability on the per-server
-   connection-era record (`tools/mcp_connection_era.py` — the existing per-server
-   registry with the right degrade-reason conventions).
+1. **Negotiated capability, never probed**: at discovery/mount, read the era-split
+   key (probe verdict above — modern: `server_capabilities.extensions` ∋ the tasks id;
+   legacy: per-tool `execution.taskSupport`); record the server's task capability on
+   the per-server connection-era record (`tools/mcp_connection_era.py` — the existing
+   per-server registry with the right degrade-reason conventions).
 2. **Capability-keyed routing**: a server with task-capable tools gets a DIRECT
    task-capable client route (the machinery in `relay_transport` today); v1 servers
    keep today's path byte-for-byte. Decision point: `tasks_declaration()`
