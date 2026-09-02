@@ -46,6 +46,19 @@ class _Agent:
         return SimpleNamespace(answer="ok", selected_expert="", routing_rationale="")
 
 
+def test_context_reference_capability_is_explicitly_enabled(tmp_path: Path) -> None:
+    """The web client can enable the picker from negotiated server truth."""
+
+    client = TestClient(build_app(sessions_path=tmp_path / "sessions.json"))
+
+    capability = client.get("/v1/capabilities", headers={"X-GACT-Version": "0.3"}).json()[
+        "capabilities"
+    ]["x_clio_context_references"]
+
+    assert capability["enabled"] is True
+    assert capability["part_type"] == "context_ref"
+
+
 class _Workspaces:
     def __init__(self, roots: dict[str, Path]) -> None:
         self._roots = roots

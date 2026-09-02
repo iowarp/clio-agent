@@ -60,6 +60,7 @@ CONTEXT_REFERENCE_KINDS: frozenset[str] = frozenset(
 )
 REFERENCE_SEARCH_KINDS: frozenset[str] = frozenset({*CONTEXT_REFERENCE_KINDS, "resource"})
 CONTEXT_REFERENCE_CAPABILITY: dict[str, Any] = {
+    "enabled": True,
     "version": "1",
     "part_type": "context_ref",
     "kinds": ["workspace_file", "artifact", "session", "agent_run"],
