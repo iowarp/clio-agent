@@ -222,6 +222,20 @@ RATCHET_BASELINE: dict[str, int] = {
     # resolve-specific decision (which namespace, how to merge into THIS
     # executor, how to name the failure) belongs here.
     "src/clio_agent/gact/agents/builders.py": 1997,
+    # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
+    # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
+    # tool callable this loop will ever run (MCP-bridged, instrumented
+    # native, dynamic-agent external, or a bare hand-built dspy.Tool -- every
+    # documented way to add a tool) so a raised typed MCP protocol refusal is
+    # marked before dspy's own per-call swallow can discard it (sync AND the
+    # coroutine-returning async case, since dspy.Tool.__call__ awaits an
+    # async func's result outside the callable's own return); (2)
+    # _execute_tool_calls pops that mark right after the swallow and
+    # re-raises, escalating a deterministic refusal to a terminal turn
+    # failure instead of letting the model retry it. The classification +
+    # side channel are owned by tools/mcp_errors.py; only the wrap/pop/raise
+    # + docstrings explaining why land here.
+    "src/clio_agent/gact/agents/reactv2.py": 884,
     # #948 S4/S5/S6 growth already carried this file past the flat 800 cap (to 842)
     # before it was ever added to this baseline — a pre-existing gap this change
     # did not introduce (it was silently exempt from the ratchet, not under it).
@@ -788,7 +802,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # the field declaration/init lands here. F13: aclose() now clears
     # _namespace_direct_routes/_namespace_heal_attempted alongside the
     # ctxs/clients dicts they describe.
-    "src/clio_agent/tools/mcp_executor.py": 891,
+    # +6 (#1282, C1-S2 D3): call_tool_result's retry-safe timeout branch raises
+    # the typed, stream_audit-surfaced tools/mcp_wait_ladder.typed_call_timeout_error
+    # instead of a bare TimeoutError -- classification/surfacing owned there;
+    # only the lazy import (ruff-wrapped to 3 lines at this line length) + one
+    # raise-site swap land here.
+    "src/clio_agent/tools/mcp_executor.py": 897,
     "src/clio_agent/tools/mcp_config.py": 817,
     # #1231 Part 1/2 (consumer half of the live-console feature): not previously
     # baselined -- this file was ALREADY 7 lines over the 800 cap before this
