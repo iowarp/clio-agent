@@ -30,9 +30,7 @@ def describe_resource_parts(app: "FastAPI", sid: str, parts: list) -> list[str]:
     (nothing to describe — the caller keeps its text unchanged).
     """
 
-    resource_parts = [
-        part for part in parts or [] if getattr(part, "type", "") == "resource_ref"
-    ]
+    resource_parts = [part for part in parts or [] if getattr(part, "type", "") == "resource_ref"]
     if not resource_parts:
         return []
     session = app.state.sessions.get(sid)

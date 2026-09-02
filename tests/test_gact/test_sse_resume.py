@@ -460,9 +460,7 @@ async def test_epoch_reset_reason_reaches_the_stream_audit(
     events = _seed_history(app, sid, 2)
     impossible = events[-1].id + 10_000
 
-    async with _SSEConnection(
-        app, sid, last_event_id=str(impossible), gact_version="0.3"
-    ) as conn:
+    async with _SSEConnection(app, sid, last_event_id=str(impossible), gact_version="0.3") as conn:
         await conn.read_frames(2)
         gap = await conn.read_frame()
 

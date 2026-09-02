@@ -928,9 +928,10 @@ def test_a_failed_promotion_restores_the_row_and_its_revision(tmp_path: Path) ->
     rows = store.list_queued("sess_rollback")
     assert [row.id for row in rows] == ["queued_rollback"]
     assert rows[0].revision == 1, "a rolled-back promotion must not consume a revision"
-    assert [row.id for row in MessageIntentStore(tmp_path / "rollback.json").list_queued(
-        "sess_rollback"
-    )] == ["queued_rollback"]
+    assert [
+        row.id
+        for row in MessageIntentStore(tmp_path / "rollback.json").list_queued("sess_rollback")
+    ] == ["queued_rollback"]
 
 
 # --------------------------------------------------------------------------- #
@@ -1064,4 +1065,3 @@ def test_the_acceptance_state_has_no_unreachable_value() -> None:
 
     states = get_args(PostMessageResponse.model_fields["state"].annotation)
     assert set(states) == {"started", "pending_steer"}
-

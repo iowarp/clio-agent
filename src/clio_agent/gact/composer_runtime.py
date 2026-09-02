@@ -151,7 +151,7 @@ def _install_composer_idle_hook(app: Any, deps: Any) -> None:
             previous(session_id)
         else:  # pragma: no cover - build_app always installs the drain first
             drain_inbox_and_notify_spotter(app, session_id)
-        _promote_queue_head(app, deps, session_id)
+        promote_queue_head(app, deps, session_id)
 
     app.state.turn_runner.set_idle_hook(on_session_idle)
 
@@ -160,15 +160,10 @@ def promote_queue_head(app: Any, deps: Any, session_id: str) -> None:
     """Attempt one auto-promotion of ``session_id``'s queue head.
 
     Re-driven from every point where the queue can become promotable: a turn
-    going idle, a queued-message mutation on an idle session, and a promotion
-    that failed against a stale revision. Never starts work on a busy or
+    going idle and any queued-message mutation. Never starts work on a busy or
     autostart-suspended session.
     """
 
-    _promote_queue_head(app, deps, session_id)
-
-
-def _promote_queue_head(app: Any, deps: Any, session_id: str) -> None:
     from clio_agent.gact.events import Event  # noqa: PLC0415
     from clio_agent.gact.message_intents import RevisionConflictError  # noqa: PLC0415
     from clio_agent.gact.message_submission import accept_message  # noqa: PLC0415

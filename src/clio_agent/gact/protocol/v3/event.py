@@ -11,8 +11,9 @@ from clio_agent.gact.protocol.v3.composer import COMPOSER_PROJECTORS
 from clio_agent.gact.protocol.v3.message import message_to_v3, part_to_v3_block
 from clio_agent.gact.protocol.v3.session import session_to_v3
 
-# The composer lanes own their projections in ``protocol.v3.composer``; this
-# module only registers them (see _EVENT_PROJECTORS below).
+# Cancellation facts that live ONLY on a session.status_changed payload (they are
+# per-attempt, so the Session record cannot carry them) and must ride the v3
+# session projection rather than being discarded with the rest of the payload.
 _CANCELLATION_FIELDS = (
     "execution_cancellation",
     "executor_work_may_continue",
@@ -375,6 +376,5 @@ def format_sse_v3(
     event_type = str(envelope["type"])
     id_line = "" if event.transient else f"id: {event.id}\n"
     return (
-        f"event: {event_type}\n{id_line}data: "
-        f"{json.dumps(envelope, separators=(',', ':'))}\n\n"
+        f"event: {event_type}\n{id_line}data: {json.dumps(envelope, separators=(',', ':'))}\n\n"
     ).encode()

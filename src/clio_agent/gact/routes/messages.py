@@ -421,9 +421,7 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
             # ``rows`` is newest-first for the 0.2 page; the v3 projection is
             # ledger-ordered and preserves what it is given, so hand it the
             # chronological view rather than making it re-sort by wall clock.
-            snapshot = transcript_entities(
-                list(reversed(rows)), sid, subagent_links=subagent_links
-            )
+            snapshot = transcript_entities(list(reversed(rows)), sid, subagent_links=subagent_links)
             snapshot["cursor"] = str(app.state.bus.latest_event_id(sid))
             # The paging cursor is a MESSAGE id and a different fact from the
             # event cursor above; dropping it left a v3 client with no way to

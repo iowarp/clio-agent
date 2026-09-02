@@ -213,6 +213,7 @@ def test_permission_list_metadata_reports_truncation_and_recent_first(
 # The ask-user half of the same cross-session "what is waiting on me?" surface
 # GET /v1/permissions serves, and registered from the same concern module.
 
+
 def test_unscoped_questions_route_spans_sessions_and_filters_by_status(
     tmp_path: Path,
 ) -> None:
