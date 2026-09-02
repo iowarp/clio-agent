@@ -931,3 +931,137 @@ def test_a_failed_promotion_restores_the_row_and_its_revision(tmp_path: Path) ->
     assert [row.id for row in MessageIntentStore(tmp_path / "rollback.json").list_queued(
         "sess_rollback"
     )] == ["queued_rollback"]
+
+
+# --------------------------------------------------------------------------- #
+# F9 — smaller wire/vocabulary corrections.                                     #
+# --------------------------------------------------------------------------- #
+
+
+def test_v3_transcript_preserves_ledger_order_not_wall_clock(tmp_path: Path) -> None:
+    """A missing/duplicate ``created_at`` must not reshuffle the conversation."""
+
+    from clio_agent.gact.protocol.v3.message import transcript_entities
+    from clio_agent.gact.types import Message, Part
+
+    def row(message_id: str, created_at: str) -> Message:
+        return Message(
+            id=message_id,
+            session_id="sess_order",
+            role="user",
+            created_at=created_at,
+            updated_at=created_at,
+            parts=[Part(id=f"part_{message_id}", type="text", text=message_id)],
+        )
+
+    ledger = [
+        row("m1", "2026-08-30T12:00:00+00:00"),
+        row("m2", ""),  # no stamp: message_to_v3 defaults it to NOW
+        row("m3", "2026-08-30T12:00:00+00:00"),  # same millisecond as m1
+        row("m4", "2026-08-30T11:00:00+00:00"),  # a clock that went backwards
+    ]
+    snapshot = transcript_entities(ledger, "sess_order")
+    assert [message["id"] for message in snapshot["messages"]] == ["m1", "m2", "m3", "m4"]
+
+
+def test_v3_message_page_carries_the_paging_cursor(tmp_path: Path) -> None:
+    """A v3 client had no way to page into the past that a v2 client had."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=FakeClioAgent(answer="ok"))
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "paging"}).json()["id"]
+        for index in range(2):
+            assert (
+                client.post(
+                    f"/v1/sessions/{sid}/messages",
+                    json={"parts": [{"type": "text", "text": f"turn {index}"}]},
+                ).status_code
+                == 200
+            )
+        page = client.get(
+            f"/v1/sessions/{sid}/messages?limit=1",
+            headers={"x-gact-version": "0.3"},
+        ).json()
+        assert page["next_cursor"], "the v3 page dropped next_cursor"
+        # ``cursor`` (event timeline) and ``next_cursor`` (message paging) are
+        # different facts and a v3 client needs both.
+        assert page["cursor"].isdigit()
+        assert page["next_cursor"] != page["cursor"]
+        older = client.get(
+            f"/v1/sessions/{sid}/messages?before={page['next_cursor']}",
+            headers={"x-gact-version": "0.3"},
+        )
+        assert older.status_code == 200, older.text
+
+
+def test_the_loop_inbox_bound_is_configurable_and_protects_steers(tmp_path: Path) -> None:
+    """The bound is load-bearing for durable steers, so it must be tunable and
+    must evict the recoverable event first, saying so."""
+
+    from clio_agent.gact.loop_inbox import InboxEvent, LoopInbox, _inbox_maxlen
+    from tests._config_layer import set_config
+
+    assert _inbox_maxlen() == 64
+    set_config("gact.loop_inbox.max_events", 3)
+    assert _inbox_maxlen() == 3, "the inbox bound is not reachable through config"
+    assert LoopInbox()._events.maxlen == 3  # noqa: SLF001 - bound under test
+
+    dropped: list[InboxEvent] = []
+    inbox = LoopInbox(maxlen=2, on_overflow=dropped.append)
+    inbox.put(InboxEvent(kind="user_message", task_id="", steer_message_id="msg_steer"))
+    inbox.put(InboxEvent(kind="child_completed", task_id="task_a"))
+    inbox.put(InboxEvent(kind="child_completed", task_id="task_b"))
+
+    assert [event.task_id for event in dropped] == ["task_a"], (
+        "overflow evicted a durable steer while a recoverable child wake was buffered"
+    )
+    remaining = inbox.drain()
+    assert [event.steer_message_id or event.task_id for event in remaining] == [
+        "msg_steer",
+        "task_b",
+    ]
+
+
+def test_overflow_publishes_a_typed_reason(tmp_path: Path) -> None:
+    from clio_agent.gact.loop_inbox import InboxEvent, inbox_for
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=None)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "overflow"}).json()["id"]
+        inbox = inbox_for(app, sid)
+        for index in range(inbox._events.maxlen + 1):  # noqa: SLF001 - bound under test
+            inbox.put(InboxEvent(kind="child_completed", task_id=f"task_{index}"))
+
+        overflow = _projected(app, sid, "loop_inbox.overflow")
+        assert overflow, "a dropped wake published no typed reason"
+        assert overflow[0]["payload"]["reason"] == "inbox_full"
+        assert overflow[0]["payload"]["recoverable"] is True
+        assert overflow[0]["payload"]["dropped_task_id"] == "task_0"
+
+
+def test_delivery_steer_on_an_idle_session_is_refused_typed(tmp_path: Path) -> None:
+    """`steer` used to fall through and silently START a turn instead."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=FakeClioAgent(answer="ok"))
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "vocab"}).json()["id"]
+        refused = client.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "steer nothing"}], "delivery": "steer"},
+        )
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["error"]["error"] == "no_active_turn_to_steer"
+        assert _user_messages(client, sid) == []
+        assert app.state.turn_runner.busy(sid) is False
+
+
+def test_the_acceptance_state_has_no_unreachable_value() -> None:
+    """`queued` was never produced by any acceptance path."""
+
+    from typing import get_args
+
+    from clio_agent.gact.types import PostMessageResponse
+
+    states = get_args(PostMessageResponse.model_fields["state"].annotation)
+    assert set(states) == {"started", "pending_steer"}
+

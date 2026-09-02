@@ -56,12 +56,20 @@ class PostMessageRequest(BaseModel):
 
 
 class PostMessageResponse(BaseModel):
-    """Immediate durable acceptance for a submitted user message."""
+    """Immediate durable acceptance for a submitted user message.
+
+    ``state`` has exactly two reachable values. ``queued`` was never produced:
+    POST /messages either starts a turn or accepts a pending steer, and it must
+    NOT quietly enqueue a future message behind the user's back — the durable
+    queue is its own explicit surface (``POST .../queued-messages``). An
+    unreachable wire value is a promise a client can wait forever for, so it is
+    gone rather than left as decoration.
+    """
 
     message_id: str
     accepted_at: str
     delivery: Literal["start", "steer", "auto"] = "auto"
-    state: Literal["started", "pending_steer", "queued"] = "started"
+    state: Literal["started", "pending_steer"] = "started"
     effective_model: ModelRef = Field(default_factory=ModelRef)
     behavior: MessageBehavior = Field(default_factory=MessageBehavior)
     idempotent_replay: bool = False

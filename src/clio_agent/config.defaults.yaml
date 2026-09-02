@@ -502,6 +502,9 @@ gact.ledger_retention.turn_attempts.max: 2000
 # meaningful with the S5 atoms regime, leave off normally.
 gact.live_edge_streaming: false
 
+# CLIO_GACT_LOOP_INBOX_MAX_EVENTS  (int)  <- src/clio_agent/gact/loop_inbox.py
+gact.loop_inbox.max_events: 64
+
 # CLIO_GACT_MAX_ACCEPTANCES_PER_SESSION  (int)  <- src/clio_agent/gact/message_intents.py
 # Per-session cap on retained message-acceptance records used for idempotent
 # POST replay; raise for clients that retry over long windows, lower to

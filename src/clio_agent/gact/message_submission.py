@@ -392,6 +392,29 @@ def accept_message(
     busy = busy_payload is not None
     if busy and req.delivery == "start":
         raise HTTPException(status_code=409, detail=busy_payload)
+    if not busy and req.delivery == "steer":
+        # ``steer`` is HONOURED, not reinterpreted. It used to fall through to the
+        # busy check and silently start a turn on an idle session -- the caller
+        # asked to steer work in flight and got a brand-new turn instead. There is
+        # nothing to steer, so say so and let the caller decide (``auto`` is the
+        # value that means "start or steer, whichever fits").
+        raise HTTPException(
+            status_code=409,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="no_active_turn_to_steer",
+                    message=(
+                        "delivery=steer requires a turn in flight on this session; "
+                        "use delivery=start or delivery=auto to begin one"
+                    ),
+                    details={
+                        "session_id": sid,
+                        "recovery_actions": ["retry_with_start", "retry_with_auto"],
+                    },
+                    recoverable=True,
+                )
+            ).model_dump(exclude_none=True),
+        )
 
     behavior = req.behavior.model_dump()
     metadata = dict(req.metadata)

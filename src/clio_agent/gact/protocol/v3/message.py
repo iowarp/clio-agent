@@ -423,9 +423,23 @@ def transcript_entities(
     *,
     subagent_links: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Return a normalized transcript snapshot and its referenced entities."""
+    """Return a normalized transcript snapshot and its referenced entities.
+
+    ``messages`` MUST arrive in ledger order (oldest first) and that order is
+    PRESERVED. The projection used to re-sort by the ``created_at`` string, which
+    made a wall-clock timestamp -- not the append order the server actually
+    recorded -- decide the conversation's shape: two rows stamped in the same
+    millisecond ordered arbitrarily, and a row with no ``created_at`` (defaulted
+    to *now* by :func:`message_to_v3`) jumped to the end of the transcript.
+
+    The synthetic ``child-relation`` rows are the one exception: they describe a
+    child task the parent has not persisted a handoff part for, so they have no
+    ledger position. They follow the real transcript, ordered among themselves by
+    their link's ``created_at`` with insertion order as a stable tiebreak.
+    """
 
     projected_messages: list[dict[str, Any]] = []
+    child_relations: list[tuple[str, int, dict[str, Any]]] = []
     tools: dict[str, dict[str, Any]] = {}
     tasks: dict[str, dict[str, Any]] = {}
     subagents: dict[str, dict[str, Any]] = {}
@@ -495,26 +509,31 @@ def transcript_entities(
                 else {}
             ),
         }
-        projected_messages.append(
-            {
-                "id": f"child-relation:{subagent_id}",
-                "session_id": session_id,
-                **({"run_id": str(link["parent_run_id"])} if link.get("parent_run_id") else {}),
-                "role": "system",
-                "created_at": created_at,
-                "blocks": [
-                    {
-                        "id": f"child-relation-block:{subagent_id}",
-                        "type": "subagent",
-                        "subagent_id": subagent_id,
-                    }
-                ],
-                "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
-                "cost_usd": 0.0,
-            }
+        child_relations.append(
+            (
+                created_at,
+                len(child_relations),
+                {
+                    "id": f"child-relation:{subagent_id}",
+                    "session_id": session_id,
+                    **({"run_id": str(link["parent_run_id"])} if link.get("parent_run_id") else {}),
+                    "role": "system",
+                    "created_at": created_at,
+                    "blocks": [
+                        {
+                            "id": f"child-relation-block:{subagent_id}",
+                            "type": "subagent",
+                            "subagent_id": subagent_id,
+                        }
+                    ],
+                    "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+                    "cost_usd": 0.0,
+                },
+            )
         )
 
-    projected_messages.sort(key=lambda message: str(message.get("created_at") or ""))
+    child_relations.sort(key=lambda entry: (entry[0], entry[1]))
+    projected_messages.extend(row for _created_at, _index, row in child_relations)
 
     transcript_parts.sort(key=lambda row: (row[0], row[1]))
     surface_records, a2ui_degradations = project_a2ui_parts(

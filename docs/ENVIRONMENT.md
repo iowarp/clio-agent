@@ -100,6 +100,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_GACT_BEARER_TOKEN` | `gact.auth.bearer_token` | str | _(unset)_ | `src/clio_agent/gact/auth.py` |
 | `CLIO_GACT_CANCELLATION_GRACE_S` | `gact.cancellation_grace_s` | float | `0.1` | `src/clio_agent/gact/routes/session_cancellation.py` |
 | `CLIO_GACT_CORS_ORIGINS` | `gact.cors.origins` | str | _(unset)_ | `src/clio_agent/gact/cors.py` |
+| `CLIO_GACT_LOOP_INBOX_MAX_EVENTS` | `gact.loop_inbox.max_events` | int | `64` | `src/clio_agent/gact/loop_inbox.py` |
 | `CLIO_GACT_MAX_ACCEPTANCES_PER_SESSION` | `gact.message_intents.max_acceptances_per_session` | int | `200` | `src/clio_agent/gact/message_intents.py` |
 | `CLIO_GACT_MAX_QUEUED_MESSAGES_PER_SESSION` | `gact.message_intents.max_queued_per_session` | int | `100` | `src/clio_agent/gact/message_intents.py` |
 | `CLIO_GACT_MAX_SETTLED_STEERS_PER_SESSION` | `gact.message_intents.max_settled_steers_per_session` | int | `100` | `src/clio_agent/gact/message_intents.py` |

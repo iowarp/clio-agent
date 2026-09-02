@@ -53,6 +53,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
@@ -66,9 +67,27 @@ logger = logging.getLogger(__name__)
 
 # Bound on buffered wakes per session. A parent turn drains at every tool
 # boundary, so this only needs to absorb a burst of children finishing between
-# two boundaries; on overflow the OLDEST is dropped with a typed reason and the
-# next-turn ``notify_pending`` fallback still carries it (never silent loss).
-_INBOX_MAXLEN = 64
+# two boundaries. It became LOAD-BEARING once durable steers started riding this
+# queue (#1036/#1052): a dropped child wake is recoverable (its next-turn
+# ``notify_pending`` still delivers it), but a dropped steer's durable intent
+# stays ``pending`` with nothing left to deliver it until a restart re-enqueues
+# it. So the bound is configurable, the eviction policy protects steers, and
+# every drop emits a typed reason naming which kind was lost.
+_DEFAULT_INBOX_MAXLEN = 64
+
+
+def _inbox_maxlen() -> int:
+    """Per-session buffered-wake bound (config: ``gact.loop_inbox.max_events``)."""
+
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    return conf.resolve(
+        "gact.loop_inbox.max_events",
+        env="CLIO_GACT_LOOP_INBOX_MAX_EVENTS",
+        default=_DEFAULT_INBOX_MAXLEN,
+        cast=conf.as_int,
+    )
+
 
 InboxKind = Literal["child_completed", "child_failed", "user_message"]
 
@@ -129,34 +148,54 @@ class LoopInbox:
     Writers are child done-callback threads (``turn_spawn._on_child_done`` →
     Producer A); the reader is the parent's tool-executor thread (the drain
     step-hook). One :class:`threading.RLock` guards a bounded
-    ``deque(maxlen=_INBOX_MAXLEN)``; :meth:`put` and :meth:`drain` are the only
+    ``deque`` (see :func:`_inbox_maxlen`); :meth:`put` and :meth:`drain` are the only
     mutators, so put-vs-drain across those threads is race-free.
     """
 
-    def __init__(self, maxlen: int = _INBOX_MAXLEN) -> None:
+    def __init__(
+        self,
+        maxlen: int | None = None,
+        *,
+        on_overflow: "Callable[[InboxEvent], None] | None" = None,
+    ) -> None:
         self._lock = threading.RLock()
-        self._events: deque[InboxEvent] = deque(maxlen=maxlen)
+        self._events: deque[InboxEvent] = deque(maxlen=maxlen or _inbox_maxlen())
+        self._on_overflow = on_overflow
 
     def put(self, event: InboxEvent) -> None:
-        """Append ``event``; on overflow drop the OLDEST with a TYPED reason.
+        """Append ``event``; on overflow evict with a TYPED reason.
 
         A ``deque(maxlen=...)`` silently discards the leftmost element when full,
-        which would be an unlogged degrade (a no-silent-fallback violation). We
-        detect the full condition first and emit a structured reason naming the
-        dropped task; the dropped completion still has its next-turn
-        ``notify_pending`` fallback, so this is latency, never loss.
+        which would be an unlogged degrade (a no-silent-fallback violation), so
+        the full condition is detected first.
+
+        Eviction protects the irreplaceable: a child wake is RECOVERABLE (its
+        next-turn ``notify_pending`` still delivers it) while a durable steer is
+        not (its intent stays ``pending`` with nothing left to deliver it), so the
+        oldest recoverable event goes first and a steer is only evicted when the
+        buffer holds nothing but steers. Either way the drop is announced through
+        ``on_overflow`` and named in the log.
         """
 
         with self._lock:
             if len(self._events) == self._events.maxlen:
-                dropped = self._events[0]
+                victim = next(
+                    (row for row in self._events if not row.steer_message_id),
+                    self._events[0],
+                )
+                self._events.remove(victim)
+                recoverable = not victim.steer_message_id
                 logger.warning(
-                    "loop_inbox overflow reason=inbox_full dropped_task=%s dropped_kind=%s "
-                    "maxlen=%s (next-turn notify_pending fallback still delivers it)",
-                    dropped.task_id,
-                    dropped.kind,
+                    "loop_inbox overflow reason=inbox_full dropped_kind=%s dropped_task=%s "
+                    "dropped_steer=%s recoverable=%s maxlen=%s",
+                    victim.kind,
+                    victim.task_id,
+                    victim.steer_message_id,
+                    recoverable,
                     self._events.maxlen,
                 )
+                if self._on_overflow is not None:
+                    self._on_overflow(victim)
             self._events.append(event)
 
     def drain(self) -> list[InboxEvent]:
@@ -216,6 +255,35 @@ class LoopInbox:
             return len(self._events) != before
 
 
+def _overflow_reporter(app: "FastAPI", session_id: str) -> "Callable[[InboxEvent], None]":
+    """Publish one typed ``loop_inbox.overflow`` per evicted wake."""
+
+    def report(dropped: InboxEvent) -> None:
+        try:
+            from clio_agent.gact.events import Event  # noqa: PLC0415
+
+            app.state.bus.publish(
+                Event(
+                    type="loop_inbox.overflow",
+                    session_id=session_id,
+                    payload={
+                        "session_id": session_id,
+                        "reason": "inbox_full",
+                        "dropped_kind": dropped.kind,
+                        "dropped_task_id": dropped.task_id,
+                        "dropped_steer_message_id": dropped.steer_message_id,
+                        # A child wake still rides the next-turn notify_pending
+                        # feed; a durable steer does not.
+                        "recoverable": not dropped.steer_message_id,
+                    },
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - telemetry must not break a put
+            logger.warning("loop_inbox overflow publish failed reason=publish_error err=%r", exc)
+
+    return report
+
+
 def inbox_for(app: "FastAPI", session_id: str) -> LoopInbox:
     """Get-or-create the :class:`LoopInbox` for ``session_id`` on ``app.state``.
 
@@ -227,7 +295,9 @@ def inbox_for(app: "FastAPI", session_id: str) -> LoopInbox:
     existing = inboxes.get(session_id)
     if existing is not None:
         return existing
-    return inboxes.setdefault(session_id, LoopInbox())
+    return inboxes.setdefault(
+        session_id, LoopInbox(on_overflow=_overflow_reporter(app, session_id))
+    )
 
 
 def enqueue_completion_wake(app: "FastAPI", task: object) -> None:
