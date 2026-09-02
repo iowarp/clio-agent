@@ -47,6 +47,12 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
         "backends.",
     ),
     (
+        "Workspace resources",
+        ("resources",),
+        "The immutable workspace resource service: the upload byte ceiling and the optional "
+        "document-processor used to derive structured views.",
+    ),
+    (
         "Tools + MCP",
         ("tools",),
         "File-policy sandboxing, shell execution bounds and the MCP tool fleet's "
@@ -88,6 +94,10 @@ KEY_NOTES: dict[str, str] = {
     "agents.child_forward_deadline_s": (
         "Seconds before an unattended parent's forwarded HITL question auto-fails the waiting "
         "child task; defaults to the elicitation window."
+    ),
+    "agents.default_blueprint_id": (
+        "Installed marketplace Agent Blueprint a fresh deployment bootstraps as its default; set "
+        "it to ship a different agent, never to define one in code."
     ),
     "agents.disable_default_registry_bootstrap": (
         "Disables auto-installing the default marketplace Agent-Blueprint registry on first boot; "
@@ -700,6 +710,14 @@ KEY_NOTES: dict[str, str] = {
     "providers.codex.credential_home_capacity": (
         "Max simultaneous private CODEX_HOME credential-dir copies the Codex SDK transport keeps "
         "alive; raise for many concurrent Codex sessions."
+    ),
+    "resources.document_processor_url": (
+        "Base URL of the optional document-processing service used to derive structured views of "
+        "uploaded resources; unset leaves resources served as originals."
+    ),
+    "resources.max_bytes": (
+        "Byte ceiling on a single uploaded workspace resource; raise for large scientific inputs, "
+        "lower to bound per-workspace disk use."
     ),
     "relay.cluster": (
         "This deployment's registered relay cluster identity; set it to route jarvis/remote-MCP "

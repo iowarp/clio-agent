@@ -82,7 +82,9 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_DEBUG_MEMPROF_FRAMES` | `debug.memprof_frames` | int | `20` | `src/clio_agent/gact/diagnostics.py` |
 | `CLIO_DEBUG_MEMPROF_OUT` | `debug.memprof_out` | str | _(unset)_ | `src/clio_agent/gact/diagnostics.py` |
 | `CLIO_DEBUG_ONLY` | `debug.only` | list | `_no_only` _(computed)_ | `src/clio_agent/runtime/trace.py` |
+| `CLIO_DEFAULT_AGENT_BLUEPRINT_ID` | `agents.default_blueprint_id` | str | `earthscope-gnss-region` | `src/clio_agent/gact/agent_blueprint_refresh.py` |
 | `CLIO_DISABLE_JSON_ADAPTER_FALLBACK` | `lm.disable_json_adapter_fallback` | bool | `false` | `src/clio_agent/lm/adapters.py` |
+| `CLIO_DOCUMENT_PROCESSOR_URL` | `resources.document_processor_url` | str | _(unset)_ | `src/clio_agent/gact/composer_runtime.py` |
 | `CLIO_DUMP_UNPARSEABLE` | `debug.dump_unparseable` | str | _(unset)_ | `src/clio_agent/lm/adapters.py` |
 | `CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS` | `limits.empty_tool_repair_attempts` | int | `3` | `src/clio_agent/gact/agents/reactv2_events.py` |
 | `CLIO_ENVIRONMENT` | `runtime.environment` | str | `dev` | `src/clio_agent/config.py` |
@@ -205,6 +207,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_RESIDENT_LEDGERS_MAX` | `gact.resident_ledgers.max_sessions` | int | `512` | `src/clio_agent/gact/resident_ledgers.py` |
 | `CLIO_RESIDENT_LEDGERS_MAX_BYTES` | `gact.resident_ledgers.max_bytes` | int | `536870912` | `src/clio_agent/gact/resident_ledgers.py` |
 | `CLIO_RESIDENT_LEDGERS_TTL_S` | `gact.resident_ledgers.idle_ttl_s` | float | `1800.0` | `src/clio_agent/gact/resident_ledgers.py` |
+| `CLIO_RESOURCE_MAX_BYTES` | `resources.max_bytes` | int | `262144000` | `src/clio_agent/gact/composer_runtime.py` |
 | `CLIO_SANDBOX_ENABLED` | `sandbox.enabled` | bool | `true` | `src/clio_agent/runtime/sandbox.py` |
 | `CLIO_SCHEDULER_JITTER_WINDOW_S` | `scheduler.jitter_window_s` | int | `0` | `src/clio_agent/gact/scheduler.py` |
 | `CLIO_SCHEDULER_MAX_LIFETIME_S` | `scheduler.max_lifetime_s` | int | `2592000` | `src/clio_agent/gact/scheduler.py` |

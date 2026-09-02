@@ -127,12 +127,13 @@ def default_registry_url() -> str:
 
 def default_registry_metadata() -> dict[str, str]:
     """Return the pinned default registry bootstrap contract."""
+    from clio_agent.gact.agent_blueprint_refresh import default_agent_blueprint_id  # noqa: PLC0415
 
     return {
         "source": default_registry_url(),
         "ref": DEFAULT_REGISTRY_REF,
         "commit": DEFAULT_REGISTRY_COMMIT,
-        "default_agent_blueprint_id": DEFAULT_AGENT_BLUEPRINT_ID,
+        "default_agent_blueprint_id": default_agent_blueprint_id(),
         "submodule_path": DEFAULT_REGISTRY_SUBMODULE_PATH,
     }
 
@@ -183,11 +184,9 @@ def discover_agent_blueprints(
         )
         for candidate in candidates:
             blueprints.append(parse_agent_blueprint_root(candidate, scope=scope))
-    # ONE row per id: scopes scan global→workspace, and the MOST SPECIFIC copy
-    # wins (a project-local ``.clio`` pack overrides the installed one — the dev
-    # override). Without this a pack present in both scopes lists twice and
-    # ``load_agent_blueprints`` loads both copies' experts (#13, review
-    # 2026-08-13 — the doubled "EarthScope (Flat / Haiku)" row).
+    # ONE row per id: scopes scan global→workspace and the MOST SPECIFIC copy
+    # wins (a project-local ``.clio`` pack overrides the installed one). Without
+    # it the pack lists twice AND both copies' experts load (#13, 2026-08-13).
     by_id: dict[str, AgentBlueprintDefinition] = {}
     for row in blueprints:
         by_id[row.id] = row
@@ -219,12 +218,12 @@ def discover_agent_blueprints(
 
 
 def __getattr__(name: str):  # noqa: ANN202 - PEP 562 lazy re-export
-    """Lazy re-exports for registry-maintenance names that moved to their owner
-    module (:mod:`clio_agent.gact.agent_blueprint_refresh`, #775 no-accretion).
-    Lazy so this module never top-imports the refresh module (which top-imports
-    this one)."""
+    """Lazy re-exports for names owned by :mod:`clio_agent.gact
+    .agent_blueprint_refresh` (#775 no-accretion); lazy because it top-imports
+    this module."""
 
     if name in {
+        "default_agent_blueprint_id",
         "ensure_default_registry_bootstrap",
         "uninstalled_tombstones_path",
         "read_uninstalled_tombstones",

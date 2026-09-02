@@ -346,6 +346,11 @@ agent_tasks.max_concurrent: 3
 # the waiting child task; defaults to the elicitation window.
 # agents.child_forward_deadline_s:  # computed at runtime: DEFAULT_ELICITATION_TIMEOUT_S
 
+# CLIO_DEFAULT_AGENT_BLUEPRINT_ID  (str)  <- src/clio_agent/gact/agent_blueprint_refresh.py
+# Installed marketplace Agent Blueprint a fresh deployment bootstraps as its
+# default; set it to ship a different agent, never to define one in code.
+agents.default_blueprint_id: "earthscope-gnss-region"
+
 # CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP  (bool)  <- src/clio_agent/gact/agent_blueprint_refresh.py
 # Disables auto-installing the default marketplace Agent-Blueprint registry
 # on first boot; set true for an offline deployment.
@@ -733,6 +738,23 @@ artifacts.table_preview_max_rows: 2000
 # Largest CSV artifact, in bytes, the table-preview route will read; the
 # file streams twice so this bounds latency, not memory.
 artifacts.table_preview_max_source_bytes: 268435456
+
+# ==========================================================================
+# Workspace resources
+# ==========================================================================
+# The immutable workspace resource service: the upload byte ceiling and the
+# optional document-processor used to derive structured views.
+
+# CLIO_DOCUMENT_PROCESSOR_URL  (str)  <- src/clio_agent/gact/composer_runtime.py
+# Base URL of the optional document-processing service used to derive
+# structured views of uploaded resources; unset leaves resources served as
+# originals.
+# resources.document_processor_url:  # default unset; resolved in code
+
+# CLIO_RESOURCE_MAX_BYTES  (int)  <- src/clio_agent/gact/composer_runtime.py
+# Byte ceiling on a single uploaded workspace resource; raise for large
+# scientific inputs, lower to bound per-workspace disk use.
+resources.max_bytes: 262144000
 
 # ==========================================================================
 # Tools + MCP
