@@ -46,6 +46,7 @@ from dspy.primitives.prediction import Prediction
 from dspy.utils.exceptions import AdapterParseError, ContextWindowExceededError
 
 from clio_agent.arc.working_set_fold import emit_step_open
+from clio_agent.errors import ClioError
 from clio_agent.gact.runtime.context_tokens import _arc_obs_value
 from clio_agent.gact.runtime.globals import (
     _active_lm_last_reasoning,
@@ -454,19 +455,35 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
             forced_submit_turn_index,
         )
         return result
-    except Exception as exc:
-        # #1282 F6 (#1275 ask 3): an exception escaping the loop body (the D1
-        # typed-refusal escalation is the concrete reproducer, but this
-        # closes the SAME gap for any other unhandled per-step error) must
-        # not leave the expert lifecycle span dangling on the highway (a
-        # "started" with no matching close) or skip publishing the retained
-        # History (the S4 repair entry's only read of what THIS turn actually
-        # produced before it died). Both fire BEFORE re-raising -- the
-        # exception itself is never swallowed here, only observed. Reaches
-        # the SSE UI wire for free via the existing status="failed"
-        # always-pass rule (gact/semantic_events.py's
+    except ClioError as exc:
+        # #1282 F6 (#1275 ask 3): a TYPED clio escalation (the D1 refusal
+        # escalation is the concrete reproducer; ClioError/MCPProtocolError
+        # covers every other typed clio error too) propagating out of the
+        # loop body must not leave the expert lifecycle span dangling on the
+        # highway (a "started" with no matching close) or skip publishing
+        # the retained History (the S4 repair entry's only read of what THIS
+        # turn actually produced before it died). Both fire BEFORE
+        # re-raising -- the exception itself is never swallowed here, only
+        # observed. Reaches the SSE UI wire for free via the existing
+        # status="failed" always-pass rule (gact/semantic_events.py's
         # ``_SSE_ALWAYS_STATUSES`` — no event-type catalog change needed);
         # dedicated RENDERING for it is gact-tui#384, filed separately.
+        #
+        # SCOPE (re-verify round, narrowed from a bare ``except Exception``):
+        # a GENERIC crash (RuntimeError et al.) is NOT caught here and
+        # re-raises completely unchanged -- no lifecycle.failed, no closing
+        # observation, no retained-history publish. That is ARC's own
+        # deliberate crash contract (working_set_fold.py §2.8b,
+        # ``emit_step_open``'s own docstring, pinned by
+        # ``test_working_set_fold_step_open.py::test_crash_leaves_step_open``):
+        # a hard mid-step crash leaves ONLY the pre-execution step_open
+        # breadcrumb on the canonical log, never a synthesized closing
+        # observation authored after the fact. Widening this except clause
+        # to Exception (an earlier version of this fix did exactly that)
+        # silently violated that contract for every ordinary crash, not just
+        # typed refusals. Fixing the dangling-span/lost-history gap for a
+        # GENERIC crash is a separate decision against the ARC fold
+        # contract, out of this slice's scope.
         reason = str(getattr(exc, "reason", "") or type(exc).__name__)
         try:
             _emit_expert_lifecycle_event(

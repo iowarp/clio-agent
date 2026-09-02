@@ -21,6 +21,7 @@ Sabotage tripwires (from the task):
 from __future__ import annotations
 
 import types
+from typing import Any
 
 import dspy
 import pytest
@@ -212,3 +213,79 @@ def test_v2_forward_escalation_closes_the_lifecycle_span_and_publishes_history(
     assert retained is not None, "the retained History must be published before re-raising"
     assert retained["termination_reason"] == "escalated_error"
     assert retained["history"], "the turn's messages up to the escalation must be retained"
+
+
+def test_v2_forward_generic_crash_escalates_unchanged_no_arc_enrichment(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1282 F6 scope (re-verify round): the except branch above is narrowed
+    to ``ClioError`` on purpose. A GENERIC crash (a bare ``RuntimeError``, not
+    a typed clio error) must propagate completely UNCHANGED -- no
+    ``expert.lifecycle.failed``, no closing ARC observation, no
+    retained-history publish. That is ARC's own deliberate crash contract
+    (``arc/working_set_fold.py`` §2.8b, ``emit_step_open``'s own docstring,
+    pinned by
+    ``test_working_set_fold_step_open.py::test_crash_leaves_step_open``): a
+    hard mid-step crash leaves ONLY the step_open breadcrumb on the
+    canonical log, never a synthesized closing observation authored after
+    the fact. An earlier version of the F6 fix caught ``Exception``
+    unconditionally and broke exactly this contract -- this is the
+    regression arm for that."""
+
+    agent = retaining_reactv2_cls()(
+        "question -> answer", tools=[dspy.Tool(lambda: "ok", name="probe")], max_iters=6
+    )
+    lm = DummyLM(
+        [
+            {
+                "next_thought": "call probe",
+                "tool_calls": {"tool_calls": [{"name": "probe", "args": {}}]},
+            }
+        ]
+    )
+
+    # A HARD mid-step failure, mirroring test_working_set_fold_step_open.py's
+    # OWN sabotage technique exactly: dspy wraps *tool-callable* errors into
+    # observations (D1's own escalation only intervenes for a TYPED refusal),
+    # so a bare tool exception never reaches instrumented_forward's outer
+    # except at all -- to model a genuine unrecovered crash, fail the
+    # execution STAGE itself (the loop's own agent._execute_tool_calls call),
+    # exactly like the ARC contract's own pin does.
+    def _boom(_tool_calls: Any) -> Any:
+        raise RuntimeError("execution stage exploded mid-step")
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _boom)
+
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    lifecycle_events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        reactv2_events,
+        "_emit_expert_lifecycle_event",
+        lambda event_type, **kw: lifecycle_events.append((event_type, kw)),
+    )
+
+    fake_app = types.SimpleNamespace(state=types.SimpleNamespace(arc=arc))
+    sess_token = ctx.set_session_id(SID)
+    app_token = ctx.set_app(fake_app)
+    try:
+        with live_plane_context(arc, session=SID, scope=SCOPE):
+            with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+                with pytest.raises(RuntimeError, match="execution stage exploded mid-step"):
+                    agent(question="find alpha")
+            retained = ctx.active_trajectory()
+    finally:
+        ctx.reset(app_token)
+        ctx.reset(sess_token)
+
+    types_seen = [event_type for event_type, _kw in lifecycle_events]
+    assert "expert.lifecycle.started" in types_seen
+    assert "expert.lifecycle.failed" not in types_seen, (
+        "a generic crash must NOT close the lifecycle span -- out of F6's scope"
+    )
+    assert retained is None, "a generic crash must NOT publish retained history either"
+
+    live = arc.render_segments(SID, SCOPE)
+    assert not any(s.kind == "observation" for s in live), (
+        "a generic crash must leave no synthesized closing observation -- "
+        "only the pre-execution step_open breadcrumb, per the ARC crash contract"
+    )
