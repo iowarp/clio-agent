@@ -61,6 +61,7 @@ from clio_agent.tools.mcp_task_records import InMemoryTaskRecordStore, set_task_
 from clio_agent.tools.mcp_task_routing import (
     record_definitive_capability,
     record_namespace_route_decision,
+    recorded_route_heals,
     recorded_task_route_decisions,
     resolve_and_build_direct_client,
     resolve_namespace_route,
@@ -365,6 +366,73 @@ async def test_declared_path_serves_task_required_tools_cold_race_then_heals() -
             healed_decisions = [d for ns, d in recorded_task_route_decisions() if ns == namespace]
             assert healed_decisions[-1].use_direct is True
             assert healed_decisions[-1].reason == MCP_TASKS_DIRECT_ROUTE_SELECTED
+    finally:
+        _reap("mcp_exerciser.py")
+
+
+async def test_heal_attempt_is_bounded_when_the_direct_factory_never_lands() -> None:
+    """#1281 F12 (adversarial review, regression): ``resolve_namespace_route``
+    sees only the capability-derived INTENT, not whether a direct factory
+    actually exists/constructs for THIS executor. Before the fix, a
+    namespace with capability True but NO usable direct factory (a
+    construction path that never threaded factories on, or F9's
+    construction-failure demotion) evicted + reconnected + reported a heal
+    on EVERY reuse, forever, since it never actually lands direct (measured
+    by the reviewer: 3 calls -> 3 connects -> 2 false heal events).
+
+    Regression: capability True + an EMPTY factory registry -> across N
+    SUBSEQUENT calls, exactly ONE extra ``_connect_namespace`` invocation
+    (the single bounded heal attempt) and ZERO ``mcp_task_route_healed``
+    events for this namespace -- the heal is attempted at most once, never
+    reported as successful when it never actually lands direct.
+    """
+
+    namespace = "v2exf12"
+    try:
+        spec = _exerciser_spec(namespace)
+        gw = build_gateway({namespace: spec})
+        executor = AsyncMCPToolExecutor(
+            gw,
+            namespace_servers=namespace_proxies(gw),
+            preloaded_tools={f"{namespace}_plain_echo": None},
+        )
+        executor._clio_namespace_specs = namespace_specs(gw)  # noqa: SLF001
+        # Deliberately EMPTY: no direct factory is ever threaded onto this
+        # executor for this namespace -- the F12 scenario (a reserved-
+        # namespace mount, or F9's permanent construction-failure demotion).
+        executor._clio_namespace_direct_factories = {}  # noqa: SLF001
+
+        connect_calls = 0
+        original_connect = executor._connect_namespace  # noqa: SLF001
+
+        async def _counting_connect(ns: str, proxy: Any) -> Any:
+            nonlocal connect_calls
+            connect_calls += 1
+            return await original_connect(ns, proxy)
+
+        executor._connect_namespace = _counting_connect  # type: ignore[method-assign]  # noqa: SLF001
+
+        async with executor:
+            # Cold connect: capability unknown at first, lands proxy; the
+            # exerciser's own opportunistic capture (a genuinely modern,
+            # task-capable backend) then lands capability True for free --
+            # forced explicitly too, so the test's precondition never
+            # depends on that capture's exact timing.
+            await executor.call_tool_result(f"{namespace}_plain_echo", {"payload": "a"})
+            from clio_agent.tools.mcp_connection_era import record_task_capability
+
+            record_task_capability(namespace, task_capable=True, source="capabilities_extensions")
+
+            connect_calls = 0  # only count the N calls below
+            for i in range(3):
+                outcome = await executor.call_tool_result(
+                    f"{namespace}_plain_echo", {"payload": f"b{i}"}
+                )
+                assert "plain:" in outcome.model_text
+
+        assert connect_calls == 1, "the heal attempt must be bounded to exactly once"
+        heals = [ns for ns in recorded_route_heals() if ns == namespace]
+        assert heals == [], "a heal that never lands direct must never be reported healed"
     finally:
         _reap("mcp_exerciser.py")
 

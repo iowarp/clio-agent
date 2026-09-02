@@ -97,6 +97,7 @@ __all__ = [
     "record_definitive_capability",
     "record_namespace_route_decision",
     "record_route_healed",
+    "recorded_route_heals",
     "recorded_task_route_decisions",
     "resolve_and_build_direct_client",
     "resolve_namespace_route",
@@ -300,17 +301,41 @@ def record_namespace_route_decision(namespace: str, decision: NamespaceRouteDeci
     )
 
 
+#: Bounded, queryable ring of namespace-heal events -- mirrors the route-
+#: decision ring, so a caller/test can assert "zero heals actually
+#: happened" (#1281 F12 regression: a permanently missing/failing direct
+#: factory must never be reported as a heal that never actually landed
+#: direct -- see the mixin's success-gated call site).
+_HEAL_EVENTS: "deque[str]" = deque(maxlen=256)
+_HEAL_EVENTS_LOCK = Lock()
+
+
 def record_route_healed(namespace: str) -> None:
     """Typed + audited (#1281 F2, F6): a namespace's cached client was
     evicted and reconnected direct because capability discovery landed True
-    AFTER the connect that originally cached it on the proxy path."""
+    AFTER the connect that originally cached it on the proxy path.
 
+    Call ONLY on a CONFIRMED successful direct landing (#1281 F12
+    adversarial review: calling this merely on a heal ATTEMPT -- before
+    knowing whether the reconnect actually landed direct -- misreports a
+    factory-missing/construction-failed reconnect as a successful heal).
+    """
+
+    with _HEAL_EVENTS_LOCK:
+        _HEAL_EVENTS.append(namespace)
     from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
 
     logger.warning(
         "mcp namespace route healed namespace=%s reason=%s", namespace, MCP_TASK_ROUTE_HEALED
     )
     stream_audit("mcp_task_route_healed", reason=MCP_TASK_ROUTE_HEALED, namespace=namespace)
+
+
+def recorded_route_heals() -> list[str]:
+    """Return a snapshot of recorded namespace-heal events (queryable audit)."""
+
+    with _HEAL_EVENTS_LOCK:
+        return list(_HEAL_EVENTS)
 
 
 def recorded_task_route_decisions() -> list[tuple[str, NamespaceRouteDecision]]:

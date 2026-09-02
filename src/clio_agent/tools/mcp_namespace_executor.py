@@ -19,9 +19,16 @@ class AsyncNamespacePreparationMixin:
     _namespace_clients: dict[str, Any]
     _namespace_ctxs: dict[str, Any]
     _namespace_direct_routes: dict[str, bool]
+    _namespace_heal_attempted: set[str]
     _namespace_servers: Mapping[str, Any]
 
-    async def _connect_namespace(self, namespace: str, proxy: Any) -> None:
+    async def _connect_namespace(self, namespace: str, proxy: Any) -> Any:
+        """Connect + cache namespace's client; overridden by AsyncMCPToolExecutor.
+
+        Declared to return the connected client (not ``None`` -- the prior
+        stub's lie went unnoticed while every caller discarded the result;
+        F12's heal path is the first to assign it).
+        """
         raise NotImplementedError
 
     def merge_namespace_tools(self, namespace: str, tools: Mapping[str, Any]) -> None:
@@ -63,6 +70,19 @@ class AsyncNamespacePreparationMixin:
         a namespace that connected DIRECT is never evicted/thrashed back to
         proxy by a later degrade, which cannot happen under the F7 demotion
         guard anyway but is enforced here independently.
+
+        #1281 F12 (adversarial review): ``resolve_namespace_route`` sees only
+        the capability-derived INTENT, not whether a direct factory actually
+        exists/constructs for THIS executor -- when it does not (a missing
+        factory, or one that raises, F4/F9), every reuse re-resolved intent
+        as "should heal", so EVERY call evicted, reconnected (still landing
+        proxy), and reported a heal that never actually happened (measured:
+        3 calls -> 3 connects -> 2 false heal events). ``_namespace_heal_
+        attempted`` bounds a namespace to AT MOST ONE heal attempt: marked
+        BEFORE evicting (so a second reuse never retries), cleared ONLY on a
+        confirmed successful direct landing (so a genuine future capability
+        fix -- a factory later threaded on, say -- can still heal again).
+        ``record_route_healed`` fires ONLY on that confirmed success.
         """
 
         client = self._namespace_clients.get(namespace)
@@ -70,11 +90,17 @@ class AsyncNamespacePreparationMixin:
             return await self._connect_namespace(namespace, proxy)
         if self._namespace_direct_routes.get(namespace, False):
             return client
+        if namespace in self._namespace_heal_attempted:
+            return client
         if not resolve_namespace_route(namespace).use_direct:
             return client
+        self._namespace_heal_attempted.add(namespace)
         await self._evict_namespace_client(namespace)
-        record_route_healed(namespace)
-        return await self._connect_namespace(namespace, proxy)
+        reconnected = await self._connect_namespace(namespace, proxy)
+        if self._namespace_direct_routes.get(namespace, False):
+            self._namespace_heal_attempted.discard(namespace)
+            record_route_healed(namespace)
+        return reconnected
 
     async def _evict_namespace_client(self, namespace: str) -> None:
         """Close + drop a namespace's stale cached client ahead of a heal reconnect."""

@@ -290,6 +290,12 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         # the heal check (mcp_namespace_executor._namespace_client) reads
         # this to bound eviction STRICTLY to unknown/False -> direct.
         self._namespace_direct_routes: dict[str, bool] = {}
+        # #1281 F12 (adversarial review): namespaces whose heal has already
+        # been ATTEMPTED -- bounds a namespace to at most one evict+reconnect
+        # cycle when a direct-capable verdict's factory is missing/failing,
+        # so a permanently-stuck namespace never repeats the cycle (and its
+        # false "healed" report) on every subsequent call.
+        self._namespace_heal_attempted: set[str] = set()
         # Namespaces whose FIRST routed call succeeded (#934 spawn-diet hooks).
         self._connected_namespaces: set[str] = set()
         self._timeout = timeout
@@ -646,6 +652,11 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                 logger.debug("Error closing namespace client %r: %s", namespace, exc)
         self._namespace_ctxs.clear()
         self._namespace_clients.clear()
+        # #1281 F13 (adversarial review): clear the route/heal bookkeeping
+        # alongside the clients/ctxs it describes -- a closed executor must
+        # never be re-entered with stale per-namespace route state.
+        self._namespace_direct_routes.clear()
+        self._namespace_heal_attempted.clear()
 
         if self._client_ctx is not None:
             close_timeout = min(5.0, max(0.1, self._timeout))
