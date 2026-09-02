@@ -43,6 +43,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
+from clio_agent.errors import ClioError
 from clio_agent.gact.delegation import (
     _coerce_expert_handoff_rows,
     _prediction_workflow_state,
@@ -725,6 +726,24 @@ async def _run_turn_in_background(
                 "skill_path": exc.path,
                 "recovery_actions": ["choose_builtin_agent", "retry", "exit"],
             },
+            recoverable=True,
+        )
+        state.answer_text = ""
+        state.tools_called = []
+    except ClioError as exc:
+        # #1282 F5 (#1275 ask 2): a typed clio error -- a protocol refusal
+        # chief among them -- reaches the parent with its OWN reason/details
+        # (json_rpc_code, protocol_data naming what to re-dial with) instead
+        # of the generic agent_error below erasing them. to_dict() IS the
+        # structured envelope this taxonomy already standardizes on;
+        # turn_spawn_failures.child_task_error_reason already reads
+        # details["reason"] back off of it for the parent's AgentTask record
+        # (agent_tasks.ERROR_REASONS carries the typed reason strings).
+        payload = exc.to_dict()
+        state.error_info = ErrorInfo(
+            error=payload["error"],
+            message=payload["message"],
+            details=payload["details"],
             recoverable=True,
         )
         state.answer_text = ""

@@ -92,6 +92,15 @@ ERROR_REASONS = frozenset(
         # so the boot settle fails it with this typed reason + notify_pending so the
         # parent's next turn learns its spawned task was interrupted and decides.
         "server_restart_interrupted",
+        # #1282 F5 (#1275 ask 2): a child's typed MCP protocol refusal
+        # (-32021/-32022) reaches the parent's AgentTask record with its OWN
+        # reason instead of collapsing to "agent_error" -- turn.py's
+        # ClioError branch stamps ErrorInfo.details["reason"] from
+        # errors.MCP_CAPABILITY_REFUSED / MCP_PROTOCOL_REFUSED, and
+        # turn_spawn_failures.child_task_error_reason projects it here
+        # verbatim (falls back to "agent_error" for anything not listed).
+        "mcp_capability_refused",
+        "mcp_protocol_refused",
     }
 )
 
