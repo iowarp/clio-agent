@@ -359,6 +359,18 @@ KEY_NOTES: dict[str, str] = {
         "Experimental flag enabling live-edge SSE atom sealing (default off); only meaningful with "
         "the S5 atoms regime, leave off normally."
     ),
+    "gact.message_intents.max_acceptances_per_session": (
+        "Per-session cap on retained message-acceptance records used for idempotent POST replay; "
+        "raise for clients that retry over long windows, lower to shrink the intent store."
+    ),
+    "gact.message_intents.max_queued_per_session": (
+        "Per-session cap on durable queued (future) messages; a create past it is REFUSED with a "
+        "typed 429, never evicted. Raise for heavy queue use."
+    ),
+    "gact.message_intents.max_settled_steers_per_session": (
+        "Per-session cap on retained SETTLED (consumed/cancelled) pending-steer rows; undelivered "
+        "steers are never evicted. Lower to shrink the intent store."
+    ),
     "gact.resident_ledgers.idle_ttl_s": (
         "Seconds an idle session's in-memory transcript ledger may sit resident before release "
         "(rehydrates on next access); lower to free memory."

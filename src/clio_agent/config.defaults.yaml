@@ -502,6 +502,23 @@ gact.ledger_retention.turn_attempts.max: 2000
 # meaningful with the S5 atoms regime, leave off normally.
 gact.live_edge_streaming: false
 
+# CLIO_GACT_MAX_ACCEPTANCES_PER_SESSION  (int)  <- src/clio_agent/gact/message_intents.py
+# Per-session cap on retained message-acceptance records used for idempotent
+# POST replay; raise for clients that retry over long windows, lower to
+# shrink the intent store.
+gact.message_intents.max_acceptances_per_session: 200
+
+# CLIO_GACT_MAX_QUEUED_MESSAGES_PER_SESSION  (int)  <- src/clio_agent/gact/message_intents.py
+# Per-session cap on durable queued (future) messages; a create past it is
+# REFUSED with a typed 429, never evicted. Raise for heavy queue use.
+gact.message_intents.max_queued_per_session: 100
+
+# CLIO_GACT_MAX_SETTLED_STEERS_PER_SESSION  (int)  <- src/clio_agent/gact/message_intents.py
+# Per-session cap on retained SETTLED (consumed/cancelled) pending-steer
+# rows; undelivered steers are never evicted. Lower to shrink the intent
+# store.
+gact.message_intents.max_settled_steers_per_session: 100
+
 # CLIO_RESIDENT_LEDGERS_TTL_S  (float)  <- src/clio_agent/gact/resident_ledgers.py
 # Seconds an idle session's in-memory transcript ledger may sit resident
 # before release (rehydrates on next access); lower to free memory.

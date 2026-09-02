@@ -12,6 +12,7 @@ import logging
 import os
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, TypeVar
@@ -22,6 +23,54 @@ from clio_agent.gact.types import Message, MessageBehavior, ModelRef, Part, Post
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
+
+_SETTLED_STEER_STATES = frozenset({"consumed", "cancelled"})
+
+
+@dataclass(frozen=True)
+class IntentRetention:
+    """Per-session bounds on the three durable intent planes.
+
+    Every plane grew without limit: a settled steer and an acceptance record were
+    written on every mutation and never removed, so a long-lived session's store
+    grew forever and each flush rewrote all of it.
+
+    The two bounds behave DIFFERENTLY on purpose. Settled steers and acceptances
+    are HISTORY -- the oldest are evicted with a typed reason. Queued messages are
+    the user's un-sent future intent, so the cap REFUSES a new one
+    (``QueueCapacityError``) rather than silently dropping something they wrote.
+    """
+
+    max_queued_per_session: int
+    max_settled_steers_per_session: int
+    max_acceptances_per_session: int
+
+    @classmethod
+    def from_conf(cls) -> "IntentRetention":
+        """Resolve the bounds through the config layer (file -> env -> default)."""
+
+        from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+        return cls(
+            max_queued_per_session=conf.resolve(
+                "gact.message_intents.max_queued_per_session",
+                env="CLIO_GACT_MAX_QUEUED_MESSAGES_PER_SESSION",
+                default=100,
+                cast=conf.as_int,
+            ),
+            max_settled_steers_per_session=conf.resolve(
+                "gact.message_intents.max_settled_steers_per_session",
+                env="CLIO_GACT_MAX_SETTLED_STEERS_PER_SESSION",
+                default=100,
+                cast=conf.as_int,
+            ),
+            max_acceptances_per_session=conf.resolve(
+                "gact.message_intents.max_acceptances_per_session",
+                env="CLIO_GACT_MAX_ACCEPTANCES_PER_SESSION",
+                default=200,
+                cast=conf.as_int,
+            ),
+        )
 
 
 def stage_intent_user_message(
@@ -105,16 +154,31 @@ class DuplicateIntentError(ValueError):
     """Raised when a client-provided identity already names another intent."""
 
 
+class QueueCapacityError(ValueError):
+    """Raised when a session's queue is already at its configured cap."""
+
+    def __init__(self, limit: int) -> None:
+        super().__init__(f"queued message limit reached: {limit}")
+        self.limit = limit
+
+
 class MessageIntentStore:
     """Thread-safe JSON persistence for message intent outside the transcript."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, retention: IntentRetention | None = None) -> None:
         self._path = path
+        self._retention = retention or IntentRetention.from_conf()
         self._lock = threading.RLock()
         self._pending: dict[str, PendingSteer] = {}
         self._queued: dict[str, QueuedMessage] = {}
         self._acceptances: dict[str, dict[str, Any]] = {}
         self._load()
+
+    @property
+    def retention(self) -> IntentRetention:
+        """The per-session bounds this store enforces."""
+
+        return self._retention
 
     def acceptance(self, session_id: str, key: str) -> PostMessageResponse | None:
         """Return a prior acceptance for this session/key, if one exists."""
@@ -139,6 +203,7 @@ class MessageIntentStore:
                     "idempotency key already names a different accepted message"
                 )
             self._acceptances[index_key] = serialized
+            self._prune_acceptances_locked(session_id)
             self._flush_locked()
 
     def add_pending(self, pending: PendingSteer) -> None:
@@ -171,6 +236,7 @@ class MessageIntentStore:
             self._pending[pending.message_id] = pending.model_copy(deep=True)
             if index_key:
                 self._acceptances[index_key] = response.model_dump()
+                self._prune_acceptances_locked(pending.session_id)
             self._flush_locked()
             return None
 
@@ -268,8 +334,10 @@ class MessageIntentStore:
                 return None
             row.state = "cancelled"
             row.cancelled_at = _now_iso()
+            settled = row.model_copy(deep=True)
+            self._prune_settled_steers_locked(session_id)
             self._flush_locked()
-            return row.model_copy(deep=True)
+            return settled
 
     def mark_consumed(self, session_id: str, message_id: str) -> PendingSteer | None:
         """Settle a claimed steer after its transcript event is published."""
@@ -280,8 +348,10 @@ class MessageIntentStore:
                 return None
             row.state = "consumed"
             row.consumed_at = _now_iso()
+            settled = row.model_copy(deep=True)
+            self._prune_settled_steers_locked(session_id)
             self._flush_locked()
-            return row.model_copy(deep=True)
+            return settled
 
     def list_queued(self, session_id: str) -> list[QueuedMessage]:
         """Return authoritative server order for a session's queued messages."""
@@ -308,6 +378,12 @@ class MessageIntentStore:
                 for queued in self._queued.values()
                 if queued.session_id == row.session_id
             ]
+            limit = self._retention.max_queued_per_session
+            if len(positions) >= limit:
+                # A REFUSAL, not an eviction: a queued message is the user's
+                # un-sent future intent and must never disappear behind their
+                # back. The typed error names the limit so a client can say why.
+                raise QueueCapacityError(limit)
             row.position = max(positions, default=-1) + 1
             self._queued[row.id] = row.model_copy(deep=True)
             self._flush_locked()
@@ -415,11 +491,18 @@ class MessageIntentStore:
     ) -> tuple[QueuedMessage, T] | None:
         """Accept and remove one queued row as one revision-checked transaction.
 
-        The callback runs while the store lock is held so edit, delete, reorder,
-        manual promotion, and the idle auto-dispatch path cannot race. If the
-        acceptance callback raises, the queued row remains durable and editable.
-        Acceptance idempotency makes a process interruption after acceptance but
-        before removal safe to replay on the next promotion attempt.
+        RESERVE-then-accept, not accept-under-lock. The row is removed from the
+        queue under the lock, which is what actually makes the transaction
+        exclusive — edit, delete, reorder, a manual promotion and the idle
+        auto-dispatch all miss a row that is no longer in ``_queued``. The
+        callback then runs OUTSIDE the lock: it stages a whole turn (transcript
+        write, provider validation, background task), and holding the store's
+        RLock across that blocked every other queue reader for its duration.
+
+        If acceptance raises, the reservation is rolled back — the row is durable
+        and editable again at its ORIGINAL revision, so a client's revision guard
+        still matches. Acceptance idempotency makes a process interruption after
+        acceptance but before removal safe to replay on the next attempt.
         """
 
         with self._lock:
@@ -428,11 +511,18 @@ class MessageIntentStore:
                 return None
             if row.revision != revision:
                 raise RevisionConflictError(row.model_copy(deep=True))
-            result = promote(row.model_copy(deep=True))
-            deleted = self._queued.pop(message_id)
+            reserved = self._queued.pop(message_id)
             self._normalize_positions_locked(session_id)
             self._flush_locked()
-            return deleted.model_copy(deep=True), result
+        try:
+            result = promote(reserved.model_copy(deep=True))
+        except BaseException:
+            with self._lock:
+                self._queued[reserved.id] = reserved
+                self._normalize_positions_locked(session_id)
+                self._flush_locked()
+            raise
+        return reserved.model_copy(deep=True), result
 
     def delete_session(self, session_id: str) -> None:
         """Remove every pending, queued, and idempotency row owned by a session."""
@@ -458,6 +548,59 @@ class MessageIntentStore:
             for key in acceptance_keys:
                 self._acceptances.pop(key, None)
             self._flush_locked()
+
+    def _prune_acceptances_locked(self, session_id: str) -> None:
+        """Evict the OLDEST acceptances past the per-session cap, with a reason.
+
+        An acceptance record only serves idempotent replay of a POST the client
+        may retry; once it is far enough in the past no client will ask again.
+        Eviction is therefore safe, and never silent: an evicted key that IS
+        replayed re-accepts, which the log line below makes diagnosable.
+        """
+
+        limit = self._retention.max_acceptances_per_session
+        prefix = f"{session_id}:"
+        keys = [key for key in self._acceptances if key.startswith(prefix)]
+        if len(keys) <= limit:
+            return
+        ordered = sorted(keys, key=lambda key: str(self._acceptances[key].get("accepted_at") or ""))
+        for key in ordered[: len(keys) - limit]:
+            self._acceptances.pop(key, None)
+        logger.info(
+            "message-intent acceptances pruned session=%s reason=acceptance_retention "
+            "limit=%d evicted=%d",
+            session_id,
+            limit,
+            len(keys) - limit,
+        )
+
+    def _prune_settled_steers_locked(self, session_id: str) -> None:
+        """Evict the OLDEST settled steers past the cap. ACTIVE rows never go.
+
+        ``consumed`` and ``cancelled`` rows are history a client reconciles
+        against; ``pending`` and ``claimed`` rows are undelivered user intent and
+        are exempt from every bound (dropping one would lose a message the server
+        already accepted with a 202).
+        """
+
+        limit = self._retention.max_settled_steers_per_session
+        settled = [
+            row
+            for row in self._pending.values()
+            if row.session_id == session_id and row.state in _SETTLED_STEER_STATES
+        ]
+        if len(settled) <= limit:
+            return
+        settled.sort(key=lambda row: (row.consumed_at or row.cancelled_at or row.accepted_at))
+        for row in settled[: len(settled) - limit]:
+            self._pending.pop(row.message_id, None)
+        logger.info(
+            "message-intent settled steers pruned session=%s reason=steer_retention "
+            "limit=%d evicted=%d",
+            session_id,
+            limit,
+            len(settled) - limit,
+        )
 
     def _normalize_positions_locked(self, session_id: str) -> None:
         rows = sorted(
@@ -534,15 +677,24 @@ class MessageIntentStore:
             "acceptances": self._acceptances,
         }
         tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        # Compact, not pretty: this rewrites the WHOLE store on every mutation
+        # (one file, no per-session shard), so indent=2 + sort_keys multiplied the
+        # bytes written on the acceptance hot path for no operator benefit. The
+        # write stays SYNCHRONOUS on purpose -- POST /messages promises a durable
+        # steer before it returns its 202, so a write-behind queue would turn that
+        # contract into a lie on any crash. The retention bounds above are what
+        # keep the write cheap.
+        tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
         os.replace(tmp, self._path)
 
 
 __all__ = [
     "DuplicateIntentError",
-    "MessageIntentStore",
+    "IntentRetention",
     "IntentStoreReadError",
+    "MessageIntentStore",
     "PendingSteer",
+    "QueueCapacityError",
     "QueuedMessage",
     "RevisionConflictError",
 ]

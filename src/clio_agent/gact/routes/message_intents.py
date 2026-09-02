@@ -8,10 +8,21 @@ from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from clio_agent.gact.events import Event
-from clio_agent.gact.message_intents import QueuedMessage, RevisionConflictError
+from clio_agent.gact.message_intents import (
+    QueueCapacityError,
+    QueuedMessage,
+    RevisionConflictError,
+)
 from clio_agent.gact.message_submission import accept_message
 from clio_agent.gact.runtime.globals import _new_message_id
-from clio_agent.gact.types import MessageBehavior, ModelRef, Part, PostMessageRequest
+from clio_agent.gact.types import (
+    ErrorEnvelope,
+    ErrorInfo,
+    MessageBehavior,
+    ModelRef,
+    Part,
+    PostMessageRequest,
+)
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -190,18 +201,40 @@ def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
         existing = app.state.message_intents.get_queued(sid, message_id)
         if existing is not None:
             return existing
-        row = app.state.message_intents.create_queued(
-            QueuedMessage(
-                id=message_id,
-                session_id=sid,
-                parts=parts,
-                metadata=req.metadata,
-                client_message_id=req.client_message_id,
-                idempotency_key=req.idempotency_key,
-                behavior=req.behavior,
-                model=req.model,
+        try:
+            row = app.state.message_intents.create_queued(
+                QueuedMessage(
+                    id=message_id,
+                    session_id=sid,
+                    parts=parts,
+                    metadata=req.metadata,
+                    client_message_id=req.client_message_id,
+                    idempotency_key=req.idempotency_key,
+                    behavior=req.behavior,
+                    model=req.model,
+                )
             )
-        )
+        except QueueCapacityError as exc:
+            # A refusal, not an eviction: the queue holds the user's un-sent
+            # future intent, so the cap must never silently drop one of them.
+            raise HTTPException(
+                status_code=429,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="queue_capacity_exceeded",
+                        message=(
+                            "this session's queued-message limit is reached; promote or delete "
+                            "a queued message before adding another"
+                        ),
+                        details={
+                            "session_id": sid,
+                            "limit": exc.limit,
+                            "recovery_actions": ["promote_queued", "delete_queued", "retry"],
+                        },
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
         publish("queued_message.created", sid, row.model_dump())
         redrive_queue(sid)
         return row

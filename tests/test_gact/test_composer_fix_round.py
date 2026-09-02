@@ -751,3 +751,183 @@ def test_deleting_an_ordinary_message_leaves_the_intent_plane_alone(tmp_path: Pa
         assert pending is not None and pending.state == "pending"
         assert inbox_for(app, sid).peek_nonempty()
         _wait_idle(app, sid)
+
+
+# --------------------------------------------------------------------------- #
+# F8 — the intent store must be bounded and cheap to persist.                   #
+# --------------------------------------------------------------------------- #
+
+
+def _steer(store: Any, sid: str, index: int, state: str) -> str:
+    from clio_agent.gact.message_intents import PendingSteer
+
+    message_id = f"msg_{state}_{index:03d}"
+    store.add_pending(
+        PendingSteer(
+            message_id=message_id,
+            session_id=sid,
+            text=f"steer {index}",
+            accepted_at=f"2026-08-30T12:{index // 60:02d}:{index % 60:02d}+00:00",
+        )
+    )
+    if state in {"consumed", "cancelled"}:
+        store.claim_pending(sid, message_id)
+    if state == "consumed":
+        store.mark_consumed(sid, message_id)
+    elif state == "cancelled":
+        store.cancel_pending(sid, message_id)
+    return message_id
+
+
+def test_settled_steers_and_acceptances_are_bounded(tmp_path: Path) -> None:
+    """Both planes grew without limit: every settled steer and every acceptance."""
+
+    from clio_agent.gact.message_intents import IntentRetention, MessageIntentStore
+    from clio_agent.gact.types import PostMessageResponse
+
+    path = tmp_path / "intents.json"
+    store = MessageIntentStore(
+        path,
+        retention=IntentRetention(
+            max_queued_per_session=100,
+            max_settled_steers_per_session=3,
+            max_acceptances_per_session=2,
+        ),
+    )
+    settled = [_steer(store, "sess_bound", index, "consumed") for index in range(6)]
+    live = _steer(store, "sess_bound", 99, "pending")
+
+    kept = [row for row in settled if store.get_pending("sess_bound", row) is not None]
+    assert kept == settled[-3:], "settled steers are not pruned oldest-first"
+    assert store.get_pending("sess_bound", live) is not None, "an ACTIVE steer was evicted"
+
+    for index in range(5):
+        store.record_acceptance(
+            "sess_bound",
+            f"key-{index}",
+            PostMessageResponse(
+                message_id=f"msg_acc_{index}",
+                accepted_at=f"2026-08-30T13:00:{index:02d}+00:00",
+            ),
+        )
+    surviving = [
+        index for index in range(5) if store.acceptance("sess_bound", f"key-{index}") is not None
+    ]
+    assert surviving == [3, 4], "acceptances grow without bound"
+
+    # Durable across a rebuild, and compactly serialized.
+    reloaded = MessageIntentStore(path)
+    assert reloaded.get_pending("sess_bound", live) is not None
+    assert reloaded.acceptance("sess_bound", "key-4") is not None
+    raw = path.read_text(encoding="utf-8")
+    assert "\n" not in raw.strip(), "the store still writes indented JSON on every mutation"
+
+
+def test_the_queue_refuses_past_its_cap_instead_of_growing(tmp_path: Path) -> None:
+    """A refusal, not an eviction: a user's future message is never dropped."""
+
+    from clio_agent.gact.message_intents import IntentRetention, MessageIntentStore
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowAgent(sleep_s=4.0))
+    app.state.message_intents = MessageIntentStore(
+        tmp_path / "capped.json",
+        retention=IntentRetention(
+            max_queued_per_session=2,
+            max_settled_steers_per_session=50,
+            max_acceptances_per_session=50,
+        ),
+    )
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "capped"}).json()["id"]
+        assert (
+            client.post(
+                f"/v1/sessions/{sid}/messages",
+                json={"parts": [{"type": "text", "text": "hold the slot"}]},
+            ).status_code
+            == 200
+        )
+        _wait_busy(app, sid)
+        for index in range(2):
+            created = client.post(
+                f"/v1/sessions/{sid}/queued-messages",
+                json={"text": f"queued {index}", "client_message_id": f"msg_cap_{index}"},
+            )
+            assert created.status_code == 201, created.text
+        refused = client.post(
+            f"/v1/sessions/{sid}/queued-messages",
+            json={"text": "one too many", "client_message_id": "msg_cap_over"},
+        )
+        assert refused.status_code == 429, refused.text
+        body = refused.json()
+        assert body["error"]["error"] == "queue_capacity_exceeded"
+        assert body["error"]["details"]["limit"] == 2
+        rows = client.get(f"/v1/sessions/{sid}/queued-messages").json()["queued_messages"]
+        assert [row["id"] for row in rows] == ["msg_cap_0", "msg_cap_1"]
+        _wait_idle(app, sid)
+
+
+def test_promotion_does_not_hold_the_store_lock_across_acceptance(tmp_path: Path) -> None:
+    """Acceptance stages a whole turn; holding the store RLock across it blocks
+    every other queue reader for the duration."""
+
+    from clio_agent.gact.message_intents import MessageIntentStore, QueuedMessage
+    from clio_agent.gact.types import Part
+
+    store = MessageIntentStore(tmp_path / "lock.json")
+    store.create_queued(
+        QueuedMessage(
+            id="queued_lock",
+            session_id="sess_lock",
+            parts=[Part(type="text", text="promote me")],
+        )
+    )
+    observed: dict[str, Any] = {}
+
+    def slow_acceptance(row: QueuedMessage) -> str:
+        # A concurrent reader must not be blocked by this callback.
+        import threading
+
+        done = threading.Event()
+
+        def read() -> None:
+            observed["listed"] = [item.id for item in store.list_queued("sess_lock")]
+            done.set()
+
+        thread = threading.Thread(target=read)
+        thread.start()
+        observed["unblocked"] = done.wait(timeout=2.0)
+        thread.join(timeout=2.0)
+        return row.parts[0].text
+
+    promoted = store.promote_queued("sess_lock", "queued_lock", 1, slow_acceptance)
+    assert observed["unblocked"] is True, "acceptance ran while holding the store lock"
+    assert observed["listed"] == [], "the row must be reserved out of the queue while accepting"
+    assert promoted is not None and promoted[1] == "promote me"
+    assert store.list_queued("sess_lock") == []
+
+
+def test_a_failed_promotion_restores_the_row_and_its_revision(tmp_path: Path) -> None:
+    from clio_agent.gact.message_intents import MessageIntentStore, QueuedMessage
+    from clio_agent.gact.types import Part
+
+    store = MessageIntentStore(tmp_path / "rollback.json")
+    store.create_queued(
+        QueuedMessage(
+            id="queued_rollback",
+            session_id="sess_rollback",
+            parts=[Part(type="text", text="boom")],
+        )
+    )
+
+    def failing(_row: QueuedMessage) -> str:
+        raise RuntimeError("acceptance failed")
+
+    with pytest.raises(RuntimeError, match="acceptance failed"):
+        store.promote_queued("sess_rollback", "queued_rollback", 1, failing)
+
+    rows = store.list_queued("sess_rollback")
+    assert [row.id for row in rows] == ["queued_rollback"]
+    assert rows[0].revision == 1, "a rolled-back promotion must not consume a revision"
+    assert [row.id for row in MessageIntentStore(tmp_path / "rollback.json").list_queued(
+        "sess_rollback"
+    )] == ["queued_rollback"]
