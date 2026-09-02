@@ -246,7 +246,7 @@ def test_capabilities_and_provider_catalog_report_image_part_support(client: Tes
     by_id = {row["id"]: row for row in providers}
     assert by_id["openai"]["metadata"]["supports_vision"] is True
     assert by_id["anthropic"]["metadata"]["supports_vision"] is True
-    assert by_id["codex"]["metadata"]["supports_vision"] is False
+    assert by_id["codex"]["metadata"]["supports_vision"] is True
     assert by_id["claude_code"]["metadata"]["supports_vision"] is False
 
 

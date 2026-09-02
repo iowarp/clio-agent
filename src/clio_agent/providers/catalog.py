@@ -331,6 +331,7 @@ PROVIDERS: tuple[Provider, ...] = (
         auth_method="none",
         is_kind_default=True,
         supports_live_catalog=False,
+        supports_vision=True,
         parse_retry_capability="single_attempt",
         model_catalog=(
             ModelEntry(

@@ -82,6 +82,30 @@ def test_catalog_uses_modalities_only_from_current_live_evidence() -> None:
     assert static["evidence"]["live"] is False
 
 
+def test_live_codex_sdk_catalog_advertises_its_typed_image_input() -> None:
+    preset = LMProviderPreset(
+        id="codex",
+        label="Codex",
+        provider="codex",
+        api_base="codex://sdk",
+        suggested_model="gpt-5.6-luna",
+    )
+    report = HandshakeReport(
+        provider_id="codex",
+        provider_kind="codex",
+        connectivity=ConnectivityState.OK,
+        auth=AuthState.NOT_REQUIRED,
+        models_source="live",
+        generated_at="2026-09-02T12:00:00+00:00",
+        models=(ModelProfile(id="gpt-5.6-luna", capabilities=("text", "image")),),
+    )
+
+    row = model_catalog_row(preset, report, report.models[0])
+
+    assert row["modalities"] == ["image", "text"]
+    assert row["evidence"]["live"] is True
+
+
 def test_normalized_codex_catalog_bootstraps_live_discovery(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]

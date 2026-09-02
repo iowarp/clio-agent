@@ -70,6 +70,7 @@ def test_discover_models_present_overlay_served_with_context_marker(
                     "context_window": 272000,
                     "context_source": "models.dev",
                     "output_limit": 64000,
+                    "capabilities": ["text", "image"],
                 }
             ],
             source=CODEX_SOURCE,
@@ -81,6 +82,7 @@ def test_discover_models_present_overlay_served_with_context_marker(
     assert [r["id"] for r in rows] == ["gpt-5.6-sol"]
     assert rows[0]["context_window"] == 272000
     assert rows[0]["output_limit"] == 64000
+    assert rows[0]["capabilities"] == ["text", "image"]
     assert rows[0]["_overlay_context_checked"] is True
 
 
@@ -115,12 +117,14 @@ def test_discover_model_config_prefills_from_overlay_row() -> None:
         "context_window": 272000,
         "output_limit": 64000,
         "context_source": "models.dev",
+        "capabilities": ["text", "image"],
         "_overlay_context_checked": True,
     }
     profile = asyncio.run(handshake.discover_model_config(client=None, ctx=_ctx(), raw=raw))
     assert profile.id == "gpt-5.6-sol"
     assert profile.context_window == 272000
     assert profile.output_limit == 64000
+    assert profile.capabilities == ("text", "image")
     assert profile.context_source == "models.dev"
 
 

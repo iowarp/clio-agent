@@ -532,13 +532,19 @@ class _StubCodex:
 
 
 def _codex_model(
-    model_id: str, *, name: str = "", description: str = "", is_default: bool = False
+    model_id: str,
+    *,
+    name: str = "",
+    description: str = "",
+    is_default: bool = False,
+    input_modalities: list[str] | None = None,
 ) -> Any:
     return SimpleNamespace(
         id=model_id,
         display_name=name or model_id,
         description=description,
         is_default=is_default,
+        input_modalities=input_modalities or ["text", "image"],
     )
 
 
@@ -559,6 +565,7 @@ def test_discover_codex_success_reports_default_and_source(monkeypatch: pytest.M
     assert {m["id"] for m in result.discovered} == {"gpt-5.6-sol", "gpt-5.6-terra"}
     assert result.default_model == "gpt-5.6-sol"
     assert result.source == "codex_sdk"
+    assert all(m["capabilities"] == ["text", "image"] for m in result.discovered)
     assert stub.closed is True
 
 

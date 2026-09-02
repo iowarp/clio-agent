@@ -104,6 +104,42 @@ def _messages_to_codex_prompt(messages: list[dict[str, Any]]) -> str:
     )
 
 
+def _messages_to_codex_input(messages: list[dict[str, Any]]) -> tuple[str, list[str]]:
+    """Return the hardened transcript plus native SDK image inputs.
+
+    The Codex SDK accepts data URLs as typed ``ImageInput`` values.  Keep those
+    values out of the serialized transcript and audit log while preserving all
+    text and role boundaries through the existing hardened serializer.
+    """
+
+    text_messages: list[dict[str, Any]] = []
+    image_urls: list[str] = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            text_messages.append(message)
+            continue
+        text_parts: list[Any] = []
+        for part in content:
+            if not isinstance(part, dict):
+                text_parts.append(part)
+                continue
+            part_type = str(part.get("type") or "").strip().lower()
+            if part_type not in {"image", "image_url", "input_image"} and "image_url" not in part:
+                text_parts.append(part)
+                continue
+            image_value = part.get("image_url") or part.get("url")
+            if isinstance(image_value, dict):
+                image_value = image_value.get("url")
+            if not isinstance(image_value, str) or not image_value.strip():
+                raise CodexUnsupportedMultimodalError(
+                    "Codex SDK image message parts require a non-empty URL"
+                )
+            image_urls.append(image_value.strip())
+        text_messages.append({**message, "content": text_parts})
+    return _messages_to_codex_prompt(text_messages), image_urls
+
+
 def _build_model_response(
     *,
     text: str,
@@ -193,8 +229,10 @@ class CodexLLM(CustomLLM):
         params = optional_params or {}
         clean_model = model.removeprefix("codex/").removeprefix("cdx-")
         self._resolve_transport(params)
+        prompt, images = _messages_to_codex_input(messages)
         text, usage = run_sdk(
-            prompt=_messages_to_codex_prompt(messages),
+            prompt=prompt,
+            images=images,
             model=clean_model,
             cwd=_resolve_codex_cwd(params),
             effort=_resolve_effort(params),
@@ -227,8 +265,10 @@ class CodexLLM(CustomLLM):
         self._resolve_transport(params)
         parts: list[str] = []
         usage: dict[str, int] = {}
+        prompt, images = _messages_to_codex_input(messages)
         async for chunk in astream_sdk(
-            prompt=_messages_to_codex_prompt(messages),
+            prompt=prompt,
+            images=images,
             model=clean_model,
             cwd=_resolve_codex_cwd(params),
             effort=_resolve_effort(params),
@@ -275,8 +315,10 @@ class CodexLLM(CustomLLM):
         params = optional_params or {}
         clean_model = model.removeprefix("codex/").removeprefix("cdx-")
         self._resolve_transport(params)
+        prompt, images = _messages_to_codex_input(messages)
         text, usage = run_sdk(
-            prompt=_messages_to_codex_prompt(messages),
+            prompt=prompt,
+            images=images,
             model=clean_model,
             cwd=_resolve_codex_cwd(params),
             effort=_resolve_effort(params),
@@ -321,8 +363,10 @@ class CodexLLM(CustomLLM):
         params = optional_params or {}
         clean_model = model.removeprefix("codex/").removeprefix("cdx-")
         self._resolve_transport(params)
+        prompt, images = _messages_to_codex_input(messages)
         async for chunk in astream_sdk(
-            prompt=_messages_to_codex_prompt(messages),
+            prompt=prompt,
+            images=images,
             model=clean_model,
             cwd=_resolve_codex_cwd(params),
             effort=_resolve_effort(params),

@@ -64,6 +64,15 @@ logger = logging.getLogger(__name__)
 _OVERLAY_CHECKED_KEY = "_overlay_context_checked"
 
 
+def _overlay_capabilities(row: dict[str, Any]) -> tuple[str, ...]:
+    """Return capability strings persisted by live CLI model discovery."""
+
+    values = row.get("capabilities")
+    if not isinstance(values, list):
+        return ()
+    return tuple(str(value).strip() for value in values if str(value).strip())
+
+
 class CliCatalogHandshake(NoOpHandshake):
     """:class:`NoOpHandshake` variant whose model list prefers the refresh overlay."""
 
@@ -100,6 +109,7 @@ class CliCatalogHandshake(NoOpHandshake):
                     "context_window": m.get("context_window"),
                     "output_limit": m.get("output_limit"),
                     "context_source": m.get("context_source"),
+                    "capabilities": list(_overlay_capabilities(m)),
                     _OVERLAY_CHECKED_KEY: True,
                 }
                 for m in wire["models"]
@@ -132,6 +142,7 @@ class CliCatalogHandshake(NoOpHandshake):
             output_limit=output_limit
             if isinstance(output_limit, int) and output_limit > 0
             else None,
+            capabilities=_overlay_capabilities(raw),
             context_source=str(raw.get("context_source") or "overlay"),
             raw=dict(raw),
         )
