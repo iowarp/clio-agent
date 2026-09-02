@@ -57,6 +57,9 @@ def cancel_session_state(app: FastAPI, deps: "GactDeps", sid: str) -> dict[str, 
     event = app.state.cancel_events.get(sid)
     if event is not None:
         event.set()
+    from clio_agent.gact.composer_runtime import (  # noqa: PLC0415
+        stop_session_composer_autostart,
+    )
     from clio_agent.gact.turn_spawn import cancel_children_of  # noqa: PLC0415
     from clio_agent.providers.claude_code_cancel import abort_session_streams  # noqa: PLC0415
 
@@ -64,6 +67,11 @@ def cancel_session_state(app: FastAPI, deps: "GactDeps", sid: str) -> dict[str, 
     abort_session_streams(sid)
     stop_session_loop(app, sid)
     stop_session_goal(app, sid)
+    # The composer planes are turn PRODUCERS too: a residual steer and a queued
+    # head would each re-drive the agent the moment the cancelled turn's slot
+    # cleared. Quiesce them like the loop/goal producers -- retaining, never
+    # deleting, the user's durable intent.
+    composer_autostart = stop_session_composer_autostart(app, sid)
     in_flight = app.state.in_flight_turns.get(sid)
     cancellation_pending = in_flight is not None and not in_flight.done()
     attempt = {
@@ -89,6 +97,7 @@ def cancel_session_state(app: FastAPI, deps: "GactDeps", sid: str) -> dict[str, 
         "execution_cancellation": "cooperative_pending" if cancellation_pending else "none",
         "executor_work_may_continue": cancellation_pending,
         "cancellation_attempt": deps.cancellation_attempt_summary(attempt),
+        "composer_autostart": composer_autostart,
     }
     app.state.bus.publish(Event(type="session.status_changed", session_id=sid, payload=payload))
     return payload

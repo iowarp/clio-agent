@@ -336,6 +336,17 @@ def drain_inbox_to_new_turn(app: "FastAPI", sid: str) -> None:
         return  # session gone; nothing to resume into
     if app.state.agent is None or app.state.turn_runner.busy(sid):
         return  # not ready — leave buffered for the next idle transition
+    from clio_agent.gact.composer_runtime import session_autostart_suspended  # noqa: PLC0415
+
+    if session_autostart_suspended(app, sid):
+        # /cancel means STOP. Re-driving a residual steer here would restart the
+        # very agent the user just stopped. The steer stays buffered AND its
+        # durable intent stays listed/cancellable; the user's next explicit send
+        # lifts the suspension and the next idle boundary promotes it.
+        logger.info(
+            "loop_inbox steer re-drive suspended session=%s reason=session_cancelled", sid
+        )
+        return
     events = inbox.drain()
     steers = [e for e in events if e.kind == "user_message"]
     for residual in events:

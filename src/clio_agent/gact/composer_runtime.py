@@ -79,64 +79,158 @@ def register_composer_routes(app: Any, deps: Any) -> None:
     _install_composer_idle_hook(app, deps)
 
 
-def _install_composer_idle_hook(app: Any, deps: Any) -> None:
-    """Drain residual steers first, then start the head queued message when idle.
+def session_autostart_suspended(app: Any, session_id: str) -> bool:
+    """True when a session must not START work on its own.
 
-    This REPLACES the idle hook ``build_app`` installed earlier, and calls the
-    same ``drain_inbox_and_notify_spotter`` body it used — the queue promotion is
-    appended after it, never instead of it.
+    A cancelled session is the one such state today: ``/cancel`` is the user
+    saying *stop*, and the durable composer planes (a residual steer, a queued
+    head) would otherwise re-drive the agent the instant the cancelled turn's
+    slot cleared — Esc restarting the very turn it stopped. The SESSION STATUS is
+    the server truth here, not a cancel flag: the flag is already cleared by the
+    time the idle hook runs, whereas the cancelled turn's finalize (and
+    ``cancel_session_state`` before it) stamps ``status="cancelled"`` and it
+    stays until the user explicitly sends again.
+    """
+
+    session = app.state.sessions.get(session_id)
+    return str(getattr(session, "status", "") or "") == "cancelled"
+
+
+def stop_session_composer_autostart(app: Any, session_id: str) -> dict[str, Any]:
+    """Quiesce the composer's two turn producers for a cancelled session.
+
+    The canonical-stop sibling of ``stop_session_loop`` / ``stop_session_goal``,
+    called from ``cancel_session_state``. Cancelling stops a session from
+    STARTING work; it does NOT delete the user's durable intent, so the pending
+    steers and queued messages stay listed, editable and cancellable — they
+    simply stop auto-promoting until the user sends again. The retained counts
+    ride the cancellation payload so the suspension is a recorded fact, never a
+    silent swallow.
     """
 
     from clio_agent.gact.events import Event  # noqa: PLC0415
+
+    intents = getattr(app.state, "message_intents", None)
+    if intents is None:
+        return {"reason": "composer_state_unavailable", "suspended": False}
+    summary = {
+        "reason": "session_cancelled",
+        "suspended": True,
+        "retained_pending_steers": len(intents.list_pending(session_id)),
+        "retained_queued_messages": len(intents.list_queued(session_id)),
+    }
+    if summary["retained_pending_steers"] or summary["retained_queued_messages"]:
+        app.state.bus.publish(
+            Event(
+                type="composer.autostart_suspended",
+                session_id=session_id,
+                payload={"session_id": session_id, **summary},
+            )
+        )
+    return summary
+
+
+def _install_composer_idle_hook(app: Any, deps: Any) -> None:
+    """Start the head queued message when a session goes idle.
+
+    COMPOSES with the idle hook ``build_app`` installed earlier (the loop-inbox
+    drain + SPOTTER clearance) rather than replacing it: the previous hook runs
+    first and the queue promotion is appended after it. Overwriting the slot is
+    what silently unregistered the drain.
+    """
+
     from clio_agent.gact.loop_inbox import drain_inbox_and_notify_spotter  # noqa: PLC0415
+
+    previous = app.state.turn_runner.idle_hook
+
+    def on_session_idle(session_id: str) -> None:
+        if previous is not None:
+            previous(session_id)
+        else:  # pragma: no cover - build_app always installs the drain first
+            drain_inbox_and_notify_spotter(app, session_id)
+        _promote_queue_head(app, deps, session_id)
+
+    app.state.turn_runner.set_idle_hook(on_session_idle)
+
+
+def promote_queue_head(app: Any, deps: Any, session_id: str) -> None:
+    """Attempt one auto-promotion of ``session_id``'s queue head.
+
+    Re-driven from every point where the queue can become promotable: a turn
+    going idle, a queued-message mutation on an idle session, and a promotion
+    that failed against a stale revision. Never starts work on a busy or
+    autostart-suspended session.
+    """
+
+    _promote_queue_head(app, deps, session_id)
+
+
+def _promote_queue_head(app: Any, deps: Any, session_id: str) -> None:
+    from clio_agent.gact.events import Event  # noqa: PLC0415
+    from clio_agent.gact.message_intents import RevisionConflictError  # noqa: PLC0415
     from clio_agent.gact.message_submission import accept_message  # noqa: PLC0415
     from clio_agent.gact.types import PostMessageRequest  # noqa: PLC0415
 
-    def on_session_idle(session_id: str) -> None:
-        drain_inbox_and_notify_spotter(app, session_id)
-        if app.state.turn_runner.busy(session_id):
-            return
+    if app.state.turn_runner.busy(session_id):
+        return
+    if session_autostart_suspended(app, session_id):
+        # Typed, not silent: the queue is intact and the user's next explicit
+        # send lifts the suspension.
+        queued = app.state.message_intents.list_queued(session_id)
+        if queued:
+            logger.info(
+                "queued-message auto-promotion suspended session=%s reason=session_cancelled "
+                "retained=%d",
+                session_id,
+                len(queued),
+            )
+        return
+
+    def _accept(row: Any) -> Any:
+        return accept_message(
+            app,
+            deps,
+            session_id,
+            PostMessageRequest(
+                parts=row.parts,
+                model=row.model,
+                metadata=row.metadata,
+                client_message_id=row.client_message_id,
+                idempotency_key=row.idempotency_key or row.id,
+                delivery="start",
+                behavior=row.behavior,
+            ),
+        )
+
+    # A racing edit/reorder bumps the head's revision between the read and the
+    # promote. That is a stale READ, not a failure of intent: re-read the head
+    # and retry ONCE rather than freezing the queue until an unrelated turn ends.
+    for attempt in range(2):
         queued = app.state.message_intents.list_queued(session_id)
         if not queued:
             return
         head = queued[0]
         try:
             promoted = app.state.message_intents.promote_queued(
+                session_id, head.id, head.revision, _accept
+            )
+        except RevisionConflictError:
+            if attempt == 0:
+                continue
+            logger.warning(
+                "queued-message auto-promotion lost the revision race twice session=%s message=%s",
                 session_id,
                 head.id,
-                head.revision,
-                lambda row: accept_message(
-                    app,
-                    deps,
-                    session_id,
-                    PostMessageRequest(
-                        parts=row.parts,
-                        model=row.model,
-                        metadata=row.metadata,
-                        client_message_id=row.client_message_id,
-                        idempotency_key=row.idempotency_key or row.id,
-                        delivery="start",
-                        behavior=row.behavior,
-                    ),
-                ),
             )
+            _publish_promotion_failure(app, session_id, head.id, "queue_revision_conflict")
+            return
         except Exception:  # noqa: BLE001 - retain the durable row and emit typed failure
             logger.exception(
                 "queued-message auto-promotion failed session=%s message=%s",
                 session_id,
                 head.id,
             )
-            app.state.bus.publish(
-                Event(
-                    type="queued_message.promotion_failed",
-                    session_id=session_id,
-                    payload={
-                        "queued_message_id": head.id,
-                        "error": "queue_auto_promotion_failed",
-                        "recoverable": True,
-                    },
-                )
-            )
+            _publish_promotion_failure(app, session_id, head.id, "queue_auto_promotion_failed")
             return
         if promoted is None:
             return
@@ -153,8 +247,30 @@ def _install_composer_idle_hook(app: Any, deps: Any) -> None:
                 },
             )
         )
+        return
 
-    app.state.turn_runner.set_idle_hook(on_session_idle)
+
+def _publish_promotion_failure(app: Any, session_id: str, message_id: str, error: str) -> None:
+    """Emit the typed promotion failure. The row stays durable and retryable.
+
+    ``retry_on`` names the concrete events that re-drive it, so a client is not
+    left guessing whether a failed auto-promotion is dead or merely deferred.
+    """
+
+    from clio_agent.gact.events import Event  # noqa: PLC0415
+
+    app.state.bus.publish(
+        Event(
+            type="queued_message.promotion_failed",
+            session_id=session_id,
+            payload={
+                "queued_message_id": message_id,
+                "error": error,
+                "recoverable": True,
+                "retry_on": ["session_idle", "queue_mutation", "manual_promote"],
+            },
+        )
+    )
 
 
 def resource_capabilities(app: Any) -> dict[str, Any]:
