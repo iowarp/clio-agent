@@ -1,7 +1,6 @@
 """Session lifecycle + ask-user/retry routes for the GACT server (#714).
 
-This concern owns the largest GACT surface: the ``/v1/sessions`` lifecycle and the
-session-scoped ask-user / retry protocol.
+This concern owns the ``/v1/sessions`` lifecycle and session-scoped ask/retry protocol.
 
 * CRUD -- ``POST/GET/PATCH/DELETE /v1/sessions`` (+ ``GET /v1/sessions/{sid}``):
   create against the workspace store, list with the archive partition, patch the
@@ -19,15 +18,11 @@ session-scoped ask-user / retry protocol.
 * Cancel -- ``POST /v1/sessions/{sid}/cancel``: best-effort cooperative cancel of
   an in-flight turn (flip the flag, signal the event, schedule a grace-period task
   cancel) + a ``session.status_changed`` event.
-* Ask-user -- ``GET/POST /v1/sessions/{sid}/questions`` + ``.../answer`` +
-  ``.../cancel``: the orchestrator's user-question ledger; answering a
-  ``resume_on_answer`` question stages a background resume turn.
-* Retry -- ``GET /v1/sessions/{sid}/attempts`` +
-  ``POST /v1/sessions/{sid}/messages/{message_id}/retry``: record/execute a turn
-  retry, optionally kicking a background turn off the source user message.
+* Ask-user -- session question CRUD plus background resumption after answers.
+* Retry -- list and execute recorded attempts from a source user message.
 
-Fork, question-answer and retry routes use ``deps.start_background_user_turn``.
-This module loads only leaf packages and never :mod:`clio_agent.gact.app`; shared
+Fork, question-answer and retry use ``deps.start_background_user_turn``. This
+module loads only leaf packages and never :mod:`clio_agent.gact.app`; shared
 cross-concern helpers (ledger replace, ARC release, model-ref errors, evidence index,
 resume text) travel on :class:`GactDeps`; private rollback and retry helpers stay here.
 """
@@ -1150,8 +1145,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         row = UserQuestion(
             id=_new_question_id(),
             session_id=sid,
-            owner_session_id=sid,
-            attended_session_id=attended_session_id(app, sid),
+            **{"owner_session_id": sid, "attended_session_id": attended_session_id(app, sid)},
             prompt=prompt,
             kind=req.kind,
             options=_normalize_question_options(req),
@@ -1350,8 +1344,6 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
         return row
 
-    # The normalized interactions route delegates to these exact owner paths;
-    # it never reimplements question transition/resume behavior or adds a queue.
     app.state.answer_user_question = answer_user_question
     app.state.cancel_user_question = cancel_user_question
 

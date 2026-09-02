@@ -211,8 +211,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # executor, how to name the failure) belongs here.
     # PR #1278 re-land: -22. The two dynamic-agent DSPy signatures moved to
     # their owner module agents/signatures.py; the additive `images` input +
-    # its three forward params are what stayed.
-    "src/clio_agent/gact/agents/builders.py": 1975,
+    # its three forward params are what stayed. Interaction runtime extraction
+    # then removed one additional line.
+    "src/clio_agent/gact/agents/builders.py": 1974,
     # #948 S4/S5/S6 growth already carried this file past the flat 800 cap (to 842)
     # before it was ever added to this baseline — a pre-existing gap this change
     # did not introduce (it was silently exempt from the ratchet, not under it).
@@ -632,8 +633,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # P0.1a (#1102): move Part + CapabilityFlags to gact/parts.py; 1170 -> 958 lines.
     # PR #1278 re-land: -48. MessageBehavior + the PostMessage request/response
     # contract moved to their owner module gact/message_contract.py; this file
-    # re-exports all three so existing imports keep resolving.
-    "src/clio_agent/gact/types.py": 894,
+    # re-exports all three so existing imports keep resolving. Interaction wire
+    # models now live in interaction_types.py and remain re-exported here.
+    "src/clio_agent/gact/types.py": 862,
     # -120 (#891): the SDK-session machinery moved out to sibling owner modules —
     # the blocking-path pool to providers/claude_code_sdk_pool.py and the per-expert
     # streaming session/delta transport to providers/claude_code_sessions.py; this

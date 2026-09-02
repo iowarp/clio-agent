@@ -8,16 +8,10 @@ compile registered dynamic agents into concrete DSPy modules:
 * Agent-Blueprint experts (:func:`_build_blueprint_dspy_module`) using predict,
   chain-of-thought, or ReAct modules.
 
-Supporting machinery includes runtime signatures, LM and tool resolution, external
-MCP tools, blueprint telemetry, bounded schema repair, tool-intent recovery, and
-synchronous child-expert and bounded-fanout delegation.
-
-The retaining ReAct engine lives in :mod:`clio_agent.gact.agents.runtime`; resolution
-and prompt composition live in the sibling ``resolution`` and ``composition`` modules.
-Cross-concern helpers still owned by the ``gact.app`` turn handler or workflow-state
-subsystem are imported lazily inside the functions that need them, preserving the
-strangler seam without a module-load cycle. Permission-gate and tool-observer factories
-are reached through ``app.state`` and are never imported from ``gact.app``.
+Supporting machinery covers tool/LM resolution, telemetry, bounded schema repair,
+tool-intent recovery, and child delegation. The retaining ReAct engine, resolution,
+and prompt composition remain in sibling modules; cross-concern helpers load lazily
+to preserve the strangler seam without a module cycle.
 """
 
 from __future__ import annotations
@@ -49,6 +43,7 @@ from clio_agent.gact.agents.composition import (
     _runtime_active_workspace_context,
     _runtime_dynamic_agent_children_context,
 )
+from clio_agent.gact.agents.declared_native_tools import resolve_declared_native_tools
 from clio_agent.gact.agents.resolution import _active_workflow_state_schema
 from clio_agent.gact.agents.runtime import (
     _retaining_react_cls,
@@ -626,19 +621,9 @@ def _dynamic_agent_tools(
 ) -> list[Any]:
     """Resolve the exact DSPy tools a tool-declaring dynamic agent may use."""
 
-    requested_tools = [str(t).strip() for t in agent_def.tools if str(t).strip()]
-    available_tools: dict[str, Any] = {}
-    if "ask_user" in requested_tools:
-        from clio_agent.gact.ask_user_tool import build_ask_user_tool  # noqa: PLC0415
-
-        available_tools["ask_user"] = build_ask_user_tool(agent_def)
-        toolset_inventory.register_tool_source(sources, "ask_user", "native-declared")
-    if "create_a2ui_surface" in requested_tools:
-        from clio_agent.gact.a2ui_tools import build_create_a2ui_surface_tool  # noqa: PLC0415
-
-        available_tools["create_a2ui_surface"] = build_create_a2ui_surface_tool()
-        toolset_inventory.register_tool_source(sources, "create_a2ui_surface", "native-declared")
-    gateway_requested = [name for name in requested_tools if name not in available_tools]
+    requested_tools, available_tools, gateway_requested = resolve_declared_native_tools(
+        agent_def, sources
+    )
     tool_executor = None
     if gateway_requested:
         try:

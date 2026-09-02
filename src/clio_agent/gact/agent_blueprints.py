@@ -462,10 +462,6 @@ _MEMORY_TOOL_NAMES = {
     "memory_read_context_frame",
 }
 
-# In-process runtime tools are valid blueprint declarations, but are not MCP
-# gateway tools and must never be inferred as universally available.
-DECLARABLE_NATIVE_TOOL_NAMES = frozenset({"ask_user", "create_a2ui_surface"})
-
 
 def _mapping_field(meta: dict[str, Any], *keys: str) -> dict[str, Any]:
     for key in keys:
@@ -563,7 +559,7 @@ def _validate_agent_tool_references(
     # iff the pack declares its server namespace via ``mcp_servers`` (declaration
     # is the enablement). Legacy ``tools/*.md`` descriptors remain explicitly
     # gated until enabled/trusted.
-    builtin_tools = set(TOOL_CATALOG) | _MEMORY_TOOL_NAMES | set(DECLARABLE_NATIVE_TOOL_NAMES)
+    builtin_tools = set(TOOL_CATALOG) | _MEMORY_TOOL_NAMES | {"ask_user", "create_a2ui_surface"}
     declared_namespaces = {str(n).strip() for n in declared_server_names if str(n).strip()}
     descriptor_tools: dict[str, dict[str, Any]] = {}
     for descriptor in mcp_descriptors:

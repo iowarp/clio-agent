@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import FastAPI, HTTPException
 
@@ -25,7 +25,16 @@ from clio_agent.tools.mcp_task_records import TaskRecord, resolve_store
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
 
-__all__ = ["project_pending_interactions", "register_interaction_routes"]
+__all__ = ["project_pending_interactions", "register_permission_and_interaction_routes"]
+
+
+def register_permission_and_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
+    """Register authoritative permission routes and their interaction projection."""
+
+    from clio_agent.gact.routes.permissions import register_permissions_routes  # noqa: PLC0415
+
+    register_permissions_routes(app, deps)
+    register_interaction_routes(app, deps)
 
 
 def _error(status_code: int, code: str, message: str, **details: Any) -> HTTPException:
@@ -83,7 +92,9 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
         isinstance(question.metadata, Mapping) and question.metadata.get("elicitation")
     )
     task_id = correlation["task_id"]
-    kind = "mcp_task_input" if is_mcp and task_id else "question"
+    kind: Literal["question", "mcp_task_input"] = (
+        "mcp_task_input" if is_mcp and task_id else "question"
+    )
     return PendingInteraction(
         id=f"{kind}:{question.id}",
         kind=kind,
@@ -118,7 +129,7 @@ def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInte
     owner = str(row.get("session_id") or "")
     tool_call = row.get("tool_call")
     tool_call = tool_call if isinstance(tool_call, Mapping) else {}
-    status = "pending"
+    status: Literal["pending", "answered", "cancelled"] = "pending"
     if row.get("status") != "pending":
         status = (
             "answered"
