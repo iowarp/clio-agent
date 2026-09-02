@@ -23,6 +23,7 @@ from clio_agent.tools.launcher_cache_lock import (
 from clio_agent.tools.mcp_connection_era import (
     MCPConnectionEra,
     classify_connection_era,
+    latest_mcp_connection_era,
     resolved_connect_mode,
 )
 from clio_agent.tools.mcp_errors import typed_mcp_call_error, typed_mcp_protocol_error
@@ -38,7 +39,10 @@ from clio_agent.tools.mcp_result_projection import (
     model_tool_result_chars as model_tool_result_chars,
 )
 from clio_agent.tools.mcp_runtime import make_mcp_client
-from clio_agent.tools.mcp_task_routing import resolve_namespace_route
+from clio_agent.tools.mcp_task_routing import (
+    record_namespace_route_decision,
+    resolve_and_build_direct_client,
+)
 from clio_agent.tools.mcp_timeout_budget import component_declared_timeout_seconds
 
 logger = logging.getLogger(__name__)
@@ -268,6 +272,24 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         self._namespace_servers = dict(namespace_servers) if namespace_servers else {}
         self._namespace_clients: dict[str, Any] = {}
         self._namespace_ctxs: dict[str, Any] = {}
+        # #1281 F5 (adversarial review): derive the direct-client factory
+        # registry straight off `server` (the gateway) at construction -- the
+        # ONE choke point EVERY executor build (create_async_tool_executor,
+        # SyncMCPToolExecutor's own inner build, any future direct
+        # construction) funnels through, so a construction site can never
+        # forget to stamp it (gact/relay_wiring.py's rebuild was exactly this
+        # miss). getattr-guarded: a non-gateway `server` (an in-process test
+        # double) simply carries no registry, matching today's proxy-only
+        # behavior. A merge caller joining a SECOND gateway's namespaces onto
+        # an EXISTING executor (fleet_blueprint_merge.merge_blueprint_namespaces)
+        # still mutates this dict in place afterward -- construction only seeds it.
+        self._clio_namespace_direct_factories: dict[str, Any] = dict(
+            getattr(server, "_clio_namespace_direct_factories", None) or {}
+        )
+        # #1281 F2: which route a cached namespace client actually used --
+        # the heal check (mcp_namespace_executor._namespace_client) reads
+        # this to bound eviction STRICTLY to unknown/False -> direct.
+        self._namespace_direct_routes: dict[str, bool] = {}
         # Namespaces whose FIRST routed call succeeded (#934 spawn-diet hooks).
         self._connected_namespaces: set[str] = set()
         self._timeout = timeout
@@ -438,9 +460,7 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                 proxy = self._namespace_servers.get(namespace)
                 if proxy is None:
                     raise ValueError(f"unknown MCP namespace {namespace!r}")
-                client = self._namespace_clients.get(namespace)
-                if client is None:
-                    client = await self._connect_namespace(namespace, proxy)
+                client = await self._namespace_client(namespace, proxy)
             else:
                 client = self._client
             return await asyncio.wait_for(client.read_resource(uri), timeout=self._timeout)
@@ -459,15 +479,16 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         for the default/boot executor and for any namespace not backed by a
         cold-cacheable stdio spec, both of which skip the lock entirely).
 
-        #1281 (C1-S1): before building the proxy-path ``ctx``, consult
-        ``resolve_namespace_route`` (typed, capability-keyed, never probed --
-        see ``tools/mcp_task_routing.py``). A task-capable namespace with a
-        mounted direct factory (stamped at ``build_gateway`` time, threaded
-        onto this executor the same way ``_clio_namespace_specs`` is) uses
-        that factory instead -- the tasks extension attaches automatically
-        (default client class), fixing #1274 for THIS namespace. Otherwise
-        (capability unknown, genuine v1, or no factory threaded onto this
-        executor) today's proxy path is unchanged, byte-identical.
+        #1281 (C1-S1): before building the proxy-path ``ctx``,
+        ``resolve_and_build_direct_client`` resolves the typed,
+        capability-keyed route AND attempts to build the direct client in
+        one step (never probed -- see ``tools/mcp_task_routing.py``); its
+        returned decision (which may differ from the raw intent -- a
+        missing/failing factory demotes to proxy, typed -- adversarial
+        review F4/F9) is recorded to the audit ring unconditionally. A
+        successful direct client's tasks extension attaches automatically
+        (default client class), fixing #1274 for THIS namespace; otherwise
+        today's proxy path is unchanged, byte-identical.
         """
 
         specs: Mapping[str, Any] = getattr(self, "_clio_namespace_specs", None) or {}
@@ -475,9 +496,9 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         direct_factories: Mapping[str, Callable[[], Any]] = (
             getattr(self, "_clio_namespace_direct_factories", None) or {}
         )
-        route = resolve_namespace_route(namespace)
-        direct_factory = direct_factories.get(namespace) if route.use_direct else None
-        ctx = direct_factory() if direct_factory is not None else self._client_factory(proxy)
+        direct_client, decision = resolve_and_build_direct_client(namespace, direct_factories)
+        record_namespace_route_decision(namespace, decision)
+        ctx = direct_client if direct_client is not None else self._client_factory(proxy)
         if spec is not None and uses_shared_launcher_cache(spec):
             async with aacquire_launcher_cache_lock(namespace):
                 client = await ctx.__aenter__()
@@ -485,11 +506,29 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
             client = await ctx.__aenter__()
         self._namespace_ctxs[namespace] = ctx
         self._namespace_clients[namespace] = client
-        self._namespace_connection_eras[namespace] = classify_connection_era(
-            server_id=namespace,
-            protocol_version=getattr(client, "protocol_version", None),
-            connect_mode=resolved_connect_mode(),
-        )
+        self._namespace_direct_routes[namespace] = direct_client is not None
+        if direct_client is None:
+            self._namespace_connection_eras[namespace] = classify_connection_era(
+                server_id=namespace,
+                protocol_version=getattr(client, "protocol_version", None),
+                connect_mode=resolved_connect_mode(),
+            )
+        else:
+            # #1281 F10 (adversarial review): make_mcp_client(...,
+            # server_id=namespace) inside direct_client_factory already
+            # instruments __aenter__ (instrument_client_era), which just
+            # classified this exact connect above. Re-classifying here would
+            # double the era-downgrade audit trail on a legacy landing --
+            # read back what it recorded instead. The fallback classify is
+            # defensive only (should be unreachable: the direct client is
+            # ALWAYS server_id-instrumented), never a silent missing record.
+            self._namespace_connection_eras[namespace] = latest_mcp_connection_era(
+                namespace
+            ) or classify_connection_era(
+                server_id=namespace,
+                protocol_version=getattr(client, "protocol_version", None),
+                connect_mode=resolved_connect_mode(),
+            )
         return client
 
     async def _route(self, name: str) -> tuple[Any, str, str | None]:
@@ -515,9 +554,7 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                 raise ValueError(f"unknown tool {name!r}: not in the preloaded tool catalog")
             assert self._client is not None
             return self._client, name, None
-        client = self._namespace_clients.get(namespace)
-        if client is None:
-            client = await self._connect_namespace(namespace, proxy)
+        client = await self._namespace_client(namespace, proxy)
         return client, bare, namespace
 
     def _timeout_for_tool(self, name: str) -> float:

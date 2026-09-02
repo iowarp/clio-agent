@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import suppress
 from typing import Any
+
+from clio_agent.tools.mcp_task_routing import record_route_healed, resolve_namespace_route
 
 
 class AsyncNamespacePreparationMixin:
@@ -14,6 +17,8 @@ class AsyncNamespacePreparationMixin:
     _closed: bool
     _mcp_tools: dict[str, Any]
     _namespace_clients: dict[str, Any]
+    _namespace_ctxs: dict[str, Any]
+    _namespace_direct_routes: dict[str, bool]
     _namespace_servers: Mapping[str, Any]
 
     async def _connect_namespace(self, namespace: str, proxy: Any) -> None:
@@ -36,13 +41,50 @@ class AsyncNamespacePreparationMixin:
         if proxy is None:
             raise ValueError(f"unknown MCP namespace {namespace!r}")
         async with self._call_lock:
-            if namespace not in self._namespace_clients:
-                await self._connect_namespace(namespace, proxy)
+            await self._namespace_client(namespace, proxy)
 
     def is_namespace_prepared(self, namespace: str) -> bool:
         """Return whether this executor owns a persistent namespace client."""
 
         return namespace in self._namespace_clients
+
+    async def _namespace_client(self, namespace: str, proxy: Any) -> Any:
+        """Return this namespace's persistent client, healing a stale proxy route.
+
+        #1281 F2 (adversarial review): a namespace connected while capability
+        was unknown/False caches its client FOREVER without this -- a LATER
+        True verdict (from a discovery pass that lands after the connect)
+        would change nothing, permanently stranding a live task-capable
+        server on the suppressing proxy path. Every reuse re-resolves the
+        route; if it flipped unknown/False -> direct, the stale client is
+        evicted and reconnected direct, typed ``MCP_TASK_ROUTE_HEALED``.
+        Bound STRICTLY to that one direction (checked via
+        ``_namespace_direct_routes``, stamped by ``_connect_namespace``) --
+        a namespace that connected DIRECT is never evicted/thrashed back to
+        proxy by a later degrade, which cannot happen under the F7 demotion
+        guard anyway but is enforced here independently.
+        """
+
+        client = self._namespace_clients.get(namespace)
+        if client is None:
+            return await self._connect_namespace(namespace, proxy)
+        if self._namespace_direct_routes.get(namespace, False):
+            return client
+        if not resolve_namespace_route(namespace).use_direct:
+            return client
+        await self._evict_namespace_client(namespace)
+        record_route_healed(namespace)
+        return await self._connect_namespace(namespace, proxy)
+
+    async def _evict_namespace_client(self, namespace: str) -> None:
+        """Close + drop a namespace's stale cached client ahead of a heal reconnect."""
+
+        ctx = self._namespace_ctxs.pop(namespace, None)
+        self._namespace_clients.pop(namespace, None)
+        self._namespace_direct_routes.pop(namespace, None)
+        if ctx is not None:
+            with suppress(Exception):
+                await ctx.__aexit__(None, None, None)
 
 
 class SyncNamespacePreparationMixin:
