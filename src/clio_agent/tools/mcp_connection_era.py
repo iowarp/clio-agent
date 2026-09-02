@@ -86,7 +86,11 @@ from typing import Any, Literal, TypeVar
 from fastmcp.utilities.tasks import TASKS_EXTENSION_ID
 from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS, MODERN_PROTOCOL_VERSIONS
 
-from clio_agent.errors import MCP_PROTOCOL_DOWNGRADED_TO_LEGACY
+from clio_agent.errors import (
+    MCP_PROTOCOL_DOWNGRADED_TO_LEGACY,
+    MCP_TASK_CAPABILITY_DEMOTED,
+    MCP_TASK_CAPABILITY_DEMOTION_REFUSED,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +138,24 @@ def resolved_connect_mode() -> str:
     )
 
 
+def protocol_version_era(protocol_version: str | None) -> ProtocolEra:
+    """Classify a raw ``protocol_version`` string into an era -- pure, no recording.
+
+    Shared by :func:`classify_connection_era` and
+    :mod:`clio_agent.tools.mcp_task_routing`'s definitive capability read
+    (#1281 F7: a capability verdict records the era it was negotiated on, so
+    the demotion guard in :func:`record_task_capability` can tell an
+    equally-authoritative re-read from a downgraded one) -- kept in exactly
+    ONE place so the two never derive era differently.
+    """
+
+    if protocol_version in MODERN_PROTOCOL_VERSIONS:
+        return "modern"
+    if protocol_version in HANDSHAKE_PROTOCOL_VERSIONS:
+        return "legacy"
+    return "unknown"
+
+
 def classify_connection_era(
     *, server_id: str, protocol_version: str | None, connect_mode: str
 ) -> MCPConnectionEra:
@@ -150,12 +172,7 @@ def classify_connection_era(
     two notions of "pinned" cannot drift apart.
     """
 
-    if protocol_version in MODERN_PROTOCOL_VERSIONS:
-        era: ProtocolEra = "modern"
-    elif protocol_version in HANDSHAKE_PROTOCOL_VERSIONS:
-        era = "legacy"
-    else:
-        era = "unknown"
+    era = protocol_version_era(protocol_version)
 
     pinned = bool(connect_mode) and connect_mode != "auto"
     degrade_reason = MCP_PROTOCOL_DOWNGRADED_TO_LEGACY if (not pinned and era == "legacy") else None
@@ -265,18 +282,27 @@ class MCPTaskCapability:
 
     Recorded by :func:`record_task_capability` at DISCOVERY time (the
     per-namespace listing pass, ``tools/gateway.py::_list_declared_tools``,
-    and the opportunistic positive-only read at a real backend connect,
-    ``tools/gateway.py::_proxy_for_spec``) -- never inferred from call
-    behavior or timing. Keyed by the DECLARED namespace/server name (the same
-    key ``_clio_namespace_specs`` uses), NOT the SHA-derived
-    :class:`~clio_agent.tools.mcp_task_extension.BackendIdentity.server_id`
-    a task record itself is keyed on -- two different identity spaces for two
-    different purposes (routing a namespace vs. keying a durable task row).
+    a replayed listing-cache hit, and the opportunistic positive-only read at
+    a real backend connect, this module's own ``instrument_client_era``) --
+    never inferred from call behavior or timing. Keyed by the DECLARED
+    namespace/server name (the same key ``_clio_namespace_specs`` uses), NOT
+    the SHA-derived :class:`~clio_agent.tools.mcp_task_extension.
+    BackendIdentity.server_id` a task record itself is keyed on -- two
+    different identity spaces for two different purposes (routing a
+    namespace vs. keying a durable task row).
+
+    ``era`` (#1281 F7, adversarial review) is the protocol era THIS verdict
+    was negotiated on -- the demotion guard in :func:`record_task_capability`
+    needs it to tell an equally-authoritative re-read (another modern
+    negotiation) from a downgraded one (a legacy landing on what may still be
+    a modern, task-capable server, e.g. the #1186 race) before letting a
+    False overwrite a ``capabilities_extensions`` True.
     """
 
     server_id: str
     task_capable: bool
     source: TaskCapabilitySource
+    era: ProtocolEra = "unknown"
 
 
 #: Latest task-capability verdict PER declared server, mirroring
@@ -288,27 +314,111 @@ _LATEST_TASK_CAPABILITY_LOCK = threading.Lock()
 
 
 def record_task_capability(
-    server_id: str, *, task_capable: bool, source: TaskCapabilitySource
+    server_id: str,
+    *,
+    task_capable: bool,
+    source: TaskCapabilitySource,
+    era: ProtocolEra = "unknown",
 ) -> MCPTaskCapability:
     """Record one server's task-capability verdict, keyed by declared name.
 
-    Always overwrites the prior verdict for ``server_id`` (mirrors
+    Overwrites the prior verdict for ``server_id`` (mirrors
     :func:`_record_latest`: the per-server surface answers "what do we know
-    right now", not "has it ever been true"). A no-op (still returns the
-    record) for an unlabeled id.
+    right now", not "has it ever been true") -- WITH ONE GUARD (#1281 F7): a
+    False may not overwrite an existing True whose source was
+    ``capabilities_extensions`` (the authoritative modern key) unless this
+    new read is EQUALLY authoritative (``era == "modern"``). A refused
+    overwrite keeps the existing True record and is itself typed + audited
+    (:data:`~clio_agent.errors.MCP_TASK_CAPABILITY_DEMOTION_REFUSED`) rather
+    than silently dropped; a permitted True -> False transition is likewise
+    typed + audited as a real demotion
+    (:data:`~clio_agent.errors.MCP_TASK_CAPABILITY_DEMOTED`). A no-op (still
+    returns the record) for an unlabeled id.
     """
 
-    record = MCPTaskCapability(server_id=server_id, task_capable=task_capable, source=source)
-    if server_id:
-        with _LATEST_TASK_CAPABILITY_LOCK:
-            _LATEST_TASK_CAPABILITY_BY_SERVER[server_id] = record
-        logger.debug(
-            "mcp task capability recorded server=%s task_capable=%s source=%s",
-            server_id,
-            task_capable,
-            source,
+    candidate = MCPTaskCapability(
+        server_id=server_id, task_capable=task_capable, source=source, era=era
+    )
+    if not server_id:
+        return candidate
+
+    with _LATEST_TASK_CAPABILITY_LOCK:
+        existing = _LATEST_TASK_CAPABILITY_BY_SERVER.get(server_id)
+        refuse = (
+            existing is not None
+            and existing.task_capable
+            and existing.source == "capabilities_extensions"
+            and not task_capable
+            and era != "modern"
         )
+        record = existing if refuse and existing is not None else candidate
+        if not refuse:
+            _LATEST_TASK_CAPABILITY_BY_SERVER[server_id] = record
+
+    if refuse:
+        assert existing is not None  # narrowed by `refuse`'s own condition
+        _record_capability_demotion_refused(existing, attempted=candidate)
+        return record
+
+    logger.debug(
+        "mcp task capability recorded server=%s task_capable=%s source=%s era=%s",
+        server_id,
+        task_capable,
+        source,
+        era,
+    )
+    if existing is not None and existing.task_capable and not task_capable:
+        _record_capability_demoted(record, previous=existing)
     return record
+
+
+def _record_capability_demoted(record: MCPTaskCapability, *, previous: MCPTaskCapability) -> None:
+    """A True verdict was legitimately overwritten by an equally-authoritative False."""
+
+    from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
+
+    logger.warning(
+        "mcp task capability demoted server=%s reason=%s previous_source=%s new_source=%s era=%s",
+        record.server_id,
+        MCP_TASK_CAPABILITY_DEMOTED,
+        previous.source,
+        record.source,
+        record.era,
+    )
+    stream_audit(
+        "mcp_task_capability_demoted",
+        reason=MCP_TASK_CAPABILITY_DEMOTED,
+        server_id=record.server_id,
+        previous_source=previous.source,
+        new_source=record.source,
+        era=record.era,
+    )
+
+
+def _record_capability_demotion_refused(
+    existing: MCPTaskCapability, *, attempted: MCPTaskCapability
+) -> None:
+    """A False verdict was refused: not equally authoritative as the True it targeted."""
+
+    from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
+
+    logger.warning(
+        "mcp task capability demotion refused server=%s reason=%s existing_source=%s "
+        "attempted_source=%s attempted_era=%s",
+        existing.server_id,
+        MCP_TASK_CAPABILITY_DEMOTION_REFUSED,
+        existing.source,
+        attempted.source,
+        attempted.era,
+    )
+    stream_audit(
+        "mcp_task_capability_demotion_refused",
+        reason=MCP_TASK_CAPABILITY_DEMOTION_REFUSED,
+        server_id=existing.server_id,
+        existing_source=existing.source,
+        attempted_source=attempted.source,
+        attempted_era=attempted.era,
+    )
 
 
 def latest_task_capability(server_id: str) -> MCPTaskCapability | None:
@@ -386,16 +496,20 @@ def _instrumented_class(base_cls: type) -> type:
         async def __aenter__(self: Any) -> Any:  # noqa: N807 - dunder override
             result = await base_cls.__aenter__(self)  # type: ignore[attr-defined]
             server_id = getattr(self, _SERVER_ID_ATTR, "")
-            classify_connection_era(
+            negotiated_era = classify_connection_era(
                 server_id=server_id,
                 protocol_version=getattr(self, "protocol_version", None),
                 connect_mode=resolved_connect_mode(),
             )
             # #1281 (C1-S1): opportunistic POSITIVE-only capability capture --
             # see the module docstring. Never overwrites a verdict with False.
+            # era=negotiated_era.era feeds the F7 demotion guard.
             if server_id and _server_declares_tasks(self):
                 record_task_capability(
-                    server_id, task_capable=True, source="capabilities_extensions"
+                    server_id,
+                    task_capable=True,
+                    source="capabilities_extensions",
+                    era=negotiated_era.era,
                 )
             return result
 
@@ -446,6 +560,7 @@ __all__ = [
     "instrument_client_era",
     "latest_mcp_connection_era",
     "latest_task_capability",
+    "protocol_version_era",
     "record_task_capability",
     "recorded_mcp_connection_downgrades",
     "resolved_connect_mode",
