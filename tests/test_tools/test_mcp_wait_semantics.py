@@ -13,10 +13,12 @@ or left unobservable:
     ``tools.mcp_task_records.set_task_wait_listener``, the attempt count, the
     poll cadence, the status transitions) and prove a live cancel interrupts
     it promptly (ack-only semantics, ``mcp_tasks.cancel_task``);
-(c) the ``plain_staller`` progress-reset arm: a progress notification is the
-    observable "alive" signal for a PLAIN (non-task) call — no wait-ladder
-    escalation (the typed ``tools.mcp.call_timeout_s`` backstop,
-    ``tools/mcp_wait_ladder.py``) fires while progress keeps arriving.
+(c) the activity-driven ``call_timeout_s`` backstop (#1282 F11, landed with
+    F3a): a REAL reset proof, not just "nothing fired" -- a tool slower than
+    a short CONFIGURED backstop that keeps emitting progress (``plain_
+    staller``) still completes, while the SAME-duration, genuinely SILENT
+    tool (``silent_sleeper``, zero progress) hits the typed
+    ``MCPCallTimeoutBackstopError`` at that same short window.
 """
 
 from __future__ import annotations
@@ -123,6 +125,45 @@ async def test_guarded_input_legacy_front_refuses_terminal_fast_not_hangs() -> N
             await executor.call_tool("guarded_input", {})
 
 
+async def test_plain_guarded_input_mrtr_round_trips_through_a_proxy_front() -> None:
+    """#1282 F9: the PROXY-route MRTR leg the spec named -- a DIFFERENT axis
+    than the legacy-front test above (that one proves a task=required tool
+    structurally CANNOT be satisfied pre-2026-07-28; this one proves the
+    SDK's ``run_input_required_driver`` MRTR loop itself survives the
+    declared-path's PROXY mount (``gateway._proxy_for_spec``, which strips
+    the backend's tasks declaration -- ``test_mcp_v2_conformance.py``'s
+    ``test_proxy_front_strips_the_backend_tasks_declaration`` -- but still
+    negotiates the SAME modern era otherwise). ``plain_guarded_input`` needs
+    no tasks extension at all, so it round-trips successfully through the
+    proxy exactly as it does direct. Goes through ``build_gateway`` (a real
+    stdio-spawned backend, the SAME production wiring
+    ``test_v1_fixture_through_the_declared_path`` proves calls a tool
+    successfully) rather than a bare in-memory ``create_proxy(ProxyClient(
+    build_exerciser_server()))`` front -- that construction, verified live,
+    hits an unrelated era-negotiation mismatch in the installed fastmcp/mcp
+    version for ANY tool call (not just MRTR), which is a third-party proxy
+    quirk outside this slice's scope, not a C1-S2 defect."""
+
+    from clio_agent.tools.gateway import build_gateway
+
+    namespace = "proxymrtr"
+    spec = MCPServerSpec(
+        name=namespace, transport="stdio", command=sys.executable, args=(str(EXERCISER_PATH),)
+    )
+    gw = build_gateway({namespace: spec})
+    # _elicit_client_factory (this file's own helper) wraps _auto_accept the
+    # way CLIO's make_mcp_client expects (4-arg elicitation_handler); a bare
+    # fastmcp Client(gw, elicitation_handler=_auto_accept) dispatches MRTR's
+    # server-initiated requests through a DIFFERENT arg count, unrelated to
+    # this slice -- proven the same way the direct-route test above builds
+    # its client.
+    async with _elicit_client_factory(gw) as front:
+        result = await front.call_tool(f"{namespace}_plain_guarded_input", {})
+    text = result.content[0].text
+    assert "answered:" in text
+    assert "picked" in text
+
+
 # --------------------------------------------------------------------------
 # (b) task-mode staller: observable waits + live cancel
 # --------------------------------------------------------------------------
@@ -200,32 +241,27 @@ async def test_staller_live_cancel_interrupts_promptly() -> None:
 # --------------------------------------------------------------------------
 
 
-async def test_plain_staller_progress_flow_never_trips_the_backstop() -> None:
-    """A steadily progress-emitting plain call never trips the typed
-    call_timeout_s backstop (tools/mcp_wait_ladder.MCPCallTimeoutBackstopError)
-    -- progress is the observable "alive" signal a stall detector would key
-    on; here there is no escalation to observe because none fires."""
+async def test_progress_resets_the_activity_backstop_silence_still_trips_it() -> None:
+    """#1282 F11 (adversarial review, landed with F3a): a REAL activity-reset
+    proof, not merely "nothing fired". Both tools run LONGER than a short
+    CONFIGURED ``call_timeout_s`` (the executor's own ``timeout``, reused
+    as-is -- F3a adds no new config knob): ``plain_staller`` keeps emitting
+    progress every ~0.1s (well inside the 0.5s window) and MUST complete;
+    ``silent_sleeper`` emits NOTHING and MUST hit the typed
+    ``MCPCallTimeoutBackstopError`` at that same window -- proving the
+    backstop is genuinely activity-driven, not merely disarmed."""
 
-    events: list[str] = []
+    from clio_agent.tools.mcp_wait_ladder import MCPCallTimeoutBackstopError
 
-    async def _on_progress(progress: float, total: float | None, message: str | None) -> None:
-        events.append(f"{progress}/{total}")
-
-    server = build_exerciser_server()
-    executor = AsyncMCPToolExecutor(server, client_factory=lambda target: make_mcp_client(target))
+    executor = AsyncMCPToolExecutor(
+        build_exerciser_server(), timeout=0.5, client_factory=lambda target: make_mcp_client(target)
+    )
     async with executor:
-        client, on_server_name, _ns = await executor._route("plain_staller")  # noqa: SLF001
-        outcome = await client.call_tool(
-            on_server_name, {"seconds": 0.3, "steps": 6}, progress_handler=_on_progress
-        )
-    assert outcome.data == "plain-stalled"
-    assert len(events) == 6, events
+        # Total runtime (1.2s) EXCEEDS the 0.5s backstop window; only frequent
+        # progress (12 steps, ~0.1s apart) keeps it alive past that window.
+        outcome = await executor.call_tool_result("plain_staller", {"seconds": 1.2, "steps": 12})
+        assert outcome.model_text == "plain-stalled"
 
-
-def test_call_timeout_backstop_reason_is_the_documented_constant() -> None:
-    """The typed reason D3 surfaces on a genuine backstop firing (sanity pin
-    that the constant this suite would grep for is spelled as documented)."""
-
-    from clio_agent.tools.mcp_wait_ladder import MCP_CALL_TIMEOUT_BACKSTOP
-
-    assert MCP_CALL_TIMEOUT_BACKSTOP == "mcp_call_timeout_backstop"
+        with pytest.raises(MCPCallTimeoutBackstopError) as excinfo:
+            await executor.call_tool_result("silent_sleeper", {"seconds": 1.2})
+        assert excinfo.value.reason == "mcp_call_timeout_backstop"

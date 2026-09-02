@@ -833,5 +833,12 @@ def test_permanent_protocol_refusal_terminates_the_react_loop_fast() -> None:
         "the react loop must terminate on the FIRST protocol refusal instead of "
         "retrying a structurally-unresolvable call turn after turn"
     )
-    # #1282 D2: the message carries the actionable re-dial hint.
-    assert TASKS_EXTENSION_ID in str(excinfo.value)
+    # #1282 F10 (adversarial review): the RAW server message already names the
+    # extension id ("...requires the tasks extension (io.modelcontextprotocol/
+    # tasks); the client did not declare it..."), so a bare
+    # ``TASKS_EXTENSION_ID in str(...)`` assertion would pass even without
+    # D2's own hint-append code ever running -- vacuous. Assert the D2-added
+    # SENTENCE specifically (errors.py's ``_required_extensions_hint``).
+    assert f" Re-dial declaring the client extension(s): {TASKS_EXTENSION_ID}." in str(
+        excinfo.value
+    )
