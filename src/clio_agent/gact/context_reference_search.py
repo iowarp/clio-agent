@@ -18,7 +18,8 @@ from clio_agent.gact.routes.workspace_file_policy import (
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-_SEARCH_LIMIT = 5000
+_EMPTY_QUERY_LIMIT_PER_KIND = 20
+_SEARCH_LIMIT = 100
 
 
 def _reference_result(
@@ -61,7 +62,13 @@ def _disambiguate_duplicate_labels(results: list[dict[str, Any]]) -> list[dict[s
     return disambiguated
 
 
-def _walk_workspace_files(app: "FastAPI", workspace_id: str) -> list[dict[str, Any]]:
+def _walk_workspace_files(
+    app: "FastAPI",
+    workspace_id: str,
+    *,
+    needle: str = "",
+    limit: int = _SEARCH_LIMIT,
+) -> list[dict[str, Any]]:
     from clio_agent.gact.context_references import (  # noqa: PLC0415
         _file_media_type,
         _stat_revision,
@@ -80,13 +87,15 @@ def _walk_workspace_files(app: "FastAPI", workspace_id: str) -> list[dict[str, A
             and not is_internal_workspace_file_directory(name)
         )
         for name in sorted(filenames):
-            if len(results) >= _SEARCH_LIMIT:
+            if len(results) >= limit:
                 return results
             path = Path(directory) / name
             if path.is_symlink():
                 continue
             try:
                 ref_id = path.relative_to(root).as_posix()
+                if needle and needle not in f"workspace_file {name} {ref_id}".casefold():
+                    continue
                 revision = _stat_revision(path)
                 size = path.stat().st_size
             except OSError:
@@ -261,9 +270,18 @@ async def search_workspace_references(
             allowed_kinds=sorted(REFERENCE_SEARCH_KINDS),
         )
 
+    needle = query.strip().casefold()
     results: list[dict[str, Any]] = []
     if "workspace_file" in selected:
-        results.extend(await asyncio.to_thread(_walk_workspace_files, app, workspace_id))
+        results.extend(
+            await asyncio.to_thread(
+                _walk_workspace_files,
+                app,
+                workspace_id,
+                needle=needle,
+                limit=_SEARCH_LIMIT if needle else _EMPTY_QUERY_LIMIT_PER_KIND,
+            )
+        )
     if "resource" in selected:
         results.extend(_resource_results(app, workspace_id))
     if "artifact" in selected:
@@ -274,7 +292,6 @@ async def search_workspace_references(
         results.extend(_agent_run_results(app, workspace_id))
 
     results = _disambiguate_duplicate_labels(results)
-    needle = query.strip().casefold()
     if needle:
         results = [
             row
@@ -284,7 +301,20 @@ async def search_workspace_references(
                 (str(row["label"]), str(row["detail"]), str(row["id"]), str(row["kind"]))
             ).casefold()
         ]
-    return sorted(results, key=lambda row: (row["kind"], row["label"].casefold(), row["id"]))
+    ordered = sorted(results, key=lambda row: (row["kind"], row["label"].casefold(), row["id"]))
+    if needle:
+        return ordered[:_SEARCH_LIMIT]
+
+    counts: dict[str, int] = {}
+    bounded: list[dict[str, Any]] = []
+    for row in ordered:
+        kind = str(row["kind"])
+        count = counts.get(kind, 0)
+        if count >= _EMPTY_QUERY_LIMIT_PER_KIND:
+            continue
+        counts[kind] = count + 1
+        bounded.append(row)
+    return bounded
 
 
 __all__ = ["search_workspace_references"]

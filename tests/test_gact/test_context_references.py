@@ -288,6 +288,31 @@ def test_search_aggregates_repositories_with_exact_shape_and_duplicate_labels(
     assert all(row["id"] in row["detail"] for row in duplicate_artifacts)
 
 
+def test_empty_reference_search_is_bounded_without_hiding_deep_matches(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    workspace = tmp_path / "a"
+    workspace.mkdir(parents=True, exist_ok=True)
+    for index in range(25):
+        (workspace / f"file-{index:02d}.txt").write_text(str(index), encoding="utf-8")
+    deep_match = workspace / "zz-deep-match.txt"
+    deep_match.write_text("found", encoding="utf-8")
+
+    initial = asyncio.run(
+        search_workspace_references(app, "ws_a", kinds=["workspace_file"])
+    )
+    searched = asyncio.run(
+        search_workspace_references(
+            app,
+            "ws_a",
+            query="deep-match",
+            kinds=["workspace_file"],
+        )
+    )
+
+    assert len(initial) == 20
+    assert [row["id"] for row in searched] == ["zz-deep-match.txt"]
+
+
 def test_reference_route_accepts_csv_kinds_and_query(tmp_path: Path) -> None:
     owner = _app(tmp_path)
     target = tmp_path / "a" / "notes.md"
