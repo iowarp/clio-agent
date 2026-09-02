@@ -41,7 +41,16 @@ from typing import Any
 from clio_agent import conf, paths
 from clio_agent.runtime import trace
 
-_SCHEMA = "clio-agent.mcp-listing-cache.v1"
+#: #1281 (C1-S1): bumped v1 -> v2 so a pre-fix cached listing (recorded before
+#: capability discovery existed) cannot mask a task-capable server for up to
+#: 24h -- the schema mismatch drops it, forcing a live re-list that also
+#: records its task capability. Bumped v2 -> v3 (adversarial-review F3): a v2
+#: entry stored NO capability fields at all, so BOTH cache-first callers
+#: (``gateway.list_tool_definitions``, ``mcp_discovery._list_one_namespace``)
+#: silently defeated the definitive read on every cache HIT for a whole TTL
+#: window -- the entry now carries the negotiated verdict, and every hit
+#: replays it through ``record_task_capability`` (see :func:`load_listing`).
+_SCHEMA = "clio-agent.mcp-listing-cache.v3"
 _CACHE_BASENAME = "mcp_listing_cache.json"
 
 _lock = threading.Lock()
@@ -128,6 +137,16 @@ def load_listing(
     ``None`` is quiet on a plain miss; an INVALID entry (launcher changed,
     expired, malformed) is dropped with a typed reason before returning
     ``None`` so the live listing that follows refreshes it.
+
+    #1281 F3 (adversarial review): a HIT that carries a persisted task
+    capability (``task_capable``/``task_capability_source``, written by
+    :func:`store_listing`) replays it through ``mcp_connection_era.
+    record_task_capability`` -- keyed by ``namespace``, the same key the
+    live definitive read uses -- so a warm namespace's capability is
+    queryable without a live re-list forcing it. An entry with no persisted
+    capability (pre-C1-S1, impossible post the v3 schema bump, but also a
+    cacheable spec whose live listing never resolved a capability) replays
+    nothing, leaving the registry exactly as a live miss would.
     """
 
     from mcp.types import Tool  # noqa: PLC0415 - deferred; hot path never imports it on a miss
@@ -139,9 +158,7 @@ def load_listing(
         return None
 
     def _drop(reason: str) -> None:
-        trace.event(
-            "TOOLS", "mcp_listing_cache_invalid namespace=%s reason=%s", namespace, reason
-        )
+        trace.event("TOOLS", "mcp_listing_cache_invalid namespace=%s reason=%s", namespace, reason)
         try:
             with _lock:
                 fresh = _load()
@@ -169,16 +186,51 @@ def load_listing(
         _drop("malformed")
         return None
     try:
-        return [Tool.model_validate(t) for t in raw_tools]
+        listed = [Tool.model_validate(t) for t in raw_tools]
     except Exception as exc:  # noqa: BLE001 - malformed entry is typed + dropped
         _drop(f"undecodable:{type(exc).__name__}")
         return None
 
+    task_capable = entry.get("task_capable")
+    source = entry.get("task_capability_source")
+    era = entry.get("task_capability_era")
+    if isinstance(task_capable, bool) and source in (
+        "capabilities_extensions",
+        "tool_execution",
+        "none",
+    ):
+        from clio_agent.tools.mcp_connection_era import record_task_capability  # noqa: PLC0415
+
+        record_task_capability(
+            namespace,
+            task_capable=task_capable,
+            source=source,
+            era=era if era in ("modern", "legacy", "unknown") else "unknown",
+        )
+    return listed
+
 
 def store_listing(
-    namespace: str, command: str, args: tuple[str, ...], tools: list[Any], env: Any = None
+    namespace: str,
+    command: str,
+    args: tuple[str, ...],
+    tools: list[Any],
+    env: Any = None,
+    *,
+    task_capable: bool | None = None,
+    source: str | None = None,
+    era: str | None = None,
 ) -> None:
-    """Persist a live listing result. Never raises (boot must not fail on cache IO)."""
+    """Persist a live listing result. Never raises (boot must not fail on cache IO).
+
+    ``task_capable``/``source``/``era`` (#1281 F3, adversarial review) are
+    the negotiated verdict a caller resolved for THIS SAME live listing
+    (e.g. via ``mcp_task_routing.capability_cache_fields(namespace)`` right
+    after ``gateway._list_declared_tools`` recorded it) -- persisted
+    alongside the tools so the NEXT cache hit can replay it
+    (:func:`load_listing`) without needing a live re-connect. All-``None``
+    (the default) persists no capability fields, matching pre-C1-S1 entries.
+    """
 
     try:
         fingerprint = _launcher_fingerprint(command)
@@ -186,7 +238,7 @@ def store_listing(
             return  # nothing durable to anchor the entry on
         with _lock:
             entries = _load()
-            entries[entry_key(command, args, env)] = {
+            entry: dict[str, Any] = {
                 "namespace": namespace,
                 "launcher_fingerprint": fingerprint,
                 "listed_at": time.time(),
@@ -198,6 +250,11 @@ def store_listing(
                     t.model_dump(mode="json", by_alias=True, exclude_none=True) for t in tools
                 ],
             }
+            if task_capable is not None:
+                entry["task_capable"] = task_capable
+                entry["task_capability_source"] = source
+                entry["task_capability_era"] = era
+            entries[entry_key(command, args, env)] = entry
             # Prune expired entries while we hold the file anyway — the cache
             # must not grow monotonically (test runs key by unique tmp paths).
             ttl_s = listing_ttl_h() * 3600
@@ -208,8 +265,8 @@ def store_listing(
                 if isinstance(v.get("listed_at"), (int, float)) and now - v["listed_at"] <= ttl_s
             }
             _save(entries)
-        trace.event(
-            "TOOLS", "mcp_listing_cached namespace=%s tools=%d", namespace, len(tools)
-        )
+        trace.event("TOOLS", "mcp_listing_cached namespace=%s tools=%d", namespace, len(tools))
     except Exception as exc:  # noqa: BLE001 - cache IO failure must never fail boot
-        trace.event("TOOLS", "mcp_listing_cache_store_failed namespace=%s reason=%s", namespace, exc)
+        trace.event(
+            "TOOLS", "mcp_listing_cache_store_failed namespace=%s reason=%s", namespace, exc
+        )

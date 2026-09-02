@@ -281,11 +281,16 @@ def build_gateway(
     else:
         make_proxy = _proxy_for_spec
     accepts_cwd = _proxy_factory_accepts_cwd(make_proxy)
+    from clio_agent.tools import mcp_task_routing  # noqa: PLC0415
+
     # Attached to the gateway object (not a module map keyed by id(gw)): it
     # dies with the gateway, id-reuse cannot alias a stale registry, and a
     # second build over the same base MERGES instead of overwriting.
     registry: dict[str, Any] = getattr(gw, "_clio_namespace_proxies", {})
     specs_registry: dict[str, MCPServerSpec] = getattr(gw, "_clio_namespace_specs", {})
+    # #1281 (C1-S1): per-namespace DIRECT-CLIENT factory, beside specs_registry
+    # -- resolves the ordering problem (capability is learned after mount).
+    direct_factories: dict[str, Any] = getattr(gw, "_clio_namespace_direct_factories", {})
     degraded: dict[str, dict[str, Any]] = getattr(gw, "_clio_degraded_capabilities", {})
 
     reason = str((relay_status or {}).get("reason") or "")
@@ -382,19 +387,27 @@ def build_gateway(
             continue
         try:
             # Only stdio specs honor cwd; http specs are shared and ignore it.
-            proxy = (
-                make_proxy(spec, cwd if spec.transport == "stdio" else None)
-                if accepts_cwd
-                else make_proxy(spec)
-            )
+            spec_cwd = cwd if spec.transport == "stdio" else None
+            proxy = make_proxy(spec, spec_cwd) if accepts_cwd else make_proxy(spec)
             _mount_with_namespace(gw, proxy, name)
             existing.add(name)
             registry[name] = proxy
             specs_registry[name] = spec
+            # #1281 F9 (adversarial review): an INJECTED proxy_factory (tests:
+            # an in-process double with no real transport behind the spec)
+            # means `spec` may not honestly describe how to reach this
+            # namespace directly -- skip stamping a factory built from
+            # transport_for(spec) rather than mount one that would silently
+            # dial something the test never intended.
+            if proxy_factory is None:
+                direct_factories[name] = mcp_task_routing.direct_client_factory(
+                    spec, spec_cwd, handlers=handlers, capabilities=capabilities, namespace=name
+                )
         except Exception as exc:  # noqa: BLE001 - non-fatal: log + skip a bad server
             logger.warning("failed to mount declared MCP %r: %s", name, exc)
     gw._clio_namespace_proxies = registry  # type: ignore[attr-defined]
     gw._clio_namespace_specs = specs_registry  # type: ignore[attr-defined]
+    gw._clio_namespace_direct_factories = direct_factories  # type: ignore[attr-defined]
     gw._clio_degraded_capabilities = degraded  # type: ignore[attr-defined]
     return gw
 
@@ -408,6 +421,17 @@ def namespace_proxies(gw: FastMCP) -> dict[str, Any]:
     """
 
     return dict(getattr(gw, "_clio_namespace_proxies", {}))
+
+
+def namespace_direct_factories(gw: FastMCP) -> dict[str, Any]:
+    """Per-namespace direct-client factories stamped at mount (#1281 C1-S1).
+
+    Threaded to an executor the same way ``namespace_specs`` is, so
+    ``mcp_executor._connect_namespace`` can build a task-declaring client
+    directly for a namespace whose capability discovery has landed True.
+    """
+
+    return dict(getattr(gw, "_clio_namespace_direct_factories", {}))
 
 
 def _mounted_namespaces(gw: FastMCP) -> set[str]:
@@ -532,7 +556,10 @@ def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
     returning and can tolerate the wait.
     """
 
-    from clio_agent.tools import listing_cache  # noqa: PLC0415
+    from clio_agent.tools import (
+        listing_cache,  # noqa: PLC0415
+        mcp_task_routing,  # noqa: PLC0415
+    )
 
     specs = namespace_specs(gw)
     tools: dict[str, Any] = {}
@@ -583,8 +610,21 @@ def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
             # an overlapping corpse still holds its RSS.
             _await_spawned_exit(before)
             if cacheable and spec is not None:
+                # #1281 F3: persist the capability THIS live listing just
+                # recorded (record_definitive_capability, inside
+                # _list_declared_tools) so the NEXT cache hit can replay it.
+                task_capable, cap_source, cap_era = mcp_task_routing.capability_cache_fields(
+                    namespace
+                )
                 listing_cache.store_listing(
-                    namespace, spec.command, tuple(spec.args), listed, spec.env
+                    namespace,
+                    spec.command,
+                    tuple(spec.args),
+                    listed,
+                    spec.env,
+                    task_capable=task_capable,
+                    source=cap_source,
+                    era=cap_era,
                 )
         assert listed is not None
         for tool in listed:
@@ -698,14 +738,21 @@ def _list_declared_tools(
 
     ``timeout_s``/``attempt_key`` (#1240, see ``tools.listing_attempts``) bound
     every RPC and let an abandoning caller force-close this attempt, respectively.
+
+    #1281 (C1-S1): also the single choke point both live listing paths share,
+    so the DEFINITIVE task-capability read (``mcp_task_routing.
+    record_definitive_capability``) lands here -- see that module's docstring.
     """
+    from clio_agent.tools.mcp_task_routing import record_definitive_capability  # noqa: PLC0415
 
     async def _list() -> list[Any]:
         client = Client(transport_for(spec), timeout=timeout_s, init_timeout=timeout_s)
         listing_attempts.register(attempt_key, asyncio.get_running_loop(), client)
         try:
             async with client:
-                return await client.list_tools()
+                listed = await client.list_tools()
+                record_definitive_capability(spec.name, client, listed)
+                return listed
         finally:
             listing_attempts.unregister(attempt_key)
             disconnect = getattr(client.transport, "disconnect", None)

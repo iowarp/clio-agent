@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from fastmcp.utilities.tasks import TASKS_EXTENSION_ID
 from mcp.shared.exceptions import MCPError
 
 from clio_agent import conf
@@ -26,9 +27,13 @@ from clio_agent.errors import (
     MCPUnsupportedProtocolVersionError,
 )
 from clio_agent.tools.mcp_connection_era import (
+    MCPTaskCapability,
+    all_latest_task_capabilities,
     classify_connection_era,
     instrument_client_era,
     latest_mcp_connection_era,
+    latest_task_capability,
+    record_task_capability,
     recorded_mcp_connection_downgrades,
 )
 from clio_agent.tools.mcp_executor import AsyncMCPToolExecutor
@@ -103,9 +108,7 @@ def test_legacy_under_auto_also_calls_stream_audit(monkeypatch) -> None:
     def _fake_stream_audit(stage: str, **fields) -> None:
         calls.append((stage, fields))
 
-    monkeypatch.setattr(
-        "clio_agent.runtime.stream_audit.stream_audit", _fake_stream_audit
-    )
+    monkeypatch.setattr("clio_agent.runtime.stream_audit.stream_audit", _fake_stream_audit)
 
     classify_connection_era(
         server_id="audited-server", protocol_version="2025-06-18", connect_mode="auto"
@@ -216,9 +219,7 @@ async def test_pinned_modern_mode_protocol_refusal_is_unchanged(monkeypatch) -> 
 
     class _RefusingClient(_EraClient):
         async def __aenter__(self) -> "_RefusingClient":
-            raise MCPError(
-                -32022, "server refuses 2026-07-28", {"requestedVersion": "2026-07-28"}
-            )
+            raise MCPError(-32022, "server refuses 2026-07-28", {"requestedVersion": "2026-07-28"})
 
     client = _RefusingClient(None)
     executor = AsyncMCPToolExecutor(
@@ -369,4 +370,165 @@ async def test_instrument_client_era_never_mutates_the_original_class() -> None:
     assert type(instrumented) is not _AsyncWithOnlyClient
     async with plain:
         pass
-    assert latest_mcp_connection_era("isolated") is None  # plain's connect never classified anything
+    assert (
+        latest_mcp_connection_era("isolated") is None
+    )  # plain's connect never classified anything
+
+
+# --------------------------------------------------------------------------- #
+# #1281 (C1-S1): the task-capability registry -- a SECOND, separate write     #
+# path (record_task_capability / latest_task_capability), pure and I/O-free.  #
+# --------------------------------------------------------------------------- #
+
+
+def test_record_task_capability_is_queryable_by_server_id() -> None:
+    record = record_task_capability("cap-server-a", task_capable=True, source="tool_execution")
+
+    assert record == MCPTaskCapability(
+        server_id="cap-server-a", task_capable=True, source="tool_execution"
+    )
+    assert latest_task_capability("cap-server-a") == record
+
+
+def test_latest_task_capability_is_unknown_before_any_record() -> None:
+    assert latest_task_capability("never-recorded-capability-server") is None
+
+
+def test_record_task_capability_overwrites_when_not_guarded() -> None:
+    """Mirrors ``_record_latest``: the surface answers "what do we know right
+    now", not "has it ever been true" -- a later record replaces the earlier
+    one for the SAME server_id, UNLESS the F7 demotion guard applies (a True
+    sourced ``capabilities_extensions`` being demoted by a non-equally-
+    authoritative False -- see ``test_record_task_capability_demotion_guard*``
+    below). ``tool_execution`` is not the guarded source, so this is a plain
+    overwrite."""
+
+    record_task_capability("cap-server-b", task_capable=True, source="tool_execution")
+    second = record_task_capability("cap-server-b", task_capable=False, source="none")
+
+    assert latest_task_capability("cap-server-b") == second
+    assert latest_task_capability("cap-server-b").task_capable is False
+
+
+def test_record_task_capability_demotion_guard_refuses_unauthoritative_false() -> None:
+    """#1281 F7: a True sourced ``capabilities_extensions`` (the authoritative
+    modern key) may not be overwritten by a False whose era is not itself
+    "modern" -- e.g. a legacy-negotiated read, which may just be the #1186
+    downgrade race on a genuinely modern, task-capable server. The refused
+    write returns the EXISTING (unchanged) record."""
+
+    true_record = record_task_capability(
+        "cap-server-guard", task_capable=True, source="capabilities_extensions", era="modern"
+    )
+    refused = record_task_capability(
+        "cap-server-guard", task_capable=False, source="none", era="legacy"
+    )
+    assert refused == true_record
+    assert latest_task_capability("cap-server-guard") == true_record
+
+
+def test_record_task_capability_demotion_guard_permits_equally_authoritative_false() -> None:
+    """#1281 F7: a False read at an EQUALLY authoritative (modern) era DOES
+    demote a prior ``capabilities_extensions`` True -- a real capability
+    change (e.g. the server removed the tasks extension), not a downgrade
+    artifact."""
+
+    record_task_capability(
+        "cap-server-guard-2", task_capable=True, source="capabilities_extensions", era="modern"
+    )
+    demoted = record_task_capability(
+        "cap-server-guard-2", task_capable=False, source="none", era="modern"
+    )
+    assert demoted.task_capable is False
+    assert latest_task_capability("cap-server-guard-2") == demoted
+
+
+def test_all_latest_task_capabilities_snapshots_every_server() -> None:
+    record_task_capability("cap-snapshot-a", task_capable=True, source="tool_execution")
+    record_task_capability("cap-snapshot-b", task_capable=False, source="none")
+
+    snapshot = all_latest_task_capabilities()
+
+    assert snapshot["cap-snapshot-a"].task_capable is True
+    assert snapshot["cap-snapshot-b"].task_capable is False
+
+
+# --------------------------------------------------------------------------- #
+# #1281 (C1-S1): the opportunistic POSITIVE-only capture piggybacked on the   #
+# SAME __aenter__ seam era classification uses (instrument_client_era).      #
+# --------------------------------------------------------------------------- #
+
+
+class _CapabilitiesStub:
+    """Minimal ``ServerCapabilities``-shaped stub carrying only ``extensions``."""
+
+    def __init__(self, extensions: dict[str, Any] | None) -> None:
+        self.extensions = extensions
+
+
+class _CapabilityAwareClient(_EraClient):
+    """An ``_EraClient`` that also reports SERVER-declared capabilities."""
+
+    def __init__(
+        self, protocol_version: str | None, extensions: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(protocol_version)
+        self.server_capabilities = _CapabilitiesStub(extensions)
+
+
+@pytest.mark.asyncio
+async def test_instrumented_connect_opportunistically_records_a_positive_capability() -> None:
+    """A real connect whose server-declared extensions carry the tasks id
+    records a positive verdict on the SAME __aenter__ seam era uses -- the
+    seam that makes ``test_declared_path_serves_task_required_tools`` pass
+    without a preceding ``_list_declared_tools`` discovery pass."""
+
+    client = instrument_client_era(
+        _CapabilityAwareClient("2026-07-28", extensions={TASKS_EXTENSION_ID: {}}),
+        server_id="opportunistic-positive",
+    )
+
+    async with client:
+        pass
+
+    capability = latest_task_capability("opportunistic-positive")
+    assert capability is not None
+    assert capability.task_capable is True
+    assert capability.source == "capabilities_extensions"
+
+
+@pytest.mark.asyncio
+async def test_instrumented_connect_never_records_a_negative_capability() -> None:
+    """Absence of the tasks id at a bare connect is NOT proof of incapability
+    (a legacy server's capability rides its listing, not a bare connect) --
+    this seam must leave the registry untouched, never write False."""
+
+    assert latest_task_capability("opportunistic-silent") is None
+    client = instrument_client_era(
+        _CapabilityAwareClient("2026-07-28", extensions={}), server_id="opportunistic-silent"
+    )
+
+    async with client:
+        pass
+
+    assert latest_task_capability("opportunistic-silent") is None
+
+
+@pytest.mark.asyncio
+async def test_instrumented_connect_never_clobbers_an_earlier_true_verdict() -> None:
+    """A definitive True (from ``_list_declared_tools``, say) must survive a
+    LATER opportunistic connect that happens to carry no extensions (e.g. a
+    proxy front's re-advertisement) -- this seam writes positives only."""
+
+    record_task_capability("opportunistic-sticky", task_capable=True, source="tool_execution")
+    client = instrument_client_era(
+        _CapabilityAwareClient("2026-07-28", extensions={}), server_id="opportunistic-sticky"
+    )
+
+    async with client:
+        pass
+
+    capability = latest_task_capability("opportunistic-sticky")
+    assert capability is not None
+    assert capability.task_capable is True
+    assert capability.source == "tool_execution"  # unchanged, not clobbered

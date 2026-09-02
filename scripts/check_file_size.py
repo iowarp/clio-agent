@@ -123,7 +123,23 @@ RATCHET_BASELINE: dict[str, int] = {
     # lives in the owner module tools/gateway.py; only the call site is here.
     # The campaign's blueprint extraction offsets six lines from that merged
     # seam; the synchronized owner is measured at 1022 lines.
-    "src/clio_agent/agent.py": 1022,  # blueprint activation moved to gact/blueprint_activation.py
+    # #1281 (C1-S1): +7 (1022 -> 1029) to thread the new direct-client-factory
+    # registry onto every executor construction path ClioAgent owns: the
+    # namespace_direct_factories import, a stamp_direct_factories() call
+    # right after the default (no-workspace) executor is built (stamp_fresh_
+    # fleet only covers per-workspace fleets), and one added kwarg on the
+    # existing stamp_fresh_fleet(...) call. All routing/stamping logic lives
+    # in the owner modules tools/mcp_task_routing.py and tools/
+    # fleet_blueprint_merge.py; only these call-site lines land here.
+    # #1281 F5 (adversarial-review fix round): 1029 -> 1030, net +1 despite
+    # DELETING the explicit stamp_direct_factories() call site above and its
+    # import (F5's ruling: fold the stamp into AsyncMCPToolExecutor.__init__
+    # itself, which derives the registry straight off the gateway `server`
+    # argument every construction path already passes -- the one true choke
+    # point, closing the gap where gact/relay_wiring.py's rebuild never
+    # stamped at all). The deletion nets negative; the +1 is docstring/
+    # comment lines explaining why the stamp is deliberately absent here.
+    "src/clio_agent/agent.py": 1030,  # blueprint activation moved to gact/blueprint_activation.py
     "src/clio_agent/arc/memory.py": 1389,  # provider ladder moved to provenance_config.py
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -741,7 +757,38 @@ RATCHET_BASELINE: dict[str, int] = {
     # the owner module tools/launcher_cache_lock.py: FileLock's default
     # thread_local=True silently orphans the OS lock when acquire/release
     # run on different threads, as they do here via asyncio.to_thread).
-    "src/clio_agent/tools/mcp_executor.py": 827,
+    # #1281 (C1-S1): +16 (827 -> 843) for the call-time route branch in
+    # _connect_namespace -- consults tools/mcp_task_routing.resolve_namespace_route
+    # (typed, capability-keyed, never probed) and, when it selects the direct
+    # route AND a factory is threaded onto this executor, builds the client
+    # through that factory instead of the proxy path. The route DECISION
+    # logic, its typed reasons, and the queryable decision ring all live in
+    # the owner module tools/mcp_task_routing.py; only this thin branch +
+    # its docstring land here.
+    # #1281 (adversarial-review fix round): +37 (843 -> 880). F5: derive
+    # _clio_namespace_direct_factories straight off `server` at
+    # __init__ -- the one true construction choke point (closes gact/
+    # relay_wiring.py's rebuild, which never stamped it). F2: a new
+    # _namespace_direct_routes field (which route a cached client actually
+    # used) so the heal check (moved to the owner mixin, mcp_namespace_
+    # executor.py) can bound eviction strictly to unknown/False -> direct.
+    # F4/F9: _connect_namespace now calls resolve_and_build_direct_client
+    # (resolve + attempt construction in one step, typed fallback on a
+    # missing/failing factory) and records the decision ACTUALLY taken via
+    # record_namespace_route_decision. F10: skip the duplicate era
+    # classification on a successful direct connect (instrument_client_era
+    # already covered it), reading it back instead. All decision/heal LOGIC
+    # lives in the owner modules tools/mcp_task_routing.py and tools/
+    # mcp_namespace_executor.py; only these thin call sites + docstrings
+    # land here.
+    # #1281 (re-verify fix round): +11 (880 -> 891) for F12/F13. F12: a new
+    # _namespace_heal_attempted set (init'd beside _namespace_direct_routes)
+    # bounding a namespace to at most one heal attempt -- the actual gating
+    # LOGIC lives in the owner mixin tools/mcp_namespace_executor.py; only
+    # the field declaration/init lands here. F13: aclose() now clears
+    # _namespace_direct_routes/_namespace_heal_attempted alongside the
+    # ctxs/clients dicts they describe.
+    "src/clio_agent/tools/mcp_executor.py": 891,
     "src/clio_agent/tools/mcp_config.py": 817,
     # #1231 Part 1/2 (consumer half of the live-console feature): not previously
     # baselined -- this file was ALREADY 7 lines over the 800 cap before this
@@ -822,7 +869,24 @@ RATCHET_BASELINE: dict[str, int] = {
     # functions' irreducible bodies + minimal docstrings before accepting
     # this ratchet (house precedent: gact/transcript.py's discard_open_text
     # entry). Ratchets back with the #714/#767 decomposition.
-    "src/clio_agent/tools/gateway.py": 902,
+    # #1281 (C1-S1): +24 (902 -> 926) for the capability-keyed task-routing
+    # thin call sites -- the DEFINITIVE capability read at the single choke
+    # point both live listing paths share (_list_declared_tools), the
+    # per-namespace direct-client-factory registry stamped beside
+    # _clio_namespace_specs at mount (build_gateway), and its
+    # namespace_direct_factories() accessor. The routing DECISION, the two
+    # capability-read helpers, and the factory builder itself all live in the
+    # new owner module tools/mcp_task_routing.py (no-accretion); only these
+    # thin call sites + the one accessor land here.
+    # #1281 (adversarial-review fix round): +23 (926 -> 949). F3: persist the
+    # capability THIS live listing recorded alongside the cached tools
+    # (capability_cache_fields() call + the store_listing kwargs) so the
+    # NEXT cache hit can replay it -- the definitive read has no other way
+    # to survive a warm cache. F9: skip stamping a namespace's direct
+    # factory when `proxy_factory` was injected (tests: an in-process double
+    # with no real transport behind the spec). Both decision/read logic
+    # stays in tools/mcp_task_routing.py; only these call sites land here.
+    "src/clio_agent/tools/gateway.py": 949,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.

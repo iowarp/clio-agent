@@ -157,7 +157,10 @@ def _list_one_namespace(
     out the (now merely a backstop) timeout.
     """
 
-    from clio_agent.tools import listing_cache  # noqa: PLC0415
+    from clio_agent.tools import (
+        listing_cache,  # noqa: PLC0415
+        mcp_task_routing,  # noqa: PLC0415
+    )
     from clio_agent.tools.gateway import _list_declared_tools  # noqa: PLC0415
     from clio_agent.tools.launcher_cache_lock import (  # noqa: PLC0415
         acquire_launcher_cache_lock,
@@ -168,6 +171,8 @@ def _list_one_namespace(
     cacheable = spec.transport == "stdio" and bool(spec.command)
     listed: list[Any] | None = None
     if cacheable:
+        # #1281 F3: a HIT replays its persisted capability through
+        # record_task_capability inside load_listing itself.
         listed = listing_cache.load_listing(namespace, spec.command, tuple(spec.args), spec.env)
     if listed is None:
         timeout_s = _namespace_attempt_timeout_s(namespace)
@@ -180,7 +185,19 @@ def _list_one_namespace(
             else:
                 listed = _list_declared_tools(spec, timeout_s=timeout_s, attempt_key=attempt_key)
         if cacheable:
-            listing_cache.store_listing(namespace, spec.command, tuple(spec.args), listed, spec.env)
+            # #1281 F3: persist the capability THIS live listing just
+            # recorded so the NEXT cache hit can replay it.
+            task_capable, source, era = mcp_task_routing.capability_cache_fields(namespace)
+            listing_cache.store_listing(
+                namespace,
+                spec.command,
+                tuple(spec.args),
+                listed,
+                spec.env,
+                task_capable=task_capable,
+                source=source,
+                era=era,
+            )
     return {
         f"{namespace}_{tool.name}": tool.model_copy(update={"name": f"{namespace}_{tool.name}"})
         for tool in listed

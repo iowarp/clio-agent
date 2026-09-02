@@ -105,6 +105,54 @@ MCP_NAMESPACE_MOUNT_FAILED = "mcp_namespace_mount_failed"
 #: reporting it. The shared clio-core CTE daemon is excluded by construction
 #: (see runtime/process_census.py) and never matches this reason.
 PROCESS_CENSUS_ORPHAN_REAPED = "process_census_orphan_reaped"
+#: #1281 (C1-S1): a namespace connect used the DIRECT task-declaring client
+#: route because ``tools/mcp_connection_era.latest_task_capability`` had
+#: already recorded this server as task-capable -- the unlock for the #1274
+#: defect (every declared server previously suppressed the tasks extension
+#: via the proxy path's ``ProxyClient``). Never fires for a v1 server.
+MCP_TASKS_DIRECT_ROUTE_SELECTED = "mcp_tasks_direct_route_selected"
+#: #1281 (C1-S1): a namespace connect kept today's proxy path because no
+#: capability discovery has landed for this server yet (``latest_task_capability``
+#: returned ``None``) -- the safe default until a listing pass
+#: (``gateway._list_declared_tools``) or an opportunistic real-backend connect
+#: (``mcp_connection_era.instrument_client_era``) records a verdict.
+#: Self-heals on the next discovery pass; never a permanent classification.
+MCP_TASK_CAPABILITY_UNKNOWN = "mcp_task_capability_unknown"
+#: #1281 (C1-S1, adversarial-review F4): capability discovery recorded this
+#: namespace task-capable, but NO direct-client factory was ever threaded
+#: onto this executor (a reserved-namespace mount, or a construction path
+#: that predates the C1-S1 stamping) -- the call still routes through the
+#: proxy, but this is NEVER silent: the ring records the DECISION ACTUALLY
+#: TAKEN (proxy), typed with this reason, rather than the unreachable intent.
+MCP_TASK_DIRECT_FACTORY_MISSING = "mcp_task_direct_factory_missing"
+#: #1281 (C1-S1, adversarial-review F9): a direct-client factory WAS present
+#: and selected, but invoking it raised (e.g. ``transport_for`` refusing an
+#: ``MCPSpawnError``-shaped spec at call time). The call falls back to the
+#: proxy path -- which the server's own capability declaration proves can
+#: still serve it -- rather than hard-failing a call the proxy would serve.
+MCP_TASK_DIRECT_FACTORY_CONSTRUCTION_FAILED = "mcp_task_direct_factory_construction_failed"
+#: #1281 (C1-S1, adversarial-review F2): a namespace's PERSISTENT client was
+#: connected while capability was unknown/False (proxy path), and a LATER
+#: discovery pass landed it True -- the stale proxy client is evicted and
+#: reconnected through the direct route. Bound STRICTLY to the unknown/False
+#: -> direct flip (never the reverse), so a healthy direct connection can
+#: never be evicted/thrashed back to the suppressing proxy path.
+MCP_TASK_ROUTE_HEALED = "mcp_task_route_healed"
+#: #1281 (C1-S1, adversarial-review F7): a task-capability verdict recorded
+#: True from the AUTHORITATIVE modern key (``capabilities_extensions``) was
+#: legitimately overwritten by an equally-authoritative (modern-negotiated)
+#: False -- a real capability demotion (e.g. a server that removed the
+#: tasks extension), not a downgrade artifact. Queryable so a demotion is
+#: never a silent fact.
+MCP_TASK_CAPABILITY_DEMOTED = "mcp_task_capability_demoted"
+#: #1281 (C1-S1, adversarial-review F7): an attempted False verdict was
+#: REFUSED because it was not equally authoritative as the True verdict it
+#: would have overwritten (e.g. a legacy-negotiated read -- possibly just
+#: the #1186 downgrade race on a genuinely modern, task-capable server --
+#: attempting to clobber a prior ``capabilities_extensions`` True). The
+#: existing True record is kept; this reason makes the refusal queryable
+#: rather than a silently dropped write.
+MCP_TASK_CAPABILITY_DEMOTION_REFUSED = "mcp_task_capability_demotion_refused"
 
 
 class ClioError(Exception):
