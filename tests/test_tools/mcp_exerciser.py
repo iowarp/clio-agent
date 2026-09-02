@@ -23,6 +23,7 @@ clio_agent, so the spawned subprocess needs no repo path.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -33,9 +34,19 @@ from fastmcp.tools.base import Tool
 from fastmcp.utilities.tasks import TASKS_EXTENSION_ID, TaskConfig
 from fastmcp_tasks.extension import TasksExtension
 
-__all__ = ["EXERCISER_NAMESPACE", "EXERCISER_PATH", "TASKS_EXTENSION_ID", "build_exerciser_server"]
+__all__ = [
+    "EXERCISER_NAMESPACE",
+    "EXERCISER_PATH",
+    "MODERN_PROTOCOL_VERSION",
+    "TASKS_EXTENSION_ID",
+    "build_exerciser_server",
+]
 
 EXERCISER_PATH = Path(__file__).resolve()
+
+# The era the current v2 wire negotiates; pinned here so an upstream era bump
+# fails conformance tests with a message about the ERA, not a bare string.
+MODERN_PROTOCOL_VERSION = "2026-07-28"
 
 # The declared-server namespace tests mount the exerciser under. Kept short and
 # underscore-free: tool routing splits ``<namespace>_<tool>`` on the FIRST "_".
@@ -109,19 +120,32 @@ def build_exerciser_server() -> FastMCP:
 
     @server.tool(task=TaskConfig(mode="required", poll_interval=timedelta(milliseconds=50)))
     async def staller(ctx: Context, seconds: float = 0.5, steps: int = 5) -> str:
-        """Run slowly while reporting progress: the C1-S2 wait-surfacing leg.
+        """Run slowly as a REQUIRED task, cancellable between steps.
 
-        Emits one progress notification per step so "progress resets the
-        clock" and "visible waiting" are provable against real intermediate
-        updates, and stays cancellable between steps.
+        Its ``report_progress`` calls ride the TASK channel, which a plain
+        ``call_tool`` progress handler never sees (proven by the C1-S0 review's
+        A/B) -- what IS observable during a task-mode wait (status transitions,
+        poll cadence) is C1-S2's job to pin. For client-visible progress
+        notifications, use ``plain_staller``.
         """
-
-        import asyncio  # noqa: PLC0415 - keep the module import surface minimal for the stdio spawn
 
         for step in range(max(1, steps)):
             await asyncio.sleep(max(0.0, seconds) / max(1, steps))
             await ctx.report_progress(progress=step + 1, total=max(1, steps))
         return "stalled-through"
+
+    @server.tool
+    async def plain_staller(ctx: Context, seconds: float = 0.5, steps: int = 5) -> str:
+        """Run slowly on the PLAIN path, one progress notification per step.
+
+        The provable "progress resets the clock" / "visible waiting" arm:
+        a ``call_tool(..., progress_handler=...)`` receives every step.
+        """
+
+        for step in range(max(1, steps)):
+            await asyncio.sleep(max(0.0, seconds) / max(1, steps))
+            await ctx.report_progress(progress=step + 1, total=max(1, steps))
+        return "plain-stalled"
 
     return server
 
