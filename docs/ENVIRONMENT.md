@@ -213,6 +213,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_RESIDENT_LEDGERS_TTL_S` | `gact.resident_ledgers.idle_ttl_s` | float | `1800.0` | `src/clio_agent/gact/resident_ledgers.py` |
 | `CLIO_RESOURCE_DELIVERY_LEDGER_MAX_RECORDS` | `resources.delivery_ledger_max_records` | int | `2000` | `src/clio_agent/gact/resource_delivery.py` |
 | `CLIO_RESOURCE_DERIVATIVE_NAME_MAX_CHARS` | `resources.derivative_name_max_chars` | int | `48` | `src/clio_agent/gact/resource_processing.py` |
+| `CLIO_RESOURCE_LIST_MAX_RECORDS` | `resources.list_max_records` | int | `100` | `src/clio_agent/gact/resource_tools.py` |
 | `CLIO_RESOURCE_MAX_BYTES` | `resources.max_bytes` | int | `262144000` | `src/clio_agent/gact/composer_runtime.py` |
 | `CLIO_RESOURCE_PROCESSOR_CANCEL_TIMEOUT_S` | `resources.processor_cancel_timeout_s` | float | `30.0` | `src/clio_agent/gact/resource_processing.py` |
 | `CLIO_RESOURCE_PROCESSOR_CONNECT_TIMEOUT_S` | `resources.processor_connect_timeout_s` | float | `5.0` | `src/clio_agent/gact/resource_processing.py` |
@@ -223,6 +224,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_RESOURCE_SEARCH_EXCERPT_CHARS` | `resources.search_excerpt_chars` | int | `500` | `src/clio_agent/gact/resource_tools.py` |
 | `CLIO_RESOURCE_SEARCH_MATCH_LIMIT` | `resources.search_match_limit` | int | `50` | `src/clio_agent/gact/resource_tools.py` |
 | `CLIO_RESOURCE_STATUS_POLL_FAILURE_THRESHOLD` | `resources.status_poll_failure_threshold` | int | `5` | `src/clio_agent/gact/resource_lifecycle.py` |
+| `CLIO_RESOURCE_STRUCTURE_NODE_MAX_BYTES` | `resources.structure_node_max_bytes` | int | `2097152` | `src/clio_agent/gact/resource_processing.py` |
 | `CLIO_RESOURCE_TEXT_PREVIEW_BYTES` | `resources.text_preview_bytes` | int | `2097152` | `src/clio_agent/gact/routes/resources.py` |
 | `CLIO_RESOURCE_TEXT_READ_CHARS` | `resources.text_read_chars` | int | `65536` | `src/clio_agent/gact/resource_tools.py` |
 | `CLIO_RESOURCE_TEXT_SCAN_BYTES` | `resources.text_scan_bytes` | int | `2097152` | `src/clio_agent/gact/resource_tools.py` |

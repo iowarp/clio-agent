@@ -91,6 +91,17 @@ def search_excerpt_chars() -> int:
     )
 
 
+def list_max_records() -> int:
+    """Resource rows one workspace listing returns before reporting truncation."""
+
+    return conf.resolve(
+        "resources.list_max_records",
+        env="CLIO_RESOURCE_LIST_MAX_RECORDS",
+        default=100,
+        cast=conf.as_int,
+    )
+
+
 def _record(app: "FastAPI", workspace_id: str, resource_id: str) -> ResourceRecord:
     record = app.state.resource_store.get(workspace_id, resource_id)
     if record is None:
@@ -124,10 +135,11 @@ def list_workspace_resources(app: "FastAPI", workspace_id: str) -> dict[str, Any
     """Return bounded metadata for resources owned by one workspace."""
 
     rows = app.state.resource_store.list(workspace_id)
+    limit = max(1, list_max_records())
     return {
         "workspace_id": workspace_id,
-        "resources": [row.to_wire() for row in rows[:100]],
-        "truncated": len(rows) > 100,
+        "resources": [row.to_wire() for row in rows[:limit]],
+        "truncated": len(rows) > limit,
     }
 
 

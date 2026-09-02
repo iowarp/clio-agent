@@ -25,6 +25,16 @@ from clio_agent.gact.resource_mime import detect_media_type
 
 logger = logging.getLogger(__name__)
 
+# Prefix handed to :func:`detect_media_type`. NOT a tunable: the sniff contract
+# is written against exactly this window (``resource_mime`` documents "custody
+# reads 8 KiB", and ``resource_tools._read_text`` types its decode refusal
+# against the same prefix), and a per-deployment window would make a recorded
+# ``detection_source`` non-reproducible across boxes.
+_MIME_SNIFF_HEAD_BYTES = 8192
+# Streaming read window for the finalize hash pass. Buffer size only — it has no
+# observable effect on the digest, the sniff, or the stored bytes.
+_FINALIZE_READ_CHUNK_BYTES = 1024 * 1024
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -284,9 +294,9 @@ class ResourceStore:
         digest = hashlib.sha256()
         head = b""
         with upload.open("rb") as stream:
-            while chunk := stream.read(1024 * 1024):
-                if len(head) < 8192:
-                    head += chunk[: 8192 - len(head)]
+            while chunk := stream.read(_FINALIZE_READ_CHUNK_BYTES):
+                if len(head) < _MIME_SNIFF_HEAD_BYTES:
+                    head += chunk[: _MIME_SNIFF_HEAD_BYTES - len(head)]
                 digest.update(chunk)
         detected_mime, detection_source = detect_media_type(record.name, head)
         destination = self._revision_dir(record) / "original"

@@ -739,6 +739,10 @@ KEY_NOTES: dict[str, str] = {
         "Base URL of the optional document-processing service used to derive structured views of "
         "uploaded resources; unset leaves resources served as originals."
     ),
+    "resources.list_max_records": (
+        "Resource rows one workspace listing returns before it reports truncation; raise for "
+        "workspaces holding many uploads, lower to keep tool results small."
+    ),
     "resources.max_bytes": (
         "Byte ceiling on a single uploaded workspace resource; raise for large scientific inputs, "
         "lower to bound per-workspace disk use."
@@ -778,6 +782,10 @@ KEY_NOTES: dict[str, str] = {
     "resources.status_poll_failure_threshold": (
         "Consecutive failed converter status polls tolerated before the resource is marked failed "
         "with converter_status_unavailable; lower to give up on a vanished converter sooner."
+    ),
+    "resources.structure_node_max_bytes": (
+        "Byte ceiling on ONE structured node (a page, table, picture or text block) served from a "
+        "derived view; raise for documents with very large single nodes."
     ),
     "resources.text_preview_bytes": (
         "Byte ceiling on a text resource served inline through the preview route; raise to "

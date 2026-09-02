@@ -786,6 +786,12 @@ resources.derivative_name_max_chars: 48
 # originals.
 # resources.document_processor_url:  # default unset; resolved in code
 
+# CLIO_RESOURCE_LIST_MAX_RECORDS  (int)  <- src/clio_agent/gact/resource_tools.py
+# Resource rows one workspace listing returns before it reports truncation;
+# raise for workspaces holding many uploads, lower to keep tool results
+# small.
+resources.list_max_records: 100
+
 # CLIO_RESOURCE_MAX_BYTES  (int)  <- src/clio_agent/gact/composer_runtime.py
 # Byte ceiling on a single uploaded workspace resource; raise for large
 # scientific inputs, lower to bound per-workspace disk use.
@@ -837,6 +843,12 @@ resources.search_match_limit: 50
 # marked failed with converter_status_unavailable; lower to give up on a
 # vanished converter sooner.
 resources.status_poll_failure_threshold: 5
+
+# CLIO_RESOURCE_STRUCTURE_NODE_MAX_BYTES  (int)  <- src/clio_agent/gact/resource_processing.py
+# Byte ceiling on ONE structured node (a page, table, picture or text block)
+# served from a derived view; raise for documents with very large single
+# nodes.
+resources.structure_node_max_bytes: 2097152
 
 # CLIO_RESOURCE_TEXT_PREVIEW_BYTES  (int)  <- src/clio_agent/gact/routes/resources.py
 # Byte ceiling on a text resource served inline through the preview route;
