@@ -40,13 +40,23 @@ class _RefusingAgent:
         )
 
 
-def test_clio_error_settles_the_turn_with_its_own_reason_not_agent_error(
+def test_clio_error_settles_the_turn_with_its_typed_reason_in_details(
     tmp_path: Path,
 ) -> None:
-    """#1282 F5: the turn's ``error_info`` carries the refusal's OWN typed
-    ``error``/``details`` (json_rpc_code, protocol_data naming what to
-    re-dial with) -- never the generic ``agent_error`` the pre-fix catch-all
-    would have produced."""
+    """#1282 F5: the turn's ``error_info.details`` carries the refusal's OWN
+    typed reason/json_rpc_code/protocol_data (naming what to re-dial with) --
+    never the generic catch-all's bare ``{"original_error": "TypeName"}``.
+
+    N4 (re-verify round): the TOP-LEVEL ``error_info.error`` field stays
+    ``"agent_error"`` -- WITHIN the existing wire taxonomy the client
+    renders -- rather than a CLIO-internal ``error_type`` string
+    (``"mcp_missing_required_client_capability"``) the client would not
+    recognize (falling back to a bare "Internal error"). The typed
+    distinction lives in ``details["reason"]``, which is what
+    ``turn_spawn_failures.child_task_error_reason`` actually reads to
+    project onto a spawned child's AgentTask record -- never the top-level
+    ``error`` field.
+    """
 
     app = build_app(sessions_path=tmp_path / "s.json", agent=_RefusingAgent())
     with TestClient(app) as c:
@@ -71,8 +81,10 @@ def test_clio_error_settles_the_turn_with_its_own_reason_not_agent_error(
         assert completed, "a ClioError must still publish a visible error turn"
         error_info = completed[-1].payload["error_info"]
 
-        # #1282 F5: NOT the generic catch-all's "agent_error".
-        assert error_info["error"] == "mcp_missing_required_client_capability"
+        # #1282 N4: top-level error stays the existing taxonomy value.
+        assert error_info["error"] == "agent_error"
+        # ...but details carries the FULL typed envelope, not the generic
+        # catch-all's bare {"original_error": "TypeName"}.
         assert error_info["details"]["reason"] == "mcp_capability_refused"
         assert error_info["details"]["json_rpc_code"] == -32021
         assert (error_info["details"]["protocol_data"]["requiredCapabilities"]["extensions"]) == {
@@ -88,4 +100,22 @@ def test_clio_error_settles_the_turn_with_its_own_reason_not_agent_error(
             m for m in msgs if m["role"] == "assistant" and m.get("stop_reason") == "error"
         ]
         assert error_turns, "error turn must land in the persisted transcript"
-        assert error_turns[0]["error_info"]["error"] == "mcp_missing_required_client_capability"
+        assert error_turns[0]["error_info"]["error"] == "agent_error"
+        assert error_turns[0]["error_info"]["details"]["reason"] == "mcp_capability_refused"
+
+
+def test_child_task_error_reason_projects_the_backstop_reasons() -> None:
+    """#1282 N3: the SAME diagnosability class as F5 -- a child backstopped by
+    tools/mcp_wait_ladder.py's typed MCPCallTimeoutBackstopError must not
+    collapse to "agent_error" on its parent's AgentTask record either."""
+
+    from clio_agent.gact.turn_spawn_failures import child_task_error_reason
+
+    assert (
+        child_task_error_reason({"details": {"reason": "mcp_call_timeout_backstop"}})
+        == "mcp_call_timeout_backstop"
+    )
+    assert (
+        child_task_error_reason({"details": {"reason": "mcp_task_drive_timeout_backstop"}})
+        == "mcp_task_drive_timeout_backstop"
+    )

@@ -732,16 +732,25 @@ async def _run_turn_in_background(
         state.tools_called = []
     except ClioError as exc:
         # #1282 F5 (#1275 ask 2): a typed clio error -- a protocol refusal
-        # chief among them -- reaches the parent with its OWN reason/details
+        # chief among them -- reaches the parent with its own reason/details
         # (json_rpc_code, protocol_data naming what to re-dial with) instead
-        # of the generic agent_error below erasing them. to_dict() IS the
-        # structured envelope this taxonomy already standardizes on;
-        # turn_spawn_failures.child_task_error_reason already reads
-        # details["reason"] back off of it for the parent's AgentTask record
-        # (agent_tasks.ERROR_REASONS carries the typed reason strings).
+        # of the generic agent_error branch below erasing them.
+        #
+        # N4 (re-verify round): the TOP-LEVEL error field stays "agent_error"
+        # -- the SAME value the generic branch below already uses -- rather
+        # than exc.to_dict()["error"] (e.g. "mcp_missing_required_client_
+        # capability"), which is a CLIO-internal error_type, not a member of
+        # the wire taxonomy the client renders; an unrecognized code there
+        # falls back to a bare "Internal error". details still carries the
+        # FULL to_dict() payload -- json_rpc_code, protocol_data, and
+        # details["reason"], which is what actually matters structurally:
+        # turn_spawn_failures.child_task_error_reason reads details["reason"]
+        # (never the top-level error) to project the typed reason onto a
+        # spawned child's AgentTask record (agent_tasks.ERROR_REASONS carries
+        # the typed reason strings, not error_type strings).
         payload = exc.to_dict()
         state.error_info = ErrorInfo(
-            error=payload["error"],
+            error="agent_error",
             message=payload["message"],
             details=payload["details"],
             recoverable=True,

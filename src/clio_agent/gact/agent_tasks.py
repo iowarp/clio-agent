@@ -101,6 +101,13 @@ ERROR_REASONS = frozenset(
         # verbatim (falls back to "agent_error" for anything not listed).
         "mcp_capability_refused",
         "mcp_protocol_refused",
+        # #1282 N3 (re-verify round): the SAME diagnosability class as F5 --
+        # a child backstopped by tools/mcp_wait_ladder.py's typed
+        # MCPCallTimeoutBackstopError (the call_timeout_s activity-driven
+        # backstop, F3a, or _poll_until_terminal's own deadline, F3b) must
+        # not collapse to "agent_error" either.
+        "mcp_call_timeout_backstop",
+        "mcp_task_drive_timeout_backstop",
     }
 )
 
