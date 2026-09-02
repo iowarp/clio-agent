@@ -212,7 +212,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # PR #1278 re-land: -22. The two dynamic-agent DSPy signatures moved to
     # their owner module agents/signatures.py; the additive `images` input +
     # its three forward params are what stayed.
-    "src/clio_agent/gact/agents/builders.py": 1975,
+    "src/clio_agent/gact/agents/builders.py": 1974,
     # #948 S4/S5/S6 growth already carried this file past the flat 800 cap (to 842)
     # before it was ever added to this baseline — a pre-existing gap this change
     # did not introduce (it was silently exempt from the ratchet, not under it).
@@ -614,7 +614,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # on_turn_finalized call site right after the session.status_changed
     # publish, alongside the existing dispatch_*_at_finalize hooks it mirrors
     # (a lazy import + one call). Logic lives in gact/spotter_watcher.py.
-    "src/clio_agent/gact/turn_finalize.py": 978,  # +36 (A4 #1057): the loop-goal compose glue is extracted into the named, tested `compose_goal_loop_stop_at_finalize` seam (A4 review: the inline glue was silently deletable — the extracted function is driven by the finalize seam test); the glue owns the goal->loop import so goal.py stays a leaf (no cycle)
+    "src/clio_agent/gact/turn_finalize.py": 853,  # ask-user pause moved to user_question_pause.py
     # P5 (owner ask 2026-08-06): +7 for the child/subagent artifact-rollup call
     # site (comment + function-local import + one-line invocation, matching the
     # P4.1/P4.2/P1.6d dispatch idiom already used lower in this file); the
@@ -630,10 +630,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # Create/Update requests) + a 3-line doc comment; the enum + enforcement live in
     # sessions.py + permission_gate.py, so only the field declarations land here.
     # P0.1a (#1102): move Part + CapabilityFlags to gact/parts.py; 1170 -> 958 lines.
-    # PR #1278 re-land: -48. MessageBehavior + the PostMessage request/response
-    # contract moved to their owner module gact/message_contract.py; this file
-    # re-exports all three so existing imports keep resolving.
-    "src/clio_agent/gact/types.py": 894,
+    # PR #1278 re-land moved message contracts to gact/message_contract.py;
+    # interaction contracts now likewise live in gact/interaction_types.py.
+    # This facade re-exports both owner modules for import compatibility.
+    "src/clio_agent/gact/types.py": 862,
     # -120 (#891): the SDK-session machinery moved out to sibling owner modules —
     # the blocking-path pool to providers/claude_code_sdk_pool.py and the per-expert
     # streaming session/delta transport to providers/claude_code_sessions.py; this

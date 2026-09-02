@@ -33,10 +33,11 @@ import asyncio
 import logging
 import threading
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from clio_agent.gact.elicitation_correlation import invocation_with_request_correlation
 from clio_agent.gact.elicitation_schema import (
     ELICITATION_QUESTION_SOURCE,
     FormTranslation,
@@ -46,6 +47,7 @@ from clio_agent.gact.elicitation_schema import (
     translate_form_schema,
     validate_elicitation_answer,
 )
+from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.types import UserQuestion, UserQuestionOption
 from clio_agent.tools.mcp_handlers import MCPClientCapabilities, MCPInvocationContext
 
@@ -429,63 +431,6 @@ def _new_question(
     )
 
 
-def invocation_with_request_correlation(
-    invocation: MCPInvocationContext, request_context: Any
-) -> MCPInvocationContext:
-    """Add authoritative SEP-2663 task/input identity carried by a callback request.
-
-    ``mcp_tasks`` names task elicitation requests ``task-{task_id}-{input_key}``.
-    Task ids may contain dashes, so this resolves the prefix against the existing
-    durable task store instead of splitting an ambiguous string heuristically.
-    """
-
-    request_id = str(getattr(request_context, "request_id", "") or "")
-    if not request_id.startswith("task-") or not invocation.session_id:
-        return invocation
-    try:
-        from clio_agent.tools.mcp_task_records import iter_task_records  # noqa: PLC0415
-
-        candidates = [
-            record
-            for record in iter_task_records()
-            if record.session_id == invocation.session_id
-            and request_id.startswith(f"task-{record.task_id}-")
-        ]
-    except Exception:  # noqa: BLE001 - correlation enrichment must not reject elicitation
-        return invocation
-    if len(candidates) != 1:
-        return invocation
-    task_id = candidates[0].task_id
-    return replace(
-        invocation,
-        task_id=task_id,
-        input_key=request_id.removeprefix(f"task-{task_id}-") or None,
-    )
-
-
-def _attended_session(app: Any, session_id: str) -> str:
-    """Walk the ``parent_session_id`` chain to the top human-attended session.
-
-    A spawned child cannot answer its own HITL prompt, so a child question is
-    surfaced on the ROOT session a human is attending. Cycle-guarded; returns
-    ``session_id`` unchanged when there is no parent chain or no session store.
-    """
-
-    sessions = getattr(app.state, "sessions", None)
-    if sessions is None:
-        return session_id
-    seen: set[str] = set()
-    sid = session_id
-    while sid and sid not in seen:
-        seen.add(sid)
-        sess = sessions.get(sid)
-        parent = str(getattr(sess, "parent_session_id", "") or "") if sess is not None else ""
-        if not parent:
-            return sid
-        sid = parent
-    return sid
-
-
 def _pending_question_for(app: Any, session_id: str) -> UserQuestion | None:
     """Return a session's pending question (anchor first, else newest pending)."""
 
@@ -516,7 +461,7 @@ def forward_child_question_to_parent(app: Any, task: Any, child_sid: str) -> str
     if child_q is None:
         _record_reason("child_waiting_without_question", child=child_sid)
         return None
-    attended = _attended_session(app, getattr(task, "parent_session_id", "") or child_sid)
+    attended = attended_session_id(app, getattr(task, "parent_session_id", "") or child_sid)
     child_elicitation = child_q.metadata.get("elicitation")
     child_elicitation = child_elicitation if isinstance(child_elicitation, Mapping) else {}
     forwarded = _new_question(
@@ -693,7 +638,7 @@ async def handle_elicitation(
     # Child forwarding: an unattended child cannot answer its own elicitation, so the
     # question is minted on the ROOT attended session (the parked future stays keyed
     # by question id, so the parent user's answer wakes THIS child's tool call).
-    attended = _attended_session(app, session_id)
+    attended = attended_session_id(app, session_id)
     forwarded_from = session_id if attended != session_id else ""
 
     mode = str(getattr(params, "mode", "") or "")

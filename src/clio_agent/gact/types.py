@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from clio_agent.arc.schema import SegmentKind
 from clio_agent.gact.context_preferences_types import (
@@ -22,6 +22,21 @@ from clio_agent.gact.context_preferences_types import (
 from clio_agent.gact.context_preferences_types import (
     UpdateContextPreferencesRequest as UpdateContextPreferencesRequest,
 )
+from clio_agent.gact.interaction_types import (
+    AnswerUserQuestionRequest as AnswerUserQuestionRequest,
+)
+from clio_agent.gact.interaction_types import (
+    CreateUserQuestionRequest as CreateUserQuestionRequest,
+)
+from clio_agent.gact.interaction_types import PendingInteraction as PendingInteraction
+from clio_agent.gact.interaction_types import (
+    PendingInteractionSource as PendingInteractionSource,
+)
+from clio_agent.gact.interaction_types import (
+    RespondInteractionRequest as RespondInteractionRequest,
+)
+from clio_agent.gact.interaction_types import UserQuestion as UserQuestion
+from clio_agent.gact.interaction_types import UserQuestionOption as UserQuestionOption
 from clio_agent.gact.parts import CapabilityFlags, Part
 from clio_agent.gact.workspace_types import (
     CreateWorkspaceRequest as CreateWorkspaceRequest,
@@ -643,111 +658,6 @@ class ListToolsResponse(BaseModel):
     """GET /v1/catalog/tools body."""
 
     tools: list[Tool]
-
-
-# ---------------------------------------------------------------------------
-# CLIO ask-user and retry protocol (#333)
-# ---------------------------------------------------------------------------
-
-
-class UserQuestionOption(BaseModel):
-    label: str
-    value: str = ""
-    description: str = ""
-
-
-class UserQuestion(BaseModel):
-    id: str
-    session_id: str
-    # Additive interaction-contract identities. ``session_id`` remains the
-    # legacy delivery/session key; owner identifies the exact runtime that must
-    # receive the answer, while attended identifies the root human surface.
-    owner_session_id: str = ""
-    attended_session_id: str = ""
-    prompt: str
-    status: Literal["pending", "answered", "cancelled", "expired"] = "pending"
-    kind: Literal["freeform", "choice", "confirmation"] = "freeform"
-    options: list[UserQuestionOption] = Field(default_factory=list)
-    created_at: str
-    updated_at: str
-    expires_at: str = ""
-    source: str = "orchestrator"
-    turn_id: str = ""
-    attempt_id: str = ""
-    answer: str = ""
-    selected_options: list[str] = Field(default_factory=list)
-    answer_metadata: dict[str, Any] = Field(default_factory=dict)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def fill_interaction_session_ids(self) -> "UserQuestion":
-        """Populate additive ownership fields when reading legacy question rows."""
-
-        metadata = self.metadata if isinstance(self.metadata, dict) else {}
-        elicitation = metadata.get("elicitation")
-        elicitation = elicitation if isinstance(elicitation, dict) else {}
-        if not self.owner_session_id:
-            self.owner_session_id = str(
-                metadata.get("forwarded_from_session")
-                or elicitation.get("forwarded_from_session")
-                or self.session_id
-            )
-        if not self.attended_session_id:
-            self.attended_session_id = self.session_id
-        return self
-
-
-class CreateUserQuestionRequest(BaseModel):
-    prompt: str
-    kind: Literal["freeform", "choice", "confirmation"] = "freeform"
-    options: list[UserQuestionOption] = Field(default_factory=list)
-    source: str = "orchestrator"
-    turn_id: str = ""
-    attempt_id: str = ""
-    expires_at: str = ""
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class AnswerUserQuestionRequest(BaseModel):
-    answer: str = ""
-    selected_options: list[str] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class PendingInteractionSource(BaseModel):
-    """Protocol and producer correlation for one pending interaction."""
-
-    protocol: Literal["native", "mcp"]
-    tool_name: str = ""
-    invocation_id: str = ""
-    surface_id: str = ""
-
-
-class PendingInteraction(BaseModel):
-    """Normalized pending human interaction projected from authoritative stores."""
-
-    id: str
-    kind: Literal["question", "permission", "a2ui", "mcp_task_input"]
-    owner_session_id: str
-    attended_session_id: str
-    task_id: str = ""
-    status: Literal["pending", "answered", "cancelled", "expired"] = "pending"
-    title: str
-    prompt: str = ""
-    source: PendingInteractionSource
-    created_at: str
-    payload: dict[str, Any] = Field(default_factory=dict)
-    actions: list[str] = Field(default_factory=list)
-
-
-class RespondInteractionRequest(BaseModel):
-    """Kind-neutral response body routed by the server-side interaction identity."""
-
-    action: str = ""
-    answer: str = ""
-    selected_options: list[str] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    message: dict[str, Any] = Field(default_factory=dict)
 
 
 class RetryTurnRequest(BaseModel):

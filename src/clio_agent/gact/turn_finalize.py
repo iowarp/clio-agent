@@ -41,7 +41,6 @@ import logging
 import threading
 import time
 from collections.abc import Mapping
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.agents.resolution import (
@@ -59,16 +58,11 @@ from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
 from clio_agent.gact.evidence import (
     _tool_result_preview,
 )
-from clio_agent.gact.messaging import (
-    _ask_user_options_from_action,
-    _coerce_ask_user_action,
-)
 from clio_agent.gact.runtime.globals import (
     _emit_semantic_event,
     _iso_from_epoch,
     _new_message_id,
     _new_part_id,
-    _new_question_id,
     _session_agent_id,
 )
 from clio_agent.gact.runtime.retention import enforce_list_bound
@@ -87,9 +81,9 @@ from clio_agent.gact.types import (
     Message,
     Part,
     Tokens,
-    UserQuestion,
 )
 from clio_agent.gact.usage import capture_reasoning_log
+from clio_agent.gact.user_question_pause import maybe_pause_for_user as maybe_pause_for_user
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
@@ -100,157 +94,6 @@ if TYPE_CHECKING:
     from clio_agent.gact.turn_state import TurnState
 
 logger = logging.getLogger(__name__)
-
-
-def maybe_pause_for_user(
-    state: "TurnState",
-    pred: Any,
-    *,
-    update_retry_attempt: "Callable[..., None]",
-) -> bool:
-    """Pause the turn for user input when the prediction requested it (#767 Phase B).
-
-    When the prediction carries an ``ask_user`` action and the turn has not
-    already errored, this mints the :class:`~clio_agent.gact.types.UserQuestion`,
-    flips the session to ``waiting_user``, finalizes the context frame, settles
-    the transcript ledger, and returns ``True`` — the orchestrator then returns
-    before the finalize region (the in-flight assistant identity/parts stay in
-    the legacy dicts so the resume turn re-adopts them). Returns ``False`` when
-    there is nothing to pause for and the turn should proceed to finalize.
-
-    ``update_retry_attempt`` is the orchestrator's per-turn closure, threaded in
-    by reference (it is also read by the linear body + the finalize region).
-    """
-
-    session = state.app.state.sessions.get(state.sid)
-    pending = (
-        (getattr(session, "metadata", None) or {}).get("pending_ask_user")
-        if session is not None
-        else None
-    )
-    ask_user_action = (
-        dict(pending)
-        if isinstance(pending, dict) and pending and not pending.get("surfaced")
-        else _coerce_ask_user_action(pred)
-    )
-    if state.error_info is not None or not ask_user_action:
-        return False
-    now_iso = datetime.now(timezone.utc).isoformat()
-    options = _ask_user_options_from_action(ask_user_action)
-    kind_raw = str(ask_user_action.get("kind") or "").strip()
-    kind = kind_raw if kind_raw in {"freeform", "choice", "confirmation"} else ""
-    if not kind:
-        kind = "choice" if options and not ask_user_action.get("allow_freeform") else "freeform"
-    from clio_agent.gact.permission_delivery import attended_session_id  # noqa: PLC0415
-
-    attended = str(ask_user_action.get("attended_session_id") or "") or attended_session_id(
-        state.app, state.sid
-    )
-    owner = str(ask_user_action.get("owner_session_id") or "") or state.sid
-    question = UserQuestion(
-        id=_new_question_id(),
-        session_id=state.sid,
-        owner_session_id=owner,
-        attended_session_id=attended,
-        prompt=str(ask_user_action["question"]),
-        status="pending",
-        kind=kind,  # type: ignore[arg-type]
-        options=options,
-        created_at=now_iso,
-        updated_at=now_iso,
-        expires_at=str(ask_user_action.get("expires_at") or ""),
-        source="native" if isinstance(pending, dict) and pending else "orchestrator_action",
-        turn_id=state.user_msg.id,
-        attempt_id=state.retry_attempt_id,
-        metadata={
-            **dict(ask_user_action.get("metadata") or {}),
-            "reason": ask_user_action.get("reason", ""),
-            "caller": ask_user_action.get("caller", {}),
-            "task_id": ask_user_action.get("task_id", ""),
-            "invocation_id": ask_user_action.get("invocation_id", ""),
-            "resume_on_answer": True,
-            "source_user_message_id": state.user_msg.id,
-            "source_user_text": state.user_text,
-            "selected_agent": state.selected_agent,
-            "route_source": state.route_source,
-            "route_reason": state.route_reason,
-        },
-    )
-    state.app.state.user_questions[question.id] = question
-    _emit_semantic_event(
-        state.app,
-        state.sid,
-        "user_question.created",
-        turn_id=state.turn_id,
-        trace_id=state.trace_id,
-        status="waiting_user",
-        summary="Agent requested user input before continuing.",
-        actor={"agent_id": state.selected_agent or state.invocation_agent_id},
-        subject={"question_id": question.id},
-        payload=question.model_dump(exclude_none=True),
-    )
-    metadata_patch: dict[str, Any] = {"pending_user_question_id": question.id}
-    if isinstance(pending, dict) and pending:
-        metadata_patch["pending_ask_user"] = {
-            **pending,
-            "surfaced": True,
-            "question_id": question.id,
-        }
-    updated = state.app.state.sessions.update(
-        state.sid,
-        status="waiting_user",
-        message_count=len(state.app.state.messages.get(state.sid, [])),
-        metadata_patch=metadata_patch,
-    )
-    if isinstance(pending, dict) and pending:
-        from clio_agent.gact.ask_user_tool import arm_ask_user_deadline  # noqa: PLC0415
-
-        arm_ask_user_deadline(state.app, question)
-    _finalize_context_frame(
-        state.app,
-        state.sid,
-        state.context_frame["id"],
-        "",
-        "completed",
-        error_info=None,
-    )
-    state.bus.publish(
-        Event(
-            type="user_question.created",
-            session_id=state.sid,
-            payload=question.model_dump(exclude_none=True),
-        )
-    )
-    state.bus.publish(
-        Event(
-            type="session.status_changed",
-            session_id=state.sid,
-            payload={
-                "session_id": state.sid,
-                "status": "waiting_user",
-                "prev_status": "running",
-                "updated_at": updated.updated_at if updated is not None else "",
-                "pending_user_question_id": question.id,
-            },
-        )
-    )
-    if state.retry_attempt_id:
-        update_retry_attempt(
-            "completed",
-            metadata_patch={
-                "ask_user_question_id": question.id,
-                "stop_reason": "waiting_user",
-            },
-        )
-    # #767 PR2: the ask_user pause exits the turn before the finalize
-    # region — settle the ledger so it can never poison a later turn.
-    # The in-flight assistant identity/parts stay in the legacy dicts
-    # (deliberately NOT popped here, exactly as before) and the resume
-    # turn re-adopts them via _open_turn_transcript's carried-state
-    # adoption, so the resumed turn continues the same assistant
-    # message without a second message.created.
-    settle_turn_transcript(state)
-    return True
 
 
 def finalize_turn(
