@@ -88,7 +88,12 @@ def build_auto_react_tools(agent_def: Any) -> list[Any]:
         # stability the fixed order above exists to protect.
         *build_resource_tools(agent_def),
     ]
+    declared = {str(name).strip() for name in (getattr(agent_def, "tools", None) or [])}
     if not (getattr(agent_def, "parent_id", "") or ""):
-        tools.append(build_create_a2ui_surface_tool())
+        # Root compatibility: still automatic unless explicitly declared (the
+        # declared-native resolver already attached the same tool). Children get
+        # it only through an explicit blueprint tools declaration.
+        if "create_a2ui_surface" not in declared:
+            tools.append(build_create_a2ui_surface_tool())
         tools.append(build_refresh_provider_models_tool())
     return tools

@@ -122,7 +122,17 @@ def maybe_pause_for_user(
     by reference (it is also read by the linear body + the finalize region).
     """
 
-    ask_user_action = _coerce_ask_user_action(pred)
+    session = state.app.state.sessions.get(state.sid)
+    pending = (
+        (getattr(session, "metadata", None) or {}).get("pending_ask_user")
+        if session is not None
+        else None
+    )
+    ask_user_action = (
+        dict(pending)
+        if isinstance(pending, dict) and pending and not pending.get("surfaced")
+        else _coerce_ask_user_action(pred)
+    )
     if state.error_info is not None or not ask_user_action:
         return False
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -131,22 +141,33 @@ def maybe_pause_for_user(
     kind = kind_raw if kind_raw in {"freeform", "choice", "confirmation"} else ""
     if not kind:
         kind = "choice" if options and not ask_user_action.get("allow_freeform") else "freeform"
+    from clio_agent.gact.permission_delivery import attended_session_id  # noqa: PLC0415
+
+    attended = str(ask_user_action.get("attended_session_id") or "") or attended_session_id(
+        state.app, state.sid
+    )
+    owner = str(ask_user_action.get("owner_session_id") or "") or state.sid
     question = UserQuestion(
         id=_new_question_id(),
         session_id=state.sid,
+        owner_session_id=owner,
+        attended_session_id=attended,
         prompt=str(ask_user_action["question"]),
         status="pending",
         kind=kind,  # type: ignore[arg-type]
         options=options,
         created_at=now_iso,
         updated_at=now_iso,
-        source="orchestrator_action",
+        expires_at=str(ask_user_action.get("expires_at") or ""),
+        source="native" if isinstance(pending, dict) and pending else "orchestrator_action",
         turn_id=state.user_msg.id,
         attempt_id=state.retry_attempt_id,
         metadata={
             **dict(ask_user_action.get("metadata") or {}),
             "reason": ask_user_action.get("reason", ""),
             "caller": ask_user_action.get("caller", {}),
+            "task_id": ask_user_action.get("task_id", ""),
+            "invocation_id": ask_user_action.get("invocation_id", ""),
             "resume_on_answer": True,
             "source_user_message_id": state.user_msg.id,
             "source_user_text": state.user_text,
@@ -168,12 +189,23 @@ def maybe_pause_for_user(
         subject={"question_id": question.id},
         payload=question.model_dump(exclude_none=True),
     )
+    metadata_patch: dict[str, Any] = {"pending_user_question_id": question.id}
+    if isinstance(pending, dict) and pending:
+        metadata_patch["pending_ask_user"] = {
+            **pending,
+            "surfaced": True,
+            "question_id": question.id,
+        }
     updated = state.app.state.sessions.update(
         state.sid,
         status="waiting_user",
         message_count=len(state.app.state.messages.get(state.sid, [])),
-        metadata_patch={"pending_user_question_id": question.id},
+        metadata_patch=metadata_patch,
     )
+    if isinstance(pending, dict) and pending:
+        from clio_agent.gact.ask_user_tool import arm_ask_user_deadline  # noqa: PLC0415
+
+        arm_ask_user_deadline(state.app, question)
     _finalize_context_frame(
         state.app,
         state.sid,

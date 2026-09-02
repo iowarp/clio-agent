@@ -1,0 +1,347 @@
+"""Runtime-tool and normalized interaction contract tests."""
+
+from __future__ import annotations
+
+import time
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+from fastapi.testclient import TestClient
+
+from clio_agent.gact import context as gact_context
+from clio_agent.gact.agent_tasks import AgentTask
+from clio_agent.gact.agents.auto_tools import build_auto_react_tools
+from clio_agent.gact.agents.builders import _dynamic_agent_tools
+from clio_agent.gact.app import build_app
+from clio_agent.gact.ask_user_tool import arm_ask_user_deadline
+from clio_agent.gact.elicitation_bridge import invocation_with_request_correlation
+from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
+from clio_agent.gact.types import AgentDef, UserQuestion, UserQuestionOption
+from clio_agent.tools.mcp_handlers import MCPInvocationContext
+from clio_agent.tools.mcp_task_records import TaskKey, TaskRecord, resolve_store
+
+HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
+
+
+def _root_and_child(app: object) -> tuple[str, str]:
+    root = app.state.sessions.create(workspace_id="ws_default", title="root")
+    child = app.state.sessions.create(
+        workspace_id="ws_default", title="child", parent_session_id=root.id
+    )
+    app.state.agent_task_registry.register(
+        AgentTask(
+            task_id="task_child",
+            parent_session_id=root.id,
+            child_session_id=child.id,
+            agent_ref={"expert_id": "child"},
+            status="running",
+            created_at="2026-09-02T10:00:00+00:00",
+        )
+    )
+    return root.id, child.id
+
+
+def test_declared_native_tools_are_selective_and_root_a2ui_remains_compatible() -> None:
+    ask = AgentDef(id="asker", title="Asker", parent_id="root", tools=["ask_user"])
+    visual = AgentDef(id="visual", title="Visual", parent_id="root", tools=["create_a2ui_surface"])
+    plain_child = AgentDef(id="plain", title="Plain", parent_id="root")
+    root = AgentDef(id="root", title="Root")
+
+    assert [tool.name for tool in _dynamic_agent_tools(SimpleNamespace(), ask, {})] == ["ask_user"]
+    assert [tool.name for tool in _dynamic_agent_tools(SimpleNamespace(), visual, {})] == [
+        "create_a2ui_surface"
+    ]
+    assert "ask_user" not in {tool.name for tool in build_auto_react_tools(plain_child)}
+    assert "create_a2ui_surface" not in {tool.name for tool in build_auto_react_tools(plain_child)}
+    assert "create_a2ui_surface" in {tool.name for tool in build_auto_react_tools(root)}
+
+
+def test_ask_user_runtime_tool_injects_owner_task_and_attended_correlation(
+    tmp_path, monkeypatch
+) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    root, child = _root_and_child(app)
+    agent = AgentDef(id="child", title="Child", parent_id="root", tools=["ask_user"])
+    tool = _dynamic_agent_tools(SimpleNamespace(), agent, {})[0]
+    monkeypatch.setattr(gact_context, "active_app", lambda: app)
+    monkeypatch.setattr(gact_context, "active_session_id", lambda: child)
+    monkeypatch.setattr(gact_context, "active_turn_id", lambda: "turn_child")
+
+    result = tool(
+        question="Which dataset should I use?",
+        kind="choice",
+        options=[{"label": "A", "value": "a"}],
+    )
+
+    pending = app.state.sessions.get(child).metadata["pending_ask_user"]
+    assert "END YOUR TURN" in result
+    assert pending["owner_session_id"] == child
+    assert pending["attended_session_id"] == root
+    assert pending["task_id"] == "task_child"
+    assert pending["invocation_id"] == "turn_child:child:ask_user"
+
+
+def test_interactions_aggregate_children_and_route_question_and_permission(
+    tmp_path,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    root, child = _root_and_child(app)
+    now = datetime.now(timezone.utc).isoformat()
+    native = UserQuestion(
+        id="q_native",
+        session_id=root,
+        owner_session_id=root,
+        attended_session_id=root,
+        prompt="Proceed?",
+        kind="confirmation",
+        options=[UserQuestionOption(label="Yes", value="yes")],
+        created_at=now,
+        updated_at=now,
+    )
+    mcp = UserQuestion(
+        id="q_mcp",
+        session_id=root,
+        owner_session_id=child,
+        attended_session_id=root,
+        prompt="Select format",
+        kind="choice",
+        options=[UserQuestionOption(label="CSV", value="csv")],
+        source="mcp_elicitation",
+        created_at=now,
+        updated_at=now,
+        metadata={
+            "elicitation": {
+                "tool_name": "earthscope_query",
+                "invocation_id": "call_7",
+                "task_id": "task_child",
+                "input_key": "format",
+            }
+        },
+    )
+    app.state.user_questions = {native.id: native, mcp.id: mcp}
+    app.state.permissions["perm_child"] = {
+        "id": "perm_child",
+        "session_id": child,
+        "status": "pending",
+        "summary": "Allow child write",
+        "created_at": now,
+        "tool_call": {"tool_name": "fs_apply_edit_write", "input": {"path": "x"}},
+    }
+    calls: list[tuple[str, str]] = []
+    original_answer = app.state.answer_user_question
+
+    async def record_answer(session_id: str, question_id: str, request: object) -> UserQuestion:
+        calls.append((session_id, question_id))
+        return await original_answer(session_id, question_id, request)
+
+    app.state.answer_user_question = record_answer
+
+    with TestClient(app) as client:
+        direct = client.get(f"/v1/sessions/{root}/interactions").json()["interactions"]
+        assert {row["id"] for row in direct} == {
+            "question:q_native",
+            "mcp_task_input:q_mcp",
+        }
+        aggregate = client.get(
+            f"/v1/sessions/{root}/interactions", params={"include_children": True}
+        ).json()["interactions"]
+        rows = {row["id"]: row for row in aggregate}
+        assert {row["status"] for row in aggregate} == {"pending"}
+        assert rows["mcp_task_input:q_mcp"]["owner_session_id"] == child
+        assert rows["mcp_task_input:q_mcp"]["task_id"] == "task_child"
+        assert rows["mcp_task_input:q_mcp"]["source"] == {
+            "protocol": "mcp",
+            "tool_name": "earthscope_query",
+            "invocation_id": "call_7",
+        }
+        assert rows["permission:perm_child"]["task_id"] == "task_child"
+
+        answered = client.post(
+            f"/v1/sessions/{root}/interactions/question:q_native/response",
+            json={"action": "answer", "selected_options": ["yes"]},
+        )
+        assert answered.status_code == 200
+        assert calls == [(root, "q_native")]
+        duplicate = client.post(
+            f"/v1/sessions/{root}/interactions/question:q_native/response",
+            json={"action": "answer", "selected_options": ["yes"]},
+        )
+        assert duplicate.status_code == 409
+
+        allowed = client.post(
+            f"/v1/sessions/{root}/interactions/permission:perm_child/response",
+            json={"action": "allow"},
+        )
+        assert allowed.status_code == 200
+        assert app.state.permissions["perm_child"]["status"] == "resolved"
+
+        cancellable = UserQuestion(
+            id="q_cancel",
+            session_id=root,
+            prompt="Cancel me",
+            created_at=now,
+            updated_at=now,
+        )
+        app.state.user_questions[cancellable.id] = cancellable
+        cancelled = client.post(
+            f"/v1/sessions/{root}/interactions/question:q_cancel/response",
+            json={"action": "cancel"},
+        )
+        assert cancelled.status_code == 200
+        assert cancelled.json()["interaction"]["status"] == "cancelled"
+
+        expired = UserQuestion(
+            id="q_expired",
+            session_id=root,
+            prompt="Too late",
+            status="expired",
+            created_at=now,
+            updated_at=now,
+        )
+        app.state.user_questions[expired.id] = expired
+        late = client.post(
+            f"/v1/sessions/{root}/interactions/question:q_expired/response",
+            json={"action": "answer", "answer": "late"},
+        )
+        assert late.status_code == 409
+
+
+def test_legacy_forwarded_question_hydrates_owner_and_attended_ids() -> None:
+    row = UserQuestion.model_validate(
+        {
+            "id": "legacy",
+            "session_id": "root",
+            "prompt": "Legacy forwarded question",
+            "created_at": "2026-09-02T10:00:00+00:00",
+            "updated_at": "2026-09-02T10:00:00+00:00",
+            "metadata": {"forwarded_from_session": "child"},
+        }
+    )
+
+    assert row.owner_session_id == "child"
+    assert row.attended_session_id == "root"
+
+
+def test_native_question_deadline_atomically_expires_and_releases_root(tmp_path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    root = app.state.sessions.create(workspace_id="ws_default", title="root")
+    now = datetime.now(timezone.utc)
+    row = UserQuestion(
+        id="q_deadline",
+        session_id=root.id,
+        owner_session_id=root.id,
+        attended_session_id=root.id,
+        prompt="Timed question",
+        created_at=now.isoformat(),
+        updated_at=now.isoformat(),
+        expires_at=(now - timedelta(seconds=1)).isoformat(),
+    )
+    app.state.user_questions[row.id] = row
+    app.state.sessions.update(
+        root.id,
+        status="waiting_user",
+        metadata_patch={"pending_user_question_id": row.id},
+    )
+
+    arm_ask_user_deadline(app, row)
+    deadline = time.monotonic() + 2.0
+    while app.state.user_questions[row.id].status == "pending" and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert app.state.user_questions[row.id].status == "expired"
+    assert app.state.sessions.get(root.id).status == "idle"
+    assert app.state.sessions.get(root.id).metadata["pending_user_question_id"] == ""
+
+
+def test_mcp_task_request_id_correlates_hyphenated_task_exactly(tmp_path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    root, child = _root_and_child(app)
+    del root
+    resolve_store(None).put(
+        TaskRecord(
+            key=TaskKey(server_id="srv", session_id=child, task_id="abc-def"),
+            tool="earthscope_query",
+            status="input_required",
+        )
+    )
+    invocation = MCPInvocationContext(
+        invocation_id="call_7",
+        session_id=child,
+        namespace="earthscope",
+        tool_name="earthscope_query",
+    )
+
+    correlated = invocation_with_request_correlation(
+        invocation,
+        SimpleNamespace(request_id="task-abc-def-output_format"),
+    )
+
+    assert correlated.task_id == "abc-def"
+    assert correlated.input_key == "output_format"
+
+
+def test_child_a2ui_interaction_routes_to_owning_surface(tmp_path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    root, child = _root_and_child(app)
+    create = {
+        "version": "v0.9.1",
+        "createSurface": {"surfaceId": "child-form", "catalogId": CLIO_A2UI_CATALOG_ID},
+    }
+    components = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "child-form",
+            "components": [
+                {"id": "label", "component": "Text", "text": "Submit"},
+                {
+                    "id": "submit",
+                    "component": "Button",
+                    "child": "label",
+                    "action": {"event": {"name": "form.submit", "context": {"value": "x"}}},
+                },
+            ],
+        },
+    }
+    action = {
+        "version": "v0.9.1",
+        "action": {
+            "name": "form.submit",
+            "surfaceId": "child-form",
+            "sourceComponentId": "submit",
+            "timestamp": "2026-09-02T10:00:00Z",
+            "context": {"value": "x"},
+        },
+    }
+    with TestClient(app) as client:
+        produced = client.post(
+            f"/v1/sessions/{child}/a2ui/messages",
+            headers=HEADERS,
+            json={"messages": [create, components]},
+        )
+        assert produced.status_code == 200
+        listed = client.get(
+            f"/v1/sessions/{root}/interactions", params={"include_children": True}
+        ).json()["interactions"]
+        row = next(item for item in listed if item["kind"] == "a2ui")
+        assert row["owner_session_id"] == child
+        assert row["source"]["surface_id"] == "child-form"
+        mismatched = {
+            **action,
+            "action": {**action["action"], "surfaceId": "different-surface"},
+        }
+        rejected = client.post(
+            f"/v1/sessions/{root}/interactions/{row['id']}/response",
+            json={"message": mismatched},
+        )
+        assert rejected.status_code == 422
+        responded = client.post(
+            f"/v1/sessions/{root}/interactions/{row['id']}/response",
+            json={"message": action},
+        )
+        assert responded.status_code == 200
+        assert responded.json()["result"]["submitted"] == {"value": "x"}
+
+
+def test_capabilities_advertise_normalized_interactions(tmp_path) -> None:
+    with TestClient(build_app(sessions_path=tmp_path / "sessions.json")) as client:
+        assert client.get("/v1/capabilities").json()["capabilities"]["x_clio_interactions"] is True

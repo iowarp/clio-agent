@@ -627,45 +627,59 @@ def _dynamic_agent_tools(
     """Resolve the exact DSPy tools a tool-declaring dynamic agent may use."""
 
     requested_tools = [str(t).strip() for t in agent_def.tools if str(t).strip()]
-    try:
-        tool_executor = _active_base_agent_tool_executor(base_agent)
-    except Exception as exc:  # noqa: BLE001 - preserve the typed agent boundary
-        from clio_agent.gact.mcp_readiness import mount_failure_reason  # noqa: PLC0415
+    available_tools: dict[str, Any] = {}
+    if "ask_user" in requested_tools:
+        from clio_agent.gact.ask_user_tool import build_ask_user_tool  # noqa: PLC0415
 
-        resolution_failures = {"workspace_fleet": mount_failure_reason(exc)}
-        logger.exception(
-            "custom_agent_tool_executor_unavailable agent=%s tools=%s",
-            agent_def.id,
-            requested_tools,
-        )
-        raise _UnsupportedSessionAgent(
-            agent_def.id,
-            reason="custom_agent_tool_executor_unavailable",
-            tools=requested_tools,
-            mount_failures=resolution_failures,
-        ) from exc
-    mount_failures: dict[str, str] = {}
-    if tool_executor is None or not hasattr(tool_executor, "to_dspy_tools"):
-        if requested_tools:
+        available_tools["ask_user"] = build_ask_user_tool(agent_def)
+        toolset_inventory.register_tool_source(sources, "ask_user", "native-declared")
+    if "create_a2ui_surface" in requested_tools:
+        from clio_agent.gact.a2ui_tools import build_create_a2ui_surface_tool  # noqa: PLC0415
+
+        available_tools["create_a2ui_surface"] = build_create_a2ui_surface_tool()
+        toolset_inventory.register_tool_source(sources, "create_a2ui_surface", "native-declared")
+    gateway_requested = [name for name in requested_tools if name not in available_tools]
+    tool_executor = None
+    if gateway_requested:
+        try:
+            tool_executor = _active_base_agent_tool_executor(base_agent)
+        except Exception as exc:  # noqa: BLE001 - preserve the typed agent boundary
+            from clio_agent.gact.mcp_readiness import mount_failure_reason  # noqa: PLC0415
+
+            resolution_failures = {"workspace_fleet": mount_failure_reason(exc)}
+            logger.exception(
+                "custom_agent_tool_executor_unavailable agent=%s tools=%s",
+                agent_def.id,
+                gateway_requested,
+            )
             raise _UnsupportedSessionAgent(
                 agent_def.id,
                 reason="custom_agent_tool_executor_unavailable",
-                tools=requested_tools,
+                tools=gateway_requested,
+                mount_failures=resolution_failures,
+            ) from exc
+    mount_failures: dict[str, str] = {}
+    if tool_executor is None or not hasattr(tool_executor, "to_dspy_tools"):
+        if gateway_requested:
+            raise _UnsupportedSessionAgent(
+                agent_def.id,
+                reason="custom_agent_tool_executor_unavailable",
+                tools=gateway_requested,
             )
-        available_tools: dict[str, Any] = {}
     else:
-        available_tools, mount_failures = _resolve_declared_tools_with_on_demand_mount(
-            tool_executor, requested_tools
+        gateway_tools, mount_failures = _resolve_declared_tools_with_on_demand_mount(
+            tool_executor, gateway_requested
         )
         mounted = toolset_inventory.mounted_namespace_set(tool_executor)
-        for name in available_tools:
+        for name in gateway_tools:
             # prefix is real provenance only if mounted (finding [D]); else "gateway".
             prefix, sep, bare = name.partition("_")
             source = prefix if (sep and bare and prefix in mounted) else "gateway"
             toolset_inventory.register_tool_source(sources, name, source)
+        available_tools.update(gateway_tools)
     app = _ctx.active_app()
     if app is not None:
-        available_tools.update(_enabled_external_mcp_dspy_tools(app, requested_tools, sources))
+        available_tools.update(_enabled_external_mcp_dspy_tools(app, gateway_requested, sources))
     missing_tools = [name for name in requested_tools if name not in available_tools]
     resolved_tools = [name for name in requested_tools if name in available_tools]
     if missing_tools and not resolved_tools:  # nothing to degrade to -- brick TYPED (#1228 D3)
