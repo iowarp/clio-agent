@@ -7,11 +7,13 @@ Three layers, each load-bearing for the campaign:
    legacy = per-tool ``execution.taskSupport``), and that the proxy front
    STRIPS the backend's declaration. C1-S1's routing reads exactly these keys;
    if an upstream bump moves them, these pins fail first and name the spot.
-2. THE DEFECT, EXECUTABLE -- a ``task=required`` server mounted the way a user
+2. THE DEFECT, FIXED -- a ``task=required`` server mounted the way a user
    declares one (``MCPServerSpec`` -> ``build_gateway`` -> executor namespace
-   route) refuses every call with the typed -32021 today. The desired behavior
-   is the strict-xfail twin: C1-S1 removes the marker and deletes the
-   defect pin.
+   route) used to refuse every call with the typed -32021 (#1274). C1-S1
+   (#1281) fixes it with capability-keyed routing: once a namespace's task
+   capability is negotiated True, ``_connect_namespace`` uses a DIRECT
+   task-declaring client instead of the proxy path that suppresses the
+   declaration.
 3. THE FROZEN V1 ERA -- the hand-rolled 2025-11-25 fixture proves genuine
    legacy servers negotiate, list, and call through the same declared path
    (the byte-identical surface C1-S1 must not move).
@@ -32,15 +34,34 @@ from fastmcp.server.providers.proxy import ProxyClient
 from clio_agent import conf
 from clio_agent.errors import (
     MCP_PROTOCOL_DOWNGRADED_TO_LEGACY,
+    MCP_TASK_CAPABILITY_UNKNOWN,
+    MCP_TASKS_DECLARATION_SUPPRESSED,
+    MCP_TASKS_DIRECT_ROUTE_SELECTED,
     MCPMissingRequiredClientCapabilityError,
 )
-from clio_agent.tools.gateway import build_gateway, namespace_proxies, namespace_specs
-from clio_agent.tools.mcp_config import MCPServerSpec
-from clio_agent.tools.mcp_connection_era import latest_mcp_connection_era, resolved_connect_mode
+from clio_agent.tools.gateway import (
+    _list_declared_tools,
+    build_gateway,
+    namespace_direct_factories,
+    namespace_proxies,
+    namespace_specs,
+)
+from clio_agent.tools.mcp_config import MCPServerSpec, transport_for
+from clio_agent.tools.mcp_connection_era import (
+    latest_mcp_connection_era,
+    latest_task_capability,
+    resolved_connect_mode,
+)
 from clio_agent.tools.mcp_errors import typed_mcp_protocol_error
 from clio_agent.tools.mcp_executor import AsyncMCPToolExecutor
 from clio_agent.tools.mcp_runtime import make_mcp_client
+from clio_agent.tools.mcp_task_extension import tasks_declaration
 from clio_agent.tools.mcp_task_records import InMemoryTaskRecordStore, set_task_record_store
+from clio_agent.tools.mcp_task_routing import (
+    record_definitive_capability,
+    recorded_task_route_decisions,
+    resolve_namespace_route,
+)
 
 from .mcp_exerciser import (
     EXERCISER_NAMESPACE,
@@ -218,10 +239,12 @@ def _declared_exerciser_executor() -> AsyncMCPToolExecutor:
     """The exerciser mounted the way a user-declared server mounts: spec ->
     ``build_gateway`` -> executor namespace route (production wiring:
     ``agent.py`` passes ``namespace_proxies``; ``_active_tool_executor`` stamps
-    the spec registry the S1 branch will read). One deliberate divergence:
-    production also passes ``preloaded_tools`` (#932) so ``start()`` skips the
-    composite listing fan-out -- omitted here, so the exerciser spawns once for
-    that listing and once for the namespace route; assertions are unaffected."""
+    the spec + direct-factory registries the C1-S1 branch reads --
+    ``fleet_blueprint_merge.stamp_direct_factories`` mirrors that here). One
+    deliberate divergence: production also passes ``preloaded_tools`` (#932)
+    so ``start()`` skips the composite listing fan-out -- omitted here, so
+    the exerciser spawns once for that listing and once for the namespace
+    route; assertions are unaffected."""
 
     spec = MCPServerSpec(
         name=EXERCISER_NAMESPACE,
@@ -232,20 +255,21 @@ def _declared_exerciser_executor() -> AsyncMCPToolExecutor:
     gw = build_gateway({EXERCISER_NAMESPACE: spec})
     executor = AsyncMCPToolExecutor(gw, namespace_servers=namespace_proxies(gw))
     executor._clio_namespace_specs = namespace_specs(gw)  # noqa: SLF001 - mirrors production stamping
+    executor._clio_namespace_direct_factories = namespace_direct_factories(gw)  # noqa: SLF001
     return executor
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=MCPMissingRequiredClientCapabilityError,
-    reason="#1274: the declared path suppresses the tasks declaration; C1-S1 (#1281) flips this",
-)
 async def test_declared_path_serves_task_required_tools() -> None:
     """THE CAMPAIGN TARGET: a user-declared ``task=required`` tool simply works.
 
-    ``raises=`` pins the ONE acceptable failure (the typed -32021 refusal): a
-    half-fix that fails any other way -- spawn error, timeout, error-shaped
-    success -- fails this test instead of hiding behind the xfail.
+    C1-S1 (#1281) fixes this: the declared path's composite ``start()``
+    listing fan-out reaches the exerciser's REAL backend leg (``gateway.
+    _proxy_for_spec``'s per-request clone), whose ``__aenter__`` opportunistically
+    records the tasks extension as a positive capability
+    (``mcp_connection_era``'s ``instrument_client_era`` hook) BEFORE the
+    ``task_echo`` call is dispatched -- so ``_connect_namespace`` routes this
+    namespace direct instead of through the proxy that suppresses the
+    declaration.
     """
 
     try:
@@ -254,32 +278,23 @@ async def test_declared_path_serves_task_required_tools() -> None:
                 f"{EXERCISER_NAMESPACE}_task_echo", {"payload": "ping"}
             )
             assert outcome.model_text == "echo:ping"
-    finally:
-        _reap("mcp_exerciser.py")
-
-
-async def test_declared_path_today_refuses_task_required_typed() -> None:
-    """The defect pin C1-S1 DELETES: today the same call dies -32021, typed.
-    (Its value: proves the refusal is at least typed and terminal, never a
-    silent hang -- the #1275 floor.)"""
-
-    try:
-        async with _declared_exerciser_executor() as executor:
-            with pytest.raises(MCPMissingRequiredClientCapabilityError) as excinfo:
-                await executor.call_tool_result(
-                    f"{EXERCISER_NAMESPACE}_task_echo", {"payload": "ping"}
-                )
-        # -32021 is a generic missing-capability code (sampling qualifies too):
-        # pin that THIS refusal names the tasks extension specifically.
-        data = excinfo.value.protocol_data or {}
-        assert TASKS_EXTENSION_ID in data["requiredCapabilities"]["extensions"]
+        era = latest_task_capability(EXERCISER_NAMESPACE)
+        assert era is not None
+        assert era.task_capable is True
+        assert era.source == "capabilities_extensions"
+        decisions = {
+            ns: d for ns, d in recorded_task_route_decisions() if ns == EXERCISER_NAMESPACE
+        }
+        assert decisions, "no route decision recorded for the exerciser namespace"
     finally:
         _reap("mcp_exerciser.py")
 
 
 async def test_declared_path_plain_tools_work_on_a_task_capable_server() -> None:
     """Plain tools on a task-capable server work TODAY through the declared
-    path -- C1-S1 must not move this."""
+    path -- C1-S1 must not move this. Whole-namespace routing means a plain
+    tool on a task-capable server ALSO rides the direct route once capability
+    is known True; the typed reason record says so."""
 
     try:
         async with _declared_exerciser_executor() as executor:
@@ -287,6 +302,10 @@ async def test_declared_path_plain_tools_work_on_a_task_capable_server() -> None
                 f"{EXERCISER_NAMESPACE}_plain_echo", {"payload": "ping"}
             )
             assert "plain:ping" in outcome.model_text
+        decisions = [d for ns, d in recorded_task_route_decisions() if ns == EXERCISER_NAMESPACE]
+        assert decisions, "no route decision recorded for the exerciser namespace"
+        assert decisions[-1].use_direct is True
+        assert decisions[-1].reason == MCP_TASKS_DIRECT_ROUTE_SELECTED
     finally:
         _reap("mcp_exerciser.py")
 
@@ -308,8 +327,6 @@ def _v1_spec(name: str) -> MCPServerSpec:
 async def test_v1_fixture_negotiates_legacy_and_serves_the_tool() -> None:
     """A genuine 2025-11-25 server: auto-mode negotiation lands legacy and the
     plain tool round-trips on the camelCase wire."""
-
-    from clio_agent.tools.mcp_config import transport_for
 
     try:
         client = make_mcp_client(transport_for(_v1_spec("v1fix")), server_id="v1fix")
@@ -347,3 +364,104 @@ async def test_v1_fixture_through_the_declared_path() -> None:
         assert era.degrade_reason == MCP_PROTOCOL_DOWNGRADED_TO_LEGACY
     finally:
         _reap("mcp_v1_fixture.py")
+
+
+async def test_v1_fixture_definitive_capability_is_false_and_keeps_the_proxy_route() -> None:
+    """The DEFINITIVE read (``gateway._list_declared_tools``, the boot catalog
+    pass) on a genuine v1 server sees neither era marker (extensions stripped,
+    no per-tool ``execution`` arm on this fixture's one tool) and records a
+    real negative -- so the call-time route decision keeps the proxy path
+    with NO special reason (``tasks_declaration``'s own
+    ``mcp_tasks_declaration_suppressed`` -- unchanged, still tested in
+    ``test_mcp_tasks.py`` -- covers why THAT leg never advertises tasks)."""
+
+    namespace = "v1fix-definitive"
+    assert latest_task_capability(namespace) is None
+    try:
+        tools = _list_declared_tools(_v1_spec(namespace))
+        assert [tool.name for tool in tools] == [V1_TOOL_NAME]
+
+        capability = latest_task_capability(namespace)
+        assert capability is not None
+        assert capability.task_capable is False
+        assert capability.source == "none"
+
+        decision = resolve_namespace_route(namespace)
+        assert decision.use_direct is False
+        assert decision.reason is None
+
+        declaration = tasks_declaration(ProxyClient, object())
+        assert declaration.reason == MCP_TASKS_DECLARATION_SUPPRESSED
+    finally:
+        _reap("mcp_v1_fixture.py")
+
+
+# --------------------------------------------------------------------------
+# Layer 4: C1-S1 capability-keyed routing (#1281) -- the discovery reads and
+# the route decision, in isolation from the full declared-path plumbing.
+# --------------------------------------------------------------------------
+
+
+async def test_record_definitive_capability_reads_modern_extensions() -> None:
+    """In-memory modern exerciser: the definitive read finds the tasks id in
+    the server-declared extensions -- ``source="capabilities_extensions"``."""
+
+    async with Client(build_exerciser_server()) as client:
+        tools = await client.list_tools()
+        capability = record_definitive_capability("unit-modern", client, tools)
+    assert capability.task_capable is True
+    assert capability.source == "capabilities_extensions"
+    assert latest_task_capability("unit-modern") == capability
+
+
+async def test_record_definitive_capability_reads_legacy_per_tool_marker() -> None:
+    """Legacy-mode front over the exerciser: extensions are stripped by the
+    version sieve, so the definitive read falls back to the per-tool
+    ``execution.task_support`` arm -- ``source="tool_execution"``."""
+
+    async with Client(build_exerciser_server(), mode="legacy") as client:
+        tools = await client.list_tools()
+        capability = record_definitive_capability("unit-legacy", client, tools)
+    assert capability.task_capable is True
+    assert capability.source == "tool_execution"
+
+
+async def test_record_definitive_capability_records_a_genuine_negative() -> None:
+    """The frozen v1 fixture's one tool carries neither era marker: the
+    definitive read records ``task_capable=False``, ``source="none"``."""
+
+    try:
+        client = make_mcp_client(transport_for(_v1_spec("unit-v1-negative")), server_id="unit-v1")
+        async with client:
+            tools = await client.list_tools()
+            capability = record_definitive_capability("unit-v1-negative", client, tools)
+        assert capability.task_capable is False
+        assert capability.source == "none"
+    finally:
+        _reap("mcp_v1_fixture.py")
+
+
+def test_capability_unknown_default_keeps_the_proxy_path() -> None:
+    """Before ANY discovery lands for a namespace, the route decision keeps
+    the proxy path with the typed capability-unknown reason -- the safe
+    default (never a guess) until a listing pass or an opportunistic
+    real-backend connect records a verdict."""
+
+    namespace = "never-discovered-c1s1-namespace"
+    assert latest_task_capability(namespace) is None
+    decision = resolve_namespace_route(namespace)
+    assert decision.use_direct is False
+    assert decision.reason == MCP_TASK_CAPABILITY_UNKNOWN
+    assert (namespace, decision) in recorded_task_route_decisions()
+
+
+def test_known_task_capable_namespace_routes_direct() -> None:
+    """A namespace with a recorded True verdict routes direct, typed."""
+
+    from clio_agent.tools.mcp_connection_era import record_task_capability
+
+    namespace = "unit-known-task-capable"
+    record_task_capability(namespace, task_capable=True, source="capabilities_extensions")
+    decision = resolve_namespace_route(namespace)
+    assert decision.use_direct is True
+    assert decision.reason == MCP_TASKS_DIRECT_ROUTE_SELECTED
