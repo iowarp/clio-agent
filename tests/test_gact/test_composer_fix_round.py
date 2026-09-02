@@ -683,3 +683,71 @@ def test_an_unclaimable_steer_does_not_strand_the_steers_behind_it(tmp_path: Pat
 
     assert len(agent.calls) >= 2, "the steers behind an unclaimable one were stranded"
     assert "s2" in agent.calls[1][0]
+
+
+# --------------------------------------------------------------------------- #
+# F7 — deleting the message must retire the intent behind it.                   #
+# --------------------------------------------------------------------------- #
+
+
+def test_deleting_a_pending_steer_message_retires_its_intent(tmp_path: Path) -> None:
+    """Deleting the transcript row used to leave the delivery intent alive.
+
+    The drain would later claim it and steer the model with a message the user
+    had deleted.
+    """
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowAgent(sleep_s=2.0))
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "delete"}).json()["id"]
+        assert (
+            client.post(
+                f"/v1/sessions/{sid}/messages",
+                json={"parts": [{"type": "text", "text": "first"}]},
+            ).status_code
+            == 200
+        )
+        _wait_busy(app, sid)
+        steer_id = client.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "delete me"}]},
+        ).json()["message_id"]
+
+        assert client.delete(f"/v1/sessions/{sid}/messages/{steer_id}").status_code == 204
+
+        pending = app.state.message_intents.get_pending(sid, steer_id)
+        assert pending is not None and pending.state == "cancelled"
+        assert not inbox_for(app, sid).peek_nonempty(), "the inbox still carries a deleted steer"
+        assert client.get(f"/v1/sessions/{sid}/pending-steers").json()["pending_steers"] == []
+
+        with _active_turn(app, sid):
+            assert drain_active_session_inbox(app) == ""
+
+        retired = _projected(app, sid, "pending_steer.cancelled")
+        assert retired and retired[0]["entity_id"] == steer_id
+        _wait_idle(app, sid)
+
+
+def test_deleting_an_ordinary_message_leaves_the_intent_plane_alone(tmp_path: Path) -> None:
+    """The retirement is scoped to the deleted id, not to the session."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowAgent(sleep_s=2.0))
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "scoped"}).json()["id"]
+        started = client.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "first"}], "client_message_id": "msg_first"},
+        )
+        assert started.status_code == 200
+        _wait_busy(app, sid)
+        steer_id = client.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "keep me"}]},
+        ).json()["message_id"]
+
+        assert client.delete(f"/v1/sessions/{sid}/messages/msg_first").status_code == 204
+
+        pending = app.state.message_intents.get_pending(sid, steer_id)
+        assert pending is not None and pending.state == "pending"
+        assert inbox_for(app, sid).peek_nonempty()
+        _wait_idle(app, sid)

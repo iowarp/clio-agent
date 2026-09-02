@@ -94,6 +94,35 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
             ).model_dump(exclude_none=True),
         )
 
+    def _retire_pending_steer_intent(sid: str, message_id: str) -> None:
+        """Retire the delivery intent behind a deleted transcript message.
+
+        A pending steer lives on TWO planes: the transcript row the client sees
+        and the durable intent + inbox event that will deliver it. Deleting only
+        the row left the intent alive, so a later drain claimed it and steered
+        the model with a message the user had deleted. This mirrors the
+        ``DELETE /pending-steers/{id}`` cleanup; a message with no intent behind
+        it (an ordinary user or assistant row) is untouched.
+        """
+
+        intents = getattr(app.state, "message_intents", None)
+        if intents is None or intents.cancel_pending(sid, message_id) is None:
+            return
+        inbox = (getattr(app.state, "loop_inboxes", None) or {}).get(sid)
+        if inbox is not None:
+            inbox.cancel_user_message(message_id)
+        app.state.bus.publish(
+            Event(
+                type="pending_steer.cancelled",
+                session_id=sid,
+                payload={
+                    "message_id": message_id,
+                    "session_id": sid,
+                    "reason": "message_deleted",
+                },
+            )
+        )
+
     def _delete_message_from_session(sid: str, message_id: str) -> bool:
         msgs = app.state.messages.get(sid, [])
         for i, message in enumerate(msgs):
@@ -116,6 +145,7 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
             removed = msgs.pop(i)
             retained = preserve_a2ui(sid, msgs, [removed], "message_delete")
             deps.replace_session_messages(app, sid, retained)
+            _retire_pending_steer_intent(sid, message_id)
             if sess is not None:
                 app.state.sessions.update(sid, message_count=len(retained))
             app.state.bus.publish(
