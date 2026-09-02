@@ -781,7 +781,14 @@ RATCHET_BASELINE: dict[str, int] = {
     # lives in the owner modules tools/mcp_task_routing.py and tools/
     # mcp_namespace_executor.py; only these thin call sites + docstrings
     # land here.
-    "src/clio_agent/tools/mcp_executor.py": 880,
+    # #1281 (re-verify fix round): +11 (880 -> 891) for F12/F13. F12: a new
+    # _namespace_heal_attempted set (init'd beside _namespace_direct_routes)
+    # bounding a namespace to at most one heal attempt -- the actual gating
+    # LOGIC lives in the owner mixin tools/mcp_namespace_executor.py; only
+    # the field declaration/init lands here. F13: aclose() now clears
+    # _namespace_direct_routes/_namespace_heal_attempted alongside the
+    # ctxs/clients dicts they describe.
+    "src/clio_agent/tools/mcp_executor.py": 891,
     "src/clio_agent/tools/mcp_config.py": 817,
     # #1231 Part 1/2 (consumer half of the live-console feature): not previously
     # baselined -- this file was ALREADY 7 lines over the 800 cap before this
