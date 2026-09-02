@@ -32,7 +32,6 @@ with different specs) keeps the FIRST mounted spec and emits a typed
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any
 
 from clio_agent.runtime import trace
@@ -159,7 +158,6 @@ def stamp_fresh_fleet(
     blueprint_id: str,
     federation_epoch: Any,
     declared_specs: dict[str, Any],
-    direct_factories: Mapping[str, Any] | None = None,
 ) -> None:
     """Stamp a freshly-rebuilt fleet's bookkeeping (agent.py's rebuild path).
 
@@ -167,37 +165,27 @@ def stamp_fresh_fleet(
     #1236 federation epoch, and the #1237 declared-namespace map — the latter
     on BOTH the sync wrapper (``builders.py`` reads it there) and its inner
     async executor (``mcp_executor.py``'s dispatch-time gate reads it there).
-    ``direct_factories`` (#1281 C1-S1) is stamped the same dual way via
-    :func:`stamp_direct_factories`. Best-effort on test doubles that refuse
-    attribute assignment.
+    Best-effort on test doubles that refuse attribute assignment.
+
+    #1281 F5 (adversarial review): the direct-client factory registry is
+    deliberately NOT stamped here -- ``AsyncMCPToolExecutor.__init__`` now
+    derives it straight off the SAME gateway ``create_sync_tool_executor``
+    was just called with (the caller's construction, immediately before this
+    stamp), so a second explicit stamp here would only re-assert what
+    construction already got right, and — worse — could silently mask a
+    FUTURE construction-site regression by papering over it here instead of
+    surfacing it. A namespace joining a resident fleet via a LATER, additive
+    blueprint merge (no fresh construction involved) still needs its own
+    merge logic -- see :func:`merge_blueprint_namespaces`.
     """
 
     _stamp(executor, "_clio_mounted_blueprint_id", blueprint_id)
     _stamp(executor, "_clio_mounted_blueprint_ids", {blueprint_id} if blueprint_id else set())
     _stamp(executor, "_clio_federation_epoch", federation_epoch)
     _stamp(executor, "_clio_namespace_specs", declared_specs)
-    stamp_direct_factories(executor, direct_factories or {})
     inner = getattr(executor, "_async_executor", None)
     if inner is not None:
         _stamp(inner, "_clio_namespace_specs", declared_specs)
-
-
-def stamp_direct_factories(executor: Any, direct_factories: Mapping[str, Any]) -> None:
-    """Stamp the #1281 (C1-S1) direct-client factory registry onto ``executor``.
-
-    Mirrors the ``_clio_namespace_specs`` dual-stamp (sync wrapper + inner
-    async executor) so ``mcp_executor._connect_namespace`` can route a
-    namespace direct once its task capability is discovered True -- on
-    EVERY executor construction path: the default (no-workspace) gateway
-    executor, a freshly rebuilt per-workspace fleet (:func:`stamp_fresh_fleet`),
-    and an additively-merged blueprint (:func:`merge_blueprint_namespaces`).
-    """
-
-    factories = dict(direct_factories)
-    _stamp(executor, "_clio_namespace_direct_factories", factories)
-    inner = getattr(executor, "_async_executor", None)
-    if inner is not None:
-        _stamp(inner, "_clio_namespace_direct_factories", factories)
 
 
 def _mounted_blueprint_ids(executor: Any) -> set[str]:
