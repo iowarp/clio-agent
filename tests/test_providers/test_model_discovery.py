@@ -549,12 +549,25 @@ def _codex_model(
 
 
 def test_discover_codex_success_reports_default_and_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openai_codex.generated.v2_all import InputModality
+
     from clio_agent.providers.model_discovery import codex as md_codex
 
     stub = _StubCodex(
         rows=[
-            _codex_model("gpt-5.6-sol", name="GPT-5.6-Sol", description="d1", is_default=True),
-            _codex_model("gpt-5.6-terra", name="GPT-5.6-Terra", description="d2"),
+            _codex_model(
+                "gpt-5.6-sol",
+                name="GPT-5.6-Sol",
+                description="d1",
+                is_default=True,
+                input_modalities=[InputModality.text, InputModality.image],
+            ),
+            _codex_model(
+                "gpt-5.6-terra",
+                name="GPT-5.6-Terra",
+                description="d2",
+                input_modalities=[InputModality.text, InputModality.image],
+            ),
         ]
     )
     monkeypatch.setattr(md_codex, "AsyncCodex", lambda *_args, **_kwargs: stub)

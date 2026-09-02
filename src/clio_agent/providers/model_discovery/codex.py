@@ -76,7 +76,10 @@ def discover_codex(*, timeout: float = 20.0) -> ProviderDiscoveryResult:
             "id": str(row.id),
             "name": str(row.display_name or row.id),
             "description": str(row.description or ""),
-            "capabilities": [str(value) for value in getattr(row, "input_modalities", None) or []],
+            "capabilities": [
+                str(getattr(value, "value", value))
+                for value in getattr(row, "input_modalities", None) or []
+            ],
         }
         for row in rows
         if row.id
