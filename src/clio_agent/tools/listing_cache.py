@@ -41,7 +41,11 @@ from typing import Any
 from clio_agent import conf, paths
 from clio_agent.runtime import trace
 
-_SCHEMA = "clio-agent.mcp-listing-cache.v1"
+#: #1281 (C1-S1): bumped v1 -> v2 so a pre-fix cached listing (recorded before
+#: capability discovery existed) cannot mask a task-capable server for up to
+#: 24h -- the schema mismatch drops it, forcing a live re-list that also
+#: records its task capability.
+_SCHEMA = "clio-agent.mcp-listing-cache.v2"
 _CACHE_BASENAME = "mcp_listing_cache.json"
 
 _lock = threading.Lock()
@@ -139,9 +143,7 @@ def load_listing(
         return None
 
     def _drop(reason: str) -> None:
-        trace.event(
-            "TOOLS", "mcp_listing_cache_invalid namespace=%s reason=%s", namespace, reason
-        )
+        trace.event("TOOLS", "mcp_listing_cache_invalid namespace=%s reason=%s", namespace, reason)
         try:
             with _lock:
                 fresh = _load()
@@ -208,8 +210,8 @@ def store_listing(
                 if isinstance(v.get("listed_at"), (int, float)) and now - v["listed_at"] <= ttl_s
             }
             _save(entries)
-        trace.event(
-            "TOOLS", "mcp_listing_cached namespace=%s tools=%d", namespace, len(tools)
-        )
+        trace.event("TOOLS", "mcp_listing_cached namespace=%s tools=%d", namespace, len(tools))
     except Exception as exc:  # noqa: BLE001 - cache IO failure must never fail boot
-        trace.event("TOOLS", "mcp_listing_cache_store_failed namespace=%s reason=%s", namespace, exc)
+        trace.event(
+            "TOOLS", "mcp_listing_cache_store_failed namespace=%s reason=%s", namespace, exc
+        )
