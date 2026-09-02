@@ -219,10 +219,18 @@ def _format_sse(event: "Event") -> bytes:
     id: <numeric monotonic id>
     data: <json envelope>
     <blank line>
+
+    A TRANSIENT event (the ``server.heartbeat`` keepalive) is emitted WITHOUT the
+    ``id:`` line. Per the SSE spec a frame with no id leaves the client's
+    ``lastEventId`` untouched, which is exactly right for a keepalive: it never
+    enters the replay history and never advances ``bus.highest_event_id``, so
+    putting its id on the wire pushed the client's resume cursor past the
+    timeline head and made the next reconnect look like a process-epoch reset.
     """
 
     payload = json.dumps(event.envelope())
-    lines = f"event: {event.type}\nid: {event.id}\ndata: {payload}\n\n"
+    id_line = "" if event.transient else f"id: {event.id}\n"
+    lines = f"event: {event.type}\n{id_line}data: {payload}\n\n"
     return lines.encode("utf-8")
 
 

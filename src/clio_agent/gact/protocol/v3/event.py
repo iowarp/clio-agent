@@ -280,8 +280,22 @@ def _projector_for(event_type: str) -> _Projector | None:
     )
 
 
-def event_to_v3(event: Event, *, session: Any = None, workspace_id: str = "") -> dict[str, Any]:
-    """Translate a live 0.2 event into the canonical scoped 0.3 envelope."""
+def event_to_v3(
+    event: Event,
+    *,
+    session: Any = None,
+    workspace_id: str = "",
+    entity_revision: int | None = None,
+) -> dict[str, Any]:
+    """Translate a live 0.2 event into the canonical scoped 0.3 envelope.
+
+    ``entity_revision`` defaults to the event's own timeline id. A caller that
+    emits a connection-local frame ABOUT an entity — the reconnect preamble's
+    ``session.snapshot``, whose wire id is pinned to 0 so the served frames stay
+    monotonic — passes the entity's real revision here instead, so a
+    revision-guarding client does not discard the authoritative snapshot as older
+    than what it already holds.
+    """
 
     payload: dict[str, Any] = dict(event.payload)
     event_type = event.type
@@ -312,7 +326,7 @@ def event_to_v3(event: Event, *, session: Any = None, workspace_id: str = "") ->
         "type": event_type,
         "occurred_at": event.occurred_at,
         "scope": scope,
-        "entity_revision": event.id,
+        "entity_revision": event.id if entity_revision is None else int(entity_revision),
         "payload": payload,
     }
     if entity_id:
@@ -322,12 +336,26 @@ def event_to_v3(event: Event, *, session: Any = None, workspace_id: str = "") ->
     return envelope
 
 
-def format_sse_v3(event: Event, *, session: Any = None, workspace_id: str = "") -> bytes:
-    """Render an event as an SSE frame containing a GACT 0.3 envelope."""
+def format_sse_v3(
+    event: Event,
+    *,
+    session: Any = None,
+    workspace_id: str = "",
+    entity_revision: int | None = None,
+) -> bytes:
+    """Render an event as an SSE frame containing a GACT 0.3 envelope.
 
-    envelope = event_to_v3(event, session=session, workspace_id=workspace_id)
+    A TRANSIENT event (the keepalive) is framed WITHOUT an ``id:`` line so it
+    leaves the client's ``lastEventId`` alone — see ``runtime.globals._format_sse``
+    for the resume-cursor reasoning this mirrors.
+    """
+
+    envelope = event_to_v3(
+        event, session=session, workspace_id=workspace_id, entity_revision=entity_revision
+    )
     event_type = str(envelope["type"])
+    id_line = "" if event.transient else f"id: {event.id}\n"
     return (
-        f"event: {event_type}\nid: {event.id}\ndata: "
+        f"event: {event_type}\n{id_line}data: "
         f"{json.dumps(envelope, separators=(',', ':'))}\n\n"
     ).encode()

@@ -91,12 +91,20 @@ def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/sessions/{sid}/message-state")
     async def get_message_state(sid: str) -> dict[str, Any]:
-        """Return one authoritative reconciliation snapshot for GACT 0.3 clients."""
+        """Return one authoritative reconciliation snapshot for GACT 0.3 clients.
+
+        ``next_cursor`` speaks the server-wide cursor convention (see the
+        ``GET /v1/sessions/{sid}/events`` docstring): *the highest event id this
+        snapshot already accounts for*, so a client can hand it straight to
+        ``Last-Event-ID`` and resume exclusively from there. It used to return
+        ``last id + 1`` — an inclusive convention — which pushed a reconciling
+        client one id past the timeline head and tripped the epoch guard on its
+        very first reconnect. ``0`` means the session has no events yet.
+        """
 
         session = app.state.sessions.get(sid)
         if session is None:
             raise HTTPException(status_code=404, detail=f"session not found: {sid}")
-        events = app.state.bus.session_events_since(sid, cursor=1)
         return {
             "protocol_version": "0.3",
             "authoritative": True,
@@ -108,7 +116,7 @@ def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
             "queued_messages": [
                 row.model_dump() for row in app.state.message_intents.list_queued(sid)
             ],
-            "next_cursor": events[-1].id + 1 if events else 1,
+            "next_cursor": app.state.bus.latest_event_id(sid),
             "dropped_events": app.state.bus.dropped_total(sid),
         }
 
