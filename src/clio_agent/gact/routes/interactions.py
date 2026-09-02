@@ -116,6 +116,7 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
                 "question_id": question.id,
                 "question_kind": question.kind,
                 "options": [option.model_dump() for option in question.options],
+                "allow_freeform": question.allow_freeform,
                 "expires_at": question.expires_at,
                 "input_key": correlation["input_key"],
             }.items()

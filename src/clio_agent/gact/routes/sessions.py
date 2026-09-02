@@ -3,9 +3,8 @@
 This concern owns the ``/v1/sessions`` lifecycle and session-scoped ask/retry protocol.
 
 * CRUD -- ``POST/GET/PATCH/DELETE /v1/sessions`` (+ ``GET /v1/sessions/{sid}``):
-  create against the workspace store, list with the archive partition, patch the
-  mutable mode/title fields, and permission-gated delete (which also drops the
-  session's messages, context-file ledger and hot ARC footprint).
+  create, list, and patch sessions; permission-gated delete also drops messages,
+  the context-file ledger, and the hot ARC footprint.
 * Rollback -- ``POST /v1/sessions/{sid}/undo`` + ``.../rewind``: drop the trailing
   ``count`` messages (undo) or everything past a target message (rewind), both
   permission-gated and republished as ``message.deleted`` + ``session.{op}``.
@@ -1141,6 +1140,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             prompt=prompt,
             kind=req.kind,
             options=_normalize_question_options(req),
+            allow_freeform=req.allow_freeform,
             created_at=now_iso,
             updated_at=now_iso,
             expires_at=req.expires_at,
