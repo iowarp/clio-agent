@@ -26,6 +26,7 @@ class UserQuestion(BaseModel):
     status: Literal["pending", "answered", "cancelled", "expired"] = "pending"
     kind: Literal["freeform", "choice", "confirmation"] = "freeform"
     options: list[UserQuestionOption] = Field(default_factory=list)
+    allow_freeform: bool = False
     created_at: str
     updated_at: str
     expires_at: str = ""
@@ -60,6 +61,7 @@ class CreateUserQuestionRequest(BaseModel):
     prompt: str
     kind: Literal["freeform", "choice", "confirmation"] = "freeform"
     options: list[UserQuestionOption] = Field(default_factory=list)
+    allow_freeform: bool = False
     source: str = "orchestrator"
     turn_id: str = ""
     attempt_id: str = ""

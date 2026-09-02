@@ -66,6 +66,7 @@ def build_ask_user_tool(agent_def: Any) -> Any:
         question: str,
         kind: str = "freeform",
         options: list[dict[str, Any]] | None = None,
+        allowFreeform: bool = False,  # noqa: N803 - public tool schema is camelCase
         reason: str = "",
         expiresInSeconds: int = 600,  # noqa: N803 - public tool schema is camelCase
     ) -> str:
@@ -108,6 +109,7 @@ def build_ask_user_tool(agent_def: Any) -> Any:
             "question": prompt,
             "kind": normalized_kind,
             "choices": normalized_options,
+            "allow_freeform": bool(allowFreeform),
             "reason": str(reason or "").strip(),
             "expires_at": expires_at,
             "owner_session_id": owner,
@@ -138,6 +140,10 @@ def build_ask_user_tool(agent_def: Any) -> Any:
                 "type": "array",
                 "description": "Choice options with label, value, and optional description.",
                 "items": {"type": "object"},
+            },
+            "allowFreeform": {
+                "type": "boolean",
+                "description": "Allow a free-form answer alongside supplied choices.",
             },
             "reason": {"type": "string", "description": "Why this input is required."},
             "expiresInSeconds": {

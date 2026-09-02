@@ -71,6 +71,7 @@ def test_ask_user_runtime_tool_injects_owner_task_and_attended_correlation(
         question="Which dataset should I use?",
         kind="choice",
         options=[{"label": "A", "value": "a"}],
+        allowFreeform=True,
     )
 
     pending = app.state.sessions.get(child).metadata["pending_ask_user"]
@@ -79,6 +80,7 @@ def test_ask_user_runtime_tool_injects_owner_task_and_attended_correlation(
     assert pending["attended_session_id"] == root
     assert pending["task_id"] == "task_child"
     assert pending["invocation_id"] == "turn_child:child:ask_user"
+    assert pending["allow_freeform"] is True
 
 
 def test_interactions_aggregate_children_and_route_question_and_permission(
@@ -95,6 +97,7 @@ def test_interactions_aggregate_children_and_route_question_and_permission(
         prompt="Proceed?",
         kind="confirmation",
         options=[UserQuestionOption(label="Yes", value="yes")],
+        allow_freeform=True,
         created_at=now,
         updated_at=now,
     )
@@ -154,6 +157,7 @@ def test_interactions_aggregate_children_and_route_question_and_permission(
             "tool_name": "earthscope_query",
             "invocation_id": "call_7",
         }
+        assert rows["question:q_native"]["payload"]["allow_freeform"] is True
         assert rows["permission:perm_child"]["task_id"] == "task_child"
 
         answered = client.post(

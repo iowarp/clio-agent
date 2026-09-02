@@ -7,8 +7,7 @@ This concern owns the ``/v1/sessions`` lifecycle and scoped ask/retry protocol:
 * Fork/import/export provide branching and portable JSON transfer.
 * Compaction replaces the visible transcript with evidence-preserving memory.
 * Cancel cooperatively stops an in-flight turn and publishes its status.
-* Ask-user -- session question CRUD plus background resumption after answers.
-* Retry -- list and execute recorded attempts from a source user message.
+* Ask-user and retry own question resumption and recorded source-message attempts.
 Fork, question-answer, and retry share ``deps.start_background_user_turn``. Shared
 cross-concern helpers travel on :class:`GactDeps`; private helpers stay here.
 """
@@ -1129,6 +1128,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             prompt=prompt,
             kind=req.kind,
             options=_normalize_question_options(req),
+            allow_freeform=req.allow_freeform,
             created_at=now_iso,
             updated_at=now_iso,
             expires_at=req.expires_at,

@@ -60,6 +60,7 @@ def maybe_pause_for_user(
         status="pending",
         kind=kind,  # type: ignore[arg-type]
         options=options,
+        allow_freeform=bool(ask_user_action.get("allow_freeform", False)),
         created_at=now_iso,
         updated_at=now_iso,
         expires_at=str(ask_user_action.get("expires_at") or ""),
