@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import mimetypes
+import logging
 import os
 import shutil
 import threading
@@ -20,6 +20,10 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+from clio_agent.gact.resource_mime import detect_media_type
+
+logger = logging.getLogger(__name__)
 
 
 def _now_iso() -> str:
@@ -36,48 +40,6 @@ def _safe_name(value: str) -> str:
     if any(ord(character) < 32 for character in name):
         raise ValueError("resource name contains control characters")
     return name[:255]
-
-
-def _detect_mime(name: str, head: bytes) -> tuple[str, str]:
-    """Detect a bounded set of high-confidence signatures, then use the suffix."""
-
-    signatures: tuple[tuple[bytes, str], ...] = (
-        (b"%PDF-", "application/pdf"),
-        (b"\x89PNG\r\n\x1a\n", "image/png"),
-        (b"\xff\xd8\xff", "image/jpeg"),
-        (b"GIF87a", "image/gif"),
-        (b"GIF89a", "image/gif"),
-        (b"RIFF", "application/riff"),
-        (b"PK\x03\x04", "application/zip"),
-        (b"\x89HDF\r\n\x1a\n", "application/x-hdf5"),
-    )
-    for signature, media_type in signatures:
-        if head.startswith(signature):
-            return media_type, "signature"
-    if head and b"\x00" not in head:
-        try:
-            head.decode("utf-8")
-        except UnicodeDecodeError:
-            pass
-        else:
-            guessed, _ = mimetypes.guess_type(name)
-            if guessed and (
-                guessed.startswith("text/")
-                or guessed
-                in {
-                    "application/json",
-                    "application/javascript",
-                    "application/xml",
-                    "application/yaml",
-                    "application/x-yaml",
-                }
-            ):
-                return guessed, "utf8_and_extension"
-            return "text/plain", "utf8"
-    guessed, _ = mimetypes.guess_type(name)
-    if guessed:
-        return guessed, "extension"
-    return "application/octet-stream", "fallback"
 
 
 class ResourceRecord(BaseModel):
@@ -288,7 +250,7 @@ class ResourceStore:
                 if len(head) < 8192:
                     head += chunk[: 8192 - len(head)]
                 digest.update(chunk)
-        detected_mime, detection_source = _detect_mime(record.name, head)
+        detected_mime, detection_source = detect_media_type(record.name, head)
         destination = self._revision_dir(record) / "original"
         os.replace(upload, destination)
         now = _now_iso()
