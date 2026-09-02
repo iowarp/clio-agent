@@ -69,14 +69,18 @@ class _FakeClient:
     async def __aexit__(self, *exc: Any) -> bool:
         return False
 
-    async def call_tool(self, tool_name: str, tool_args: Any) -> _FakeResult:
+    async def call_tool(
+        self, tool_name: str, tool_args: Any, *, progress_handler: Any = None
+    ) -> _FakeResult:
         return _FakeResult("hello-from-tool")
 
 
 class _StructuredFakeClient(_FakeClient):
     """Return text for the model and structured MCP content for telemetry."""
 
-    async def call_tool(self, tool_name: str, tool_args: Any) -> _FakeResult:
+    async def call_tool(
+        self, tool_name: str, tool_args: Any, *, progress_handler: Any = None
+    ) -> _FakeResult:
         return _FakeResult(
             "human projection",
             structured_content={

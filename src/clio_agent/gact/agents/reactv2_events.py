@@ -46,6 +46,7 @@ from dspy.primitives.prediction import Prediction
 from dspy.utils.exceptions import AdapterParseError, ContextWindowExceededError
 
 from clio_agent.arc.working_set_fold import emit_step_open
+from clio_agent.errors import ClioError
 from clio_agent.gact.runtime.context_tokens import _arc_obs_value
 from clio_agent.gact.runtime.globals import (
     _active_lm_last_reasoning,
@@ -329,7 +330,12 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
     # Both iterables always yield at least once (range(max_iters) for
     # max_iters > 0; itertools.count() is infinite) -- pre-bound only so a
     # static checker can see `turn_index` is never actually unbound below.
+    # step_span_id/thought are ALSO pre-bound (#1282 F6) so the escalation
+    # except branch below can reference "whatever the last iteration reached"
+    # even when an exception fires before either is (re)assigned this turn.
     turn_index = -1
+    step_span_id = ""
+    thought: Any = ""
     try:
         for turn_index in turn_indices:
             step_span_id = uuid.uuid4().hex[:16]
@@ -449,6 +455,71 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
             forced_submit_turn_index,
         )
         return result
+    except ClioError as exc:
+        # #1282 F6 (#1275 ask 3): a TYPED clio escalation (the D1 refusal
+        # escalation is the concrete reproducer; ClioError/MCPProtocolError
+        # covers every other typed clio error too) propagating out of the
+        # loop body must not leave the expert lifecycle span dangling on the
+        # highway (a "started" with no matching close) or skip publishing
+        # the retained History (the S4 repair entry's only read of what THIS
+        # turn actually produced before it died). Both fire BEFORE
+        # re-raising -- the exception itself is never swallowed here, only
+        # observed. Reaches the SSE UI wire for free via the existing
+        # status="failed" always-pass rule (gact/semantic_events.py's
+        # ``_SSE_ALWAYS_STATUSES`` — no event-type catalog change needed);
+        # dedicated RENDERING for it is gact-tui#384, filed separately.
+        #
+        # SCOPE (re-verify round, narrowed from a bare ``except Exception``):
+        # a GENERIC crash (RuntimeError et al.) is NOT caught here and
+        # re-raises completely unchanged -- no lifecycle.failed, no closing
+        # observation, no retained-history publish. That is ARC's own
+        # deliberate crash contract (working_set_fold.py §2.8b,
+        # ``emit_step_open``'s own docstring, pinned by
+        # ``test_working_set_fold_step_open.py::test_crash_leaves_step_open``):
+        # a hard mid-step crash leaves ONLY the pre-execution step_open
+        # breadcrumb on the canonical log, never a synthesized closing
+        # observation authored after the fact. Widening this except clause
+        # to Exception (an earlier version of this fix did exactly that)
+        # silently violated that contract for every ordinary crash, not just
+        # typed refusals. Fixing the dangling-span/lost-history gap for a
+        # GENERIC crash is a separate decision against the ARC fold
+        # contract, out of this slice's scope.
+        reason = str(getattr(exc, "reason", "") or type(exc).__name__)
+        try:
+            _emit_expert_lifecycle_event(
+                "expert.lifecycle.failed",
+                expert_id=expert_id,
+                expert_span_id=expert_span_id,
+                status="failed",
+                payload={"reason": reason, "error": str(exc)},
+            )
+            if turn_index >= 0:
+                _arc_write(
+                    arc,
+                    session,
+                    scope,
+                    "observation",
+                    {"text": f"[turn escalated] {reason}: {exc}"},
+                    turn_index,
+                    turn_id=turn_id,
+                    expert_span_id=expert_span_id,
+                    run_span_id=step_span_id,
+                )
+            _ctx.publish_trajectory(
+                {
+                    "history": list(history.messages),
+                    "input_args": dict(pending_inputs),
+                    "termination_reason": "escalated_error",
+                }
+            )
+        except Exception:  # noqa: BLE001 - cleanup must never swallow the REAL error
+            logger.warning(
+                "reactv2 escalation cleanup failed expert_id=%s reason=%s",
+                expert_id,
+                reason,
+                exc_info=True,
+            )
+        raise
     finally:
         _ctx.reset(parent_token)
 

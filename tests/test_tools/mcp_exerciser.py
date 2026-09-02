@@ -118,6 +118,31 @@ def build_exerciser_server() -> FastMCP:
         answer = responses.get("q1")
         return f"answered:{getattr(answer, 'content', None)}"
 
+    @server.tool
+    async def plain_guarded_input(ctx: Context) -> Any:
+        """Ask for one input via the PLAIN (non-task) SEP-2322 MRTR shape (#1282 F9).
+
+        Unlike ``guarded_input`` (task=required, so a client without the tasks
+        extension can never reach it at all -- proven terminal-fast in
+        ``test_guarded_input_legacy_front_refuses_terminal_fast_not_hangs``,
+        a PROTOCOL-STRUCTURAL axis), this tool needs NO extension: the SDK's
+        own ``run_input_required_driver`` handles a raw ``InputRequiredResult``
+        return regardless of tasks capability. Proves MRTR itself survives a
+        ``create_proxy(ProxyClient(...))`` front (which strips the tasks
+        declaration but negotiates the SAME modern era otherwise) -- a
+        DIFFERENT axis: the proxy mount, not the protocol era.
+        """
+
+        responses = ctx.input_responses
+        if not responses:
+            return mcp_types.InputRequiredResult(
+                inputRequests={"q1": _one_elicit("Pick a value")},
+                requestState="round-1",
+                resultType="input_required",
+            )
+        answer = responses.get("q1")
+        return f"answered:{getattr(answer, 'content', None)}"
+
     @server.tool(task=TaskConfig(mode="required", poll_interval=timedelta(milliseconds=50)))
     async def staller(ctx: Context, seconds: float = 0.5, steps: int = 5) -> str:
         """Run slowly as a REQUIRED task, cancellable between steps.
@@ -146,6 +171,24 @@ def build_exerciser_server() -> FastMCP:
             await asyncio.sleep(max(0.0, seconds) / max(1, steps))
             await ctx.report_progress(progress=step + 1, total=max(1, steps))
         return "plain-stalled"
+
+    @server.tool(annotations={"readOnlyHint": True})
+    async def silent_sleeper(seconds: float = 0.5) -> str:
+        """Sleep on the PLAIN path with ZERO progress notifications (#1282 F11).
+
+        The contrasting arm to ``plain_staller``: genuinely silent (no
+        instrument at all, not even one), so the C1-S2 D3 activity-driven
+        ``call_timeout_s`` backstop (``tools/mcp_wait_ladder.
+        run_with_activity_backstop``) has nothing to reset on and must still
+        fire for a call that outlasts its window. ``readOnlyHint`` is
+        genuinely true (it has no side effects) -- declared so a timeout on
+        it surfaces the typed backstop directly rather than the executor's
+        (correct, unrelated) uncertain-mutating-timeout guard for a
+        NON-retry-safe tool.
+        """
+
+        await asyncio.sleep(max(0.0, seconds))
+        return "slept-silently"
 
     return server
 

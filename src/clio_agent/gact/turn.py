@@ -43,6 +43,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
+from clio_agent.errors import ClioError
 from clio_agent.gact.delegation import (
     _coerce_expert_handoff_rows,
     _prediction_workflow_state,
@@ -726,6 +727,33 @@ async def _run_turn_in_background(
                 "skill_path": exc.path,
                 "recovery_actions": ["choose_builtin_agent", "retry", "exit"],
             },
+            recoverable=True,
+        )
+        state.answer_text = ""
+        state.tools_called = []
+    except ClioError as exc:
+        # #1282 F5 (#1275 ask 2): a typed clio error -- a protocol refusal
+        # chief among them -- reaches the parent with its own reason/details
+        # (json_rpc_code, protocol_data naming what to re-dial with) instead
+        # of the generic agent_error branch below erasing them.
+        #
+        # N4 (re-verify round): the TOP-LEVEL error field stays "agent_error"
+        # -- the SAME value the generic branch below already uses -- rather
+        # than exc.to_dict()["error"] (e.g. "mcp_missing_required_client_
+        # capability"), which is a CLIO-internal error_type, not a member of
+        # the wire taxonomy the client renders; an unrecognized code there
+        # falls back to a bare "Internal error". details still carries the
+        # FULL to_dict() payload -- json_rpc_code, protocol_data, and
+        # details["reason"], which is what actually matters structurally:
+        # turn_spawn_failures.child_task_error_reason reads details["reason"]
+        # (never the top-level error) to project the typed reason onto a
+        # spawned child's AgentTask record (agent_tasks.ERROR_REASONS carries
+        # the typed reason strings, not error_type strings).
+        payload = exc.to_dict()
+        state.error_info = ErrorInfo(
+            error="agent_error",
+            message=payload["message"],
+            details=payload["details"],
             recoverable=True,
         )
         state.answer_text = ""

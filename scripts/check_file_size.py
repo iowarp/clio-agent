@@ -229,6 +229,30 @@ RATCHET_BASELINE: dict[str, int] = {
     # their owner module agents/signatures.py; the additive `images` input +
     # its three forward params are what stayed.
     "src/clio_agent/gact/agents/builders.py": 1975,
+    # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
+    # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
+    # tool callable this loop will ever run (MCP-bridged, instrumented
+    # native, dynamic-agent external, or a bare hand-built dspy.Tool -- every
+    # documented way to add a tool) so a raised typed MCP protocol refusal is
+    # marked before dspy's own per-call swallow can discard it (sync AND the
+    # coroutine-returning async case, since dspy.Tool.__call__ awaits an
+    # async func's result outside the callable's own return); (2)
+    # _execute_tool_calls pops that mark right after the swallow and
+    # re-raises, escalating a deterministic refusal to a terminal turn
+    # failure instead of letting the model retry it. The classification +
+    # side channel are owned by tools/mcp_errors.py; only the wrap/pop/raise
+    # + docstrings explaining why land here.
+    # +31 (#1282, C1-S2 adversarial-review round): F2 -- deleted the dead
+    # async-await guard, added the loud construction-time TypeError refusal
+    # for a coroutine-function tool callable (a fuller docstring explaining
+    # the asyncio.run() context-boundary bug the old guard silently missed).
+    # F8 -- one-line @functools.wraps(inner) fix.
+    # +6 (#1282, re-verify round): the F2 docstring's async-boundary contrast
+    # rewritten to state the general lesson honestly (a contextvar crossing
+    # asyncio.Task/asyncio.run is verify-don't-assume, not safe-by-default)
+    # after B1 proved the "F3a's ensure_future boundary is just safe" framing
+    # was itself the exact ordering bug the B1 fix corrects.
+    "src/clio_agent/gact/agents/reactv2.py": 921,
     # #948 S4/S5/S6 growth already carried this file past the flat 800 cap (to 842)
     # before it was ever added to this baseline — a pre-existing gap this change
     # did not introduce (it was silently exempt from the ratchet, not under it).
@@ -605,7 +629,25 @@ RATCHET_BASELINE: dict[str, int] = {
     # the server + typed reason in the user-facing message/details when the
     # unavailability came from a failed on-demand mount attempt; the
     # mount_failures map itself is built in gact/agents/builders.py.
-    "src/clio_agent/gact/turn.py": 863,
+    # +20 (#1282, C1-S2 F5): a ClioError except branch (before the generic
+    # agent_error catch-all) builds ErrorInfo straight from exc.to_dict() --
+    # the classification/reason vocabulary lives in errors.py; only the one
+    # branch + import land here.
+    # +9 (#1282, re-verify round N4): the ClioError branch's docstring now
+    # explains why the top-level error_info.error stays "agent_error" (the
+    # existing wire taxonomy) while details carries the full typed payload --
+    # no behavior lines added, only the honesty fix's explanation.
+    "src/clio_agent/gact/turn.py": 891,
+    # NEW entry (#1282, C1-S2 F5): crossed the flat 800 cap (798 -> 807) for
+    # two new typed reason strings (mcp_capability_refused/
+    # mcp_protocol_refused) added to ERROR_REASONS so turn.py's ClioError
+    # branch's stamped detail reason projects onto a spawned child's
+    # AgentTask record (turn_spawn_failures.child_task_error_reason already
+    # reads it back unchanged) instead of falling back to "agent_error".
+    # +7 (#1282, re-verify round N3): the two backstop reasons
+    # (mcp_call_timeout_backstop / mcp_task_drive_timeout_backstop) joined
+    # ERROR_REASONS -- same diagnosability class as F5's two refusal reasons.
+    "src/clio_agent/gact/agent_tasks.py": 814,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the
@@ -805,7 +847,26 @@ RATCHET_BASELINE: dict[str, int] = {
     # the field declaration/init lands here. F13: aclose() now clears
     # _namespace_direct_routes/_namespace_heal_attempted alongside the
     # ctxs/clients dicts they describe.
-    "src/clio_agent/tools/mcp_executor.py": 891,
+    # +6 (#1282, C1-S2 D3): call_tool_result's retry-safe timeout branch raises
+    # the typed, stream_audit-surfaced tools/mcp_wait_ladder.typed_call_timeout_error
+    # instead of a bare TimeoutError -- classification/surfacing owned there;
+    # only the lazy import (ruff-wrapped to 3 lines at this line length) + one
+    # raise-site swap land here.
+    # +26 (#1282, C1-S2 F3a adversarial-review round): call_tool_result's
+    # explicit-budget branch now runs through
+    # tools/mcp_wait_ladder.run_with_activity_backstop (an ACTIVITY-DRIVEN
+    # deadline, reset by progress notifications / task status transitions,
+    # instead of a flat asyncio.wait_for over the whole call) with a wired
+    # progress_handler; the timeout except branch distinguishes an
+    # already-typed MCPCallTimeoutBackstopError (re-raised as-is) from any
+    # other TimeoutError (still typed defensively). All ladder/backstop LOGIC
+    # lives in the owner module; only the call-site swap + branch land here.
+    # +13: MCPClientProtocol.call_tool widened to declare the OPTIONAL
+    # progress_handler parameter real fastmcp clients accept and F3a's
+    # activity backstop now passes -- the protocol previously omitted it
+    # entirely (a bug, not a feature: 19 test doubles across the repo
+    # conformed to the narrower, wrong contract until this review round).
+    "src/clio_agent/tools/mcp_executor.py": 936,
     "src/clio_agent/tools/mcp_config.py": 817,
     # #1231 Part 1/2 (consumer half of the live-console feature): not previously
     # baselined -- this file was ALREADY 7 lines over the 800 cap before this
