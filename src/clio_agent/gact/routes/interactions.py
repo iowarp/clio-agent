@@ -321,7 +321,11 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
             "include_children": include_children,
         }
 
-    @app.post("/v1/sessions/{root_session_id}/interactions/{interaction_id}/response")
+    @app.post(
+        "/v1/sessions/{root_session_id}/interactions/{interaction_id}/response",
+        include_in_schema=False,
+    )
+    @app.post("/v1/sessions/{root_session_id}/interactions/{interaction_id}/respond")
     async def respond_interaction(
         root_session_id: str,
         interaction_id: str,
