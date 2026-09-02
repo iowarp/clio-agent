@@ -104,7 +104,9 @@ def test_v2_forward_writes_arc_and_emits_highway(tmp_path, monkeypatch: pytest.M
     assert str(getattr(pred, "answer", "")) == "FINAL"
 
 
-def test_v2_forward_fires_autocompact_trigger_each_turn(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_v2_forward_fires_autocompact_trigger_each_turn(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The proactive auto-compaction TRIGGER is wired into the V2 loop: forward calls
     ``agent._maybe_autocompact`` before every ``react`` call (removing the call in
     ``instrumented_forward`` turns this red)."""
@@ -127,3 +129,86 @@ def test_v2_forward_fires_autocompact_trigger_each_turn(tmp_path, monkeypatch: p
 
     # Two turns (search + submit) => the trigger fired at least twice, one per send.
     assert calls["n"] >= 2, f"autocompact trigger did not fire per turn; fired {calls['n']}x"
+
+
+def test_v2_forward_escalation_closes_the_lifecycle_span_and_publishes_history(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1282 F6 (#1275 ask 3): a D1-escalated typed refusal propagating out of
+    ``instrumented_forward`` must not leave ``expert.lifecycle.started`` with
+    no matching close on the highway, and must not skip publishing the
+    retained History (the S4 repair entry's only read of what the turn
+    produced before it died). Sabotage: removing the F6 except branch in
+    ``instrumented_forward`` turns this red (no ``expert.lifecycle.failed``,
+    ``active_trajectory()`` stays whatever it was before this forward)."""
+    from clio_agent.errors import MCPMissingRequiredClientCapabilityError
+
+    def _refusing_tool(payload: str = "") -> str:
+        raise MCPMissingRequiredClientCapabilityError(
+            "task_echo requires the tasks extension",
+            {"requiredCapabilities": {"extensions": {"io.modelcontextprotocol/tasks": {}}}},
+        )
+
+    agent = retaining_reactv2_cls()(
+        "question -> answer",
+        tools=[dspy.Tool(_search), dspy.Tool(_refusing_tool)],
+        max_iters=6,
+    )
+    # Turn 1 succeeds (search) so there IS retained prior-turn history by the
+    # time turn 2's refusal escalates -- proving the retain captures what the
+    # turn actually produced before it died, not merely an empty stand-in.
+    lm = DummyLM(
+        [
+            {
+                "next_thought": "search first",
+                "tool_calls": {"tool_calls": [{"name": "search", "args": {"q": "alpha"}}]},
+            },
+            {
+                "next_thought": "call it",
+                "tool_calls": {
+                    "tool_calls": [{"name": "_refusing_tool", "args": {"payload": "x"}}]
+                },
+            },
+        ]
+    )
+
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    lifecycle_events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        reactv2_events,
+        "_emit_expert_lifecycle_event",
+        lambda event_type, **kw: lifecycle_events.append((event_type, kw)),
+    )
+
+    fake_app = types.SimpleNamespace(state=types.SimpleNamespace(arc=arc))
+    sess_token = ctx.set_session_id(SID)
+    app_token = ctx.set_app(fake_app)
+    try:
+        with live_plane_context(arc, session=SID, scope=SCOPE):
+            with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+                with pytest.raises(MCPMissingRequiredClientCapabilityError):
+                    agent(question="find alpha")
+            # The trajectory cell was installed by reactv2.py's own forward()
+            # before instrumented_forward ran; F6's except branch published
+            # into it before re-raising, so it must NOT still be None. Read
+            # INSIDE live_plane_context's own scope -- its __exit__ resets
+            # the contextvar token it set, which would otherwise mask this.
+            retained = ctx.active_trajectory()
+    finally:
+        ctx.reset(app_token)
+        ctx.reset(sess_token)
+
+    types_seen = [event_type for event_type, _kw in lifecycle_events]
+    assert "expert.lifecycle.started" in types_seen
+    assert "expert.lifecycle.failed" in types_seen, (
+        "an escalated refusal must close the lifecycle span, not just open it"
+    )
+    failed_payload = next(
+        kw for event_type, kw in lifecycle_events if event_type == "expert.lifecycle.failed"
+    )
+    assert failed_payload["status"] == "failed"
+    assert failed_payload["payload"]["reason"] == "mcp_capability_refused"
+
+    assert retained is not None, "the retained History must be published before re-raising"
+    assert retained["termination_reason"] == "escalated_error"
+    assert retained["history"], "the turn's messages up to the escalation must be retained"

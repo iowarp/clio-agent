@@ -59,6 +59,7 @@ the class stays a real, importable, testable module-scope unit.
 
 from __future__ import annotations
 
+import functools
 from typing import TYPE_CHECKING, Any
 
 import dspy
@@ -114,7 +115,7 @@ _REFUSAL_MARK_WRAPPED_ATTR = "_clio_refusal_mark_wrapped"
 
 
 def _mark_refusals_on_tool_calls(tools: dict[str, Any]) -> None:
-    """Wrap every tool's callable so a raised MCP protocol refusal is marked.
+    """Wrap every SYNC tool callable so a raised MCP protocol refusal is marked.
 
     THE ONE CHOKEPOINT (#1275/#901 C1-S2 D1): rather than hunting down every
     call site that constructs a ``dspy.Tool`` a react loop might use (an
@@ -123,36 +124,55 @@ def _mark_refusals_on_tool_calls(tools: dict[str, Any]) -> None:
     DOCUMENTED, valid ways to add a tool, per CLAUDE.md's own
     ``dspy.Tool.from_mcp_tool`` pattern), this wraps EVERY callable that will
     ever run through ``self.tools`` right here, where they all funnel through
-    on construction. Handles both sync and (the coroutine-returning) async
-    callables -- ``dspy.Tool.__call__`` itself awaits/bridges an async
-    ``func``'s result AFTER this wrapper returns it, so the await is guarded
-    too, not just the synchronous call.
+    on construction.
+
+    #1282 F2 (adversarial review): an EARLIER version of this wrapper also
+    tried to guard an async (coroutine-returning) callable's eventual await.
+    That guard was a NO-OP: ``dspy.Tool.__call__`` runs an async ``func`` via
+    ``self._run_async_in_sync(result)``, which -- with no loop already
+    running -- calls ``asyncio.run(result)``: a BRAND NEW event loop with a
+    FRESH top-level ``contextvars.Context``, not a copy of the calling
+    context. The contextvar :func:`~clio_agent.tools.mcp_errors.
+    mark_terminal_refusal` sets is therefore invisible to the popper on the
+    far side of that boundary (proven end-to-end: an async refusing tool
+    escalated NOTHING -- the #1275 hang shape returned, silently). Contrast
+    ``tools/mcp_wait_ladder.py``'s F3a activity-clock contextvar, which IS
+    safe across an ``asyncio.ensure_future`` boundary -- that stays on the
+    SAME running loop, so the new Task's context is a COPY of the setter's,
+    not a fresh one from a brand-new loop.
+
+    Every SHIPPED tool callable reaching this loop is sync today (native/
+    MCP-bridged/dynamic-agent tools all bridge async work behind a sync
+    boundary before becoming a ``dspy.Tool`` -- CLAUDE.md's own "no custom
+    async/sync bridge code" rule is exactly why no shipped tool exposes a
+    raw async callable here). Rather than silently mis-mark (or silently NOT
+    mark) a genuinely async tool, construction now REFUSES one outright,
+    loudly, the day one appears -- never resurrecting the #1275 hang for it
+    quietly.
 
     Mirrors ``tools/mcp_errors.py``'s :func:`~clio_agent.tools.mcp_errors.
     mark_terminal_refusal` contract exactly: classify, stash if it IS a
     protocol refusal, then always re-raise the ORIGINAL exception unchanged
     -- this function only records, :meth:`_RetainingReActV2._execute_tool_calls`
     is what escalates.
+
+    Raises:
+        TypeError: ``tools`` contains a coroutine-function callable (an
+            async tool) -- fail fast at construction rather than silently
+            losing refusal escalation for it.
     """
-    import asyncio  # noqa: PLC0415
+    import inspect  # noqa: PLC0415
 
     from clio_agent.tools.mcp_errors import mark_terminal_refusal  # noqa: PLC0415
 
-    async def _await_marked(coro: Any) -> Any:
-        try:
-            return await coro
-        except Exception as exc:  # noqa: BLE001 - marked, then re-raised unchanged
-            mark_terminal_refusal(exc)
-            raise
-
     def _wrap(inner: Any) -> Any:
+        @functools.wraps(inner)
         def _marked(**kwargs: Any) -> Any:
             try:
-                result = inner(**kwargs)
+                return inner(**kwargs)
             except Exception as exc:  # noqa: BLE001 - marked, then re-raised unchanged
                 mark_terminal_refusal(exc)
                 raise
-            return _await_marked(result) if asyncio.iscoroutine(result) else result
 
         setattr(_marked, _REFUSAL_MARK_WRAPPED_ATTR, True)
         return _marked
@@ -161,6 +181,17 @@ def _mark_refusals_on_tool_calls(tools: dict[str, Any]) -> None:
         func = getattr(tool, "func", None)
         if func is None or getattr(func, _REFUSAL_MARK_WRAPPED_ATTR, False):
             continue
+        if inspect.iscoroutinefunction(func):
+            raise TypeError(
+                f"tool {getattr(tool, 'name', func)!r} has an ASYNC (coroutine-"
+                "function) callable -- the #1275 refusal-marking wrap "
+                "(gact/agents/reactv2.py, #1282 F2) cannot see past "
+                "dspy.Tool.__call__'s asyncio.run() context boundary for it, "
+                "so it would silently lose refusal escalation. Every shipped "
+                "tool callable is sync; bridge this tool to sync BEFORE "
+                "constructing its dspy.Tool, the way every other tool source "
+                "in this codebase already does."
+            )
         tool.func = _wrap(func)
 
 

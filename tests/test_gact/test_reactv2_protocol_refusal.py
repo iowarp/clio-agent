@@ -109,6 +109,26 @@ def test_protocol_refusal_message_names_the_redial_extension() -> None:
     assert "io.modelcontextprotocol/tasks" in str(excinfo.value)
 
 
+def test_async_tool_callable_refused_at_construction() -> None:
+    """#1282 F2 (adversarial review): an EARLIER version of the wrap tried to
+    also guard an async (coroutine-returning) callable's eventual await --
+    that guard was a NO-OP (proven end-to-end by the reviewer:
+    ``dspy.Tool.__call__`` runs it via ``self._run_async_in_sync``, which --
+    with no loop already running -- calls ``asyncio.run(result)``: a BRAND
+    NEW event loop with a FRESH top-level ``contextvars.Context``, so the
+    marking contextvar set inside the async tool never reaches the popper on
+    the far side -- the #1275 hang shape would return, silently, for it).
+    Rather than resurrect that silent failure mode, construction now REFUSES
+    an async tool outright, loudly, the day one appears."""
+
+    async def async_tool(payload: str = "") -> str:
+        return payload
+
+    cls = retaining_reactv2_cls()
+    with pytest.raises(TypeError, match="ASYNC"):
+        cls("question -> answer", tools=[dspy.Tool(async_tool)], max_iters=6)
+
+
 def test_ordinary_tool_error_is_not_escalated() -> None:
     """An UNTYPED tool error stays the model's own retryable observation -- the
     fix is scoped strictly to the typed refusal class (superseding principle

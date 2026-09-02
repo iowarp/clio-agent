@@ -329,7 +329,12 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
     # Both iterables always yield at least once (range(max_iters) for
     # max_iters > 0; itertools.count() is infinite) -- pre-bound only so a
     # static checker can see `turn_index` is never actually unbound below.
+    # step_span_id/thought are ALSO pre-bound (#1282 F6) so the escalation
+    # except branch below can reference "whatever the last iteration reached"
+    # even when an exception fires before either is (re)assigned this turn.
     turn_index = -1
+    step_span_id = ""
+    thought: Any = ""
     try:
         for turn_index in turn_indices:
             step_span_id = uuid.uuid4().hex[:16]
@@ -449,6 +454,55 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
             forced_submit_turn_index,
         )
         return result
+    except Exception as exc:
+        # #1282 F6 (#1275 ask 3): an exception escaping the loop body (the D1
+        # typed-refusal escalation is the concrete reproducer, but this
+        # closes the SAME gap for any other unhandled per-step error) must
+        # not leave the expert lifecycle span dangling on the highway (a
+        # "started" with no matching close) or skip publishing the retained
+        # History (the S4 repair entry's only read of what THIS turn actually
+        # produced before it died). Both fire BEFORE re-raising -- the
+        # exception itself is never swallowed here, only observed. Reaches
+        # the SSE UI wire for free via the existing status="failed"
+        # always-pass rule (gact/semantic_events.py's
+        # ``_SSE_ALWAYS_STATUSES`` — no event-type catalog change needed);
+        # dedicated RENDERING for it is gact-tui#384, filed separately.
+        reason = str(getattr(exc, "reason", "") or type(exc).__name__)
+        try:
+            _emit_expert_lifecycle_event(
+                "expert.lifecycle.failed",
+                expert_id=expert_id,
+                expert_span_id=expert_span_id,
+                status="failed",
+                payload={"reason": reason, "error": str(exc)},
+            )
+            if turn_index >= 0:
+                _arc_write(
+                    arc,
+                    session,
+                    scope,
+                    "observation",
+                    {"text": f"[turn escalated] {reason}: {exc}"},
+                    turn_index,
+                    turn_id=turn_id,
+                    expert_span_id=expert_span_id,
+                    run_span_id=step_span_id,
+                )
+            _ctx.publish_trajectory(
+                {
+                    "history": list(history.messages),
+                    "input_args": dict(pending_inputs),
+                    "termination_reason": "escalated_error",
+                }
+            )
+        except Exception:  # noqa: BLE001 - cleanup must never swallow the REAL error
+            logger.warning(
+                "reactv2 escalation cleanup failed expert_id=%s reason=%s",
+                expert_id,
+                reason,
+                exc_info=True,
+            )
+        raise
     finally:
         _ctx.reset(parent_token)
 
