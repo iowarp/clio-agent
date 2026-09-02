@@ -727,6 +727,14 @@ KEY_NOTES: dict[str, str] = {
         "Max simultaneous private CODEX_HOME credential-dir copies the Codex SDK transport keeps "
         "alive; raise for many concurrent Codex sessions."
     ),
+    "resources.delivery_ledger_max_records": (
+        "Rows of resource-delivery provenance kept in resource_deliveries.json before the oldest "
+        "are compacted away; raise to retain a longer attachment audit trail."
+    ),
+    "resources.derivative_name_max_chars": (
+        "Longest derivative id stored under its own filename before it is hashed to a short "
+        "digest name; lower on Windows deployments with deep state directories (MAX_PATH)."
+    ),
     "resources.document_processor_url": (
         "Base URL of the optional document-processing service used to derive structured views of "
         "uploaded resources; unset leaves resources served as originals."
@@ -734,6 +742,58 @@ KEY_NOTES: dict[str, str] = {
     "resources.max_bytes": (
         "Byte ceiling on a single uploaded workspace resource; raise for large scientific inputs, "
         "lower to bound per-workspace disk use."
+    ),
+    "resources.processor_cancel_timeout_s": (
+        "Seconds to wait for the document processor to acknowledge a cancellation; raise only if "
+        "the service cancels slowly under load."
+    ),
+    "resources.processor_connect_timeout_s": (
+        "Seconds to wait for a TCP connection to the document processor; raise on a slow or "
+        "congested link to the service."
+    ),
+    "resources.processor_pool_timeout_s": (
+        "Seconds to wait for a free connection from the document-processor client pool; raise "
+        "when many uploads convert concurrently."
+    ),
+    "resources.processor_read_timeout_s": (
+        "Seconds to wait for the document processor's response headers/body on a submit; raise "
+        "when the service queues submissions behind long conversions."
+    ),
+    "resources.processor_status_timeout_s": (
+        "Seconds to wait for one document-processor status poll; raise only if status responses "
+        "are genuinely slow, since every poll pays it."
+    ),
+    "resources.processor_write_timeout_s": (
+        "Seconds to stream one upload body to the document processor; 0 derives it from "
+        "resources.max_bytes at 1 MiB/s (floor 60s) so a raised ceiling is not cut off mid-body."
+    ),
+    "resources.search_excerpt_chars": (
+        "Characters of each matching line returned by a bounded resource search; raise for more "
+        "context per hit, lower to shrink tool output."
+    ),
+    "resources.search_match_limit": (
+        "Matches one bounded resource search returns before reporting truncation; raise for "
+        "broader sweeps, lower to keep tool results small."
+    ),
+    "resources.status_poll_failure_threshold": (
+        "Consecutive failed converter status polls tolerated before the resource is marked failed "
+        "with converter_status_unavailable; lower to give up on a vanished converter sooner."
+    ),
+    "resources.text_preview_bytes": (
+        "Byte ceiling on a text resource served inline through the preview route; raise to "
+        "preview larger documents in a client."
+    ),
+    "resources.text_read_chars": (
+        "Characters returned by one bounded resource text read before truncation; raise to hand "
+        "the model more of a document per call."
+    ),
+    "resources.text_scan_bytes": (
+        "Byte ceiling on text CLIO will linearly scan for a resource search or direct read; raise "
+        "for larger plain-text inputs, lower to bound per-call CPU."
+    ),
+    "resources.upload_chunk_bytes": (
+        "Largest single resumable-upload chunk the server accepts, enforced while the body "
+        "streams; raise for fewer round-trips on fast links, lower to bound per-request memory."
     ),
     "relay.cluster": (
         "This deployment's registered relay cluster identity; set it to route jarvis/remote-MCP "
