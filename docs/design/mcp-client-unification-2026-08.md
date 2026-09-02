@@ -1,8 +1,35 @@
 # MCP client unification — one client, negotiated v1/v2, no privileged integrations
 
-**Umbrella:** iowarp/clio-agent#1274 (+ #1275 refusal semantics). **Status:** ACTIVE — kickoff Monday 2026-08-31.
+**Umbrella:** iowarp/clio-agent#1274 (+ #1275 refusal semantics). **Status:** ACTIVE —
+branch `feat/mcp-client-unification` (cut 2026-09-01 from develop 96d5bdcc, the integrated
+post-landing base; the merge-first precondition is satisfied).
 **Protocol references (this repo):** `docs/design/mcp-v2-understanding-2026-08.md` (the working
 understanding) and `docs/design/mcp-client-obligations-2026-07-28.md` (per-item obligations table).
+
+## REORIENTATION (owner-ruled, 2026-09-01 — supersedes the execution order below)
+
+The campaign was motivated by clio-relay owning a bespoke task-capable path instead of the
+main client doing the proper handshake. That fork has now bitten real users repeatedly:
+MCP v2–compliant servers are structurally unusable on clio (the #1274 -32021 failure), and
+more complaints have arrived. Priorities therefore invert:
+
+- **First and foremost: a proper clio MCP client** — ONE client, official negotiation,
+  full v2 protocol surface — proven against BOTH eras: real v1 servers (the existing
+  fleet, byte-identical) and real v2 servers. The relay's special path is left UNTOUCHED
+  AND WORKING while this is built (never break baseline); it is not the driver, the
+  proving ground, or a gate anymore.
+- **Testing grounds for v2:** (1) the clio-kit web MCP — v2-native, `task=required`
+  fetch, the exact real-user failure — with the marketplace deep-research expert working
+  end-to-end on clio-agent as the user-visible proof; (2) a SYNTHETIC v2-exerciser MCP
+  server in tests that FORCEFULLY uses the v2 semantics (task=required, MCP Apps/ui,
+  MRTR, elicitation, subscriptions, cache hints, …) as the per-slice conformance bed;
+  public internet v2 servers may serve as extra non-gating sanity legs.
+- **clio-relay becomes the after-fact:** the special-path removal (the dissolve/keep/
+  delete inventory below), letters (b) and (c), and the v1.7.0 release move to a SEPARATE
+  follow-on plan-execute process (campaign 2) that starts only after campaign 1 has
+  landed and we can confidently say clio supports the full MCP v2 protocol.
+- **Landing:** campaign 1 lands on develop at its own acceptance (C1-S6) — the user fix
+  ships without waiting for the relay migration.
 
 ## THE CAMPAIGN LETTERS (owner-ruled, 2026-08-29 — the authoritative frame)
 
@@ -39,24 +66,31 @@ understanding) and `docs/design/mcp-client-obligations-2026-07-28.md` (per-item 
   JSON-Schema 2020-12 posture, pagination/completions small MUSTs, and the fastmcp beta-track
   hardening (develop is already on 4.0.0b1; upstream b5) with the verification-probe shortlist.
 
-## EXECUTION ORDER (Monday kickoff)
+## EXECUTION ORDER (reoriented 2026-09-01; the 2026-08-31 order is superseded)
 
-1. **clio-relay + MCP v2 adaptation first**: build (a) on the feature branch
-   (`feat/mcp-client-unification`; owner ruling — develop is user-consumed, the campaign lands on
-   develop only at its final proof), migrate the relay onto the unified client, and DELETE the
-   relay's special path (the inventory's dissolve/keep/delete verdicts below).
-2. (d), (e), (f) land as slices on the same branch as the generic client grows.
-3. **Final testing grounds: clio-web-search and the clio-kit web MCP** — the acceptance is
-   explicitly ordered: FIRST clio-relay works properly with no special path (the full relay
-   workload through the unified client), THEN the web MCPs prove generality end-to-end (the
-   `task=required` fetch scenario that exposed the fork — a real user's exact failure).
-4. (b) runs in parallel in jarvis-cd/clio-kit (different repos); (c) gates on everything and
-   closes the campaign with the v1.7.0 release.
+**Campaign 1 — this branch (`feat/mcp-client-unification`):**
+1. Build (a) on the generic declared-server path only — capability-keyed routing over the
+   already-generic task machinery (`tools/mcp_tasks.py` / `mcp_task_extension.py`); the
+   relay's special path stays untouched and working.
+2. (d), (e), (f) land as slices on the same branch as the generic client grows, each proven
+   against the synthetic v2-exerciser as its surface grows.
+3. Acceptance (C1-S6): v1 fleet regression + exerciser full-surface + clio-kit web MCP
+   `task=required` fetch + the deep-research expert working on clio-agent. On pass, the
+   campaign lands on develop and the full-v2-support claim is made.
 
-PRECONDITION (owner hold, 2026-08-29): the other development teams' outstanding week of work
-merges into develop first; the campaign branches from the true integrated base. Known conflict
-surfaces vs this session's pushed merges: gact/relay_wiring.py, tools/gateway.py, agent.py relay
-fields.
+**Campaign 2 — separate follow-on plan-execute process (relay after-fact):** migrate the
+relay onto the unified client as consumer #1, execute the dissolve/keep/delete inventory
+below (special path DELETED, content-accounted), re-verify the relay workload through the
+unified client, then letters (b) and (c) close with the v1.7.0 release. Gets its own
+kickoff, plan pass, and issue tree when campaign 1 has landed.
+
+PRECONDITION — SATISFIED 2026-09-01: the outstanding week of work (#1255 + gact-tui#380)
+merged; the branch is cut from the integrated base (develop 96d5bdcc). Known parallel lane:
+`codex/clio-composer-pipeline` (PR #1278, gact-0.3/composer/resources territory) overlaps
+only on gact/relay_wiring.py (+22, a provider_config passthrough into
+construct_agent_with_relay) and tools/mcp_executor.py (~20 lines) — absorb on the periodic
+develop→campaign merges; the relay_wiring.py deletion happens in campaign 2, where the
+passthrough must survive into whatever replaces that seam.
 
 ## The defect, precisely
 
@@ -135,36 +169,58 @@ ONE client pathway for every server (built-in, declared, relay):
   (collapse into `list_builtin_tool_definitions` once relay is declared),
   18 `relay.*` config keys → declared-server entry.
 
-## Slices (dependency order; implement → adversarial review → merge, per slice)
+## Campaign 1 slices (dependency order; implement → adversarial review → merge, per slice)
 
-Letter mapping: S1–S8 deliver (a); (d)/(e)/(f) slot in as marked.
-
-- **S1 — capability-keyed task routing (the unlock).** Read `taskSupport` at
-  discovery; record per-server capability; `tasks_declaration` keyed on capability;
-  direct task-capable route in `_proxy_for_spec`/`_connect_namespace` for
-  task-capable servers; v1 path byte-identical (regression-proven).
-- **S2 — refusal + wait semantics (#1275):** protocol-refusal class terminal-fast
+- **C1-S0 — the v2 exerciser + dual-era conformance bed.** A synthetic in-repo MCP
+  server (fastmcp 4 + fastmcp-tasks server side; in-memory `Client(server)` where
+  possible) that FORCEFULLY uses v2: `task=required` tools (-32021 with
+  `requiredCapabilities` on plain calls), declared extensions, MRTR/input_required
+  rounds, elicitation (form and url modes), subscriptions/listen + listChanged, cache
+  hints, resultType variants, pagination — plus a frozen v1-era fixture server. Each
+  later slice EXTENDS the exerciser with its surface; the conformance suite runs the
+  unified client against both eras. Starts with the tasks surface (what S1 needs).
+- **C1-S1 — capability-keyed task routing (the unlock; fixes the #1274 defect).**
+  Read `execution.taskSupport` at discovery; record per-server capability on
+  `mcp_connection_era`; `tasks_declaration` keyed on capability; direct task-capable
+  route in `_proxy_for_spec`/`_connect_namespace` for task-capable servers; v1 path
+  byte-identical (regression-proven).
+- **C1-S2 — refusal + wait semantics (#1275):** protocol-refusal class terminal-fast
   on every path; progress-aware ladder on the direct route; visible waiting.
   Includes (e)'s MRTR per-path verification.
-- **S3 — task machinery unification:** drive-to-terminal, handle registries
-  (`relay_install_jobs` → shared registry), ONE state vocabulary.
-- **S3b — (a) extension registry:** generic extension negotiation (declare + read
-  server extensions); tasks becomes an entry; **(d) the ui extension declares here**;
+- **C1-S3 — (a) generic extension registry:** extension negotiation (declare + read
+  server-declared extensions); tasks becomes a registry entry, not a special case;
+  **(d) the ui extension declares here** — align `gact/mcp_apps.py` to the 2026-07-28
+  extensions framework, revision metadata, tolerate-unknown-metadata preserved;
   enumerate the other official extensions (oauth-client-credentials for headless/CI,
   enterprise-managed-auth).
-- **S4 — console generalization:** `mcp_task_console.py` + stream observer factory.
-- **S5 — curated tool overlay + relay as declared server:** `tool_overlay.py`;
-  `relay_factory` deleted; relay enters `load_mcp_servers()`.
-- **S6 — artifact fetch generalization** + origin-schema-keyed edges.
-- **S6b — (f) protocol-surface completion:** subscriptions/listen + listChanged→cache
-  invalidation, server cache hints, resultType/x-mcp-header/era-gated removals,
-  auth specifics + CIMD deployment artifact, fastmcp b1→b5 + verification probes.
-- **S7 — glue deletion sweep** with content-accounted deletion verification.
-- **S8 — the ordered acceptance:** FIRST the full relay workload through the unified
-  client, no special path (this is where the campaign may land on develop); THEN the
-  final testing grounds — clio-web-search / clio-kit web MCP `task=required` fetch
-  end-to-end through the generic declared-server path (the exact real-user failure
-  that exposed the fork). Relay-specific tests migrate or die with their subjects.
+- **C1-S4 — (e) MRTR + elicitation completeness:** round bound, typed exhaustion, the
+  single HITL surface all three input shapes converge on — surviving unification
+  intact; per-mode form/url capability declaration, URL-mode consent MUSTs, SEP-1034
+  defaults, SEP-1330 multi-select enums, no removed elicitationId constructs.
+- **C1-S5 — (f) protocol-surface completion:** subscriptions/listen + listChanged→cache
+  invalidation, server cache hints (`ttlMs`/`cacheScope` + caching MUST-NOTs),
+  resultType/x-mcp-header/SSE re-issue-never-resume/era-gated removals, auth specifics
+  by name (iss validation, credential-per-issuer, PKCE-absence refusal, RFC 8707, CIMD
+  as a cluster-parameterized deployment artifact), JSON-Schema 2020-12 posture,
+  pagination/completions MUSTs, fastmcp b1→b5 + the verification-probe shortlist.
+- **C1-S6 — acceptance + landing:** (i) v1 fleet regression byte-identical; (ii)
+  exerciser full-surface green; (iii) clio-kit web MCP `task=required` fetch
+  end-to-end through the generic declared-server path (the exact real-user failure);
+  (iv) the marketplace deep-research expert works on clio-agent; optional non-gating
+  sanity leg against a public internet v2 server. On pass: land on develop, make the
+  full-v2-support claim.
+
+## Campaign 2 slices (relay after-fact — separate process, re-planned at its kickoff)
+
+Held from the original plan, content unchanged: task-machinery dissolution into shared
+owners (`relay_install_jobs` → shared registry, ONE state vocabulary), console
+generalization (`mcp_task_console.py` + stream observer factory), curated tool overlay +
+relay as declared server (`relay_factory` deleted, relay enters `load_mcp_servers()`),
+artifact fetch generalization + origin-schema-keyed edges, the glue deletion sweep
+(content-accounted; `relay_wiring.py` deletion must preserve the #1278 provider_config
+passthrough semantics), and the relay-workload acceptance through the unified client with
+no special path. Relay-specific tests migrate or die with their subjects. Letters (b) and
+(c) close it with the v1.7.0 release.
 
 Rules that bind every slice: no accretion (owner modules, ratchets); no silent
 fallback (typed reasons); protocol-negotiation only; the five #1274 wait
