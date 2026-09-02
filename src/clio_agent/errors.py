@@ -105,6 +105,19 @@ MCP_NAMESPACE_MOUNT_FAILED = "mcp_namespace_mount_failed"
 #: reporting it. The shared clio-core CTE daemon is excluded by construction
 #: (see runtime/process_census.py) and never matches this reason.
 PROCESS_CENSUS_ORPHAN_REAPED = "process_census_orphan_reaped"
+#: #1281 (C1-S1): a namespace connect used the DIRECT task-declaring client
+#: route because ``tools/mcp_connection_era.latest_task_capability`` had
+#: already recorded this server as task-capable -- the unlock for the #1274
+#: defect (every declared server previously suppressed the tasks extension
+#: via the proxy path's ``ProxyClient``). Never fires for a v1 server.
+MCP_TASKS_DIRECT_ROUTE_SELECTED = "mcp_tasks_direct_route_selected"
+#: #1281 (C1-S1): a namespace connect kept today's proxy path because no
+#: capability discovery has landed for this server yet (``latest_task_capability``
+#: returned ``None``) -- the safe default until a listing pass
+#: (``gateway._list_declared_tools``) or an opportunistic real-backend connect
+#: (``gateway._proxy_for_spec``) records a verdict. Self-heals on the next
+#: discovery pass; never a permanent classification.
+MCP_TASK_CAPABILITY_UNKNOWN = "mcp_task_capability_unknown"
 
 
 class ClioError(Exception):
