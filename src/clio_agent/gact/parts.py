@@ -87,6 +87,7 @@ class CapabilityFlags(DocumentCapabilityFields):
     # #966 S2 / #968 — the /v1/artifacts read surface + user-pin channel, the
     # artifact.* SSE family, and resource_link parts carrying artifact:// wire ids.
     x_clio_artifacts: bool = False
+    x_clio_child_activity_projection: dict[str, Any] = Field(default_factory=dict)
     x_clio_semantic_trace_backend: str = ""
     x_clio_semantic_trace_detail: str = ""
     x_clio_hook_backend: str = ""

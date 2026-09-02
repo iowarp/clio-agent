@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Query
 from starlette.concurrency import run_in_threadpool
 
 from clio_agent import conf
+from clio_agent.gact.provenance.child_projection import project_child_execution
 from clio_agent.gact.provenance.normalization import normalize_semantic_events
 from clio_agent.gact.provenance.protocol import ExecutionProvenanceReader
 from clio_agent.gact.semantic_events import semantic_event_from_events_content
@@ -163,11 +164,15 @@ def register_provenance_routes(app: FastAPI, deps: "GactDeps") -> None:
             # when no native durable reader is configured.
             if not isinstance(reader, ExecutionProvenanceReader):
                 events = await run_in_threadpool(_native_events, app, [sid, *child_ids])
-                return normalize_semantic_events(
-                    events,
-                    provider="native",
-                    session_id=sid,
-                    limit=limit,
+                return project_child_execution(
+                    app,
+                    sid,
+                    normalize_semantic_events(
+                        events,
+                        provider="native",
+                        session_id=sid,
+                        limit=limit,
+                    ),
                 )
         else:
             reader_method = getattr(backend, "reader", None)
@@ -181,12 +186,13 @@ def register_provenance_routes(app: FastAPI, deps: "GactDeps") -> None:
                 details={"session_id": sid, "provider": selected},
             )
         try:
-            return await run_in_threadpool(
+            result = await run_in_threadpool(
                 reader.query_execution,
                 session_id=sid,
                 child_session_ids=child_ids,
                 limit=limit,
             )
+            return project_child_execution(app, sid, result)
         except Exception as exc:
             raise _typed_error(
                 status_code=503,

@@ -24,7 +24,8 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException
 
-from clio_agent.gact.agent_tasks import AgentTask, display_run_name
+from clio_agent.gact.agent_tasks import AgentTask, descendant_session_ids, display_run_name
+from clio_agent.gact.provenance.child_projection import child_session_lineage
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.mcp_task_records import TaskRecord, resolve_store
 
@@ -91,7 +92,9 @@ def _mcp_task_process(record: TaskRecord) -> dict[str, Any]:
     }
 
 
-def project_session_async_processes(app: "FastAPI", session_id: str) -> list[dict[str, Any]]:
+def project_session_async_processes(
+    app: "FastAPI", session_id: str, *, include_children: bool = True
+) -> list[dict[str, Any]]:
     """List every async process (spawned agent OR durable MCP task) for one session.
 
     Newest-created first, matching ``run_registry.project_runs``'s ordering
@@ -101,13 +104,37 @@ def project_session_async_processes(app: "FastAPI", session_id: str) -> list[dic
     dedupe idiom ``project_runs`` uses.
     """
 
-    agent_tasks = app.state.agent_task_registry.for_parent(session_id)
+    lineage = child_session_lineage(app, session_id)
+    lineage_by_session = {str(row["session_id"]): row for row in lineage}
+    owner_session_ids = [session_id]
+    if include_children:
+        owner_session_ids.extend(descendant_session_ids(app, session_id))
+    agent_tasks = [
+        task
+        for owner_session_id in owner_session_ids
+        for task in app.state.agent_task_registry.for_parent(owner_session_id)
+    ]
     agent_task_ids = {task.task_id for task in agent_tasks}
-    rows = [_agent_process(task) for task in agent_tasks]
+    rows = []
+    for task in agent_tasks:
+        owner = lineage_by_session.get(task.child_session_id, {})
+        rows.append(
+            {
+                **_agent_process(task),
+                "root_session_id": session_id,
+                "owner_session_id": task.child_session_id,
+                "task_path": list(owner.get("task_path") or [task.task_id]),
+            }
+        )
     rows.extend(
-        _mcp_task_process(record)
+        {
+            **_mcp_task_process(record),
+            "root_session_id": session_id,
+            "owner_session_id": record.session_id,
+            "task_path": list(lineage_by_session.get(record.session_id, {}).get("task_path") or []),
+        }
         for record in resolve_store(None).list()
-        if record.session_id == session_id and record.task_id not in agent_task_ids
+        if record.session_id in owner_session_ids and record.task_id not in agent_task_ids
     )
     return sorted(rows, key=lambda row: str(row.get("created_at") or ""), reverse=True)
 
@@ -118,7 +145,13 @@ def register_async_process_routes(app: FastAPI, deps: "GactDeps") -> None:
     del deps  # symmetry with the other register_*_routes; state is on app.state
 
     @app.get("/v1/sessions/{sid}/async-processes")
-    async def list_session_async_processes(sid: str) -> dict[str, Any]:
+    async def list_session_async_processes(
+        sid: str, include_children: bool = True
+    ) -> dict[str, Any]:
         if app.state.sessions.get(sid) is None:
             raise _not_found("session", sid)
-        return {"processes": project_session_async_processes(app, sid)}
+        return {
+            "processes": project_session_async_processes(
+                app, sid, include_children=include_children
+            )
+        }

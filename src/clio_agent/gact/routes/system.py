@@ -520,6 +520,18 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "revision_pinned_kinds": ["workspace_file", "resource", "artifact"],
                 },
                 x_clio_artifacts=True,  # #968 — /v1/artifacts + artifact.* + resource_link
+                x_clio_child_activity_projection={
+                    "include_children": True,
+                    "session_lineage": True,
+                    "typed_edges": [
+                        "delegated",
+                        "executes_in",
+                        "contains",
+                        "used",
+                        "generated",
+                        "responded_to",
+                    ],
+                },
                 x_clio_document_artifacts={
                     "protocol_version": "0.1.0",
                     "profiles": [
