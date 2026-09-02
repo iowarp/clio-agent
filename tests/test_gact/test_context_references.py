@@ -635,11 +635,27 @@ def test_queue_context_refs_authorize_edit_reorder_and_retain_stale_promotion(
     target = tmp_path / "workspace" / "queued.txt"
     target.parent.mkdir(parents=True)
     target.write_text("first revision", encoding="utf-8")
-    app = build_app(sessions_path=tmp_path / "sessions.json", agent=_Agent())
+    app = build_app(
+        sessions_path=tmp_path / "sessions.json",
+        agent=SlowClioAgent(delay_s=2.0),
+    )
     app.state.workspaces.update("ws_default", root_path=str(target.parent))
 
     with TestClient(app) as client:
         session_id = client.post("/v1/sessions", json={"title": "Queued context"}).json()["id"]
+        # Queue rows are intentionally a while-busy affordance. Hold the active
+        # slot so this test can exercise edit, reorder, and stale promotion
+        # before the idle auto-dispatch lifecycle consumes the head row.
+        started = client.post(
+            f"/v1/sessions/{session_id}/messages",
+            json={"parts": [{"type": "text", "text": "hold the slot"}]},
+        )
+        assert started.status_code == 200, started.text
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not app.state.turn_runner.busy(session_id):
+            time.sleep(0.02)
+        assert app.state.turn_runner.busy(session_id)
+
         created = client.post(
             f"/v1/sessions/{session_id}/queued-messages",
             json={

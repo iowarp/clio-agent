@@ -99,7 +99,10 @@ from clio_agent.gact.app import build_app
 # +1 for GET /v1/questions -- the unscoped attention lane's ask-user half,
 # registered by routes/permissions.py beside the unscoped GET /v1/permissions it
 # mirrors (measured: this app's GET routes contribute one method pair each).
-EXPECTED_ROUTE_METHOD_PAIRS = 232
+# +4 method pairs for the structured-reference search and normalized child-
+# interaction projection/response routes registered by routes/references.py and
+# routes/interactions.py.
+EXPECTED_ROUTE_METHOD_PAIRS = 236
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
