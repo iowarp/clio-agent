@@ -471,6 +471,7 @@ async def _try_streamed_forward(
     session_mode: str = "edit",
     session_edit_mode: str = "diff",
     agent_override: Any | None = None,
+    images: list[Any] | None = None,
     cancel_requested: Any | None = None,
 ) -> Optional[Any]:
     """Run the agent's forward via dspy.streamify, pumping every
@@ -608,6 +609,7 @@ async def _try_streamed_forward(
                 session_id=sid,
                 session_mode=session_mode,
                 session_edit_mode=session_edit_mode,
+                images=list(images or []),
                 cancel_requested=cancel_requested,
             )
         except TypeError:
@@ -617,9 +619,14 @@ async def _try_streamed_forward(
                     session_id=sid,
                     session_mode=session_mode,
                     session_edit_mode=session_edit_mode,
+                    images=list(images or []),
                 )
             except TypeError:
-                stream_iter = streamed(question=enriched_text, session_id=sid)
+                stream_iter = streamed(
+                    question=enriched_text,
+                    session_id=sid,
+                    images=list(images or []),
+                )
         async for piece in stream_iter:
             provider_event_index += 1
             if isinstance(piece, StreamResponse):

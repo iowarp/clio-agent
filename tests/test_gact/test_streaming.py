@@ -384,7 +384,8 @@ async def test_expert_stream_responses_emit_live_field_chunks(
         captured.update(kwargs)
 
         async def fake_streamed(*args: Any, **kwargs: Any) -> Any:
-            del args, kwargs
+            del args
+            captured["forward_kwargs"] = kwargs
             yield StreamResponse(
                 predict_name="data_expert.agent",
                 signature_field_name="analysis",
@@ -420,6 +421,7 @@ async def test_expert_stream_responses_emit_live_field_chunks(
         "sid",
         emit_chunk,
         session_mode="experts",
+        images=["native-image"],
     )
 
     assert result is not None
@@ -427,6 +429,7 @@ async def test_expert_stream_responses_emit_live_field_chunks(
     assert chunks == ["Analysis", "\n\nRecommendations:\n", "Do this"]
     assert captured["program"] is agent
     assert captured["is_async_program"] is False
+    assert captured["forward_kwargs"]["images"] == ["native-image"]
     listeners = captured["stream_listeners"]
     assert all(listener.predict is not None for listener in listeners)
     assert {listener.signature_field_name for listener in listeners} == {"answer"}
