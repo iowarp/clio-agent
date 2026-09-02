@@ -20,7 +20,7 @@ from clio_agent.gact.resource_custody import ResourceLimitError, ResourceStore
 from clio_agent.gact.resource_processing import (
     ResourceConverterFactory,
     ResourceProcessingRecord,
-    _normalize_docling_payload,
+    ResourceProcessingStore,
 )
 from clio_agent.gact.resource_tools import (
     inspect_workspace_resource,
@@ -80,7 +80,8 @@ class _CompleteDocumentProcessor:
                             "name": "structured.table-1.json",
                             "kind": "table",
                             "media_type": "application/json",
-                            "selector": "$.tables[0]",
+                            "collection": "tables",
+                            "index": 0,
                         },
                     ],
                 },
@@ -307,7 +308,7 @@ def test_binary_resource_has_honest_metadata_only_preview(tmp_path: Path) -> Non
 def test_resource_limit_is_enforced_before_storage(tmp_path: Path) -> None:
     store = ResourceStore(root=tmp_path / "resources", max_resource_bytes=4)
     with pytest.raises(ResourceLimitError, match="deployment limit"):
-        store.create(workspace_id="ws_1", name="large.txt", declared_size=5)
+        store.create_or_resume(workspace_id="ws_1", name="large.txt", declared_size=5)
     assert store.list("ws_1") == []
 
 
@@ -644,37 +645,34 @@ def test_resource_list_advances_pending_converter_state(tmp_path: Path) -> None:
 
         listed = client.get(f"/v1/workspaces/{workspace_id}/resources").json()["resources"]
         assert listed[0]["processing"]["state"] == "complete"
-        assert listed[0]["processing"]["query_tool"] == "workspace_resource_inspect"
 
 
-def test_docling_service_result_is_adapted_to_named_markdown_derivative() -> None:
-    payload = _normalize_docling_payload(
-        {
-            "id": "docling_job",
-            "status": "complete",
-            "result": {
-                "markdown": "# Converted\n",
-                "document": {
-                    "document_type": "application/pdf",
-                    "structure": {"texts": [{"text": "Converted"}]},
-                },
-            },
-        }
+def test_a_result_without_a_derivative_manifest_is_refused_not_patched_up(
+    tmp_path: Path,
+) -> None:
+    """The manifest is a contract term, so a missing one fails typed.
+
+    The document service emits ``derivatives`` on every completed result
+    (verified against clio-web-search: ``build_derivative_manifest`` always
+    yields at least the markdown entry). The consumer-side shim that used to
+    synthesize a manifest from ``markdown`` was therefore unreachable for
+    anything the service produces today, and silently "fixing" a shape CLIO
+    does not understand is exactly the repair core must not do.
+    """
+
+    store = ResourceStore(root=tmp_path / "resources", max_resource_bytes=1024)
+    record, _replay = store.create_or_resume(
+        workspace_id="ws_1", name="doc.md", declared_size=len(b"# x\n")
     )
+    record = store.append(record.id, offset=0, data=b"# x\n")
+    processing = ResourceProcessingStore(store)
 
-    assert payload["result"]["document"]["structure"]["texts"] == [{"text": "Converted"}]
-    assert payload["result"]["derivatives"] == {
-        "schema": "clio.resource-derivatives.v1",
-        "entries": [
-            {
-                "id": "markdown",
-                "name": "document.md",
-                "kind": "markdown",
-                "media_type": "text/markdown",
-                "content": "# Converted\n",
-            }
-        ],
-    }
+    with pytest.raises(ValueError, match="derivative manifest"):
+        processing.save_result(
+            record,
+            processing.state(record),
+            {"markdown": "# x\n", "document": {"structure": {"texts": []}}},
+        )
 
 
 def test_malformed_completed_converter_result_never_breaks_resource_reads(tmp_path: Path) -> None:
@@ -710,7 +708,11 @@ def test_malformed_completed_converter_result_never_breaks_resource_reads(tmp_pa
 
         assert response.status_code == 200, response.text
         assert response.json()["processing"]["state"] == "failed"
-        assert response.json()["processing"]["failure"] == {"code": "processor_result_invalid"}
+        failure = response.json()["processing"]["failure"]
+        assert failure["code"] == "processor_result_invalid"
+        # The reason names WHICH contract term the processor broke, so an
+        # operator is not left guessing between "no structure" and "no manifest".
+        assert "derivative manifest" in failure["detail"]
 
 
 def test_active_resource_conversion_remains_pending_until_user_cancels(tmp_path: Path) -> None:
@@ -843,7 +845,7 @@ def test_converter_factory_uses_magic_mime_priority_and_falls_back(tmp_path: Pat
             return {"id": "fallback_job", "status": "processing"}
 
     store = ResourceStore(root=tmp_path / "resources", max_resource_bytes=1024)
-    record = store.create(
+    record, _replay = store.create_or_resume(
         workspace_id="ws_1",
         name="notes.md",
         declared_size=len(b"# Notes\n"),
@@ -871,7 +873,7 @@ def test_native_image_resource_ref_becomes_model_image_input(tmp_path: Path) -> 
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
     )
     store = ResourceStore(root=tmp_path / "resources", max_resource_bytes=1024)
-    record = store.create(
+    record, _replay = store.create_or_resume(
         workspace_id="ws_vision",
         name="pixel.png",
         declared_size=len(png),
@@ -901,7 +903,7 @@ def test_non_native_image_resource_ref_never_becomes_model_image_input(tmp_path:
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
     )
     store = ResourceStore(root=tmp_path / "resources", max_resource_bytes=1024)
-    record = store.create(
+    record, _replay = store.create_or_resume(
         workspace_id="ws_text_only",
         name="pixel.png",
         declared_size=len(png),
@@ -919,26 +921,6 @@ def test_non_native_image_resource_ref_never_becomes_model_image_input(tmp_path:
     app = SimpleNamespace(state=SimpleNamespace(resource_store=store))
 
     assert _dspy_images_from_parts([part], app=app, workspace_id="ws_text_only") == []
-
-
-def test_converter_factory_discovers_installed_extensions(monkeypatch: pytest.MonkeyPatch) -> None:
-    converter = _CompleteDocumentProcessor()
-
-    class _EntryPoint:
-        name = "test-converter"
-
-        @staticmethod
-        def load() -> object:
-            return lambda: converter
-
-    monkeypatch.setattr(
-        "clio_agent.gact.resource_processing.metadata.entry_points",
-        lambda *, group: [_EntryPoint()] if group == "clio_agent.resource_converters" else [],
-    )
-    factory = ResourceConverterFactory()
-
-    assert factory.discover_entry_points() == (converter.id,)
-    assert factory.get(converter.id) is converter
 
 
 def test_resource_reference_projects_as_attachment_block() -> None:

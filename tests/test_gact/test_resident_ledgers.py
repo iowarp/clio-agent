@@ -401,11 +401,17 @@ def test_estimate_bytes_counts_nested_and_image_payloads() -> None:
     assert 1_100 <= light_bytes < 1_500
 
 
-def test_estimate_bytes_counts_gact_v3_resource_and_a2ui_payloads() -> None:
-    """Optional GACT 0.3 payloads count while their omitted defaults do not."""
+# The optional Part fields each 0.3 part type populates. The byte estimate must
+# see EVERY one of them, so the fixtures below set every name listed here and
+# ``test_the_optional_field_fixtures_cover_every_declared_field`` derives the
+# list from ``Part`` itself — a new field cannot slip in and inflate a ledger
+# unmeasured, which is exactly how ``name`` was missed on the resource part.
+_RESOURCE_REF_FIELDS = ("resource_id", "resource_revision", "delivery_preference", "name")
+_A2UI_FIELDS = ("surface_id", "a2ui_protocol_version", "a2ui_messages")
 
-    light = _msg("m", "s", text="hi")
-    resource = Message(
+
+def _resource_ref_message() -> Message:
+    return Message(
         id="resource-message",
         session_id="s",
         role="user",
@@ -418,10 +424,14 @@ def test_estimate_bytes_counts_gact_v3_resource_and_a2ui_payloads() -> None:
                 resource_id="res_" + "r" * 2_000,
                 resource_revision="sha256:" + "a" * 64,
                 delivery_preference="bounded_tools",
+                name="attachment-" + "n" * 200,
             )
         ],
     )
-    surface = Message(
+
+
+def _a2ui_message() -> Message:
+    return Message(
         id="surface-message",
         session_id="s",
         role="assistant",
@@ -438,9 +448,36 @@ def test_estimate_bytes_counts_gact_v3_resource_and_a2ui_payloads() -> None:
         ],
     )
 
-    light_bytes = _estimate_bytes([light])
-    assert _estimate_bytes([resource]) > light_bytes + 1_500
-    assert _estimate_bytes([surface]) > light_bytes + 1_500
+
+def test_estimate_bytes_counts_gact_v3_resource_and_a2ui_payloads() -> None:
+    """Optional GACT 0.3 payloads count while their omitted defaults do not."""
+
+    light_bytes = _estimate_bytes([_msg("m", "s", text="hi")])
+    assert _estimate_bytes([_resource_ref_message()]) > light_bytes + 1_500
+    assert _estimate_bytes([_a2ui_message()]) > light_bytes + 1_500
+
+
+def test_the_optional_field_fixtures_cover_every_declared_field() -> None:
+    """Derive the covered names from ``Part`` so a new field cannot hide.
+
+    Sabotage: add a payload-bearing field to ``Part`` for either 0.3 part type
+    without listing it above and this fails, instead of the byte cap quietly
+    under-counting every ledger that carries one.
+    """
+
+    resource_part = _resource_ref_message().parts[0]
+    surface_part = _a2ui_message().parts[0]
+    for part, declared in ((resource_part, _RESOURCE_REF_FIELDS), (surface_part, _A2UI_FIELDS)):
+        # Every declared name is a real Part field...
+        assert set(declared) <= set(type(part).model_fields)
+        # ...and every one of them is actually populated in the fixture, so the
+        # estimate is measured over the full payload, not a subset.
+        populated = {
+            name
+            for name in declared
+            if getattr(part, name) != type(part).model_fields[name].default
+        }
+        assert populated == set(declared)
 
 
 def test_byte_cap_evicts_tool_result_heavy_sessions() -> None:
