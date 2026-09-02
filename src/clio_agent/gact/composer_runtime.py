@@ -22,12 +22,13 @@ AppendMessage = Callable[[Any, str, Message], None]
 logger = logging.getLogger(__name__)
 
 
-def initialize_composer_state(
-    app: Any,
-    session_store_path: Path,
-    append_message: AppendMessage,
-) -> None:
-    """Install durable composer stores and recover accepted pending steers."""
+def initialize_composer_state(app: Any, session_store_path: Path) -> None:
+    """Install the durable composer stores.
+
+    Pending-steer RECOVERY is deliberately not done here: it re-enqueues onto
+    ``app.state.loop_inboxes``, which ``build_app`` creates later, so it runs
+    from :func:`register_composer_routes` instead.
+    """
 
     state_root = session_store_path.parent
     app.state.message_intents = MessageIntentStore(path=state_root / "message_intents.json")
@@ -54,7 +55,6 @@ def initialize_composer_state(
     converter_factory = ResourceConverterFactory([DocumentProcessorClient(processor_url)])
     converter_factory.discover_entry_points()
     app.state.resource_converter_factory = converter_factory
-    _recover_pending_steers(app, append_message)
 
 
 def register_composer_routes(app: Any, deps: Any) -> None:
@@ -77,6 +77,9 @@ def register_composer_routes(app: Any, deps: Any) -> None:
     register_resource_routes(app, deps)
     register_normalized_provider_catalog_routes(app, deps)
     _install_composer_idle_hook(app, deps)
+    # Runs here, not in initialize_composer_state: recovery re-enqueues onto
+    # app.state.loop_inboxes, which build_app creates between the two calls.
+    _recover_pending_steers(app, deps.append_session_message)
 
 
 def session_autostart_suspended(app: Any, session_id: str) -> bool:
@@ -302,25 +305,51 @@ def delete_workspace_resources(app: Any, workspace_id: str) -> None:
 
 
 def _recover_pending_steers(app: Any, append_message: AppendMessage) -> None:
-    """Restore accepted pending user identities after a process interruption."""
+    """Restore accepted pending user identities after a process interruption.
+
+    Two halves, and the second was missing. The transcript row is restored so the
+    client sees the identity its ``202`` promised, AND the delivery intent is
+    re-enqueued onto the (in-memory, therefore empty-at-boot) ``LoopInbox`` — a
+    ``PendingSteer`` that is durable but has no inbox event is stranded: no drain
+    and no idle re-drive will ever look at it, so the user's accepted message is
+    silently never delivered. The store already resets ``claimed`` to ``pending``
+    on load, so a steer interrupted mid-claim is re-drivable too.
+    """
+
+    from clio_agent.gact.loop_inbox import enqueue_user_steer  # noqa: PLC0415
 
     for pending in app.state.message_intents.list_all_pending():
         if app.state.sessions.get(pending.session_id) is None:
             continue
-        messages = app.state.messages.get(pending.session_id, [])
-        if any(message.id == pending.message_id for message in messages):
-            continue
         metadata = {**pending.metadata, "pending_steer": True}
-        append_message(
+        messages = app.state.messages.get(pending.session_id, [])
+        if not any(message.id == pending.message_id for message in messages):
+            append_message(
+                app,
+                pending.session_id,
+                Message(
+                    id=pending.message_id,
+                    session_id=pending.session_id,
+                    role="user",
+                    created_at=pending.accepted_at,
+                    updated_at=pending.accepted_at,
+                    parts=list(pending.parts),
+                    metadata=metadata,
+                ),
+            )
+        # Always re-enqueue: the transcript row may have survived in the durable
+        # ledger while the in-memory inbox did not.
+        enqueue_user_steer(
             app,
             pending.session_id,
-            Message(
-                id=pending.message_id,
-                session_id=pending.session_id,
-                role="user",
-                created_at=pending.accepted_at,
-                updated_at=pending.accepted_at,
-                parts=list(pending.parts),
-                metadata=metadata,
-            ),
+            pending.text,
+            metadata,
+            steer_message_id=pending.message_id,
+            steer_created_at=pending.accepted_at,
+            steer_parts=list(pending.parts),
+        )
+        logger.info(
+            "recovered pending steer session=%s message=%s reason=restart_recovery",
+            pending.session_id,
+            pending.message_id,
         )

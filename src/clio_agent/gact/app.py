@@ -1222,7 +1222,7 @@ def build_app(
     # #889: BOUNDED (LRU + byte cap + idle-TTL) resident projection over the store —
     # boots empty (index only), materializes lazily. See gact.resident_ledgers.
     app.state.messages = build_resident_ledger_set(app)
-    composer_runtime.initialize_composer_state(app, session_store_path, _append_session_message)
+    composer_runtime.initialize_composer_state(app, session_store_path)
     # cooperative cancellation flags. POST /cancel
     # adds a sid; the POST-message handler checks + clears after the
     # agent returns. Set (not dict) because the flag's presence IS

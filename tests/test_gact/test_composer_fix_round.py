@@ -447,3 +447,56 @@ def test_v3_session_projection_carries_the_cancellation_envelope(tmp_path: Path)
         assert cancellation["cancellation_attempt"]
         assert cancellation["composer_autostart"]["reason"] == "session_cancelled"
         _wait_idle(app, sid)
+
+
+# --------------------------------------------------------------------------- #
+# F5 — a recovered pending steer must actually be deliverable.                  #
+# --------------------------------------------------------------------------- #
+
+
+def test_a_recovered_pending_steer_is_delivered_after_a_restart(tmp_path: Path) -> None:
+    """Restoring the transcript row is only half of recovery.
+
+    ``LoopInbox`` is in-memory, so a durable ``PendingSteer`` with no re-enqueued
+    inbox event is stranded: no drain and no idle re-drive ever looks at it, and
+    the user's accepted message is silently never delivered.
+    """
+
+    sessions_path = tmp_path / "s.json"
+    first = build_app(sessions_path=sessions_path, agent=_SlowAgent(sleep_s=1.5))
+    with TestClient(first) as client:
+        sid = client.post("/v1/sessions", json={"title": "restart"}).json()["id"]
+        assert (
+            client.post(
+                f"/v1/sessions/{sid}/messages",
+                json={"parts": [{"type": "text", "text": "first"}]},
+            ).status_code
+            == 200
+        )
+        _wait_busy(first, sid)
+        steer_id = client.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "recovered steer"}]},
+        ).json()["message_id"]
+
+    agent = FakeClioAgent(answer="after restart")
+    restarted = build_app(sessions_path=sessions_path, agent=agent)
+    assert inbox_for(restarted, sid).peek_nonempty(), "recovery did not re-enqueue the steer"
+
+    with TestClient(restarted) as client:
+        assert (
+            client.post(
+                f"/v1/sessions/{sid}/messages",
+                json={"parts": [{"type": "text", "text": "second"}]},
+            ).status_code
+            == 200
+        )
+        deadline = time.monotonic() + 6.0
+        while time.monotonic() < deadline and len(agent.calls) < 2:
+            time.sleep(0.05)
+
+    assert len(agent.calls) >= 2, "the recovered steer never reached the model"
+    assert "recovered steer" in agent.calls[1][0]
+    assert restarted.state.message_intents.get_pending(sid, steer_id) is None or (
+        restarted.state.message_intents.get_pending(sid, steer_id).state == "consumed"  # type: ignore[union-attr]
+    )
