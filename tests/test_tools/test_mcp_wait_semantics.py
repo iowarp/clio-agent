@@ -236,6 +236,34 @@ async def test_staller_live_cancel_interrupts_promptly() -> None:
         assert final.status == "cancelled"
 
 
+async def test_task_mode_staller_survives_a_short_backstop_via_status_polls() -> None:
+    """#1282 B1 (re-verify round, BLOCKING): the task-mode activity-reset path
+    (``default_task_wait_observer`` -> ``touch_active_activity_clock``) is
+    the ONLY signal keeping a task-mode drive alive past
+    ``run_with_activity_backstop``'s deadline -- unlike a plain call, a
+    task-mode tool's ``report_progress`` calls ride a channel the executor's
+    ``progress_handler`` never sees (proven by C1-S0). If the activity
+    contextvar is set AFTER the drive's ``asyncio.Task`` is created (the B1
+    bug), every poll's ``touch`` is a silent no-op and this staller -- whose
+    total runtime (3s) far exceeds the configured backstop (1.0s), but whose
+    50ms poll cadence keeps it comfortably alive if the reset actually
+    works -- must die at the backstop instead of completing.
+
+    RED before the ordering fix (verified via ``git stash`` on
+    ``mcp_wait_ladder.py``): the call raised ``UncertainMutatingToolOutcomeError``
+    (``staller`` is not annotated retry-safe, so the backstop's TimeoutError
+    was converted rather than propagated raw) well before the 3s tool
+    finished. GREEN after: the call completes normally.
+    """
+
+    executor = AsyncMCPToolExecutor(
+        build_exerciser_server(), timeout=1.0, client_factory=lambda target: make_mcp_client(target)
+    )
+    async with executor:
+        outcome = await executor.call_tool_result("staller", {"seconds": 3.0, "steps": 30})
+    assert outcome.model_text == "stalled-through"
+
+
 # --------------------------------------------------------------------------
 # (c) plain_staller progress-reset: no ladder escalation while progress flows
 # --------------------------------------------------------------------------

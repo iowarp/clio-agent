@@ -136,10 +136,16 @@ def _mark_refusals_on_tool_calls(tools: dict[str, Any]) -> None:
     mark_terminal_refusal` sets is therefore invisible to the popper on the
     far side of that boundary (proven end-to-end: an async refusing tool
     escalated NOTHING -- the #1275 hang shape returned, silently). Contrast
-    ``tools/mcp_wait_ladder.py``'s F3a activity-clock contextvar, which IS
-    safe across an ``asyncio.ensure_future`` boundary -- that stays on the
-    SAME running loop, so the new Task's context is a COPY of the setter's,
-    not a fresh one from a brand-new loop.
+    ``tools/mcp_wait_ladder.py``'s F3a activity-clock contextvar: an
+    ``asyncio.ensure_future`` boundary is FIXABLE this way (unlike
+    ``asyncio.run()``'s brand-new loop) because it stays on the SAME running
+    loop, so a new Task's context CAN be a copy of the setter's -- but only
+    if the ``.set()`` actually happens before the Task is created. Getting
+    that ordering right was itself a live bug (#1282 B1, re-verify round: an
+    earlier version created the Task first) -- the general lesson both
+    guards teach is the same: a contextvar crossing an ``asyncio.Task`` or
+    ``asyncio.run()`` boundary is a `verify, don't assume` situation on
+    EVERY use, not a mechanism that is safe by default.
 
     Every SHIPPED tool callable reaching this loop is sync today (native/
     MCP-bridged/dynamic-agent tools all bridge async work behind a sync

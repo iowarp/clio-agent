@@ -17,7 +17,8 @@ Four pieces (adversarial-review round, F1/F3/F4):
    ``to_dict()`` reaches the wire/trace, F4) AND a ``TimeoutError`` (so the
    executor's existing ``isinstance(exc, TimeoutError)`` retry-safety
    classification is unaffected — verified both ways in
-   ``tests/test_tools/test_mcp_wait_ladder.py``). Firing is ALWAYS
+   ``tests/test_core/test_errors.py::TestMCPCallTimeoutBackstopErrorMRO``).
+   Firing is ALWAYS
    ``logger.warning``'d (never opt-in-only) plus ``stream_audit``'d (opt-in
    structured detail) — never silent, never JSONL-only.
 
@@ -43,13 +44,23 @@ Four pieces (adversarial-review round, F1/F3/F4):
    (:func:`touch_active_activity_clock`, called by the executor's
    ``progress_handler`` AND by :func:`default_task_wait_observer` on every
    non-terminal poll) resets the deadline; a genuinely SILENT call still
-   hits the typed backstop. Deliberately does NOT restructure
-   ``AsyncMCPToolExecutor._call_lock`` (the reviewer's alternative,
-   skipped): the lock bounds how long clio itself holds one executor's
-   single in-flight slot, not how long a server may legitimately take to
-   answer a PROGRESSING call — activity-reset defuses starvation for the
-   progressing case without touching that invariant, and a silent call
-   still frees the lock at ``call_timeout_s``, same as before.
+   hits the typed backstop. **B1 (re-verify round, blocking, fixed):** the
+   task-mode reset path depends on ``_ACTIVE_ACTIVITY_CLOCK`` being set
+   BEFORE ``asyncio.ensure_future(coro)`` creates the task —
+   ``asyncio.Task`` snapshots ``contextvars.copy_context()`` at creation, so
+   the reverse order made :func:`touch_active_activity_clock` a silent
+   no-op for every task-mode drive (proven live: a 30-poll/3s staller died
+   at a 1.0s backstop). :func:`run_with_activity_backstop` now sets the
+   contextvar first — see its own docstring/comment for the exact ordering.
+
+   The accepted cost: a PROGRESSING call holds
+   ``AsyncMCPToolExecutor._call_lock`` for as long as it keeps progressing —
+   deliberately NOT restructured (the reviewer's lock-restructuring
+   alternative was skipped). This mirrors the already-sanctioned #1225
+   ``wait_for_terminal`` precedent (``timeout=None`` already holds the slot
+   unboundedly); killing live, progressing work to free the lock sooner is
+   the worse outcome under the user-agency rule. A genuinely SILENT call
+   still frees the lock at ``call_timeout_s``, unchanged.
 
 3. :func:`default_task_wait_observer` — the per-drive ``on_poll`` hook every
    NON-relay backend was missing entirely (rule 5, "every wait names what it
@@ -124,7 +135,8 @@ class MCPCallTimeoutBackstopError(ToolError, TimeoutError):
     ``tools/execution.py``'s retry-safety / uncertain-mutating-timeout check
     chief among them — keeps working byte-identically). MRO-verified:
     ``isinstance`` holds for BOTH bases; ``str(exc)`` and ``exc.to_dict()``
-    both work (tested in ``tests/test_tools/test_mcp_wait_ladder.py``).
+    both work (tested in
+    ``tests/test_core/test_errors.py::TestMCPCallTimeoutBackstopErrorMRO``).
     """
 
     def __init__(self, message: str, *, reason: str, details: dict[str, Any]) -> None:
@@ -212,12 +224,25 @@ class ActivityClock:
 #: :func:`run_with_activity_backstop` for the duration of ONE call; read by
 #: :func:`touch_active_activity_clock`, called from deep inside that SAME
 #: call's task-mode poll loop (``default_task_wait_observer``) with no direct
-#: parameter path back to the executor's local ``ActivityClock``. A fresh
-#: ``asyncio.Task`` captures a COPY of the current context at creation
-#: (``contextvars`` semantics), so this is visible to code running inside the
-#: task created below, on the SAME running event loop — never across an
-#: ``asyncio.run()``-started NEW loop (see reactv2.py's F2 docstring for why
-#: that boundary is different and unsafe for a similar contextvar).
+#: parameter path back to the executor's local ``ActivityClock``.
+#:
+#: ORDERING IS LOAD-BEARING (#1282 B1, re-verify round -- this was a live
+#: bug, not a hypothetical): ``asyncio.Task`` snapshots
+#: ``contextvars.copy_context()`` at CREATION time, so this contextvar MUST
+#: be ``.set()`` on the calling frame BEFORE ``asyncio.ensure_future(coro)``
+#: creates the task the drive runs inside -- ``run_with_activity_backstop``
+#: does exactly that (set, then create). Reversing the two makes every
+#: read inside the task see the pre-set (``None``) value: a silent no-op
+#: that quietly disables the task-mode reset path while the plain-call
+#: ``progress_handler`` path (which closes over ``ActivityClock`` directly,
+#: no contextvar involved) keeps working -- proven live, a 30-poll/3s
+#: staller died at a 1.0s backstop under the reversed order. Once set
+#: correctly, before task creation, the task's copied context DOES carry
+#: the value for the rest of that task's life, on the SAME running event
+#: loop -- this is a DIFFERENT (safe) boundary than an ``asyncio.run()``
+#: call starting a brand-new loop with a fresh top-level context (see
+#: reactv2.py's F2 docstring, the case that genuinely cannot be fixed by
+#: reordering because there is no shared loop to copy a context across).
 _ACTIVE_ACTIVITY_CLOCK: "contextvars.ContextVar[ActivityClock | None]" = contextvars.ContextVar(
     "clio_mcp_active_activity_clock", default=None
 )
@@ -284,8 +309,16 @@ async def run_with_activity_backstop(
     re-raising, exactly like a bare ``await coro`` would.
     """
 
-    task: "asyncio.Task[_T]" = asyncio.ensure_future(coro)
+    # #1282 B1 (re-verify round, BLOCKING): the contextvar MUST be set BEFORE
+    # the task is created. asyncio.Task snapshots contextvars.copy_context()
+    # at CREATION time, so a set() issued after ensure_future() is invisible
+    # inside the task -- touch_active_activity_clock() (the SOLE task-mode
+    # reset path, called from default_task_wait_observer deep inside coro)
+    # would silently no-op, and a genuinely progressing task-mode drive would
+    # hit the backstop as if it were silent. Verified live: reversing this
+    # order made a 30-poll/3s staller die at a 1.0s backstop.
     token = _ACTIVE_ACTIVITY_CLOCK.set(activity)
+    task: "asyncio.Task[_T]" = asyncio.ensure_future(coro)
     try:
         while True:
             remaining = activity.last_touch_monotonic + timeout - time.monotonic()
