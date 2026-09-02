@@ -201,11 +201,29 @@ def test_publish_mcp_task_console_delta_for_an_unattributed_key_publishes_nothin
 # --------------------------------------------------------------------------- #
 
 
-def test_publish_mcp_task_wait_carries_what_it_waits_on() -> None:
+async def test_publish_mcp_task_wait_carries_what_it_waits_on() -> None:
     """The six #1274 wait constraints' rule 5, on the wire: attempt N, the
-    observed status, and the server-advertised next-poll interval."""
+    observed status, and the server-advertised next-poll interval.
+
+    #1282 F1: the event is TRANSIENT (connection-timeline plumbing, like
+    ``server.heartbeat``), so it never reaches the replay-history query
+    (``session_events_since``) -- asserted here via a LIVE subscriber
+    instead, the same pattern ``test_eventbus_replay_watchdog.py`` uses for
+    heartbeats.
+    """
+
+    import asyncio
 
     app = _FakeApp()
+    received: list[Any] = []
+
+    async def reader() -> None:
+        async for ev in app.state.bus.subscribe("sess-1"):
+            received.append(ev)
+            break
+
+    task = asyncio.create_task(reader())
+    await asyncio.sleep(0)
     publish_mcp_task_wait(
         app,  # type: ignore[arg-type]
         _key(),
@@ -213,15 +231,19 @@ def test_publish_mcp_task_wait_carries_what_it_waits_on() -> None:
         attempt=3,
         next_poll_ms=250,
     )
+    await asyncio.wait_for(task, timeout=2.0)
 
-    event = app.state.bus.session_events_since("sess-1")[0]
+    event = received[0]
     assert event.type == MCP_TASK_WAIT_EVENT
+    assert event.transient is True
     assert event.payload == {
         "key": _key().to_wire(),
         "status": "working",
         "attempt": 3,
         "next_poll_ms": 250,
     }
+    # And, precisely because it is transient, it must NOT be in the replay log.
+    assert app.state.bus.session_events_since("sess-1") == []
 
 
 def test_publish_mcp_task_wait_for_an_unattributed_key_publishes_nothing() -> None:
@@ -257,12 +279,19 @@ def test_install_wires_the_change_console_and_wait_listeners(
         assert task_wait_listener() is not None
 
 
-def test_wait_listener_installed_by_a_real_boot_publishes_a_lean_event(
+async def test_wait_listener_installed_by_a_real_boot_publishes_a_lean_event(
     tmp_path: Path,
 ) -> None:
     """Drives the installed hook exactly the way
     ``tools/mcp_wait_ladder.py``'s default observer calls it (positional: key,
-    status, attempt, next_poll_ms) against a REAL app/bus from ``build_app``."""
+    status, attempt, next_poll_ms) against a REAL app/bus from ``build_app``.
+
+    #1282 F1: the event is TRANSIENT, so a live subscriber (not
+    ``session_events_since``'s replay-history query) is what proves delivery
+    -- mirrors ``test_publish_mcp_task_wait_carries_what_it_waits_on`` above.
+    """
+
+    import asyncio
 
     app = _build(tmp_path)
     with TestClient(app) as client:
@@ -271,15 +300,28 @@ def test_wait_listener_installed_by_a_real_boot_publishes_a_lean_event(
 
         listener = task_wait_listener()
         assert listener is not None
+
+        received: list[Any] = []
+
+        async def reader() -> None:
+            async for ev in app.state.bus.subscribe(sid):
+                if ev.type == MCP_TASK_WAIT_EVENT:
+                    received.append(ev)
+                    break
+
+        task = asyncio.create_task(reader())
+        await asyncio.sleep(0)
         listener(key, "working", 2, 500)
+        await asyncio.wait_for(task, timeout=2.0)
 
-        events = app.state.bus.session_events_since(sid, cursor=1)
-        wait_events = [e for e in events if e.type == MCP_TASK_WAIT_EVENT]
+        # And, precisely because it is transient, it must NOT be in the replay log.
+        replayed = app.state.bus.session_events_since(sid, cursor=1)
+        assert not any(e.type == MCP_TASK_WAIT_EVENT for e in replayed)
 
-    assert len(wait_events) == 1
-    assert wait_events[0].payload["status"] == "working"
-    assert wait_events[0].payload["attempt"] == 2
-    assert wait_events[0].payload["next_poll_ms"] == 500
+    assert len(received) == 1
+    assert received[0].payload["status"] == "working"
+    assert received[0].payload["attempt"] == 2
+    assert received[0].payload["next_poll_ms"] == 500
 
 
 def test_console_listener_installed_by_a_real_boot_publishes_a_lean_event(
