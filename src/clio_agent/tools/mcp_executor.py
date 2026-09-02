@@ -38,6 +38,7 @@ from clio_agent.tools.mcp_result_projection import (
     model_tool_result_chars as model_tool_result_chars,
 )
 from clio_agent.tools.mcp_runtime import make_mcp_client
+from clio_agent.tools.mcp_task_routing import resolve_namespace_route
 from clio_agent.tools.mcp_timeout_budget import component_declared_timeout_seconds
 
 logger = logging.getLogger(__name__)
@@ -457,11 +458,26 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         (stamped externally by ``ClioAgent`` at gateway-build time; absent
         for the default/boot executor and for any namespace not backed by a
         cold-cacheable stdio spec, both of which skip the lock entirely).
+
+        #1281 (C1-S1): before building the proxy-path ``ctx``, consult
+        ``resolve_namespace_route`` (typed, capability-keyed, never probed --
+        see ``tools/mcp_task_routing.py``). A task-capable namespace with a
+        mounted direct factory (stamped at ``build_gateway`` time, threaded
+        onto this executor the same way ``_clio_namespace_specs`` is) uses
+        that factory instead -- the tasks extension attaches automatically
+        (default client class), fixing #1274 for THIS namespace. Otherwise
+        (capability unknown, genuine v1, or no factory threaded onto this
+        executor) today's proxy path is unchanged, byte-identical.
         """
 
         specs: Mapping[str, Any] = getattr(self, "_clio_namespace_specs", None) or {}
         spec = specs.get(namespace)
-        ctx = self._client_factory(proxy)
+        direct_factories: Mapping[str, Callable[[], Any]] = (
+            getattr(self, "_clio_namespace_direct_factories", None) or {}
+        )
+        route = resolve_namespace_route(namespace)
+        direct_factory = direct_factories.get(namespace) if route.use_direct else None
+        ctx = direct_factory() if direct_factory is not None else self._client_factory(proxy)
         if spec is not None and uses_shared_launcher_cache(spec):
             async with aacquire_launcher_cache_lock(namespace):
                 client = await ctx.__aenter__()
