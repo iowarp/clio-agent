@@ -183,6 +183,29 @@ ONE client pathway for every server (built-in, declared, relay):
   (collapse into `list_builtin_tool_definitions` once relay is declared),
   18 `relay.*` config keys → declared-server entry.
 
+## Campaign 1 status (2026-09-02)
+
+- **C1-S0 MERGED** (2bcde2f9; #1280): exerciser + frozen v1 fixture + dual-era suite; the
+  era-split probe verdict recorded above.
+- **C1-S1 MERGED** (954f8b9f; #1281): capability-keyed routing — the #1274 defect fixed,
+  adversarially proven under production wiring both directions (readiness-ordered
+  first-call success; cold-race typed refusal then one-shot heal).
+- **C1-S2 MERGED** (15a03f24; #1282, resolves #1275): the hang's root cause was the
+  vendored ReActV2 tool-exception swallow (typed refusals became LM-retry fuel; swept
+  through BestOfN/Refine too); refusals terminal-fast with typed reasons on the parent
+  surface + re-dial hints; every MCP wait activity-driven, typed, surfaced (transient
+  throttled `mcp_task.wait`; rendering = gact-tui#384), cancellable. OWNER-EYE TRADE: a
+  progressing call holds the per-namespace call lock while it progresses (accepted cost
+  of never killing live work; #1225 precedent).
+- Composer wave ABSORBED (develop 61708fae → c43a2ca8, clean). Deep-researcher case
+  scaffolded (case14; #1286 leg iii).
+- **REORDER (owner, 2026-09-02): full live verification is PREPARED NOW on the campaign
+  branch** (scripts/live_verification/: preflight + web-fetch smoke + synthetic-on-a-
+  session + fleet/deep-researcher runbooks) and RUNS ON OWNER GO-AHEAD — before S3-S5,
+  not after. A live session against the exerciser (incl. an MRTR round through the real
+  HITL surface) is added to the #1286 gate; the exerciser-as-test-surface re-affirmation
+  stays as well.
+
 ## Campaign 1 slices (dependency order; implement → adversarial review → merge, per slice)
 
 - **C1-S0 — the v2 exerciser + dual-era conformance bed.** A synthetic in-repo MCP
