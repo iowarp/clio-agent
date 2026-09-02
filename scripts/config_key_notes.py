@@ -47,6 +47,12 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
         "backends.",
     ),
     (
+        "Workspace resources",
+        ("resources",),
+        "The immutable workspace resource service: the upload byte ceiling and the optional "
+        "document-processor used to derive structured views.",
+    ),
+    (
         "Tools + MCP",
         ("tools",),
         "File-policy sandboxing, shell execution bounds and the MCP tool fleet's "
@@ -88,6 +94,11 @@ KEY_NOTES: dict[str, str] = {
     "agents.child_forward_deadline_s": (
         "Seconds before an unattended parent's forwarded HITL question auto-fails the waiting "
         "child task; defaults to the elicitation window."
+    ),
+    "agents.default_blueprint_id": (
+        "Installed marketplace Agent Blueprint a fresh deployment bootstraps and binds as its "
+        "default (base-agent: one react root over CLIO's native workspace tools); set it to ship a "
+        "different agent, never to define one in code."
     ),
     "agents.disable_default_registry_bootstrap": (
         "Disables auto-installing the default marketplace Agent-Blueprint registry on first boot; "
@@ -348,6 +359,22 @@ KEY_NOTES: dict[str, str] = {
     "gact.live_edge_streaming": (
         "Experimental flag enabling live-edge SSE atom sealing (default off); only meaningful with "
         "the S5 atoms regime, leave off normally."
+    ),
+    "gact.loop_inbox.max_events": (
+        "Per-session bound on buffered mid-turn wakes (child completions and user steers) before "
+        "the oldest recoverable one is evicted; raise for very fan-out-heavy turns."
+    ),
+    "gact.message_intents.max_acceptances_per_session": (
+        "Per-session cap on retained message-acceptance records used for idempotent POST replay; "
+        "raise for clients that retry over long windows, lower to shrink the intent store."
+    ),
+    "gact.message_intents.max_queued_per_session": (
+        "Per-session cap on durable queued (future) messages; a create past it is REFUSED with a "
+        "typed 429, never evicted. Raise for heavy queue use."
+    ),
+    "gact.message_intents.max_settled_steers_per_session": (
+        "Per-session cap on retained SETTLED (consumed/cancelled) pending-steer rows; undelivered "
+        "steers are never evicted. Lower to shrink the intent store."
     ),
     "gact.resident_ledgers.idle_ttl_s": (
         "Seconds an idle session's in-memory transcript ledger may sit resident before release "
@@ -700,6 +727,82 @@ KEY_NOTES: dict[str, str] = {
     "providers.codex.credential_home_capacity": (
         "Max simultaneous private CODEX_HOME credential-dir copies the Codex SDK transport keeps "
         "alive; raise for many concurrent Codex sessions."
+    ),
+    "resources.delivery_ledger_max_records": (
+        "Rows of resource-delivery provenance kept in resource_deliveries.json before the oldest "
+        "are compacted away; raise to retain a longer attachment audit trail."
+    ),
+    "resources.derivative_name_max_chars": (
+        "Longest derivative id stored under its own filename before it is hashed to a short "
+        "digest name; lower on Windows deployments with deep state directories (MAX_PATH)."
+    ),
+    "resources.document_processor_url": (
+        "Base URL of the optional document-processing service used to derive structured views of "
+        "uploaded resources; unset leaves resources served as originals."
+    ),
+    "resources.list_max_records": (
+        "Resource rows one workspace listing returns before it reports truncation; raise for "
+        "workspaces holding many uploads, lower to keep tool results small."
+    ),
+    "resources.max_bytes": (
+        "Byte ceiling on a single uploaded workspace resource; raise for large scientific inputs, "
+        "lower to bound per-workspace disk use."
+    ),
+    "resources.processor_cancel_timeout_s": (
+        "Seconds to wait for the document processor to acknowledge a cancellation; raise only if "
+        "the service cancels slowly under load."
+    ),
+    "resources.processor_connect_timeout_s": (
+        "Seconds to wait for a TCP connection to the document processor; raise on a slow or "
+        "congested link to the service."
+    ),
+    "resources.processor_pool_timeout_s": (
+        "Seconds to wait for a free connection from the document-processor client pool; raise "
+        "when many uploads convert concurrently."
+    ),
+    "resources.processor_read_timeout_s": (
+        "Seconds to wait for the document processor's response headers/body on a submit; raise "
+        "when the service queues submissions behind long conversions."
+    ),
+    "resources.processor_status_timeout_s": (
+        "Seconds to wait for one document-processor status poll; raise only if status responses "
+        "are genuinely slow, since every poll pays it."
+    ),
+    "resources.processor_write_timeout_s": (
+        "Seconds to stream one upload body to the document processor; 0 derives it from "
+        "resources.max_bytes at 1 MiB/s (floor 60s) so a raised ceiling is not cut off mid-body."
+    ),
+    "resources.search_excerpt_chars": (
+        "Characters of each matching line returned by a bounded resource search; raise for more "
+        "context per hit, lower to shrink tool output."
+    ),
+    "resources.search_match_limit": (
+        "Matches one bounded resource search returns before reporting truncation; raise for "
+        "broader sweeps, lower to keep tool results small."
+    ),
+    "resources.status_poll_failure_threshold": (
+        "Consecutive failed converter status polls tolerated before the resource is marked failed "
+        "with converter_status_unavailable; lower to give up on a vanished converter sooner."
+    ),
+    "resources.structure_node_max_bytes": (
+        "Byte ceiling on ONE structured node (a page, table, picture or text block) served from a "
+        "derived view; raise for documents with very large single nodes."
+    ),
+    "resources.text_preview_bytes": (
+        "Byte ceiling on a text resource served inline through the preview route; raise to "
+        "preview larger documents in a client."
+    ),
+    "resources.text_read_chars": (
+        "Characters returned by one bounded resource text read before truncation; raise to hand "
+        "the model more of a document per call."
+    ),
+    "resources.text_scan_bytes": (
+        "Byte ceiling on text CLIO will linearly scan for a resource search or direct read; raise "
+        "for larger plain-text inputs, lower to bound per-call CPU."
+    ),
+    "resources.upload_chunk_bytes": (
+        "Largest single resumable-upload chunk the server accepts, enforced while the body "
+        "streams; raise for fewer round-trips on fast links, lower to bound per-request memory."
     ),
     "relay.cluster": (
         "This deployment's registered relay cluster identity; set it to route jarvis/remote-MCP "

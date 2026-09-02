@@ -544,48 +544,18 @@ class Message(BaseModel):
         return wire
 
 
-class PostMessageRequest(BaseModel):
-    """POST /v1/sessions/{sid}/messages body — SPEC §6.3.
-
-    The wire contract uses ``parts[]`` (a list of the same Part
-    shape the server emits). We accept ``text`` as a convenience
-    alias for the single-text-part form because CLIO's early
-    scaffold used that; prefer ``parts`` for new callers.
-    """
-
-    parts: list[Part] = Field(default_factory=list)
-    text: Optional[str] = None
-    model: Optional[ModelRef] = None
-    agent: Optional[AgentRef] = None
-    agent_id: Optional[str] = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-    def extract_text(self) -> str:
-        """Return the user-visible text payload.
-
-        Preference order: text parts joined in order, falling back to the
-        legacy ``text`` field when the caller used the simpler shape.
-        """
-
-        text_parts: list[str] = []
-        for p in self.parts:
-            if p.type == "text" and p.text:
-                text_parts.append(p.text)
-        if text_parts:
-            return "\n".join(text_parts).strip()
-        return self.text or ""
-
-    def image_parts(self) -> list[Part]:
-        """Return image parts supplied in this message."""
-
-        return [p for p in self.parts if p.type == "image"]
-
-    def extract_agent_id(self) -> str:
-        """Return a per-turn agent override, if the caller supplied one."""
-
-        if self.agent is not None and self.agent.id:
-            return self.agent.id
-        return self.agent_id or ""
+# The message submission/acceptance contract (``MessageBehavior``,
+# ``PostMessageRequest``, ``PostMessageResponse``) is OWNED by
+# ``gact.message_contract`` and re-exported here so every existing
+# ``from clio_agent.gact.types import PostMessageRequest`` keeps resolving to
+# the one definition. The import sits mid-module (after ``AgentRef`` /
+# ``ModelRef`` / ``Part`` are bound) because the contract module imports those
+# three back out of this one.
+from clio_agent.gact.message_contract import (  # noqa: E402, I001
+    MessageBehavior as MessageBehavior,
+    PostMessageRequest as PostMessageRequest,
+    PostMessageResponse as PostMessageResponse,
+)
 
 
 class AgentCapabilityRef(BaseModel):
@@ -673,24 +643,6 @@ class ListToolsResponse(BaseModel):
     """GET /v1/catalog/tools body."""
 
     tools: list[Tool]
-
-
-class PostMessageResponse(BaseModel):
-    """POST /v1/sessions/{sid}/messages response — SPEC §6.3.
-
-    Returns immediately with an ack: just the user message id and
-    accepted_at timestamp. The assistant turn arrives asynchronously
-    via the SSE channel (message.created, message.part.added,
-    message.part.delta, message.completed). This shape matches the
-    TUI's ``PostMessageResponse`` Go struct + the emulator's
-    behaviour so the wire is interoperable.
-
-    The full Message objects are still discoverable via
-    GET /v1/sessions/{sid}/messages once the turn settles.
-    """
-
-    message_id: str
-    accepted_at: str
 
 
 # ---------------------------------------------------------------------------

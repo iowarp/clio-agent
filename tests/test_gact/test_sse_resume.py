@@ -124,6 +124,9 @@ class _SSEConnection:
             with contextlib.suppress(BaseException):
                 await self._task
 
+    async def read_raw_frame(self, timeout: float = _READ_TIMEOUT) -> bytes:
+        return await asyncio.wait_for(self._frames.get(), timeout)
+
     async def read_frame(self, timeout: float = _READ_TIMEOUT) -> dict[str, Any]:
         raw = await asyncio.wait_for(self._frames.get(), timeout)
         return _parse_frame(raw)
@@ -338,10 +341,11 @@ async def test_v3_route_emits_scoped_revisioned_envelopes(tmp_path: Any) -> None
     """Negotiation reaches the real unbounded SSE route, not only pure projection."""
 
     app, sid = _make_app_with_session(tmp_path)
+    events = _seed_history(app, sid, 3)
     async with _SSEConnection(
         app,
         sid,
-        last_event_id=None,
+        last_event_id=str(events[-1].id),
         gact_version="0.3",
         a2ui_version="0.9.1",
     ) as conn:
@@ -351,5 +355,118 @@ async def test_v3_route_emits_scoped_revisioned_envelopes(tmp_path: Any) -> None
     assert connected["data"]["protocol_version"] == "0.3"
     assert connected["data"]["scope"]["session_id"] == sid
     assert snapshot["type"] == "session.upserted"
-    assert snapshot["data"]["entity_revision"] == 0
+    # The snapshot IS authoritative: it carries the session's real revision (the
+    # head of its timeline), not a placeholder 0 a revision-guarding client would
+    # discard as older than what it already holds. The SSE ``id:`` line stays
+    # pinned at 0 so the served wire remains monotonic.
+    assert snapshot["id"] == 0
+    assert snapshot["data"]["entity_revision"] == events[-1].id
     assert snapshot["data"]["payload"]["id"] == sid
+
+
+# ---- (d) heartbeats + cursor convention (#composer fix round F3) -----------
+
+
+async def test_heartbeat_frame_carries_no_id_line(tmp_path: Any) -> None:
+    """A keepalive must not advance the client's replay cursor.
+
+    ``heartbeat_event`` mints a real id off the global counter but is transient,
+    so it never enters the timeline and never advances ``highest_event_id``.
+    Emitting that id on the wire made a spec-conformant client's ``lastEventId``
+    jump PAST the timeline head, and the next reconnect was answered with a bogus
+    ``stream.gap reason=cursor_epoch_reset`` plus a forced replay from 0. Per the
+    SSE spec a frame with no ``id:`` field leaves ``lastEventId`` untouched, so
+    the keepalive is emitted without one.
+    """
+
+    from clio_agent.gact.events import heartbeat_event  # noqa: PLC0415
+
+    app, sid = _make_app_with_session(tmp_path)
+    events = _seed_history(app, sid, 2)
+
+    async with _SSEConnection(app, sid, last_event_id=str(events[-1].id)) as conn:
+        await _read_preamble(conn)
+        await _wait_subscribed(app, sid)
+        app.state.bus.publish(heartbeat_event(sid))
+        raw = await conn.read_raw_frame()
+
+    text = raw.decode("utf-8")
+    assert "event: server.heartbeat" in text
+    assert not any(line.startswith("id:") for line in text.splitlines())
+
+
+async def test_reconnect_after_heartbeat_replays_nothing_and_declares_no_gap(
+    tmp_path: Any,
+) -> None:
+    """The whole round trip: heartbeat, reconnect at the head, silence."""
+
+    from clio_agent.gact.events import heartbeat_event  # noqa: PLC0415
+
+    app, sid = _make_app_with_session(tmp_path)
+    events = _seed_history(app, sid, 3)
+    head = events[-1].id
+
+    async with _SSEConnection(app, sid, last_event_id=str(head), gact_version="0.3") as conn:
+        await conn.read_frames(2)
+        await _wait_subscribed(app, sid)
+        app.state.bus.publish(heartbeat_event(sid))
+        await conn.read_raw_frame()
+
+    async with _SSEConnection(app, sid, last_event_id=str(head), gact_version="0.3") as conn:
+        preamble = await conn.read_frames(2)
+        assert [frame["type"] for frame in preamble] == ["stream.live", "session.upserted"]
+        await conn.assert_no_frame()
+
+
+async def test_message_state_cursor_resumes_the_stream_seamlessly(tmp_path: Any) -> None:
+    """GET /message-state's cursor is directly usable as ``Last-Event-ID``.
+
+    It used to return ``last id + 1`` (an inclusive convention) while the SSE
+    resume cursor is exclusive, so a client feeding one into the other tripped
+    the epoch guard on its very first reconnect.
+    """
+
+    import httpx  # noqa: PLC0415
+
+    app, sid = _make_app_with_session(tmp_path)
+    events = _seed_history(app, sid, 4)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as http:
+        snapshot = (await http.get(f"/v1/sessions/{sid}/message-state")).json()
+
+    assert snapshot["next_cursor"] == events[-1].id
+
+    async with _SSEConnection(app, sid, last_event_id=str(snapshot["next_cursor"])) as conn:
+        await _read_preamble(conn)
+        await conn.assert_no_frame()
+
+
+async def test_epoch_reset_reason_reaches_the_stream_audit(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A genuinely impossible cursor still resets — and says so on the audit."""
+
+    from clio_agent.gact.routes import misc as misc_routes  # noqa: PLC0415
+
+    rows: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        misc_routes,
+        "stream_audit",
+        lambda stage, **fields: rows.append((stage, fields)),
+    )
+
+    app, sid = _make_app_with_session(tmp_path)
+    events = _seed_history(app, sid, 2)
+    impossible = events[-1].id + 10_000
+
+    async with _SSEConnection(app, sid, last_event_id=str(impossible), gact_version="0.3") as conn:
+        await conn.read_frames(2)
+        gap = await conn.read_frame()
+
+    assert gap["type"] == "stream.gap"
+    audited = [fields for stage, fields in rows if stage == "sse.stream_gap"]
+    assert audited, "the epoch reset never reached the stream audit"
+    assert audited[0]["reason"] == "cursor_epoch_reset"
+    assert audited[0]["requested_cursor"] == impossible
+    assert audited[0]["new_timeline_head"] == events[-1].id

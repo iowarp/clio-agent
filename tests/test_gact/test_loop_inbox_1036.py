@@ -111,14 +111,16 @@ def test_mid_turn_post_returns_202_persists_steer_no_second_turn(tmp_path: Path)
         assert resp.status_code == 202
         steer_id = resp.json()["message_id"]
 
-        # #1052 persist-at-CONSUMPTION: the route no longer persists, so the steer is
-        # NOT YET in GET /messages between the 202 and the next drain.
-        assert steer_id not in {m["id"] for m in _user_msgs(client, sid)}
+        # GACT 0.3 acceptance persists the actual human transcript message before
+        # returning 202. The client renders this same identity with a dashed border.
+        accepted = {m["id"]: m for m in _user_msgs(client, sid)}[steer_id]
+        assert accepted["metadata"].get("pending_steer") is True
+        assert accepted["metadata"].get("mid_turn_steer") is not True
         # It is buffered for the running turn's next boundary / idle re-drive.
         assert inbox_for(app, sid).peek_nonempty()
 
         # Simulate the mid-turn tool boundary: the running turn drains its inbox and
-        # persists the steer AT consumption (turn keeps its slot — no new turn).
+        # settles the already-persisted steer AT consumption (turn keeps its slot).
         with _active_turn(app, sid):
             drain_active_session_inbox(app)
 
@@ -160,39 +162,35 @@ def test_route_no_longer_double_persists_steer(tmp_path: Path) -> None:
 
 
 def test_steer_persisted_exactly_once_on_midturn_drain(tmp_path: Path) -> None:
-    """A POST-style steer (carrying a pre-minted id/stamp) drained mid-turn persists
-    EXACTLY ONE ``mid_turn_steer`` message; the idle re-drive then persists NOTHING
-    further (the atomic drain already emptied the inbox) — exactly-once across the
-    two consumers."""
+    """A route-accepted steer settles the same persisted identity exactly once."""
 
-    app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowAgent(sleep_s=0.1))
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowAgent(sleep_s=1.5))
     with TestClient(app) as client:
         sid = _new_session(client)
-        enqueue_user_steer(
-            app,
-            sid,
-            "drain me",
-            {"foo": "bar"},
-            steer_message_id="msg_user_steer1",
-            steer_created_at="2026-07-24T00:00:00+00:00",
-        )
+        assert _post(client, sid, "first").status_code == 200
+        _wait_busy(app, sid)
+        response = _post(client, sid, "drain me")
+        assert response.status_code == 202
+        steer_id = response.json()["message_id"]
         with _active_turn(app, sid):
             block = drain_active_session_inbox(app)
 
         assert USER_STEER_MARKER in block
         by_id = {m["id"]: m for m in _user_msgs(client, sid)}
-        assert "msg_user_steer1" in by_id, "the pre-minted steer id was not persisted"
-        assert by_id["msg_user_steer1"]["metadata"].get("mid_turn_steer") is True
-        assert by_id["msg_user_steer1"].get("turn_id", "") == ""
-        assert _text_of(by_id["msg_user_steer1"]) == "drain me"
+        assert steer_id in by_id, "the accepted steer identity was lost"
+        assert by_id[steer_id]["metadata"].get("pending_steer") is False
+        assert by_id[steer_id]["metadata"].get("mid_turn_steer") is True
+        assert by_id[steer_id].get("turn_id", "") == ""
+        assert _text_of(by_id[steer_id]) == "drain me"
         assert sum(1 for m in _user_msgs(client, sid) if _text_of(m) == "drain me") == 1
 
         # Second consumer (idle re-drive): inbox already empty → no further persist,
         # no new turn.
         before = len(_user_msgs(client, sid))
+        before_turn_ids = [message["id"] for message in _turn_msgs(client, sid)]
         drain_inbox_to_new_turn(app, sid)
         assert len(_user_msgs(client, sid)) == before
-        assert _turn_msgs(client, sid) == []
+        assert [message["id"] for message in _turn_msgs(client, sid)] == before_turn_ids
         assert not inbox_for(app, sid).peek_nonempty()
 
 
@@ -245,9 +243,9 @@ def test_drain_surfaces_steer_block_no_consume_no_terminal(tmp_path: Path) -> No
     assert called["consume"] == 0, "the steer branch invoked the task once-gate"
     # #1052 discriminator: this event carries NO steer_message_id (ask-user-resume
     # style) — the block surfaces but the drain persists NOTHING mid-turn.
-    assert not any(
-        m.role == "user" for m in app.state.messages.get(sid, [])
-    ), "an empty-id steer must not be persisted at the drain"
+    assert not any(m.role == "user" for m in app.state.messages.get(sid, [])), (
+        "an empty-id steer must not be persisted at the drain"
+    )
 
 
 def test_drain_empty_steer_text_surfaces_nothing(tmp_path: Path) -> None:
@@ -296,7 +294,7 @@ def test_residual_steer_redrives_one_new_turn_at_idle(tmp_path: Path) -> None:
         assert not inbox_for(app, sid).peek_nonempty()
 
 
-def test_two_residual_steers_make_one_turn(tmp_path: Path) -> None:
+def test_two_residual_steers_preserve_two_turn_identities(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowAgent(sleep_s=0.8))
     with TestClient(app) as client:
         sid = _new_session(client)
@@ -307,20 +305,15 @@ def test_two_residual_steers_make_one_turn(tmp_path: Path) -> None:
 
         _wait_idle(app, sid)
         deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and len(_turn_msgs(client, sid)) < 2:
+        while time.monotonic() < deadline and len(_turn_msgs(client, sid)) < 3:
             time.sleep(0.05)
-        # Two steers, but only ONE additional turn (their texts concatenated).
-        # GET /messages is newest-first, so the re-driven turn leads.
+        # Each accepted steer keeps its own message id and is promoted at one safe
+        # idle boundary. GET /messages is newest-first.
         turns = _turn_msgs(client, sid)
-        assert len(turns) == 2, "two residual steers must re-drive as ONE turn, not two"
-        assert _text_of(turns[0]) == "s1\n\ns2"
-        # #1052 documented multi-steer edge: when N steers coalesce into ONE turn, that
-        # single message can carry only one id, so it mints a FRESH one rather than
-        # silently claiming either steer's 202 id (the coalesced ids are un-resolvable).
-        assert turns[0]["id"] not in {s1_id, s2_id}
-        # #1052: exactly 2 user messages (first turn + the ONE promoted steer turn) —
-        # the route persisted no per-steer duplicate.
-        assert len(_user_msgs(client, sid)) == 2
+        assert len(turns) == 3, "each accepted steer must become its own turn"
+        assert [_text_of(turn) for turn in turns[:2]] == ["s2", "s1"]
+        assert [turn["id"] for turn in turns[:2]] == [s2_id, s1_id]
+        assert len(_user_msgs(client, sid)) == 3
         assert not inbox_for(app, sid).peek_nonempty()
 
 

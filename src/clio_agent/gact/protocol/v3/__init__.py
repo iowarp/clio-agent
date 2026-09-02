@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -23,6 +24,20 @@ def utcnow_iso() -> str:
     """Return an ISO-8601 UTC timestamp for protocol provenance."""
 
     return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass(frozen=True)
+class Projection:
+    """One projected 0.3 envelope body: its type, payload and entity identity.
+
+    Defined here rather than beside the projector table so a per-lane projector
+    module (``protocol.v3.composer``) can produce one without importing back
+    into ``protocol.v3.event`` — which registers it — and forming a cycle.
+    """
+
+    event_type: str
+    payload: dict[str, Any]
+    entity_id: str | None = None
 
 
 def project_for_request(

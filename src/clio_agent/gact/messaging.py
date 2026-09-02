@@ -28,6 +28,7 @@ import at module top. It never imports :mod:`clio_agent.gact.app`.
 
 from __future__ import annotations
 
+import base64
 import inspect
 import json
 from collections.abc import Mapping
@@ -300,7 +301,7 @@ def _user_message_parts(
     parts: list[Part] = []
     has_text = False
     for part in request_parts:
-        if part.type not in {"text", "image", "artifact_review"}:
+        if part.type not in {"text", "image", "artifact_review", "resource_ref"}:
             continue
         metadata = dict(part.metadata)
         if part.type == "image":
@@ -344,11 +345,49 @@ def _image_part_summaries(parts: list[Part]) -> list[dict[str, Any]]:
     return rows
 
 
-def _dspy_images_from_parts(parts: list[Part]) -> list[Any]:
-    """Convert GACT image parts to DSPy image inputs for native vision models."""
+def _resource_ref_image(part: Part, *, app: Any | None, workspace_id: str) -> Any | None:
+    """Return the DSPy image for a resource whose delivery plan chose ``native``."""
+
+    delivery = part.metadata.get("delivery")
+    representation = str(delivery.get("representation") or "") if isinstance(delivery, dict) else ""
+    if representation != "native" or app is None or not workspace_id:
+        return None
+    record = app.state.resource_store.get(workspace_id, part.resource_id)
+    if (
+        record is None
+        or str(record.revision) != str(part.resource_revision)
+        or record.state != "ready"
+        or not record.detected_mime.startswith("image/")
+    ):
+        return None
+    import dspy  # noqa: PLC0415
+
+    original = app.state.resource_store.content_path(record).read_bytes()
+    encoded = base64.b64encode(original).decode("ascii")
+    return dspy.Image(f"data:{record.detected_mime};base64,{encoded}")
+
+
+def _dspy_images_from_parts(
+    parts: list[Part],
+    *,
+    app: Any | None = None,
+    workspace_id: str = "",
+) -> list[Any]:
+    """Convert native-planned GACT image parts and resources to DSPy images.
+
+    ``resource_ref`` is the normal upload contract. Its immutable original is
+    eligible only when delivery planning explicitly selected ``native`` from a
+    live provider handshake; text-only or unknown models therefore keep using
+    bounded resource tools and never receive image bytes optimistically.
+    """
 
     images: list[Any] = []
     for part in parts:
+        if part.type == "resource_ref":
+            resource_image = _resource_ref_image(part, app=app, workspace_id=workspace_id)
+            if resource_image is not None:
+                images.append(resource_image)
+            continue
         if part.type != "image":
             continue
         try:

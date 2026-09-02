@@ -48,6 +48,7 @@ from clio_agent.gact.autonomous_loop import build_loop_wakeup_tool
 from clio_agent.gact.cron_tools import build_cron_tools
 from clio_agent.gact.goal import build_goal_status_tool
 from clio_agent.gact.plan_mode import build_plan_exit_tool
+from clio_agent.gact.resource_tools import build_resource_tools
 from clio_agent.gact.todos import build_write_todos_tool
 from clio_agent.providers.model_discovery import build_refresh_provider_models_tool
 
@@ -70,6 +71,22 @@ def build_auto_react_tools(agent_def: Any) -> list[Any]:
         build_loop_wakeup_tool(),
         build_goal_status_tool(),
         build_raise_alert_card_tool(agent_def),
+        # The bounded read surface for uploaded workspace resources. Universal,
+        # not tier-1 only: the enrichment block that announces an attachment
+        # names these tools, and a spawned child working the attachment needs
+        # the same doors. They read only, and read only within the session's own
+        # workspace, so there is no billed or destructive action to scope.
+        #
+        # Attached UNCONDITIONALLY rather than "only when the workspace already
+        # holds a resource" (RULE 5 curation was weighed and this is the
+        # decision): the agent is built ONCE per turn, but a resource can arrive
+        # DURING one — an attachment-only steer folds the same enrichment block
+        # into the live turn (resource_enrichment.describe_resource_parts). A
+        # build-time attachment test would therefore hand the model a block
+        # naming five tools it does not have, and would also make the react tool
+        # prefix vary with mutable workspace state, breaking the prompt-cache
+        # stability the fixed order above exists to protect.
+        *build_resource_tools(agent_def),
     ]
     if not (getattr(agent_def, "parent_id", "") or ""):
         tools.append(build_create_a2ui_surface_tool())

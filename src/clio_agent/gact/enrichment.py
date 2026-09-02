@@ -29,16 +29,14 @@ what went into it:
   auto-approved permission audit row.
 * **Turn provenance** -- ``_context_file_turn_provenance`` returns non-secret
   provenance for the context files attached to a turn.
+* **Workspace resources** -- ``enrich_with_workspace_resources`` adds bounded
+  attachment state for the user message's ``resource_ref`` parts.
 
-The module imports only leaves (stdlib, :mod:`clio_agent.gact.runtime.globals`
-for the frame-id + access-error + session-agent-id helpers,
-:mod:`clio_agent.gact.runtime.constants` for the inline byte cap,
-:mod:`clio_agent.gact.runtime.memory_search` for the ranked search,
-:mod:`clio_agent.gact.permission_gate` for the policy gate + audit row,
-:mod:`clio_agent.gact.providers.config` for the active-LM ref, and the tool
-file-policy leaves); it never imports :mod:`clio_agent.gact.app` at module top.
-``app`` is always passed explicitly so handlers never close over ``build_app``
-locals.
+The module imports only leaves (stdlib plus the ``runtime.globals`` /
+``runtime.constants`` / ``runtime.memory_search`` / ``permission_gate`` /
+``providers.config`` / ``resource_enrichment`` helpers and the tool file-policy
+leaves); it never imports :mod:`clio_agent.gact.app` at module top. ``app`` is
+always passed explicitly so handlers never close over ``build_app`` locals.
 """
 
 from __future__ import annotations
@@ -55,6 +53,7 @@ from clio_agent.gact.permission_gate import (
     _record_resolved_permission,
 )
 from clio_agent.gact.providers.config import _active_lm_model_ref
+from clio_agent.gact.resource_enrichment import enrich_with_workspace_resources
 from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.constants import _CTX_MAX_BYTES
 from clio_agent.gact.runtime.globals import (
@@ -610,6 +609,7 @@ def enrich_turn_context(
 
     with bringup_timing.timer_for_session(app, sid).phase("enrichment"):
         text = _enrich_with_context_files(app, sid, user_text)
+        text = enrich_with_workspace_resources(app, sid, text, user_msg)
         return _enrich_with_requested_memory_search(app, sid, text, user_msg)
 
 

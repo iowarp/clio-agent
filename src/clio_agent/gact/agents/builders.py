@@ -53,6 +53,10 @@ from clio_agent.gact.agents.resolution import _active_workflow_state_schema
 from clio_agent.gact.agents.runtime import (
     _retaining_react_cls,
 )
+from clio_agent.gact.agents.signatures import (
+    _prompt_user_agent_signature,
+    _tool_user_agent_signature,
+)
 from clio_agent.gact.agents.tool_executor_resolution import (
     resolve_active_base_agent_tool_executor,
 )
@@ -196,26 +200,6 @@ def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> "Resolve
     return resolve_endpoint_and_handshake(spec, default_credential=default_credential)
 
 
-def _prompt_user_agent_signature() -> Any:
-    """Return the DSPy signature used by prompt-only dynamic agents."""
-    import dspy  # noqa: PLC0415
-
-    class PromptUserAgentSignature(dspy.Signature):
-        """Run a registered CLIO user agent using supplied runtime instructions."""
-
-        system_prompt: str = dspy.InputField(desc="Registered agent instructions")
-        question: str = dspy.InputField(desc="User message for this agent")
-        answer: str = dspy.OutputField(desc="User-facing answer")
-        expert_handoffs: str = dspy.OutputField(
-            desc=(
-                "JSON array of synchronous child expert delegations to execute next. "
-                "Use [] when no child expert should be called."
-            )
-        )
-
-    return PromptUserAgentSignature
-
-
 def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any:
     """Build a DSPy module wrapper for a streamable prompt-only dynamic agent."""
 
@@ -273,6 +257,7 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             session_mode: str = "edit",
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
+            images: list[Any] | None = None,
         ) -> Any:
             _ = (
                 session_mode,
@@ -296,6 +281,7 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
                 result = self.answer_synthesizer(
                     system_prompt=self.system_prompt,
                     question=question,
+                    images=list(images or []),
                 )
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
@@ -326,26 +312,6 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             )
 
     return PromptUserAgentModule(base_agent, agent_def)
-
-
-def _tool_user_agent_signature() -> Any:
-    """Return the DSPy signature used by tool-declaring dynamic agents."""
-    import dspy  # noqa: PLC0415
-
-    class ToolUserAgentSignature(dspy.Signature):
-        """Run a registered CLIO user agent using supplied tool runtime instructions."""
-
-        system_prompt: str = dspy.InputField(desc="Registered agent instructions")
-        question: str = dspy.InputField(desc="User message for this agent")
-        answer: str = dspy.OutputField(desc="User-facing answer")
-        expert_handoffs: str = dspy.OutputField(
-            desc=(
-                "JSON array of synchronous child expert delegations to execute next. "
-                "Use [] when no child expert should be called."
-            )
-        )
-
-    return ToolUserAgentSignature
 
 
 async def _call_enabled_external_mcp_tool(
@@ -1086,7 +1052,12 @@ def _injected_workflow_state_field_type(schema: "WorkflowStateSchema") -> Any:
     )
 
 
-def _blueprint_runtime_signature(agent_def: "AgentDef", *, app: Any = None) -> Any:
+def _blueprint_runtime_signature(
+    agent_def: "AgentDef",
+    *,
+    app: Any = None,
+    include_images: bool = False,
+) -> Any:
     """Build a DSPy Signature from a blueprint's ordered signature fields.
 
     ``app`` lets a caller that already holds the live app thread it in explicitly
@@ -1156,6 +1127,8 @@ def _blueprint_runtime_signature(agent_def: "AgentDef", *, app: Any = None) -> A
             ("system_prompt", "Runtime instructions and context for this expert", str),
             *inputs,
         ]
+    if include_images and not any(name == "images" for name, _, _ in inputs):
+        inputs.append(("images", "User-provided images for this turn", list[dspy.Image]))
     outputs = _ordered_fields(raw_outputs, [("answer", "User-facing answer", str)])
     structured = (
         agent_def.structured_outputs if isinstance(agent_def.structured_outputs, Mapping) else {}
@@ -1318,7 +1291,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             self._cred_resolver = CredentialResolver()
             self.config = self._resolved_spec.materialize(self._cred_resolver)
             self._provider_config = self.config
-            self.signature = _blueprint_runtime_signature(agent_def)
+            self.signature = _blueprint_runtime_signature(agent_def, include_images=True)
             self.tools: list[Any] = []
             skill_rt = _skill_runtime.skill_runtime_for_agent(
                 _ctx.active_app(), agent_def, session_id=_ctx.active_session_id()
@@ -1463,6 +1436,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             session_mode: str = "edit",
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
+            images: list[Any] | None = None,
         ) -> Any:
             _ = (
                 session_mode,
@@ -1507,9 +1481,11 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                         runtime_system_prompt = "\n\n".join(
                             part for part in (runtime_system_prompt, runtime_child_context) if part
                         )
-            kwargs = {"question": question}
+            kwargs: dict[str, Any] = {"question": question}
             if "system_prompt" in self.signature.input_fields:
                 kwargs["system_prompt"] = runtime_system_prompt
+            if "images" in self.signature.input_fields:
+                kwargs["images"] = list(images or [])
             if trace.HF_ON:
                 trace.hot("FWD-A", "%s child-context+seed-done", getattr(self.agent_def, "id", "?"))
             blueprint_tool_rows: list[dict[str, Any]] = []
@@ -1906,6 +1882,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             session_mode: str = "edit",
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
+            images: list[Any] | None = None,
         ) -> Any:
             _ = (
                 session_mode,
@@ -1940,6 +1917,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                     result = self.react_agent(
                         system_prompt=self.system_prompt,
                         question=question,
+                        images=list(images or []),
                     )
             except Exception as exc:
                 app = _ctx.active_app()

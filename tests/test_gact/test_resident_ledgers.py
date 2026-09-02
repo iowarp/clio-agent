@@ -395,9 +395,89 @@ def test_estimate_bytes_counts_nested_and_image_payloads() -> None:
     # ``content_blocks``; the document-artifacts merge (3347d283, DocumentPartFields
     # mixin -- review_id/artifact_id/artifact_version/artifact_sha256/review_text/
     # anchor); and the action_card part (52387c2e, source/severity/title/body/
-    # actions) -> 1,322. It remains three orders of magnitude lighter than either
-    # heavy payload.
-    assert 1_100 <= light_bytes < 1_400
+    # actions) -> 1,322. The composer re-land's resource_ref fields (resource_id/
+    # resource_revision/delivery_preference) -> 1,449. It remains three orders of
+    # magnitude lighter than either heavy payload.
+    assert 1_100 <= light_bytes < 1_500
+
+
+# The optional Part fields each 0.3 part type populates. The byte estimate must
+# see EVERY one of them, so the fixtures below set every name listed here and
+# ``test_the_optional_field_fixtures_cover_every_declared_field`` derives the
+# list from ``Part`` itself — a new field cannot slip in and inflate a ledger
+# unmeasured, which is exactly how ``name`` was missed on the resource part.
+_RESOURCE_REF_FIELDS = ("resource_id", "resource_revision", "delivery_preference", "name")
+_A2UI_FIELDS = ("surface_id", "a2ui_protocol_version", "a2ui_messages")
+
+
+def _resource_ref_message() -> Message:
+    return Message(
+        id="resource-message",
+        session_id="s",
+        role="user",
+        created_at="t",
+        updated_at="t",
+        parts=[
+            Part(
+                id="resource-part",
+                type="resource_ref",
+                resource_id="res_" + "r" * 2_000,
+                resource_revision="sha256:" + "a" * 64,
+                delivery_preference="bounded_tools",
+                name="attachment-" + "n" * 200,
+            )
+        ],
+    )
+
+
+def _a2ui_message() -> Message:
+    return Message(
+        id="surface-message",
+        session_id="s",
+        role="assistant",
+        created_at="t",
+        updated_at="t",
+        parts=[
+            Part(
+                id="surface-part",
+                type="a2ui",
+                surface_id="surface",
+                a2ui_protocol_version="0.9.1",
+                a2ui_messages=[{"updateDataModel": {"value": "v" * 2_000}}],
+            )
+        ],
+    )
+
+
+def test_estimate_bytes_counts_gact_v3_resource_and_a2ui_payloads() -> None:
+    """Optional GACT 0.3 payloads count while their omitted defaults do not."""
+
+    light_bytes = _estimate_bytes([_msg("m", "s", text="hi")])
+    assert _estimate_bytes([_resource_ref_message()]) > light_bytes + 1_500
+    assert _estimate_bytes([_a2ui_message()]) > light_bytes + 1_500
+
+
+def test_the_optional_field_fixtures_cover_every_declared_field() -> None:
+    """Derive the covered names from ``Part`` so a new field cannot hide.
+
+    Sabotage: add a payload-bearing field to ``Part`` for either 0.3 part type
+    without listing it above and this fails, instead of the byte cap quietly
+    under-counting every ledger that carries one.
+    """
+
+    resource_part = _resource_ref_message().parts[0]
+    surface_part = _a2ui_message().parts[0]
+    for part, declared in ((resource_part, _RESOURCE_REF_FIELDS), (surface_part, _A2UI_FIELDS)):
+        # Every declared name is a real Part field...
+        assert set(declared) <= set(type(part).model_fields)
+        # ...and every one of them is actually populated in the fixture, so the
+        # estimate is measured over the full payload, not a subset.
+        populated = {
+            name
+            for name in declared
+            if getattr(part, name) != type(part).model_fields[name].default
+        }
+        assert populated == set(declared)
 
 
 def test_byte_cap_evicts_tool_result_heavy_sessions() -> None:

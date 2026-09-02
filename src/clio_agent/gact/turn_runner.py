@@ -116,9 +116,20 @@ class TurnRunner:
         """Register a callback fired (on the event loop) when a session's turn slot
         clears — i.e. the session just became free. Used to re-drive work deferred
         because the session was busy (e.g. an ask-user resume that couldn't stage
-        while an intervening turn ran). The hook must not raise; errors are logged."""
+        while an intervening turn ran). The hook must not raise; errors are logged.
+
+        There is exactly ONE idle hook. A later installer that needs to add
+        behavior must read :attr:`idle_hook` and COMPOSE with it (call it first),
+        never silently replace it — two independent registrations racing this slot
+        is how the inbox drain went missing behind the queue promoter."""
 
         self._on_session_idle = hook
+
+    @property
+    def idle_hook(self) -> Callable[[str], None] | None:
+        """The currently installed idle hook, so a later installer can wrap it."""
+
+        return self._on_session_idle
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Capture the app-lifetime event loop (call once, from lifespan startup

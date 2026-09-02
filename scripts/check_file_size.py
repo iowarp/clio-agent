@@ -168,7 +168,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # pre-existing CI-blocking debt this change closes (P5 adversarial review [A]).
     # Ratchet down (PR #1255 review): the uninstall-tombstone bookkeeping moved to
     # its owner module gact/agent_blueprint_refresh.py.
-    "src/clio_agent/gact/agent_blueprints.py": 1058,
+    # PR #1278 re-land: -1 net. default_agent_blueprint_id() went to its owner
+    # module agent_blueprint_refresh.py (this file is ratcheted, #774) and is
+    # reached through the PEP 562 shim; only the one-line lazy import in
+    # default_registry_metadata landed here, offset by two comment trims.
+    "src/clio_agent/gact/agent_blueprints.py": 1057,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -221,7 +225,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # module tools/mcp_discovery.py (ensure_namespace); only the expert-
     # resolve-specific decision (which namespace, how to merge into THIS
     # executor, how to name the failure) belongs here.
-    "src/clio_agent/gact/agents/builders.py": 1997,
+    # PR #1278 re-land: -22. The two dynamic-agent DSPy signatures moved to
+    # their owner module agents/signatures.py; the additive `images` input +
+    # its three forward params are what stayed.
+    "src/clio_agent/gact/agents/builders.py": 1975,
     # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
     # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
     # tool callable this loop will ever run (MCP-bridged, instrumented
@@ -332,7 +339,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # days" bug). All reap logic lives in the owner module
     # runtime/process_census.py (reap_orphaned_processes/boot_reap_off_loop);
     # only the sequencing wrapper + its one call site land here.
-    "src/clio_agent/gact/app.py": 2540,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
+    # PR #1278 re-land: -46. The three registered-agent runners moved to their
+    # owner module agents/runners.py; the composer lanes added only an import
+    # plus two one-line calls (initialize_composer_state/register_composer_routes)
+    # and three forwarded args on the _start_background_user_turn wrapper.
+    "src/clio_agent/gact/app.py": 2494,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -525,7 +536,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # can name a declared tool's server + reason -- turn.py's except handler
     # is the only reader; the mount decision lives in gact/agents/builders.py.
     "src/clio_agent/gact/runtime/globals.py": 986,  # blueprint-path arg threading (#1247)
-    "src/clio_agent/gact/streaming.py": 964,
+    # PR #1278 re-land: -36. _run_dynamic_agent_compat + its arity probe moved
+    # to the owner module gact/agent_invocation.py (which adds the optional
+    # images slot); this file re-exports both names.
+    "src/clio_agent/gact/streaming.py": 928,
     # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
     # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
     # merge(main->develop): +10 (932 -> 942) integrating main's #964 structured
@@ -674,7 +688,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # Create/Update requests) + a 3-line doc comment; the enum + enforcement live in
     # sessions.py + permission_gate.py, so only the field declarations land here.
     # P0.1a (#1102): move Part + CapabilityFlags to gact/parts.py; 1170 -> 958 lines.
-    "src/clio_agent/gact/types.py": 942,
+    # PR #1278 re-land: -48. MessageBehavior + the PostMessage request/response
+    # contract moved to their owner module gact/message_contract.py; this file
+    # re-exports all three so existing imports keep resolving.
+    "src/clio_agent/gact/types.py": 894,
     # -120 (#891): the SDK-session machinery moved out to sibling owner modules —
     # the blocking-path pool to providers/claude_code_sdk_pool.py and the per-expert
     # streaming session/delta transport to providers/claude_code_sessions.py; this

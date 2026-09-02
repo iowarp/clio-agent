@@ -221,9 +221,9 @@ def _format_sse(event: "Event") -> bytes:
     <blank line>
     """
 
-    payload = json.dumps(event.envelope())
-    lines = f"event: {event.type}\nid: {event.id}\ndata: {payload}\n\n"
-    return lines.encode("utf-8")
+    # Keepalives omit ``id:`` (never move lastEventId) -- see format_sse_v3.
+    id_line = "" if event.transient else f"id: {event.id}\n"
+    return f"event: {event.type}\n{id_line}data: {json.dumps(event.envelope())}\n\n".encode()
 
 
 # ---- ID + timestamp helpers used by the message endpoint ---------

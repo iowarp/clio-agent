@@ -95,6 +95,9 @@ def test_empty_session_does_not_fetch_a_missing_persistent_blob(client: TestClie
         headers={"X-GACT-Version": "0.3"},
     )
     assert response.status_code == 200
+    # ``cursor`` is the event-timeline resume cursor; ``next_cursor`` is the
+    # MESSAGE paging cursor the 0.2 page has always carried and the 0.3 page used
+    # to drop (composer fix round F9). Both belong in the snapshot.
     assert response.json() == {
         "messages": [],
         "tools": [],
@@ -104,6 +107,7 @@ def test_empty_session_does_not_fetch_a_missing_persistent_blob(client: TestClie
         "surfaces": [],
         "a2ui_degradations": [],
         "cursor": "0",
+        "next_cursor": None,
     }
 
 
@@ -122,9 +126,7 @@ def test_include_system_false_drops_system_messages(client: TestClient) -> None:
     sid = _create_session(client)
     _seed(client, sid, [("m0", "system"), ("m1", "user"), ("m2", "assistant")])
 
-    body = client.get(
-        f"/v1/sessions/{sid}/messages", params={"include_system": "false"}
-    ).json()
+    body = client.get(f"/v1/sessions/{sid}/messages", params={"include_system": "false"}).json()
     assert [m["id"] for m in body["messages"]] == ["m2", "m1"]
     assert all(m["role"] != "system" for m in body["messages"])
     assert body["next_cursor"] is None
@@ -216,9 +218,7 @@ def test_before_unknown_id_is_404(client: TestClient) -> None:
     sid = _create_session(client)
     _seed(client, sid, [("m0", "user"), ("m1", "assistant")])
 
-    resp = client.get(
-        f"/v1/sessions/{sid}/messages", params={"before": "msg_missing"}
-    )
+    resp = client.get(f"/v1/sessions/{sid}/messages", params={"before": "msg_missing"})
     assert resp.status_code == 404
     err = resp.json()["error"]
     assert err["error"] == "not_found"
@@ -289,9 +289,7 @@ def test_live_message_before_cursor_unknown_is_404(client: TestClient) -> None:
     _install_live_assistant(client, sid, "msg_live")
 
     # The live projection is not a stored message, so it is not a valid cursor.
-    resp = client.get(
-        f"/v1/sessions/{sid}/messages", params={"before": "msg_live"}
-    )
+    resp = client.get(f"/v1/sessions/{sid}/messages", params={"before": "msg_live"})
     assert resp.status_code == 404
 
 
@@ -326,9 +324,7 @@ def test_parent_session_id_filters_to_subsessions(client: TestClient) -> None:
     # An unrelated top-level session (no parent).
     _create_session(client, title="unrelated")
 
-    rows = client.get(
-        "/v1/sessions", params={"parent_session_id": parent}
-    ).json()["sessions"]
+    rows = client.get("/v1/sessions", params={"parent_session_id": parent}).json()["sessions"]
     assert {r["id"] for r in rows} == {child_a, child_b}
     assert all(r["parent_session_id"] == parent for r in rows)
 
@@ -337,9 +333,9 @@ def test_parent_session_id_non_matching_returns_empty(client: TestClient) -> Non
     _create_session(client, title="a")
     _create_session(client, title="b")
 
-    rows = client.get(
-        "/v1/sessions", params={"parent_session_id": "sess_nobody"}
-    ).json()["sessions"]
+    rows = client.get("/v1/sessions", params={"parent_session_id": "sess_nobody"}).json()[
+        "sessions"
+    ]
     assert rows == []
 
 
@@ -357,9 +353,7 @@ def test_parent_session_id_empty_string_is_unchanged(client: TestClient) -> None
     parent = _create_session(client, title="parent")
     child = client.post(f"/v1/sessions/{parent}/fork", json={}).json()["id"]
 
-    rows = client.get(
-        "/v1/sessions", params={"parent_session_id": ""}
-    ).json()["sessions"]
+    rows = client.get("/v1/sessions", params={"parent_session_id": ""}).json()["sessions"]
     ids = {r["id"] for r in rows}
     assert parent in ids
     assert child in ids

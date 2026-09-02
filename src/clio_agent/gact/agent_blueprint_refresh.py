@@ -23,6 +23,7 @@ top level; that module imports THIS one only function-locally (inside
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from typing import Any
 from clio_agent import conf
 from clio_agent.gact.agent_blueprint_sources import record_default_agent_blueprint_source
 from clio_agent.gact.agent_blueprints import (
+    _BLUEPRINT_ID_RE,
     _BLUEPRINT_ROOT_NAME,
     DEFAULT_AGENT_BLUEPRINT_ID,
     DEFAULT_REGISTRY_COMMIT,
@@ -43,6 +45,47 @@ from clio_agent.gact.agent_blueprints import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The marketplace agent a fresh deployment bootstraps and binds by default.
+# Declared HERE (not beside the DEFAULT_AGENT_BLUEPRINT_ID constant) because
+# this module owns the default-registry bootstrap policy the knob steers, and
+# agent_blueprints.py is at its file-size ratchet (#774 no-accretion).
+#
+# The shipped value of that constant is ``base-agent`` (marketplace ``main``,
+# 0.2.0): one react root over CLIO's native workspace tools with no hidden
+# hierarchy, so a first-run box boots a general agent instead of a domain demo.
+# It SELECTS an installed marketplace artifact — the pack keeps ownership of its
+# prompts, tools and hierarchy, nothing is defined in code — and a box whose
+# marketplace never installed still serves sessions on the code-shipped builtin
+# main (RULE 2), with the failed bootstrap surfaced as a typed DISABLED registry
+# row (``discover_agent_blueprints``) rather than a silent fallback.
+_DEFAULT_AGENT_BLUEPRINT_CONF_KEY = "agents.default_blueprint_id"
+_DEFAULT_AGENT_BLUEPRINT_ENV = "CLIO_DEFAULT_AGENT_BLUEPRINT_ID"
+
+
+def default_agent_blueprint_id() -> str:
+    """Return the configured marketplace agent bootstrapped for new deployments.
+
+    The value is an installed Agent Blueprint id: its prompts, tools and
+    hierarchy stay owned by the marketplace artifact, so this setting SELECTS an
+    artifact and never creates an implicit code-defined agent. An id that could
+    not name a blueprint directory fails typed rather than falling back.
+    """
+
+    resolved = str(
+        conf.resolve(
+            _DEFAULT_AGENT_BLUEPRINT_CONF_KEY,
+            env=_DEFAULT_AGENT_BLUEPRINT_ENV,
+            default=DEFAULT_AGENT_BLUEPRINT_ID,
+            cast=conf.as_str,
+        )
+    ).strip()
+    if not re.fullmatch(_BLUEPRINT_ID_RE, resolved):
+        raise ValueError(
+            "agents.default_blueprint_id must name an installed agent blueprint "
+            "using letters, numbers, dots, underscores, or hyphens"
+        )
+    return resolved
 
 
 def ensure_default_registry_bootstrap(
@@ -81,7 +124,7 @@ def ensure_default_registry_bootstrap(
     cwd = cwd or Path(_os.getcwd())
     pinned = DEFAULT_REGISTRY_COMMIT.strip()
     source = default_registry_install_source()
-    root = _install_root(home=home, cwd=cwd, scope="global") / DEFAULT_AGENT_BLUEPRINT_ID
+    root = _install_root(home=home, cwd=cwd, scope="global") / default_agent_blueprint_id()
     sync_diagnostic = sync_local_registry_packs(source=source, home=home, cwd=cwd, pinned=pinned)
     if (root / _BLUEPRINT_ROOT_NAME).exists():
         # #948 S4b upgrade path: an installed-but-invalid default blueprint (a
