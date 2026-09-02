@@ -33,9 +33,10 @@ from __future__ import annotations
 import itertools
 import logging
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
-from dspy.adapters.types.tool import ToolCallResults
+from dspy.adapters.types.tool import ToolCallResults, ToolCalls
 from dspy.predict.react_v2 import (
     _append_history_event,
     _coerce_history,
@@ -63,6 +64,54 @@ REACT_EMPTY_TOOL_EXHAUSTED = "react_empty_tool_exhausted"
 #: The committed default budget (``limits.empty_tool_repair_attempts``), also
 #: the fallback when an operator's configured value cannot be resolved.
 _DEFAULT_EMPTY_TOOL_REPAIR_ATTEMPTS = 3
+
+# Tools whose successful call is itself the terminal outcome of the current
+# model turn.  Their authoritative payload remains in session metadata until
+# the post-forward pause seam mints the user-facing interaction.
+_TURN_YIELD_METADATA: dict[str, str] = {
+    "ask_user": "pending_ask_user",
+    "plan_exit": "pending_plan_exit",
+}
+
+
+def _pending_turn_yield_name(tool_calls: ToolCalls) -> str:
+    """Return the successful turn-ending tool in this batch, if one is pending.
+
+    The tool name alone is insufficient: a rejected ``plan_exit`` or malformed
+    ``ask_user`` call must remain an ordinary tool error.  The corresponding
+    un-surfaced session-metadata record is the proof that the tool completed its
+    mutation and the outer turn should now yield to the user.
+    """
+
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415
+
+    names = {str(call.name or "") for call in tool_calls.tool_calls}
+    candidates = names.intersection(_TURN_YIELD_METADATA)
+    if not candidates:
+        return ""
+    app = _ctx.active_app()
+    session_id = _ctx.active_session_id()
+    sessions = getattr(getattr(app, "state", None), "sessions", None)
+    session = sessions.get(session_id) if sessions is not None and session_id else None
+    metadata = getattr(session, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return ""
+    for tool_name, metadata_key in _TURN_YIELD_METADATA.items():
+        pending = metadata.get(metadata_key)
+        if (
+            tool_name in candidates
+            and isinstance(pending, Mapping)
+            and pending
+            and not pending.get("surfaced")
+        ):
+            return tool_name
+    return ""
+
+
+def is_turn_yield_prediction(prediction: Any) -> bool:
+    """Return whether a ReAct prediction intentionally yielded for user input."""
+
+    return str(getattr(prediction, "termination_reason", "") or "").endswith("_yield")
 
 
 def _empty_tool_repair_attempts() -> int:
@@ -422,6 +471,17 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
                     step_span_id=step_span_id,
                     turn_id=turn_id,
                 )
+
+                # ``ask_user`` and ``plan_exit`` are runtime turn boundaries, not
+                # prompt advice.  Keep the completed call/result in History and on
+                # the semantic highway, then return before another LM iteration.
+                # The post-forward pause seam consumes the authoritative metadata
+                # and changes the session to ``waiting_user``.
+                if yield_name := _pending_turn_yield_name(tool_calls):
+                    return Prediction(
+                        history=history,
+                        termination_reason=f"{yield_name}_yield",
+                    )
 
                 if final_outputs is not None:
                     _emit_expert_completed(expert_id, expert_span_id, final_outputs, turn_index + 1)

@@ -6,12 +6,15 @@ import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import dspy
+from dspy.utils.dummies import DummyLM
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as gact_context
 from clio_agent.gact.agent_tasks import AgentTask
 from clio_agent.gact.agents.auto_tools import build_auto_react_tools
 from clio_agent.gact.agents.builders import _dynamic_agent_tools
+from clio_agent.gact.agents.reactv2 import retaining_reactv2_cls
 from clio_agent.gact.app import build_app
 from clio_agent.gact.ask_user_tool import arm_ask_user_deadline
 from clio_agent.gact.elicitation_bridge import invocation_with_request_correlation
@@ -81,6 +84,59 @@ def test_ask_user_runtime_tool_injects_owner_task_and_attended_correlation(
     assert pending["task_id"] == "task_child"
     assert pending["invocation_id"] == "turn_child:child:ask_user"
     assert pending["allow_freeform"] is True
+
+
+def test_ask_user_success_ends_react_turn_before_another_model_step(tmp_path) -> None:
+    """A native question is a runtime yield, not advice the model may ignore."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="ask")
+    agent_def = AgentDef(id="asker", title="Asker", tools=["ask_user"])
+    ask_tool = _dynamic_agent_tools(SimpleNamespace(), agent_def, {})[0]
+    react = retaining_reactv2_cls()(
+        "question -> answer",
+        tools=[ask_tool],
+        max_iters=0,
+    )
+    lm = DummyLM(
+        [
+            {
+                "next_thought": "The requested study lacks a defined objective.",
+                "tool_calls": {
+                    "tool_calls": [
+                        {
+                            "name": "ask_user",
+                            "args": {
+                                "question": "What outcome should the simulation estimate?",
+                                "kind": "freeform",
+                            },
+                        }
+                    ]
+                },
+            },
+            {
+                "next_thought": "This second model step must never run.",
+                "tool_calls": {"tool_calls": [{"name": "submit", "args": {"answer": "wrong"}}]},
+            },
+        ]
+    )
+    app_token = gact_context.set_app(app)
+    session_token = gact_context.set_session_id(session.id)
+    turn_token = gact_context.set_turn_id_token("turn_ask")
+    try:
+        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+            prediction = react(question="Help me design a simulation study.")
+    finally:
+        gact_context.reset(turn_token)
+        gact_context.reset(session_token)
+        gact_context.reset(app_token)
+
+    assert prediction.termination_reason == "ask_user_yield"
+    assert not getattr(prediction, "answer", "")
+    assert len(lm.history) == 1
+    pending = app.state.sessions.get(session.id).metadata["pending_ask_user"]
+    assert pending["question"] == "What outcome should the simulation estimate?"
+    assert pending["surfaced"] is False
 
 
 def test_interactions_aggregate_children_and_route_question_and_permission(

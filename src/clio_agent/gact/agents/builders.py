@@ -1733,6 +1733,11 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     )
                 )
             answer = str(getattr(result, "answer", "") or "").strip()
+            from clio_agent.gact.agents.reactv2_events import (  # noqa: PLC0415
+                is_turn_yield_prediction,
+            )
+
+            turn_yielded = is_turn_yield_prediction(result)
             tools_called: list[dict[str, Any]] = []
             if self.kind == "react":
                 tools_called = _extract_tools_called_from_trajectory(
@@ -1740,12 +1745,12 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 )
                 if blueprint_tool_rows:
                     tools_called = _merge_tool_call_rows(tools_called, blueprint_tool_rows)
-                if not answer:
+                if not answer and not turn_yielded:
                     answer = _tool_agent_empty_answer_fallback(getattr(result, "trajectory", None))
             # The typed workflow_state output rides the Prediction's structured
             # ``workflow_state`` field below -- it is NOT serialized into ``answer``
             # text (that polluted the user-facing answer; consumers read the field).
-            if not answer:
+            if not answer and not turn_yielded:
                 # #948 S4: an empty answer is a typed failure (see the required
                 # ``answer`` field on the runtime signature). The settle/synthesis
                 # layer that once consumed an empty orchestrator answer is deleted;
@@ -1771,6 +1776,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 tools_called=tools_called,
                 # #953 [5]: carry the variant winner stamp (else dropped here) to the turn.
                 variant_selection=getattr(result, "variant_selection", None),
+                termination_reason=getattr(result, "termination_reason", ""),
                 error_info=None,
             )
 
@@ -1950,9 +1956,14 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                     )
                 )
             answer = str(getattr(result, "answer", "") or "").strip()
-            if not answer:
+            from clio_agent.gact.agents.reactv2_events import (  # noqa: PLC0415
+                is_turn_yield_prediction,
+            )
+
+            turn_yielded = is_turn_yield_prediction(result)
+            if not answer and not turn_yielded:
                 answer = _tool_agent_empty_answer_fallback(getattr(result, "trajectory", None))
-            if not answer:
+            if not answer and not turn_yielded:
                 raise RuntimeError(f"user agent {self.agent_def.id!r} returned an empty answer")
             tools_called = _extract_tools_called_from_trajectory(
                 getattr(result, "trajectory", None)
@@ -1968,6 +1979,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 ),
                 trajectory=getattr(result, "trajectory", None),
                 tools_called=tools_called,
+                termination_reason=getattr(result, "termination_reason", ""),
                 error_info=None,
             )
 
