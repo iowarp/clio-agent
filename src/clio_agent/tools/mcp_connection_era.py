@@ -60,6 +60,19 @@ under a pinned modern mode already raises the typed ``MCP_PROTOCOL_REFUSED``
 path (:class:`clio_agent.errors.MCPUnsupportedProtocolVersionError`)
 unchanged, and a pinned legacy connection landing on legacy is not a
 downgrade at all.
+
+#1281 (C1-S1) piggybacks ONE opportunistic read on this SAME ``__aenter__``
+seam: whenever an instrumented client's real negotiation lands, if its
+SERVER-declared extensions carry the SEP-2663 tasks id, that is recorded as
+a POSITIVE task-capability verdict (:func:`record_task_capability`) under
+the DECLARED server/namespace name -- covering the case where a proxy-routed
+listing or call reaches the real backend before ``tools/gateway.py::
+_list_declared_tools``'s own definitive (connect + full listing) read has
+run (see :mod:`clio_agent.tools.mcp_task_routing`, which owns the routing
+DECISION and the definitive read; this module owns only the record + this
+one opportunistic capture, since it already instruments every real connect).
+This capture NEVER writes a negative -- a bare connect carries no guaranteed
+tool listing, so extensions absence here is not proof of incapability.
 """
 
 from __future__ import annotations
@@ -70,6 +83,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
+from fastmcp.utilities.tasks import TASKS_EXTENSION_ID
 from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS, MODERN_PROTOCOL_VERSIONS
 
 from clio_agent.errors import MCP_PROTOCOL_DOWNGRADED_TO_LEGACY
@@ -144,9 +158,7 @@ def classify_connection_era(
         era = "unknown"
 
     pinned = bool(connect_mode) and connect_mode != "auto"
-    degrade_reason = (
-        MCP_PROTOCOL_DOWNGRADED_TO_LEGACY if (not pinned and era == "legacy") else None
-    )
+    degrade_reason = MCP_PROTOCOL_DOWNGRADED_TO_LEGACY if (not pinned and era == "legacy") else None
 
     record = MCPConnectionEra(
         server_id=server_id,
@@ -232,6 +244,109 @@ def all_latest_mcp_connection_eras() -> dict[str, MCPConnectionEra]:
         return dict(_LATEST_BY_SERVER)
 
 
+# --------------------------------------------------------------------------- #
+# #1281 (C1-S1): per-server task capability -- a discovery-time write path,   #
+# separate from the __aenter__-time era writes above.                        #
+# --------------------------------------------------------------------------- #
+
+#: Where a task-capability verdict was read from. ``capabilities_extensions``
+#: is the modern (2026-07-28) key: the SERVER-DECLARED ``ServerCapabilities.
+#: extensions`` carries ``io.modelcontextprotocol/tasks``. ``tool_execution``
+#: is the legacy (2025-11-25) key: a listed tool's ``execution.task_support``
+#: is ``"optional"`` or ``"required"`` (SEP-1686) -- the modern wire has no
+#: per-tool ``execution`` field to read at all. ``none`` is a genuine negative:
+#: neither key was present on a connect-and-list that saw both.
+TaskCapabilitySource = Literal["capabilities_extensions", "tool_execution", "none"]
+
+
+@dataclass(frozen=True)
+class MCPTaskCapability:
+    """One declared server's task capability, as negotiated (never probed).
+
+    Recorded by :func:`record_task_capability` at DISCOVERY time (the
+    per-namespace listing pass, ``tools/gateway.py::_list_declared_tools``,
+    and the opportunistic positive-only read at a real backend connect,
+    ``tools/gateway.py::_proxy_for_spec``) -- never inferred from call
+    behavior or timing. Keyed by the DECLARED namespace/server name (the same
+    key ``_clio_namespace_specs`` uses), NOT the SHA-derived
+    :class:`~clio_agent.tools.mcp_task_extension.BackendIdentity.server_id`
+    a task record itself is keyed on -- two different identity spaces for two
+    different purposes (routing a namespace vs. keying a durable task row).
+    """
+
+    server_id: str
+    task_capable: bool
+    source: TaskCapabilitySource
+
+
+#: Latest task-capability verdict PER declared server, mirroring
+#: ``_LATEST_BY_SERVER``'s lock+dict idiom exactly -- a SEPARATE registry
+#: (discovery-time writes, not era-classification writes) so the two
+#: concerns never share a lock or a stale-overwrite risk.
+_LATEST_TASK_CAPABILITY_BY_SERVER: dict[str, MCPTaskCapability] = {}
+_LATEST_TASK_CAPABILITY_LOCK = threading.Lock()
+
+
+def record_task_capability(
+    server_id: str, *, task_capable: bool, source: TaskCapabilitySource
+) -> MCPTaskCapability:
+    """Record one server's task-capability verdict, keyed by declared name.
+
+    Always overwrites the prior verdict for ``server_id`` (mirrors
+    :func:`_record_latest`: the per-server surface answers "what do we know
+    right now", not "has it ever been true"). A no-op (still returns the
+    record) for an unlabeled id.
+    """
+
+    record = MCPTaskCapability(server_id=server_id, task_capable=task_capable, source=source)
+    if server_id:
+        with _LATEST_TASK_CAPABILITY_LOCK:
+            _LATEST_TASK_CAPABILITY_BY_SERVER[server_id] = record
+        logger.debug(
+            "mcp task capability recorded server=%s task_capable=%s source=%s",
+            server_id,
+            task_capable,
+            source,
+        )
+    return record
+
+
+def latest_task_capability(server_id: str) -> MCPTaskCapability | None:
+    """Return the most recent task-capability verdict for ``server_id``, if any.
+
+    ``None`` means capability is genuinely UNKNOWN (no discovery has landed
+    yet) -- routing callers must treat this as "keep the proxy path", never
+    as a false negative.
+    """
+
+    with _LATEST_TASK_CAPABILITY_LOCK:
+        return _LATEST_TASK_CAPABILITY_BY_SERVER.get(server_id)
+
+
+def all_latest_task_capabilities() -> dict[str, MCPTaskCapability]:
+    """Return a snapshot of every observed server's latest task-capability verdict."""
+
+    with _LATEST_TASK_CAPABILITY_LOCK:
+        return dict(_LATEST_TASK_CAPABILITY_BY_SERVER)
+
+
+def _server_declares_tasks(client: Any) -> bool:
+    """Whether a connected client's SERVER-declared extensions carry the tasks id.
+
+    Reads ``client.server_capabilities`` -- populated by the SDK's own
+    negotiation, independent of what THIS client itself declared (a
+    ``ProxyClient`` that suppresses its own extension advertisement still
+    sees the backend's true capabilities here). Deliberately duplicated
+    (rather than imported) from :mod:`clio_agent.tools.mcp_task_routing`'s
+    equivalent helper: that module imports FROM this one, so the reverse
+    import would cycle. Both are three lines; keep them in sync by hand.
+    """
+
+    capabilities = getattr(client, "server_capabilities", None)
+    extensions = getattr(capabilities, "extensions", None) or {}
+    return TASKS_EXTENSION_ID in extensions
+
+
 _ClientT = TypeVar("_ClientT")
 
 #: Per-base-class instrumented subclasses, cached like
@@ -270,14 +385,23 @@ def _instrumented_class(base_cls: type) -> type:
 
         async def __aenter__(self: Any) -> Any:  # noqa: N807 - dunder override
             result = await base_cls.__aenter__(self)  # type: ignore[attr-defined]
+            server_id = getattr(self, _SERVER_ID_ATTR, "")
             classify_connection_era(
-                server_id=getattr(self, _SERVER_ID_ATTR, ""),
+                server_id=server_id,
                 protocol_version=getattr(self, "protocol_version", None),
                 connect_mode=resolved_connect_mode(),
             )
+            # #1281 (C1-S1): opportunistic POSITIVE-only capability capture --
+            # see the module docstring. Never overwrites a verdict with False.
+            if server_id and _server_declares_tasks(self):
+                record_task_capability(
+                    server_id, task_capable=True, source="capabilities_extensions"
+                )
             return result
 
-        subclass = type(f"_EraInstrumented{base_cls.__name__}", (base_cls,), {"__aenter__": __aenter__})
+        subclass = type(
+            f"_EraInstrumented{base_cls.__name__}", (base_cls,), {"__aenter__": __aenter__}
+        )
         _INSTRUMENTED_CLASSES[base_cls] = subclass
         return subclass
 
@@ -313,11 +437,16 @@ def instrument_client_era(client: _ClientT, *, server_id: str) -> _ClientT:
 
 __all__ = [
     "MCPConnectionEra",
+    "MCPTaskCapability",
     "ProtocolEra",
+    "TaskCapabilitySource",
     "all_latest_mcp_connection_eras",
+    "all_latest_task_capabilities",
     "classify_connection_era",
     "instrument_client_era",
     "latest_mcp_connection_era",
+    "latest_task_capability",
+    "record_task_capability",
     "recorded_mcp_connection_downgrades",
     "resolved_connect_mode",
 ]
