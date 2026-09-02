@@ -114,6 +114,15 @@ def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.delete("/v1/sessions/{sid}/pending-steers/{message_id}")
     async def cancel_pending_steer(sid: str, message_id: str) -> dict[str, Any]:
+        """Cancel one accepted-but-undelivered steer.
+
+        Cancels a ``pending`` steer AND one a consumer merely ``claimed`` — a
+        claim is a delivery reservation that can outlive its consumer, so it must
+        never make a steer permanently uncancellable. Only a steer already
+        ``consumed`` (the model has seen it) or already ``cancelled`` refuses,
+        with the settled state named in the 409.
+        """
+
         require_session(sid)
         cancelled = app.state.message_intents.cancel_pending(sid, message_id)
         if cancelled is None:
@@ -122,7 +131,7 @@ def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
                 raise HTTPException(status_code=404, detail="pending steer not found")
             raise HTTPException(
                 status_code=409,
-                detail={"error": "steer_already_claimed", "state": current.state},
+                detail={"error": "steer_already_settled", "state": current.state},
             )
         inbox = app.state.loop_inboxes.get(sid)
         if inbox is not None:

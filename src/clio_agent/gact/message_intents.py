@@ -231,12 +231,40 @@ class MessageIntentStore:
             self._flush_locked()
             return row.model_copy(deep=True)
 
-    def cancel_pending(self, session_id: str, message_id: str) -> PendingSteer | None:
-        """Mark an unclaimed pending steer cancelled."""
+    def release_claim(self, session_id: str, message_id: str) -> PendingSteer | None:
+        """Return a claimed-but-unsurfaced steer to ``pending``.
+
+        A claim is a delivery reservation, not a settlement. When the consumer
+        that claimed a steer cannot surface it (nothing describable to compose,
+        a settle failure) the reservation MUST be given back — otherwise the row
+        sits ``claimed`` forever: never delivered, never re-driven, and (before
+        :meth:`cancel_pending` learned the ``claimed`` state) uncancellable.
+        """
 
         with self._lock:
             row = self._pending.get(message_id)
-            if row is None or row.session_id != session_id or row.state != "pending":
+            if row is None or row.session_id != session_id or row.state != "claimed":
+                return None
+            row.state = "pending"
+            row.claimed_at = ""
+            self._flush_locked()
+            return row.model_copy(deep=True)
+
+    def cancel_pending(self, session_id: str, message_id: str) -> PendingSteer | None:
+        """Mark a not-yet-consumed steer cancelled.
+
+        Cancels from ``pending`` AND from ``claimed``: a claim can outlive the
+        consumer that took it (a crashed drain, a turn torn down between claim
+        and settle), and a steer nobody can cancel is a permanent lie in the
+        client's composer. Consumption is the one terminal a cancel cannot
+        reach — by then the model has already been steered.
+        """
+
+        with self._lock:
+            row = self._pending.get(message_id)
+            if row is None or row.session_id != session_id:
+                return None
+            if row.state not in {"pending", "claimed"}:
                 return None
             row.state = "cancelled"
             row.cancelled_at = _now_iso()

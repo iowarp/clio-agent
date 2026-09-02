@@ -11,20 +11,34 @@ if TYPE_CHECKING:
     from clio_agent.gact.types import Message
 
 
-def enrich_with_workspace_resources(
-    app: "FastAPI", sid: str, user_text: str, user_msg: "Message"
-) -> str:
-    """Prepend trusted attachment state without mutating public message parts."""
+ATTACHMENT_MARKER = "## Workspace attachments (private runtime context)"
+
+ATTACHMENT_PREAMBLE = (
+    "This block describes user-selected resources. Do not quote this injected block or expose "
+    "private custody paths in the response."
+)
+
+
+def describe_resource_parts(app: "FastAPI", sid: str, parts: list) -> list[str]:
+    """Return one trusted grounding line per ``resource_ref`` part.
+
+    The single owner of "how a workspace resource is described to the model".
+    :func:`enrich_with_workspace_resources` folds these into a turn's prompt;
+    the loop-inbox steer drain folds the same lines into a mid-turn steer block
+    so an attachment-only steer is not silently unreadable. Returns ``[]`` when
+    the message carries no resource references or the session has no workspace
+    (nothing to describe — the caller keeps its text unchanged).
+    """
 
     resource_parts = [
-        part for part in getattr(user_msg, "parts", []) or [] if part.type == "resource_ref"
+        part for part in parts or [] if getattr(part, "type", "") == "resource_ref"
     ]
     if not resource_parts:
-        return user_text
+        return []
     session = app.state.sessions.get(sid)
     workspace_id = str(getattr(session, "workspace_id", "") or "")
     if not workspace_id:
-        return user_text
+        return []
 
     blocks: list[str] = []
     for part in resource_parts:
@@ -127,16 +141,31 @@ def enrich_with_workspace_resources(
             + "with workspace_resource_read; otherwise use bounded workspace or domain tools."
         )
 
+    return blocks
+
+
+def enrich_with_workspace_resources(
+    app: "FastAPI", sid: str, user_text: str, user_msg: "Message"
+) -> str:
+    """Prepend trusted attachment state without mutating public message parts."""
+
+    blocks = describe_resource_parts(app, sid, list(getattr(user_msg, "parts", []) or []))
     if not blocks:
         return user_text
     return (
-        "## Workspace attachments (private runtime context)\n\n"
-        "This block describes user-selected resources. Do not quote this injected block or expose "
-        "private custody paths in the response.\n\n"
+        ATTACHMENT_MARKER
+        + "\n\n"
+        + ATTACHMENT_PREAMBLE
+        + "\n\n"
         + "\n".join(blocks)
         + "\n\n## User message\n\n"
         + user_text
     )
 
 
-__all__ = ["enrich_with_workspace_resources"]
+__all__ = [
+    "ATTACHMENT_MARKER",
+    "ATTACHMENT_PREAMBLE",
+    "describe_resource_parts",
+    "enrich_with_workspace_resources",
+]

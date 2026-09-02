@@ -437,22 +437,37 @@ def drain_active_session_inbox(app: "FastAPI") -> str:
         task_events = []
         for event in events:
             if event.kind == "user_message":
-                if event.steer_message_id:
-                    # Claiming is the single-consumer gate against the idle
-                    # re-drive: whichever path claims first owns this steer.
-                    if app.state.message_intents.claim_pending(sid, event.steer_message_id) is None:
-                        continue
-                steer_text = (event.text or "").strip()
-                if steer_text:
-                    steer_blocks.append(USER_STEER_MARKER + "\n\n" + steer_text)
-                    # A POST-route steer carries a pre-minted, ALREADY persisted id
-                    # (acceptance wrote the pending row before returning its 202);
-                    # settle that same transcript record HERE, the point the running
-                    # turn folds it in. An ask-user-resume steer carries NO
-                    # steer_message_id — it persists only via the idle new-turn, so
-                    # we surface its block without settling anything.
-                    if event.steer_message_id:
-                        _mark_steer_consumed(app, sid, event)
+                block = _compose_steer_block(app, sid, event)
+                if not event.steer_message_id:
+                    # An ask-user-resume steer owns no durable intent and persists
+                    # only via the idle new-turn: surface its block, settle nothing.
+                    if block:
+                        steer_blocks.append(block)
+                    continue
+                # Claiming is the single-consumer gate against the idle re-drive:
+                # whichever path claims first owns this steer.
+                if app.state.message_intents.claim_pending(sid, event.steer_message_id) is None:
+                    continue
+                if not block:
+                    # Nothing describable to surface. The claim is a delivery
+                    # reservation, so give it back rather than stranding the row
+                    # ``claimed`` forever (uncancellable, never re-driven).
+                    app.state.message_intents.release_claim(sid, event.steer_message_id)
+                    logger.warning(
+                        "loop_inbox steer skip reason=steer_not_describable steer_id=%s",
+                        event.steer_message_id,
+                    )
+                    continue
+                # A POST-route steer carries a pre-minted, ALREADY persisted id
+                # (acceptance wrote the pending row before returning its 202); settle
+                # that same transcript record HERE, the point the running turn folds
+                # it in. CONSUMPTION is the gate, not the claim: if the settle does
+                # not land (the row was cancelled between claim and settle, or the
+                # transcript identity is gone) the block is NOT surfaced and the
+                # reservation is released, so the steer stays exactly-once.
+                if not _mark_steer_consumed(app, sid, event):
+                    continue
+                steer_blocks.append(block)
                 continue
             task_events.append(event)
 
@@ -526,7 +541,75 @@ def drain_active_session_inbox(app: "FastAPI") -> str:
         return ""
 
 
-def _mark_steer_consumed(app: "FastAPI", sid: str, event: InboxEvent) -> None:
+def _steer_parts(event: InboxEvent) -> list:
+    """Coerce an event's carried steer parts into :class:`Part` objects.
+
+    ``enqueue_user_steer`` documents ``steer_parts`` as "wire dicts or Part
+    objects" (the POST route hands Parts; a rehydrated/recovered event can hand
+    dicts). Every consumer below reads them as Parts, so normalize once here and
+    drop anything that will not coerce rather than raising into the drain.
+    """
+
+    from clio_agent.gact.types import Part  # noqa: PLC0415
+
+    parts: list = []
+    for raw in event.steer_parts or []:
+        if isinstance(raw, Part):
+            parts.append(raw)
+            continue
+        if isinstance(raw, dict):
+            try:
+                parts.append(Part(**raw))
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    "loop_inbox steer part skipped reason=steer_part_invalid steer_id=%s err=%r",
+                    event.steer_message_id,
+                    exc,
+                )
+    return parts
+
+
+def _compose_steer_block(app: "FastAPI", sid: str, event: InboxEvent) -> str:
+    """Compose the model-facing ``steer`` grounding block for one steer event.
+
+    A steer is legitimate with text, with attachments, or with both — an
+    attachment-only steer ("look at this file") is a real instruction, so the
+    block references the attached resources through the SAME description the
+    ordinary turn path uses (``resource_enrichment.describe_resource_parts``).
+    Image parts cannot be folded into a turn already in flight, so they are
+    NAMED rather than silently dropped. Returns ``""`` only when there is
+    genuinely nothing to say.
+    """
+
+    from clio_agent.gact.resource_enrichment import (  # noqa: PLC0415
+        ATTACHMENT_MARKER,
+        ATTACHMENT_PREAMBLE,
+        describe_resource_parts,
+    )
+
+    parts = _steer_parts(event)
+    sections: list[str] = []
+    resource_lines = describe_resource_parts(app, sid, parts)
+    if resource_lines:
+        sections.append(
+            ATTACHMENT_MARKER + "\n\n" + ATTACHMENT_PREAMBLE + "\n\n" + "\n".join(resource_lines)
+        )
+    image_count = sum(1 for part in parts if getattr(part, "type", "") == "image")
+    if image_count:
+        sections.append(
+            f"- {image_count} image attachment(s) accompany this steer. Image bytes cannot be "
+            "folded into a turn that is already running; they stay on the user's message and are "
+            "delivered natively on the next turn that carries it."
+        )
+    steer_text = (event.text or "").strip()
+    if steer_text:
+        sections.append(steer_text)
+    if not sections:
+        return ""
+    return USER_STEER_MARKER + "\n\n" + "\n\n".join(sections)
+
+
+def _mark_steer_consumed(app: "FastAPI", sid: str, event: InboxEvent) -> bool:
     """Settle an ALREADY persisted steer at the drain and re-publish its message.
 
     Acceptance (``message_submission.accept_message``) durably wrote the pending
@@ -535,9 +618,13 @@ def _mark_steer_consumed(app: "FastAPI", sid: str, event: InboxEvent) -> None:
     on the SAME record, mark the intent consumed, and re-publish
     ``message.created`` so SSE clients see the steer take effect. Runs on the
     tool-executor thread (thread-safe, exactly as this module already publishes
-    ``loop_inbox.drained`` + the delegation terminals). Wrapped in its OWN
-    typed-reason try/except so a settle hiccup still lets the ``### steer`` block
-    surface to the model — the steer is never lost to the turn.
+    ``loop_inbox.drained`` + the delegation terminals).
+
+    Returns ``True`` only when the intent actually settled. On any failure — the
+    transcript identity is gone, the row was cancelled between claim and settle —
+    it logs a typed reason, RELEASES the claim so the steer is re-drivable at the
+    next boundary, and returns ``False``; the caller then withholds the block, so
+    a steer is surfaced at most once and never surfaced after a cancel.
     """
 
     try:
@@ -548,6 +635,8 @@ def _mark_steer_consumed(app: "FastAPI", sid: str, event: InboxEvent) -> None:
         msg = next((row for row in messages if row.id == event.steer_message_id), None)
         if msg is None:
             raise ValueError(f"pending steer transcript missing: {event.steer_message_id}")
+        if app.state.message_intents.mark_consumed(sid, event.steer_message_id) is None:
+            raise ValueError(f"pending steer no longer claimed: {event.steer_message_id}")
         metadata = dict(msg.metadata)
         metadata["pending_steer"] = False
         metadata["mid_turn_steer"] = True
@@ -556,16 +645,18 @@ def _mark_steer_consumed(app: "FastAPI", sid: str, event: InboxEvent) -> None:
         _replace_session_messages(
             app, sid, [settled if row.id == settled.id else row for row in messages]
         )
-        app.state.message_intents.mark_consumed(sid, event.steer_message_id)
         app.state.bus.publish(
             Event(type="message.created", session_id=sid, payload=settled.to_wire())
         )
-    except Exception as exc:  # noqa: BLE001 - a settle hiccup must not drop the steer block
+        return True
+    except Exception as exc:  # noqa: BLE001 - a settle hiccup must not break the tool call
         logger.warning(
             "loop_inbox steer settle failed reason=steer_settle_error steer_id=%s err=%r",
             event.steer_message_id,
             exc,
         )
+        app.state.message_intents.release_claim(sid, event.steer_message_id)
+        return False
 
 
 def _publish_drain_progress(app: "FastAPI", sid: str, drained: int, surfaced: int) -> None:
