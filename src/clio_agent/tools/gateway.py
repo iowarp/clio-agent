@@ -393,9 +393,16 @@ def build_gateway(
             existing.add(name)
             registry[name] = proxy
             specs_registry[name] = spec
-            direct_factories[name] = mcp_task_routing.direct_client_factory(
-                spec, spec_cwd, handlers=handlers, capabilities=capabilities, namespace=name
-            )
+            # #1281 F9 (adversarial review): an INJECTED proxy_factory (tests:
+            # an in-process double with no real transport behind the spec)
+            # means `spec` may not honestly describe how to reach this
+            # namespace directly -- skip stamping a factory built from
+            # transport_for(spec) rather than mount one that would silently
+            # dial something the test never intended.
+            if proxy_factory is None:
+                direct_factories[name] = mcp_task_routing.direct_client_factory(
+                    spec, spec_cwd, handlers=handlers, capabilities=capabilities, namespace=name
+                )
         except Exception as exc:  # noqa: BLE001 - non-fatal: log + skip a bad server
             logger.warning("failed to mount declared MCP %r: %s", name, exc)
     gw._clio_namespace_proxies = registry  # type: ignore[attr-defined]
@@ -549,7 +556,10 @@ def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
     returning and can tolerate the wait.
     """
 
-    from clio_agent.tools import listing_cache  # noqa: PLC0415
+    from clio_agent.tools import (
+        listing_cache,  # noqa: PLC0415
+        mcp_task_routing,  # noqa: PLC0415
+    )
 
     specs = namespace_specs(gw)
     tools: dict[str, Any] = {}
@@ -600,8 +610,21 @@ def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
             # an overlapping corpse still holds its RSS.
             _await_spawned_exit(before)
             if cacheable and spec is not None:
+                # #1281 F3: persist the capability THIS live listing just
+                # recorded (record_definitive_capability, inside
+                # _list_declared_tools) so the NEXT cache hit can replay it.
+                task_capable, cap_source, cap_era = mcp_task_routing.capability_cache_fields(
+                    namespace
+                )
                 listing_cache.store_listing(
-                    namespace, spec.command, tuple(spec.args), listed, spec.env
+                    namespace,
+                    spec.command,
+                    tuple(spec.args),
+                    listed,
+                    spec.env,
+                    task_capable=task_capable,
+                    source=cap_source,
+                    era=cap_era,
                 )
         assert listed is not None
         for tool in listed:
