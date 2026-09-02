@@ -109,7 +109,8 @@ def classify_parentage(
     # the just-started server along with it, so exclude the server's ancestors
     # from child classification.
     server_ancestors: set[int] = set()
-    cursor = by_pid.get(server_root_pid).ppid if server_root_pid in by_pid else 0
+    server_root = by_pid.get(server_root_pid)
+    cursor = server_root.ppid if server_root is not None else 0
     while cursor in by_pid and cursor not in server_ancestors:
         server_ancestors.add(cursor)
         cursor = by_pid[cursor].ppid

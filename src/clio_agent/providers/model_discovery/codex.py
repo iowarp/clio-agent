@@ -91,7 +91,10 @@ def discover_codex(*, timeout: float = 20.0) -> ProviderDiscoveryResult:
             source=CODEX_SOURCE,
             failed_reason="Codex Python SDK returned zero models",
         )
-    default_model = next((str(row.id) for row in rows if row.is_default), discovered[0]["id"])
+    default_model = next(
+        (str(row.id) for row in rows if row.is_default),
+        str(discovered[0]["id"]),
+    )
     return ProviderDiscoveryResult(
         provider="codex",
         discovered=attach_context_limits(discovered, "codex"),

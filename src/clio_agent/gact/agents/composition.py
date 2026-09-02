@@ -319,10 +319,10 @@ def _runtime_dynamic_agent_children_context(
     ]
     for row in sorted(rows, key=lambda item: (item.tier, item.id)):
         detail = (row.description or row.title or "").strip()
-        cap_bits: list[str] = []
+        legacy_cap_bits: list[str] = []
         if row.tools:
-            cap_bits.append("tools: " + ", ".join(row.tools))
-        cap_text = f" [{'; '.join(cap_bits)}]" if cap_bits else ""
+            legacy_cap_bits.append("tools: " + ", ".join(row.tools))
+        cap_text = f" [{'; '.join(legacy_cap_bits)}]" if legacy_cap_bits else ""
         lines.append(f"- `{row.id}`: {detail}{cap_text}")
     lines.append("")
     lines.append(
