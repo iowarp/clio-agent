@@ -302,14 +302,10 @@ class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
         budget with fields still missing records ``react_submit_repair_exhausted`` (a
         recorded degraded turn — the missing fields stay absent, never fabricated).
         """
-        from clio_agent.gact.agents.reactv2_events import (  # noqa: PLC0415
-            is_turn_yield_prediction,
-        )
-
-        # A successful ask_user/plan_exit call intentionally has no final output:
-        # its pending interaction is the turn result.  Re-forcing ``submit`` here
-        # would re-enter the model after the runtime already decided to pause.
-        if is_turn_yield_prediction(pred) or self._declared_outputs_present(pred):
+        # A yielded interaction is the result; never force a later submit over it.
+        if str(getattr(pred, "termination_reason", "") or "").endswith(
+            "_yield"
+        ) or self._declared_outputs_present(pred):
             return pred
         agent_id = _active_react_scope_safe()
         bound = _submit_repair_attempts()
