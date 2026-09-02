@@ -157,19 +157,19 @@ def test_interactions_aggregate_children_and_route_question_and_permission(
         assert rows["permission:perm_child"]["task_id"] == "task_child"
 
         answered = client.post(
-            f"/v1/sessions/{root}/interactions/question:q_native/response",
+            f"/v1/sessions/{root}/interactions/question:q_native/respond",
             json={"action": "answer", "selected_options": ["yes"]},
         )
         assert answered.status_code == 200
         assert calls == [(root, "q_native")]
         duplicate = client.post(
-            f"/v1/sessions/{root}/interactions/question:q_native/response",
+            f"/v1/sessions/{root}/interactions/question:q_native/respond",
             json={"action": "answer", "selected_options": ["yes"]},
         )
         assert duplicate.status_code == 409
 
         allowed = client.post(
-            f"/v1/sessions/{root}/interactions/permission:perm_child/response",
+            f"/v1/sessions/{root}/interactions/permission:perm_child/respond",
             json={"action": "allow"},
         )
         assert allowed.status_code == 200
@@ -184,11 +184,25 @@ def test_interactions_aggregate_children_and_route_question_and_permission(
         )
         app.state.user_questions[cancellable.id] = cancellable
         cancelled = client.post(
-            f"/v1/sessions/{root}/interactions/question:q_cancel/response",
+            f"/v1/sessions/{root}/interactions/question:q_cancel/respond",
             json={"action": "cancel"},
         )
         assert cancelled.status_code == 200
         assert cancelled.json()["interaction"]["status"] == "cancelled"
+
+        compatibility = UserQuestion(
+            id="q_compatibility",
+            session_id=root,
+            prompt="Answer through the compatibility route",
+            created_at=now,
+            updated_at=now,
+        )
+        app.state.user_questions[compatibility.id] = compatibility
+        compatible = client.post(
+            f"/v1/sessions/{root}/interactions/question:q_compatibility/response",
+            json={"action": "answer", "answer": "kept"},
+        )
+        assert compatible.status_code == 200
 
         expired = UserQuestion(
             id="q_expired",
@@ -200,7 +214,7 @@ def test_interactions_aggregate_children_and_route_question_and_permission(
         )
         app.state.user_questions[expired.id] = expired
         late = client.post(
-            f"/v1/sessions/{root}/interactions/question:q_expired/response",
+            f"/v1/sessions/{root}/interactions/question:q_expired/respond",
             json={"action": "answer", "answer": "late"},
         )
         assert late.status_code == 409
@@ -330,12 +344,12 @@ def test_child_a2ui_interaction_routes_to_owning_surface(tmp_path) -> None:
             "action": {**action["action"], "surfaceId": "different-surface"},
         }
         rejected = client.post(
-            f"/v1/sessions/{root}/interactions/{row['id']}/response",
+            f"/v1/sessions/{root}/interactions/{row['id']}/respond",
             json={"message": mismatched},
         )
         assert rejected.status_code == 422
         responded = client.post(
-            f"/v1/sessions/{root}/interactions/{row['id']}/response",
+            f"/v1/sessions/{root}/interactions/{row['id']}/respond",
             json={"message": action},
         )
         assert responded.status_code == 200
