@@ -67,10 +67,20 @@ MCP_TASK_EVENT_DEFAULT = "mcp_task.updated"
 #: all -- it fires on every growing poll of a still-``working`` task).
 MCP_TASK_CONSOLE_EVENT = "mcp_task.console"
 
-#: #1282 (C1-S2 D3) lean wait-surfacing event type. Mirrors ``MCP_TASK_CONSOLE_EVENT``'s
-#: shape (delta-only, not status-keyed) but for the generic "what is this wait
-#: doing" signal every task-capable backend now gets (tools/mcp_wait_ladder.py's
-#: default observer), not just relay's console tail.
+#: #1282 (C1-S2 D3/F1) lean wait-surfacing event type: the generic "what is
+#: this wait doing" signal every task-capable backend now gets
+#: (tools/mcp_wait_ladder.py's default observer), not just relay's console
+#: tail. NOT a byte-delta like ``MCP_TASK_CONSOLE_EVENT`` (there is no
+#: incremental content to carry — each firing is a small, self-contained
+#: {status, attempt, next_poll_ms} snapshot); "lean" here means small
+#: payload, not delta-encoded. TRANSIENT (F1): connection-timeline plumbing,
+#: exactly like ``server.heartbeat`` — never recorded into the bounded
+#: per-session replay history (``gact/events.py``'s 256-event cap; a
+#: non-transient version of this event at a 50ms task poll interval measured
+#: ~7.2k events/hr, evicting real history within minutes — the #761 heartbeat
+#: regression, reproduced). The emitting observer additionally throttles to
+#: on-change-or->=1s (mcp_wait_ladder.default_task_wait_observer) so this is
+#: belt-and-braces, not the only fix.
 MCP_TASK_WAIT_EVENT = "mcp_task.wait"
 
 
@@ -151,9 +161,11 @@ def publish_mcp_task_wait(
     relay's console tail): what it waits on (``key`` -- the task id, and
     ``TaskKey.server_id``/session for attribution), the observed ``status``,
     the attempt number, and the server-ADVERTISED ``next_poll_ms`` (never a
-    clio-imposed deadline -- the backoff the server itself is asking for). A
-    key with no resolvable CLIO session has nothing to publish to, mirroring
-    :func:`publish_mcp_task_event`.
+    clio-imposed deadline -- the backoff the server itself is asking for).
+    Published ``transient=True`` (F1: never evicts real replay history) and
+    already throttled by the calling observer (on-change-or->=1s) before this
+    ever fires. A key with no resolvable CLIO session has nothing to publish
+    to, mirroring :func:`publish_mcp_task_event`.
     """
 
     session_id = key.session_id
@@ -165,6 +177,10 @@ def publish_mcp_task_wait(
         Event(
             type=MCP_TASK_WAIT_EVENT,
             session_id=session_id,
+            # #1282 F1: transient -- connection-timeline plumbing, never replay
+            # history (see MCP_TASK_WAIT_EVENT's docstring for the measured
+            # #761-shaped flood this closes).
+            transient=True,
             payload={
                 "key": key.to_wire(),
                 "status": status,

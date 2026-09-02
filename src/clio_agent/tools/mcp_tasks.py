@@ -71,7 +71,7 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import mcp_types
 from fastmcp.utilities.tasks import TASKS_EXTENSION_ID
@@ -459,7 +459,15 @@ async def _poll_until_terminal(
     while True:
         budget = remaining()
         if budget is not None and budget <= 0:
-            raise TimeoutError(f"task {key.task_id} did not finish within {timeout_seconds}s")
+            # #1282 F3b: typed + surfaced, never a bare TimeoutError -- see
+            # tools/mcp_wait_ladder.py's module docstring for why this stays a
+            # typed BACKSTOP (not made unbounded) despite having no producer
+            # in clio's own call sites today.
+            from clio_agent.tools.mcp_wait_ladder import (  # noqa: PLC0415
+                typed_task_drive_timeout_error,
+            )
+
+            raise typed_task_drive_timeout_error(key.task_id, cast(float, timeout_seconds))
 
         current = await send_task_get(session, key.task_id, budget)
         _record_status(store, ledger, key, current)

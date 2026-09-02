@@ -9,7 +9,7 @@ import json
 import logging
 import math
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
@@ -63,8 +63,21 @@ class MCPClientProtocol(Protocol):
         """List tools exposed by the backing server."""
         ...
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
-        """Call a named tool on the backing server."""
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        progress_handler: Callable[[float, float | None, str | None], Awaitable[None]]
+        | None = None,
+    ) -> Any:
+        """Call a named tool on the backing server.
+
+        ``progress_handler`` (#1282 F3a) is optional -- a test double may
+        ignore it entirely; a real ``fastmcp.Client`` forwards it so
+        ``tools/mcp_wait_ladder.py``'s activity-driven backstop can reset its
+        deadline on progress notifications.
+        """
         ...
 
     async def read_resource(self, uri: str) -> Any:
@@ -411,11 +424,36 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
             # (proxy ctx-enter spawns nothing), so first-call success/failure
             # is the spawn-diet learn/drop-plan signal.
             first_call = namespace is not None and namespace not in self._connected_namespaces
+            # #1282 F3a: an EXPLICIT budget (timeout is not None) is bounded by an
+            # ACTIVITY-DRIVEN deadline (last_activity + timeout), never a flat
+            # wall clock over the whole call -- a transparently-driven task's
+            # full multi-poll drive, or a plain call's progress notifications,
+            # both reset it (run_with_activity_backstop's own docstring). An
+            # unbounded commitment (timeout is None, #1225 wait_for_terminal)
+            # needs no backstop at all, activity-driven or otherwise.
+            from clio_agent.tools.mcp_wait_ladder import (  # noqa: PLC0415
+                ActivityClock,
+                MCPCallTimeoutBackstopError,
+                activity_progress_handler,
+                run_with_activity_backstop,
+                typed_call_timeout_error,
+            )
+
             try:
-                result = await asyncio.wait_for(
-                    client.call_tool(on_server_name, dict(args)),
-                    timeout=timeout,
-                )
+                if timeout is None:
+                    result = await client.call_tool(on_server_name, dict(args))
+                else:
+                    activity = ActivityClock()
+                    result = await run_with_activity_backstop(
+                        client.call_tool(
+                            on_server_name,
+                            dict(args),
+                            progress_handler=activity_progress_handler(activity),
+                        ),
+                        tool=name,
+                        timeout=timeout,
+                        activity=activity,
+                    )
             except TimeoutError as exc:
                 # Conservative: a first-call timeout may be tool latency, not
                 # spawn health — the dropped plan self-heals (declared respawn
@@ -426,12 +464,13 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                 assert timeout is not None, "unbounded wait never times out"
                 if not self._tool_timeout_is_retry_safe(name):
                     raise self.mark_uncertain_mutating_timeout(name, args, timeout) from exc
-                # #1282 D3: the tools.mcp.call_timeout_s runaway backstop fired --
-                # typed + stream_audit-surfaced, never a bare TimeoutError.
-                from clio_agent.tools.mcp_wait_ladder import (
-                    typed_call_timeout_error,  # noqa: PLC0415
-                )
-
+                if isinstance(exc, MCPCallTimeoutBackstopError):
+                    # Already typed + surfaced by run_with_activity_backstop --
+                    # re-typing here would double-log/double-audit the SAME firing.
+                    raise
+                # Defense-in-depth: a TimeoutError from somewhere other than the
+                # activity backstop (e.g. an inner SDK-level read timeout) is
+                # still typed, never a bare TimeoutError reaching the caller.
                 raise typed_call_timeout_error(name, timeout) from exc
             except Exception as exc:
                 if first_call and namespace is not None:
