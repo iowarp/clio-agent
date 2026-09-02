@@ -67,6 +67,35 @@ def record_submit_audit(
         head=text[:120],
         full_text=text[:12000],
     )
+    if reason != "react_submit_repair_attempted":
+        return
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415
+    from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
+        _emit_semantic_event,
+        _llm_provider_payload,
+    )
+
+    app = _ctx.active_app()
+    session_id = _ctx.active_session_id()
+    if app is None or not session_id:
+        return
+    trajectory = _ctx.active_trajectory() or {}
+    termination = str(trajectory.get("termination_reason") or "")
+    repair_reason = "no_tool_call" if termination == "empty_tool_calls" else "parse_repair"
+    provider = _llm_provider_payload(app, agent_id)
+    _emit_semantic_event(
+        app,
+        session_id,
+        "agent.submit_repair.attempted",
+        turn_id=_ctx.active_turn_id(),
+        trace_id=_ctx.active_trace_id(),
+        status="running",
+        summary="Agent output required a bounded submit re-ask.",
+        actor={"agent_id": agent_id},
+        provider=provider,
+        payload={"reason": repair_reason},
+        detail_level="off",
+    )
 
 
 def record_forced_submit_rejection(attempted: str) -> None:
