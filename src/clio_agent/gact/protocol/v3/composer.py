@@ -21,7 +21,7 @@ Two identity decisions are worth naming:
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from clio_agent.gact.events import Event
 from clio_agent.gact.protocol.v3 import Projection
@@ -192,7 +192,11 @@ def queued_message_promotion_failed(
     return Projection("queued_message.promotion_failed", projected, entity_id)
 
 
-COMPOSER_PROJECTORS = {
+# Annotated rather than inferred: ``protocol.v3.event`` imports this table while
+# this module imports ``protocol.v3`` (for ``Projection``), and across that cycle
+# mypy cannot resolve an inferred dict type at the import site
+# (``has-type``). The annotation is the same shape ``event._Projector`` declares.
+COMPOSER_PROJECTORS: dict[str, Callable[[Event, dict[str, Any], Any], Projection]] = {
     "message.accepted": message_accepted,
     "message.cancelled": message_cancelled,
     "pending_steer.cancelled": pending_steer_cancelled,
