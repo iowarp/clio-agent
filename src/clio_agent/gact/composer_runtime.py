@@ -157,6 +157,25 @@ def _install_composer_idle_hook(app: Any, deps: Any) -> None:
     app.state.turn_runner.set_idle_hook(on_session_idle)
 
 
+def resource_capabilities(app: Any) -> dict[str, Any]:
+    """Report the workspace-resource service's live limits and converter registry.
+
+    A client must know the upload ceiling BEFORE it starts a resumable upload,
+    and which converters are configured before it expects a structured view.
+    Both are read off the stores this module built rather than restated, so the
+    advertised contract cannot drift from what the service actually enforces.
+    """
+
+    store = getattr(app.state, "resource_store", None)
+    if store is None:
+        return {}
+    factory = getattr(app.state, "resource_converter_factory", None)
+    return {
+        "max_bytes": int(store.max_resource_bytes),
+        "converters": factory.capabilities() if factory is not None else [],
+    }
+
+
 def delete_workspace_resources(app: Any, workspace_id: str) -> None:
     """Delete workspace-owned resource bytes and provider-delivery records."""
 

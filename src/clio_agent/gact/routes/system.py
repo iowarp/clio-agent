@@ -35,6 +35,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from clio_agent.errors import MCP_TASK_RECORD_STORE_ABSENT
+from clio_agent.gact.composer_runtime import resource_capabilities
 from clio_agent.gact.protocol_v3 import capabilities_to_v3, project_for_request
 from clio_agent.gact.relay_status import relay_capabilities
 from clio_agent.gact.runtime.capabilities import (
@@ -557,6 +558,14 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "durable": task_store_durable,
                     "reason": None if task_store_durable else MCP_TASK_RECORD_STORE_ABSENT,
                 },
+                # Composer lanes. Unconditionally true: composer_runtime
+                # registers all three surfaces at build_app, so a running
+                # server always serves them. The resource block carries the
+                # limits a client must respect before it starts an upload.
+                x_clio_message_delivery=True,
+                x_clio_pending_steers=True,
+                x_clio_queued_messages=True,
+                x_clio_resources=resource_capabilities(app),
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
             auth=AuthInfo(
