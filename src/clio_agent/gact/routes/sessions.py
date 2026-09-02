@@ -1,29 +1,16 @@
 """Session lifecycle + ask-user/retry routes for the GACT server (#714).
 
-This concern owns the ``/v1/sessions`` lifecycle and session-scoped ask/retry protocol.
+This concern owns the ``/v1/sessions`` lifecycle and scoped ask/retry protocol:
 
-* CRUD -- ``POST/GET/PATCH/DELETE /v1/sessions`` (+ ``GET /v1/sessions/{sid}``):
-  create against the workspace store, list with the archive partition, patch the
-  mutable mode/title fields, and permission-gated delete (which also drops the
-  session's messages, context-file ledger and hot ARC footprint).
-* Rollback -- ``POST /v1/sessions/{sid}/undo`` + ``.../rewind``: drop the trailing
-  ``count`` messages (undo) or everything past a target message (rewind), both
-  permission-gated and republished as ``message.deleted`` + ``session.{op}``.
-* Branch/transfer -- ``POST /v1/sessions/{sid}/fork`` (copy a session + its
-  messages into a fresh child), ``GET /v1/sessions/{sid}/export`` +
-  ``POST /v1/sessions/import`` (portable JSON round-trip).
-* Compaction -- ``POST /v1/sessions/{sid}/compact``: summarise the transcript
-  through the live agent into an evidence-preserving compact memory, archive the
-  originals, store the summary in ARC, and replace the visible ledger.
-* Cancel -- ``POST /v1/sessions/{sid}/cancel``: best-effort cooperative cancel of
-  an in-flight turn (flip the flag, signal the event, schedule a grace-period task
-  cancel) + a ``session.status_changed`` event.
+* CRUD creates, lists, patches, and permission-gates session deletion.
+* Undo/rewind drop trailing messages and publish their lifecycle events.
+* Fork/import/export provide branching and portable JSON transfer.
+* Compaction replaces the visible transcript with evidence-preserving memory.
+* Cancel cooperatively stops an in-flight turn and publishes its status.
 * Ask-user -- session question CRUD plus background resumption after answers.
 * Retry -- list and execute recorded attempts from a source user message.
-Fork, question-answer and retry use ``deps.start_background_user_turn``. This
-module loads only leaf packages and never :mod:`clio_agent.gact.app`; shared
-cross-concern helpers (ledger replace, ARC release, model-ref errors, evidence index,
-resume text) travel on :class:`GactDeps`; private rollback and retry helpers stay here.
+Fork, question-answer, and retry share ``deps.start_background_user_turn``. Shared
+cross-concern helpers travel on :class:`GactDeps`; private helpers stay here.
 """
 
 from __future__ import annotations
@@ -39,8 +26,8 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact import context_reference_retry
 from clio_agent.gact.autonomous_loop import stop_session_loop
-from clio_agent.gact.context_references import authorize_context_reference_parts
 from clio_agent.gact.events import Event
 from clio_agent.gact.goal import stop_session_goal
 from clio_agent.gact.loop_inbox import enqueue_user_steer
@@ -72,7 +59,6 @@ from clio_agent.gact.types import (
     ListSessionsResponse,
     Message,
     ModelRef,
-    Part,
     RetryTurnRequest,
     Session,
     TurnAttempt,
@@ -1103,12 +1089,6 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             return original_text
         return f"{original_text}\n\n[Retry notes]\n{notes}"
 
-    def _retryable_user_message(message: Message | None) -> bool:
-        return message is not None and any(
-            (part.type == "text" and bool(part.text)) or part.type == "context_ref"
-            for part in message.parts
-        )
-
     @app.get("/v1/sessions/{sid}/questions")
     async def list_user_questions(sid: str, status: str = "") -> dict[str, Any]:
         if app.state.sessions.get(sid) is None:
@@ -1437,7 +1417,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                         )
                     ).model_dump(exclude_none=True),
                 )
-            if not _retryable_user_message(source_user):
+            if not context_reference_retry.retryable_user_message(source_user):
                 execution_blocked_reason = "source_user_message_not_found"
             elif model_changed:
                 envelope = deps.unsupported_model_ref_error(
@@ -1470,12 +1450,11 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         # instead of staging; the client retries once the running turn finishes.
         if req.execute and not execution_blocked_reason and app.state.turn_runner.busy(sid):
             execution_blocked_reason = "session_busy"
-        retry_parts: list[Part] | None = None
+        retry_parts = None
         if req.execute and not execution_blocked_reason and source_user is not None:
-            retry_parts = [part.model_copy(update={"id": ""}) for part in source_user.parts]
-            if req.notes.strip():
-                retry_parts.append(Part(type="text", text=f"[Retry notes]\n{req.notes.strip()}"))
-            retry_parts = await authorize_context_reference_parts(app, sess, retry_parts)
+            retry_parts = await context_reference_retry.authorize_retry_parts(
+                app, sess, source_user, req.notes
+            )
         now_iso = datetime.now(timezone.utc).isoformat()
         attempt = TurnAttempt(
             id=_new_attempt_id(),

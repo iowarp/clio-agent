@@ -1,8 +1,6 @@
 """Per-turn context enrichment + context-frame provenance helpers (#714).
 
-Behavior-preserving extraction from :mod:`clio_agent.gact.app`. This module owns
-the cohesive cluster that prepares one user turn's *prompt context* and records
-what went into it:
+This module prepares one turn's *prompt context* and records what went into it:
 
 * **Context-file injection** -- ``_enrich_with_context_files`` prepends the bodies
   (or, for ``mode=edit``/binary files, structured summaries) of every file the
@@ -29,14 +27,10 @@ what went into it:
   auto-approved permission audit row.
 * **Turn provenance** -- ``_context_file_turn_provenance`` returns non-secret
   provenance for the context files attached to a turn.
-* **Workspace resources** -- ``enrich_with_workspace_resources`` adds bounded
-  attachment state for the user message's ``resource_ref`` parts.
+* **Workspace resources** -- bounded state for ``resource_ref`` parts.
 
-The module imports only leaves (stdlib plus the ``runtime.globals`` /
-``runtime.constants`` / ``runtime.memory_search`` / ``permission_gate`` /
-``providers.config`` / ``resource_enrichment`` helpers and the tool file-policy
-leaves); it never imports :mod:`clio_agent.gact.app` at module top. ``app`` is
-always passed explicitly so handlers never close over ``build_app`` locals.
+The module imports only leaves and never imports :mod:`clio_agent.gact.app` at
+module top. ``app`` is passed explicitly so handlers do not close over app locals.
 """
 
 from __future__ import annotations
@@ -47,6 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+from clio_agent.gact import context_references
 from clio_agent.gact.events import Event
 from clio_agent.gact.permission_gate import (
     _policy_action_for_tool,
@@ -199,11 +194,7 @@ def _record_context_frame(
             }
         )
 
-    from clio_agent.gact.context_references import (  # noqa: PLC0415
-        context_reference_frame_items,
-    )
-
-    reference_items = context_reference_frame_items(user_msg)
+    reference_items = context_references.context_reference_frame_items(user_msg)
     items.extend(reference_items)
     token_total += sum(int(item.get("tokens_estimated", 0) or 0) for item in reference_items)
 
@@ -618,11 +609,7 @@ def enrich_turn_context(
     with bringup_timing.timer_for_session(app, sid).phase("enrichment"):
         text = _enrich_with_context_files(app, sid, user_text)
         text = enrich_with_workspace_resources(app, sid, text, user_msg)
-        from clio_agent.gact.context_references import (  # noqa: PLC0415
-            enrich_with_context_references,
-        )
-
-        text = enrich_with_context_references(app, sid, text, user_msg)
+        text = context_references.enrich_with_context_references(app, sid, text, user_msg)
         return _enrich_with_requested_memory_search(app, sid, text, user_msg)
 
 

@@ -22,10 +22,6 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.artifacts.storage import resolve_owned_artifact_path
 from clio_agent.gact.artifacts.wire import mime_for
-from clio_agent.gact.routes.workspace_file_policy import (
-    is_internal_workspace_file_directory,
-    skip_workspace_file_directory,
-)
 from clio_agent.gact.runtime.constants import _CTX_MAX_BYTES
 from clio_agent.gact.runtime.globals import _ContextFileAccessError
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Message, Part
@@ -63,7 +59,14 @@ CONTEXT_REFERENCE_KINDS: frozenset[str] = frozenset(
     {"workspace_file", "artifact", "session", "agent_run"}
 )
 REFERENCE_SEARCH_KINDS: frozenset[str] = frozenset({*CONTEXT_REFERENCE_KINDS, "resource"})
-_SEARCH_LIMIT = 5000
+CONTEXT_REFERENCE_CAPABILITY: dict[str, Any] = {
+    "version": "1",
+    "part_type": "context_ref",
+    "kinds": ["workspace_file", "artifact", "session", "agent_run"],
+    "search_kinds": ["workspace_file", "resource", "artifact", "session", "agent_run"],
+    "search_route": "/v1/workspaces/{workspace_id}/references",
+    "revision_pinned_kinds": ["workspace_file", "resource", "artifact"],
+}
 _SUMMARY_MESSAGE_LIMIT = 5
 _SUMMARY_EXCERPT_CHARS = 600
 _FILE_CHUNK_BYTES = 1024 * 1024
@@ -212,204 +215,6 @@ def _stat_revision(path: Path) -> str:
     return f"stat:{stat.st_mtime_ns}:{stat.st_size}"
 
 
-def _reference_result(
-    *,
-    kind: str,
-    ref_id: str,
-    label: str,
-    detail: str,
-    media_type: str,
-    revision: str,
-    navigation: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Return the exact stable result shape shared by every repository."""
-
-    return {
-        "kind": kind,
-        "id": ref_id,
-        "label": label,
-        "detail": detail,
-        "media_type": media_type,
-        "revision": revision,
-        "navigation": dict(navigation),
-    }
-
-
-def _disambiguate_duplicate_labels(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Make duplicate labels visibly distinguishable without changing their identities."""
-
-    counts: dict[tuple[str, str], int] = {}
-    for row in results:
-        key = (str(row["kind"]), str(row["label"]).casefold())
-        counts[key] = counts.get(key, 0) + 1
-    disambiguated: list[dict[str, Any]] = []
-    for row in results:
-        key = (str(row["kind"]), str(row["label"]).casefold())
-        if counts[key] <= 1 or str(row["id"]) in str(row["detail"]):
-            disambiguated.append(row)
-            continue
-        disambiguated.append({**row, "detail": f"{row['detail']} · {row['id']}"})
-    return disambiguated
-
-
-def _walk_workspace_files(app: "FastAPI", workspace_id: str) -> list[dict[str, Any]]:
-    root = _workspace_root(app, workspace_id)
-    if not root.is_dir():
-        return []
-    results: list[dict[str, Any]] = []
-    for directory, names, filenames in os.walk(root, followlinks=False):
-        names[:] = sorted(
-            name
-            for name in names
-            if not skip_workspace_file_directory(name)
-            and not is_internal_workspace_file_directory(name)
-        )
-        for name in sorted(filenames):
-            if len(results) >= _SEARCH_LIMIT:
-                return results
-            path = Path(directory) / name
-            if path.is_symlink():
-                continue
-            try:
-                ref_id = path.relative_to(root).as_posix()
-                revision = _stat_revision(path)
-                size = path.stat().st_size
-            except OSError:
-                continue
-            results.append(
-                _reference_result(
-                    kind="workspace_file",
-                    ref_id=ref_id,
-                    label=name,
-                    detail=f"{ref_id} ({size} bytes)",
-                    media_type=_file_media_type(path),
-                    revision=revision,
-                    navigation={
-                        "workspace_id": workspace_id,
-                        "path": ref_id,
-                        "route": "/v1/workspaces/{workspace_id}/files/read",
-                    },
-                )
-            )
-    return results
-
-
-def _resource_results(app: "FastAPI", workspace_id: str) -> list[dict[str, Any]]:
-    """Project the optional composer resource repository without recreating it."""
-
-    store = getattr(app.state, "resource_store", None)
-    if store is None:
-        return []
-    try:
-        records = store.list(workspace_id)
-    except (AttributeError, KeyError, TypeError, ValueError):
-        return []
-    results: list[dict[str, Any]] = []
-    for record in records:
-        ref_id = str(getattr(record, "id", "") or "")
-        label = str(getattr(record, "name", "") or ref_id)
-        revision = str(getattr(record, "revision", "") or "")
-        media_type = str(
-            getattr(record, "detected_mime", "")
-            or getattr(record, "media_type", "")
-            or "application/octet-stream"
-        )
-        results.append(
-            _reference_result(
-                kind="resource",
-                ref_id=ref_id,
-                label=label,
-                detail=f"Workspace resource {label}",
-                media_type=media_type,
-                revision=revision,
-                navigation={
-                    "workspace_id": workspace_id,
-                    "resource_id": ref_id,
-                    "route": "/v1/workspaces/{workspace_id}/resources/{resource_id}",
-                },
-            )
-        )
-    return results
-
-
-def _artifact_results(app: "FastAPI", workspace_id: str) -> list[dict[str, Any]]:
-    registry = get_registry(app)
-    results: list[dict[str, Any]] = []
-    for record in registry.list_for_workspace(workspace_id):
-        version = record.head
-        if version is None:
-            continue
-        results.append(
-            _reference_result(
-                kind="artifact",
-                ref_id=version.artifact_id,
-                label=record.name,
-                detail=f"{record.name} v{version.version} ({version.kind.value})",
-                media_type=mime_for(version, record.name),
-                revision=f"v{version.version}",
-                navigation={
-                    "workspace_id": workspace_id,
-                    "artifact_id": version.artifact_id,
-                    "route": "/v1/artifacts/{artifact_id}",
-                },
-            )
-        )
-    return results
-
-
-def _session_results(app: "FastAPI", workspace_id: str) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
-    for session in app.state.sessions.list(workspace_id=workspace_id):
-        results.append(
-            _reference_result(
-                kind="session",
-                ref_id=session.id,
-                label=session.title or session.id,
-                detail=f"Session · {session.status} · {session.message_count} messages",
-                media_type="application/vnd.clio.session-summary+json",
-                revision=session.updated_at,
-                navigation={
-                    "workspace_id": workspace_id,
-                    "session_id": session.id,
-                    "route": "/v1/sessions/{session_id}",
-                },
-            )
-        )
-    return results
-
-
-def _agent_run_results(app: "FastAPI", workspace_id: str) -> list[dict[str, Any]]:
-    registry = getattr(app.state, "agent_task_registry", None)
-    if registry is None:
-        return []
-    results: list[dict[str, Any]] = []
-    for task in registry.snapshot():
-        child = app.state.sessions.get(task.child_session_id)
-        parent = app.state.sessions.get(task.parent_session_id)
-        owner = child or parent
-        if owner is None or owner.workspace_id != workspace_id:
-            continue
-        expert = str((task.agent_ref or {}).get("expert_id") or "agent")
-        label = task.run_label or f"{expert} #{task.run_index + 1}"
-        results.append(
-            _reference_result(
-                kind="agent_run",
-                ref_id=task.task_id,
-                label=label,
-                detail=f"Agent run · {task.status} · {expert}",
-                media_type="application/vnd.clio.agent-run-summary+json",
-                revision=task.updated_at,
-                navigation={
-                    "workspace_id": workspace_id,
-                    "task_id": task.task_id,
-                    "session_id": task.child_session_id,
-                    "route": "/v1/agent-tasks/{task_id}",
-                },
-            )
-        )
-    return results
-
-
 async def search_workspace_references(
     app: "FastAPI",
     workspace_id: str,
@@ -417,54 +222,13 @@ async def search_workspace_references(
     query: str = "",
     kinds: Iterable[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Search existing same-workspace repositories using one stable result shape."""
+    """Search existing repositories through the focused discovery owner."""
 
-    if app.state.workspaces.get(workspace_id) is None:
-        raise _failure(
-            status_code=404,
-            error="not_found",
-            message=f"workspace not found: {workspace_id}",
-            ref_kind="workspace",
-            ref_id=workspace_id,
-        )
-    selected = set(kinds or REFERENCE_SEARCH_KINDS)
-    unknown = sorted(selected - REFERENCE_SEARCH_KINDS)
-    if unknown:
-        raise _failure(
-            status_code=400,
-            error="validation_error",
-            message=f"unknown reference kind(s): {', '.join(unknown)}",
-            ref_kind="reference_search",
-            ref_id=workspace_id,
-            recoverable=True,
-            unknown_kinds=unknown,
-            allowed_kinds=sorted(REFERENCE_SEARCH_KINDS),
-        )
+    from clio_agent.gact.context_reference_search import (  # noqa: PLC0415
+        search_workspace_references as search,
+    )
 
-    results: list[dict[str, Any]] = []
-    if "workspace_file" in selected:
-        results.extend(await asyncio.to_thread(_walk_workspace_files, app, workspace_id))
-    if "resource" in selected:
-        results.extend(_resource_results(app, workspace_id))
-    if "artifact" in selected:
-        results.extend(await asyncio.to_thread(_artifact_results, app, workspace_id))
-    if "session" in selected:
-        results.extend(_session_results(app, workspace_id))
-    if "agent_run" in selected:
-        results.extend(_agent_run_results(app, workspace_id))
-
-    results = _disambiguate_duplicate_labels(results)
-    needle = query.strip().casefold()
-    if needle:
-        results = [
-            row
-            for row in results
-            if needle
-            in " ".join(
-                (str(row["label"]), str(row["detail"]), str(row["id"]), str(row["kind"]))
-            ).casefold()
-        ]
-    return sorted(results, key=lambda row: (row["kind"], row["label"].casefold(), row["id"]))
+    return await search(app, workspace_id, query=query, kinds=kinds)
 
 
 def _summary_excerpt(text: str) -> str:
@@ -847,6 +611,14 @@ def context_reference_deliveries(parts: Iterable[Part]) -> list[dict[str, Any]]:
     return deliveries
 
 
+def record_context_reference_deliveries(metadata: dict[str, Any], parts: Iterable[Part]) -> None:
+    """Attach canonical context-reference delivery records to message metadata."""
+
+    deliveries = context_reference_deliveries(parts)
+    if deliveries:
+        metadata["context_reference_deliveries"] = deliveries
+
+
 def _recorded_delivery_metadata(
     part: Part, workspace_id: str, current: dict[str, Any]
 ) -> tuple[dict[str, Any], bool]:
@@ -995,6 +767,10 @@ def context_reference_frame_items(message: Message) -> list[dict[str, Any]]:
     return rows
 
 
+from clio_agent.gact.context_reference_search import (  # noqa: E402
+    _disambiguate_duplicate_labels as _disambiguate_duplicate_labels,
+)
+
 __all__ = [
     "CONTEXT_REFERENCE_KINDS",
     "REFERENCE_SEARCH_KINDS",
@@ -1004,5 +780,6 @@ __all__ = [
     "context_reference_deliveries",
     "context_reference_frame_items",
     "enrich_with_context_references",
+    "record_context_reference_deliveries",
     "search_workspace_references",
 ]

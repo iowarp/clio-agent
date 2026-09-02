@@ -28,10 +28,8 @@ agent-builder + blueprint-runner seams and ``_enrich_cancellation_error_info``
 resolved through ``app`` via a *function-local* import at their single call site,
 the same cycle-break pattern ``clio_agent.gact.agents.builders`` uses.
 
-Behavior is byte-for-byte identical to the in-``build_app`` original: the
-threading/executor handoff, cooperative + hard cancellation, turn timeout, the
-``_ctx`` contextvar set/copy_context semantics, and the trajectory/SSE emission
-are all preserved unchanged.
+Behavior preserves the original threading handoff, cancellation, timeout,
+contextvar, trajectory, and SSE semantics.
 """
 
 from __future__ import annotations
@@ -43,6 +41,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
+from clio_agent.gact.context_references import record_context_reference_deliveries
 from clio_agent.gact.delegation import (
     _coerce_expert_handoff_rows,
     _prediction_workflow_state,
@@ -800,13 +799,7 @@ def _start_background_user_turn(
         request_parts=list(request_parts or []),
         user_text=user_text,
     )
-    from clio_agent.gact.context_references import (  # noqa: PLC0415
-        context_reference_deliveries,
-    )
-
-    reference_deliveries = context_reference_deliveries(user_parts)
-    if reference_deliveries:
-        user_metadata["context_reference_deliveries"] = reference_deliveries
+    record_context_reference_deliveries(user_metadata, user_parts)
     image_count = sum(1 for part in user_parts if part.type == "image")
     if image_count:
         native_dispatch = _agent_accepts_images(app.state.agent)

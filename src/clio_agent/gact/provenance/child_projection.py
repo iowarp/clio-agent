@@ -16,6 +16,19 @@ from clio_agent.gact.agent_tasks import display_run_name
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+CHILD_ACTIVITY_PROJECTION_CAPABILITY: dict[str, Any] = {
+    "include_children": True,
+    "session_lineage": True,
+    "typed_edges": [
+        "delegated",
+        "executes_in",
+        "contains",
+        "used",
+        "generated",
+        "responded_to",
+    ],
+}
+
 
 def child_session_lineage(app: "FastAPI", root_session_id: str) -> list[dict[str, Any]]:
     """Return a bounded, breadth-first lineage for ``root_session_id``.

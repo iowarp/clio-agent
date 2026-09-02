@@ -470,7 +470,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # the base commit's file already failed `ruff format --check`) -- no
     # additional logic, only canonical line-wrapping of untouched code. All
     # timer/registry logic lives in the owner module gact/runtime/bringup_timing.py.
-    "src/clio_agent/gact/routes/sessions.py": 1545,
+    "src/clio_agent/gact/routes/sessions.py": 1540,
     # #1215 S5: crossed the 800 new-file cap (793 -> 809) for enrich_turn_context —
     # a thin timed combinator wrapping the TWO existing enrichment calls
     # (_enrich_with_context_files + _enrich_with_requested_memory_search) in ONE
@@ -615,7 +615,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # on_turn_finalized call site right after the session.status_changed
     # publish, alongside the existing dispatch_*_at_finalize hooks it mirrors
     # (a lazy import + one call). Logic lives in gact/spotter_watcher.py.
-    "src/clio_agent/gact/turn_finalize.py": 978,  # +36 (A4 #1057): the loop-goal compose glue is extracted into the named, tested `compose_goal_loop_stop_at_finalize` seam (A4 review: the inline glue was silently deletable — the extracted function is driven by the finalize seam test); the glue owns the goal->loop import so goal.py stays a leaf (no cycle)
+    "src/clio_agent/gact/turn_finalize.py": 853,  # Interaction pause ownership moved to user_question_pause.py.
     # P5 (owner ask 2026-08-06): +7 for the child/subagent artifact-rollup call
     # site (comment + function-local import + one-line invocation, matching the
     # P4.1/P4.2/P1.6d dispatch idiom already used lower in this file); the
