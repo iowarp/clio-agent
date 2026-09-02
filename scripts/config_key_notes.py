@@ -96,8 +96,9 @@ KEY_NOTES: dict[str, str] = {
         "child task; defaults to the elicitation window."
     ),
     "agents.default_blueprint_id": (
-        "Installed marketplace Agent Blueprint a fresh deployment bootstraps as its default; set "
-        "it to ship a different agent, never to define one in code."
+        "Installed marketplace Agent Blueprint a fresh deployment bootstraps and binds as its "
+        "default (base-agent: one react root over CLIO's native workspace tools); set it to ship a "
+        "different agent, never to define one in code."
     ),
     "agents.disable_default_registry_bootstrap": (
         "Disables auto-installing the default marketplace Agent-Blueprint registry on first boot; "

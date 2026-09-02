@@ -50,6 +50,15 @@ logger = logging.getLogger(__name__)
 # Declared HERE (not beside the DEFAULT_AGENT_BLUEPRINT_ID constant) because
 # this module owns the default-registry bootstrap policy the knob steers, and
 # agent_blueprints.py is at its file-size ratchet (#774 no-accretion).
+#
+# The shipped value of that constant is ``base-agent`` (marketplace ``main``,
+# 0.2.0): one react root over CLIO's native workspace tools with no hidden
+# hierarchy, so a first-run box boots a general agent instead of a domain demo.
+# It SELECTS an installed marketplace artifact — the pack keeps ownership of its
+# prompts, tools and hierarchy, nothing is defined in code — and a box whose
+# marketplace never installed still serves sessions on the code-shipped builtin
+# main (RULE 2), with the failed bootstrap surfaced as a typed DISABLED registry
+# row (``discover_agent_blueprints``) rather than a silent fallback.
 _DEFAULT_AGENT_BLUEPRINT_CONF_KEY = "agents.default_blueprint_id"
 _DEFAULT_AGENT_BLUEPRINT_ENV = "CLIO_DEFAULT_AGENT_BLUEPRINT_ID"
 

@@ -82,7 +82,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_DEBUG_MEMPROF_FRAMES` | `debug.memprof_frames` | int | `20` | `src/clio_agent/gact/diagnostics.py` |
 | `CLIO_DEBUG_MEMPROF_OUT` | `debug.memprof_out` | str | _(unset)_ | `src/clio_agent/gact/diagnostics.py` |
 | `CLIO_DEBUG_ONLY` | `debug.only` | list | `_no_only` _(computed)_ | `src/clio_agent/runtime/trace.py` |
-| `CLIO_DEFAULT_AGENT_BLUEPRINT_ID` | `agents.default_blueprint_id` | str | `earthscope-gnss-region` | `src/clio_agent/gact/agent_blueprint_refresh.py` |
+| `CLIO_DEFAULT_AGENT_BLUEPRINT_ID` | `agents.default_blueprint_id` | str | `base-agent` | `src/clio_agent/gact/agent_blueprint_refresh.py` |
 | `CLIO_DISABLE_JSON_ADAPTER_FALLBACK` | `lm.disable_json_adapter_fallback` | bool | `false` | `src/clio_agent/lm/adapters.py` |
 | `CLIO_DOCUMENT_PROCESSOR_URL` | `resources.document_processor_url` | str | _(unset)_ | `src/clio_agent/gact/composer_runtime.py` |
 | `CLIO_DUMP_UNPARSEABLE` | `debug.dump_unparseable` | str | _(unset)_ | `src/clio_agent/lm/adapters.py` |

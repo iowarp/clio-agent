@@ -347,9 +347,11 @@ agent_tasks.max_concurrent: 3
 # agents.child_forward_deadline_s:  # computed at runtime: DEFAULT_ELICITATION_TIMEOUT_S
 
 # CLIO_DEFAULT_AGENT_BLUEPRINT_ID  (str)  <- src/clio_agent/gact/agent_blueprint_refresh.py
-# Installed marketplace Agent Blueprint a fresh deployment bootstraps as its
-# default; set it to ship a different agent, never to define one in code.
-agents.default_blueprint_id: "earthscope-gnss-region"
+# Installed marketplace Agent Blueprint a fresh deployment bootstraps and
+# binds as its default (base-agent: one react root over CLIO's native
+# workspace tools); set it to ship a different agent, never to define one in
+# code.
+agents.default_blueprint_id: "base-agent"
 
 # CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP  (bool)  <- src/clio_agent/gact/agent_blueprint_refresh.py
 # Disables auto-installing the default marketplace Agent-Blueprint registry
