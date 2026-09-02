@@ -595,6 +595,7 @@ async def _try_streamed_forward(
         if field_name:
             previous_stream_field = field_name
 
+    stream_input = {"question": enriched_text, "session_id": sid, "images": list(images or [])}
     try:
         # StreamListener emits ``StreamResponse`` instances that
         # carry the cleaned chunk in ``.chunk``. Keep the legacy
@@ -605,28 +606,20 @@ async def _try_streamed_forward(
         # older / fake agents fall back via TypeError catch).
         try:
             stream_iter = streamed(
-                question=enriched_text,
-                session_id=sid,
+                **stream_input,
                 session_mode=session_mode,
                 session_edit_mode=session_edit_mode,
-                images=list(images or []),
                 cancel_requested=cancel_requested,
             )
         except TypeError:
             try:
                 stream_iter = streamed(
-                    question=enriched_text,
-                    session_id=sid,
+                    **stream_input,
                     session_mode=session_mode,
                     session_edit_mode=session_edit_mode,
-                    images=list(images or []),
                 )
             except TypeError:
-                stream_iter = streamed(
-                    question=enriched_text,
-                    session_id=sid,
-                    images=list(images or []),
-                )
+                stream_iter = streamed(**stream_input)
         async for piece in stream_iter:
             provider_event_index += 1
             if isinstance(piece, StreamResponse):
