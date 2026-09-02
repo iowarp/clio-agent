@@ -40,6 +40,14 @@ def _event_identity(event_type: str, payload: Mapping[str, Any]) -> str | None:
         "task": ("task_id", "handle_id", "id"),
         "artifact": ("artifact_id", "uri", "id"),
         "a2ui": ("surface_id", "id"),
+        # Composer lanes. Without an entry each of these falls back to a bare
+        # "id" the payload does not carry, so the v3 envelope would ship a null
+        # entity_id and a client could not correlate the update with the row it
+        # already holds.
+        "resource": ("resource_id", "id"),
+        "queued_message": ("queued_message_id", "id"),
+        "pending_steer": ("message_id", "id"),
+        "provider_catalog": ("catalog_id", "id"),
     }
     family = event_type.split(".", 1)[0]
     for key in keys_by_type.get(family, ("id",)):
