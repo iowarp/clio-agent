@@ -32,6 +32,7 @@ from clio_agent.tools.mcp_task_records import (
     TaskRecord,
     set_task_change_listener,
     set_task_console_listener,
+    set_task_wait_listener,
 )
 
 if TYPE_CHECKING:
@@ -43,9 +44,11 @@ __all__ = [
     "MCP_TASK_CONSOLE_EVENT",
     "MCP_TASK_EVENT_DEFAULT",
     "MCP_TASK_EVENTS",
+    "MCP_TASK_WAIT_EVENT",
     "install_mcp_task_event_publisher",
     "publish_mcp_task_console_delta",
     "publish_mcp_task_event",
+    "publish_mcp_task_wait",
 ]
 
 # One event name per terminal edge, mirroring ``agent_tasks.AGENT_TASK_EVENTS``.
@@ -63,6 +66,12 @@ MCP_TASK_EVENT_DEFAULT = "mcp_task.updated"
 #: (that catalog keys purely on TERMINAL status; this one is not status-keyed at
 #: all -- it fires on every growing poll of a still-``working`` task).
 MCP_TASK_CONSOLE_EVENT = "mcp_task.console"
+
+#: #1282 (C1-S2 D3) lean wait-surfacing event type. Mirrors ``MCP_TASK_CONSOLE_EVENT``'s
+#: shape (delta-only, not status-keyed) but for the generic "what is this wait
+#: doing" signal every task-capable backend now gets (tools/mcp_wait_ladder.py's
+#: default observer), not just relay's console tail.
+MCP_TASK_WAIT_EVENT = "mcp_task.wait"
 
 
 def publish_mcp_task_event(app: "FastAPI", record: TaskRecord) -> None:
@@ -132,17 +141,54 @@ def publish_mcp_task_console_delta(
     )
 
 
+def publish_mcp_task_wait(
+    app: "FastAPI", key: TaskKey, *, status: str, attempt: int, next_poll_ms: int | None
+) -> None:
+    """Publish one LEAN ``mcp_task.wait`` surfacing event (#1282, C1-S2 D3).
+
+    The six #1274 wait constraints' "every wait names what it waits on" rule,
+    made concrete on the wire for EVERY task-capable backend (not just
+    relay's console tail): what it waits on (``key`` -- the task id, and
+    ``TaskKey.server_id``/session for attribution), the observed ``status``,
+    the attempt number, and the server-ADVERTISED ``next_poll_ms`` (never a
+    clio-imposed deadline -- the backoff the server itself is asking for). A
+    key with no resolvable CLIO session has nothing to publish to, mirroring
+    :func:`publish_mcp_task_event`.
+    """
+
+    session_id = key.session_id
+    if not session_id:
+        return
+    from clio_agent.gact.events import Event  # noqa: PLC0415 - avoid import cycle
+
+    app.state.bus.publish(
+        Event(
+            type=MCP_TASK_WAIT_EVENT,
+            session_id=session_id,
+            payload={
+                "key": key.to_wire(),
+                "status": status,
+                "attempt": attempt,
+                "next_poll_ms": next_poll_ms,
+            },
+        )
+    )
+
+
 def install_mcp_task_event_publisher(app: "FastAPI") -> None:
     """Wire durable MCP-task mutations to this app's event bus (boot entry point).
 
     Installs closures over ``app`` as the process-global change listener
     (:func:`clio_agent.tools.mcp_task_records.set_task_change_listener`, called by
     :class:`~clio_agent.gact.mcp_task_store.SessionMetadataTaskStore` on every
-    ``put``) AND the console-delta listener
+    ``put``), the console-delta listener
     (:func:`clio_agent.tools.mcp_task_records.set_task_console_listener`, called
     by a backend's ``on_poll`` observer when it folds new console bytes in,
-    #1236). One listener slot of EACH exists per process, matching the single-
-    app-per-process shape every other ``install_*`` boot hook
+    #1236), AND the generic wait-surfacing listener
+    (:func:`clio_agent.tools.mcp_task_records.set_task_wait_listener`, called by
+    ``tools/mcp_wait_ladder.py``'s default observer on every non-terminal poll,
+    #1282 D3). One listener slot of EACH exists per process, matching the
+    single-app-per-process shape every other ``install_*`` boot hook
     (``install_agent_task_registry``, ``install_session_task_store``) already
     assumes.
     """
@@ -151,5 +197,10 @@ def install_mcp_task_event_publisher(app: "FastAPI") -> None:
     set_task_console_listener(
         lambda key, channel, delta, offset, truncated: publish_mcp_task_console_delta(
             app, key, channel=channel, delta=delta, offset=offset, truncated=truncated
+        )
+    )
+    set_task_wait_listener(
+        lambda key, status, attempt, next_poll_ms: publish_mcp_task_wait(
+            app, key, status=status, attempt=attempt, next_poll_ms=next_poll_ms
         )
     )

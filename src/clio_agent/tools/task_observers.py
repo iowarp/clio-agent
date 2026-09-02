@@ -62,8 +62,10 @@ __all__ = [
 #: driven, so a factory can bind its hook to that exact task id (mirrors
 #: :func:`clio_agent.tools.relay_console.make_console_on_poll`'s ``job_id``
 #: argument). Returning ``None`` is a legitimate answer (e.g. console tailing
-#: disabled by config) -- the caller then drives with no hook, identical to an
-#: unregistered backend.
+#: disabled by config) -- :func:`resolve_task_observer` then drives with the
+#: GENERIC wait-surfacing default (#1282 D3) instead, identical to an
+#: unregistered backend: an opt-out of backend-specific enrichment is never an
+#: opt-out of the baseline "every wait names what it waits on" guarantee.
 TaskObserverFactory = Callable[["TaskKey"], "OnPollHook | None"]
 
 _LOCK = threading.Lock()
@@ -98,26 +100,35 @@ def unregister_task_observer_factory(server_id: str) -> None:
         _FACTORIES.pop(server_id, None)
 
 
-def resolve_task_observer(key: "TaskKey") -> "OnPollHook | None":
-    """Resolve the registered ``on_poll`` hook for one task's backend, or ``None``.
+def resolve_task_observer(key: "TaskKey") -> "OnPollHook":
+    """Resolve the ``on_poll`` hook for one task's backend.
 
-    ``None`` is the documented default -- an unregistered ``server_id`` (every
-    non-relay backend today) needs no log line; absence is normal, not a
-    degradation. A REGISTERED factory that raises while building its hook is the
-    one failure this function guards: caught, reported at WARNING with the typed
-    reason ``mcp_task_observer_factory_failed``, and downgraded to ``None`` so the
-    drive this was about to observe proceeds untouched. Called exactly once per
-    drive (:meth:`clio_agent.tools.mcp_task_extension.ClioTasksClientExtension.
-    _resolve_task` calls it once before ``drive_task_to_terminal`` starts), so one
-    warning here already IS "once per drive" -- no extra dedup state needed.
+    A REGISTERED backend-specific factory (relay's console-tail today) wins.
+    Otherwise (#1282, C1-S2 D3) falls back to
+    :func:`~clio_agent.tools.mcp_wait_ladder.default_task_wait_observer` — the
+    generic wait-surfacing hook every non-relay task-capable backend was
+    missing entirely (the six #1274 wait constraints' "every wait names what
+    it waits on" rule was silently unmet for them; only relay's console tail
+    was ever visible). A REGISTERED factory that raises while building its
+    hook is the one failure this function guards: caught, reported at WARNING
+    with the typed reason ``mcp_task_observer_factory_failed``, and downgraded
+    to the SAME default (never bare ``None``, and never breaks the drive this
+    was about to observe) — a broken backend-specific factory must not also
+    cost the drive its generic wait visibility. Called exactly once per drive
+    (:meth:`clio_agent.tools.mcp_task_extension.ClioTasksClientExtension.
+    _resolve_task` calls it once before ``drive_task_to_terminal`` starts), so
+    one warning here already IS "once per drive" -- no extra dedup state
+    needed.
     """
+
+    from clio_agent.tools.mcp_wait_ladder import default_task_wait_observer  # noqa: PLC0415
 
     with _LOCK:
         factory = _FACTORIES.get(key.server_id)
     if factory is None:
-        return None
+        return default_task_wait_observer(key)
     try:
-        return factory(key)
+        hook = factory(key)
     except Exception as exc:  # noqa: BLE001 - a broken factory must never break the drive
         logger.warning(
             "mcp task observer factory failed reason=%s server_id=%s task_id=%s: %s",
@@ -126,4 +137,5 @@ def resolve_task_observer(key: "TaskKey") -> "OnPollHook | None":
             key.task_id,
             exc,
         )
-        return None
+        return default_task_wait_observer(key)
+    return hook if hook is not None else default_task_wait_observer(key)

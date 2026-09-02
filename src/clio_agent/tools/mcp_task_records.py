@@ -68,11 +68,13 @@ __all__ = [
     "set_task_console_listener",
     "set_task_record_store",
     "set_task_session_resolver",
+    "set_task_wait_listener",
     "task_canceller",
     "task_change_listener",
     "task_console_listener",
     "task_record_store",
     "task_record_store_is_durable",
+    "task_wait_listener",
 ]
 
 #: Terminal SEP-2663 task states.
@@ -716,3 +718,35 @@ def task_console_listener() -> Any:
 
     with _HOOK_LOCK:
         return _TASK_CONSOLE_LISTENER
+
+
+_TASK_WAIT_LISTENER: Any = None
+
+
+def set_task_wait_listener(listener: Any) -> None:
+    """Install the ``(TaskKey, status, attempt, next_poll_ms) -> None`` hook
+    fired on every OBSERVED, NON-TERMINAL poll of a task drive (#1282, C1-S2
+    D3 — the six #1274 wait constraints' "every wait names what it waits on"
+    rule, generalized past relay's own console tail to EVERY task-capable
+    backend).
+
+    SEPARATE from :func:`set_task_console_listener`: that hook carries actual
+    output BYTES (a chunk/offset/truncated triple) and only ever fires for a
+    backend that tails real console output (relay today). This one carries no
+    bytes at all — just the wait's own shape (what status it observed, which
+    attempt this is, how long until the next poll) — and is meant to fire for
+    EVERY backend's task drive, console-tailing or not, so a wait is visible
+    even when there is nothing to tail. Absent (the default) is a quiet
+    no-op, mirroring every other hook in this module.
+    """
+
+    global _TASK_WAIT_LISTENER
+    with _HOOK_LOCK:
+        _TASK_WAIT_LISTENER = listener
+
+
+def task_wait_listener() -> Any:
+    """The installed wait-surfacing listener, or ``None``."""
+
+    with _HOOK_LOCK:
+        return _TASK_WAIT_LISTENER

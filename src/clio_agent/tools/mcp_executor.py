@@ -426,7 +426,13 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                 assert timeout is not None, "unbounded wait never times out"
                 if not self._tool_timeout_is_retry_safe(name):
                     raise self.mark_uncertain_mutating_timeout(name, args, timeout) from exc
-                raise TimeoutError(f"MCP tool {name!r} timed out after {timeout:g}s") from exc
+                # #1282 D3: the tools.mcp.call_timeout_s runaway backstop fired --
+                # typed + stream_audit-surfaced, never a bare TimeoutError.
+                from clio_agent.tools.mcp_wait_ladder import (
+                    typed_call_timeout_error,  # noqa: PLC0415
+                )
+
+                raise typed_call_timeout_error(name, timeout) from exc
             except Exception as exc:
                 if first_call and namespace is not None:
                     spawn_diet.spawn_failed(namespace)

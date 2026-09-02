@@ -1,22 +1,28 @@
 """#1231: the per-backend ``on_poll`` observer registry (tools/task_observers.py).
 
-Two test groups:
+Three test groups:
 
-1. The registry itself, in isolation — register/resolve/unregister, an unknown
-   ``server_id`` resolving to ``None``, and a raising factory degrading to ``None``
+1. The registry itself, in isolation — register/resolve/unregister, an
+   unregistered ``server_id`` falling back to the GENERIC wait-surfacing
+   default (#1282, C1-S2 D3 — every task-capable backend's drive is observed,
+   not just relay's), and a raising factory degrading to that SAME default
    with a typed warning instead of propagating.
 2. The transparent SEP-2663 client-extension wiring
    (``ClioTasksClientExtension._resolve_task`` -> ``drive_task_to_terminal``)
-   actually calling the resolved hook for a REGISTERED backend, and NOT for an
-   unregistered one — the run-14 gap this issue closes (13 relay-driven task
-   records, all console bytes 0, because nothing was ever wired into this path).
+   actually calling the resolved hook for a REGISTERED backend, and the
+   generic default for an unregistered one — the run-14 gap this issue closes
+   (13 relay-driven task records, all console bytes 0, because nothing was
+   ever wired into this path) PLUS #1282's generalization past relay alone.
    The scripted-session fake mirrors ``test_mcp_tasks.py``'s, kept self-contained
    here rather than imported so a failure in this file points straight at the
    registry wiring, never at a shared fixture two files depend on.
+3. #1282 D3: the default wait observer itself fires the typed ``mcp_task.wait``
+   surfacing on every non-terminal poll and stays silent on the terminal one.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -28,6 +34,7 @@ from clio_agent.tools.mcp_task_records import (
     InMemoryTaskRecordStore,
     TaskKey,
     set_task_record_store,
+    set_task_wait_listener,
 )
 from clio_agent.tools.task_observers import (
     register_task_observer_factory,
@@ -61,10 +68,13 @@ def _clean_registry() -> Any:
 # --------------------------------------------------------------------------- #
 
 
-def test_unknown_server_id_resolves_to_none() -> None:
-    """No factory registered for this server_id -- the documented default."""
+def test_unknown_server_id_resolves_to_the_generic_wait_default() -> None:
+    """No factory registered for this server_id -- #1282 D3's generic default,
+    never bare ``None`` (every drive is observed at least generically)."""
 
-    assert resolve_task_observer(_key("task-1", server="never-registered")) is None
+    hook = resolve_task_observer(_key("task-1", server="never-registered"))
+    assert hook is not None
+    assert asyncio.iscoroutinefunction(hook)
 
 
 def test_registered_factory_is_called_with_the_full_key_and_its_hook_returned() -> None:
@@ -87,20 +97,30 @@ def test_registered_factory_is_called_with_the_full_key_and_its_hook_returned() 
     assert seen_keys == [key]
 
 
-def test_a_factory_returning_none_is_a_legitimate_answer() -> None:
-    """A factory may decline to observe (e.g. console tailing disabled) -- no warning."""
+def test_a_factory_returning_none_falls_back_to_the_generic_default(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A factory may decline backend-specific observation (e.g. console tailing
+    disabled) -- #1282 D3: that is an opt-out of ENRICHMENT, never of the
+    baseline generic wait surfacing, and it is not a warning-worthy failure."""
 
     register_task_observer_factory(SERVER_A, lambda key: None)
-    assert resolve_task_observer(_key("task-2")) is None
+    with caplog.at_level(logging.WARNING, logger="clio_agent.tools.task_observers"):
+        hook = resolve_task_observer(_key("task-2"))
+    assert hook is not None
+    assert not any(MCP_TASK_OBSERVER_FACTORY_FAILED in record.message for record in caplog.records)
 
 
 def test_unregister_reverts_to_the_unregistered_default() -> None:
-    """After unregister, resolution behaves exactly as if never registered."""
+    """After unregister, resolution behaves exactly as if never registered
+    (the generic #1282 D3 default, not a bare ``None``)."""
 
     register_task_observer_factory(SERVER_A, lambda key: (lambda *_a: None))
-    assert resolve_task_observer(_key("task-3")) is not None
+    registered_hook = resolve_task_observer(_key("task-3"))
     unregister_task_observer_factory(SERVER_A)
-    assert resolve_task_observer(_key("task-3")) is None
+    default_hook = resolve_task_observer(_key("task-3"))
+    assert default_hook is not None
+    assert default_hook is not registered_hook
 
 
 def test_unregister_is_idempotent_on_an_unregistered_id() -> None:
@@ -109,10 +129,11 @@ def test_unregister_is_idempotent_on_an_unregistered_id() -> None:
     unregister_task_observer_factory("never-registered-anywhere")
 
 
-def test_a_raising_factory_is_caught_and_degrades_to_none_with_a_typed_warning(
+def test_a_raising_factory_is_caught_and_degrades_to_the_generic_default(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A broken factory must never break the drive it was about to observe."""
+    """A broken factory must never break the drive it was about to observe --
+    and #1282 D3: it must not cost the drive its generic wait visibility either."""
 
     def broken_factory(key: TaskKey) -> Any:
         raise RuntimeError("boom")
@@ -121,15 +142,18 @@ def test_a_raising_factory_is_caught_and_degrades_to_none_with_a_typed_warning(
     with caplog.at_level(logging.WARNING, logger="clio_agent.tools.task_observers"):
         resolved = resolve_task_observer(_key("task-4"))
 
-    assert resolved is None
+    assert resolved is not None
     assert any(MCP_TASK_OBSERVER_FACTORY_FAILED in record.message for record in caplog.records)
 
 
 def test_registration_is_scoped_per_server_id() -> None:
-    """A factory registered for one backend never answers for another's tasks."""
+    """A factory registered for one backend never answers for another's tasks
+    -- the other backend still gets the generic #1282 D3 default, not the
+    scoped registration."""
 
     register_task_observer_factory(SERVER_A, lambda key: (lambda *_a: None))
-    assert resolve_task_observer(_key("task-5", server=SERVER_B)) is None
+    other_backend_hook = resolve_task_observer(_key("task-5", server=SERVER_B))
+    assert other_backend_hook is not None
 
 
 def test_last_writer_wins_on_re_registration() -> None:
@@ -248,27 +272,41 @@ async def test_registered_observer_fires_on_every_poll_of_an_auto_claimed_task()
     assert observed == ["working", "completed"]
 
 
-async def test_unregistered_backend_drives_with_no_hook_identical_to_today() -> None:
-    """No factory registered for this server_id -- behavior is unchanged (on_poll=None)."""
+async def test_unregistered_backend_drives_with_the_generic_default_observer() -> None:
+    """No factory registered for this server_id -- #1282 D3: the drive still
+    completes normally, now observed by the generic default (never a bare
+    ``on_poll=None`` -- every backend's wait is at least generically surfaced)."""
 
     store = InMemoryTaskRecordStore()
     set_task_record_store(store)
+    waits: list[tuple[str, str, int, Any]] = []
+    set_task_wait_listener(
+        lambda key, status, attempt, next_poll_ms: waits.append(
+            (key.task_id, status, attempt, next_poll_ms)
+        )
+    )
     try:
         session = _ScriptedSession(
             [
+                _task_payload("task-10", "working", poll_interval_ms=1),
                 _task_payload(
                     "task-10",
                     "completed",
                     result={"content": [{"type": "text", "text": "ok"}]},
-                )
+                ),
             ]
         )
         extension = ClioTasksClientExtension(BackendIdentity(SERVER_B, {"transport": "test"}))
         result = await extension._resolve_task(_create_result("task-10"), _Ctx(session))
     finally:
         set_task_record_store(None)
+        set_task_wait_listener(None)
 
     assert result.content[0].text == "ok"
+    # One surfaced wait for the "working" poll -- attempt 1, naming what it
+    # waits on -- and NONE for the terminal "completed" poll (nothing left to
+    # wait on once the task has settled).
+    assert waits == [("task-10", "working", 1, 1)]
 
 
 async def test_a_broken_registered_factory_never_breaks_the_drive() -> None:
