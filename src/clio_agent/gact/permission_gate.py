@@ -753,6 +753,8 @@ def _make_permission_gate(app: "FastAPI"):
             "created_at": datetime.now(timezone.utc).isoformat(),
             "status": "pending",
         }
+        if _is_external_mcp_permission_context(context):
+            row["kind"] = _EXTERNAL_MCP_PERMISSION_CONTEXT_KIND
         # #1044: the ai-review reviewer runs ONLY when there is no explicit ``ask`` policy —
         # an explicit ``ask`` is a deliberate "always confirm THIS tool with a HUMAN" and beats
         # the mode (uniform with #1034: explicit policy > mode), so it must NOT be reviewer-

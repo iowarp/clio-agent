@@ -477,6 +477,7 @@ from clio_agent.gact.routes.diffs import (  # noqa: E402
 from clio_agent.gact.routes.expert_packs import (  # noqa: E402
     register_expert_packs_routes,
 )
+from clio_agent.gact.routes.interactions import register_interaction_routes  # noqa: E402
 from clio_agent.gact.routes.mcp import (  # noqa: E402
     register_mcp_routes,
 )
@@ -2256,6 +2257,7 @@ def build_app(
     # resolution-derived-policy + validation/persistence data layer lives in
     # runtime/permission_policies.py (shared with the build_app startup load).
     register_permissions_routes(app, deps)
+    register_interaction_routes(app, deps)
 
     # ---- DELETE /v1/sessions/{sid}/messages/{id} + /v1/messages/{id} -
     # Both message-delete routes (session-scoped + the global, optionally

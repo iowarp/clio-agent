@@ -79,6 +79,7 @@ class CapabilityFlags(DocumentCapabilityFields):
     x_clio_expert_packs: bool = False
     x_clio_agent_blueprints: bool = False
     x_clio_user_questions: bool = False
+    x_clio_interactions: bool = False
     x_clio_retry_attempts: bool = False
     x_clio_context_frames: bool = False
     x_clio_semantic_events: bool = False

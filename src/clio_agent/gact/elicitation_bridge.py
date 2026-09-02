@@ -33,7 +33,7 @@ import asyncio
 import logging
 import threading
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -407,6 +407,8 @@ def _new_question(
     options: list[UserQuestionOption],
     metadata: dict[str, Any],
     source: str = ELICITATION_QUESTION_SOURCE,
+    owner_session_id: str = "",
+    attended_session_id: str = "",
 ) -> UserQuestion:
     from clio_agent.gact.runtime.globals import _new_question_id  # noqa: PLC0415
 
@@ -414,6 +416,8 @@ def _new_question(
     return UserQuestion(
         id=_new_question_id(),
         session_id=session_id,
+        owner_session_id=owner_session_id or session_id,
+        attended_session_id=attended_session_id or session_id,
         prompt=prompt,
         status="pending",
         kind=kind,  # type: ignore[arg-type]
@@ -422,6 +426,40 @@ def _new_question(
         updated_at=now_iso,
         source=source,
         metadata=metadata,
+    )
+
+
+def invocation_with_request_correlation(
+    invocation: MCPInvocationContext, request_context: Any
+) -> MCPInvocationContext:
+    """Add authoritative SEP-2663 task/input identity carried by a callback request.
+
+    ``mcp_tasks`` names task elicitation requests ``task-{task_id}-{input_key}``.
+    Task ids may contain dashes, so this resolves the prefix against the existing
+    durable task store instead of splitting an ambiguous string heuristically.
+    """
+
+    request_id = str(getattr(request_context, "request_id", "") or "")
+    if not request_id.startswith("task-") or not invocation.session_id:
+        return invocation
+    try:
+        from clio_agent.tools.mcp_task_records import iter_task_records  # noqa: PLC0415
+
+        candidates = [
+            record
+            for record in iter_task_records()
+            if record.session_id == invocation.session_id
+            and request_id.startswith(f"task-{record.task_id}-")
+        ]
+    except Exception:  # noqa: BLE001 - correlation enrichment must not reject elicitation
+        return invocation
+    if len(candidates) != 1:
+        return invocation
+    task_id = candidates[0].task_id
+    return replace(
+        invocation,
+        task_id=task_id,
+        input_key=request_id.removeprefix(f"task-{task_id}-") or None,
     )
 
 
@@ -479,6 +517,8 @@ def forward_child_question_to_parent(app: Any, task: Any, child_sid: str) -> str
         _record_reason("child_waiting_without_question", child=child_sid)
         return None
     attended = _attended_session(app, getattr(task, "parent_session_id", "") or child_sid)
+    child_elicitation = child_q.metadata.get("elicitation")
+    child_elicitation = child_elicitation if isinstance(child_elicitation, Mapping) else {}
     forwarded = _new_question(
         attended,
         prompt=child_q.prompt,
@@ -489,7 +529,11 @@ def forward_child_question_to_parent(app: Any, task: Any, child_sid: str) -> str
             "forwarded_from_session": child_sid,
             "forwarded_from_question": child_q.id,
             "task_id": getattr(task, "task_id", ""),
+            "invocation_id": child_q.metadata.get("invocation_id", "")
+            or child_elicitation.get("invocation_id", ""),
         },
+        owner_session_id=child_sid,
+        attended_session_id=attended,
     )
     _publish_question_created(app, forwarded)
     bus = getattr(app.state, "bus", None)
@@ -675,9 +719,13 @@ async def handle_elicitation(
                     "namespace": invocation.namespace,
                     "tool_name": invocation.tool_name,
                     "invocation_id": invocation.invocation_id,
+                    "task_id": invocation.task_id,
+                    "input_key": invocation.input_key,
                     "forwarded_from_session": forwarded_from,
                 },
             },
+            owner_session_id=session_id,
+            attended_session_id=attended,
         )
     elif mode == "form":
         translation = translate_form_schema(getattr(params, "requested_schema", {}) or {})
@@ -698,9 +746,13 @@ async def handle_elicitation(
                     "namespace": invocation.namespace,
                     "tool_name": invocation.tool_name,
                     "invocation_id": invocation.invocation_id,
+                    "task_id": invocation.task_id,
+                    "input_key": invocation.input_key,
                     "forwarded_from_session": forwarded_from,
                 },
             },
+            owner_session_id=session_id,
+            attended_session_id=attended,
         )
     else:
         _record_reason("elicitation_unknown_mode", mode=mode, tool=invocation.tool_name)
@@ -730,8 +782,9 @@ def make_elicitation_hook(
         params: Any,
         request_context: Any,
     ) -> Any:
+        correlated = invocation_with_request_correlation(invocation, request_context)
         return await handle_elicitation(
-            app, invocation, message, params, url_trusted_origins=url_trusted_origins
+            app, correlated, message, params, url_trusted_origins=url_trusted_origins
         )
 
     return hook

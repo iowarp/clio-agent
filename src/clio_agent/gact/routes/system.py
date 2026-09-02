@@ -501,6 +501,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 x_clio_expert_packs=True,
                 x_clio_agent_blueprints=True,
                 x_clio_user_questions=True,
+                x_clio_interactions=True,
                 x_clio_retry_attempts=True,
                 x_clio_context_frames=True,
                 x_clio_semantic_events=True,

@@ -52,6 +52,7 @@ from clio_agent.gact.goal import stop_session_goal
 from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
 from clio_agent.gact.messaging import raise_on_reserved_metadata
+from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.protocol_v3 import project_for_request, session_to_v3
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
 from clio_agent.gact.routes.compaction import build_compact_summary_message
@@ -1149,6 +1150,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         row = UserQuestion(
             id=_new_question_id(),
             session_id=sid,
+            owner_session_id=sid,
+            attended_session_id=attended_session_id(app, sid),
             prompt=prompt,
             kind=req.kind,
             options=_normalize_question_options(req),
@@ -1346,6 +1349,11 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         )
         return row
+
+    # The normalized interactions route delegates to these exact owner paths;
+    # it never reimplements question transition/resume behavior or adds a queue.
+    app.state.answer_user_question = answer_user_question
+    app.state.cancel_user_question = cancel_user_question
 
     @app.get("/v1/sessions/{sid}/attempts")
     async def list_turn_attempts(sid: str) -> dict[str, Any]:

@@ -104,18 +104,10 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
             "created_surface_ids": list(outcome.created_surface_ids),
         }
 
-    @app.post("/v1/sessions/{sid}/a2ui/actions")
-    async def handle_action(sid: str, request: Request) -> dict[str, Any]:
-        """Validate and dispatch a registered official A2UI client action."""
+    async def dispatch_action(sid: str, body: Mapping[str, Any]) -> dict[str, Any]:
+        """Dispatch a parsed action through the authoritative A2UI owner path."""
 
         sess = require_session(sid)
-        if getattr(request.state, "a2ui_protocol_version", None) != A2UI_V091:
-            raise _error(
-                406,
-                "unsupported_protocol",
-                f"A2UI {A2UI_V091} must be negotiated",
-            )
-        body = await json_body(request, route="POST /v1/sessions/{sid}/a2ui/actions")
         if set(body) - {"message", "correlation"}:
             raise _error(422, "validation_error", "A2UI action body contains unknown fields")
         message = body.get("message")
@@ -215,6 +207,23 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         )
         return result
+
+    @app.post("/v1/sessions/{sid}/a2ui/actions")
+    async def handle_action(sid: str, request: Request) -> dict[str, Any]:
+        """Validate and dispatch a registered official A2UI client action."""
+
+        if getattr(request.state, "a2ui_protocol_version", None) != A2UI_V091:
+            raise _error(
+                406,
+                "unsupported_protocol",
+                f"A2UI {A2UI_V091} must be negotiated",
+            )
+        body = await json_body(request, route="POST /v1/sessions/{sid}/a2ui/actions")
+        return await dispatch_action(sid, body)
+
+    # The normalized interaction responder reuses this exact action dispatcher;
+    # protocol negotiation already happened on its own route.
+    app.state.dispatch_a2ui_action = dispatch_action
 
 
 __all__ = ["register_a2ui_routes"]

@@ -123,6 +123,7 @@ async def correlated_elicitation_handler(
     from clio_agent.gact.elicitation_bridge import (  # noqa: PLC0415
         _resolve_trusted_origins,
         handle_elicitation,
+        invocation_with_request_correlation,
     )
 
     session_key = id(getattr(request_context, "session", None))
@@ -136,9 +137,10 @@ async def correlated_elicitation_handler(
             len(_OPEN),
         )
         return ElicitResult(action="decline")
+    invocation = invocation_with_request_correlation(record.invocation, request_context)
     return await handle_elicitation(
         record.app,
-        record.invocation,
+        invocation,
         message,
         params,
         url_trusted_origins=_resolve_trusted_origins(None),
