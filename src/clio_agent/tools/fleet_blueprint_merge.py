@@ -77,15 +77,18 @@ def merge_blueprint_namespaces(
     # #1281 (C1-S1): the direct-client factory registry merges the SAME way
     # specs do -- a namespace joining a resident fleet via a second blueprint
     # must be routable direct the moment its capability is discovered True.
-    existing_factories = getattr(executor, "_clio_namespace_direct_factories", None)
-    if existing_factories is None:
-        existing_factories = {}
-        _stamp(executor, "_clio_namespace_direct_factories", existing_factories)
+    # #1281 F14 (adversarial review): stamped ONLY on the INNER async
+    # executor. Unlike _clio_namespace_specs (read off the sync wrapper by
+    # builders.py), _clio_namespace_direct_factories is read exclusively by
+    # AsyncMCPToolExecutor's own methods (_connect_namespace,
+    # mcp_namespace_executor._namespace_client) where ``self`` IS the async
+    # executor -- a wrapper-side stamp is never read by anything and would
+    # be dead state.
     inner_factories = (
         getattr(inner, "_clio_namespace_direct_factories", None) if inner is not None else None
     )
     if inner is not None and inner_factories is None:
-        inner_factories = existing_factories
+        inner_factories = {}
         _stamp(inner, "_clio_namespace_direct_factories", inner_factories)
 
     merged: list[str] = []
@@ -113,10 +116,8 @@ def merge_blueprint_namespaces(
         if inner_specs is not None and inner_specs is not existing_specs:
             inner_specs[namespace] = spec
         factory = new_direct_factories.get(namespace)
-        if factory is not None:
-            existing_factories[namespace] = factory
-            if inner_factories is not None and inner_factories is not existing_factories:
-                inner_factories[namespace] = factory
+        if factory is not None and inner_factories is not None:
+            inner_factories[namespace] = factory
         proxy = new_proxies.get(namespace)
         if inner is not None and proxy is not None:
             # Lazy per-namespace proxy: joins the routing table without
