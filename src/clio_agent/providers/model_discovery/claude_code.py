@@ -3,17 +3,22 @@ probe-validates the documented CLI alias vocabulary (iowarp/clio-agent#1211)."""
 
 from __future__ import annotations
 
-import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 from typing import Any
 
+from clio_agent.providers.model_discovery.modality_evidence import modality_evidence
 from clio_agent.providers.model_discovery.overlay import (
     CLAUDE_CODE_SOURCE,
     ProviderDiscoveryResult,
     attach_context_limits,
+)
+from clio_agent.providers.model_discovery.probe_assets import (
+    ProbeChallenge,
+    build_probe_challenge,
 )
 
 #: The documented Claude Code CLI model aliases (verified live via ``claude --help``
@@ -35,12 +40,24 @@ CLAUDE_CODE_ALIAS_CANDIDATES: tuple[str, ...] = ("fable", "opus", "sonnet", "hai
 #: tighter than ``5 * timeout``.
 CLAUDE_CODE_PROBE_TIMEOUT_S = 30.0
 
-#: One cheap native multimodal turn used to validate both the model alias and
-#: the image/PDF input contract exposed by the installed Claude Code SDK/CLI.
-_PROBE_PROMPT = "Reply with the single word: ok."
-_PROBE_IMAGE_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+#: The text-only probe: validates the ALIAS alone, and says nothing about
+#: modalities. Used as the M3 fallback when the multimodal turn cannot run.
+_TEXT_PROBE_PROMPT = "Reply with the single word: ok."
+
+#: The multimodal probe prompt. It names exactly what a genuine reply must
+#: contain, and gives the model an explicit way to say an attachment did not
+#: arrive -- so "I could not see it" is an answer, not a parse failure.
+_NATIVE_PROBE_PROMPT = (
+    "Two attachments are included with this message: one image and one PDF. Each "
+    "shows a single four-digit number. Reply with exactly one line and nothing "
+    "else:\nIMAGE: <the number in the image>; PDF: <the number in the PDF>\n"
+    "If an attachment did not reach you, write NONE in its place."
 )
+
+#: Parses ``IMAGE: 1234; PDF: 5678`` out of a reply, tolerating case, spacing and
+#: surrounding prose. Each modality is matched independently, so a reply that
+#: gets one right and one wrong evidences exactly one.
+_PROBE_TOKEN_RE = re.compile(r"\b(IMAGE|PDF)\b\s*[:=]\s*([A-Za-z0-9]+)", re.IGNORECASE)
 
 #: Rejection is a DEFINITIVE model-not-available signal -- the only api_error_status
 #: this probe treats as "the account does not serve this model" (#1211 review D3).
@@ -54,62 +71,78 @@ class ClaudeCodeCLIUnavailableError(RuntimeError):
     """Raised when the ``claude`` binary isn't on PATH at probe time."""
 
 
-def _probe_pdf_b64() -> str:
-    """Return a valid one-page PDF for the live native-input probe."""
+def _probe_input(challenge: ProbeChallenge | None) -> str:
+    """Build one Claude stream-json user message for a probe turn.
 
-    objects = [
-        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
-        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
-        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R >>\nendobj\n",
-        b"4 0 obj\n<< /Length 0 >>\nstream\n\nendstream\nendobj\n",
-    ]
-    body = bytearray(b"%PDF-1.4\n")
-    offsets = [0]
-    for obj in objects:
-        offsets.append(len(body))
-        body.extend(obj)
-    xref = len(body)
-    body.extend(f"xref\n0 {len(offsets)}\n".encode())
-    body.extend(b"0000000000 65535 f \n")
-    for offset in offsets[1:]:
-        body.extend(f"{offset:010d} 00000 n \n".encode())
-    body.extend(
-        f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    ``challenge`` present -> the native image + PDF blocks plus the prompt that
+    demands their codes back. ``None`` -> the text-only fallback turn, which
+    validates the alias and claims nothing about modalities.
+    """
+
+    content: list[dict[str, Any]] = []
+    if challenge is not None:
+        content += [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": challenge.image_b64,
+                },
+            },
+            {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": challenge.pdf_b64,
+                },
+            },
+        ]
+    content.append(
+        {"type": "text", "text": _NATIVE_PROBE_PROMPT if challenge else _TEXT_PROBE_PROMPT}
     )
-    return base64.b64encode(bytes(body)).decode("ascii")
-
-
-def _multimodal_probe_input() -> str:
-    """Build one Claude stream-json user message with native image and PDF blocks."""
-
     payload = {
         "type": "user",
         "session_id": "",
         "parent_tool_use_id": None,
-        "message": {
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/png",
-                        "data": _PROBE_IMAGE_B64,
-                    },
-                },
-                {
-                    "type": "document",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "application/pdf",
-                        "data": _probe_pdf_b64(),
-                    },
-                },
-                {"type": "text", "text": _PROBE_PROMPT},
-            ],
-        },
+        "message": {"role": "user", "content": content},
     }
     return json.dumps(payload, separators=(",", ":")) + "\n"
+
+
+def _evidenced_modalities(
+    reply: str, challenge: ProbeChallenge
+) -> tuple[list[str], dict[str, Any]]:
+    """Return ``(capabilities, capability_evidence)`` for one native probe reply.
+
+    Each modality is judged INDEPENDENTLY on whether the reply quotes back that
+    attachment's own code, so a CLI that forwards the image but strips the PDF is
+    recorded as image-capable and pdf-unreported rather than as either extreme.
+    ``text`` is always evidenced — the model answered.
+    """
+
+    tokens = {
+        match.group(1).lower(): match.group(2) for match in _PROBE_TOKEN_RE.finditer(reply or "")
+    }
+    expected = {"image": challenge.image_code, "pdf": challenge.pdf_code}
+    capabilities = ["text"]
+    unevidenced: list[str] = []
+    for modality, code in expected.items():
+        if tokens.get(modality, "").strip().lower() == code.lower():
+            capabilities.append(modality)
+        else:
+            unevidenced.append(modality)
+    if not unevidenced:
+        return capabilities, modality_evidence(
+            source="claude_code_native_probe", reason="modality_reported"
+        )
+    return capabilities, modality_evidence(
+        source="claude_code_native_probe",
+        reason="modality_probe_unevidenced",
+        unevidenced=unevidenced,
+        detail=f"reply did not quote the attached code(s): {(reply or '')[:200]!r}",
+    )
 
 
 def _result_payload(stdout: str) -> dict[str, Any] | None:
@@ -153,11 +186,21 @@ def _resolve_claude_binary() -> str:
     return path
 
 
-def _probe_claude(binary: str, alias: str | None, *, timeout: float) -> dict[str, Any]:
-    """Run one native image/PDF turn, probing ``alias`` (or the CLI default).
+def _probe_claude(
+    binary: str,
+    alias: str | None,
+    *,
+    timeout: float,
+    challenge: ProbeChallenge | None = None,
+) -> dict[str, Any]:
+    """Run one probe turn against ``alias`` (or the CLI default).
 
-    Never raises. Returns ``{"outcome", "resolved_model", "reason"}`` where
-    ``outcome`` is one of:
+    ``challenge`` present -> the native image + PDF turn whose reply must quote
+    both codes back; ``None`` -> the text-only turn that validates the alias and
+    claims nothing about modalities.
+
+    Never raises. Returns ``{"outcome", "resolved_model", "reason",
+    "capabilities", "capability_evidence"}`` where ``outcome`` is one of:
 
     * ``"accepted"`` — the alias/model resolved and answered; ``resolved_model``
       carries its RESOLVED canonical model id (``modelUsage`` key), which is how
@@ -189,7 +232,7 @@ def _probe_claude(binary: str, alias: str | None, *, timeout: float) -> dict[str
     try:
         proc = subprocess.run(  # noqa: S603 - fixed argv, no shell, no user-controlled input
             args,
-            input=_multimodal_probe_input(),
+            input=_probe_input(challenge),
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -220,12 +263,51 @@ def _probe_claude(binary: str, alias: str | None, *, timeout: float) -> dict[str
         outcome = "rejected" if status == _CLAUDE_REJECTION_STATUS else "inconclusive"
         return {"outcome": outcome, "resolved_model": "", "reason": reason}
     resolved = next(iter(payload.get("modelUsage") or {}), "")
+    if challenge is None:
+        # A text-only turn evidences the ALIAS, nothing more. Stamping image/pdf
+        # here (the old behaviour, on ANY non-error reply) was pure fabrication:
+        # a CLI that stripped the attachments answered identically.
+        capabilities = ["text"]
+        evidence = modality_evidence(
+            source="claude_code_native_probe",
+            reason="modality_probe_unavailable",
+            unevidenced=["image", "pdf"],
+        )
+    else:
+        capabilities, evidence = _evidenced_modalities(str(payload.get("result") or ""), challenge)
     return {
         "outcome": "accepted",
         "resolved_model": str(resolved),
         "reason": "",
-        "capabilities": ["text", "image", "pdf"],
+        "capabilities": capabilities,
+        "capability_evidence": evidence,
     }
+
+
+def _probe_alias(binary: str, alias: str | None, *, timeout: float) -> dict[str, Any]:
+    """Probe one alias multimodally, falling back to a text-only turn (M3).
+
+    A multimodal probe that cannot answer must NOT reject the model or sink the
+    whole discovery run: an account or CLI build that cannot carry attachments is
+    a modality fact about that model, not evidence it is unavailable. So an
+    inconclusive native turn is retried once as text-only; when THAT validates,
+    the alias is accepted with text-only capabilities and a typed
+    ``modality_probe_unavailable`` reason carrying the native failure. Only a
+    probe that could not answer at all stays inconclusive.
+
+    A REJECTION (a definitive 404) is returned as-is and never retried — the
+    account does not serve the model, and no fallback changes that.
+    """
+
+    native = _probe_claude(binary, alias, timeout=timeout, challenge=build_probe_challenge())
+    if native["outcome"] != "inconclusive":
+        return native
+    fallback = _probe_claude(binary, alias, timeout=timeout, challenge=None)
+    if fallback["outcome"] != "accepted":
+        return native
+    evidence = dict(fallback.get("capability_evidence") or {})
+    evidence["detail"] = f"native probe was inconclusive: {native['reason']}"
+    return {**fallback, "capability_evidence": evidence}
 
 
 def discover_claude_code(
@@ -256,6 +338,13 @@ def discover_claude_code(
     it (#1211 review D3). The loop exits on the FIRST inconclusive probe rather
     than always running all candidates, bounding the common-case latency well
     under the ``len(candidates) + 1`` worst case.
+
+    A multimodal probe that comes back inconclusive is retried ONCE as a
+    text-only turn before that abort. A CLI or account that cannot carry
+    attachments is a MODALITY fact, not a reason to reject the model or sink
+    discovery: the alias still validates, its modalities are recorded as
+    typed-unreported, and the abort is reserved for a probe that could not
+    answer at all.
     """
     try:
         binary = _resolve_claude_binary()
@@ -264,7 +353,7 @@ def discover_claude_code(
             provider="claude_code", discovered=[], source=CLAUDE_CODE_SOURCE, failed_reason=str(exc)
         )
 
-    bare = _probe_claude(binary, None, timeout=timeout)
+    bare = _probe_alias(binary, None, timeout=timeout)
     if bare["outcome"] == "inconclusive":
         return ProviderDiscoveryResult(
             provider="claude_code",
@@ -278,7 +367,7 @@ def discover_claude_code(
     rejected: list[dict[str, str]] = []
     default_model = ""
     for alias in candidates:
-        probe = _probe_claude(binary, alias, timeout=timeout)
+        probe = _probe_alias(binary, alias, timeout=timeout)
         if probe["outcome"] == "inconclusive":
             return ProviderDiscoveryResult(
                 provider="claude_code",
@@ -296,6 +385,7 @@ def discover_claude_code(
                         f"Resolves to {resolved}." if resolved else "Validated Claude Code alias."
                     ),
                     "capabilities": list(probe.get("capabilities") or []),
+                    "capability_evidence": probe.get("capability_evidence") or {},
                 }
             )
             if cli_default_canonical and resolved == cli_default_canonical:

@@ -695,10 +695,94 @@ def test_discover_codex_zero_models_is_typed_reason(monkeypatch: pytest.MonkeyPa
 # --------------------------------------------------------------------------- #
 
 
+def _challenge_codes(probe_input: str) -> tuple[str, str]:
+    """Read the codes the probe actually rendered into its two attachments.
+
+    The fake CLI answers with THESE, so a passing probe proves the reply quoted
+    the attachment content back -- the whole point of the discriminating probe.
+    A test that hardcoded the answer would pass for a CLI that stripped both
+    attachments, which is exactly the failure the probe exists to catch.
+    """
+
+    import base64
+
+    content = json.loads(probe_input)["message"]["content"]
+    by_type = {part["type"]: part for part in content}
+    image_png = base64.b64decode(by_type["image"]["source"]["data"])
+    pdf_bytes = base64.b64decode(by_type["document"]["source"]["data"])
+    return _read_png_code(image_png), _read_pdf_code(pdf_bytes)
+
+
+def _read_pdf_code(pdf_bytes: bytes) -> str:
+    """Pull the four digits the probe PDF prints, straight from its content stream."""
+
+    import re
+
+    match = re.search(rb"\((\d{4})\)\s*Tj", pdf_bytes)
+    assert match is not None, "probe PDF carried no printed code"
+    return match.group(1).decode("ascii")
+
+
+def _read_png_code(png_bytes: bytes) -> str:
+    """Decode the probe PNG and read its digits back through the glyph table.
+
+    This is the machine-readable stand-in for a vision model actually LOOKING at
+    the image: it re-derives the code from the rendered pixels, so a broken
+    renderer fails the test instead of silently producing an unreadable image.
+    """
+
+    import struct
+    import zlib
+
+    from clio_agent.providers.model_discovery import probe_assets
+
+    width, height = struct.unpack(">II", png_bytes[16:24])
+    idat = b""
+    offset = 8
+    while offset < len(png_bytes):
+        length = struct.unpack(">I", png_bytes[offset : offset + 4])[0]
+        tag = png_bytes[offset + 4 : offset + 8]
+        if tag == b"IDAT":
+            idat += png_bytes[offset + 8 : offset + 8 + length]
+        offset += 12 + length
+    raw = zlib.decompress(idat)
+    stride = width * 3 + 1
+    rows = [raw[i * stride + 1 : (i + 1) * stride] for i in range(height)]
+
+    scale = probe_assets._SCALE
+    margin = probe_assets._MARGIN
+    glyph_w, glyph_h = probe_assets._GLYPH_WIDTH, probe_assets._GLYPH_HEIGHT
+    gap = probe_assets._GLYPH_GAP
+    cells_wide = (width - 2 * margin) // scale
+    digits = (cells_wide + gap) // (glyph_w + gap)
+
+    def _cell(row: int, column: int) -> str:
+        y = margin + row * scale + scale // 2
+        x = margin + column * scale + scale // 2
+        return "#" if rows[y][x * 3] == 0 else "."
+
+    inverse = {glyph: digit for digit, glyph in probe_assets._DIGIT_GLYPHS.items()}
+    code = ""
+    for index in range(digits):
+        base = index * (glyph_w + gap)
+        glyph = tuple(
+            "".join(_cell(row, base + column) for column in range(glyph_w))
+            for row in range(glyph_h)
+        )
+        code += inverse[glyph]
+    return code
+
+
 def _fake_claude_run(responses: dict[str | None, dict[str, Any]]) -> Any:
-    def _run(args: list[str], **_kw: Any) -> Any:
+    """A CLI that DID show the model the attachments: it answers their codes."""
+
+    def _run(args: list[str], **kwargs: Any) -> Any:
         alias = args[args.index("--model") + 1] if "--model" in args else None
-        payload = responses[alias]
+        payload = dict(responses[alias])
+        probe_input = kwargs.get("input") or ""
+        if '"type":"image"' in probe_input and "result" not in payload:
+            image_code, pdf_code = _challenge_codes(probe_input)
+            payload["result"] = f"IMAGE: {image_code}; PDF: {pdf_code}"
         return SimpleNamespace(stdout=json.dumps(payload), stderr="", returncode=0)
 
     return _run
@@ -725,21 +809,29 @@ def test_discover_claude_code_all_aliases_validate_default_follows_bare_probe(
     assert result.default_model == "fable"
     assert result.default_model_reason == ""
     assert result.rejected == []
-    assert all(model["capabilities"] == ["text", "image", "pdf"] for model in result.discovered)
+    # Evidenced, not asserted against a constant: the fake CLI answered with the
+    # codes the probe rendered, so these capabilities came from the reply.
+    assert all(
+        sorted(model["capabilities"]) == ["image", "pdf", "text"] for model in result.discovered
+    )
+    assert all(
+        model["capability_evidence"]["reason"] == "modality_reported" for model in result.discovered
+    )
 
 
-def test_probe_claude_uses_native_image_and_pdf_stream_input(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    seen: dict[str, Any] = {}
+def _probe_cli(reply_for: Any, *, capture: dict[str, Any] | None = None) -> Any:
+    """A fake ``claude`` whose reply is computed from the probe input it received."""
 
     def _run(args: list[str], **kwargs: Any) -> Any:
-        seen["args"] = args
-        seen["input"] = kwargs["input"]
+        probe_input = kwargs.get("input") or ""
+        if capture is not None:
+            capture["args"] = args
+            capture["input"] = probe_input
         result = {
             "type": "result",
             "is_error": False,
             "modelUsage": {"claude-sonnet-5": {}},
+            "result": reply_for(probe_input),
         }
         return SimpleNamespace(
             stdout="\n".join([json.dumps({"type": "system"}), json.dumps(result)]),
@@ -747,18 +839,167 @@ def test_probe_claude_uses_native_image_and_pdf_stream_input(
             returncode=0,
         )
 
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _run)
+    return _run
 
-    probe = md_claude_code._probe_claude("claude", "sonnet", timeout=5.0)
+
+def test_probe_claude_evidences_both_modalities_from_the_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reply that quotes BOTH attachment codes evidences both modalities."""
+
+    seen: dict[str, Any] = {}
+
+    def _reply(probe_input: str) -> str:
+        image_code, pdf_code = _challenge_codes(probe_input)
+        return f"IMAGE: {image_code}; PDF: {pdf_code}"
+
+    monkeypatch.setattr(md_claude_code.subprocess, "run", _probe_cli(_reply, capture=seen))
+
+    probe = md_claude_code._probe_alias("claude", "sonnet", timeout=5.0)
 
     assert probe["outcome"] == "accepted"
-    assert probe["capabilities"] == ["text", "image", "pdf"]
+    assert sorted(probe["capabilities"]) == ["image", "pdf", "text"]
+    assert probe["capability_evidence"]["reason"] == "modality_reported"
     assert seen["args"][seen["args"].index("--input-format") + 1] == "stream-json"
-    request = json.loads(seen["input"])
-    content = request["message"]["content"]
+    content = json.loads(seen["input"])["message"]["content"]
     assert [part["type"] for part in content] == ["image", "document", "text"]
     assert content[0]["source"]["media_type"] == "image/png"
     assert content[1]["source"]["media_type"] == "application/pdf"
+
+
+def test_probe_claude_refuses_to_credit_a_reply_that_never_saw_the_attachments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The old probe's exact failure: a CLI that strips attachments still answers.
+
+    ``ok`` was accepted as proof of image AND pdf input. It now evidences neither.
+    """
+
+    monkeypatch.setattr(md_claude_code.subprocess, "run", _probe_cli(lambda _input: "ok"))
+
+    probe = md_claude_code._probe_alias("claude", "sonnet", timeout=5.0)
+
+    assert probe["outcome"] == "accepted"
+    assert probe["capabilities"] == ["text"]
+    evidence = probe["capability_evidence"]
+    assert evidence["reason"] == "modality_probe_unevidenced"
+    assert evidence["unevidenced"] == ["image", "pdf"]
+
+
+def test_probe_claude_evidences_each_modality_independently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CLI that forwards the image but strips the PDF is recorded as exactly that."""
+
+    def _reply(probe_input: str) -> str:
+        image_code, _pdf_code = _challenge_codes(probe_input)
+        return f"IMAGE: {image_code}; PDF: NONE"
+
+    monkeypatch.setattr(md_claude_code.subprocess, "run", _probe_cli(_reply))
+
+    probe = md_claude_code._probe_alias("claude", "sonnet", timeout=5.0)
+
+    assert sorted(probe["capabilities"]) == ["image", "text"]
+    assert probe["capability_evidence"]["unevidenced"] == ["pdf"]
+
+
+def test_probe_claude_does_not_credit_a_guessed_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plausible-looking answer that is not THIS probe's code evidences nothing."""
+
+    monkeypatch.setattr(
+        md_claude_code.subprocess, "run", _probe_cli(lambda _input: "IMAGE: 0000; PDF: 0000")
+    )
+
+    probe = md_claude_code._probe_alias("claude", "haiku", timeout=5.0)
+
+    # A one-in-ten-thousand collision would make this flaky, so the codes are
+    # regenerated per probe and the two are always distinct -- one guess cannot
+    # satisfy both.
+    assert "pdf" not in probe["capabilities"] or "image" not in probe["capabilities"]
+
+
+def test_a_probe_that_cannot_carry_attachments_falls_back_to_text_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M3: a failed multimodal turn is a MODALITY fact, not a model rejection."""
+
+    calls: list[str] = []
+
+    def _run(args: list[str], **kwargs: Any) -> Any:
+        probe_input = kwargs.get("input") or ""
+        native = '"type":"image"' in probe_input
+        calls.append("native" if native else "text")
+        if native:
+            return SimpleNamespace(
+                stdout=json.dumps(
+                    {
+                        "type": "result",
+                        "is_error": True,
+                        "api_error_status": 400,
+                        "result": "stream-json input with attachments is unsupported",
+                    }
+                ),
+                stderr="",
+                returncode=0,
+            )
+        return SimpleNamespace(
+            stdout=json.dumps(
+                {
+                    "type": "result",
+                    "is_error": False,
+                    "modelUsage": {"claude-sonnet-5": {}},
+                    "result": "ok",
+                }
+            ),
+            stderr="",
+            returncode=0,
+        )
+
+    monkeypatch.setattr(md_claude_code.subprocess, "run", _run)
+
+    probe = md_claude_code._probe_alias("claude", "sonnet", timeout=5.0)
+
+    assert calls == ["native", "text"]
+    # The MODEL is still available -- discovery is not sunk and nothing is rejected.
+    assert probe["outcome"] == "accepted"
+    assert probe["resolved_model"] == "claude-sonnet-5"
+    assert probe["capabilities"] == ["text"]
+    evidence = probe["capability_evidence"]
+    assert evidence["reason"] == "modality_probe_unavailable"
+    assert evidence["unevidenced"] == ["image", "pdf"]
+    assert "unsupported" in evidence["detail"]
+
+
+def test_a_definitive_rejection_is_never_retried_as_text_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 404 says the account does not serve the model; no fallback changes that."""
+
+    calls: list[str] = []
+
+    def _run(args: list[str], **kwargs: Any) -> Any:
+        calls.append("probe")
+        return SimpleNamespace(
+            stdout=json.dumps(
+                {
+                    "type": "result",
+                    "is_error": True,
+                    "api_error_status": 404,
+                    "result": "There's an issue with the selected model (nope).",
+                }
+            ),
+            stderr="",
+            returncode=0,
+        )
+
+    monkeypatch.setattr(md_claude_code.subprocess, "run", _run)
+
+    probe = md_claude_code._probe_alias("claude", "nope", timeout=5.0)
+
+    assert probe["outcome"] == "rejected"
+    assert calls == ["probe"]
 
 
 def test_discover_claude_code_one_alias_rejected_others_still_validate(
@@ -947,8 +1188,11 @@ def test_discover_claude_code_bare_probe_timeout_aborts_provider_overlay_intact(
     assert result.discovered == []
     assert result.failed_reason is not None
     assert "bare CLI-default probe inconclusive" in result.failed_reason
-    # The loop never even started probing aliases -- only the bare call ran.
-    assert calls == [None]
+    # The loop never started probing ALIASES -- only the bare call, twice: the
+    # native turn and its M3 text-only retry, which timed out the same way. A
+    # probe that cannot answer at all still aborts; the retry only rescues the
+    # case where the model answers but cannot carry attachments.
+    assert calls == [None, None]
 
     wire = model_discovery.record_refresh(result)
     assert wire["removed"] == []
@@ -1373,7 +1617,17 @@ def test_discover_claude_code_live_single_alias() -> None:
     result = model_discovery.discover_claude_code(candidates=("haiku",), timeout=60.0)
     assert result.failed_reason is None, result.failed_reason
     assert [m["id"] for m in result.discovered] == ["haiku"]
-    assert result.discovered[0]["capabilities"] == ["text", "image", "pdf"]
+    # Whatever the live CLI evidenced, the row must SAY which reason produced it
+    # rather than carrying an unexplained constant.
+    evidence = result.discovered[0]["capability_evidence"]
+    assert evidence["reason"] in {
+        "modality_reported",
+        "modality_probe_unevidenced",
+        "modality_probe_unavailable",
+    }
+    assert "text" in result.discovered[0]["capabilities"]
+    if evidence["reason"] == "modality_reported":
+        assert sorted(result.discovered[0]["capabilities"]) == ["image", "pdf", "text"]
 
 
 # --------------------------------------------------------------------------- #
