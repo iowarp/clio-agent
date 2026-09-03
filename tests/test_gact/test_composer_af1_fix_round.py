@@ -431,103 +431,72 @@ def test_queue_promotion_authorizes_referenced_parts_exactly_once(
     ``context_ref`` parts off-loop, and the synchronous ``accept_message`` it
     handed off to re-authorized the SAME parts again on the loop thread -- the
     digest work F1 moved off-loop ran twice per promotion instead of once.
+
+    The row is seeded directly through the store rather than the HTTP create
+    route: the route's own ``redrive_queue`` call (an unconditional
+    auto-promotion attempt, a no-op only while the session is busy) and any
+    live-turn/busy-vs-idle machinery are both irrelevant to what this test
+    checks. Earlier versions held a real turn open with a blocking fake agent
+    to keep the session busy across the create+promote calls; under enough
+    concurrent machine load that live turn's own executor scheduling proved
+    unable to guarantee the row survived to the manual promote call (observed
+    live, repeatedly, even with an unbounded wait -- a real race in the
+    turn-scheduling machinery this test has no business depending on). Seeding
+    through the store sidesteps that entirely: nothing calls
+    ``redrive_queue``/``promote_queue_head`` before this test's own explicit
+    promote, so the row's presence is a certainty, not a timing bet.
     """
 
-    import threading
-    import time
-
     from clio_agent.gact import message_submission
-    from tests.test_gact.test_post_messages import FakeClioAgent, FakePrediction
+    from clio_agent.gact.message_intents import QueuedMessage
+    from clio_agent.gact.types import Part
+    from tests.test_gact.test_post_messages import FakeClioAgent
 
-    # A wall-clock delay races the auto-promotion idle hook under machine load:
-    # if the turn happens to settle before this test reaches the manual promote
-    # call, composer_runtime's own idle-transition auto-promotion consumes the
-    # queued row first, and the manual call 404s on a row that is already gone.
-    # Holding the turn open on an Event the test releases itself makes "the turn
-    # is still busy when we promote" a certainty, not a timing bet -- so
-    # ``forward`` must NOT time out its own wait: a bounded wait reintroduces
-    # exactly the race under enough load (observed live: a full-suite run slow
-    # enough to blow a 10s ceiling let the held turn settle on its own, and the
-    # queue's own auto-promotion consumed the row before the manual call ran).
-    # The test's own ``finally`` is what prevents an actual hang, not this wait.
-    release_turn = threading.Event()
-
-    class HoldingAgent(FakeClioAgent):
-        def forward(self, question: str, session_id: str) -> object:
-            self.calls.append((question, session_id))
-            release_turn.wait()
-            return FakePrediction(answer=self.answer)
-
-    app = build_app(sessions_path=tmp_path / "sessions.json", agent=HoldingAgent())
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeClioAgent(answer="ok"))
     workspace_id, sid = _workspace_session(app, tmp_path, name="promote")
     (tmp_path / "promote" / "notes.txt").write_text("hello reference", encoding="utf-8")
 
-    calls: list[int] = []
-    real_authorize = message_submission.authorize_context_reference_parts_sync
+    with TestClient(app) as client:
+        listed = client.get(
+            f"/v1/workspaces/{workspace_id}/references",
+            params={"kinds": "workspace_file"},
+            headers=HEADERS,
+        ).json()["references"]
+        row = next(item for item in listed if item["id"] == "notes.txt")
 
-    def counting_authorize(app_, session_, parts_):
-        calls.append(1)
-        return real_authorize(app_, session_, parts_)
-
-    monkeypatch.setattr(
-        message_submission, "authorize_context_reference_parts_sync", counting_authorize
-    )
-
-    try:
-        with TestClient(app) as client:
-            started = client.post(
-                f"/v1/sessions/{sid}/messages",
-                json={"parts": [{"type": "text", "text": "hold the slot"}]},
+        app.state.message_intents.create_queued(
+            QueuedMessage(
+                id="queued_ref",
+                session_id=sid,
+                parts=[
+                    Part(type="text", text="look at this"),
+                    Part(
+                        type="context_ref",
+                        ref_kind="workspace_file",
+                        ref_id="notes.txt",
+                        revision=row["revision"],
+                    ),
+                ],
+                client_message_id="msg_ref_future",
             )
-            assert started.status_code == 200, started.text
-            deadline = time.monotonic() + 30.0
-            while time.monotonic() < deadline and not app.state.turn_runner.busy(sid):
-                time.sleep(0.02)
-            assert app.state.turn_runner.busy(sid)
+        )
 
-            listed = client.get(
-                f"/v1/workspaces/{workspace_id}/references",
-                params={"kinds": "workspace_file"},
-                headers=HEADERS,
-            ).json()["references"]
-            row = next(item for item in listed if item["id"] == "notes.txt")
+        calls: list[int] = []
+        real_authorize = message_submission.authorize_context_reference_parts_sync
 
-            created = client.post(
-                f"/v1/sessions/{sid}/queued-messages",
-                json={
-                    "parts": [
-                        {"type": "text", "text": "look at this"},
-                        {
-                            "type": "context_ref",
-                            "ref_kind": "workspace_file",
-                            "ref_id": "notes.txt",
-                            "revision": row["revision"],
-                        },
-                    ],
-                    "client_message_id": "msg_ref_future",
-                    "idempotency_key": "queue-ref-1",
-                },
-            )
-            assert created.status_code == 201, created.text
-            queued = created.json()
+        def counting_authorize(app_, session_, parts_):
+            calls.append(1)
+            return real_authorize(app_, session_, parts_)
 
-            # The turn must still be busy: promotion is meant to run through the
-            # explicit manual door below, not the idle-hook auto-promoter.
-            assert app.state.turn_runner.busy(sid)
+        monkeypatch.setattr(
+            message_submission, "authorize_context_reference_parts_sync", counting_authorize
+        )
 
-            # Isolate the PROMOTE call's own authorization count; queueing
-            # legitimately authorized the reference once already, at a different
-            # point in time.
-            calls.clear()
-            promoted = client.post(
-                f"/v1/sessions/{sid}/queued-messages/{queued['id']}/promote",
-                json={"revision": queued["revision"], "delivery": "auto"},
-            )
-            assert promoted.status_code == 200, promoted.text
-    finally:
-        # Guaranteed even on assertion failure: never leave the held turn (and
-        # its blocked thread) hanging past this test.
-        release_turn.set()
+        promoted = client.post(
+            f"/v1/sessions/{sid}/queued-messages/queued_ref/promote",
+            json={"revision": 1, "delivery": "auto"},
+        )
+        assert promoted.status_code == 200, promoted.text
 
     assert len(calls) == 1
 
