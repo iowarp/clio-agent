@@ -55,8 +55,15 @@ Avenues (see ``LEG_C2.md`` for the full per-avenue writeup + citations):
                          side is generic, not a tasks/ui shortlist. Headless
                          (the handshake was already fetched for the readiness
                          gate).
- 9. adversarial       -- BLOCKED: no MUST-violating raw-responder/ASGI-shim
-                         fixture exists in this repo.
+ 9. adversarial       -- #1285 C1-S5: FLIPPED to a real assertion.
+                         ``mcp_adversarial_fixture.py`` short-circuits four
+                         requests with hand-built malformed frames (bad
+                         resultType, -32021 with no requiredCapabilities,
+                         always-32020, empty-string pagination cursor).
+                         Asserts clio's typed handling of each -- including a
+                         verified fastmcp CLIENT bug (empty-string cursor
+                         treated as terminal pagination, not a clio defect).
+                         Headless, in-process.
 10. headers           -- a NEW header-capture HTTP MCP server
                          (``_header_capture_server.py``) probed through the
                          REST-install lane (``POST /v1/mcp/servers`` +
@@ -208,8 +215,11 @@ AVENUE_PLAN: list[dict[str, Any]] = [
     {
         "avenue": "adversarial",
         "needs_lm": False,
-        "expect": "blocked",
-        "summary": "no MUST-violating raw-responder/ASGI-shim fixture exists in this repo",
+        "expect": "pass",
+        "summary": (
+            "#1285 C1-S5: four hand-built malformed frames asserted typed-handled; "
+            "includes a verified fastmcp pagination-cursor bug pinned as a finding"
+        ),
     },
     {
         "avenue": "headers",
@@ -519,36 +529,117 @@ def avenue_list_changed() -> dict[str, Any]:
     }
 
 
+async def _run_adversarial_probe() -> dict[str, Any]:
+    """Drive all four MUST violations end to end (#1285 C1-S5 item 4).
+
+    In-process (no gact server): ``mcp_adversarial_fixture.py`` wraps a real
+    fastmcp app in a pure ASGI middleware that short-circuits four specific
+    requests with hand-built, deliberately malformed JSON-RPC frames -- see
+    that module's docstring for why (bypassing fastmcp's own protocol
+    correctness without reimplementing the whole HTTP transport by hand).
+    """
+
+    from fastmcp import Client
+    from mcp.shared.exceptions import MCPError
+
+    from clio_agent.errors import MCPMissingRequiredClientCapabilityError
+    from clio_agent.tools.mcp_errors import typed_mcp_protocol_error
+    from clio_agent.tools.mcp_header_mismatch import call_tool_with_header_retry
+    from tests.test_tools.mcp_adversarial_fixture import (
+        BAD_HEADER_MISMATCH_TOOL,
+        BAD_MISSING_CAPS_TOOL,
+        BAD_RESULT_TYPE_TOOL,
+        PAGINATED_TOOL_2,
+        adversarial_in_process_transport,
+        build_adversarial_app,
+        run_adversarial_lifespan,
+    )
+
+    app = build_adversarial_app()
+    evidence: dict[str, Any] = {}
+    async with run_adversarial_lifespan(app):
+        transport = adversarial_in_process_transport(app)
+        async with Client(transport) as client:
+            result = await client.call_tool(BAD_RESULT_TYPE_TOOL, {"payload": "x"})
+            evidence["bad_result_type"] = {
+                "is_error": result.is_error,
+                "crashed": False,
+            }
+
+            try:
+                await client.call_tool(BAD_MISSING_CAPS_TOOL, {"payload": "x"})
+                evidence["bad_missing_caps"] = {"crashed": False, "raised": False}
+            except MCPError as exc:
+                typed = typed_mcp_protocol_error(exc)
+                evidence["bad_missing_caps"] = {
+                    "crashed": False,
+                    "raised": True,
+                    "code": exc.code,
+                    "typed_ok": isinstance(typed, MCPMissingRequiredClientCapabilityError),
+                }
+
+            try:
+                await call_tool_with_header_retry(client, BAD_HEADER_MISMATCH_TOOL, {"payload": "x"})
+                evidence["bad_header_mismatch"] = {"crashed": False, "bounded": False}
+            except MCPError as exc:
+                evidence["bad_header_mismatch"] = {
+                    "crashed": False,
+                    "bounded": True,
+                    "final_code": exc.code,
+                }
+
+            tools = await client.list_tools()
+            names = sorted(t.name for t in tools)
+            evidence["pagination"] = {
+                "resolved_tool_names": names,
+                "second_page_reached": PAGINATED_TOOL_2 in names,
+                "note": (
+                    "verified LIBRARY gap, not a clio gap: fastmcp's Client."
+                    "list_tools() checks `if not result.next_cursor: break` "
+                    "(fastmcp/client/mixins/tools.py), so an EMPTY-STRING "
+                    "cursor (E10: valid, non-terminal) is treated as the end "
+                    "-- clio never implements its own pagination, it always "
+                    "calls client.list_tools() and trusts the result"
+                ),
+            }
+
+    return evidence
+
+
 def avenue_adversarial() -> dict[str, Any]:
+    """#1285 C1-S5 item 4: flipped blocked -> real (was: no fixture existed).
+
+    Asserts clio's typed handling of all four violations, including a
+    verified fastmcp CLIENT-side bug (empty-string pagination cursor treated
+    as terminal) this avenue documents rather than hides.
+    """
+
+    import asyncio as _asyncio
+
+    from tests.test_tools.mcp_adversarial_fixture import PAGINATED_TOOL
+
+    try:
+        evidence = _asyncio.run(_run_adversarial_probe())
+    except Exception as exc:  # noqa: BLE001 - captured into the verdict
+        return {
+            "avenue": "adversarial",
+            "status": "fail",
+            "evidence": {},
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    ok = (
+        not evidence["bad_result_type"]["crashed"]
+        and evidence["bad_missing_caps"]["raised"]
+        and evidence["bad_missing_caps"].get("typed_ok") is True
+        and evidence["bad_header_mismatch"]["bounded"]
+        and evidence["pagination"]["resolved_tool_names"] == [PAGINATED_TOOL]
+    )
     return {
         "avenue": "adversarial",
-        "status": "blocked",
-        "evidence": {
-            "checked": [
-                "tests/test_tools/*",
-                "docs/design/mcp-v2-understanding-2026-08.md",
-                "docs/design/mcp-client-obligations-2026-07-28.md",
-            ],
-            "finding": (
-                "no standalone MUST-violating raw-responder/ASGI-shim fixture "
-                "exists anywhere in this repo -- searched tests/test_tools/ for "
-                "'raw responder'/'ASGI shim'/'asgi_shim'/'raw_responder': zero "
-                "hits. The C1-S0 slice (mcp_exerciser.py, mcp_v1_fixture.py) "
-                "built a well-behaved modern exerciser and a well-behaved frozen "
-                "v1 fixture, but no fixture that deliberately emits malformed/"
-                "MUST-violating frames (e.g. a wrong-typed tasks/get response, a "
-                "missing required field, an invalid taskSupport value)."
-            ),
-            "what_is_missing": (
-                "a small hand-rolled ASGI app (bypassing fastmcp's own protocol "
-                "correctness) returning deliberately protocol-violating JSON-RPC "
-                "frames for specific methods, servable stand-alone as a second "
-                "declared MCP server so a leg could mount it in a workspace "
-                "mcp.yaml and assert the client reacts typed to each violation "
-                "without hanging."
-            ),
-        },
-        "error": None,
+        "status": "pass" if ok else "fail",
+        "evidence": evidence,
+        "error": None if ok else "one or more adversarial violations were not handled as expected",
     }
 
 
