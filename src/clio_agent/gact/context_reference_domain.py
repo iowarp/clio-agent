@@ -65,6 +65,39 @@ CONTEXT_REFERENCE_KINDS: frozenset[str] = frozenset(
     }
 )
 REFERENCE_SEARCH_KINDS: frozenset[str] = frozenset({*CONTEXT_REFERENCE_KINDS, "resource"})
+
+#: Kinds delivered to the model as a bounded SUMMARY rather than file bytes. Four
+#: of them (evidence_source / context_frame / diff / plan) are snapshots of state
+#: that moves inside the very turn that referenced it, which is why delivery falls
+#: back to the snapshot recorded at admission.
+SUMMARY_REFERENCE_KINDS: frozenset[str] = frozenset(
+    {"session", "agent_run", "evidence_source", "context_frame", "diff", "plan"}
+)
+#: Which message part each SEARCHABLE kind becomes once attached. Eight kinds ride
+#: the ``context_ref`` part; a picked ``resource`` is admitted as the ``resource_ref``
+#: part the composer already delivers (its own custody record, revision check and
+#: per-model delivery planning) rather than as a second, parallel mechanism.
+REFERENCE_PART_TYPE_BY_KIND: dict[str, str] = {
+    **dict.fromkeys(sorted(CONTEXT_REFERENCE_KINDS), "context_ref"),
+    "resource": "resource_ref",
+}
+
+#: Names the picker offers that are NOT reference kinds, and the mechanism that
+#: actually serves them. Documented rather than invented: choosing which agent runs
+#: a turn is an existing field on the message request, so adding an ``agents``
+#: reference kind would be a second way to say the same thing.
+REFERENCE_ALTERNATE_MECHANISMS: dict[str, dict[str, str]] = {
+    "agents": {
+        "mechanism": "message_request_field",
+        "field": "agent",
+        "route": "POST /v1/sessions/{session_id}/messages",
+        "detail": (
+            "Selecting the agent for a turn is the request's own agent field; it is "
+            "not an attachable reference and has no context_ref kind."
+        ),
+    },
+}
+
 CONTEXT_REFERENCE_CAPABILITY: dict[str, Any] = {
     "enabled": True,
     "version": "1",
@@ -72,6 +105,10 @@ CONTEXT_REFERENCE_CAPABILITY: dict[str, Any] = {
     "kinds": sorted(CONTEXT_REFERENCE_KINDS),
     "search_kinds": sorted(REFERENCE_SEARCH_KINDS),
     "search_route": "/v1/workspaces/{workspace_id}/references",
+    "part_type_by_kind": dict(REFERENCE_PART_TYPE_BY_KIND),
+    "alternate_mechanisms": {
+        name: dict(detail) for name, detail in REFERENCE_ALTERNATE_MECHANISMS.items()
+    },
     "revision_pinned_kinds": [
         "workspace_file",
         "resource",

@@ -37,7 +37,7 @@ from fastapi.responses import JSONResponse
 
 from clio_agent.gact.agent_tasks import display_run_name
 from clio_agent.gact.events import Event
-from clio_agent.gact.message_submission import accept_message
+from clio_agent.gact.message_submission import accept_message_async
 from clio_agent.gact.message_wire import normalize_thought_ownership
 from clio_agent.gact.messaging import raise_on_reserved_metadata
 from clio_agent.gact.protocol_v3 import project_for_request, transcript_entities
@@ -267,7 +267,11 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         # lives in the single owner module ``gact.message_submission``, so every
         # producer (this route, the queued-message promotion, the idle hook) accepts
         # a message through EXACTLY the same path.
-        ack, status_code = accept_message(app, deps, sid, req)
+        # ``accept_message_async`` resolves this submission's context references in
+        # a worker thread BEFORE entering the synchronous acceptance path, so a
+        # reference-carrying POST no longer hashes files and folds evidence
+        # ledgers on the event loop.
+        ack, status_code = await accept_message_async(app, deps, sid, req)
         del background_tasks
         response.status_code = status_code
         return ack

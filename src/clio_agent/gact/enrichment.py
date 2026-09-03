@@ -41,7 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
-from clio_agent.gact import context_references
+from clio_agent.gact import context_reference_delivery
 from clio_agent.gact.events import Event
 from clio_agent.gact.permission_gate import (
     _policy_action_for_tool,
@@ -194,7 +194,7 @@ def _record_context_frame(
             }
         )
 
-    reference_items = context_references.context_reference_frame_items(user_msg)
+    reference_items = context_reference_delivery.context_reference_frame_items(user_msg)
     items.extend(reference_items)
     token_total += sum(int(item.get("tokens_estimated", 0) or 0) for item in reference_items)
 
@@ -609,7 +609,7 @@ def enrich_turn_context(
     with bringup_timing.timer_for_session(app, sid).phase("enrichment"):
         text = _enrich_with_context_files(app, sid, user_text)
         text = enrich_with_workspace_resources(app, sid, text, user_msg)
-        text = context_references.enrich_with_context_references(app, sid, text, user_msg)
+        text = context_reference_delivery.enrich_with_context_references(app, sid, text, user_msg)
         return _enrich_with_requested_memory_search(app, sid, text, user_msg)
 
 

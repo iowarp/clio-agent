@@ -1232,8 +1232,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             raise _question_not_found(sid, question_id)
         # #1113 finding 6: atomic pending->cancelled (first-wins); if a concurrent
         # answer/timeout already terminalized it, keep the existing row (idempotent).
-        from clio_agent.gact.elicitation_bridge import (  # noqa: PLC0415
-            claim_question_transition,
+        from clio_agent.gact.elicitation_bridge import claim_question_transition  # noqa: PLC0415
+        from clio_agent.gact.elicitation_forwarding import (  # noqa: PLC0415
             resolve_cancelled_question,
         )
 

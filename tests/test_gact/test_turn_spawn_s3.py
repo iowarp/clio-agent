@@ -1117,7 +1117,7 @@ def test_forwarded_plan_exit_answer_routes_through_owner(tmp_path: Path, monkeyp
     from types import SimpleNamespace
 
     import clio_agent.gact.plan_mode as plan_mode
-    from clio_agent.gact.elicitation_bridge import deliver_forwarded_answer
+    from clio_agent.gact.elicitation_forwarding import deliver_forwarded_answer
     from clio_agent.gact.types import UserQuestion
 
     _declare(monkeypatch, "data_expert")
@@ -1177,7 +1177,7 @@ def test_forwarded_missing_child_question_fails_task(tmp_path: Path, monkeypatch
     from types import SimpleNamespace
 
     from clio_agent.gact.agent_tasks import STATUS_FAILED
-    from clio_agent.gact.elicitation_bridge import deliver_forwarded_answer
+    from clio_agent.gact.elicitation_forwarding import deliver_forwarded_answer
     from clio_agent.gact.types import UserQuestion
 
     _declare(monkeypatch, "data_expert")
@@ -1218,7 +1218,7 @@ def test_forwarded_non_resumable_child_fails_task(tmp_path: Path, monkeypatch) -
     from types import SimpleNamespace
 
     from clio_agent.gact.agent_tasks import STATUS_FAILED
-    from clio_agent.gact.elicitation_bridge import deliver_forwarded_answer
+    from clio_agent.gact.elicitation_forwarding import deliver_forwarded_answer
     from clio_agent.gact.types import UserQuestion
 
     _declare(monkeypatch, "data_expert")
@@ -1272,7 +1272,7 @@ def test_forwarded_exit_only_completes_task_and_frees_slot(tmp_path: Path, monke
 
     import clio_agent.gact.plan_mode as plan_mode
     from clio_agent.gact.agent_tasks import STATUS_COMPLETED
-    from clio_agent.gact.elicitation_bridge import deliver_forwarded_answer
+    from clio_agent.gact.elicitation_forwarding import deliver_forwarded_answer
     from clio_agent.gact.types import UserQuestion
 
     _declare(monkeypatch, "data_expert")
@@ -1332,7 +1332,7 @@ def test_forwarded_answer_with_turn_settles_task_on_turn_completion(
 
     import clio_agent.gact.plan_mode as plan_mode
     from clio_agent.gact.agent_tasks import STATUS_COMPLETED, STATUS_RUNNING
-    from clio_agent.gact.elicitation_bridge import deliver_forwarded_answer
+    from clio_agent.gact.elicitation_forwarding import deliver_forwarded_answer
     from clio_agent.gact.types import Message, Part, UserQuestion
 
     _declare(monkeypatch, "data_expert")

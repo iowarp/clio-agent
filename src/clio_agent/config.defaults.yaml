@@ -445,6 +445,42 @@ gact.blueprint_source.clone_timeout_s: 30.0
 # hard-cancelled; raise to let a mid-tool-call turn unwind cleanly.
 gact.cancellation_grace_s: 0.1
 
+# CLIO_CONTEXT_REFERENCE_BROWSE_LIMIT  (int)  <- src/clio_agent/gact/context_reference_search.py
+# Rows returned per reference kind when the picker opens with no query
+# typed; raise to browse more of a large workspace at a glance.
+gact.context_references.browse_limit_per_kind: 20
+
+# CLIO_CONTEXT_REFERENCE_MAX_HASHABLE_BYTES  (int)  <- src/clio_agent/gact/context_references.py
+# Byte ceiling on a workspace file that may be attached as a context
+# reference; admission digests the whole file, so a larger one is refused
+# with a typed context_ref_too_large.
+gact.context_references.max_hashable_bytes: 67108864
+
+# CLIO_CONTEXT_REFERENCE_SEARCH_LIMIT  (int)  <- src/clio_agent/gact/context_reference_search.py
+# Total rows one reference search returns for a typed query; raise for very
+# large workspaces at the cost of a slower picker.
+gact.context_references.search_limit: 100
+
+# CLIO_CONTEXT_REFERENCE_SNAPSHOT_CHILDREN  (int)  <- src/clio_agent/gact/context_reference_evidence.py
+# Mapping/list children kept per level of a bounded evidence snapshot (diff,
+# plan, context frame); raise to preview more of a large record.
+gact.context_references.snapshot_children: 50
+
+# CLIO_CONTEXT_REFERENCE_SNAPSHOT_STRING_CHARS  (int)  <- src/clio_agent/gact/context_reference_evidence.py
+# Character ceiling for one string inside a bounded evidence snapshot; raise
+# to preview longer diffs and plans.
+gact.context_references.snapshot_string_chars: 4000
+
+# CLIO_CONTEXT_REFERENCE_SUMMARY_EXCERPT_CHARS  (int)  <- src/clio_agent/gact/context_references.py
+# Character ceiling for one excerpt inside a bounded session or agent-run
+# reference summary; raise for more context per referenced run.
+gact.context_references.summary_excerpt_chars: 600
+
+# CLIO_CONTEXT_REFERENCE_SUMMARY_MESSAGES  (int)  <- src/clio_agent/gact/context_references.py
+# How many recent messages a referenced session's bounded summary carries;
+# raise to give the model more of the referenced conversation.
+gact.context_references.summary_messages: 5
+
 # CLIO_GACT_CORS_ORIGINS  (str)  <- src/clio_agent/gact/cors.py
 # Comma-separated browser origins allowed to call the GACT API cross-origin;
 # set when serving a web UI from a different origin.

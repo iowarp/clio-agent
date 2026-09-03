@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as gact_context
-from clio_agent.gact import context_references as context_reference_module
+from clio_agent.gact import context_reference_delivery as context_reference_delivery_module
 from clio_agent.gact.agent_tasks import AgentTask, AgentTaskRegistry
 from clio_agent.gact.app import build_app
 from clio_agent.gact.artifacts.records import (
@@ -24,11 +24,9 @@ from clio_agent.gact.artifacts.records import (
     Mechanism,
 )
 from clio_agent.gact.artifacts.registry import ArtifactRegistry
-from clio_agent.gact.context_references import (
-    authorize_context_reference_parts,
-    enrich_with_context_references,
-    search_workspace_references,
-)
+from clio_agent.gact.context_reference_delivery import enrich_with_context_references
+from clio_agent.gact.context_reference_search import search_workspace_references
+from clio_agent.gact.context_references import authorize_context_reference_parts
 from clio_agent.gact.loop_inbox import (
     drain_active_session_inbox,
     enqueue_user_steer,
@@ -282,9 +280,28 @@ def test_search_aggregates_repositories_with_exact_shape_and_duplicate_labels(
         "agent_run",
     }
     assert all(
-        set(row) == {"kind", "id", "label", "detail", "media_type", "revision", "navigation"}
+        set(row)
+        == {
+            "kind",
+            "id",
+            "label",
+            "detail",
+            "media_type",
+            "revision",
+            "part_type",
+            "navigation",
+        }
         for row in results
     )
+    # Every row states which message part it becomes, so the picker never has to
+    # guess (guessing ``context_ref`` for a resource was a 400).
+    assert {row["kind"]: row["part_type"] for row in results} == {
+        "workspace_file": "context_ref",
+        "resource": "resource_ref",
+        "artifact": "context_ref",
+        "session": "context_ref",
+        "agent_run": "context_ref",
+    }
     duplicate_files = [
         row
         for row in results
@@ -305,21 +322,6 @@ def test_search_aggregates_repositories_with_exact_shape_and_duplicate_labels(
         duplicates = [row for row in results if row["kind"] == kind and row["label"] == label]
         assert len(duplicates) == 2
         assert all(row["id"] not in row["detail"] for row in duplicates)
-    duplicate_artifacts = context_reference_module._disambiguate_duplicate_labels(
-        [
-            {
-                "kind": "artifact",
-                "id": artifact_ref,
-                "label": "report.md",
-                "detail": "report.md v1 (report)",
-                "media_type": "text/markdown",
-                "revision": "v1",
-                "navigation": {},
-            }
-            for artifact_ref in ("artifact_a", "artifact_b")
-        ]
-    )
-    assert all(row["id"] not in row["detail"] for row in duplicate_artifacts)
 
 
 def test_workspace_file_search_uses_registered_root_not_process_cwd(
@@ -1054,14 +1056,14 @@ def test_delivery_reads_bounded_bytes_and_rejects_hash_disagreement(
     assert enriched.count("1024 more bytes truncated") == 2
     assert len(enriched) < (_CTX_MAX_BYTES * 2) + 2000
 
-    original_read = context_reference_module._read_bounded_file
+    original_read = context_reference_delivery_module._read_bounded_file
 
     def changed_read(path: Path) -> object:
         if path == target:
             path.write_text("changed during delivery", encoding="utf-8")
         return original_read(path)
 
-    monkeypatch.setattr(context_reference_module, "_read_bounded_file", changed_read)
+    monkeypatch.setattr(context_reference_delivery_module, "_read_bounded_file", changed_read)
     with pytest.raises(_ContextFileAccessError) as stale:
         enrich_with_context_references(app, "sess_a", "inspect", message)
     assert stale.value.error_info.error == "context_ref_stale"

@@ -308,6 +308,34 @@ KEY_NOTES: dict[str, str] = {
         "Seconds a temporary `git clone --depth 1` of a remote blueprint source may run before "
         "timing out; raise for a large repo or slow link."
     ),
+    "gact.context_references.browse_limit_per_kind": (
+        "Rows returned per reference kind when the picker opens with no query typed; raise to "
+        "browse more of a large workspace at a glance."
+    ),
+    "gact.context_references.max_hashable_bytes": (
+        "Byte ceiling on a workspace file that may be attached as a context reference; admission "
+        "digests the whole file, so a larger one is refused with a typed context_ref_too_large."
+    ),
+    "gact.context_references.search_limit": (
+        "Total rows one reference search returns for a typed query; raise for very large "
+        "workspaces at the cost of a slower picker."
+    ),
+    "gact.context_references.snapshot_children": (
+        "Mapping/list children kept per level of a bounded evidence snapshot (diff, plan, context "
+        "frame); raise to preview more of a large record."
+    ),
+    "gact.context_references.snapshot_string_chars": (
+        "Character ceiling for one string inside a bounded evidence snapshot; raise to preview "
+        "longer diffs and plans."
+    ),
+    "gact.context_references.summary_excerpt_chars": (
+        "Character ceiling for one excerpt inside a bounded session or agent-run reference "
+        "summary; raise for more context per referenced run."
+    ),
+    "gact.context_references.summary_messages": (
+        "How many recent messages a referenced session's bounded summary carries; raise to give "
+        "the model more of the referenced conversation."
+    ),
     "gact.cancellation_grace_s": (
         "Seconds a cooperative session cancel is given before the turn task is hard-cancelled; "
         "raise to let a mid-tool-call turn unwind cleanly."
