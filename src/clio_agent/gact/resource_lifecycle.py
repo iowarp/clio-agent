@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal, cast
 
 import httpx
 
@@ -317,12 +317,10 @@ async def submit_processing(
         job_id=str(submitted["id"]),
         state="submitted",
         progress=(
-            int(submitted["progress"])
-            if isinstance(submitted.get("progress"), int | float)
-            else 0
+            int(submitted["progress"]) if isinstance(submitted.get("progress"), int | float) else 0
         ),
         progress_kind=(
-            str(submitted["progress_kind"])
+            cast(Literal["unknown", "stage", "measured"], submitted["progress_kind"])
             if submitted.get("progress_kind") in {"unknown", "stage", "measured"}
             else "unknown"
         ),
