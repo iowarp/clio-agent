@@ -204,7 +204,14 @@ def claim_question_transition(
             update["answer_metadata"] = dict(answer_metadata or {})
         updated = row.model_copy(update=update)
         questions[question_id] = updated
-        return updated
+    # OUTSIDE the questions lock: this caller made the pending -> terminal move, so
+    # the armed expiry timer has nothing left to do. Cancelling it here (rather than
+    # at each of answer / cancel / expire) keeps the one serialization point the one
+    # place the deadline is released, so no settled question leaves a live timer.
+    from clio_agent.gact.ask_user_tool import cancel_ask_user_deadline  # noqa: PLC0415
+
+    cancel_ask_user_deadline(app, question_id)
+    return updated
 
 
 async def _await_answer(app: Any, question: UserQuestion, timeout: float) -> ElicitResolution:

@@ -15,6 +15,17 @@ from clio_agent.gact.types import UserQuestion, UserQuestionOption
 PENDING_ASK_USER_META = "pending_ask_user"
 _KINDS = frozenset({"freeform", "choice", "confirmation"})
 
+#: In-code fallbacks for the response window. Both are config-resolved
+#: (``gact.ask_user.ttl_s`` / ``gact.ask_user.max_ttl_s``) so an operator can widen
+#: or tighten the window without a redeploy, mirroring
+#: ``agents.child_forward_deadline_s`` in :mod:`clio_agent.gact.child_forward`.
+_DEFAULT_ASK_USER_TTL_S = 600
+_DEFAULT_ASK_USER_MAX_TTL_S = 86_400
+
+#: Guards lazy creation of the per-app deadline registry (armed from tool threads,
+#: cancelled from the answer/cancel routes on the event loop).
+_DEADLINE_LOCK = threading.Lock()
+
 
 class AskUserError(RuntimeError):
     """Raised when ``ask_user`` cannot create a valid pending interaction."""
@@ -33,6 +44,58 @@ def _task_id_for_session(app: Any, session_id: str) -> str:
     ]
     matches.sort(key=lambda task: str(getattr(task, "created_at", "") or ""), reverse=True)
     return str(getattr(matches[0], "task_id", "") or "") if matches else ""
+
+
+def ask_user_ttl_bounds() -> tuple[int, int]:
+    """Return the configured ``(default, maximum)`` response window in seconds."""
+
+    from clio_agent import conf  # noqa: PLC0415 - avoid an import cycle at module load
+
+    default = conf.resolve(
+        "gact.ask_user.ttl_s",
+        env="CLIO_ASK_USER_TTL_S",
+        default=_DEFAULT_ASK_USER_TTL_S,
+        cast=conf.as_int,
+    )
+    maximum = conf.resolve(
+        "gact.ask_user.max_ttl_s",
+        env="CLIO_ASK_USER_MAX_TTL_S",
+        default=_DEFAULT_ASK_USER_MAX_TTL_S,
+        cast=conf.as_int,
+    )
+    maximum = max(1, maximum)
+    return max(1, min(default, maximum)), maximum
+
+
+def _deadline_registry(app: Any) -> dict[str, threading.Timer]:
+    """Return the app-scoped ``question_id -> Timer`` registry, creating it once."""
+
+    with _DEADLINE_LOCK:
+        registry = getattr(app.state, "ask_user_deadlines", None)
+        if not isinstance(registry, dict):
+            registry = {}
+            app.state.ask_user_deadlines = registry
+        return registry
+
+
+def cancel_ask_user_deadline(app: Any, question_id: str) -> bool:
+    """Cancel and forget one armed expiry timer. Returns whether one was armed.
+
+    Called from the single terminalization point
+    (:func:`~clio_agent.gact.elicitation_bridge.claim_question_transition`), so an
+    answered / cancelled / expired question never leaves a live ``threading.Timer``
+    holding a closure over the app for the rest of its TTL.
+    """
+
+    if not question_id:
+        return False
+    with _DEADLINE_LOCK:
+        registry = getattr(app.state, "ask_user_deadlines", None)
+        timer = registry.pop(question_id, None) if isinstance(registry, dict) else None
+    if timer is None:
+        return False
+    timer.cancel()
+    return True
 
 
 def _normalize_options(options: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -69,7 +132,7 @@ def build_ask_user_tool(agent_def: Any) -> Any:
         options: list[dict[str, Any]] | None = None,
         allowFreeform: bool = False,  # noqa: N803 - public tool schema is camelCase
         reason: str = "",
-        expiresInSeconds: int = 600,  # noqa: N803 - public tool schema is camelCase
+        expiresInSeconds: int = 0,  # noqa: N803 - public tool schema is camelCase
     ) -> str:
         """Ask the user one necessary question and end this turn.
 
@@ -100,7 +163,9 @@ def build_ask_user_tool(agent_def: Any) -> Any:
                 {"label": "Yes", "value": "yes", "description": ""},
                 {"label": "No", "value": "no", "description": ""},
             ]
-        ttl = max(1, min(int(expiresInSeconds), 86_400))
+        default_ttl, max_ttl = ask_user_ttl_bounds()
+        requested_ttl = int(expiresInSeconds)
+        ttl = default_ttl if requested_ttl <= 0 else max(1, min(requested_ttl, max_ttl))
         expires_at = (datetime.now(timezone.utc) + timedelta(seconds=ttl)).isoformat()
         owner = session_id
         attended = attended_session_id(app, owner)
@@ -149,7 +214,11 @@ def build_ask_user_tool(agent_def: Any) -> Any:
             "reason": {"type": "string", "description": "Why this input is required."},
             "expiresInSeconds": {
                 "type": "integer",
-                "description": "Response window in seconds, clamped to 1..86400.",
+                "description": (
+                    "Response window in seconds; 0 uses the server default "
+                    "(gact.ask_user.ttl_s) and any value is clamped to "
+                    "gact.ask_user.max_ttl_s."
+                ),
             },
         },
     )
@@ -250,6 +319,12 @@ def arm_ask_user_deadline(app: Any, question: Any) -> None:
     The question ledger remains authoritative: the timer only attempts the same
     atomic pending-to-terminal transition used by answer/cancel. A forwarded child
     mirror is expired and relayed through the existing child-task cancellation path.
+
+    The timer is RETAINED in the app-scoped ``ask_user_deadlines`` registry and
+    cancelled by :func:`cancel_ask_user_deadline` the moment the question settles.
+    An unreferenced daemon timer would otherwise stay alive for its whole TTL (up
+    to ``gact.ask_user.max_ttl_s``) holding a closure over ``app``, and a restart
+    that rehydrates surfaced questions would arm one more per question.
     """
 
     raw_deadline = str(getattr(question, "expires_at", "") or "")
@@ -272,6 +347,10 @@ def arm_ask_user_deadline(app: Any, question: Any) -> None:
         )
         from clio_agent.gact.events import Event  # noqa: PLC0415
 
+        # Drop this timer's own registry slot first: the claim below cancels a
+        # timer that has already fired (a harmless no-op) but the entry itself
+        # must not outlive the question.
+        cancel_ask_user_deadline(app, question.id)
         updated = claim_question_transition(app, question.id, "expired")
         if updated is None:
             return
@@ -324,6 +403,14 @@ def arm_ask_user_deadline(app: Any, question: Any) -> None:
 
     timer = threading.Timer(delay, expire)
     timer.daemon = True
+    registry = _deadline_registry(app)
+    with _DEADLINE_LOCK:
+        previous = registry.pop(question.id, None)
+        registry[question.id] = timer
+    if previous is not None:
+        # Re-arming the SAME question (a restart replay reaching an already-armed
+        # id) must not leave the earlier timer running.
+        previous.cancel()
     timer.start()
 
 
@@ -331,6 +418,8 @@ __all__ = [
     "AskUserError",
     "PENDING_ASK_USER_META",
     "arm_ask_user_deadline",
+    "ask_user_ttl_bounds",
     "build_ask_user_tool",
+    "cancel_ask_user_deadline",
     "restore_pending_ask_user_questions",
 ]
