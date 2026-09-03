@@ -179,6 +179,44 @@ def _save(entries: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def invalidate_namespace(namespace: str, *, reason: str = "list_changed") -> bool:
+    """Drop every cached entry for ``namespace`` (#1285 C1-S5 item 2).
+
+    The live ``subscriptions/listen`` -> ``notifications/tools/list_changed``
+    signal (``tools/mcp_listen.py``) calls this the moment a server reports its
+    own tool set changed, so the NEXT boot/refresh re-lists live instead of
+    serving a listing that is now stale for up to :func:`listing_ttl_h`. Unlike
+    :func:`load_listing`'s internal ``_drop`` (which reacts to reality-gating
+    signals -- launcher/args fingerprint, TTL -- discovered while READING one
+    entry keyed by ``command``/``args``/``env``), this is a PUSH invalidation
+    keyed by ``namespace`` alone, since the caller of a live notification knows
+    only which namespace changed, not its cache key's exact command/args/env.
+
+    Returns:
+        ``True`` if any entry was dropped, ``False`` if the namespace had
+        nothing cached (also the safe outcome on any cache IO failure --
+        matches :func:`store_listing`'s never-fail-boot discipline).
+    """
+
+    try:
+        with _lock:
+            entries = _load()
+            kept = {k: v for k, v in entries.items() if v.get("namespace") != namespace}
+            if len(kept) == len(entries):
+                return False
+            _save(kept)
+        trace.event(
+            "TOOLS", "mcp_listing_cache_invalidated namespace=%s reason=%s", namespace, reason
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 - a cache-file hiccup must never fail the
+        # live notification handler; the entry self-heals at its next TTL expiry either way.
+        trace.event(
+            "TOOLS", "mcp_listing_cache_invalidate_failed namespace=%s reason=%s", namespace, exc
+        )
+        return False
+
+
 def load_listing(
     namespace: str, command: str, args: tuple[str, ...], env: Any = None
 ) -> list[Any] | None:

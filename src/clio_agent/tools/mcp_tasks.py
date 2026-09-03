@@ -2,7 +2,8 @@
 
 WHAT THE SUBSTRATE ALREADY DOES. There is no ``mcp/client/experimental/tasks.py``
 in the installed mcp 2.0 SDK; the tasks client lives in the pinned
-**``fastmcp_tasks`` 4.0.0b1** package. It supplies: the per-request extension
+**``fastmcp_tasks`` 4.0.0b5** package (#1285 C1-S5 item 5 bumped from b1). It
+supplies: the per-request extension
 declaration (``TasksClientExtension``, folded into a client's capability ad by
 ``Client._build_extension_kwargs``), the ``ResultClaim`` for ``resultType:
 "task"`` (:class:`fastmcp_tasks.client_models.ClientCreateTaskResult`), the

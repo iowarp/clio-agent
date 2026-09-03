@@ -523,7 +523,11 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             notify_tool_observer(tool_observer, observer_name, tool_args, "started")
             try:
                 async with client_ctx as client:
-                    result = await client.call_tool(tool_name, tool_args)
+                    from clio_agent.tools.mcp_header_mismatch import (  # noqa: PLC0415
+                        call_tool_with_header_retry,
+                    )
+
+                    result = await call_tool_with_header_retry(client, tool_name, tool_args)
                 content = []
                 for c in getattr(result, "content", None) or []:
                     content.append(

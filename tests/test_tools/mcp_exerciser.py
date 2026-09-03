@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal
 
 import mcp_types
 from fastmcp import Context, FastMCP
@@ -43,11 +43,15 @@ from fastmcp.server.extensions import ServerExtension
 from fastmcp.tools.base import Tool, ToolResult
 from fastmcp.utilities.tasks import TASKS_EXTENSION_ID, TaskConfig
 from fastmcp_tasks.extension import TasksExtension
+from pydantic import Field
 
 __all__ = [
     "EXERCISER_NAMESPACE",
     "EXERCISER_PATH",
     "GUARDED_RESOURCE_URI",
+    "HEADER_ANNOTATED_TOOL_NAME",
+    "INVALID_HEADER_TOOL_NAME",
+    "LIST_CHANGED_TOOL_NAME",
     "MODERN_PROTOCOL_VERSION",
     "SYNTHETIC_EXTENSION_ID",
     "TASKS_EXTENSION_ID",
@@ -74,6 +78,21 @@ SYNTHETIC_EXTENSION_ID = "x-clio-agent/exerciser-echo"
 
 #: The MCP App resource ``ui_echo`` binds to; ``ui_panel`` (below) serves it.
 UI_RESOURCE_URI = "ui://v2ex/panel"
+
+#: #1285 C1-S5 item 1: a tool declaring an ``x-mcp-header``-ANNOTATED param, so
+#: the headers avenue can actually exercise Mcp-Param-* mirroring (SEP-2578) --
+#: no exerciser tool declared one before this slice (LEG_C2.md's gap 10).
+HEADER_ANNOTATED_TOOL_NAME = "header_annotated_echo"
+
+#: #1285 C1-S5 item 1: a tool whose ``x-mcp-header`` annotation is INVALID
+#: (a ``number``-typed property -- SEP-2578 permits only string/integer/boolean).
+#: The mcp SDK client MUST drop this tool from ``list_tools()`` results.
+INVALID_HEADER_TOOL_NAME = "invalid_header_echo"
+
+#: #1285 C1-S5 item 2: a tool that mutates the server's OWN tool registry at
+#: runtime and fires ``notifications/tools/list_changed`` (LEG_C2.md's gap 7 --
+#: the exerciser's tool set was fixed at build time before this slice).
+LIST_CHANGED_TOOL_NAME = "mutate_and_notify_list_changed"
 
 #: The url ``url_guarded_input`` elicits (C1-S4, #1284 mrtr-url avenue): a
 #: plain https origin a live-verification run declares trusted via
@@ -136,8 +155,21 @@ def _one_url_elicit(message: str, url: str = URL_GUARDED_INPUT_URL) -> Any:
     )
 
 
-def build_exerciser_server() -> FastMCP:
+def build_exerciser_server(
+    *,
+    cache_ttl: int | None = None,
+    cache_scope: Literal["public", "private"] | None = None,
+) -> FastMCP:
     """Build the v2 exerciser server (fresh instance per call).
+
+    ``cache_ttl``/``cache_scope`` (#1285 C1-S5 item 3, both default ``None`` --
+    every EXISTING caller's behavior is unchanged) forward verbatim to
+    ``FastMCP(cache_ttl=..., cache_scope=...)``, which fastmcp applies
+    UNIFORMLY to every SDK-cacheable result the server emits (tools/list,
+    prompts/list, resources/list, resources/templates/list, resources/read,
+    server/discover -- "no per-component surface and no aggregation", per
+    fastmcp's own ``server/caching.py`` docstring). A per-tool cache hint does
+    not exist in fastmcp; server-wide is the only knob the library offers.
 
     Returns:
         A ``FastMCP`` server with the SEP-2663 tasks extension and the C1-S0
@@ -145,7 +177,7 @@ def build_exerciser_server() -> FastMCP:
         (docket ``memory://``) -- zero external infrastructure.
     """
 
-    server = FastMCP(EXERCISER_NAMESPACE)
+    server = FastMCP(EXERCISER_NAMESPACE, cache_ttl=cache_ttl, cache_scope=cache_scope)
     server.add_extension(TasksExtension())
     server.add_extension(SyntheticExtension())
 
@@ -373,6 +405,51 @@ def build_exerciser_server() -> FastMCP:
         """
 
         return "<!doctype html><title>v2ex panel</title><body>v2ex</body>"
+
+    @server.tool
+    async def header_annotated_echo(
+        trace_id: Annotated[
+            str, Field(json_schema_extra={"x-mcp-header": "Trace-Id"})
+        ],
+        payload: str,
+    ) -> str:
+        """Echo ``payload``; ``trace_id`` carries an ``x-mcp-header`` annotation
+        (SEP-2578) -- the mcp SDK client mirrors it into a ``Mcp-Param-Trace-Id``
+        request header on every ``tools/call`` (#1285 C1-S5 item 1)."""
+
+        return f"trace={trace_id}:{payload}"
+
+    @server.tool
+    async def invalid_header_echo(
+        amount: Annotated[
+            float, Field(json_schema_extra={"x-mcp-header": "Amount"})
+        ],
+    ) -> str:
+        """Deliberately INVALID ``x-mcp-header`` (a ``number``-typed property --
+        SEP-2578 forbids float→str mirroring). Never reachable: a modern-era
+        client MUST drop this tool from ``tools/list`` (#1285 C1-S5 item 1)."""
+
+        return f"amount:{amount}"
+
+    @server.tool
+    async def list_changed_target() -> str:
+        """A tool whose VISIBILITY ``mutate_and_notify_list_changed`` toggles
+        (#1285 C1-S5 item 2) -- the target the ``tools/list_changed`` avenue
+        watches for."""
+
+        return "target"
+
+    @server.tool
+    async def mutate_and_notify_list_changed(ctx: Context) -> str:
+        """Hide ``list_changed_target`` and fire ``notifications/tools/list_changed``
+        (#1285 C1-S5 item 2). ``ctx.disable_components`` is fastmcp's own session-
+        visibility mutation, which sends the notification as a side effect --
+        this tool exists purely to trigger it from a real tool call so a live
+        ``subscriptions/listen`` watcher observes an ACTUAL registry mutation,
+        not a synthetic notification with nothing behind it."""
+
+        await ctx.disable_components(names={"list_changed_target"})
+        return "list_changed_target hidden; notifications/tools/list_changed sent"
 
     @server.prompt
     async def guarded_prompt(ctx: Context) -> Any:

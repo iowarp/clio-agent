@@ -26,18 +26,21 @@ boot for `--dry-run`).
   gate, headless HITL answer via
   `POST /v1/sessions/{sid}/questions/{question_id}/answer`, verdict JSON to
   `out/`.
-- `tests/test_tools/mcp_exerciser.py` — the v2ex server: 13 tools
+- `tests/test_tools/mcp_exerciser.py` — the v2ex server: 16 tools
   (`task_echo`, `task_optional_echo`, `plain_echo`, `forbidden_echo`,
   `guarded_input`, `plain_guarded_input`, `staller`, `plain_staller`,
   `silent_sleeper`, `ui_echo` (C1-S3, #1283, bound to the `ui://v2ex/panel`
-  resource), and — since C1-S4 (#1284) — `url_guarded_input`/
+  resource); since C1-S4 (#1284) — `url_guarded_input`/
   `plain_url_guarded_input`, the url-mode MRTR arm, plus (Opus review
   addendum) `url_guarded_input_idn`, the IDN/`xn--` counterpart that proves
-  `punycode_warning=True`); one MRTR-capable
-  `@server.prompt` (`guarded_prompt`) and `@server.resource`
-  (`guarded_resource`, `res://v2ex/guarded`); a synthetic, non-built-in
-  `ServerExtension` (`x-clio-agent/exerciser-echo`); no cache/listChanged
-  arms — see each blocked avenue below for the exact citation.
+  `punycode_warning=True`; and since C1-S5, #1285 — `header_annotated_echo`,
+  `invalid_header_echo` (deliberately x-mcp-header-INVALID, dropped by the
+  SDK client on list), `list_changed_target`, `mutate_and_notify_list_changed`,
+  plus optional `cache_ttl`/`cache_scope` constructor params); one
+  MRTR-capable `@server.prompt` (`guarded_prompt`) and `@server.resource`
+  (`guarded_resource`, `res://v2ex/guarded`, C1-S4); a synthetic, non-built-in
+  `ServerExtension` (`x-clio-agent/exerciser-echo`) — see the avenue table
+  below for what each tool proves.
 - `tests/test_tools/test_mcp_v2_conformance.py` — how the exerciser is
   driven in-process (this leg drives it through a REAL session instead).
 - `src/clio_agent/gact/mcp_task_events.py` — the `mcp_task.wait` SSE event
@@ -101,13 +104,13 @@ message dumps and the SSE audit log land beside it.
 | 1 | task-modes | Yes | **pass** | optional/plain succeed like leg C's task_echo already proves; forbidden-explicit is asserted only to be terminal-fast (never hung) — see "On avenue 1's forbidden-explicit design" below for why a hard "-32021/-32022 or bust" assertion would be presumptuous. |
 | 2 | mrtr-url | Yes | **pass** (C1-S4, #1284, landed; extended Opus review addendum) | the exerciser gained `url_guarded_input`/`plain_url_guarded_input` (plain-ASCII origin) and, per the review addendum, `url_guarded_input_idn` (an `xn--` ACE-encoded IDN origin) — all `task=required`, all embedding a genuine `mcp_types.ElicitRequestURLParams` (`_one_url_elicit`) instead of `_one_elicit`'s form params. The avenue drives BOTH `v2ex_url_guarded_input` and `v2ex_url_guarded_input_idn`, in order, through one real turn (url-mode elicitation is only wired through the production tool-call path, `agents/builders.py::make_elicitation_client` — never the REST-install lane, so this needs a model in the loop like avenues 1/5/11) and asserts EACH question's `metadata.elicitation` carries the FULL url + the `punycode_warning`/`punycode_host`/`punycode_host_raw` fields (build item 3 + the B5 homograph fix, `gact/elicitation_schema.py::build_url_metadata`/`punycode_warning`) — critically, `punycode_warning` must be `False` on the ASCII arm AND `True` on the IDN arm: a leg that only ever drove the always-false ASCII tool could never prove the warning branch fires at all. Its readiness-gate plumbing is live-verified in `--plumbing-only` mode (recorded `blocked`, reason "plumbing-only run"); the LM-driven assertion itself awaits a live run under owner go-ahead. |
 | 3 | mrtr-methods | No | **pass** (C1-S4, #1284, landed; re-shaped Opus review B1/B2/B3) | the exerciser gained an MRTR-capable `guarded_prompt`/`guarded_resource` (mirroring `guarded_input`'s one-round shape). The DECLARED session/turn surface still cannot reach them (finding (b) below is architectural, unaffected by this landing) — so the avenue drives them via the REST-install lane instead (`POST /v1/mcp/servers` + `POST .../prompts/get`, a bare `make_mcp_client(transport, server_id=sid)` with NO elicitation handler wired, `gact/routes/mcp.py::_external_mcp_inventory`). **`pass` keys ONLY on `prompts/get`**: a typed, terminal-fast 502 `upstream_error` (checked structurally — `error.error == "upstream_error"` plus the JSON-RPC `-32600` code, never the free-text "Elicitation not supported" prose, which a reword could silently flip false — B2). **`resources/read` is INFORMATIONAL ONLY** (B1): this repo currently has no REST route for it (a LIVE 404, not assumed from source), but a future route existing would be a GOOD change — feature absence is NEVER a pass criterion either way; only a genuine hang/untyped status there would fail this avenue. The verdict JSON carries a `pass_means` string spelling out exactly what `pass` does and does not prove (B3), so it cannot be misread as "MRTR-on-prompts/resources works end to end" — that full round-trip (asked → answered → terminal), for both methods, on BOTH the direct and proxy routes, is proven separately (offline) in `tests/test_tools/test_mcp_v2_conformance.py` — the house pattern for per-path MRTR verification. Headless, LM-free, live-verified in `--plumbing-only` mode. |
-| 4 | cache | No | **blocked** | repo-wide grep for `cache_ttl`/`cache_scope`/`CacheConfig`/`cache_hint` found zero hits inside `src/clio_agent` or `tests/test_tools` — no client support and no exerciser arm exist yet. C1-S5 territory (`docs/design/mcp-client-unification-2026-08.md` line ~62-63). |
+| 4 | cache | No | **pass** (C1-S5, #1285, landed) | `tools/mcp_runtime.py::make_mcp_client` opts execution-path clients INTO SEP-2549 response caching when `response_cache_enabled()` is true (config `tools.mcp.response_cache_enabled` / env `CLIO_MCP_RESPONSE_CACHE_ENABLED`, default `False` — deliberately opt-in, see that function's docstring); `mcp_exerciser.py::build_exerciser_server` accepts `cache_ttl`/`cache_scope` (fastmcp applies the hint server-wide, there is no per-tool knob). The avenue asserts a hinted server's second `tools/list` is served from cache (a recording store proves exactly one `set`, not two). |
 | 5 | waits-cancel | Yes | **pass** | `staller` is `task=required` with a 50ms poll interval; `gact/mcp_task_events.py::publish_mcp_task_wait` fires `mcp_task.wait` on the session's SSE bus while it runs (transient, live-only — a NEW `_sse_collector.py` subscribes DURING the call to observe it); `POST /v1/sessions/{sid}/cancel` then ends the turn `cancelled` per `gact/routes/session_cancellation.py::cancel_session_state`. |
-| 6 | pagination | No | **pass (indirect)** | no `list_page_size`/page-size control exists anywhere in `clio_agent` (repo-wide grep: zero MCP-tools/list-paging-related hits) — this leg cannot FORCE multi-page traversal. It instead reuses the readiness gate: all 12 declared exerciser tools resolving onto the agent's toolset is indirect proof that whatever paging fastmcp's `Client.list_tools()` did internally (SDK-covered per obligations doc row B1) worked correctly. |
-| 7 | list-changed | No | **blocked** | the exerciser's tool set is fixed at server-build time — no tool adds/removes a tool or fires `notifications/tools/list_changed`. Repo-wide grep for `listChanged`/`list_changed`: only unrelated hits. C1-S5 territory. |
+| 6 | pagination | No | **pass (indirect)** | no `list_page_size`/page-size control exists anywhere in `clio_agent` (repo-wide grep: zero MCP-tools/list-paging-related hits) — this leg cannot FORCE multi-page traversal. It instead reuses the readiness gate: all 16 declared exerciser tools resolving onto the agent's toolset is indirect proof that whatever paging fastmcp's `Client.list_tools()` did internally (SDK-covered per obligations doc row B1) worked correctly. |
+| 7 | list-changed | No | **pass** (C1-S5, #1285, landed) | the exerciser's `mutate_and_notify_list_changed` hides `list_changed_target` via fastmcp's own `ctx.disable_components` (a REAL registry mutation firing an unsolicited `notifications/tools/list_changed`); `tools/mcp_listen.py::list_changed_message_handler` invalidates `tools/listing_cache.py` on receipt. Uses the message_handler path, not the spec-correct `subscriptions/listen` (`watch_list_changed`): fastmcp's SERVER implements ZERO `subscriptions/listen` support (live-verified `-32601 Method not found`, reconfirmed unchanged across the b1->b5 bump, pinned as a regression lock in `tests/test_tools/test_mcp_listen.py`) — a fastmcp-specific gap, not a protocol-wide one. |
 | 8 | extensions | No | **pass** (C1-S3, #1283, landed) | `gact/routes/mcp_rows.py::handshake_server_row` now surfaces the recorded server-declared extension SET directly (`"extensions"` field, `None` when genuinely unobserved — never conflated with a real empty list, `"extensions_era"` alongside it). The avenue asserts the v2ex handshake row's `extensions` contains BOTH the well-known tasks id AND the exerciser's synthetic, non-built-in `x-clio-agent/exerciser-echo` id — proving the read side is generic, not a tasks/ui shortlist. Headless (the handshake was already fetched for the readiness gate); live-verified in `--plumbing-only` mode. |
-| 9 | adversarial | No | **blocked** | no standalone MUST-violating raw-responder/ASGI-shim fixture exists anywhere in this repo (searched `tests/test_tools/*` for "raw responder"/"ASGI shim": zero hits). The C1-S0 slice built well-behaved fixtures only. |
-| 10 | headers | No | **genuinely probed live** | a NEW `_header_capture_server.py` is booted as a real subprocess and probed via `POST /v1/mcp/servers` + `POST /v1/mcp/servers/{sid}/call`. An isolated, out-of-band smoke test (outside this repo, not part of any run this package makes) already showed a BARE `fastmcp.Client` sends `mcp-method`/`mcp-name`/`mcp-protocol-version` headers on a real `tools/call` today — B2 is "library-covered" exactly as the obligations doc's own B2 row says, with ZERO clio_agent code involved (grepped `src/clio_agent` for `Mcp-Method`/`Mcp-Param`: no hits). `mcp-param-*` mirroring (B3) is a SEPARATE, still-open question this probe tool cannot exercise either way (see the avenue's own evidence note — B3 only mirrors ANNOTATED header-worthy params, and no tool anywhere declares one). Do not assume this avenue's number pre-decides pass/fail — read the live verdict. |
+| 9 | adversarial | No | **pass** (C1-S5, #1285, landed) | `mcp_adversarial_fixture.py` wraps a real fastmcp app in a pure ASGI middleware that short-circuits four requests with hand-built malformed JSON-RPC frames (bad `resultType`, `-32021` with no `requiredCapabilities`, always-`-32020`, empty-string pagination cursor). The avenue asserts clio's typed handling of each — including a VERIFIED fastmcp CLIENT bug: `Client.list_tools()`'s `if not result.next_cursor: break` treats an empty-string cursor as terminal even though E10 says only null/missing ends pagination; pinned as a finding, not a clio defect (clio never implements its own pagination). |
+| 10 | headers | No | **pass** (C1-S5, #1285, landed) | a NEW `_header_capture_server.py` is booted as a real subprocess and probed via `POST /v1/mcp/servers` + `POST /v1/mcp/servers/{sid}/call`. B2 (`mcp-method`/`mcp-name`/`mcp-protocol-version`) was already confirmed library-covered with zero clio_agent code involved. B3 (`mcp-param-*` mirroring) is now genuinely exercised: the capture server gained `probe_with_header` (an `x-mcp-header`-annotated `Trace-Id` param) and the exerciser gained `header_annotated_echo` + a deliberately INVALID `invalid_header_echo` (proving the SDK's own `_absorb_tool_listing` drops it) — the avenue asserts the mirrored `Mcp-Param-Trace-Id` header's VALUE, not just presence. |
 | 11 | apps-ui | Yes | **pass** (C1-S3, #1283, landed) | the exerciser now carries a real ui-serving arm: `ui_echo` (`_meta.ui.resourceUri` bound to `ui://v2ex/panel`, built with fastmcp's native `fastmcp.apps` support) + a matching `@server.resource` handler serving `text/html;profile=mcp-app`. The avenue drives `v2ex_ui_echo` through a real turn and asserts an `mcp_app` Part is minted on the persisted message stream (`_append_live_assistant_part`, `mcp_apps.py:434-448` — the SAME single-writer transcript ledger a real assistant reply uses, not the SSE-only transient path avenue 5 rides) AND `GET /v1/sessions/{sid}/mcp-apps/{app_id}` (`mcp_apps.py:617-637`) actually serves the resource. Needs a model in the loop (unlike avenue 8) — its readiness-gate plumbing (the tool resolves onto the `v2ex-avenues` pack) is live-verified in `--plumbing-only` mode; the LM-driven assertion itself awaits a live run under owner go-ahead, matching this package's existing posture. |
 
 ## On avenue 1's forbidden-explicit design (why not a hard -32021/-32022 assertion)
@@ -131,33 +134,42 @@ concern in play, not a guess dressed as a fixed expectation.
 
 ## Exerciser gaps found (for C1-S5 slice scoping)
 
-- **cache**: needs a tool returning a result annotated with a cache hint
-  (`ttlMs`/`cacheScope` per the 2026-07-28 spec).
-- **list-changed**: needs a tool that mutates the server's own tool registry
-  at runtime and fires `notifications/tools/list_changed`.
-- **adversarial**: needs a hand-rolled ASGI app (bypassing fastmcp's own
-  protocol correctness) emitting deliberately MUST-violating frames,
-  servable stand-alone as a second declared MCP server.
-- **headers (partial)**: even with the new capture server, `mcp-param-*`
-  mirroring (B3) needs a tool with an ANNOTATED header-worthy param —
-  neither the capture tool nor any exerciser tool declares one today.
+All gaps this list originally named are CLOSED as of C1-S5 (#1285): C1-S4
+(#1284) closed mrtr-url and mrtr-methods; C1-S5 closed cache, list-changed,
+adversarial, and headers (partial, B3). See "Closed since this list was
+written" below for what each landing actually asserts.
 
-**Closed since this list was written:** **extensions** and **apps-ui** both
-landed in C1-S3 (#1283) — the exerciser gained a synthetic `ServerExtension`
-(`x-clio-agent/exerciser-echo`) and a `ui_echo`/`ui://v2ex/panel` pair;
-`gact/routes/mcp_rows.py::handshake_server_row` now surfaces the recorded
-extension set. **mrtr-url** and **mrtr-methods** both landed in C1-S4
-(#1284) — the exerciser gained `url_guarded_input`/`plain_url_guarded_input`
-(a genuine `ElicitRequestURLParams` arm) and `guarded_prompt`/
-`guarded_resource` (MRTR-capable prompt/resource). All four avenues are REAL
-assertions now (rows 2/3/8/11 above), not blocked findings.
+**Closed since this list was written:**
 
-**Still architectural, not an exerciser gap:** mrtr-methods finding (b) is
-unaffected by C1-S4 — the DECLARED session/turn surface still exposes only an
-expert's frontmatter `tools:` list; prompts/resources reach a session only
-through the REST-install lane (`gact/routes/mcp.py`), which has a
-`prompts/get` route but genuinely NO `resources/read` route at all (live-
-confirmed by a 404 in the avenue's own evidence, not assumed from source).
+- **extensions** and **apps-ui** both landed in C1-S3 (#1283) — the exerciser
+  gained a synthetic `ServerExtension` (`x-clio-agent/exerciser-echo`) and a
+  `ui_echo`/`ui://v2ex/panel` pair; `gact/routes/mcp_rows.py::
+  handshake_server_row` now surfaces the recorded extension set. Both
+  avenues are REAL assertions now (rows 8/11 above), not blocked findings.
+- **mrtr-url** and **mrtr-methods** both landed in C1-S4 (#1284) — the
+  exerciser gained `url_guarded_input`/`plain_url_guarded_input` (a genuine
+  `ElicitRequestURLParams` arm) and `guarded_prompt`/`guarded_resource`
+  (MRTR-capable prompt/resource). Both avenues are REAL assertions now (rows
+  2/3 above), not blocked findings. **Still architectural, not an exerciser
+  gap:** mrtr-methods finding (b) is unaffected by C1-S4 — the DECLARED
+  session/turn surface still exposes only an expert's frontmatter `tools:`
+  list; prompts/resources reach a session only through the REST-install lane
+  (`gact/routes/mcp.py`), which has a `prompts/get` route but genuinely NO
+  `resources/read` route at all (live-confirmed by a 404 in the avenue's own
+  evidence, not assumed from source).
+- **cache**, **list-changed**, **adversarial**, and **headers (partial, B3)**
+  all landed in C1-S5 (#1285) — see rows 4, 7, 9, 10 above for what each
+  avenue now asserts. `list-changed` uncovered that fastmcp's SERVER has zero
+  `subscriptions/listen` support (a library gap, pinned as a regression
+  lock, reconfirmed unchanged across the b1->b5 bump); `adversarial`
+  uncovered a genuine fastmcp CLIENT pagination bug (empty-string cursor
+  treated as terminal, also reconfirmed unchanged on b5). Both are
+  documented findings, not clio defects, since clio owns neither the fastmcp
+  server nor its client-side pagination loop.
 
-None of these were added to `tests/` (existing-file rule) — each is recorded
-here, grounded, as a finding for a future slice.
+No avenues remain blocked after C1-S4 + C1-S5: all eleven have a REAL
+pass/fail assertion -- seven (mrtr-methods, cache, pagination, list-changed,
+extensions, adversarial, headers) are headless and already live-verified in
+`--plumbing-only` mode; four (task-modes, mrtr-url, waits-cancel, apps-ui)
+need a model in the loop for their LM-driven half, which awaits a live run
+under owner go-ahead per this package's existing posture.

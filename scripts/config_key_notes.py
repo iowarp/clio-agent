@@ -1022,6 +1022,10 @@ KEY_NOTES: dict[str, str] = {
         "Retries of the era-negotiation probe after a client-side timeout before giving up; raise "
         "for a slow-starting server."
     ),
+    "tools.mcp.response_cache_enabled": (
+        "Opts execution-path MCP clients into SEP-2549 server-hinted response caching; off by "
+        "default (enabling it wraps the message handler, visible to a caller that type-checks it)."
+    ),
     "tools.mcp.setup_timeout_s": (
         "Seconds allowed for an MCP tool executor's startup handshake; raise for servers with slow "
         "cold starts, lower to fail faster."

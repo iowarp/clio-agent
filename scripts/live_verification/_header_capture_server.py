@@ -16,22 +16,21 @@ A one-off scratch probe (isolated, outside this repo, not part of any run this
 package makes) confirmed live that a BARE ``fastmcp.Client`` already sends
 ``mcp-method`` + ``mcp-protocol-version`` (and ``mcp-name`` on a ``tools/call``)
 today -- B2 is "library-covered" exactly as the obligations doc's own B2 row
-says. No ``mcp-param-*`` header appeared for a plain string arg: B3 mirrors
-only tools with ANNOTATED header-worthy params (SEP-2578), and the exerciser
-declares none -- so B3 is untestable with today's tool matrix regardless of
-what the live run finds (a second, separate exerciser gap from the ones
-``mcp_exerciser.py`` already documents). ``leg_c2_v2_avenues.py``'s avenue 10
-drives clio's REAL wrapped client (``tools/mcp_runtime.py::make_mcp_client``,
-via ``POST /v1/mcp/servers/{sid}/call`` -- see that leg's docstring for why
-this headless REST-install-lane surface is representative here even though it
-is NOT the declared/gateway path) against a running instance of this server
-and reads back what actually landed, rather than assuming either outcome.
+says.
+
+#1285 (C1-S5, item 1): this server now ALSO declares ``probe_with_header``, a
+tool carrying an ``x-mcp-header``-ANNOTATED param (SEP-2578) -- the exerciser
+gap this docstring used to record (no annotated param existed anywhere in this
+repo) is closed both here and in ``tests/test_tools/mcp_exerciser.py``'s
+``header_annotated_echo``. Avenue 10 now calls BOTH tools and asserts
+``mcp-param-trace-id`` actually mirrors on the annotated call.
 
 Runnable standalone::
 
     uv run python scripts/live_verification/_header_capture_server.py --port 18999 --log out/hcap.jsonl
 
-Declares one tool, ``probe(payload: str) -> str``, returning ``f"probe:{payload}"``.
+Declares two tools: ``probe(payload: str) -> str`` (no annotation, the B2
+baseline) and ``probe_with_header(trace_id, payload) -> str`` (B3 mirroring).
 """
 
 from __future__ import annotations
@@ -40,7 +39,9 @@ import argparse
 import json
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import Field
 
 _LOCK = threading.Lock()
 
@@ -68,6 +69,16 @@ def build_capture_app(log_path: Path) -> Any:
         """Echo ``payload`` back -- the ONLY point is what headers arrived with the call."""
 
         return f"probe:{payload}"
+
+    @server.tool
+    async def probe_with_header(
+        trace_id: Annotated[str, Field(json_schema_extra={"x-mcp-header": "Trace-Id"})],
+        payload: str,
+    ) -> str:
+        """Echo ``payload``; ``trace_id`` is x-mcp-header-annotated (SEP-2578) so a
+        listing client mirrors it into a ``Mcp-Param-Trace-Id`` header on call."""
+
+        return f"probe:{trace_id}:{payload}"
 
     class _HeaderCaptureMiddleware(BaseHTTPMiddleware):
         def __init__(self, app: Any, *, log_path: Path) -> None:

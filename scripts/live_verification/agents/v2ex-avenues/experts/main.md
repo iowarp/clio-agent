@@ -28,6 +28,9 @@ tools:
   - v2ex_plain_staller
   - v2ex_silent_sleeper
   - v2ex_ui_echo
+  - v2ex_header_annotated_echo
+  - v2ex_list_changed_target
+  - v2ex_mutate_and_notify_list_changed
 ---
 
 # V2EX Avenues Testing Agent

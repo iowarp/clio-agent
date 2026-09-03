@@ -742,7 +742,17 @@ def _list_declared_tools(
     #1281 (C1-S1): also the single choke point both live listing paths share,
     so the DEFINITIVE task-capability read (``mcp_task_routing.
     record_definitive_capability``) lands here -- see that module's docstring.
+
+    #1285 review round (SHOULD 3): also the choke point for the typed
+    x-mcp-header drop diagnostic (``mcp_header_mismatch.
+    trace_dropped_x_mcp_header_tools``) -- the SDK silently drops an
+    invalid-header tool from ``listed`` and logs it only to its own
+    library-side logger; this reaches CLIO's trace instead. Best-effort,
+    never affects ``listed`` itself.
     """
+    from clio_agent.tools.mcp_header_mismatch import (  # noqa: PLC0415
+        trace_dropped_x_mcp_header_tools,
+    )
     from clio_agent.tools.mcp_task_routing import record_definitive_capability  # noqa: PLC0415
 
     async def _list() -> list[Any]:
@@ -752,6 +762,7 @@ def _list_declared_tools(
             async with client:
                 listed = await client.list_tools()
                 record_definitive_capability(spec.name, client, listed)
+                await trace_dropped_x_mcp_header_tools(client, spec.name, listed)
                 return listed
         finally:
             listing_attempts.unregister(attempt_key)

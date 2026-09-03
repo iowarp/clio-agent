@@ -36,15 +36,35 @@ Avenues (see ``LEG_C2.md`` for the full per-avenue writeup + citations):
                          through a properly elicitation-wired client on BOTH
                          the direct and proxy routes, is proven instead in
                          ``tests/test_tools/test_mcp_v2_conformance.py``.
- 4. cache             -- BLOCKED: exerciser has no cache_ttl/cache_scope arm.
+ 4. cache             -- #1285 C1-S5: FLIPPED to a real assertion.
+                         ``make_mcp_client`` opts INTO SEP-2549 caching when
+                         ``response_cache_enabled()`` is true (this probe
+                         flips the flag for its own duration, proving the
+                         factory's wiring, not a changed operator default);
+                         a ``build_exerciser_server(cache_ttl=...,
+                         cache_scope=...)`` instance's second ``tools/list``
+                         is served from cache (a recording store proves
+                         exactly one ``set``, not two). Headless, in-process.
  5. waits-cancel      -- staller surfaces ``mcp_task.wait`` live-SSE events,
                          then a cancel ends the turn ``cancelled``, not hung.
- 6. pagination        -- the readiness gate's full 12-tool resolution is the
-                         available (indirect) proof; no ``list_page_size``
+ 6. pagination        -- the readiness gate's full-tool-matrix resolution is
+                         the available (indirect) proof; no ``list_page_size``
                          control exists anywhere in clio_agent to force real
                          multi-page traversal.
- 7. list-changed      -- BLOCKED: exerciser's tool set never changes; no
-                         listChanged arm.
+ 7. list-changed      -- #1285 C1-S5: FLIPPED to a real assertion. The
+                         exerciser's ``mutate_and_notify_list_changed`` hides
+                         ``list_changed_target`` (a real fastmcp
+                         ``ctx.disable_components`` registry mutation, firing
+                         an UNSOLICITED ``notifications/tools/list_changed``)
+                         and ``tools/mcp_listen.py::
+                         list_changed_message_handler`` invalidates
+                         ``tools/listing_cache.py`` on receipt. Uses the
+                         message_handler path, not ``watch_list_changed``'s
+                         spec-correct ``subscriptions/listen``: fastmcp's
+                         SERVER implements zero listen support (live-verified
+                         -32601, reconfirmed unchanged across the b1->b5 bump;
+                         see that module's docstring for the full finding).
+                         Headless, in-process.
  8. extensions        -- C1-S3 (#1283) landed: the handshake row now surfaces
                          the server-declared extension SET directly
                          (``gact/routes/mcp_rows.py::handshake_server_row``'s
@@ -55,8 +75,15 @@ Avenues (see ``LEG_C2.md`` for the full per-avenue writeup + citations):
                          side is generic, not a tasks/ui shortlist. Headless
                          (the handshake was already fetched for the readiness
                          gate).
- 9. adversarial       -- BLOCKED: no MUST-violating raw-responder/ASGI-shim
-                         fixture exists in this repo.
+ 9. adversarial       -- #1285 C1-S5: FLIPPED to a real assertion.
+                         ``mcp_adversarial_fixture.py`` short-circuits four
+                         requests with hand-built malformed frames (bad
+                         resultType, -32021 with no requiredCapabilities,
+                         always-32020, empty-string pagination cursor).
+                         Asserts clio's typed handling of each -- including a
+                         verified fastmcp CLIENT bug (empty-string cursor
+                         treated as terminal pagination, not a clio defect).
+                         Headless, in-process.
 10. headers           -- a NEW header-capture HTTP MCP server
                          (``_header_capture_server.py``) probed through the
                          REST-install lane (``POST /v1/mcp/servers`` +
@@ -109,6 +136,7 @@ from _sse_collector import SSECollector  # noqa: E402
 from tests.test_tools.mcp_exerciser import (  # noqa: E402
     EXERCISER_NAMESPACE,
     EXERCISER_PATH,
+    LIST_CHANGED_TOOL_NAME,
     SYNTHETIC_EXTENSION_ID,
     TASKS_EXTENSION_ID,
     URL_GUARDED_INPUT_IDN_URL,
@@ -123,6 +151,9 @@ PACK_TEMPLATE_DIR = Path(__file__).resolve().parent / "agents" / "v2ex-avenues"
 #: session.py's own EXPECTED_TOOLS -- kept as an independent, hand-written
 #: constant here rather than a cross-script import, matching how each leg in
 #: this package already declares its own expectation set).
+#: `invalid_header_echo` is deliberately EXCLUDED: a modern-era client MUST
+#: drop it from tools/list (SEP-2578) -- it can never resolve onto an agent's
+#: toolset, so a readiness gate that required it would never pass by design.
 EXERCISER_EXPECTED_TOOLS = {
     "task_echo",
     "task_optional_echo",
@@ -136,6 +167,9 @@ EXERCISER_EXPECTED_TOOLS = {
     "plain_staller",
     "silent_sleeper",
     "ui_echo",
+    "header_annotated_echo",
+    "list_changed_target",
+    "mutate_and_notify_list_changed",
 }
 
 #: Every namespaced tool the pack's `main` expert must resolve before any
@@ -191,8 +225,12 @@ AVENUE_PLAN: list[dict[str, Any]] = [
     {
         "avenue": "cache",
         "needs_lm": False,
-        "expect": "blocked",
-        "summary": "exerciser has no cache_ttl/cache_scope arm",
+        "expect": "pass",
+        "summary": (
+            "#1285 C1-S5: make_mcp_client opts INTO SEP-2549 caching when "
+            "response_cache_enabled() is true; a cache_ttl-hinted exerciser's "
+            "second tools/list is served from cache"
+        ),
     },
     {
         "avenue": "waits-cancel",
@@ -204,13 +242,16 @@ AVENUE_PLAN: list[dict[str, Any]] = [
         "avenue": "pagination",
         "needs_lm": False,
         "expect": "pass",
-        "summary": "readiness gate proves all 12 tools resolve (indirect; no page-size control exists)",
+        "summary": "readiness gate proves all expected tools resolve (indirect; no page-size control exists)",
     },
     {
         "avenue": "list-changed",
         "needs_lm": False,
-        "expect": "blocked",
-        "summary": "exerciser's tool set never changes; no listChanged arm",
+        "expect": "pass",
+        "summary": (
+            "#1285 C1-S5: mutate_and_notify_list_changed fires a real ToolsListChanged; "
+            "watch_list_changed observes it and invalidates the listing cache"
+        ),
     },
     {
         "avenue": "extensions",
@@ -224,8 +265,11 @@ AVENUE_PLAN: list[dict[str, Any]] = [
     {
         "avenue": "adversarial",
         "needs_lm": False,
-        "expect": "blocked",
-        "summary": "no MUST-violating raw-responder/ASGI-shim fixture exists in this repo",
+        "expect": "pass",
+        "summary": (
+            "#1285 C1-S5: four hand-built malformed frames asserted typed-handled; "
+            "includes a verified fastmcp pagination-cursor bug pinned as a finding"
+        ),
     },
     {
         "avenue": "headers",
@@ -575,95 +619,408 @@ def avenue_mrtr_methods(call: Any) -> dict[str, Any]:
     }
 
 
+async def _run_cache_probe() -> dict[str, Any]:
+    """Prove server cache hints end to end (#1285 C1-S5 item 3): CLIO's factory
+    opts in, and a hinted server's second list is served from cache, not re-fetched.
+
+    In-process (no gact server): builds the exerciser WITH a cache hint
+    (``build_exerciser_server(cache_ttl=..., cache_scope=...)`` -- fastmcp
+    applies it server-wide, there is no per-tool knob) and drives it through
+    TWO checks: (a) ``tools/mcp_runtime.py::make_mcp_client`` (the REAL
+    production factory) sets ``cache=True`` by default; (b) a raw
+    ``fastmcp.Client`` with a RECORDING store proves the second
+    ``list_tools()`` never calls the store's ``set`` again (a cache hit, not a
+    live re-fetch).
+    """
+
+    from dataclasses import dataclass, field
+
+    from fastmcp import Client
+    from mcp.client.caching import CacheConfig, CacheEntry, CacheKey
+
+    from clio_agent.tools.mcp_runtime import make_mcp_client
+    from tests.test_tools.mcp_exerciser import build_exerciser_server
+
+    @dataclass
+    class _RecordingStore:
+        entries: dict[Any, Any] = field(default_factory=dict)
+        get_calls: int = 0
+        set_calls: int = 0
+
+        async def get(self, key: CacheKey) -> CacheEntry | None:
+            self.get_calls += 1
+            return self.entries.get(key)
+
+        async def set(self, key: CacheKey, entry: CacheEntry) -> None:
+            self.set_calls += 1
+            self.entries[key] = entry
+
+        async def delete(self, key: CacheKey) -> None:
+            self.entries.pop(key, None)
+
+        async def clear(self) -> None:
+            self.entries.clear()
+
+    class _FakeClientCls:
+        def __init__(self, target: Any, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+    # response_cache_enabled() defaults False (opt-in, tools/mcp_runtime.py::
+    # response_cache_enabled's own docstring explains why) -- flip it on for
+    # this probe of the factory's WIRING, independent of the operator default.
+    import os
+
+    os.environ["CLIO_MCP_RESPONSE_CACHE_ENABLED"] = "true"
+    try:
+        from clio_agent import conf as _conf
+
+        _conf.reload()
+        factory_client = make_mcp_client(build_exerciser_server(), client_cls=_FakeClientCls)
+        factory_sets_cache = factory_client.kwargs.get("cache") is True
+    finally:
+        del os.environ["CLIO_MCP_RESPONSE_CACHE_ENABLED"]
+        _conf.reload()
+
+    hinted_server = build_exerciser_server(cache_ttl=60, cache_scope="private")
+    store = _RecordingStore()
+    async with Client(
+        hinted_server, cache=CacheConfig(store=store, partition="leg-c2", target_id="v2ex-cache-probe")
+    ) as client:
+        first = await client.list_tools()
+        second = await client.list_tools()
+
+    return {
+        "factory_sets_cache_true": factory_sets_cache,
+        "first_list_tool_count": len(first),
+        "second_list_tool_count": len(second),
+        "store_set_calls": store.set_calls,
+        "store_get_calls": store.get_calls,
+    }
+
+
 def avenue_cache() -> dict[str, Any]:
+    """#1285 C1-S5 item 3: flipped blocked -> real (was: no client/exerciser support existed).
+
+    ``tools/mcp_runtime.py::make_mcp_client`` opts execution-path clients into
+    SEP-2549 response caching WHEN ``response_cache_enabled()`` is true (this
+    probe flips the flag for its own duration -- see the note below), and
+    ``mcp_exerciser.py::build_exerciser_server`` accepts ``cache_ttl``/
+    ``cache_scope`` (fastmcp applies the hint server-wide -- no per-tool knob
+    exists in the library). This avenue asserts BOTH: the production factory
+    sets ``cache=True`` when enabled, and a hinted server's second
+    ``tools/list`` is served from cache (exactly one store ``set``, not two).
+    """
+
+    import asyncio as _asyncio
+
+    pass_means = (
+        "opt-in feature, default OFF (tools.mcp.response_cache_enabled / "
+        "CLIO_MCP_RESPONSE_CACHE_ENABLED). A pass here proves the factory's "
+        "WIRING is correct when an operator turns it on, and that a hinted "
+        "server's repeat tools/list is genuinely served from cache -- it is "
+        "NOT a claim that caching is on by default for any execution-path "
+        "client today."
+    )
+
+    try:
+        evidence = _asyncio.run(_run_cache_probe())
+    except Exception as exc:  # noqa: BLE001 - captured into the verdict
+        return {
+            "avenue": "cache",
+            "status": "fail",
+            "pass_means": pass_means,
+            "evidence": {},
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    ok = (
+        evidence["factory_sets_cache_true"]
+        and evidence["first_list_tool_count"] == evidence["second_list_tool_count"]
+        and evidence["store_set_calls"] == 1
+    )
     return {
         "avenue": "cache",
-        "status": "blocked",
-        "evidence": {
-            "checked": [
-                "tests/test_tools/mcp_exerciser.py",
-                "repo-wide grep: cache_ttl|cache_scope|CacheConfig|cache_hint",
-            ],
-            "finding": (
-                "no tool in the exerciser declares a cache hint (ttlMs/cacheScope); "
-                "a repo-wide grep for cache_ttl/cache_scope/CacheConfig/cache_hint "
-                "found zero hits inside src/clio_agent or tests/test_tools -- the "
-                "client has no cache-hint handling to exercise yet at all. "
-                "docs/design/mcp-client-unification-2026-08.md's C1-S5 line "
-                "('server cache hints (ttlMs/cacheScope + the caching MUST-NOTs)') "
-                "is where both the client support and an exerciser arm would land."
-            ),
-            "what_is_missing": (
-                "a new exerciser tool returning a result annotated with a cache "
-                "hint (ttlMs and/or cacheScope) so a call-twice-compare-behavior "
-                "probe becomes possible."
-            ),
-        },
-        "error": None,
+        "status": "pass" if ok else "fail",
+        "pass_means": pass_means,
+        "evidence": evidence,
+        "error": None if ok else "cache hint was not honored end to end",
+    }
+
+
+async def _run_list_changed_probe() -> dict[str, Any]:
+    """Drive a REAL registry mutation + its notification through the
+    PRODUCTION wiring end to end (#1285 C1-S5 item 2; #1285 review round
+    MUST 1).
+
+    In-process (no gact server, no HTTP): live-verified that fastmcp's SERVER
+    implements NO ``subscriptions/listen`` support at all (-32601
+    Method not found, reconfirmed unchanged across the C1-S5 item-5 b1->b5
+    bump -- see tools/mcp_listen.py's module docstring for the full finding +
+    tests/test_tools/test_mcp_listen.py's regression lock), so
+    ``watch_list_changed`` (spec-correct SEP-2575) cannot be live-proven
+    against THIS exerciser. What fastmcp servers verifiably DO send is the
+    notification UNSOLICITED over the plain connection. The review round's
+    MUST 1 folded ``list_changed_message_handler`` into ``tools/mcp_runtime.
+    py::make_mcp_client`` itself -- the ONE production client-construction
+    site -- so this probe drives THAT factory (``server_id=`` set, no manual
+    ``message_handler=``), not the standalone helper directly: proving the
+    production choke point actually installs the wiring, not just that the
+    underlying helper works in isolation (that unit-level proof lives in
+    ``test_mcp_listen.py``).
+    """
+
+    import asyncio as _asyncio
+
+    from clio_agent.tools import listing_cache
+    from clio_agent.tools.mcp_runtime import make_mcp_client
+    from tests.test_tools.mcp_exerciser import build_exerciser_server
+
+    server = build_exerciser_server()
+    invalidated: list[str] = []
+    original_invalidate = listing_cache.invalidate_namespace
+    listing_cache.invalidate_namespace = (  # type: ignore[assignment]
+        lambda namespace, **_: invalidated.append(namespace) or True
+    )
+    try:
+        client = make_mcp_client(server, server_id=EXERCISER_NAMESPACE)
+        async with client as caller:
+            mutate_result = await caller.call_tool(LIST_CHANGED_TOOL_NAME, {})
+            await _asyncio.sleep(0.3)  # unsolicited notification delivery is async
+    finally:
+        listing_cache.invalidate_namespace = original_invalidate  # type: ignore[assignment]
+
+    return {
+        "mutate_result": str(mutate_result) if mutate_result is not None else None,
+        "invalidated_namespaces": invalidated,
     }
 
 
 def avenue_list_changed() -> dict[str, Any]:
+    """#1285 C1-S5 item 2: flipped blocked -> real (was: no exerciser arm existed).
+
+    ``mutate_and_notify_list_changed`` hides ``list_changed_target`` via
+    fastmcp's own ``ctx.disable_components`` -- a REAL registry mutation, not
+    a synthetic notification -- and asserts that a ``make_mcp_client(server_id=
+    ...)``-built client (the review round's MUST 1: every production
+    execution path routes through this ONE factory) actually invalidates
+    ``tools/listing_cache.py`` when the resulting unsolicited
+    ``notifications/tools/list_changed`` arrives. See ``_run_list_changed_
+    probe``'s docstring for why this drives the production factory rather
+    than the standalone ``list_changed_message_handler`` helper directly, and
+    for why this uses that helper's legacy-push path rather than
+    ``watch_list_changed``'s spec-correct ``subscriptions/listen`` (a
+    verified fastmcp server-side gap, not a clio gap).
+    """
+
+    import asyncio as _asyncio
+
+    pass_means = (
+        "a make_mcp_client(server_id=...)-built client -- the PRODUCTION "
+        "construction site every execution path uses, not a hand-wired "
+        "message_handler -- invalidates its own namespace's listing_cache "
+        "entry on a live, unsolicited notifications/tools/list_changed "
+        "(#1285 review round MUST 1). Does NOT prove watch_list_changed's "
+        "spec-correct subscriptions/listen path (fastmcp's server does not "
+        "implement it, a pinned library gap)."
+    )
+
+    try:
+        evidence = _asyncio.run(_run_list_changed_probe())
+    except Exception as exc:  # noqa: BLE001 - captured into the verdict
+        return {
+            "avenue": "list-changed",
+            "status": "fail",
+            "pass_means": pass_means,
+            "evidence": {},
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    observed = evidence["invalidated_namespaces"] == [EXERCISER_NAMESPACE]
     return {
         "avenue": "list-changed",
-        "status": "blocked",
-        "evidence": {
-            "checked": [
-                "tests/test_tools/mcp_exerciser.py",
-                "repo-wide grep: listChanged|list_changed",
-            ],
-            "finding": (
-                "the exerciser's tool set is fixed at server-build time "
-                "(build_exerciser_server() registers the same 13 tools every call) "
-                "-- no tool dynamically adds/removes a tool or fires a "
-                "`notifications/tools/list_changed` notification. A repo-wide "
-                "grep for listChanged/list_changed found only unrelated hits "
-                "(scripts/analyze_turn_waterfall.py, an ai-docs reference doc) -- "
-                "no clio_agent client code and no exerciser arm exist for this "
-                "today. docs/design/mcp-client-unification-2026-08.md's C1-S5 "
-                "line names this explicitly: 'subscriptions/listen + listChanged "
-                "as the listing-cache invalidation signal'."
-            ),
-            "what_is_missing": (
-                "an exerciser tool that mutates its own tool registry (e.g. adds "
-                "a tool at runtime) and sends listChanged, so a re-list can be "
-                "asserted to observe the change."
-            ),
-        },
-        "error": None,
+        "status": "pass" if observed else "fail",
+        "pass_means": pass_means,
+        "evidence": evidence,
+        "error": None if observed else "listing_cache.invalidate_namespace was never called",
     }
 
 
+async def _run_adversarial_probe() -> dict[str, Any]:
+    """Drive all four MUST violations end to end (#1285 C1-S5 item 4).
+
+    In-process (no gact server): ``mcp_adversarial_fixture.py`` wraps a real
+    fastmcp app in a pure ASGI middleware that short-circuits four specific
+    requests with hand-built, deliberately malformed JSON-RPC frames -- see
+    that module's docstring for why (bypassing fastmcp's own protocol
+    correctness without reimplementing the whole HTTP transport by hand).
+    """
+
+    from fastmcp import Client
+    from mcp.shared.exceptions import MCPError
+
+    from clio_agent.errors import MCPMissingRequiredClientCapabilityError
+    from clio_agent.tools.mcp_errors import typed_mcp_protocol_error
+    from clio_agent.tools.mcp_header_mismatch import call_tool_with_header_retry
+    from tests.test_tools.mcp_adversarial_fixture import (
+        BAD_HEADER_MISMATCH_TOOL,
+        BAD_MISSING_CAPS_TOOL,
+        BAD_RESULT_TYPE_TOOL,
+        PAGINATED_TOOL_2,
+        adversarial_in_process_transport,
+        build_adversarial_app,
+        run_adversarial_lifespan,
+    )
+
+    app = build_adversarial_app()
+    evidence: dict[str, Any] = {}
+    async with run_adversarial_lifespan(app):
+        transport = adversarial_in_process_transport(app)
+        async with Client(transport) as client:
+            # #1285 review round MUST 1: accept EITHER upstream behavior for an
+            # unrecognized resultType -- today's observed SDK silently coerces
+            # it (no exception, isError as the fixture set it), but a future,
+            # stricter SDK that starts explicitly REJECTING an unrecognized
+            # resultType would be equally spec-compliant, not a regression.
+            # Only a genuinely UNEXPECTED exception type is a real finding.
+            try:
+                result = await client.call_tool(BAD_RESULT_TYPE_TOOL, {"payload": "x"})
+                evidence["bad_result_type"] = {
+                    "outcome": "silently_coerced",
+                    "is_error": result.is_error,
+                    "crashed": False,
+                }
+            except MCPError as exc:
+                evidence["bad_result_type"] = {
+                    "outcome": "typed_rejection",
+                    "crashed": False,
+                    "code": exc.code,
+                    "message": exc.message,
+                }
+            except Exception as exc:  # noqa: BLE001 - genuinely unexpected, a real finding
+                evidence["bad_result_type"] = {
+                    "outcome": "unexpected_exception",
+                    "crashed": True,
+                    "exception": f"{type(exc).__name__}: {exc}",
+                }
+
+            try:
+                await client.call_tool(BAD_MISSING_CAPS_TOOL, {"payload": "x"})
+                evidence["bad_missing_caps"] = {"crashed": False, "raised": False}
+            except MCPError as exc:
+                typed = typed_mcp_protocol_error(exc)
+                evidence["bad_missing_caps"] = {
+                    "crashed": False,
+                    "raised": True,
+                    "code": exc.code,
+                    "typed_ok": isinstance(typed, MCPMissingRequiredClientCapabilityError),
+                }
+
+            try:
+                await call_tool_with_header_retry(client, BAD_HEADER_MISMATCH_TOOL, {"payload": "x"})
+                evidence["bad_header_mismatch"] = {"crashed": False, "bounded": False}
+            except MCPError as exc:
+                evidence["bad_header_mismatch"] = {
+                    "crashed": False,
+                    "bounded": True,
+                    "final_code": exc.code,
+                }
+
+            tools = await client.list_tools()
+            names = sorted(t.name for t in tools)
+            second_page_reached = PAGINATED_TOOL_2 in names
+            evidence["pagination"] = {
+                "resolved_tool_names": names,
+                "second_page_reached": second_page_reached,
+                # #1285 review round MUST 1: accept EITHER upstream behavior --
+                # today's OBSERVED library bug (empty-string cursor treated as
+                # terminal, stopping at page 1) OR a future, spec-compliant fix
+                # (both pages resolved) are equally acceptable outcomes; only
+                # something outside BOTH known-good sets (a crash, a hang, or
+                # neither page's tool present) is a real finding.
+                "observed": (
+                    "spec_compliant_both_pages_resolved"
+                    if second_page_reached
+                    else "library_bug_empty_string_cursor_treated_as_terminal"
+                ),
+                "note": (
+                    "verified LIBRARY gap, not a clio gap: fastmcp's Client."
+                    "list_tools() checks `if not result.next_cursor: break` "
+                    "(fastmcp/client/mixins/tools.py), so an EMPTY-STRING "
+                    "cursor (E10: valid, non-terminal) is treated as the end "
+                    "-- clio never implements its own pagination, it always "
+                    "calls client.list_tools() and trusts the result. If "
+                    "'observed' above ever reads spec_compliant_both_pages_"
+                    "resolved, fastmcp fixed the bug upstream -- update this "
+                    "note, don't treat it as a regression."
+                ),
+            }
+
+    return evidence
+
+
 def avenue_adversarial() -> dict[str, Any]:
+    """#1285 C1-S5 item 4: flipped blocked -> real (was: no fixture existed).
+
+    Asserts clio SURVIVES four kinds of upstream/library non-compliance
+    typed, never that clio crashes or hangs -- NOT a claim that the fastmcp
+    SDK itself is spec-compliant (#1285 review round MUST 2: the original
+    criteria for ``bad_result_type``/``pagination`` accidentally asserted the
+    OPPOSITE -- they passed only while a specific upstream bug/laxness held,
+    and would have gone red the moment fastmcp fixed it upstream, penalizing
+    a library improvement as if it were a clio regression).
+    """
+
+    import asyncio as _asyncio
+
+    from tests.test_tools.mcp_adversarial_fixture import PAGINATED_TOOL, PAGINATED_TOOL_2
+
+    pass_means = (
+        "clio survives four kinds of library non-compliance TYPED (never a "
+        "crash or a hang) -- not a claim that fastmcp itself is spec-"
+        "compliant. bad_result_type and pagination each accept EITHER "
+        "today's observed upstream behavior OR a future, stricter/spec-"
+        "compliant fix (see each field's 'outcome'/'observed' evidence for "
+        "which one actually fired this run); only an outcome outside both "
+        "known-good sets fails. bad_missing_caps and bad_header_mismatch are "
+        "clio's OWN defensive code (typed-capability mapping, bounded "
+        "header-mismatch retry) and have exactly one correct outcome each."
+    )
+
+    try:
+        evidence = _asyncio.run(_run_adversarial_probe())
+    except Exception as exc:  # noqa: BLE001 - captured into the verdict
+        return {
+            "avenue": "adversarial",
+            "status": "fail",
+            "pass_means": pass_means,
+            "evidence": {},
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    # #1285 review round MUST 2: accept EITHER upstream behavior on both axes
+    # -- only a genuinely unexpected/untyped outcome (a crash, a hang, or a
+    # tool set matching NEITHER known-good page-resolution) fails.
+    bad_result_type_ok = evidence["bad_result_type"]["outcome"] in (
+        "silently_coerced",
+        "typed_rejection",
+    )
+    pagination_ok = evidence["pagination"]["resolved_tool_names"] in (
+        [PAGINATED_TOOL],
+        sorted([PAGINATED_TOOL, PAGINATED_TOOL_2]),
+    )
+    ok = (
+        bad_result_type_ok
+        and evidence["bad_missing_caps"]["raised"]
+        and evidence["bad_missing_caps"].get("typed_ok") is True
+        and evidence["bad_header_mismatch"]["bounded"]
+        and pagination_ok
+    )
     return {
         "avenue": "adversarial",
-        "status": "blocked",
-        "evidence": {
-            "checked": [
-                "tests/test_tools/*",
-                "docs/design/mcp-v2-understanding-2026-08.md",
-                "docs/design/mcp-client-obligations-2026-07-28.md",
-            ],
-            "finding": (
-                "no standalone MUST-violating raw-responder/ASGI-shim fixture "
-                "exists anywhere in this repo -- searched tests/test_tools/ for "
-                "'raw responder'/'ASGI shim'/'asgi_shim'/'raw_responder': zero "
-                "hits. The C1-S0 slice (mcp_exerciser.py, mcp_v1_fixture.py) "
-                "built a well-behaved modern exerciser and a well-behaved frozen "
-                "v1 fixture, but no fixture that deliberately emits malformed/"
-                "MUST-violating frames (e.g. a wrong-typed tasks/get response, a "
-                "missing required field, an invalid taskSupport value)."
-            ),
-            "what_is_missing": (
-                "a small hand-rolled ASGI app (bypassing fastmcp's own protocol "
-                "correctness) returning deliberately protocol-violating JSON-RPC "
-                "frames for specific methods, servable stand-alone as a second "
-                "declared MCP server so a leg could mount it in a workspace "
-                "mcp.yaml and assert the client reacts typed to each violation "
-                "without hanging."
-            ),
-        },
-        "error": None,
+        "status": "pass" if ok else "fail",
+        "pass_means": pass_means,
+        "evidence": evidence,
+        "error": None if ok else "one or more adversarial violations were not handled as expected",
     }
 
 
@@ -803,13 +1160,13 @@ def avenue_pagination(resolved_main_tools: set[str]) -> dict[str, Any]:
                 "anywhere in clio_agent (repo-wide grep for list_page_size/"
                 "page_size/pagination/cursor across src/clio_agent/tools/*: zero "
                 "MCP-tools/list-paging-related hits), so this leg cannot FORCE "
-                "the exerciser's 13-tool tools/list to span multiple pages. "
+                "the exerciser's tools/list to span multiple pages. "
                 "fastmcp's Client.list_tools() cursor-based pagination is "
                 "SDK-internal (obligations doc row B1, 'library-covered'), not "
                 "independently forceable to a small page size from this "
                 "codebase. This avenue instead proves pagination TRANSPARENCY "
                 "indirectly: if any page boundary were mishandled, some of the "
-                "12 expected tools would be missing from the resolved agent's "
+                "expected tools would be missing from the resolved agent's "
                 "toolset above -- they are not (when this avenue passes)."
             ),
         },
@@ -1017,6 +1374,24 @@ def avenue_headers(call: Any, hcap_port: int, hcap_log: Path) -> dict[str, Any]:
             "error": "the probe tool call through the REST-install lane failed",
         }
 
+    # #1285 (C1-S5, item 1): a SECOND call, against the ANNOTATED tool, so B3
+    # (Mcp-Param-* mirroring, SEP-2578) is actually exercised -- the plain
+    # `probe` call above only ever proved B2 (Mcp-Method/Mcp-Protocol-Version).
+    annotated_call_error: str | None = None
+    annotated_result: Any = None
+    try:
+        annotated_result = call(
+            "POST",
+            f"/v1/mcp/servers/{server_id}/call",
+            {
+                "tool": "probe_with_header",
+                "args": {"trace_id": "leg-c2-trace", "payload": "hdr-probe"},
+            },
+            ok=(200, 201),
+        )
+    except Exception as exc:  # noqa: BLE001 - captured into the verdict, not fatal to avenue 10
+        annotated_call_error = f"{type(exc).__name__}: {exc}"
+
     rows = hcap.read_captured_rows(hcap_log)
     call_rows = [r for r in rows if (r.get("headers") or {}).get("mcp-method") == "tools/call"]
     last = call_rows[-1] if call_rows else {}
@@ -1024,34 +1399,45 @@ def avenue_headers(call: Any, hcap_port: int, hcap_log: Path) -> dict[str, Any]:
     has_method = "mcp-method" in headers
     has_protocol_version = "mcp-protocol-version" in headers
     param_headers = {k: v for k, v in headers.items() if k.startswith("mcp-param-")}
-    status = "pass" if (has_method and has_protocol_version) else "fail"
+
+    # The annotated call's OWN row: find_invalid_x_mcp_header/x_mcp_header_map both
+    # key on the tool's LAST listed schema, so this must be the row whose call_result
+    # tool name matches probe_with_header -- match by presence of mcp-param-trace-id
+    # first (the direct signal), falling back to "the last row overall" for evidence.
+    annotated_rows = [r for r in call_rows if "mcp-param-trace-id" in (r.get("headers") or {})]
+    annotated_headers = (annotated_rows[-1].get("headers") if annotated_rows else None) or {}
+    mcp_param_mirrored = annotated_headers.get("mcp-param-trace-id") == "leg-c2-trace"
+
+    status = "pass" if (has_method and has_protocol_version and mcp_param_mirrored) else "fail"
     return {
         "avenue": "headers",
         "status": status,
         "evidence": {
             "install": installed,
             "call_result": result,
+            "annotated_call_result": annotated_result,
+            "annotated_call_error": annotated_call_error,
             "captured_rows": rows,
             "tools_call_headers": headers,
             "mcp_method_present": has_method,
             "mcp_protocol_version_present": has_protocol_version,
             "mcp_param_headers": param_headers,
+            "mcp_param_trace_id_mirrored": mcp_param_mirrored,
             "note": (
                 "clio_agent's OWN source carries zero code that sets these "
                 "headers (grepped src/clio_agent for Mcp-Method/Mcp-Param: no "
-                "hits); any presence here comes from the fastmcp CLIENT LIBRARY "
+                "hits); any presence here comes from the mcp SDK CLIENT LIBRARY "
                 "(tools/mcp_runtime.py::make_mcp_client wraps fastmcp.Client "
-                "verbatim). mcp-param-* mirroring (obligations doc row B3) is "
-                "UNTESTABLE with this probe tool regardless of outcome: B3 only "
-                "mirrors ANNOTATED header-worthy params (SEP-2578), and neither "
-                "this capture tool nor any exerciser tool declares one -- a "
-                "genuine capture-tool/exerciser gap, not evidence either way "
-                "about B3."
+                "verbatim, which wraps mcp.client.session.ClientSession -- see "
+                "ClientSession._make_modern_stamp). B3 mcp-param-* mirroring is "
+                "now genuinely exercised: probe_with_header declares an "
+                "x-mcp-header-annotated 'Trace-Id' param, and this avenue "
+                "asserts the mirrored header's VALUE, not just its presence."
             ),
         },
         "error": None
         if status == "pass"
-        else "tools/call did not carry Mcp-Method/Mcp-Protocol-Version headers",
+        else "tools/call did not carry Mcp-Method/Mcp-Protocol-Version/mirrored Mcp-Param-Trace-Id headers",
     }
 
 

@@ -431,6 +431,9 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
             # both reset it (run_with_activity_backstop's own docstring). An
             # unbounded commitment (timeout is None, #1225 wait_for_terminal)
             # needs no backstop at all, activity-driven or otherwise.
+            from clio_agent.tools.mcp_header_mismatch import (  # noqa: PLC0415
+                call_tool_with_header_retry,
+            )
             from clio_agent.tools.mcp_wait_ladder import (  # noqa: PLC0415
                 ActivityClock,
                 MCPCallTimeoutBackstopError,
@@ -441,11 +444,12 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
 
             try:
                 if timeout is None:
-                    result = await client.call_tool(on_server_name, dict(args))
+                    result = await call_tool_with_header_retry(client, on_server_name, dict(args))
                 else:
                     activity = ActivityClock()
                     result = await run_with_activity_backstop(
-                        client.call_tool(
+                        call_tool_with_header_retry(
+                            client,
                             on_server_name,
                             dict(args),
                             progress_handler=activity_progress_handler(activity),
