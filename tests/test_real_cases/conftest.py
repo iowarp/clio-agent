@@ -240,9 +240,19 @@ def gact_server(request: pytest.FixtureRequest) -> Generator[GactServer, None, N
     #   - XDG_CONFIG_HOME: points the server at a throwaway tmp config root, so it
     #     can't see the user's installed blueprint -> assignment 404s "agent
     #     blueprint not found" (TRAP 1/5).
+    #   - CLIO_USER_DIR: the same throwaway root via the override platformdirs
+    #     honors on EVERY OS (tests/conftest.py sets BOTH; on Windows XDG alone is
+    #     a no-op, so stripping only XDG still 404s the blueprint — same trap).
     #   - CLIO_LM_MODEL: a unit-test default model; the bind PUT sets the real one.
+    # The CLIO_RUNTIME_STATE_DIR / CLIO_ARC_STORE_CONFIG / CLIO_SERVER_CONF /
+    # CLIO_CORE_PORT / USER quintet from tests/_cte_isolation stays INHERITED on
+    # purpose: it points this server at the pytest session's private real clio-core
+    # daemon (eagerly booted at session start) with the matching shm namespace —
+    # stripping part of it would attach a mismatched namespace against the host
+    # daemon.
     for _k in (
         "XDG_CONFIG_HOME",
+        "CLIO_USER_DIR",
         "CLIO_LM_MODEL",
     ):
         env.pop(_k, None)
