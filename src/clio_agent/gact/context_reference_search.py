@@ -120,10 +120,23 @@ def _resource_results(app: "FastAPI", workspace_id: str) -> list[dict[str, Any]]
         records = store.list(workspace_id)
     except (AttributeError, KeyError, TypeError, ValueError):
         return []
+    readable_names_by_hash = {
+        str(getattr(record, "sha256", "") or "").casefold()
+        for record in records
+        if not _is_content_addressed_name(
+            str(getattr(record, "name", "") or ""),
+            str(getattr(record, "sha256", "") or ""),
+        )
+    }
     results: list[dict[str, Any]] = []
     for record in records:
         ref_id = str(getattr(record, "id", "") or "")
         label = str(getattr(record, "name", "") or ref_id)
+        content_hash = str(getattr(record, "sha256", "") or "").casefold()
+        if content_hash in readable_names_by_hash and _is_content_addressed_name(
+            label, content_hash
+        ):
+            continue
         revision = str(getattr(record, "revision", "") or "")
         media_type = str(
             getattr(record, "detected_mime", "")
@@ -146,6 +159,13 @@ def _resource_results(app: "FastAPI", workspace_id: str) -> list[dict[str, Any]]
             )
         )
     return results
+
+
+def _is_content_addressed_name(name: str, content_hash: str) -> bool:
+    """Return whether a filename exposes its content hash instead of a useful name."""
+
+    stem = Path(name).stem.casefold()
+    return bool(content_hash and stem == content_hash)
 
 
 def _artifact_results(app: "FastAPI", workspace_id: str) -> list[dict[str, Any]]:
@@ -403,7 +423,7 @@ def _walk_source_values(
         for key, child in list(value.items())[:100]:
             key_text = str(key)
             child_path = (*path, key_text)
-            if isinstance(child, str) and _is_web_url(child):
+            if isinstance(child, str) and _is_referenceable_source(child_path, child):
                 found.append((".".join(child_path), child))
             else:
                 found.extend(_walk_source_values(child, child_path, depth + 1))
@@ -421,6 +441,15 @@ def _is_web_url(value: str) -> bool:
 
     parsed = urlsplit(value.strip())
     return parsed.scheme.casefold() in {"http", "https"} and bool(parsed.netloc)
+
+
+def _is_referenceable_source(path: tuple[str, ...], value: str) -> bool:
+    """Exclude delivery infrastructure URLs from user-facing evidence sources."""
+
+    field = path[-1].replace("-", "_").casefold() if path else ""
+    if field in {"endpoint", "processor", "processor_url", "service_endpoint", "service_url"}:
+        return False
+    return _is_web_url(value)
 
 
 def _url_source_label(value: str) -> str:

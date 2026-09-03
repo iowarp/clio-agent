@@ -339,6 +339,33 @@ def test_workspace_file_search_uses_registered_root_not_process_cwd(
     assert [row["id"] for row in results] == ["registered.md"]
 
 
+def test_resource_search_prefers_a_readable_name_for_duplicate_content(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    content_hash = "a" * 64
+    app.state.resource_store = SimpleNamespace(
+        list=lambda _workspace_id: [
+            SimpleNamespace(
+                id="res_hash",
+                name=f"{content_hash}.pdf",
+                revision=1,
+                detected_mime="application/pdf",
+                sha256=content_hash,
+            ),
+            SimpleNamespace(
+                id="res_named",
+                name="annual-report.pdf",
+                revision=1,
+                detected_mime="application/pdf",
+                sha256=content_hash,
+            ),
+        ]
+    )
+
+    results = asyncio.run(search_workspace_references(app, "ws_a", kinds=["resource"]))
+
+    assert [(row["id"], row["label"]) for row in results] == [("res_named", "annual-report.pdf")]
+
+
 def test_evidence_search_ignores_categorical_source_metadata_and_keeps_urls(
     tmp_path: Path,
 ) -> None:
@@ -358,6 +385,7 @@ def test_evidence_search_ignores_categorical_source_metadata_and_keeps_urls(
                     metadata={
                         "detection_source": "signature",
                         "evidence_source": "live_handshake",
+                        "processor": "http://127.0.0.1:8089",
                         "provider": {"documentation_url": "https://example.test/docs/image-input"},
                     },
                 )
@@ -373,6 +401,7 @@ def test_evidence_search_ignores_categorical_source_metadata_and_keeps_urls(
     assert results[0]["navigation"]["uri"] == "https://example.test/docs/image-input"
     assert "signature" not in str(results)
     assert "live_handshake" not in str(results)
+    assert "127.0.0.1" not in str(results)
 
 
 def test_search_and_delivery_share_the_evidence_inventory(tmp_path: Path) -> None:
