@@ -142,7 +142,7 @@ def _grounding_workspaces(app: "FastAPI", sid: str, *, include_children: bool) -
         return []
     workspaces = [workspace_id]
     if include_children:
-        from clio_agent.gact.agent_tasks import descendant_session_ids  # noqa: PLC0415
+        from clio_agent.gact.session_descendants import descendant_session_ids  # noqa: PLC0415
 
         for child in descendant_session_ids(app, sid):
             child_ws = _session_workspace_id(app, child)

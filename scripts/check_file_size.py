@@ -123,7 +123,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # lives in the owner module tools/gateway.py; only the call site is here.
     # The campaign's blueprint extraction offsets six lines from that merged
     # seam; later docstring cleanup lowered the synchronized owner to 1020.
-    "src/clio_agent/agent.py": 1020,  # blueprint activation moved to gact/blueprint_activation.py
+    # AF-FOLD (PR #1298): +4. The workspace-root canonicalizer that the fleet
+    # registry, the leases, the reaper and the inventory reader must all agree on
+    # lives in the owner module tools/workspace_root.py; what lands here is the
+    # import plus three call sites and the two-line comment saying why the key is
+    # computed once.
+    "src/clio_agent/agent.py": 1024,  # blueprint activation moved to gact/blueprint_activation.py
     "src/clio_agent/arc/memory.py": 1389,  # provider ladder moved to provenance_config.py
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -401,7 +406,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # prompt/list branches) -- the classification logic itself lives in the owner
     # module tools/mcp_connection_era.py; only the server_id= threading + one
     # instrument_client_era() wrap for the bare-Client list branch land here.
-    "src/clio_agent/gact/routes/mcp.py": 955,  # session MCP assembly stays in routes/mcp_specs.py
+    # AF-FOLD (PR #1298): +8. GET /v1/mcp/servers now serves the typed reasons its
+    # listing is partial and reads the session inventory off the event loop (it
+    # takes the fleet lock a live turn holds). The assembly itself stays in the
+    # owner module routes/mcp_specs.py; the route gained the to_thread hop, the
+    # degradations key, and the docstring that says why both exist.
+    "src/clio_agent/gact/routes/mcp.py": 963,  # session MCP assembly stays in routes/mcp_specs.py
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
     # develop with the check job red). Recording current counts makes the debt
@@ -470,7 +480,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # the base commit's file already failed `ruff format --check`) -- no
     # additional logic, only canonical line-wrapping of untouched code. All
     # timer/registry logic lives in the owner module gact/runtime/bringup_timing.py.
-    "src/clio_agent/gact/routes/sessions.py": 1434,
+    # AF-FOLD (PR #1298): +2 -- one import and one call. DELETE /v1/sessions/{sid}
+    # purges the deleted session's agent-task rows (the registry is a projection
+    # over this store, so they are stale the moment it loses the session); the
+    # purge itself lives in the owner module gact/session_descendants.py.
+    "src/clio_agent/gact/routes/sessions.py": 1436,
     # #1215 S5: crossed the 800 new-file cap (793 -> 809) for enrich_turn_context —
     # a thin timed combinator wrapping the TWO existing enrichment calls
     # (_enrich_with_context_files + _enrich_with_requested_memory_search) in ONE
@@ -761,7 +775,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # thread_local=True silently orphans the OS lock when acquire/release
     # run on different threads, as they do here via asyncio.to_thread).
     "src/clio_agent/tools/mcp_executor.py": 827,
-    "src/clio_agent/tools/mcp_config.py": 817,
+    # AF-FOLD (PR #1298): ratcheted DOWN 817 -> 816. Credential redaction moved to
+    # the owner module tools/mcp_redaction.py, which more than paid for the
+    # ``declared`` pre-expansion field this file gained.
+    "src/clio_agent/tools/mcp_config.py": 816,
     # #1231 Part 1/2 (consumer half of the live-console feature): not previously
     # baselined -- this file was ALREADY 7 lines over the 800 cap before this
     # change (unbaselined pre-existing debt), i.e. 807 -> 820. Part 1 (+6 net):

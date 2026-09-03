@@ -58,7 +58,6 @@ from clio_agent.tools.catalog import (
     tool_owner,
 )
 from clio_agent.tools.execution import (
-    canonical_workspace_root,
     create_sync_tool_executor,
     get_active_tool_blueprint_id,
     get_active_tool_workspace_root,
@@ -77,6 +76,7 @@ from clio_agent.tools.mcp_config import load_mcp_servers
 from clio_agent.tools.mcp_discovery import NamespaceDiscoveryHealer, discover_declared_tools_bounded
 from clio_agent.tools.reaper import WorkspaceExecutorReaper
 from clio_agent.tools.remote_mcp import RemoteMcpFederation
+from clio_agent.tools.workspace_root import canonical_workspace_root
 
 _CANCELLATION_CHECKER: contextvars.ContextVar[Callable[[], bool] | None] = contextvars.ContextVar(
     "clio_cancellation_checker", default=None
@@ -504,10 +504,8 @@ class ClioAgent(dspy.Module):
         only for genuinely-invalidating events (#1236 federation epoch).
         """
 
-        # Canonicalized ONCE here, so everything keyed off ``root`` below — the
-        # executor cache, the leases, the reaper, the gateway cwd — files this
-        # workspace under the same key no matter how its ``root_path`` was
-        # spelled (``~``, trailing separator, forward slashes on Windows).
+        # Canonicalized ONCE, so the executor cache, the leases, the reaper and
+        # the gateway cwd below all file this workspace under the same key.
         root = canonical_workspace_root(get_active_tool_workspace_root())
         if not root:
             return self.tool_executor
@@ -686,9 +684,9 @@ class ClioAgent(dspy.Module):
         primitive (shared registry lock; never closes a busy/leased executor — it defers to the
         reaper's idle pass) and returns its TYPED outcome
         (:data:`RESTART_RESTARTED_LIVE` / :data:`RESTART_DEFERRED_BUSY` / :data:`RESTART_NO_RESIDENT`).
-        The registry key is :func:`~clio_agent.tools.execution.canonical_workspace_root` of the
-        workspace root — the SAME canonicalizer the turn-bound resolve uses — so the lookup
-        matches whichever way the grant route's ``ws.root_path`` happens to be spelled.
+        The registry key is ``canonical_workspace_root(workspace_root)`` — the SAME
+        canonicalizer the turn-bound resolve uses — so the lookup matches whichever way the
+        grant route's ``ws.root_path`` happens to be spelled.
         """
 
         from clio_agent.tools.reaper import RESTART_NO_RESIDENT  # noqa: PLC0415

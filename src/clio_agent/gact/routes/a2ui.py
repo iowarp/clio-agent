@@ -12,12 +12,12 @@ from clio_agent.gact.a2ui import (
     A2UIValidationError,
     validate_client_action,
 )
-from clio_agent.gact.agent_tasks import descendant_session_ids
 from clio_agent.gact.events import Event
 from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
 from clio_agent.gact.protocol_v3 import A2UI_V091, A2UI_V091_WIRE
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.routes.sessions import cancel_session_state
+from clio_agent.gact.session_descendants import descendant_session_ids
 from clio_agent.gact.turn_runner import session_busy_error_payload
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, RetryTurnRequest
 

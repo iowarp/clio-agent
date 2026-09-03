@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from clio_agent.tools.execution import canonical_workspace_root
+from clio_agent.tools.workspace_root import canonical_workspace_root
 
 #: No agent is published on the app yet (deferred construction, a failed bind).
 FLEET_HOST_ABSENT = "workspace_fleet_host_absent"

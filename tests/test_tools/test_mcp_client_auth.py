@@ -17,11 +17,11 @@ from clio_agent.tools.mcp_config import (
     MCPAuthConfig,
     MCPServerSpec,
     MCPTransportError,
-    redact_mcp_spec,
     transport_for,
     transport_from_spec,
 )
 from clio_agent.tools.mcp_handlers import MCPClientCapabilities
+from clio_agent.tools.mcp_redaction import redact_mcp_spec
 from clio_agent.tools.mcp_runtime import make_mcp_client
 
 

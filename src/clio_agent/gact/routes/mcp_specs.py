@@ -13,12 +13,9 @@ from clio_agent.gact.agents.resolution import (
     _runtime_active_agent_blueprint_path,
 )
 from clio_agent.gact.blueprint_activation import blueprint_mcp_servers, blueprint_server_map
-from clio_agent.tools.mcp_config import (
-    MCPServerSpec,
-    redact_mcp_spec,
-    unreadable_mcp_yaml_snapshot,
-)
+from clio_agent.tools.mcp_config import MCPServerSpec, unreadable_mcp_yaml_snapshot
 from clio_agent.tools.mcp_inventory_snapshot import WorkspaceMcpSnapshot, workspace_mcp_snapshot
+from clio_agent.tools.mcp_redaction import redact_mcp_spec
 
 
 def declared_mcp_specs(

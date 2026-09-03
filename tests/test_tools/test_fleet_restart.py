@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import threading
 
-from clio_agent.tools.execution import canonical_workspace_root
 from clio_agent.tools.reaper import (
     RESTART_DEFERRED_BUSY,
     RESTART_NO_RESIDENT,
     RESTART_RESTARTED_LIVE,
     WorkspaceExecutorReaper,
 )
+from clio_agent.tools.workspace_root import canonical_workspace_root
 
 
 class FakeExecutor:

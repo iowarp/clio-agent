@@ -8,11 +8,11 @@ from fastapi import FastAPI, HTTPException, Query
 from starlette.concurrency import run_in_threadpool
 
 from clio_agent import conf
-from clio_agent.gact.agent_tasks import descendant_session_ids
 from clio_agent.gact.provenance.child_projection import project_child_execution
 from clio_agent.gact.provenance.normalization import normalize_semantic_events
 from clio_agent.gact.provenance.protocol import ExecutionProvenanceReader
 from clio_agent.gact.semantic_events import semantic_event_from_events_content
+from clio_agent.gact.session_descendants import descendant_session_ids
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:

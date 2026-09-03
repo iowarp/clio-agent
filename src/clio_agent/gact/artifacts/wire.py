@@ -273,9 +273,9 @@ def append_turn_child_resource_links(
         if not direct_children:
             return
 
-        from clio_agent.gact.agent_tasks import descendant_session_ids  # noqa: PLC0415
         from clio_agent.gact.artifacts.registry import get_registry  # noqa: PLC0415
         from clio_agent.gact.runtime.globals import _new_part_id  # noqa: PLC0415
+        from clio_agent.gact.session_descendants import descendant_session_ids  # noqa: PLC0415
 
         session_ids: set[str] = set(direct_children)
         for child_sid in direct_children:

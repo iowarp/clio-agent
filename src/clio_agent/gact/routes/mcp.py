@@ -72,8 +72,9 @@ from clio_agent.gact.routes.mcp_specs import declared_mcp_specs, session_mcp_inv
 from clio_agent.gact.runtime.globals import _tool_session_context
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.execution import notify_tool_observer
-from clio_agent.tools.mcp_config import MCPTransportError, redact_mcp_spec, transport_from_spec
+from clio_agent.tools.mcp_config import MCPTransportError, transport_from_spec
 from clio_agent.tools.mcp_errors import typed_mcp_call_error
+from clio_agent.tools.mcp_redaction import redact_mcp_spec
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -139,22 +140,19 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/mcp/servers")
     async def list_mcp_servers(workspace_id: str = "", session_id: str = "") -> dict[str, Any]:
-        """Enumerate built-ins, installed servers, and selected-session declarations.
+        """Built-ins, installed servers, and the selected session's declarations.
 
-        ``degradations`` carries every typed reason the listing is partial (an
-        unreadable declaration file, a workspace fleet that is not resident), so a
-        shorter list is never served as if it were the whole truth.
+        ``degradations`` names every reason the listing is partial, so a shorter
+        list is never served as the whole truth. The session inventory blocks
+        (files + the fleet lock a live turn holds), hence the worker.
         """
 
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
         rows = _mcp_server_rows(cwd=cwd)
-        # Reads declaration files and takes the resident fleet's threading.Lock,
-        # which a live turn can hold: never on the event loop.
         inventory = await asyncio.to_thread(
             session_mcp_inventory, app, cwd=cwd, session_id=session_id
         )
-        rows.extend(inventory.rows)
-        return {"servers": rows, "degradations": inventory.degradations}
+        return {"servers": [*rows, *inventory.rows], "degradations": inventory.degradations}
 
     def _mcp_server_rows(cwd: Path | None = None) -> list[dict[str, Any]]:
         """Return bundled plus installed MCP server catalog rows."""

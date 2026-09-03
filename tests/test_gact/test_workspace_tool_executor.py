@@ -8,7 +8,8 @@ instance is created with ``__new__`` and only the per-workspace fields are set.
 from __future__ import annotations
 
 from clio_agent.agent import ClioAgent
-from clio_agent.tools.execution import canonical_workspace_root, tool_workspace_context
+from clio_agent.tools.execution import tool_workspace_context
+from clio_agent.tools.workspace_root import canonical_workspace_root
 
 
 def _bare_agent() -> ClioAgent:

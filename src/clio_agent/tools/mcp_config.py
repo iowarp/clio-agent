@@ -63,7 +63,6 @@ __all__ = [
     "load_mcp_servers",
     "transport_for",
     "transport_from_spec",
-    "redact_mcp_spec",
     "MCPTransportError",
     "unreadable_mcp_yaml_snapshot",
 ]
@@ -168,13 +167,9 @@ class MCPServerSpec:
     probe_timeout_retries: int | None = None
     source: str = ""
     validation_errors: tuple[str, ...] = ()
-    #: Pre-expansion declaration text for the three fields :func:`expand_env`
-    #: rewrites -- ``command`` / ``args`` / ``url``. ``${GITHUB_TOKEN}`` in a
-    #: declaration becomes the TOKEN in ``args`` before anything redacts the
-    #: spec, so :func:`redact_mcp_spec` serves this instead: names kept, values
-    #: gone, the same rule ``env`` and ``headers`` already follow. Empty on a
-    #: spec built without expansion (a client-supplied installed server), whose
-    #: fields are literal and were never credentials-by-reference.
+    #: Pre-expansion text for the three fields ``expand_env`` rewrites
+    #: (``command``/``args``/``url``); ``tools.mcp_redaction`` serves it in their
+    #: place. Empty on a spec built without expansion.
     declared: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @property
@@ -261,48 +256,6 @@ def _oauth_config_from_value(value: Any) -> MCPAuthConfig | None:
     )
 
 
-def redact_mcp_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
-    """Return an error/log-safe MCP spec with all client credentials removed."""
-    redacted = dict(spec)
-    headers = redacted.get("headers")
-    if isinstance(headers, Mapping):
-        redacted["headers"] = {str(key): "<redacted>" for key in headers}
-    if redacted.get("auth") is not None:
-        redacted["auth"] = "<redacted>"
-    # env values are the common credential carrier for stdio servers
-    # (GITHUB_TOKEN, API keys); redact values, keep the variable names.
-    env = redacted.get("env")
-    if isinstance(env, Mapping):
-        redacted["env"] = {str(key): "<redacted>" for key in env}
-    # ...and argv/url are the SECOND carrier: `--token ${GITHUB_TOKEN}` is already
-    # the token by the time a spec exists. Serve the declaration instead.
-    declared = redacted.pop("declared", None)
-    declared = declared if isinstance(declared, Mapping) else {}
-    for key in ("command", "url"):
-        text = declared.get(key)
-        if isinstance(text, str) and text:
-            redacted[key] = text
-    redacted["args"] = _redacted_argv(redacted.get("args"), declared.get("args"))
-    return redacted
-
-
-def _redacted_argv(expanded: Any, declared: Any) -> list[str]:
-    """Return argv as DECLARED, masking wholesale when expansion re-shaped it.
-
-    An expanded value carrying whitespace re-splits the vector, so positions no
-    longer align with the declaration and substituting element-wise would hand
-    back the wrong token. A misaligned argv is masked rather than guessed at.
-    """
-
-    argv = [str(value) for value in expanded or ()]
-    if not isinstance(declared, Sequence) or isinstance(declared, (str, bytes)):
-        return argv
-    declared_argv = [str(value) for value in declared]
-    if len(declared_argv) != len(argv):
-        return ["<redacted>"] * len(argv)
-    return declared_argv
-
-
 def _spec_from_string(
     name: str, value: str, *, source: str, env: Mapping[str, str] | None
 ) -> MCPServerSpec:
@@ -315,16 +268,10 @@ def _spec_from_string(
             name=name, transport="stdio", source=source, validation_errors=(str(exc),)
         )
 
-    # The pre-expansion text, split the SAME way, is what redaction serves in
-    # place of any field a ``${VAR}`` wrote a credential into.
-    declared_parts = shlex.split(value.strip())
+    declared_parts = shlex.split(value.strip())  # pre-expansion, split the SAME way
     if text.startswith(_URL_PREFIXES):
         return MCPServerSpec(
-            name=name,
-            transport="http",
-            url=text,
-            source=source,
-            declared={"url": value.strip()},
+            name=name, transport="http", url=text, source=source, declared={"url": value.strip()}
         )
 
     parts = shlex.split(text)
@@ -367,9 +314,7 @@ def _spec_from_mapping(
     url = ""
     headers: dict[str, str] = {}
     auth: MCPAuthConfig | None = None
-    # Pre-expansion text for every field ``expand_env`` rewrites, so redaction can
-    # serve the declaration instead of the credential a ``${VAR}`` expanded into.
-    declared_text: dict[str, Any] = {}
+    declared_text: dict[str, Any] = {}  # pre-expansion text, for redaction
     try:
         if transport == "stdio":
             declared_text["command"] = str(entry.get("command", "")).strip()

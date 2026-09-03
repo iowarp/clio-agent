@@ -11,11 +11,8 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.gact.agent_tasks import (
-    _DEFAULT_DESCENDANT_DEPTH,
-    descendant_sessions,
-    display_run_name,
-)
+from clio_agent.gact.agent_tasks import display_run_name
+from clio_agent.gact.session_descendants import _DEFAULT_DESCENDANT_DEPTH, descendant_sessions
 
 if TYPE_CHECKING:
     from fastapi import FastAPI

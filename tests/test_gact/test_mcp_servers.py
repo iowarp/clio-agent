@@ -23,7 +23,7 @@ class _InventoryAgent:
     """
 
     def __init__(self, *, root: str = "", executor: object | None = None) -> None:
-        from clio_agent.tools.execution import canonical_workspace_root
+        from clio_agent.tools.workspace_root import canonical_workspace_root
 
         self._workspace_executor_lock = threading.Lock()
         self._workspace_tool_executors = (
@@ -206,7 +206,7 @@ def test_mcp_servers_finds_the_resident_fleet_under_any_root_spelling(tmp_path: 
 def test_canonical_workspace_root_collapses_every_spelling_of_one_root(tmp_path: Path) -> None:
     """The canonicalizer itself, so the agreement above cannot drift apart."""
 
-    from clio_agent.tools.execution import canonical_workspace_root
+    from clio_agent.tools.workspace_root import canonical_workspace_root
 
     root = tmp_path / "workspace"
     root.mkdir()
@@ -229,7 +229,7 @@ def test_the_fleet_registry_keys_workspace_roots_canonically() -> None:
     """The WRITE side of that agreement: leases file under the canonical key."""
 
     from clio_agent.agent import ClioAgent
-    from clio_agent.tools.execution import canonical_workspace_root
+    from clio_agent.tools.workspace_root import canonical_workspace_root
 
     agent = ClioAgent.__new__(ClioAgent)
     _lock, _executors, leases = agent._workspace_state()

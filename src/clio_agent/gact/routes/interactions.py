@@ -10,10 +10,10 @@ from fastapi import FastAPI, HTTPException, Request
 
 from clio_agent import conf
 from clio_agent.gact.a2ui import SERVER_ACTIONS
-from clio_agent.gact.agent_tasks import descendant_session_ids
 from clio_agent.gact.mcp_task_store import app_task_store
 from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
+from clio_agent.gact.session_descendants import descendant_session_ids
 from clio_agent.gact.types import (
     AnswerUserQuestionRequest,
     ErrorEnvelope,

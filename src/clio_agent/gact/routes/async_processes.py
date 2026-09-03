@@ -24,9 +24,10 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException
 
-from clio_agent.gact.agent_tasks import AgentTask, descendant_session_ids, display_run_name
+from clio_agent.gact.agent_tasks import AgentTask, display_run_name
 from clio_agent.gact.mcp_task_store import app_task_store
 from clio_agent.gact.provenance.child_projection import child_session_lineage
+from clio_agent.gact.session_descendants import descendant_session_ids
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.mcp_task_records import TaskRecord
 

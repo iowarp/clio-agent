@@ -236,8 +236,8 @@ def _task_path(payload: dict[str, Any]) -> list[str]:
     torn projection terminates.
     """
 
-    from clio_agent.gact.agent_tasks import MAX_SPAWN_DEPTH  # noqa: PLC0415 - avoid cycle
     from clio_agent.gact.context import active_app  # noqa: PLC0415 - avoid cycle
+    from clio_agent.gact.session_descendants import MAX_SPAWN_DEPTH  # noqa: PLC0415
 
     task_id = str(payload.get("task_id") or "")
     app = active_app()

@@ -24,8 +24,8 @@ from clio_agent.gact.agent_tasks import (
     persist_agent_task,
     publish_agent_task_event,
 )
-from clio_agent.gact.agent_tasks import MAX_SPAWN_DEPTH as _MAX_SPAWN_DEPTH
 from clio_agent.gact.runtime.permission_policies import inherit_child_session_policies
+from clio_agent.gact.session_descendants import MAX_SPAWN_DEPTH as _MAX_SPAWN_DEPTH
 from clio_agent.gact.spawn_context import validate_task_spec
 from clio_agent.gact.task_fold import finish_agent_task_transition, fold_agent_task_transition
 from clio_agent.gact.turn_spawn_executor import (

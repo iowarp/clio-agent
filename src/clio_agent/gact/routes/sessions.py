@@ -54,6 +54,7 @@ from clio_agent.gact.runtime.globals import (
     _new_question_id,
 )
 from clio_agent.gact.runtime.retention import enforce_dict_bound
+from clio_agent.gact.session_descendants import purge_session_tasks
 from clio_agent.gact.types import (
     AnswerUserQuestionRequest,
     CreateSessionRequest,
@@ -316,19 +317,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         deps.delete_session_messages(app, sid)
         deps.delete_session_context_files(app, sid)
         deps.release_session_arc(app, sid)
-        # The agent-task registry is a PROJECTION over the session store, so a
-        # deleted session's rows are stale the moment the store loses it: the
-        # lineage kept naming a session nothing could read, and ``for_parent``
-        # kept handing out a task whose child is gone.
-        registry = getattr(app.state, "agent_task_registry", None)
-        if registry is not None:
-            forgotten = registry.forget_session(sid)
-            if forgotten:
-                logger.info(
-                    "agent-task rows purged with their session session=%s tasks=%s",
-                    sid,
-                    ",".join(forgotten),
-                )
+        purge_session_tasks(app, sid)
         return Response(status_code=204)
 
     # ---- Rollback (undo / rewind) -----------------------------------

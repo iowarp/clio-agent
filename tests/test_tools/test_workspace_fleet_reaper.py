@@ -13,8 +13,8 @@ from typing import Any
 
 import pytest
 
-from clio_agent.tools.execution import canonical_workspace_root
 from clio_agent.tools.reaper import WorkspaceExecutorReaper
+from clio_agent.tools.workspace_root import canonical_workspace_root
 
 
 class FakeExecutor:
