@@ -414,7 +414,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # takes the fleet lock a live turn holds). The assembly itself stays in the
     # owner module routes/mcp_specs.py; the route gained the to_thread hop, the
     # degradations key, and the docstring that says why both exist.
-    "src/clio_agent/gact/routes/mcp.py": 963,  # session MCP assembly stays in routes/mcp_specs.py
+    # AF-IMG (PR #1298): +5 -- the SPEC 6.7 anchor and the "returns BOTH the
+    # built-ins AND installed servers, each row carrying
+    # id/name/status/transport/tools_count/tools" contract sentence, deleted from
+    # list_mcp_servers this campaign. Rationale is never re-deleted to fit a
+    # ratchet; the baseline moves instead.
+    "src/clio_agent/gact/routes/mcp.py": 968,  # session MCP assembly stays in routes/mcp_specs.py
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
     # develop with the check job red). Recording current counts makes the debt
@@ -684,7 +689,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # _cli_provider.py) instead of a bare ClaudeCodeExecError -- so the account's
     # rejection reaches the trace/transcript honestly instead of a misleading
     # LMTransportError, and is never retried as transient.
-    "src/clio_agent/providers/claude_code_litellm.py": 857,
+    # AF-IMG (PR #1298): 857 -> 855. The duplicated per-call request-trace record
+    # (two near-identical copies that had already drifted) moved to its owner
+    # module providers/claude_code_audit.py as emit_request_trace, which also
+    # paid for the restored module-header rationale and the restored (redacted)
+    # messages record.
+    "src/clio_agent/providers/claude_code_litellm.py": 855,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
     # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
     # #947 DEBT (recorded 2026-07-18, #948 S4): residual over the pre-#947 count

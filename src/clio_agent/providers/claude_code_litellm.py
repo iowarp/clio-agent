@@ -1,12 +1,20 @@
-"""LiteLLM provider for Claude Code's persistent Agent SDK transport.
+"""LiteLLM ``CustomLLM`` provider for Claude Code.
 
-CLIO owns planning and tools; Claude's built-in tools remain disabled. The
-legacy per-call ``claude -p`` transport was removed in v0.8.0 (#891).
+Routes ``dspy.LM(model="claude_code/<model>", ...)`` calls through the
+Claude Agent SDK (persistent pooled CLI session) so CLIO can use the user's
+Claude Code subscription auth without bypassing the DSPy/LiteLLM provider
+contract. One transport since the v0.8.0 cleanup: the legacy ``exec`` batch
+transport (one ``claude -p`` subprocess per call, no token stream) was
+deleted — #891 evidence showed the SDK path is strictly better (pooled
+session reuse, streaming TTFT, prompt-cache continuity).
+
+The Claude Code process is used as a bare model transport. Built-in tools
+are disabled; CLIO's planner and MCP/tool gateway remain the only tool
+execution layer.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import threading
@@ -23,13 +31,16 @@ from clio_agent.providers._cli_provider import (
 from clio_agent.providers.claude_code_audit import (
     emit_call_started,
     emit_call_usage,
+    emit_request_trace,
 )
+from clio_agent.providers.claude_code_audit import trace_json as _trace_json
 from clio_agent.providers.claude_code_bridge import (
     build_model_response as _build_model_response,
 )
 from clio_agent.providers.claude_code_multimodal import (
     messages_to_claude_input,
     native_input_summary,
+    redact_message_attachments,
 )
 from clio_agent.providers.claude_code_options import build_sdk_options
 from clio_agent.providers.claude_code_sessions import (
@@ -109,15 +120,6 @@ def _next_call_index() -> int:
     with _CALL_COUNTER_LOCK:
         _CALL_COUNTER += 1
         return _CALL_COUNTER
-
-
-def _trace_json(value: Any) -> str:
-    """Serialize provider I/O for the existing trace logger."""
-
-    try:
-        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
-    except TypeError:
-        return json.dumps(str(value), ensure_ascii=False)
 
 
 def _messages_to_claude_prompt(messages: list[dict[str, Any]]) -> str:
@@ -524,6 +526,18 @@ async def _astream_sdk(
         raise ClaudeCodeExecError(f"claude agent sdk returned empty content (model={model})")
 
 
+#: The SDK options each entry point reports in its request trace. CLIO owns tool
+#: execution, so both disable Claude's built-in tools; only the streaming path
+#: asks for partial messages.
+_BLOCKING_SDK_OPTIONS: dict[str, Any] = {
+    "tools": [],
+    "allowed_tools": [],
+    "max_turns": 1,
+    "setting_sources": [],
+}
+_STREAMING_SDK_OPTIONS: dict[str, Any] = {**_BLOCKING_SDK_OPTIONS, "include_partial_messages": True}
+
+
 class ClaudeCodeLLM(CustomLLM):
     """LiteLLM custom handler that routes ``claude_code/<model>`` to Claude Code."""
 
@@ -564,31 +578,24 @@ class ClaudeCodeLLM(CustomLLM):
         cwd = params.get("claude_code_cwd", os.getcwd())
         # Provider-generic thinking (#895): resolved SDK config, or None = default.
         thinking = params.get("claude_code_thinking")
-        trace.HF_ON and trace.hot(
-            "CLAUDE-CODE-IO",
-            "request call=%d json=%s",
-            call_index,
-            _trace_json(
-                {
-                    "call": call_index,
-                    "mode": "completion",
-                    "thinking": thinking,
-                    "model": clean_model,
-                    "transport": transport,
-                    "api_base": api_base,
-                    "cwd": cwd,
-                    "timeout_s": timeout_s,
-                    "sdk_options": {
-                        "tools": [],
-                        "allowed_tools": [],
-                        "max_turns": 1,
-                        "setting_sources": [],
-                    },
-                    "prompt": prompt,
-                    "native_inputs": native_input_summary(native_blocks),
-                    "optional_params": params,
-                }
-            ),
+        emit_request_trace(
+            call_index=call_index,
+            mode="completion",
+            model=clean_model,
+            transport=transport,
+            api_base=api_base,
+            cwd=cwd,
+            timeout_s=timeout_s,
+            thinking=thinking,
+            sdk_options=_BLOCKING_SDK_OPTIONS,
+            # The request SHAPE, with attachment bytes elided and the redaction
+            # typed. Deleting this record outright (rather than redacting it)
+            # removed the only view of how many parts a multimodal request
+            # carried, in what order, of what media type.
+            messages=redact_message_attachments(messages),
+            prompt=prompt,
+            native_inputs=native_input_summary(native_blocks),
+            optional_params=params,
         )
         trace.HF_ON and trace.hot(
             "CLAUDE-CODE-CALL",
@@ -610,16 +617,19 @@ class ClaudeCodeLLM(CustomLLM):
             prompt=prompt,
         )
         started = time.monotonic()
-        sdk_kwargs: dict[str, Any] = {
-            "prompt": prompt,
-            "model": clean_model,
-            "timeout": timeout_s,
-            "cwd": cwd,
-            "thinking": thinking,
-        }
-        if native_blocks:
-            sdk_kwargs["native_blocks"] = native_blocks
-        text, usage = _run_sdk(**sdk_kwargs)
+        # ONE choice for the native_blocks seam: every call site passes it,
+        # empty or not. The completion path used to pass it conditionally while
+        # the streaming path and both message sources passed it unconditionally,
+        # so the empty case exercised a different signature from the non-empty
+        # one and only the non-empty one was tested.
+        text, usage = _run_sdk(
+            prompt=prompt,
+            native_blocks=native_blocks,
+            model=clean_model,
+            timeout=timeout_s,
+            cwd=cwd,
+            thinking=thinking,
+        )
         emit_call_usage(
             call_id=call_id,
             call_index=call_index,
@@ -753,32 +763,20 @@ class ClaudeCodeLLM(CustomLLM):
         cwd = params.get("claude_code_cwd", os.getcwd())
         # Provider-generic thinking (#895): resolved SDK thinking config, or None.
         thinking = params.get("claude_code_thinking")
-        trace.HF_ON and trace.hot(
-            "CLAUDE-CODE-IO",
-            "request call=%d json=%s",
-            call_index,
-            _trace_json(
-                {
-                    "call": call_index,
-                    "mode": "astreaming",
-                    "thinking": thinking,
-                    "model": clean_model,
-                    "transport": transport,
-                    "api_base": api_base,
-                    "cwd": cwd,
-                    "timeout_s": timeout_s,
-                    "sdk_options": {
-                        "tools": [],
-                        "allowed_tools": [],
-                        "max_turns": 1,
-                        "setting_sources": [],
-                        "include_partial_messages": True,
-                    },
-                    "prompt": prompt,
-                    "native_inputs": native_input_summary(native_blocks),
-                    "optional_params": params,
-                }
-            ),
+        emit_request_trace(
+            call_index=call_index,
+            mode="astreaming",
+            model=clean_model,
+            transport=transport,
+            api_base=api_base,
+            cwd=cwd,
+            timeout_s=timeout_s,
+            thinking=thinking,
+            sdk_options=_STREAMING_SDK_OPTIONS,
+            messages=redact_message_attachments(messages),
+            prompt=prompt,
+            native_inputs=native_input_summary(native_blocks),
+            optional_params=params,
         )
         trace.HF_ON and trace.hot(
             "CLAUDE-CODE-CALL",

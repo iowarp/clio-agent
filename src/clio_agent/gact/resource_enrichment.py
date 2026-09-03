@@ -111,14 +111,17 @@ def describe_resource_parts(app: "FastAPI", sid: str, parts: list) -> list[str]:
             "tools. Custody paths are private and must not be passed to filesystem tools."
         )
         if _is_native_delivery(part):
-            blocks.append(
-                header
-                + " The original attachment is also included directly in this model input; use it "
-                + "now. Structured conversion is independent and does not block native reading. "
-                + "Do not inspect or wait for conversion unless the user explicitly asks for "
-                + "converted structure, extracted text, or OCR."
+            # State-meaning grounding only: say WHAT is true of this attachment.
+            # The block used to continue here with "use it now" / "Do not inspect
+            # or wait for conversion" -- a behavioural prohibition that also
+            # deleted every conversion/derivative sentence below, so a model
+            # holding the original could no longer learn that a structured
+            # conversion existed, was still running, or had failed. Telling the
+            # model what a state MEANS is grounding; forbidding it a tool is not.
+            header += (
+                " The original attachment is also included directly in this model input, so its "
+                "content is readable here without any tool call."
             )
-            continue
         manifest = app.state.resource_processing_store.manifest(record)
         if processing.derivatives_available and manifest is not None:
             suffix = _derivative_suffix(manifest)

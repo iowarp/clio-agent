@@ -17,7 +17,10 @@ from clio_agent.gact.messaging import _dspy_files_from_parts, _dspy_images_from_
 from clio_agent.gact.parts import Part
 from clio_agent.gact.protocol.v3.message import part_to_v3_block
 from clio_agent.gact.resource_custody import ResourceLimitError, ResourceStore
-from clio_agent.gact.resource_enrichment import describe_resource_parts
+from clio_agent.gact.resource_enrichment import (
+    PROCESSING_QUERY_TOOL,
+    describe_resource_parts,
+)
 from clio_agent.gact.resource_processing import (
     ResourceConverterFactory,
     ResourceProcessingRecord,
@@ -1252,7 +1255,9 @@ def test_resource_context_exposes_durable_local_conversion_task_before_remote_jo
         assert "No structured converter was selected" not in prompt
 
 
-def test_native_resource_context_does_not_block_on_parallel_conversion(tmp_path: Path) -> None:
+def test_native_resource_context_states_the_input_and_keeps_conversion_grounding(
+    tmp_path: Path,
+) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeClioAgent(answer="unused"))
     with TestClient(app) as client:
         workspace_id = _workspace(client, tmp_path / "workspace")
@@ -1298,10 +1303,18 @@ def test_native_resource_context_does_not_block_on_parallel_conversion(tmp_path:
         )
 
         assert len(blocks) == 1
+        # The model is told what its INPUT contains -- state-meaning grounding.
         assert "included directly in this model input" in blocks[0]
-        assert "does not block native reading" in blocks[0]
-        assert "wait once with workspace_resource_wait" not in blocks[0]
-        assert "resource-processing:" not in blocks[0]
+        # ...and still learns the conversion state, which the prompt handcuff
+        # ("use it now", "Do not inspect or wait for conversion") deleted along
+        # with every derivative sentence. A model holding the original may still
+        # legitimately want the structured conversion; forbidding it a tool is
+        # not this block's job.
+        assert "Structured conversion is still" in blocks[0]
+        assert PROCESSING_QUERY_TOOL in blocks[0]
+        # No behavioural prohibition is injected.
+        assert "Do not inspect" not in blocks[0]
+        assert "use it now" not in blocks[0]
 
 
 def test_resource_conversion_wait_uses_one_stable_local_task_to_completion(

@@ -293,6 +293,38 @@ async def sdk_prompt(
     }
 
 
+#: Stands in for elided attachment bytes in a trace record. A typed marker, not
+#: an empty string, so a reader can tell "redacted here" from "absent upstream".
+REDACTED_ATTACHMENT_DATA = "<redacted: native attachment bytes, {length} source bytes>"
+
+
+def redact_message_attachments(messages: Any) -> Any:
+    """Return ``messages`` with attachment bytes elided and structure preserved.
+
+    The provider request trace used to record ``messages`` verbatim; the native
+    multimodal change deleted the whole record rather than redact it, so the
+    trace stopped showing the request SHAPE — how many parts, in what order, of
+    what media type — which is exactly what a multimodal dispatch bug looks like.
+    Structure is kept, only the payload is replaced, and the replacement names
+    itself and the size it stood in for.
+    """
+
+    if isinstance(messages, list):
+        return [redact_message_attachments(item) for item in messages]
+    if not isinstance(messages, dict):
+        return messages
+    redacted: dict[str, Any] = {}
+    for key, value in messages.items():
+        if key in {"data", "file_data"} and isinstance(value, str):
+            redacted[key] = REDACTED_ATTACHMENT_DATA.format(length=base64_byte_length(value))
+        elif key == "url" and isinstance(value, str) and value.startswith("data:"):
+            _header, _sep, payload = value.partition(",")
+            redacted[key] = REDACTED_ATTACHMENT_DATA.format(length=base64_byte_length(payload))
+        else:
+            redacted[key] = redact_message_attachments(value)
+    return redacted
+
+
 def native_input_summary(native_blocks: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return bounded trace metadata that never includes attachment bytes or URLs.
 
@@ -318,8 +350,10 @@ def native_input_summary(native_blocks: Sequence[dict[str, Any]]) -> list[dict[s
 __all__ = [
     "CLAUDE_IMAGE_MEDIA_TYPES",
     "CLAUDE_PDF_MEDIA_TYPE",
+    "REDACTED_ATTACHMENT_DATA",
     "messages_to_claude_input",
     "native_image_url_allowlist",
     "native_input_summary",
+    "redact_message_attachments",
     "sdk_prompt",
 ]

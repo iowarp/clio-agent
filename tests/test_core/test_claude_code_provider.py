@@ -211,9 +211,13 @@ def test_custom_llm_sdk_transport_routes_to_run_sdk(monkeypatch) -> None:
     """transport='sdk' dispatches to the Agent SDK path (not `claude -p` exec)."""
     seen: dict = {}
 
-    def _fake_sdk(*, prompt, model, timeout, cwd, thinking=None):
+    # native_blocks is required, not optional: the seam passes it from EVERY
+    # call site now, empty or not, so a signature that omits it would be a
+    # signature the transport never actually sees.
+    def _fake_sdk(*, prompt, native_blocks, model, timeout, cwd, thinking=None):
         seen["model"] = model
         seen["thinking"] = thinking
+        seen["native_blocks"] = native_blocks
         return "sdk says hi", {"input_tokens": 2, "output_tokens": 3}
 
     monkeypatch.setattr(claude_code_litellm, "_run_sdk", _fake_sdk)
@@ -230,6 +234,7 @@ def test_custom_llm_sdk_transport_routes_to_run_sdk(monkeypatch) -> None:
         optional_params={"claude_code_transport": "sdk"},
     )
     assert seen["model"] == "haiku"  # provider strips the claude_code/cc- prefixes
+    assert seen["native_blocks"] == []  # a text turn still supplies the seam
     assert resp.choices[0].message.content == "sdk says hi"
 
 

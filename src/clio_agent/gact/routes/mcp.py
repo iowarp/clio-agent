@@ -140,7 +140,12 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/mcp/servers")
     async def list_mcp_servers(workspace_id: str = "", session_id: str = "") -> dict[str, Any]:
-        """Built-ins, installed servers, and the selected session's declarations.
+        """SPEC §6.7 — enumerate MCP servers the backend has mounted.
+
+        Returns the bundled in-process built-ins (fs/shell), any
+        declared/third-party servers installed via POST /v1/mcp/servers, AND the
+        selected session's own declarations. Each row carries
+        id/name/status/transport/tools_count/tools.
 
         ``degradations`` names every reason the listing is partial, so a shorter
         list is never served as the whole truth. The session inventory blocks

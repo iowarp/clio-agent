@@ -122,7 +122,7 @@ def test_build_sdk_options_isolates_clio_from_personal_claude_capabilities() -> 
 def test_completion_passes_thinking_from_optional_params_to_run_sdk(monkeypatch) -> None:
     seen: dict = {}
 
-    def fake_sdk(*, prompt, model, timeout, cwd, thinking=None):
+    def fake_sdk(*, prompt, native_blocks, model, timeout, cwd, thinking=None):
         seen["thinking"] = thinking
         return "ok", {"input_tokens": 1, "output_tokens": 1}
 
