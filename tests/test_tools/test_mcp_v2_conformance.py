@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from collections.abc import Mapping
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -46,6 +47,10 @@ from clio_agent.errors import (
     MCP_TASKS_DIRECT_ROUTE_SELECTED,
     MCPMissingRequiredClientCapabilityError,
 )
+from clio_agent.gact.app import build_app
+from clio_agent.gact.mcp_apps import _resource_uri, call_tool_result_to_wire
+from clio_agent.gact.runtime.globals import _gact_app_context, _tool_session_context
+from clio_agent.tools.execution import SyncMCPToolExecutor
 from clio_agent.tools.gateway import (
     _list_declared_tools,
     build_gateway,
@@ -55,11 +60,13 @@ from clio_agent.tools.gateway import (
 from clio_agent.tools.mcp_config import MCPServerSpec, transport_for
 from clio_agent.tools.mcp_connection_era import (
     latest_mcp_connection_era,
+    latest_server_extensions,
     latest_task_capability,
     resolved_connect_mode,
 )
 from clio_agent.tools.mcp_errors import typed_mcp_protocol_error
 from clio_agent.tools.mcp_executor import AsyncMCPToolExecutor
+from clio_agent.tools.mcp_extension_registry import UI_EXTENSION_ID, extensions_declaration
 from clio_agent.tools.mcp_runtime import make_mcp_client
 from clio_agent.tools.mcp_task_extension import tasks_declaration
 from clio_agent.tools.mcp_task_records import InMemoryTaskRecordStore, set_task_record_store
@@ -76,7 +83,9 @@ from .mcp_exerciser import (
     EXERCISER_NAMESPACE,
     EXERCISER_PATH,
     MODERN_PROTOCOL_VERSION,
+    SYNTHETIC_EXTENSION_ID,
     TASKS_EXTENSION_ID,
+    UI_RESOURCE_URI,
     build_exerciser_server,
 )
 from .mcp_v1_fixture import V1_FIXTURE_PATH, V1_PROTOCOL_VERSION, V1_TOOL_NAME
@@ -842,3 +851,240 @@ def test_permanent_protocol_refusal_terminates_the_react_loop_fast() -> None:
     assert f" Re-dial declaring the client extension(s): {TASKS_EXTENSION_ID}." in str(
         excinfo.value
     )
+
+
+# --------------------------------------------------------------------------
+# Layer 6: C1-S3 (#1283) -- the generic extension registry (tasks becomes
+# entry #1, ui is entry #2) and the MCP Apps ui-serving arm, negotiated and
+# admitted end to end against the exerciser. The Apps HOST itself
+# (gact/mcp_apps.py) is untouched -- these tests prove the newly-declared
+# wire feeds it, never new host behavior.
+# --------------------------------------------------------------------------
+
+
+def test_extensions_declaration_composes_tasks_and_ui_for_a_plain_client() -> None:
+    """The registry folds BOTH active entries for a plain (non-proxy) client.
+
+    Tasks entry #1 is byte-identical to the pre-registry ``tasks_declaration``
+    call (proven by the layer-4 tests above, untouched); this pins the NEW
+    composition: ui is entry #2, and both are active for a plain client.
+    """
+
+    declaration = extensions_declaration(Client, object())
+    by_id = {entry.identifier: entry for entry in declaration.entries}
+    assert set(by_id) == {TASKS_EXTENSION_ID, UI_EXTENSION_ID}
+    assert by_id[TASKS_EXTENSION_ID].extension is not None
+    assert by_id[TASKS_EXTENSION_ID].reason is None
+    assert by_id[UI_EXTENSION_ID].extension is not None
+    assert by_id[UI_EXTENSION_ID].reason is None
+    assert {ext.identifier for ext in declaration.extensions} == {
+        TASKS_EXTENSION_ID,
+        UI_EXTENSION_ID,
+    }
+
+
+def test_extensions_declaration_suppresses_tasks_but_keeps_ui_for_a_proxy_client() -> None:
+    """The proxy suppression is TASKS-specific -- ui is never suppressed (#1283).
+
+    Unlike tasks (a proxy backend leg cannot drive a backend TASK on the
+    caller's behalf), a proxy can always relay a ui-bearing result unchanged;
+    declaring ui is what makes a spec-compliant server willing to attach
+    ``_meta.ui`` in the first place, regardless of transport shape.
+    """
+
+    declaration = extensions_declaration(ProxyClient, object())
+    by_id = {entry.identifier: entry for entry in declaration.entries}
+    assert by_id[TASKS_EXTENSION_ID].extension is None
+    assert by_id[TASKS_EXTENSION_ID].reason == MCP_TASKS_DECLARATION_SUPPRESSED
+    assert by_id[UI_EXTENSION_ID].extension is not None
+    assert by_id[UI_EXTENSION_ID].reason is None
+    assert [ext.identifier for ext in declaration.extensions] == [UI_EXTENSION_ID]
+
+
+async def test_declared_path_negotiates_the_synthetic_extension_end_to_end() -> None:
+    """#1283 point 1: a NON-built-in server extension, negotiated end to end.
+
+    ``mcp_exerciser.SyntheticExtension`` declares an identifier the client-side
+    registry never special-cases (not tasks, not ui) -- proving the READ side
+    (``mcp_connection_era.record_server_extensions``) is genuinely GENERIC,
+    not a shortlist of known ids, through the SAME declared-path connect seam
+    (``make_mcp_client(..., server_id=...)``) every C1-S1 test uses.
+    """
+
+    server_id = "v2ex-synthetic"
+    assert latest_server_extensions(server_id) is None, "stale record from a prior test"
+    try:
+        client = make_mcp_client(transport_for(_exerciser_spec(server_id)), server_id=server_id)
+        async with client:
+            assert SYNTHETIC_EXTENSION_ID in (client.server_capabilities.extensions or {})
+
+        record = latest_server_extensions(server_id)
+        assert record is not None
+        assert SYNTHETIC_EXTENSION_ID in record.extensions
+        assert TASKS_EXTENSION_ID in record.extensions
+        assert UI_EXTENSION_ID in record.extensions
+        assert record.era == "modern"
+    finally:
+        _reap("mcp_exerciser.py")
+
+
+def test_handshake_row_surfaces_declared_extensions() -> None:
+    """#1283 point 5: the handshake/capability read path surfaces the
+    recorded server-declared extensions -- the direct assertion target the
+    extensions live-verification avenue needed (LEG_C2.md avenue 8's finding:
+    the handshake row never surfaced ``ServerCapabilities.extensions`` at
+    all; ``execution_era`` was the only, indirect, signal)."""
+
+    from clio_agent.gact.routes.mcp_rows import handshake_server_row
+    from clio_agent.providers.handshake.mcp import MCPServerReport
+    from clio_agent.providers.handshake.model import ConnectivityState
+    from clio_agent.tools.mcp_connection_era import record_server_extensions
+
+    server_id = "unit-handshake-extensions"
+    extensions_record = record_server_extensions(
+        server_id, extensions=(TASKS_EXTENSION_ID, UI_EXTENSION_ID), era="modern"
+    )
+    report = MCPServerReport(
+        name=server_id,
+        connectivity=ConnectivityState.OK,
+        transport="stdio",
+        declared_extensions=extensions_record,
+    )
+
+    row = handshake_server_row(report)
+
+    assert sorted(row["extensions"]) == sorted([TASKS_EXTENSION_ID, UI_EXTENSION_ID])
+
+
+def test_handshake_row_extensions_absent_is_empty_list() -> None:
+    """A server never observed on any execution path reports an empty list,
+    never ``None`` or a missing key -- the avenue's assertion target must be
+    stable regardless of observation history."""
+
+    from clio_agent.gact.routes.mcp_rows import handshake_server_row
+    from clio_agent.providers.handshake.mcp import MCPServerReport
+    from clio_agent.providers.handshake.model import ConnectivityState
+
+    report = MCPServerReport(name="never-observed", connectivity=ConnectivityState.OK)
+    row = handshake_server_row(report)
+    assert row["extensions"] == []
+
+
+async def test_declared_path_ui_resource_admits_and_serves_through_the_apps_host(
+    tmp_path: Path,
+) -> None:
+    """#1283 owner scope addition (2026-09-02 comment): drives the ui-serving
+    arm through the DECLARED path and proves the four things named there:
+
+    1. the ui declaration rides the per-request capability ad via the
+       registry (the direct client construction THIS namespace's call uses
+       actively declares ui -- the wire-level proof that it reaches the
+       request ``_meta`` lives in ``test_handshake_floor_review.py``'s
+       ``test_capability_envelope_always_declares_the_tasks_extension``);
+    2. the observer seam ADMITS the result (an ``mcp_app`` Part is minted;
+       admission never raises, i.e. ``mcp_app_admission_failed`` never fires);
+    3. the sandbox route serves the resource with its declared CSP header;
+    4. tolerate-unknown-metadata still holds (the result's extra,
+       unrecognized ``x-clio-agent/unknown`` ``_meta`` namespace survives the
+       admission -> stored-record round trip unstripped).
+
+    The Apps HOST itself (``gact/mcp_apps.py``) is untouched -- this proves
+    the NEWLY-DECLARED wire feeds it, never new host behavior.
+
+    Uses :class:`~clio_agent.tools.execution.SyncMCPToolExecutor` (not the
+    bare async executor other layer-2 tests use) because the Apps host's
+    ``_bound_executor``/``_run_bound`` seam invokes ``read_resource``/
+    ``call_tool_result`` SYNCHRONOUSLY from a worker thread -- the exact
+    production shape (``agent._active_tool_executor()`` resolves a sync
+    wrapper); an async executor's coroutine would go unawaited there.
+    """
+
+    namespace = "v2exuiadmit"
+    executor: Any = None
+    try:
+        spec = _exerciser_spec(namespace)
+        listed = _list_declared_tools(spec)
+
+        # (1) the client construction THIS namespace's call will actually use
+        # (a direct client, since the exerciser is task-capable and whole-
+        # namespace routing rides direct once capability is known -- see
+        # test_declared_path_plain_tools_work_on_a_task_capable_server above)
+        # actively declares ui, unconditionally.
+        direct_declaration = extensions_declaration(Client, transport_for(spec))
+        assert any(
+            entry.identifier == UI_EXTENSION_ID and entry.extension is not None
+            for entry in direct_declaration.entries
+        )
+
+        gw = build_gateway({namespace: spec})
+        executor = SyncMCPToolExecutor(
+            gw,
+            namespace_servers=namespace_proxies(gw),
+            preloaded_tools=_preloaded_tools_from_listing(namespace, listed),
+        )
+
+        # SyncMCPToolExecutor.call_tool_result(..., return_raw=True internally)
+        # returns the RAW CallToolResult directly (the MCP Apps bridge's own
+        # contract -- see execution.py's docstring on that method), unlike
+        # AsyncMCPToolExecutor.call_tool_result's `_MCPCallOutcome` wrapper.
+        raw_result = executor.call_tool_result(f"{namespace}_ui_echo", {"payload": "hi"})
+        assert raw_result.content[0].text == "ui:hi"
+
+        tool_definition = executor._mcp_tools.get(f"{namespace}_ui_echo")  # noqa: SLF001
+        assert tool_definition is not None
+        assert _resource_uri(tool_definition) == UI_RESOURCE_URI
+
+        raw_wire = call_tool_result_to_wire(raw_result)
+        assert raw_wire["_meta"]["x-clio-agent/unknown"] == {"scratch": True}, (
+            "tolerate-unknown-metadata: an unrecognized _meta namespace must "
+            "survive the wire projection unstripped"
+        )
+
+        # (2)+(3)+(4): a REAL FastAPI app bound to THIS executor, driven
+        # through the exact production observer + sandbox routes (mirrors
+        # tests/test_gact/test_mcp_apps.py's pattern, with a REAL executor
+        # instead of the fake fixture).
+        from fastapi.testclient import TestClient
+
+        agent = SimpleNamespace(_active_tool_executor=lambda: executor)
+        app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
+
+        with TestClient(app, base_url="http://127.0.0.1:8100") as client:
+            sid = client.post("/v1/sessions", json={"title": "C1-S3"}).json()["id"]
+
+            with _gact_app_context(app), _tool_session_context(sid):
+                # (2) must NOT raise (MCPAppAdmissionError would fire the
+                # mcp_app_admission_failed log path in execution.py's caller;
+                # calling the observer directly here, a raise IS the failure).
+                app.state.pending_mcp_app_observer(
+                    f"{namespace}_ui_echo",
+                    {"payload": "hi"},
+                    tool_definition,
+                    raw_result,
+                    namespace,
+                )
+
+            registry = app.state.mcp_app_registry
+            record = registry.records_for_session(sid)[0]
+            part = app.state.live_assistant_parts[sid][-1].to_wire()
+            assert part["type"] == "mcp_app"
+            assert part["app_instance_id"] == record.app_instance_id
+            assert part["source_server"] == namespace
+            # (4) again, on the STORED record (not just the wire projection).
+            assert record.tool_result["_meta"]["x-clio-agent/unknown"] == {"scratch": True}
+
+            # (3) the sandbox route serves the resource with its CSP header.
+            prefix = f"/v1/sessions/{sid}/mcp-apps/{record.app_instance_id}"
+            sandbox = client.get(
+                f"{prefix}/sandbox",
+                params={"data_ref": record.data_ref},
+                headers={"referer": "http://127.0.0.1:8100/session"},
+            )
+            assert sandbox.status_code == 200
+            csp = sandbox.headers["content-security-policy"]
+            assert "connect-src 'self' http://127.0.0.1:*" in csp
+            assert "script-src 'self' 'unsafe-inline' blob: data: blob:" in csp
+    finally:
+        if executor is not None:
+            executor.close()
+        _reap("mcp_exerciser.py")

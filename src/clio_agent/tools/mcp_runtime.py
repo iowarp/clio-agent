@@ -432,16 +432,20 @@ def make_mcp_client(
             front leg is comparatively low-value -- see that module's
             docstring for why a PROXIED backend's real era is only ever
             observable at the seam that dials it, not at the front).
-    Tasks (#1115): every client built here declares the SEP-2663 tasks extension, so
-    a task-serving backend may run a call as a background task and CLIO drives it to
-    the real result. There is deliberately no per-call opt-out knob: a client that
-    declared nothing would still fold ``fastmcp-tasks``' own internal extension once
-    that package is imported, so an "off" switch would not turn the advertisement off
-    — it would only swap CLIO's hardened resolver for the un-hardened one. The single
+    Extensions (#1115, #1283): every client built here declares the FULL generic MCP
+    extension registry (:func:`clio_agent.tools.mcp_extension_registry.
+    extensions_declaration`) — tasks (SEP-2663, so a task-serving backend may run a
+    call as a background task and CLIO drives it to the real result) and the MCP
+    Apps ``ui`` capability ad (letter (d)), not a hardcoded tasks special case. There
+    is deliberately no per-call opt-out knob for tasks: a client that declared
+    nothing would still fold ``fastmcp-tasks``' own internal extension once that
+    package is imported, so an "off" switch would not turn the advertisement off — it
+    would only swap CLIO's hardened resolver for the un-hardened one. The single
     honest suppression is the one FastMCP itself declares: a ``client_cls`` pinning
-    ``_auto_internal_extensions = False`` (``ProxyClient``) folds no extension at all,
-    and that path is recorded with the typed reason
-    ``mcp_tasks_declaration_suppressed``.
+    ``_auto_internal_extensions = False`` (``ProxyClient``) folds no TASKS extension
+    in, and that path is recorded with the typed reason
+    ``mcp_tasks_declaration_suppressed`` — the ``ui`` ad is declared regardless (see
+    the registry module's docstring for why).
 
     Returns:
         A constructed (not yet entered) FastMCP client for ``target``.
@@ -499,17 +503,24 @@ def make_mcp_client(
             kwargs["message_handler"] = MessageMultiplexer(handlers.message)
         # `cancellation` has no fastmcp Client keyword today; P1 owns its wiring.
 
-    # #1115: declare the SEP-2663 tasks extension. CLIO's subclass carries the
+    # #1283 (C1-S3): every client built here folds in the FULL generic MCP
+    # extension registry, not a single hardcoded tasks special case. Entry #1
+    # is still the SEP-2663 tasks extension (CLIO's subclass carries the
     # substrate's identifier, so folding it in REPLACES fastmcp-tasks' internal
-    # extension with the hardened one (input-key dedup, `Mcp-Name` on task RPCs,
-    # durable task-id persistence). Suppressed — with a typed reason — for client
-    # classes that forbid internal extensions (proxy backends; #1119). The extension
-    # takes no elicitation callback here on purpose: it reads the SDK-shaped one off
-    # the live ClientSession, since fastmcp rewraps the 4-argument handler installed
-    # above (see `session_elicitation_callback`).
-    from clio_agent.tools.mcp_task_extension import tasks_declaration  # noqa: PLC0415
+    # extension with the hardened one -- input-key dedup, `Mcp-Name` on task
+    # RPCs, durable task-id persistence -- suppressed with a typed reason for
+    # client classes that forbid internal extensions, proxy backends, #1119;
+    # unchanged from the pre-registry direct call). Entry #2 is the MCP Apps
+    # `io.modelcontextprotocol/ui` capability ad (letter (d)), declared
+    # unconditionally -- see `mcp_extension_registry.py`'s module docstring for
+    # why ui, unlike tasks, is never suppressed on a proxy-like client class.
+    # The tasks extension takes no elicitation callback here on purpose: it
+    # reads the SDK-shaped one off the live ClientSession, since fastmcp
+    # rewraps the 4-argument handler installed above (see
+    # `session_elicitation_callback`).
+    from clio_agent.tools.mcp_extension_registry import extensions_declaration  # noqa: PLC0415
 
-    declaration = tasks_declaration(client_cls, target)
+    declaration = extensions_declaration(client_cls, target)
     if declaration.extensions:
         kwargs["extensions"] = list(declaration.extensions)
 

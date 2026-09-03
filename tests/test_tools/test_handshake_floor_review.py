@@ -45,7 +45,7 @@ CLIENT_CAPS_KEY = "io.modelcontextprotocol/clientCapabilities"
 
 # stdio backend that reports the clientInfo/capabilities its OWN session received,
 # reachable through the real gateway proxy so the downstream leg is asserted.
-ID_STUB = '''
+ID_STUB = """
 from fastmcp import Context, FastMCP
 
 mcp = FastMCP("id-backend")
@@ -60,7 +60,7 @@ async def whoami(ctx: Context) -> dict:
     }
 
 mcp.run()
-'''
+"""
 
 
 def _reap(needle: str) -> None:
@@ -175,9 +175,18 @@ async def test_capability_envelope_always_declares_the_tasks_extension() -> None
     The extension declaration is orthogonal to the elicitation DOMAIN declaration:
     it rides the same ``clientCapabilities`` envelope but is what tells a
     task-serving backend it may run a call as a background task.
+
+    #1283 (C1-S3): the generic extension registry also declares the MCP Apps
+    ``ui`` ad on the SAME per-request envelope -- this is the direct wire-level
+    proof of "the ui declaration rides the per-request capability ad via the
+    registry" (the C1-S3 issue's exerciser-leg requirement). Both ids are
+    asserted together rather than splitting into two tests, since they are
+    the SAME envelope on the SAME call.
     """
+    from clio_agent.tools.mcp_extension_registry import UI_EXTENSION_ID
+
     caps = await _advertised_caps()
-    assert caps["extensions"] == {"io.modelcontextprotocol/tasks": {}}
+    assert caps["extensions"] == {"io.modelcontextprotocol/tasks": {}, UI_EXTENSION_ID: {}}
 
 
 @pytest.mark.asyncio
@@ -205,6 +214,7 @@ async def test_capability_envelope_wired_handler_advertises_both_modes() -> None
 @pytest.mark.asyncio
 async def test_capability_declaration_overrides_wired_handler_to_form_only() -> None:
     """Declaration is authoritative: form-only declared + handler wired -> form only."""
+
     async def elicit(context: Any, *a: Any) -> Any:
         return None
 
@@ -279,9 +289,7 @@ async def test_no_handler_gateway_backend_receives_clio_identity(tmp_path: Path)
 
     script = tmp_path / "id_mcp.py"
     script.write_text(ID_STUB, encoding="utf-8")
-    spec = MCPServerSpec(
-        name="idb", transport="stdio", command=sys.executable, args=(str(script),)
-    )
+    spec = MCPServerSpec(name="idb", transport="stdio", command=sys.executable, args=(str(script),))
     gw = build_gateway({"idb": spec})  # PRIMARY no-handler production path
     try:
         async with Client(gw) as client:
@@ -395,7 +403,9 @@ async def test_handler_gateway_behavior_hook_override_and_forwarding(
     async def structured() -> dict[str, Any]:
         return {"a": 1, "nested": {"b": [1, 2, 3]}}
 
-    async def clio_elicit(context: Any, message: str, response_type: Any, params: Any, rc: Any) -> Any:
+    async def clio_elicit(
+        context: Any, message: str, response_type: Any, params: Any, rc: Any
+    ) -> Any:
         fired["elicit"] = True
         return "clio-answer"
 
