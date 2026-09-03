@@ -16,6 +16,22 @@ a bounded in-process ring queryable after the fact
 (:func:`recorded_mcp_app_observer_skips`) -- the same
 reason-reaches-the-trace contract the ``stream_fallback`` catalog
 (``gact/streaming.py``) established for degraded live-delivery paths.
+
+Severity + ring split (Opus review, #1308 F1): the observer runs after
+EVERY successful MCP tool call, not just App ones, so
+``mcp_app_skipped_no_resource_uri`` is the OVERWHELMING majority reason (an
+ordinary, non-App tool call -- not a real degradation) while
+``mcp_app_skipped_no_session`` is the rare diagnostic signal #1308 actually
+needed. Logging every reason at ``WARNING`` flooded logs with a misleading
+"dropped" line for the common case; recording every reason into ONE bounded
+ring let that same flood evict the rare row before anyone could query it.
+Two fixes: (1) logging is routed by the reason's OWN declared ``severity``
+(``info`` -> ``logger.info``, never ``logger.warning``, and its message never
+claims something was "dropped" -- nothing was, this is the normal path);
+(2) the ring is SPLIT so the high-volume ``no_resource_uri`` reason has its
+own bounded ring and can never evict a rare row from the other one.
+:func:`recorded_mcp_app_observer_skips` still returns BOTH, merged, so a
+caller never needs to know about the split.
 """
 
 from __future__ import annotations
@@ -54,7 +70,25 @@ _MCP_APP_OBSERVER_SKIP_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
     },
 }
 
+#: A bespoke log-message TEMPLATE for a reason whose generic "dropped" wording
+#: would mislead (Opus review, #1308 F1) -- ``no_resource_uri`` is the NORMAL
+#: shape of an ordinary, non-App tool call, not a degradation. Any reason
+#: without an entry here falls back to ``_DEFAULT_SKIP_LOG_TEMPLATE``.
+_MCP_APP_OBSERVER_SKIP_LOG_TEMPLATES: dict[str, str] = {
+    "mcp_app_skipped_no_resource_uri": (
+        "MCP App observer: tool=%s call declares no App resourceUri (the "
+        "ordinary, non-App shape) reason=%s detail=%s"
+    ),
+}
+_DEFAULT_SKIP_LOG_TEMPLATE = "MCP App result dropped tool=%s reason=%s detail=%s"
+
+#: The RARE-reason ring (``error_result`` / ``no_session``) -- #1308's actual
+#: diagnostic signal. Kept separate from the high-volume ring below so a
+#: burst of ordinary skips can never evict a row here (Opus review F1).
 _MCP_APP_OBSERVER_SKIPS: "deque[dict[str, Any]]" = deque(maxlen=256)
+#: The HIGH-VOLUME ``no_resource_uri`` ring -- every ordinary (non-App) tool
+#: call lands here instead, insulating the ring above.
+_NO_RESOURCE_URI_SKIPS: "deque[dict[str, Any]]" = deque(maxlen=256)
 _MCP_APP_OBSERVER_SKIPS_LOCK = threading.Lock()
 
 
@@ -63,31 +97,38 @@ def record_observer_skip(reason: str, **fields: Any) -> dict[str, Any]:
 
     Every early return in ``mcp_apps._make_mcp_app_observer``'s ``observe``
     calls this instead of a bare ``return`` -- the degradation reaches a
-    logger warning, the ``stream_audit`` JSONL sink, and a bounded queryable
-    in-process ring, never silently.
+    severity-routed logger call (see module docstring), the ``stream_audit``
+    JSONL sink, and a bounded queryable in-process ring, never silently.
     """
 
     definition = _MCP_APP_OBSERVER_SKIP_REASON_DEFINITIONS.get(reason)
     if definition is None:
         raise ValueError(f"Unknown MCP App observer skip reason: {reason}")
     payload: dict[str, Any] = {"reason": reason, **definition, **fields}
-    with _MCP_APP_OBSERVER_SKIPS_LOCK:
-        _MCP_APP_OBSERVER_SKIPS.append(payload)
-    stream_audit("mcp_app_observer_skip", **payload)
-    logger.warning(
-        "MCP App result dropped tool=%s reason=%s detail=%s",
-        fields.get("tool", ""),
-        reason,
-        definition["detail"],
+    ring = (
+        _NO_RESOURCE_URI_SKIPS
+        if reason == "mcp_app_skipped_no_resource_uri"
+        else _MCP_APP_OBSERVER_SKIPS
     )
+    with _MCP_APP_OBSERVER_SKIPS_LOCK:
+        ring.append(payload)
+    stream_audit("mcp_app_observer_skip", **payload)
+    log = logger.warning if definition["severity"] == "warning" else logger.info
+    template = _MCP_APP_OBSERVER_SKIP_LOG_TEMPLATES.get(reason, _DEFAULT_SKIP_LOG_TEMPLATE)
+    log(template, fields.get("tool", ""), reason, definition["detail"])
     return payload
 
 
 def recorded_mcp_app_observer_skips() -> list[dict[str, Any]]:
-    """Return a snapshot of recorded MCP-App observer skip reasons (queryable audit)."""
+    """Return a snapshot of recorded MCP-App observer skip reasons (queryable audit).
+
+    Merges BOTH rings (the rare-reason ring and the high-volume
+    ``no_resource_uri`` ring, see module docstring) -- a caller never needs
+    to know the split exists.
+    """
 
     with _MCP_APP_OBSERVER_SKIPS_LOCK:
-        return list(_MCP_APP_OBSERVER_SKIPS)
+        return list(_MCP_APP_OBSERVER_SKIPS) + list(_NO_RESOURCE_URI_SKIPS)
 
 
 __all__ = [

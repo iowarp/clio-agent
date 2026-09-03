@@ -51,7 +51,11 @@ from clio_agent.errors import (
     MCPMissingRequiredClientCapabilityError,
 )
 from clio_agent.gact.app import build_app
-from clio_agent.gact.mcp_apps import _resource_uri, call_tool_result_to_wire
+from clio_agent.gact.mcp_apps import (
+    _resource_uri,
+    call_tool_result_to_wire,
+    recorded_mcp_app_observer_skips,
+)
 from clio_agent.gact.mcp_readiness import mount_namespace_for_session
 from clio_agent.gact.runtime.globals import _gact_app_context, _tool_session_context
 from clio_agent.tools import listing_cache
@@ -1686,7 +1690,24 @@ async def test_stale_listing_cache_entry_silently_defeats_the_ui_meta_wiring(
             app.state.pending_permission_gate = lambda *a, **k: "allow"
 
             with _gact_app_context(app), _tool_session_context(sid):
+                # F3 (Opus review, C1-S4): an ORDINARY (non-App) tool call
+                # through this SAME auto-firing path -- diagnosability of the
+                # exact #1308 live symptom is the point of the typed reasons
+                # (F1); prove the ring actually carries the majority-case
+                # reason a real session emits on every plain tool call, not
+                # just assert the ui-bearing fix in isolation.
+                plain_text = executor.call_tool(f"{namespace}_plain_echo", {"payload": "ordinary"})
+                assert plain_text == "plain:ordinary"
+
                 model_text = executor.call_tool(f"{namespace}_ui_echo", {"payload": "stale"})
+
+            skips = [
+                r
+                for r in recorded_mcp_app_observer_skips()
+                if r.get("tool") == f"{namespace}_plain_echo"
+            ]
+            assert skips, "no typed skip reason was recorded for the ordinary tool call"
+            assert skips[-1]["reason"] == "mcp_app_skipped_no_resource_uri"
 
             # The live symptom, or its fix: the ordinary call succeeds either way --
             assert model_text == "ui:stale"
