@@ -296,6 +296,9 @@ def test_search_aggregates_repositories_with_exact_shape_and_duplicate_labels(
     }
     assert all(row["id"] in row["detail"] for row in duplicate_files)
     assert any(row["kind"] == "artifact" and row["id"] == artifact_id for row in results)
+    assert all(
+        row["detail"].startswith("Uploaded source ") for row in results if row["kind"] == "resource"
+    )
     for kind, label in (
         ("resource", "observations.csv"),
         ("session", "Shared title"),

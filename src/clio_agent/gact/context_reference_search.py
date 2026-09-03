@@ -145,7 +145,7 @@ def _resource_results(app: "FastAPI", workspace_id: str) -> list[dict[str, Any]]
                 kind="resource",
                 ref_id=ref_id,
                 label=label,
-                detail=f"Workspace resource {label}",
+                detail=f"Uploaded source {label}",
                 media_type=media_type,
                 revision=revision,
                 navigation={
