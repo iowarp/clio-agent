@@ -414,6 +414,17 @@ a2ui.max_string_chars: 16384
 # compaction; lower to compact earlier, raise to accumulate more.
 autocompact.pct: "0.85"
 
+# CLIO_ASK_USER_MAX_TTL_S  (int)  <- src/clio_agent/gact/ask_user_tool.py
+# Hard ceiling in seconds on an `ask_user` response window; a longer window
+# requested by the model is clamped to this. Lower it to bound how long a
+# question can hold a session.
+gact.ask_user.max_ttl_s: 86400
+
+# CLIO_ASK_USER_TTL_S  (int)  <- src/clio_agent/gact/ask_user_tool.py
+# Default `ask_user` response window in seconds, used when the model does
+# not request an explicit one; raise it for slow human reviewers.
+gact.ask_user.ttl_s: 600
+
 # CLIO_GACT_BEARER_TOKEN  (str)  <- src/clio_agent/gact/auth.py
 # Optional bearer token required on non-loopback GACT API requests; set to
 # protect a server exposed beyond localhost.

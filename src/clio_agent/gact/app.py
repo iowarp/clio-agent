@@ -1261,6 +1261,9 @@ def build_app(
     # orchestrator/backend can publish pending questions; clients
     # answer or cancel them through explicit endpoints.
     app.state.user_questions = {}
+    # Armed ask-user expiry timers, keyed by question id, so a settled question
+    # releases its ``threading.Timer`` instead of leaking one for its whole TTL.
+    app.state.ask_user_deadlines = {}
     # iowarp/clio-agent#333: retry attempts preserve provenance for
     # retry-with-notes/model flows without mutating the original turn.
     app.state.turn_attempts = {}

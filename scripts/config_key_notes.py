@@ -292,6 +292,14 @@ KEY_NOTES: dict[str, str] = {
         "Optional bearer token required on non-loopback GACT API requests; set to protect a server "
         "exposed beyond localhost."
     ),
+    "gact.ask_user.max_ttl_s": (
+        "Hard ceiling in seconds on an `ask_user` response window; a longer window requested by "
+        "the model is clamped to this. Lower it to bound how long a question can hold a session."
+    ),
+    "gact.ask_user.ttl_s": (
+        "Default `ask_user` response window in seconds, used when the model does not request an "
+        "explicit one; raise it for slow human reviewers."
+    ),
     "gact.blueprint_registry.url": (
         "Git URL of the default agent-blueprint marketplace registry; override to point at a "
         "private/mirrored marketplace."

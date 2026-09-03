@@ -53,6 +53,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARTIFACT_PROVENANCE_EVENTS` | `provenance.artifacts.include_events` | list | `sorted(DEFAULT_ARTIFACT_EVENTS)` _(computed)_ | `src/clio_agent/gact/artifacts/provenance/factory.py` |
 | `CLIO_ARTIFACT_PROVENANCE_PROVIDER` | `provenance.artifacts.provider` | str | `native` | `src/clio_agent/gact/artifacts/provenance/factory.py` |
 | `CLIO_ARTIFACT_PROVENANCE_QUEUE_SIZE` | `provenance.artifacts.queue_size` | int | `4096` | `src/clio_agent/gact/artifacts/provenance/factory.py` |
+| `CLIO_ASK_USER_MAX_TTL_S` | `gact.ask_user.max_ttl_s` | int | `86400` | `src/clio_agent/gact/ask_user_tool.py` |
+| `CLIO_ASK_USER_TTL_S` | `gact.ask_user.ttl_s` | int | `600` | `src/clio_agent/gact/ask_user_tool.py` |
 | `CLIO_AUTOCOMPACT_PCT` | `autocompact.pct` | str | `0.85` | `src/clio_agent/gact/runtime/context_tokens.py` |
 | `CLIO_BLUEPRINT_REGISTRY_URL` | `gact.blueprint_registry.url` | str | `https://github.com/iowarp/clio-agent-marketplace.git` | `src/clio_agent/gact/agent_blueprints.py` |
 | `CLIO_BLUEPRINT_SOURCE_CLONE_TIMEOUT_S` | `gact.blueprint_source.clone_timeout_s` | float | `30.0` | `src/clio_agent/gact/agent_blueprint_sources.py` |
