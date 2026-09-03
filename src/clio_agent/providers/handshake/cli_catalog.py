@@ -110,6 +110,11 @@ class CliCatalogHandshake(NoOpHandshake):
                     "output_limit": m.get("output_limit"),
                     "context_source": m.get("context_source"),
                     "capabilities": list(_overlay_capabilities(m)),
+                    # The typed modality provenance discovery recorded for this
+                    # row (why a modality is present OR absent). Forwarded so
+                    # the capability negative stays queryable downstream instead
+                    # of arriving as an anonymous empty list.
+                    "capability_evidence": m.get("capability_evidence") or {},
                     _OVERLAY_CHECKED_KEY: True,
                 }
                 for m in wire["models"]

@@ -46,6 +46,13 @@ from clio_agent.providers.model_discovery.claude_code import (
 )
 from clio_agent.providers.model_discovery.codex import discover_codex
 from clio_agent.providers.model_discovery.http import discover_http
+from clio_agent.providers.model_discovery.modality_evidence import (
+    MODALITY_EVIDENCE_REASONS,
+    MODALITY_SOURCES,
+    UnknownModalityReasonError,
+    modality_evidence,
+    reported_modalities,
+)
 from clio_agent.providers.model_discovery.overlay import (
     CLAUDE_CODE_COST_DEFAULT_MODEL,
     CLAUDE_CODE_SOURCE,
@@ -77,17 +84,21 @@ __all__ = [
     "CLAUDE_CODE_SOURCE",
     "CODEX_SOURCE",
     "HTTP_SOURCE",
+    "MODALITY_EVIDENCE_REASONS",
+    "MODALITY_SOURCES",
     "REFRESH_PER_PROVIDER_DEADLINE_S",
     "ClaudeCodeCLIUnavailableError",
     "OverlayMalformedError",
     "OverlayUnreadableError",
     "ProviderDiscoveryResult",
+    "UnknownModalityReasonError",
     "attach_context_limits",
     "build_refresh_provider_models_tool",
     "discover_claude_code",
     "discover_codex",
     "discover_http",
     "is_provider_configured",
+    "modality_evidence",
     "overlay_default_model",
     "overlay_models_wire",
     "overlay_path",
@@ -95,5 +106,6 @@ __all__ = [
     "record_refresh",
     "refresh_all",
     "refresh_all_sync",
+    "reported_modalities",
     "resolve_cloud_api_key",
 ]

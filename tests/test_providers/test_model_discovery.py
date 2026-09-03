@@ -531,21 +531,49 @@ class _StubCodex:
         return SimpleNamespace(data=self._rows)
 
 
+#: Sentinel for "the wire row did NOT carry this field at all" — distinct from an
+#: explicit empty list. The SDK declares ``Model.input_modalities`` with a schema
+#: default of ``["text", "image"]``, so only a row built WITHOUT the key
+#: reproduces what an omitting provider actually sends.
+_OMITTED: Any = object()
+
+
 def _codex_model(
     model_id: str,
     *,
     name: str = "",
     description: str = "",
     is_default: bool = False,
-    input_modalities: list[str] | None = None,
+    input_modalities: Any = _OMITTED,
 ) -> Any:
-    return SimpleNamespace(
-        id=model_id,
-        display_name=name or model_id,
-        description=description,
-        is_default=is_default,
-        input_modalities=input_modalities or ["text", "image"],
+    """Build a REAL ``openai_codex`` model row (not a permissive stand-in).
+
+    Discovery's modality evidence is decided by Pydantic's ``model_fields_set``,
+    which only a genuine SDK model carries; a ``SimpleNamespace`` stub cannot
+    reproduce the omitted-field case the SDK default hides.
+    """
+
+    from openai_codex.generated.v2_all import (
+        Model,
+        ReasoningEffort,
+        ReasoningEffortOption,
     )
+
+    fields: dict[str, Any] = {
+        "id": model_id,
+        "model": model_id,
+        "displayName": name or model_id,
+        "description": description,
+        "hidden": False,
+        "isDefault": is_default,
+        "defaultReasoningEffort": ReasoningEffort.medium,
+        "supportedReasoningEfforts": [
+            ReasoningEffortOption(description="medium", reasoningEffort=ReasoningEffort.medium)
+        ],
+    }
+    if input_modalities is not _OMITTED:
+        fields["inputModalities"] = input_modalities
+    return Model(**fields)
 
 
 def test_discover_codex_success_reports_default_and_source(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -579,7 +607,66 @@ def test_discover_codex_success_reports_default_and_source(monkeypatch: pytest.M
     assert result.default_model == "gpt-5.6-sol"
     assert result.source == "codex_sdk"
     assert all(m["capabilities"] == ["text", "image"] for m in result.discovered)
+    assert all(m["capability_evidence"]["reason"] == "modality_reported" for m in result.discovered)
     assert stub.closed is True
+
+
+def test_discover_codex_omitted_input_modalities_records_no_image_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An omitted wire field must NOT inherit the SDK's ``["text","image"]`` default.
+
+    ``Model.input_modalities`` is declared with that schema default, so reading the
+    attribute manufactures an image capability nobody reported — and the typed
+    negative could never fire in production. Only ``model_fields_set`` is evidence.
+    """
+
+    from openai_codex.generated.v2_all import Model
+
+    from clio_agent.providers.model_discovery import codex as md_codex
+
+    row = _codex_model("gpt-5.6-sol", name="GPT-5.6-Sol", is_default=True)
+    # Guard the premise: the SDK really does hand back a fabricated image modality.
+    assert isinstance(row, Model)
+    assert "input_modalities" not in row.model_fields_set
+    assert [str(getattr(v, "value", v)) for v in row.input_modalities or []] == ["text", "image"]
+
+    monkeypatch.setattr(md_codex, "AsyncCodex", lambda *_args, **_kwargs: _StubCodex(rows=[row]))
+
+    result = model_discovery.discover_codex()
+
+    assert result.failed_reason is None
+    assert result.discovered[0]["capabilities"] == []
+    evidence = result.discovered[0]["capability_evidence"]
+    assert evidence["reason"] == "modality_unreported"
+    assert evidence["source"] == "codex_sdk_input_modalities"
+    assert evidence["unevidenced"] == ["image"]
+
+
+def test_discover_codex_explicit_text_only_row_is_not_widened(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider explicitly reporting text-only stays text-only, and says so."""
+
+    from openai_codex.generated.v2_all import InputModality
+
+    from clio_agent.providers.model_discovery import codex as md_codex
+
+    stub = _StubCodex(
+        rows=[
+            _codex_model(
+                "gpt-5.6-mini",
+                is_default=True,
+                input_modalities=[InputModality.text],
+            )
+        ]
+    )
+    monkeypatch.setattr(md_codex, "AsyncCodex", lambda *_args, **_kwargs: stub)
+
+    result = model_discovery.discover_codex()
+
+    assert result.discovered[0]["capabilities"] == ["text"]
+    assert result.discovered[0]["capability_evidence"]["reason"] == "modality_reported"
 
 
 def test_discover_codex_sdk_error_is_typed_reason(monkeypatch: pytest.MonkeyPatch) -> None:
