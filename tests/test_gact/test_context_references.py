@@ -296,9 +296,7 @@ def test_search_aggregates_repositories_with_exact_shape_and_duplicate_labels(
     }
     assert all(row["id"] in row["detail"] for row in duplicate_files)
     assert any(row["kind"] == "artifact" and row["id"] == artifact_id for row in results)
-    assert all(
-        row["detail"].startswith("Uploaded source ") for row in results if row["kind"] == "resource"
-    )
+    assert all(row["detail"] == "Uploaded source" for row in results if row["kind"] == "resource")
     for kind, label in (
         ("resource", "observations.csv"),
         ("session", "Shared title"),
@@ -306,7 +304,7 @@ def test_search_aggregates_repositories_with_exact_shape_and_duplicate_labels(
     ):
         duplicates = [row for row in results if row["kind"] == kind and row["label"] == label]
         assert len(duplicates) == 2
-        assert all(row["id"] in row["detail"] for row in duplicates)
+        assert all(row["id"] not in row["detail"] for row in duplicates)
     duplicate_artifacts = context_reference_module._disambiguate_duplicate_labels(
         [
             {
@@ -321,7 +319,60 @@ def test_search_aggregates_repositories_with_exact_shape_and_duplicate_labels(
             for artifact_ref in ("artifact_a", "artifact_b")
         ]
     )
-    assert all(row["id"] in row["detail"] for row in duplicate_artifacts)
+    assert all(row["id"] not in row["detail"] for row in duplicate_artifacts)
+
+
+def test_workspace_file_search_uses_registered_root_not_process_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _app(tmp_path)
+    registered = tmp_path / "a" / "registered.md"
+    registered.parent.mkdir(parents=True, exist_ok=True)
+    registered.write_text("registered", encoding="utf-8")
+    process_cwd = tmp_path / "process-cwd"
+    process_cwd.mkdir()
+    (process_cwd / "unrelated.md").write_text("unrelated", encoding="utf-8")
+    monkeypatch.chdir(process_cwd)
+
+    results = asyncio.run(search_workspace_references(app, "ws_a", kinds=["workspace_file"]))
+
+    assert [row["id"] for row in results] == ["registered.md"]
+
+
+def test_evidence_search_ignores_categorical_source_metadata_and_keeps_urls(
+    tmp_path: Path,
+) -> None:
+    app = _app(tmp_path)
+    app.state.messages["sess_a"].append(
+        Message(
+            id="msg_source_metadata",
+            session_id="sess_a",
+            role="assistant",
+            created_at="2026-09-02T12:00:00+00:00",
+            updated_at="2026-09-02T12:00:00+00:00",
+            parts=[
+                Part(
+                    id="source_metadata",
+                    type="text",
+                    text="Capability evidence",
+                    metadata={
+                        "detection_source": "signature",
+                        "evidence_source": "live_handshake",
+                        "provider": {"documentation_url": "https://example.test/docs/image-input"},
+                    },
+                )
+            ],
+        )
+    )
+
+    results = asyncio.run(search_workspace_references(app, "ws_a", kinds=["evidence_source"]))
+
+    assert len(results) == 1
+    assert results[0]["label"] == "Documentation"
+    assert results[0]["detail"] == "From Shared title"
+    assert results[0]["navigation"]["uri"] == "https://example.test/docs/image-input"
+    assert "signature" not in str(results)
+    assert "live_handshake" not in str(results)
 
 
 def test_search_and_delivery_share_the_evidence_inventory(tmp_path: Path) -> None:

@@ -9,6 +9,7 @@ import os
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote, urlsplit
 
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.artifacts.wire import mime_for
@@ -48,20 +49,9 @@ def _reference_result(
 
 
 def _disambiguate_duplicate_labels(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Make duplicate labels visibly distinguishable without changing their identities."""
+    """Preserve duplicate identities without leaking opaque IDs into visible copy."""
 
-    counts: dict[tuple[str, str], int] = {}
-    for row in results:
-        key = (str(row["kind"]), str(row["label"]).casefold())
-        counts[key] = counts.get(key, 0) + 1
-    disambiguated: list[dict[str, Any]] = []
-    for row in results:
-        key = (str(row["kind"]), str(row["label"]).casefold())
-        if counts[key] <= 1 or str(row["id"]) in str(row["detail"]):
-            disambiguated.append(row)
-            continue
-        disambiguated.append({**row, "detail": f"{row['detail']} · {row['id']}"})
-    return disambiguated
+    return [dict(row) for row in results]
 
 
 def _walk_workspace_files(
@@ -145,7 +135,7 @@ def _resource_results(app: "FastAPI", workspace_id: str) -> list[dict[str, Any]]
                 kind="resource",
                 ref_id=ref_id,
                 label=label,
-                detail=f"Uploaded source {label}",
+                detail="Uploaded source",
                 media_type=media_type,
                 revision=revision,
                 navigation={
@@ -413,16 +403,7 @@ def _walk_source_values(
         for key, child in list(value.items())[:100]:
             key_text = str(key)
             child_path = (*path, key_text)
-            if (
-                isinstance(child, str)
-                and child
-                and (
-                    child.startswith(("http://", "https://"))
-                    or key_text.casefold().endswith(
-                        ("source", "source_url", "provenance", "provenance_url")
-                    )
-                )
-            ):
+            if isinstance(child, str) and _is_web_url(child):
                 found.append((".".join(child_path), child))
             else:
                 found.extend(_walk_source_values(child, child_path, depth + 1))
@@ -433,6 +414,35 @@ def _walk_source_values(
             found.extend(_walk_source_values(child, (*path, str(index)), depth + 1))
         return found
     return []
+
+
+def _is_web_url(value: str) -> bool:
+    """Return whether a metadata value is an externally navigable web source."""
+
+    parsed = urlsplit(value.strip())
+    return parsed.scheme.casefold() in {"http", "https"} and bool(parsed.netloc)
+
+
+def _url_source_label(value: str) -> str:
+    """Derive a compact human-readable label from a source URL."""
+
+    parsed = urlsplit(value.strip())
+    leaf = unquote(parsed.path.rstrip("/").rsplit("/", 1)[-1]).strip()
+    if leaf:
+        return f"{leaf} ({parsed.netloc})"
+    return parsed.netloc
+
+
+def _metadata_source_label(path: str, value: str) -> str:
+    """Prefer a meaningful metadata field name, falling back to the URL identity."""
+
+    leaf = path.rsplit(".", 1)[-1]
+    words = [word for word in leaf.replace("-", "_").split("_") if word]
+    if words and words[-1].casefold() == "url":
+        words.pop()
+    if words and [word.casefold() for word in words] not in (["source"], ["link"]):
+        return " ".join(word.capitalize() for word in words)
+    return _url_source_label(value)
 
 
 def _evidence_source_snapshots(
@@ -452,12 +462,20 @@ def _evidence_source_snapshots(
                     candidates.append((part.id or str(index), part.name or part.uri, part.uri))
                 for path, value in _walk_source_values(part.metadata):
                     candidates.append(
-                        (f"{part.id or index}:{path}", path.rsplit(".", 1)[-1], value)
+                        (
+                            f"{part.id or index}:{path}",
+                            _metadata_source_label(path, value),
+                            value,
+                        )
                     )
                 if part.content_blocks:
                     for path, value in _walk_source_values(part.content_blocks):
                         candidates.append(
-                            (f"{part.id or index}:content:{path}", "MCP source", value)
+                            (
+                                f"{part.id or index}:content:{path}",
+                                _metadata_source_label(path, value),
+                                value,
+                            )
                         )
                 for source_id, label, value in candidates:
                     dedupe = (session.id, value)
@@ -480,7 +498,7 @@ def _evidence_source_snapshots(
                             kind="evidence_source",
                             ref_id=ref_id,
                             label=label,
-                            detail=f"Source from {session.title or session.id} · {value}",
+                            detail=f"From {session.title or session.id}",
                             media_type="text/uri-list"
                             if value.startswith(("http://", "https://"))
                             else "text/plain",
