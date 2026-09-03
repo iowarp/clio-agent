@@ -95,7 +95,10 @@ async def watch_list_changed(
                         await on_change()
     except ListenNotSupportedError as exc:
         trace.event(
-            "TOOLS", "mcp_listen_unsupported namespace=%s version=%s", namespace, exc.negotiated_version
+            "TOOLS",
+            "mcp_listen_unsupported namespace=%s version=%s",
+            namespace,
+            exc.negotiated_version,
         )
         raise ListenUnsupported(str(exc)) from exc
     except SubscriptionLost as exc:
@@ -108,8 +111,11 @@ async def watch_list_changed(
         # A server-side listen REJECTION (not a legacy-era mismatch) is a real,
         # typed failure worth naming -- never a silent watcher death.
         trace.event(
-            "TOOLS", "mcp_listen_rejected namespace=%s code=%s message=%s",
-            namespace, exc.code, exc.message,
+            "TOOLS",
+            "mcp_listen_rejected namespace=%s code=%s message=%s",
+            namespace,
+            exc.code,
+            exc.message,
         )
         raise
     finally:

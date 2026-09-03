@@ -66,7 +66,10 @@ class DurableFileTokenStorage:
             return {}
         if raw.get("schema") != _SCHEMA:
             trace.event(
-                "TOOLS", "mcp_oauth_storage_schema_mismatch got=%s want=%s", raw.get("schema"), _SCHEMA
+                "TOOLS",
+                "mcp_oauth_storage_schema_mismatch got=%s want=%s",
+                raw.get("schema"),
+                _SCHEMA,
             )
             return {}
         entries = raw.get("entries")
@@ -75,7 +78,9 @@ class DurableFileTokenStorage:
     def _save_entries(self, entries: dict[str, dict[str, object]]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"schema": _SCHEMA, "entries": entries}, indent=1), encoding="utf-8")
+        tmp.write_text(
+            json.dumps({"schema": _SCHEMA, "entries": entries}, indent=1), encoding="utf-8"
+        )
         os.replace(tmp, self._path)
         # Best-effort OS file-permission restriction (POSIX only -- os.chmod on
         # Windows cannot express owner-only ACLs; the user profile directory's
@@ -100,7 +105,10 @@ class DurableFileTokenStorage:
             return OAuthToken.model_validate(raw)
         except Exception as exc:  # noqa: BLE001 - malformed entry degrades to a fresh OAuth flow
             trace.event(
-                "TOOLS", "mcp_oauth_storage_tokens_undecodable server=%s reason=%s", self._server_url, exc
+                "TOOLS",
+                "mcp_oauth_storage_tokens_undecodable server=%s reason=%s",
+                self._server_url,
+                exc,
             )
             return None
 
@@ -118,7 +126,10 @@ class DurableFileTokenStorage:
             # flow itself; the token still lives for THIS process (the caller's live
             # OAuthClientProvider state), just not across a restart.
             trace.event(
-                "TOOLS", "mcp_oauth_storage_tokens_store_failed server=%s reason=%s", self._server_url, exc
+                "TOOLS",
+                "mcp_oauth_storage_tokens_store_failed server=%s reason=%s",
+                self._server_url,
+                exc,
             )
 
     async def get_client_info(self) -> "OAuthClientInformationFull | None":
