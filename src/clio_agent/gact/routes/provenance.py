@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Query
 from starlette.concurrency import run_in_threadpool
 
 from clio_agent import conf
+from clio_agent.gact.agent_tasks import descendant_session_ids
 from clio_agent.gact.provenance.child_projection import project_child_execution
 from clio_agent.gact.provenance.normalization import normalize_semantic_events
 from clio_agent.gact.provenance.protocol import ExecutionProvenanceReader
@@ -35,23 +36,9 @@ def _typed_error(
 
 
 def _child_session_ids(app: FastAPI, sid: str) -> list[str]:
-    pending = [sid]
-    children: list[str] = []
-    seen = {sid}
-    rows = list(app.state.sessions.list(workspace_id=None))
-    while pending:
-        parent = pending.pop()
-        for row in rows:
-            row_id = str(getattr(row, "id", "") or "")
-            if (
-                row_id
-                and row_id not in seen
-                and str(getattr(row, "parent_session_id", "") or "") == parent
-            ):
-                seen.add(row_id)
-                children.append(row_id)
-                pending.append(row_id)
-    return children
+    """Return delegated child sessions, excluding ordinary user-created forks."""
+
+    return descendant_session_ids(app, sid)
 
 
 def _native_events(app: FastAPI, session_ids: list[str]) -> list[dict[str, Any]]:
@@ -173,6 +160,7 @@ def register_provenance_routes(app: FastAPI, deps: "GactDeps") -> None:
                         session_id=sid,
                         limit=limit,
                     ),
+                    include_children=include_children,
                 )
         else:
             reader_method = getattr(backend, "reader", None)
@@ -192,7 +180,7 @@ def register_provenance_routes(app: FastAPI, deps: "GactDeps") -> None:
                 child_session_ids=child_ids,
                 limit=limit,
             )
-            return project_child_execution(app, sid, result)
+            return project_child_execution(app, sid, result, include_children=include_children)
         except Exception as exc:
             raise _typed_error(
                 status_code=503,

@@ -68,6 +68,7 @@ from clio_agent.gact.routes.mcp_rows import (
     mcp_prompt_result_row,
 )
 from clio_agent.gact.routes.mcp_server_specs import stdio_server_spec
+from clio_agent.gact.routes.mcp_specs import declared_mcp_specs, session_mcp_server_rows
 from clio_agent.gact.runtime.globals import _tool_session_context
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.execution import notify_tool_observer
@@ -137,15 +138,12 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
     """
 
     @app.get("/v1/mcp/servers")
-    async def list_mcp_servers(workspace_id: str = "") -> dict[str, Any]:
-        """SPEC §6.7 — enumerate MCP servers the backend has mounted.
+    async def list_mcp_servers(workspace_id: str = "", session_id: str = "") -> dict[str, Any]:
+        """Enumerate built-ins, installed servers, and selected-session declarations."""
 
-        Returns BOTH the bundled in-process built-ins (fs/shell) AND any
-        declared/third-party servers installed via POST /v1/mcp/servers.
-        Each row carries id/name/status/transport/tools_count/tools.
-        """
-
-        rows = _mcp_server_rows(cwd=_runtime_workspace_catalog_cwd(app, workspace_id=workspace_id))
+        cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
+        rows = _mcp_server_rows(cwd=cwd)
+        rows.extend(session_mcp_server_rows(app, cwd=cwd, session_id=session_id))
         return {"servers": rows}
 
     def _mcp_server_rows(cwd: Path | None = None) -> list[dict[str, Any]]:
@@ -250,7 +248,6 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         flaky. The TUI calls this when it wants live tool-server status.
         """
         from clio_agent.gact.routes.mcp_rows import handshake_server_row  # noqa: PLC0415
-        from clio_agent.gact.routes.mcp_specs import declared_mcp_specs  # noqa: PLC0415
         from clio_agent.providers.handshake import handshake_mcp_servers  # noqa: PLC0415
 
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)

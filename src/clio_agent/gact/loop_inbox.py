@@ -246,6 +246,12 @@ class LoopInbox:
         with self._lock:
             return len(self._events) > 0
 
+    def snapshot(self) -> list[InboxEvent]:
+        """Return a non-consuming snapshot for lifecycle diagnostics."""
+
+        with self._lock:
+            return list(self._events)
+
     def cancel_user_message(self, message_id: str) -> bool:
         """Remove an unclaimed user steer from this inbox by stable message id."""
 

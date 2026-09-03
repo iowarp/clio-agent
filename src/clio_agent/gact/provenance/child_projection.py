@@ -83,7 +83,11 @@ def child_session_lineage(app: "FastAPI", root_session_id: str) -> list[dict[str
 
 
 def project_child_execution(
-    app: "FastAPI", root_session_id: str, result: dict[str, Any]
+    app: "FastAPI",
+    root_session_id: str,
+    result: dict[str, Any],
+    *,
+    include_children: bool = True,
 ) -> dict[str, Any]:
     """Add child ownership and causal entity edges to a normalized result.
 
@@ -95,6 +99,8 @@ def project_child_execution(
 
     projected = dict(result)
     lineage = child_session_lineage(app, root_session_id)
+    if not include_children:
+        lineage = lineage[:1]
     by_session = {str(row["session_id"]): row for row in lineage}
     task_by_id = _task_index(app)
 

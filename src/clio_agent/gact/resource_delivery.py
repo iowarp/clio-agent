@@ -39,9 +39,8 @@ def _delivery_ledger_max_records() -> int:
 
 
 # The representations the delivery PATH actually implements. ``native`` means
-# the resource's own bytes reach the model; today ``_dspy_images_from_parts`` is
-# the only implementation of that and it delivers images, so image is the only
-# media a native plan may name. ``retrieval`` and ``sandbox`` were removed: the
+# the resource's own bytes reach the model; image and PDF lanes are implemented.
+# ``retrieval`` and ``sandbox`` were removed: the
 # first was never produced by any branch, the second was produced but nothing
 # consumed it, so both were ledger entries describing work that never happened.
 DeliveryRepresentation = Literal[
@@ -55,9 +54,10 @@ DeliveryRepresentation = Literal[
 # is the queryable fact, the sentence is what a human reads.
 DELIVERY_REASONS: dict[str, str] = {
     "native_image_input": "live model handshake reports image input",
+    "native_pdf_input": "live model handshake reports PDF input",
     "native_lane_unimplemented": (
         "the live model handshake reports {modality} input, but CLIO implements native "
-        "delivery for images only; this resource is planned as {representation} instead"
+        "delivery for this modality; this resource is planned as {representation} instead"
     ),
     "bounded_text_tools": "text is exposed through bounded resource tools",
     "structured_document": (
@@ -70,7 +70,7 @@ DELIVERY_REASONS: dict[str, str] = {
     "no_representation": "no safe, verified content representation exists",
 }
 
-# Media the native lane can actually carry today.
+# Prefix media the native lane can actually carry today.
 NATIVE_MEDIA_PREFIXES = ("image/",)
 
 
@@ -311,7 +311,7 @@ _OPAQUE_TYPES = frozenset(
 # Media whose modality the handshake reports but whose native delivery lane is
 # NOT implemented. Kept as explicit maps so the day a lane lands, the seam is
 # one entry, and until then the trace names exactly what was skipped.
-_UNIMPLEMENTED_NATIVE_EXACT: dict[str, str] = {"application/pdf": "pdf"}
+_UNIMPLEMENTED_NATIVE_EXACT: dict[str, str] = {}
 _UNIMPLEMENTED_NATIVE_PREFIXES: dict[str, str] = {"audio/": "audio", "video/": "video"}
 
 
@@ -337,7 +337,7 @@ def _representation_for(
     """Return the representation, its typed reason code, and the reason sentence.
 
     A plan may only say ``native`` for media the delivery path actually carries
-    (images). When a model reports a modality CLIO has no native lane for, the
+    (images and PDFs). When a model reports a modality CLIO has no native lane for, the
     plan falls through to the next HONEST representation for that media — the
     structured conversion for documents, metadata for opaque media — and records
     ``native_lane_unimplemented`` naming the skipped modality, so the ledger,
@@ -347,6 +347,8 @@ def _representation_for(
 
     if media_type.startswith(NATIVE_MEDIA_PREFIXES) and "image" in modalities:
         return "native", "native_image_input", DELIVERY_REASONS["native_image_input"]
+    if media_type == "application/pdf" and "pdf" in modalities:
+        return "native", "native_pdf_input", DELIVERY_REASONS["native_pdf_input"]
     skipped = _unimplemented_native_modality(media_type, modalities)
     if media_type.startswith("text/") or media_type in _TEXTUAL_TYPES:
         representation: DeliveryRepresentation = "bounded_tools"

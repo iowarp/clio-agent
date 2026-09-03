@@ -12,6 +12,7 @@ from clio_agent.gact.provenance.child_projection import (
 )
 from clio_agent.gact.provenance.normalization import normalize_semantic_events
 from clio_agent.gact.routes.async_processes import project_session_async_processes
+from clio_agent.gact.routes.provenance import _child_session_ids
 
 
 @dataclass
@@ -63,6 +64,7 @@ class _Sessions:
             "root": SimpleNamespace(title="Investigation"),
             "child": SimpleNamespace(title="Evidence child"),
             "leaf": SimpleNamespace(title="Evidence leaf"),
+            "fork": SimpleNamespace(title="User fork", parent_session_id="root"),
         }
 
     def get(self, session_id: str) -> Any:
@@ -120,6 +122,32 @@ def test_projection_adds_typed_delegation_and_artifact_edges() -> None:
     assert ("task:task_leaf", "artifact:artifact_review", "generated") in edges
 
 
+def test_projection_without_children_does_not_leak_delegation_topology() -> None:
+    normalized = normalize_semantic_events(
+        [
+            {
+                "event_id": "root_turn",
+                "event_type": "turn.completed",
+                "session_id": "root",
+                "status": "completed",
+                "summary": "Root turn complete",
+            }
+        ],
+        provider="native",
+        session_id="root",
+    )
+
+    result = project_child_execution(_app(), "root", normalized, include_children=False)
+
+    assert [row["session_id"] for row in result["session_lineage"]] == ["root"]
+    assert not [node for node in result["nodes"] if node["id"].startswith("task:")]
+    assert not [edge for edge in result["edges"] if edge["kind"] == "delegated"]
+
+
+def test_child_provenance_scope_excludes_ordinary_user_forks() -> None:
+    assert _child_session_ids(_app(), "root") == ["child", "leaf"]
+
+
 def test_normalization_preserves_interaction_correlation_without_prompt_content() -> None:
     result = normalize_semantic_events(
         [
@@ -149,6 +177,24 @@ def test_normalization_preserves_interaction_correlation_without_prompt_content(
     assert span["tool_name"] == "workspace_write"
     assert span["attributes"]["interaction_id"] == "interaction_1"
     assert "prompt" not in span["attributes"]
+
+
+def test_native_user_question_events_are_interactions() -> None:
+    result = normalize_semantic_events(
+        [
+            {
+                "event_id": "question_created",
+                "event_type": "user_question.created",
+                "session_id": "child",
+                "status": "pending",
+                "summary": "Response needed",
+            }
+        ],
+        provider="native",
+        session_id="root",
+    )
+
+    assert result["spans"][0]["kind"] == "interaction"
 
 
 def test_async_process_projection_includes_nested_children(

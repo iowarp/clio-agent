@@ -15,6 +15,7 @@ from clio_agent.providers.claude_code_litellm import (
     ClaudeCodeExecError,
     ClaudeCodeLLM,
     ClaudeCodeUnsupportedMultimodalError,
+    _messages_to_claude_input,
     _messages_to_claude_prompt,
     ensure_registered,
 )
@@ -67,6 +68,98 @@ def test_messages_to_claude_prompt_rejects_image_parts() -> None:
                 }
             ]
         )
+
+
+def test_messages_to_claude_input_extracts_native_image_and_pdf() -> None:
+    prompt, blocks = _messages_to_claude_input(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "compare these"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,aW1hZ2U="},
+                    },
+                    {
+                        "type": "file",
+                        "file": {
+                            "file_data": "data:application/pdf;base64,cGRm",
+                            "filename": "paper.pdf",
+                        },
+                    },
+                ],
+            }
+        ]
+    )
+
+    assert "compare these" in prompt
+    assert "aW1hZ2U=" not in prompt
+    assert "cGRm" not in prompt
+    assert blocks == [
+        {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": "aW1hZ2U="},
+        },
+        {
+            "type": "document",
+            "source": {"type": "base64", "media_type": "application/pdf", "data": "cGRm"},
+            "title": "paper.pdf",
+        },
+    ]
+
+
+def test_messages_to_claude_input_rejects_non_pdf_file() -> None:
+    with pytest.raises(ClaudeCodeUnsupportedMultimodalError, match="unsupported native Claude"):
+        _messages_to_claude_input(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "file",
+                            "file": {"file_data": "data:text/plain;base64,dGV4dA=="},
+                        }
+                    ],
+                }
+            ]
+        )
+
+
+def test_custom_llm_delivers_native_blocks_to_sdk(monkeypatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def _fake_sdk(**kwargs: Any) -> tuple[str, dict[str, int]]:
+        seen.update(kwargs)
+        return "native", {"input_tokens": 2, "output_tokens": 1}
+
+    monkeypatch.setattr(claude_code_litellm, "_run_sdk", _fake_sdk)
+    ClaudeCodeLLM().completion(
+        model="claude_code/sonnet",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "read it"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,aW1hZ2U="},
+                    },
+                ],
+            }
+        ],
+        api_base="",
+        custom_prompt_dict={},
+        model_response=MagicMock(),
+        print_verbose=None,
+        encoding=None,
+        api_key=None,
+        logging_obj=None,
+        optional_params={"claude_code_transport": "sdk"},
+    )
+
+    assert seen["native_blocks"][0]["type"] == "image"
+    assert "aW1hZ2U=" not in seen["prompt"]
 
 
 def test_custom_llm_completion_strips_internal_model_marker() -> None:

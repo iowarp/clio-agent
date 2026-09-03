@@ -50,6 +50,7 @@ from clio_agent.gact.agent_invocation import (
 from clio_agent.gact.agent_invocation import (
     _run_dynamic_agent_compat as _run_dynamic_agent_compat,
 )
+from clio_agent.gact.agent_invocation import _select_accepted_kwargs
 from clio_agent.gact.events import Event
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.providers.config import _provider_runtime_kind
@@ -75,35 +76,6 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
 
-def _select_accepted_kwargs(func: Any, candidate: dict[str, Any]) -> dict[str, Any] | None:
-    """Return the subset of ``candidate`` keyword args that ``func`` accepts.
-
-    Signature inspection replaces the old TypeError-message sniffing: we decide
-    which optional kwargs a callee understands *before* invoking it, so the call
-    happens exactly once and any ``TypeError`` raised from inside the callee
-    propagates as-is rather than being mistaken for a signature mismatch.
-
-    Returns ``None`` when ``func`` cannot be introspected (some C-level /
-    builtin callables raise ``ValueError``/``TypeError`` from
-    :func:`inspect.signature`); the caller then makes a single best-effort
-    attempt with the full candidate set instead of guessing.
-    """
-
-    try:
-        sig = inspect.signature(func)
-    except (ValueError, TypeError):
-        return None
-    params = sig.parameters.values()
-    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params):
-        return dict(candidate)
-    accepted = {
-        p.name
-        for p in params
-        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-    }
-    return {name: value for name, value in candidate.items() if name in accepted}
-
-
 async def _try_streamed_forward_compat(
     app: "FastAPI",
     enriched_text: str,
@@ -113,6 +85,7 @@ async def _try_streamed_forward_compat(
     session_mode: str = "edit",
     session_edit_mode: str = "diff",
     images: list[Any] | None = None,
+    files: list[Any] | None = None,
     agent_override: Any | None = None,
     cancel_requested: Any | None = None,
 ) -> Optional[Any]:
@@ -127,6 +100,7 @@ async def _try_streamed_forward_compat(
         "session_mode": session_mode,
         "session_edit_mode": session_edit_mode,
         "images": images or [],
+        "files": files or [],
         "cancel_requested": cancel_requested,
     }
     if agent_override is not None:
@@ -472,6 +446,7 @@ async def _try_streamed_forward(
     session_edit_mode: str = "diff",
     agent_override: Any | None = None,
     images: list[Any] | None = None,
+    files: list[Any] | None = None,
     cancel_requested: Any | None = None,
 ) -> Optional[Any]:
     """Run the agent's forward via dspy.streamify, pumping every
@@ -595,7 +570,12 @@ async def _try_streamed_forward(
         if field_name:
             previous_stream_field = field_name
 
-    stream_input = {"question": enriched_text, "session_id": sid, "images": list(images or [])}
+    stream_input = {
+        "question": enriched_text,
+        "session_id": sid,
+        "images": list(images or []),
+        "files": list(files or []),
+    }
     try:
         # StreamListener emits ``StreamResponse`` instances that
         # carry the cleaned chunk in ``.chunk``. Keep the legacy

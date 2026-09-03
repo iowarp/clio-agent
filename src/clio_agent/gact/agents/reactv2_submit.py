@@ -2,12 +2,57 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import dspy
 from dspy.adapters.types.tool import ToolCalls
 
 REACT_FORCED_SUBMIT_REJECTED = "react_forced_submit_rejected"
+
+
+def adapter_tool_intent_from_exception(
+    exc: BaseException,
+    *,
+    allowed_tools: Iterable[str],
+) -> dict[str, Any] | None:
+    """Recover a typed tool intent emitted where DSPy expected final fields."""
+
+    from clio_agent.gact.app import _json_objects_from_text  # noqa: PLC0415
+
+    allowed = {str(name).strip() for name in allowed_tools if str(name).strip()}
+    message = str(exc)
+    if not allowed or "tool_name" not in message or "tool_args" not in message:
+        return None
+    for obj in _json_objects_from_text(message):
+        if not isinstance(obj, Mapping):
+            continue
+        tool_name = str(obj.get("tool_name") or obj.get("name") or "").strip()
+        if tool_name not in allowed:
+            continue
+        tool_args = obj.get("tool_args") or obj.get("args") or obj.get("arguments") or {}
+        return {
+            "tool_name": tool_name,
+            "tool_args": dict(tool_args) if isinstance(tool_args, Mapping) else {},
+        }
+    return None
+
+
+def call_recovered_dspy_tool(tool: Any, args: Mapping[str, Any]) -> Any:
+    """Call a DSPy tool recovered from malformed ReAct adapter output."""
+
+    if callable(tool):
+        return tool(**dict(args))
+    func = getattr(tool, "func", None)
+    if callable(func):
+        return func(**dict(args))
+    raise TypeError(f"tool is not callable: {getattr(tool, 'name', '<unknown>')}")
+
+
+def tool_names(tools: Iterable[Any]) -> list[str]:
+    """Return stable names from DSPy tool-like objects."""
+
+    return [name for tool in tools if (name := str(getattr(tool, "name", "") or "").strip())]
 
 
 def _forced_submit_error_info(break_reason: str) -> dict[str, Any] | None:

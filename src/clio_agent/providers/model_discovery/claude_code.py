@@ -3,6 +3,7 @@ probe-validates the documented CLI alias vocabulary (iowarp/clio-agent#1211)."""
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
@@ -27,15 +28,19 @@ CLAUDE_CODE_ALIAS_CANDIDATES: tuple[str, ...] = ("fable", "opus", "sonnet", "hai
 
 #: Per-probe timeout for one claude_code CLI call (#1211 review R2/R3: the OLD
 #: 60s-per-probe default gave a 5-probe (1 bare + 4 aliases) worst case of 300s.
-#: A real call takes 1-3s; a rejection returns just as fast (verified live). 15s
-#: is generous headroom while keeping the worst case bounded, and
+#: The native image/PDF proof can take longer than the former text-only probe;
+#: 30s preserves a bounded failure while covering observed cold SDK startup.
 #: ``discover_claude_code`` also exits its loop on the FIRST inconclusive probe
 #: rather than always running all 5, so the common-case worst case is much
 #: tighter than ``5 * timeout``.
-CLAUDE_CODE_PROBE_TIMEOUT_S = 15.0
+CLAUDE_CODE_PROBE_TIMEOUT_S = 30.0
 
-#: One trivial, cheap turn used to probe-validate a claude_code alias/model id.
-_PROBE_PROMPT = "reply with the single word: ok"
+#: One cheap native multimodal turn used to validate both the model alias and
+#: the image/PDF input contract exposed by the installed Claude Code SDK/CLI.
+_PROBE_PROMPT = "Reply with the single word: ok."
+_PROBE_IMAGE_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 #: Rejection is a DEFINITIVE model-not-available signal -- the only api_error_status
 #: this probe treats as "the account does not serve this model" (#1211 review D3).
@@ -47,6 +52,86 @@ _CLAUDE_REJECTION_STATUS = 404
 
 class ClaudeCodeCLIUnavailableError(RuntimeError):
     """Raised when the ``claude`` binary isn't on PATH at probe time."""
+
+
+def _probe_pdf_b64() -> str:
+    """Return a valid one-page PDF for the live native-input probe."""
+
+    objects = [
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R >>\nendobj\n",
+        b"4 0 obj\n<< /Length 0 >>\nstream\n\nendstream\nendobj\n",
+    ]
+    body = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for obj in objects:
+        offsets.append(len(body))
+        body.extend(obj)
+    xref = len(body)
+    body.extend(f"xref\n0 {len(offsets)}\n".encode())
+    body.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        body.extend(f"{offset:010d} 00000 n \n".encode())
+    body.extend(
+        f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    )
+    return base64.b64encode(bytes(body)).decode("ascii")
+
+
+def _multimodal_probe_input() -> str:
+    """Build one Claude stream-json user message with native image and PDF blocks."""
+
+    payload = {
+        "type": "user",
+        "session_id": "",
+        "parent_tool_use_id": None,
+        "message": {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": _PROBE_IMAGE_B64,
+                    },
+                },
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": _probe_pdf_b64(),
+                    },
+                },
+                {"type": "text", "text": _PROBE_PROMPT},
+            ],
+        },
+    }
+    return json.dumps(payload, separators=(",", ":")) + "\n"
+
+
+def _result_payload(stdout: str) -> dict[str, Any] | None:
+    """Read a result envelope from either legacy JSON or stream-json output."""
+
+    try:
+        payload = json.loads(stdout)
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict) and (
+        payload.get("type") == "result" or "is_error" in payload or "modelUsage" in payload
+    ):
+        return payload
+    result: dict[str, Any] | None = None
+    for line in stdout.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("type") == "result":
+            result = row
+    return result
 
 
 def _resolve_claude_binary() -> str:
@@ -69,7 +154,7 @@ def _resolve_claude_binary() -> str:
 
 
 def _probe_claude(binary: str, alias: str | None, *, timeout: float) -> dict[str, Any]:
-    """Run one trivial ``claude -p`` turn, probing ``alias`` (or the bare CLI default).
+    """Run one native image/PDF turn, probing ``alias`` (or the CLI default).
 
     Never raises. Returns ``{"outcome", "resolved_model", "reason"}`` where
     ``outcome`` is one of:
@@ -90,13 +175,25 @@ def _probe_claude(binary: str, alias: str | None, *, timeout: float) -> dict[str
     Exit code is NOT a reliable signal — a rejected model still exits 0 with
     ``is_error: true`` in the body.
     """
-    args = [binary, "-p", _PROBE_PROMPT]
+    args = [
+        binary,
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+    ]
     if alias:
         args += ["--model", alias]
-    args += ["--output-format", "json"]
     try:
         proc = subprocess.run(  # noqa: S603 - fixed argv, no shell, no user-controlled input
-            args, capture_output=True, text=True, timeout=timeout, check=False
+            args,
+            input=_multimodal_probe_input(),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return {
@@ -110,9 +207,8 @@ def _probe_claude(binary: str, alias: str | None, *, timeout: float) -> dict[str
             "resolved_model": "",
             "reason": f"probe failed to launch: {exc}",
         }
-    try:
-        payload = json.loads(proc.stdout)
-    except ValueError:
+    payload = _result_payload(proc.stdout)
+    if payload is None:
         return {
             "outcome": "inconclusive",
             "resolved_model": "",
@@ -124,7 +220,12 @@ def _probe_claude(binary: str, alias: str | None, *, timeout: float) -> dict[str
         outcome = "rejected" if status == _CLAUDE_REJECTION_STATUS else "inconclusive"
         return {"outcome": outcome, "resolved_model": "", "reason": reason}
     resolved = next(iter(payload.get("modelUsage") or {}), "")
-    return {"outcome": "accepted", "resolved_model": str(resolved), "reason": ""}
+    return {
+        "outcome": "accepted",
+        "resolved_model": str(resolved),
+        "reason": "",
+        "capabilities": ["text", "image", "pdf"],
+    }
 
 
 def discover_claude_code(
@@ -173,7 +274,7 @@ def discover_claude_code(
         )
     cli_default_canonical = bare["resolved_model"] if bare["outcome"] == "accepted" else ""
 
-    discovered: list[dict[str, str]] = []
+    discovered: list[dict[str, Any]] = []
     rejected: list[dict[str, str]] = []
     default_model = ""
     for alias in candidates:
@@ -194,6 +295,7 @@ def discover_claude_code(
                     "description": (
                         f"Resolves to {resolved}." if resolved else "Validated Claude Code alias."
                     ),
+                    "capabilities": list(probe.get("capabilities") or []),
                 }
             )
             if cli_default_canonical and resolved == cli_default_canonical:

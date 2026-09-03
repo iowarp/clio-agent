@@ -6,6 +6,25 @@ import inspect
 from typing import Any
 
 
+def _select_accepted_kwargs(func: Any, candidate: dict[str, Any]) -> dict[str, Any] | None:
+    """Return accepted kwargs, or ``None`` when the callable cannot be inspected."""
+
+    try:
+        signature = inspect.signature(func)
+    except (ValueError, TypeError):
+        return None
+    parameters = signature.parameters.values()
+    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters):
+        return dict(candidate)
+    accepted = {
+        parameter.name
+        for parameter in parameters
+        if parameter.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    return {name: value for name, value in candidate.items() if name in accepted}
+
+
 def _callable_positional_slots(func: Any, count: int) -> bool:
     """Return whether ``func`` accepts at least ``count`` positional arguments."""
 
@@ -33,6 +52,7 @@ def _run_dynamic_agent_compat(
     sid: str,
     cancel_requested: Any | None,
     images: list[Any] | None = None,
+    files: list[Any] | None = None,
 ) -> Any:
     """Call one dynamic-agent runner exactly once with its accepted arguments."""
 
@@ -41,6 +61,8 @@ def _run_dynamic_agent_compat(
         args.append(cancel_requested)
     if _callable_positional_slots(runner, 6):
         args.append(list(images or []))
+    if _callable_positional_slots(runner, 7):
+        args.append(list(files or []))
     return runner(*args)
 
 

@@ -24,6 +24,7 @@ def _runner_kwargs(
     session_id: str,
     cancel_requested: Any | None,
     images: list[Any] | None,
+    files: list[Any] | None,
 ) -> dict[str, Any]:
     """Build additive runner kwargs without changing text-only call shapes."""
 
@@ -34,6 +35,8 @@ def _runner_kwargs(
     }
     if images:
         kwargs["images"] = list(images)
+    if files:
+        kwargs["files"] = list(files)
     return kwargs
 
 
@@ -44,6 +47,7 @@ def _run_blueprint_dspy_agent(
     session_id: str,
     cancel_requested: Any | None = None,
     images: list[Any] | None = None,
+    files: list[Any] | None = None,
 ) -> Any:
     """Run a blueprint module with the active session and native images bound."""
 
@@ -56,6 +60,7 @@ def _run_blueprint_dspy_agent(
                 session_id=session_id,
                 cancel_requested=cancel_requested,
                 images=images,
+                files=files,
             )
         )
     finally:
@@ -69,6 +74,7 @@ def _run_prompt_user_agent(
     session_id: str,
     cancel_requested: Any | None = None,
     images: list[Any] | None = None,
+    files: list[Any] | None = None,
 ) -> Any:
     """Execute a prompt-only user or skill agent through DSPy and LiteLLM."""
 
@@ -81,6 +87,7 @@ def _run_prompt_user_agent(
                 session_id=session_id,
                 cancel_requested=cancel_requested,
                 images=images,
+                files=files,
             )
         )
     finally:
@@ -94,6 +101,7 @@ def _run_tool_user_agent(
     session_id: str,
     cancel_requested: Any | None = None,
     images: list[Any] | None = None,
+    files: list[Any] | None = None,
 ) -> Any:
     """Execute a tool-declaring user or skill agent through DSPy ReAct."""
 
@@ -106,6 +114,7 @@ def _run_tool_user_agent(
                 session_id=session_id,
                 cancel_requested=cancel_requested,
                 images=images,
+                files=files,
             )
         )
     finally:

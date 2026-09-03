@@ -7,11 +7,11 @@ ask-user planner actions, and summarizing predictions/subagent inputs for the
 trace. It is the single source of truth for:
 
 * **Multimodal message parts** — whether an agent's ``forward`` accepts native
-  images (:func:`_agent_accepts_images`), assembling transcript parts for a user
+  inputs, assembling transcript parts for a user
   turn while preserving image parts (:func:`_user_message_parts`), bounded
   image-part metadata for logging without raw base64
   (:func:`_image_part_summaries`), and converting GACT image parts to DSPy image
-  inputs (:func:`_dspy_images_from_parts`).
+  inputs (:func:`_dspy_images_from_parts`, :func:`_dspy_files_from_parts`).
 * **Ask-user planner actions** — extracting an ask-user action from a prediction
   (:func:`_coerce_ask_user_action`), turning it into typed question options
   (:func:`_ask_user_options_from_action`), and rendering an answered question
@@ -373,6 +373,31 @@ def _resource_ref_image(part: Part, *, app: Any | None, workspace_id: str) -> An
     return dspy.Image(f"data:{record.detected_mime};base64,{encoded}")
 
 
+def _resource_ref_file(part: Part, *, app: Any | None, workspace_id: str) -> Any | None:
+    """Return a DSPy PDF for a resource whose delivery plan chose ``native``."""
+
+    delivery = part.metadata.get("delivery")
+    representation = str(delivery.get("representation") or "") if isinstance(delivery, dict) else ""
+    if representation != "native" or app is None or not workspace_id:
+        return None
+    record = app.state.resource_store.get(workspace_id, part.resource_id)
+    if (
+        record is None
+        or str(record.revision) != str(part.resource_revision)
+        or record.state != "ready"
+        or record.detected_mime != "application/pdf"
+    ):
+        return None
+    import dspy  # noqa: PLC0415
+
+    original = app.state.resource_store.content_path(record).read_bytes()
+    return dspy.File.from_bytes(
+        original,
+        filename=record.name,
+        mime_type=record.detected_mime,
+    )
+
+
 def _dspy_images_from_parts(
     parts: list[Part],
     *,
@@ -412,3 +437,26 @@ def _dspy_images_from_parts(
         except Exception:  # noqa: BLE001 - undecodable image part skipped
             continue
     return images
+
+
+def _dspy_files_from_parts(
+    parts: list[Part],
+    *,
+    app: Any | None = None,
+    workspace_id: str = "",
+) -> list[Any]:
+    """Convert native-planned immutable PDF resources to DSPy file inputs.
+
+    A PDF reaches the model only when the resource delivery planner selected
+    ``native`` from a live provider handshake. Other documents stay on the
+    existing structured-conversion and bounded-tool paths.
+    """
+
+    files: list[Any] = []
+    for part in parts:
+        if part.type != "resource_ref":
+            continue
+        resource_file = _resource_ref_file(part, app=app, workspace_id=workspace_id)
+        if resource_file is not None:
+            files.append(resource_file)
+    return files

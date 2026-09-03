@@ -1,16 +1,7 @@
-"""LiteLLM ``CustomLLM`` provider for Claude Code.
+"""LiteLLM provider for Claude Code's persistent Agent SDK transport.
 
-Routes ``dspy.LM(model="claude_code/<model>", ...)`` calls through the
-Claude Agent SDK (persistent pooled CLI session) so CLIO can use the user's
-Claude Code subscription auth without bypassing the DSPy/LiteLLM provider
-contract. One transport since the v0.8.0 cleanup: the legacy ``exec`` batch
-transport (one ``claude -p`` subprocess per call, no token stream) was
-deleted — #891 evidence showed the SDK path is strictly better (pooled
-session reuse, streaming TTFT, prompt-cache continuity).
-
-The Claude Code process is used as a bare model transport. Built-in tools
-are disabled; CLIO's planner and MCP/tool gateway remain the only tool
-execution layer.
+CLIO owns planning and tools; Claude's built-in tools remain disabled. The
+legacy per-call ``claude -p`` transport was removed in v0.8.0 (#891).
 """
 
 from __future__ import annotations
@@ -36,6 +27,10 @@ from clio_agent.providers.claude_code_audit import (
 from clio_agent.providers.claude_code_bridge import (
     build_model_response as _build_model_response,
 )
+from clio_agent.providers.claude_code_multimodal import (
+    messages_to_claude_input,
+    native_input_summary,
+)
 from clio_agent.providers.claude_code_options import build_sdk_options
 from clio_agent.providers.claude_code_sessions import (
     _SDK_SESSION_POOL,
@@ -53,6 +48,12 @@ from clio_agent.providers.claude_code_sessions import (
 from clio_agent.providers.claude_code_stateful import (
     StatefulSend,
     resolve_stateful_send,
+)
+from clio_agent.providers.claude_code_stream_events import (
+    stream_event_text as _sdk_stream_event_text,
+)
+from clio_agent.providers.claude_code_stream_events import (
+    stream_event_thinking as _sdk_stream_event_thinking,
 )
 from clio_agent.providers.claude_code_thinking_split import (
     _split_provider_thinking_contract_delta,
@@ -133,39 +134,21 @@ def _messages_to_claude_prompt(messages: list[dict[str, Any]]) -> str:
     )
 
 
+def _messages_to_claude_input(
+    messages: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
+    """Return role-hardened text plus native Agent SDK image/PDF blocks."""
+
+    return messages_to_claude_input(
+        messages,
+        serialize_text=_messages_to_claude_prompt,
+        unsupported_multimodal_exc=ClaudeCodeUnsupportedMultimodalError,
+    )
+
+
 # The SDK transport machinery (the blocking-path pool in ``claude_code_sdk_pool`` and
 # the #891 pooled streaming transport in ``claude_code_sessions``) is imported at the
 # top and re-exported below for the historical import seams (#775 no-accretion).
-
-
-def _sdk_stream_event_text(event: dict[str, Any]) -> str:
-    """Extract user-visible text from a Claude SDK raw stream event."""
-    event_type = str(event.get("type") or "")
-    if event_type == "content_block_delta":
-        delta = event.get("delta")
-        if isinstance(delta, dict):
-            if delta.get("type") == "text_delta":
-                return str(delta.get("text") or "")
-            if isinstance(delta.get("text"), str):
-                return delta["text"]
-    if event_type == "content_block_start":
-        block = event.get("content_block")
-        if isinstance(block, dict) and block.get("type") == "text":
-            return str(block.get("text") or "")
-    return ""
-
-
-def _sdk_stream_event_thinking(event: dict[str, Any]) -> str:
-    """Extract provider-internal thinking from a Claude SDK raw stream event."""
-    event_type = str(event.get("type") or "")
-    if event_type != "content_block_delta":
-        return ""
-    delta = event.get("delta")
-    if not isinstance(delta, dict):
-        return ""
-    if delta.get("type") == "thinking_delta":
-        return str(delta.get("thinking") or "")
-    return ""
 
 
 async def _astream_sdk(
@@ -177,6 +160,7 @@ async def _astream_sdk(
     call_index: int = 0,
     thinking: dict[str, Any] | None = None,
     send: StatefulSend | None = None,
+    native_blocks: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream one Claude Code SDK call as LiteLLM-compatible chunks.
 
@@ -227,6 +211,7 @@ async def _astream_sdk(
         )
         source = entry.stream(
             payload=payload,
+            native_blocks=list(native_blocks or []),
             session_id=session_id,
             timeout=timeout,
             on_construct=_STREAM_CLIENT_POOL.bump_construct,
@@ -238,7 +223,11 @@ async def _astream_sdk(
             options=build_sdk_options(model=model, cwd=cwd, stream=True, thinking=thinking)
         )
         source = _per_call_message_source(
-            client, prompt=payload, session_id=session_id, timeout=timeout
+            client,
+            prompt=payload,
+            native_blocks=list(native_blocks or []),
+            session_id=session_id,
+            timeout=timeout,
         )
     emitted_partial = False
     final_text = ""
@@ -559,7 +548,7 @@ class ClaudeCodeLLM(CustomLLM):
     ) -> ModelResponse:
         call_index = _next_call_index()
         clean_model = model.removeprefix("claude_code/").removeprefix("cc-")
-        prompt = _messages_to_claude_prompt(messages)
+        prompt, native_blocks = _messages_to_claude_input(messages)
         params = optional_params or {}
         # Transport travels per-LM in optional_params (carried on the resolved
         # LMProviderConfig, #818); no process-global env fallback so concurrent
@@ -595,8 +584,8 @@ class ClaudeCodeLLM(CustomLLM):
                         "max_turns": 1,
                         "setting_sources": [],
                     },
-                    "messages": messages,
                     "prompt": prompt,
+                    "native_inputs": native_input_summary(native_blocks),
                     "optional_params": params,
                 }
             ),
@@ -621,13 +610,16 @@ class ClaudeCodeLLM(CustomLLM):
             prompt=prompt,
         )
         started = time.monotonic()
-        text, usage = _run_sdk(
-            prompt=prompt,
-            model=clean_model,
-            timeout=timeout_s,
-            cwd=cwd,
-            thinking=thinking,
-        )
+        sdk_kwargs: dict[str, Any] = {
+            "prompt": prompt,
+            "model": clean_model,
+            "timeout": timeout_s,
+            "cwd": cwd,
+            "thinking": thinking,
+        }
+        if native_blocks:
+            sdk_kwargs["native_blocks"] = native_blocks
+        text, usage = _run_sdk(**sdk_kwargs)
         emit_call_usage(
             call_id=call_id,
             call_index=call_index,
@@ -756,7 +748,7 @@ class ClaudeCodeLLM(CustomLLM):
                 "CLIO_CLAUDE_CODE_TRANSPORT / lm.claude_code_transport"
             )
         clean_model = model.removeprefix("claude_code/").removeprefix("cc-")
-        prompt = _messages_to_claude_prompt(messages)
+        prompt, native_blocks = _messages_to_claude_input(messages)
         timeout_s = float(timeout) if timeout else 180.0
         cwd = params.get("claude_code_cwd", os.getcwd())
         # Provider-generic thinking (#895): resolved SDK thinking config, or None.
@@ -782,8 +774,8 @@ class ClaudeCodeLLM(CustomLLM):
                         "setting_sources": [],
                         "include_partial_messages": True,
                     },
-                    "messages": messages,
                     "prompt": prompt,
+                    "native_inputs": native_input_summary(native_blocks),
                     "optional_params": params,
                 }
             ),
@@ -811,9 +803,11 @@ class ClaudeCodeLLM(CustomLLM):
             model=clean_model,
             cwd=cwd,
             thinking=thinking,
-            serialize=_messages_to_claude_prompt,
+            serialize=lambda rows: _messages_to_claude_input(rows)[0],
             call_index=call_index,
         )
+        if send.message_batch:
+            _send_prompt, native_blocks = _messages_to_claude_input(send.message_batch)
         try:
             async for chunk in _astream_sdk(
                 prompt=prompt,
@@ -823,6 +817,7 @@ class ClaudeCodeLLM(CustomLLM):
                 call_index=call_index,
                 thinking=thinking,
                 send=send,
+                native_blocks=native_blocks,
             ):
                 chunk_count += 1
                 text_chars += len(str(chunk.get("text") or ""))
@@ -850,6 +845,7 @@ __all__ = [
     "ClaudeCodeExecError",
     "ClaudeCodeLLM",
     "ensure_registered",
+    "_messages_to_claude_input",
     # Re-exported from providers.claude_code_sessions for the historical import
     # seams (tests + the completion path) — the SDK-session machinery's owner
     # module moved out of this file (#891, #775 no-accretion).

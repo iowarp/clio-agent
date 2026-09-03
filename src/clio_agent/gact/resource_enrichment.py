@@ -61,6 +61,16 @@ def _derivative_suffix(manifest: Mapping | None) -> str:
     return suffix + _conversion_warnings(manifest)
 
 
+def _is_native_delivery(part: object) -> bool:
+    """Return whether delivery planning attached the original to this model input."""
+
+    metadata = getattr(part, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return False
+    delivery = metadata.get("delivery")
+    return isinstance(delivery, Mapping) and delivery.get("representation") == "native"
+
+
 def describe_resource_parts(app: "FastAPI", sid: str, parts: list) -> list[str]:
     """Return one trusted grounding line per ``resource_ref`` part.
 
@@ -100,6 +110,15 @@ def describe_resource_parts(app: "FastAPI", sid: str, parts: list) -> list[str]:
             f"revision={record.revision}) is available through the bounded workspace-resource "
             "tools. Custody paths are private and must not be passed to filesystem tools."
         )
+        if _is_native_delivery(part):
+            blocks.append(
+                header
+                + " The original attachment is also included directly in this model input; use it "
+                + "now. Structured conversion is independent and does not block native reading. "
+                + "Do not inspect or wait for conversion unless the user explicitly asks for "
+                + "converted structure, extracted text, or OCR."
+            )
+            continue
         manifest = app.state.resource_processing_store.manifest(record)
         if processing.derivatives_available and manifest is not None:
             suffix = _derivative_suffix(manifest)

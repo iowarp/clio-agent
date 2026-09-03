@@ -122,8 +122,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # empty mount_failures map on every cold boot). The listing logic itself
     # lives in the owner module tools/gateway.py; only the call site is here.
     # The campaign's blueprint extraction offsets six lines from that merged
-    # seam; the synchronized owner is measured at 1022 lines.
-    "src/clio_agent/agent.py": 1022,  # blueprint activation moved to gact/blueprint_activation.py
+    # seam; later docstring cleanup lowered the synchronized owner to 1020.
+    "src/clio_agent/agent.py": 1020,  # blueprint activation moved to gact/blueprint_activation.py
     "src/clio_agent/arc/memory.py": 1389,  # provider ladder moved to provenance_config.py
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -212,8 +212,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # PR #1278 re-land: -22. The two dynamic-agent DSPy signatures moved to
     # their owner module agents/signatures.py; the additive `images` input +
     # its three forward params are what stayed. Interaction runtime extraction
-    # then removed one additional line.
-    "src/clio_agent/gact/agents/builders.py": 1974,
+    # plus recovery-helper extraction lowered the owner to 1943.
+    "src/clio_agent/gact/agents/builders.py": 1943,
     # #948 S4/S5/S6 growth already carried this file past the flat 800 cap (to 842)
     # before it was ever added to this baseline — a pre-existing gap this change
     # did not introduce (it was silently exempt from the ratchet, not under it).
@@ -401,7 +401,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # prompt/list branches) -- the classification logic itself lives in the owner
     # module tools/mcp_connection_era.py; only the server_id= threading + one
     # instrument_client_era() wrap for the bare-Client list branch land here.
-    "src/clio_agent/gact/routes/mcp.py": 958,  # declared MCP assembly moved to routes/mcp_specs.py
+    "src/clio_agent/gact/routes/mcp.py": 955,  # session MCP assembly stays in routes/mcp_specs.py
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
     # develop with the check job red). Recording current counts makes the debt
@@ -499,8 +499,8 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/runtime/globals.py": 986,  # blueprint-path arg threading (#1247)
     # PR #1278 re-land: -36. _run_dynamic_agent_compat + its arity probe moved
     # to the owner module gact/agent_invocation.py (which adds the optional
-    # images slot); this file re-exports both names.
-    "src/clio_agent/gact/streaming.py": 928,
+    # images slot); kwargs selection extraction lowered this owner further.
+    "src/clio_agent/gact/streaming.py": 908,
     # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
     # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
     # merge(main->develop): +10 (932 -> 942) integrating main's #964 structured
@@ -650,7 +650,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # _cli_provider.py) instead of a bare ClaudeCodeExecError -- so the account's
     # rejection reaches the trace/transcript honestly instead of a misleading
     # LMTransportError, and is never retried as transient.
-    "src/clio_agent/providers/claude_code_litellm.py": 861,
+    "src/clio_agent/providers/claude_code_litellm.py": 857,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
     # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
     # #947 DEBT (recorded 2026-07-18, #948 S4): residual over the pre-#947 count

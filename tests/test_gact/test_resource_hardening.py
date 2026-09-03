@@ -417,7 +417,6 @@ def test_a_cancel_during_the_status_await_is_not_overwritten(tmp_path: Path) -> 
 @pytest.mark.parametrize(
     ("media_type", "modality", "expected"),
     [
-        ("application/pdf", "pdf", "structured_document"),
         ("audio/wav", "audio", "metadata_only"),
         ("video/mp4", "video", "metadata_only"),
     ],
@@ -425,7 +424,7 @@ def test_a_cancel_during_the_status_await_is_not_overwritten(tmp_path: Path) -> 
 def test_a_capable_model_does_not_get_an_unimplemented_native_plan(
     media_type: str, modality: str, expected: str
 ) -> None:
-    """Only images are delivered natively, so only images may be planned native."""
+    """Unsupported native modalities fall back to an honest representation."""
 
     app = SimpleNamespace(
         state=SimpleNamespace(
@@ -464,6 +463,48 @@ def test_a_capable_model_does_not_get_an_unimplemented_native_plan(
     assert planned.representation == expected
     assert planned.reason_code == "native_lane_unimplemented"
     assert modality in planned.reason
+
+
+def test_pdf_capability_selects_native_pdf_delivery() -> None:
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            provider_catalog={
+                "providers": [
+                    {
+                        "id": "claude_code",
+                        "health": "ready",
+                        "models": [
+                            {
+                                "model_id": "sonnet",
+                                "availability": "available",
+                                "modalities": ["text", "image", "pdf"],
+                                "evidence": {"live": True, "generated_at": "2026-09-03T00:00:00Z"},
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+    )
+    record = ResourceRecord(
+        id="res_pdf",
+        workspace_id="ws_1",
+        name="paper.pdf",
+        declared_size=10,
+        received_size=10,
+        detected_mime="application/pdf",
+        state="ready",
+    )
+
+    planned = plan_resource_delivery(
+        app,
+        resource=record,
+        message_id="m_pdf",
+        model=ModelRef(provider_id="claude_code", model_id="sonnet"),
+    )
+
+    assert planned.representation == "native"
+    assert planned.reason_code == "native_pdf_input"
 
 
 def test_the_representation_vocabulary_has_no_unproduced_values() -> None:
