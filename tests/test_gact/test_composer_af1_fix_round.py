@@ -433,14 +433,28 @@ def test_queue_promotion_authorizes_referenced_parts_exactly_once(
     digest work F1 moved off-loop ran twice per promotion instead of once.
     """
 
+    import threading
     import time
 
-    from clio_agent.gact import message_submission
-    from tests.test_gact.test_post_messages import SlowClioAgent
+    from tests.test_gact.test_post_messages import FakeClioAgent, FakePrediction
 
-    app = build_app(
-        sessions_path=tmp_path / "sessions.json", agent=SlowClioAgent(delay_s=2.0)
-    )
+    from clio_agent.gact import message_submission
+
+    # A wall-clock delay races the auto-promotion idle hook under machine load:
+    # if the turn happens to settle before this test reaches the manual promote
+    # call, composer_runtime's own idle-transition auto-promotion consumes the
+    # queued row first, and the manual call 404s on a row that is already gone.
+    # Holding the turn open on an Event the test releases itself makes "the turn
+    # is still busy when we promote" a certainty, not a timing bet.
+    release_turn = threading.Event()
+
+    class HoldingAgent(FakeClioAgent):
+        def forward(self, question: str, session_id: str) -> object:
+            self.calls.append((question, session_id))
+            release_turn.wait(timeout=10.0)
+            return FakePrediction(answer=self.answer)
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=HoldingAgent())
     workspace_id, sid = _workspace_session(app, tmp_path, name="promote")
     (tmp_path / "promote" / "notes.txt").write_text("hello reference", encoding="utf-8")
 
@@ -500,6 +514,8 @@ def test_queue_promotion_authorizes_referenced_parts_exactly_once(
             json={"revision": queued["revision"], "delivery": "auto"},
         )
         assert promoted.status_code == 200, promoted.text
+        # Let the held first turn settle before the client (and app) tear down.
+        release_turn.set()
 
     assert len(calls) == 1
 
