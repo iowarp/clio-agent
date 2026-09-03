@@ -68,6 +68,7 @@ from clio_agent.gact.runtime.globals import (
 from clio_agent.gact.runtime.retention import enforce_list_bound
 from clio_agent.gact.streaming import (
     _pop_stream_fallback,
+    _pop_stream_fallback_notes,
     _stream_fallback_payload,
 )
 from clio_agent.gact.tool_observer import (
@@ -383,6 +384,13 @@ def finalize_turn(
         current_stream_part_id=current_stream_part_id,
         has_live_parts=has_live_parts,
     )
+    # Degradations that did NOT change the delivery path (native model inputs the
+    # executing agent could not accept) ride here rather than in the single
+    # delivery slot above, which a clean live stream discards -- so a dropped
+    # attachment stays on the turn's record instead of vanishing with it.
+    stream_degradations = _pop_stream_fallback_notes(state.app, state.sid)
+    if stream_degradations:
+        state.assistant_metadata["stream_degradations"] = stream_degradations
     # A live observer completion can arrive after the immediate post-forward drain
     # but before the assistant message is persisted. Reconcile once more at the
     # final metadata boundary so reloads retain the same tool facts as the live bus.

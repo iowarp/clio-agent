@@ -746,6 +746,7 @@ from clio_agent.gact.streaming import (  # noqa: E402,F401
     _extract_tools_called,
     _format_react_trajectory,
     _pop_stream_fallback,
+    _pop_stream_fallback_notes,
     _record_stream_fallback,
     _run_dynamic_agent_compat,
     _signature_prompt,

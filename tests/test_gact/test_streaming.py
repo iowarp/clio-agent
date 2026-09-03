@@ -19,6 +19,7 @@ from clio_agent.gact.app import (
     _build_stream_listeners,
     _dynamic_agent_lm_config,
     _pop_stream_fallback,
+    _pop_stream_fallback_notes,
     _record_stream_fallback,
     _stream_fallback_reason_capabilities,
     _StreamingOutputError,
@@ -68,6 +69,10 @@ class _DspyAgent(dspy.Module):
 
 
 class _ExpertStreamingAgent(dspy.Module):
+    # Declares the native-input parameters, because the streaming test below
+    # asserts an image REACHES this forward. A module that does not declare them
+    # never receives them (see the _DevelopEraAgent tests) -- asserting the kwarg
+    # on a forward that cannot accept it only ever proved the fabrication.
     def __init__(self) -> None:
         super().__init__()
         self.chat_agent = object()
@@ -79,8 +84,10 @@ class _ExpertStreamingAgent(dspy.Module):
         session_id: str,
         session_mode: str = "chat",
         session_edit_mode: str = "diff",
+        images: list[Any] | None = None,
+        files: list[Any] | None = None,
     ) -> _Pred:
-        del question, session_id, session_mode, session_edit_mode
+        del question, session_id, session_mode, session_edit_mode, images, files
         return _Pred(answer="sync fallback should not run")
 
 
@@ -193,13 +200,25 @@ def test_stream_fallback_reasons_are_audited_and_reject_unknowns(tmp_path: Path)
         "mcp_wire_cancellation_unavailable",
         # P1.4 #1114: the MRTR loop exhausted its config-resolved round bound.
         "mcp_input_required_rounds_exceeded",
+        # AF-IMG: the only INPUT-side degradation in the set -- the text still
+        # streamed live, the attachment did not ride the request.
+        "native_model_inputs_dropped",
     } == set(catalog)
+    # Every DELIVERY-path reason means "the tokens did not stream"; the one
+    # input-side reason must not be flattened into that claim, so it is asserted
+    # on its own honest shape rather than excused from the invariant.
+    input_side = {"native_model_inputs_dropped"}
     for reason, details in catalog.items():
-        assert details["synthetic_posthoc"] is True, reason
-        assert details["live_streaming"] is False, reason
         assert details["category"], reason
         assert details["description"], reason
         assert details["recovery_actions"], reason
+        if reason in input_side:
+            continue
+        assert details["synthetic_posthoc"] is True, reason
+        assert details["live_streaming"] is False, reason
+    dropped = catalog["native_model_inputs_dropped"]
+    assert dropped["synthetic_posthoc"] is False
+    assert dropped["live_streaming"] is True
 
     with pytest.raises(ValueError, match="Unknown stream fallback reason"):
         _record_stream_fallback(app, "sid", "unclassified_silent_downgrade")
@@ -262,6 +281,191 @@ async def test_streamify_setup_failure_returns_none_for_sync_fallback(
     assert fallback["live_streaming"] is False
     assert fallback["recovery_actions"]
     assert "ValueError" in fallback["message"]
+
+
+class _DevelopEraAgent(dspy.Module):
+    """The full pre-multimodal forward contract: every mode kwarg, no ``images``.
+
+    This is the shape every module built before the native-input parameters
+    landed still has -- including ``BlueprintExpertModule.forward``, the module
+    the blueprint runtime actually executes. It must stream cleanly on an
+    IMAGELESS turn.
+    """
+
+    def __init__(self, answer: str) -> None:
+        super().__init__()
+        self._answer = answer
+        self.calls: list[dict[str, Any]] = []
+
+    def forward(
+        self,
+        question: str,
+        session_id: str,
+        session_mode: str = "chat",
+        session_edit_mode: str = "diff",
+        cancel_requested: Any | None = None,
+    ) -> _Pred:
+        self.calls.append(
+            {
+                "question": question,
+                "session_id": session_id,
+                "session_mode": session_mode,
+                "session_edit_mode": session_edit_mode,
+                "cancel_requested": cancel_requested,
+            }
+        )
+        return _Pred(answer=self._answer)
+
+
+class _NativeInputAgent(dspy.Module):
+    """A post-multimodal forward that DOES declare the native-input parameters."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[dict[str, Any]] = []
+
+    def forward(
+        self,
+        question: str,
+        session_id: str,
+        session_mode: str = "chat",
+        session_edit_mode: str = "diff",
+        images: list[Any] | None = None,
+        files: list[Any] | None = None,
+        cancel_requested: Any | None = None,
+    ) -> _Pred:
+        del session_mode, session_edit_mode, cancel_requested
+        self.calls.append(
+            {
+                "question": question,
+                "session_id": session_id,
+                "images": list(images or []),
+                "files": list(files or []),
+            }
+        )
+        return _Pred(answer="saw them")
+
+
+def _install_passthrough_streamify(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace ``streamify`` with a faithful, non-threaded pass-through.
+
+    DSPy's real ``streamify`` calls the wrapped program with EXACTLY the kwargs the
+    pump hands it -- which is why an injected ``images=[]`` reached a forward that
+    never declared it and raised ``TypeError``. This stand-in preserves that one
+    load-bearing property while dropping the anyio task-group/worker-thread
+    machinery, so the kwarg contract is asserted deterministically rather than
+    through a live streaming runtime.
+    """
+
+    streamify_module = importlib.import_module("dspy.streaming.streamify")
+
+    def _passthrough(program: Any, **_options: Any) -> Any:
+        async def _run(**kwargs: Any):
+            pred = program.forward(**kwargs)
+            yield dspy.Prediction(answer=pred.answer)
+
+        return _run
+
+    monkeypatch.setattr(streamify_module, "streamify", _passthrough)
+
+
+async def test_imageless_turn_streams_on_an_agent_without_an_images_parameter(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No ``images=[]`` is injected into a forward that never declared it.
+
+    Injecting it unconditionally raised ``TypeError`` on EVERY rung of the compat
+    ladder (all three carried the same ``stream_input``), so an ordinary text turn
+    on a pre-multimodal module failed as a streaming error instead of streaming.
+    """
+
+    _install_passthrough_streamify(monkeypatch)
+    agent = _DevelopEraAgent("develop era answer")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+
+    async def emit_chunk(text: str) -> None:
+        del text
+
+    result = await _try_streamed_forward(app, "no attachments here", "sid", emit_chunk)
+
+    # The module ran with its own contract intact -- no TypeError, no fabricated
+    # kwarg, and the mode flags it DOES declare still arrived.
+    assert agent.calls == [
+        {
+            "question": "no attachments here",
+            "session_id": "sid",
+            "session_mode": "edit",
+            "session_edit_mode": "diff",
+            "cancel_requested": None,
+        }
+    ]
+    assert result is not None
+    assert result.answer == "develop era answer"
+    # An imageless turn dropped nothing, so nothing is recorded as degraded.
+    assert _pop_stream_fallback_notes(app, "sid") == []
+
+
+async def test_images_on_an_agent_without_an_images_parameter_are_typed_not_silent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A real attachment that cannot be delivered is a typed reason, not a drop."""
+
+    _install_passthrough_streamify(monkeypatch)
+    agent = _DevelopEraAgent("answered without seeing the image")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+
+    async def emit_chunk(text: str) -> None:
+        del text
+
+    result = await _try_streamed_forward(
+        app,
+        "describe the attachment",
+        "sid",
+        emit_chunk,
+        images=[object()],
+        files=[object()],
+    )
+
+    assert result is not None
+    # A NOTE, not the single delivery slot: the turn still streamed, and a later
+    # delivery-path reason (here stream_completed_without_chunks) must not be able
+    # to overwrite the record that an attachment never reached the model.
+    notes = _pop_stream_fallback_notes(app, "sid")
+    assert [note["reason"] for note in notes] == ["native_model_inputs_dropped"]
+    assert notes[0]["live_streaming"] is True
+    assert notes[0]["synthetic_posthoc"] is False
+    assert "images=1" in notes[0]["message"]
+    assert "files=1" in notes[0]["message"]
+    assert "_DevelopEraAgent.forward" in notes[0]["message"]
+    assert _pop_stream_fallback(app, "sid").get("reason") != "native_model_inputs_dropped"
+
+
+async def test_native_inputs_reach_an_agent_that_declares_them(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The gate must not become a blanket refusal: a capable forward still gets them."""
+
+    _install_passthrough_streamify(monkeypatch)
+    agent = _NativeInputAgent()
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    first, second, only_file = object(), object(), object()
+
+    async def emit_chunk(text: str) -> None:
+        del text
+
+    await _try_streamed_forward(
+        app, "look", "sid", emit_chunk, images=[first, second], files=[only_file]
+    )
+
+    assert agent.calls == [
+        {
+            "question": "look",
+            "session_id": "sid",
+            "images": [first, second],
+            "files": [only_file],
+        }
+    ]
+    assert _pop_stream_fallback_notes(app, "sid") == []
 
 
 def test_argonne_streaming_is_not_force_classified_as_batch() -> None:

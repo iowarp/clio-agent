@@ -309,7 +309,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # owner module agents/runners.py; the composer lanes added only an import
     # plus two one-line calls (initialize_composer_state/register_composer_routes)
     # and three forwarded args on the _start_background_user_turn wrapper.
-    "src/clio_agent/gact/app.py": 2488,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
+    # AF-IMG (PR #1298): +1 -- one re-export name for the typed non-delivery
+    # degradation ledger (pop). The ledger itself lives in its owner module
+    # gact/stream_fallbacks.py; only the historical re-export seam is here.
+    "src/clio_agent/gact/app.py": 2489,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -514,7 +517,14 @@ RATCHET_BASELINE: dict[str, int] = {
     # PR #1278 re-land: -36. _run_dynamic_agent_compat + its arity probe moved
     # to the owner module gact/agent_invocation.py (which adds the optional
     # images slot); kwargs selection extraction lowered this owner further.
-    "src/clio_agent/gact/streaming.py": 908,
+    # AF-IMG (PR #1298): +17 -- the native-model-input gate seam. Injecting
+    # images=[]/files=[] into every streamed forward broke every module whose
+    # forward predates those parameters, on imageless turns too. The predicate,
+    # the kwarg selection and the typed drop record all live in the owner module
+    # gact/native_model_inputs.py; what lands here is its import, one call in the
+    # stream_input literal, one call in the compat shim, and the pop/record
+    # re-export lines the historical `from gact.streaming import ...` seam needs.
+    "src/clio_agent/gact/streaming.py": 925,
     # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
     # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
     # merge(main->develop): +10 (932 -> 942) integrating main's #964 structured
@@ -629,7 +639,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # on_turn_finalized call site right after the session.status_changed
     # publish, alongside the existing dispatch_*_at_finalize hooks it mirrors
     # (a lazy import + one call). Logic lives in gact/spotter_watcher.py.
-    "src/clio_agent/gact/turn_finalize.py": 853,  # Interaction pause ownership moved to user_question_pause.py.
+    # AF-IMG (PR #1298): +8 -- one import plus a guarded four-line stamp folding
+    # the turn's non-delivery degradation notes onto assistant_metadata. A clean
+    # live stream discards the single delivery slot, so a dropped native input
+    # would otherwise vanish with it; the ledger + its typed catalog live in
+    # gact/stream_fallbacks.py, only the stamp lands here.
+    "src/clio_agent/gact/turn_finalize.py": 861,  # Interaction pause ownership moved to user_question_pause.py.
     # P5 (owner ask 2026-08-06): +7 for the child/subagent artifact-rollup call
     # site (comment + function-local import + one-line invocation, matching the
     # P4.1/P4.2/P1.6d dispatch idiom already used lower in this file); the
