@@ -229,8 +229,11 @@ def build_exerciser_server() -> FastMCP:
         tool's DEFINITION -- ``gact/mcp_apps.py::_resource_uri`` reads exactly
         that key. Paired with ``ui_panel`` below, this is the exerciser's
         ui-serving arm: the conformance suite drives a real call through
-        here, then admits + serves the result through the (regression-locked,
-        unmodified) Apps host end to end.
+        here, then feeds the real result into the (regression-locked,
+        unmodified) Apps host's admission + serving logic (the observer
+        invocation itself is by hand there, not through the auto-firing
+        production hook -- see ``test_mcp_v2_conformance.py``'s Layer 6
+        scope note).
 
         The RESULT (not just the definition) carries an extra, unrecognized
         ``_meta`` namespace (``x-clio-agent/unknown``) on purpose -- the

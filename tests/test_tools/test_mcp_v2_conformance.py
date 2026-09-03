@@ -855,10 +855,18 @@ def test_permanent_protocol_refusal_terminates_the_react_loop_fast() -> None:
 
 # --------------------------------------------------------------------------
 # Layer 6: C1-S3 (#1283) -- the generic extension registry (tasks becomes
-# entry #1, ui is entry #2) and the MCP Apps ui-serving arm, negotiated and
-# admitted end to end against the exerciser. The Apps HOST itself
-# (gact/mcp_apps.py) is untouched -- these tests prove the newly-declared
-# wire feeds it, never new host behavior.
+# entry #1, ui is entry #2) and the MCP Apps ui-serving arm, negotiated
+# against the exerciser and fed through the REAL admission/serving logic.
+# The Apps HOST itself (gact/mcp_apps.py) is untouched -- these tests prove
+# the newly-declared wire feeds it, never new host behavior. Scope note
+# (review round 1, F5): the WIRE half is genuinely end-to-end (real
+# negotiation, real declared-path call, real raw result shape); the
+# observer is then invoked BY HAND (``app.state.pending_mcp_app_observer``
+# called directly), the same technique ``tests/test_gact/test_mcp_apps.py``
+# uses -- neither suite exercises the AUTO-firing wiring inside
+# ``tools/execution.py::_call_tool_inner`` (the ``current_tool_runtime()``
+# hook resolution that fires the observer on a real completed call without
+# anyone calling it directly).
 # --------------------------------------------------------------------------
 
 
@@ -933,7 +941,9 @@ def test_handshake_row_surfaces_declared_extensions() -> None:
     recorded server-declared extensions -- the direct assertion target the
     extensions live-verification avenue needed (LEG_C2.md avenue 8's finding:
     the handshake row never surfaced ``ServerCapabilities.extensions`` at
-    all; ``execution_era`` was the only, indirect, signal)."""
+    all; ``execution_era`` was the only, indirect, signal). An OBSERVED
+    server also carries ``extensions_era`` naming the protocol era that
+    observation landed on."""
 
     from clio_agent.gact.routes.mcp_rows import handshake_server_row
     from clio_agent.providers.handshake.mcp import MCPServerReport
@@ -954,12 +964,45 @@ def test_handshake_row_surfaces_declared_extensions() -> None:
     row = handshake_server_row(report)
 
     assert sorted(row["extensions"]) == sorted([TASKS_EXTENSION_ID, UI_EXTENSION_ID])
+    assert row["extensions_era"] == "modern"
 
 
-def test_handshake_row_extensions_absent_is_empty_list() -> None:
-    """A server never observed on any execution path reports an empty list,
-    never ``None`` or a missing key -- the avenue's assertion target must be
-    stable regardless of observation history."""
+def test_handshake_row_observed_empty_extensions_is_a_real_empty_list() -> None:
+    """A REAL observation that a server declares NOTHING (every legacy/v1
+    server: the version sieve strips ``capabilities.extensions`` there) is a
+    genuine empty list -- distinct from never having observed the server at
+    all (see the sibling ``test_handshake_row_extensions_unobserved_is_none``,
+    #1283 review round 1 F2)."""
+
+    from clio_agent.gact.routes.mcp_rows import handshake_server_row
+    from clio_agent.providers.handshake.mcp import MCPServerReport
+    from clio_agent.providers.handshake.model import ConnectivityState
+    from clio_agent.tools.mcp_connection_era import record_server_extensions
+
+    server_id = "unit-handshake-legacy-observed-empty"
+    extensions_record = record_server_extensions(server_id, extensions=(), era="legacy")
+    report = MCPServerReport(
+        name=server_id,
+        connectivity=ConnectivityState.OK,
+        transport="stdio",
+        declared_extensions=extensions_record,
+    )
+
+    row = handshake_server_row(report)
+
+    assert row["extensions"] == []
+    assert row["extensions_era"] == "legacy"
+
+
+def test_handshake_row_extensions_unobserved_is_none() -> None:
+    """#1283 review round 1, F2 (MUST-FIX): a server GENUINELY unobserved on
+    any execution path reports ``None`` -- an unlabeled key or an empty list
+    would conflate "never probed" with "probed and declares nothing", and
+    EVERY legacy/v1 server produces the latter (the version sieve strips
+    ``capabilities.extensions``) regardless of whether it was ever reached.
+    ``mcp_connection_era.latest_server_extensions``'s own contract already
+    said ``None`` must never read as declares-nothing; this pins the wire row
+    honors it too (the previous ``== []`` pin PINNED the conflation)."""
 
     from clio_agent.gact.routes.mcp_rows import handshake_server_row
     from clio_agent.providers.handshake.mcp import MCPServerReport
@@ -967,7 +1010,8 @@ def test_handshake_row_extensions_absent_is_empty_list() -> None:
 
     report = MCPServerReport(name="never-observed", connectivity=ConnectivityState.OK)
     row = handshake_server_row(report)
-    assert row["extensions"] == []
+    assert row["extensions"] is None
+    assert row["extensions_era"] is None
 
 
 async def test_declared_path_ui_resource_admits_and_serves_through_the_apps_host(
@@ -989,7 +1033,16 @@ async def test_declared_path_ui_resource_admits_and_serves_through_the_apps_host
        admission -> stored-record round trip unstripped).
 
     The Apps HOST itself (``gact/mcp_apps.py``) is untouched -- this proves
-    the NEWLY-DECLARED wire feeds it, never new host behavior.
+    the NEWLY-DECLARED wire feeds it, never new host behavior. Scope note
+    (review round 1, F5): the observer (step 2) is invoked BY HAND
+    (``app.state.pending_mcp_app_observer`` called directly, matching
+    ``tests/test_gact/test_mcp_apps.py``'s own technique) -- this test does
+    NOT exercise ``tools/execution.py::_call_tool_inner``'s AUTO-firing wiring
+    (the ``current_tool_runtime()`` hook resolution that calls the observer
+    on a real completed tool call without anyone calling it directly); "end
+    to end" here means the WIRE (real negotiation, real declared-path call,
+    real raw result shape reaching real admission/serving logic), not that
+    auto-firing hook path.
 
     Uses :class:`~clio_agent.tools.execution.SyncMCPToolExecutor` (not the
     bare async executor other layer-2 tests use) because the Apps host's
@@ -1084,6 +1137,84 @@ async def test_declared_path_ui_resource_admits_and_serves_through_the_apps_host
             csp = sandbox.headers["content-security-policy"]
             assert "connect-src 'self' http://127.0.0.1:*" in csp
             assert "script-src 'self' 'unsafe-inline' blob: data: blob:" in csp
+    finally:
+        if executor is not None:
+            executor.close()
+        _reap("mcp_exerciser.py")
+
+
+async def test_ui_bearing_result_survives_the_proxy_relay_to_the_apps_host(
+    tmp_path: Path,
+) -> None:
+    """#1283 review round 1, F4: the only NEW proxy-leg wire behavior this
+    slice adds (the ``ui`` capability ad declared UNCONDITIONALLY, even for a
+    client class that forbids internal extensions -- ``_auto_internal_
+    extensions=False``, e.g. ``ProxyClient``) had no coverage where the
+    ACTUAL call rides the proxy: the sibling admission test above rides the
+    DIRECT route, since C1-S1's whole-namespace routing puts a task-capable
+    server's PLAIN tools there too once capability is known.
+
+    Forces the SAME ``ui_echo`` call through the proxy regardless of the
+    exerciser's real (True) task capability -- the same F12 technique
+    ``test_heal_attempt_is_bounded_when_the_direct_factory_never_lands``
+    uses (no direct-client factory threaded onto this executor for this
+    namespace, so the route demotes typed ``MCP_TASK_DIRECT_FACTORY_MISSING``)
+    -- and asserts the ui-bearing result's private ``_meta`` and its
+    admission into the Apps host both survive relay through ``ProxyClient``.
+    """
+
+    from fastapi.testclient import TestClient
+
+    namespace = "v2exuiproxy"
+    executor: Any = None
+    try:
+        spec = _exerciser_spec(namespace)
+        listed = _list_declared_tools(spec)
+        gw = build_gateway({namespace: spec})
+        executor = SyncMCPToolExecutor(
+            gw,
+            namespace_servers=namespace_proxies(gw),
+            preloaded_tools=_preloaded_tools_from_listing(namespace, listed),
+        )
+        # F12 technique: force the PROXY path even though the exerciser is
+        # genuinely task-capable, by threading NO direct-client factory for
+        # this namespace.
+        executor._async_executor._clio_namespace_direct_factories = {}  # noqa: SLF001
+
+        raw_result = executor.call_tool_result(f"{namespace}_ui_echo", {"payload": "proxied"})
+        assert raw_result.content[0].text == "ui:proxied"
+
+        decisions = [d for ns, d in recorded_task_route_decisions() if ns == namespace]
+        assert decisions, "no route decision recorded for the proxy-forced namespace"
+        assert decisions[-1].use_direct is False
+        assert decisions[-1].reason == MCP_TASK_DIRECT_FACTORY_MISSING
+
+        tool_definition = executor._mcp_tools.get(f"{namespace}_ui_echo")  # noqa: SLF001
+        assert tool_definition is not None
+        assert _resource_uri(tool_definition) == UI_RESOURCE_URI
+
+        raw_wire = call_tool_result_to_wire(raw_result)
+        assert raw_wire["_meta"]["x-clio-agent/unknown"] == {"scratch": True}, (
+            "the ui-bearing result's private metadata must survive relay through ProxyClient"
+        )
+
+        agent = SimpleNamespace(_active_tool_executor=lambda: executor)
+        app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
+        with TestClient(app, base_url="http://127.0.0.1:8100") as client:
+            sid = client.post("/v1/sessions", json={"title": "C1-S3-proxy"}).json()["id"]
+            with _gact_app_context(app), _tool_session_context(sid):
+                app.state.pending_mcp_app_observer(
+                    f"{namespace}_ui_echo",
+                    {"payload": "proxied"},
+                    tool_definition,
+                    raw_result,
+                    namespace,
+                )
+            registry = app.state.mcp_app_registry
+            record = registry.records_for_session(sid)[0]
+            part = app.state.live_assistant_parts[sid][-1].to_wire()
+            assert part["type"] == "mcp_app"
+            assert record.resource_uri == UI_RESOURCE_URI
     finally:
         if executor is not None:
             executor.close()

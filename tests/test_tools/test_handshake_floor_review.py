@@ -182,11 +182,21 @@ async def test_capability_envelope_always_declares_the_tasks_extension() -> None
     registry" (the C1-S3 issue's exerciser-leg requirement). Both ids are
     asserted together rather than splitting into two tests, since they are
     the SAME envelope on the SAME call.
+
+    #1283 review round 1 (F1): the ``ui`` entry's settings are pinned EXACTLY
+    (not just its presence) -- ``mcp.server.apps.client_supports_apps`` reads
+    ``settings["mimeTypes"]``, so a regression that drops back to an
+    empty-settings ad (inert against a spec-compliant server) must redden
+    HERE, not only in the raw-SDK-server test that exists to prove WHY the
+    setting matters.
     """
-    from clio_agent.tools.mcp_extension_registry import UI_EXTENSION_ID
+    from clio_agent.tools.mcp_extension_registry import MCP_APP_MIME_TYPE, UI_EXTENSION_ID
 
     caps = await _advertised_caps()
-    assert caps["extensions"] == {"io.modelcontextprotocol/tasks": {}, UI_EXTENSION_ID: {}}
+    assert caps["extensions"] == {
+        "io.modelcontextprotocol/tasks": {},
+        UI_EXTENSION_ID: {"mimeTypes": [MCP_APP_MIME_TYPE]},
+    }
 
 
 @pytest.mark.asyncio

@@ -235,7 +235,15 @@ ONE client pathway for every server (built-in, declared, relay):
   **(d) the ui extension declares here** — align `gact/mcp_apps.py` to the 2026-07-28
   extensions framework, revision metadata, tolerate-unknown-metadata preserved;
   enumerate the other official extensions (oauth-client-credentials for headless/CI,
-  enterprise-managed-auth).
+  enterprise-managed-auth). LANDED (#1283, review round 1): the client-side `ui`
+  declaration now carries the `mimeTypes` setting the SDK's own compliance gate
+  requires (`mcp.server.apps.client_supports_apps`); `gact/mcp_apps.py`'s two
+  hand-typed `"2026-01-26"` revision literals now read one registry constant. STILL
+  OPEN beyond that relocation: the actual revision-ALIGNMENT half of letter (d) —
+  whether the Apps HOST itself (`gact/mcp_apps.py`, built at SEP-1865 revision
+  2026-01-26) should move its wire shapes to the 2026-07-28 extensions framework's
+  metadata conventions — is deliberately untouched (the host is regression-locked
+  this slice); a future slice decides whether/how to align it.
 - **C1-S4 — (e) MRTR + elicitation completeness:** round bound, typed exhaustion, the
   single HITL surface all three input shapes converge on — surviving unification
   intact; per-mode form/url capability declaration, URL-mode consent MUSTs, SEP-1034

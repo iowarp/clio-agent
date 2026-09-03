@@ -19,22 +19,34 @@ pre-registry direct call.
 
 **Entry #2 — MCP Apps `ui` (#1283 letter (d)).** Declares
 ``io.modelcontextprotocol/ui`` ad-only (:func:`mcp.client.extension.advertise`
-— no claims, no behavior). Declared UNCONDITIONALLY, never suppressed for a
-client class that forbids internal extensions (unlike tasks): a proxy backend
-leg cannot drive a backend TASK on the caller's behalf (the reason tasks is
-suppressed there), but it can always relay a ui-bearing result unchanged — ui
-rendering happens entirely client-side, in the ALREADY-COMPLETE Apps host
-(``gact/mcp_apps.py``, regression-locked by this slice). Declaring it is what
-makes a SPEC-COMPLIANT (SEP-1865) server willing to attach ``_meta.ui`` to a
-call result in the first place; today's client silently never asked.
+— no claims, no behavior) WITH the ``mimeTypes`` setting the SDK's own
+compliance gate requires (review round 1, F1): ``mcp.server.apps.
+client_supports_apps`` returns ``True`` only when the declared settings carry
+``mimeTypes`` containing the mcp-app MIME -- an empty-settings ad (the
+pre-fix shape) never passes it, so no SPEC-COMPLIANT server would ever have
+attached ``_meta.ui`` to a result. fastmcp's OWN servers stamp ``ui`` in
+``ServerCapabilities`` unconditionally regardless of client declaration (no
+``client_supports_apps`` equivalent exists in fastmcp), which is why that gap
+was invisible to every fastmcp-backed test; ``test_mcp_extension_registry.py``
+now pins it against the RAW SDK server. Declared UNCONDITIONALLY, never
+suppressed for a client class that forbids internal extensions (unlike
+tasks): a proxy backend leg cannot drive a backend TASK on the caller's
+behalf (the reason tasks is suppressed there), but it can always relay a
+ui-bearing result unchanged — ui rendering happens entirely client-side, in
+the ALREADY-COMPLETE Apps host (``gact/mcp_apps.py``, regression-locked by
+this slice).
 
 **READ side** lives in :mod:`clio_agent.tools.mcp_connection_era` (mirrors the
 era / task-capability record/latest idiom already there) — every real client
 connect now ALSO records the full set of server-declared extension
-identifiers, not only the tasks id. This module only re-exports
-:data:`UI_EXTENSION_ID` / :data:`MCP_APPS_PROTOCOL_REVISION` so
-``gact/mcp_apps.py`` reads its two "2026-01-26" revision literals from ONE
-source instead of hardcoding the string twice.
+identifiers, not only the tasks id. This module re-exports
+:data:`UI_EXTENSION_ID` (from :mod:`fastmcp.apps.config`) and
+:data:`MCP_APP_MIME_TYPE` (from :mod:`fastmcp.utilities.mime`) as the ONE
+source every clio site imports (``gact/mcp_apps.py``, ``gact/artifacts/
+wire.py``) instead of each hand-typing the MIME literal, plus
+:data:`MCP_APPS_PROTOCOL_REVISION` so ``gact/mcp_apps.py`` reads its two
+"2026-01-26" revision literals from one source instead of hardcoding the
+string twice.
 
 **Enumerated, not built (#1283 point 3).** :data:`KNOWN_EXTENSIONS` is a
 STATIC DATA catalog: the two other official 2026-07-28 extensions
@@ -46,20 +58,20 @@ behavior, out of this slice's scope.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from fastmcp.apps.config import UI_EXTENSION_ID as UI_EXTENSION_ID
+from fastmcp.utilities.mime import UI_MIME_TYPE as MCP_APP_MIME_TYPE
 from fastmcp.utilities.tasks import TASKS_EXTENSION_ID
 from mcp.client.extension import ClientExtension, advertise
-
-logger = logging.getLogger(__name__)
 
 __all__ = [
     "ENTERPRISE_MANAGED_AUTH_EXTENSION_ID",
     "KNOWN_EXTENSIONS",
     "MCP_APPS_PROTOCOL_REVISION",
+    "MCP_APP_MIME_TYPE",
     "OAUTH_CLIENT_CREDENTIALS_EXTENSION_ID",
     "TASKS_EXTENSION_ID",
     "UI_EXTENSION_ID",
@@ -69,11 +81,6 @@ __all__ = [
     "extensions_declaration",
     "known_extension",
 ]
-
-#: The MCP Apps extension id (SEP-1865). Re-exported here (fastmcp's own
-#: ``fastmcp.apps.config.UI_EXTENSION_ID`` carries the same value) so every
-#: consumer of THIS registry imports one name.
-UI_EXTENSION_ID = "io.modelcontextprotocol/ui"
 
 #: ``gact/mcp_apps.py``'s Apps HOST revision (SEP-1865, built 2026-01-26). The
 #: host itself is regression-locked (#1283: "do not touch its behavior") --
@@ -140,11 +147,19 @@ def _build_ui(client_cls: Any, target: Any) -> MCPExtensionDeclaration:  # noqa:
     """Registry entry #2: the MCP Apps ``ui`` capability ad (#1283 letter (d)).
 
     Ad-only, unconditional (see the module docstring for why this entry,
-    unlike tasks, is never suppressed for a proxy-like client class).
+    unlike tasks, is never suppressed for a proxy-like client class). The
+    ``mimeTypes`` setting is REQUIRED (review round 1, F1): the SDK's own
+    ``client_supports_apps`` gate reads ``settings["mimeTypes"]`` and returns
+    ``False`` for an ad with no settings at all -- an inert declaration no
+    spec-compliant server would ever act on. See
+    ``test_mcp_extension_registry.py``'s raw-SDK-server test for the
+    before/after proof.
     """
 
     return MCPExtensionDeclaration(
-        identifier=UI_EXTENSION_ID, extension=advertise(UI_EXTENSION_ID), reason=None
+        identifier=UI_EXTENSION_ID,
+        extension=advertise(UI_EXTENSION_ID, {"mimeTypes": [MCP_APP_MIME_TYPE]}),
+        reason=None,
     )
 
 
@@ -185,12 +200,11 @@ def extensions_declaration(client_cls: Any, target: Any = None) -> ExtensionsDec
     """
 
     outcomes = tuple(build(client_cls, target) for build in _ACTIVE_ENTRIES)
+    # Suppression is already logged at its source (e.g.
+    # ``mcp_task_extension.tasks_declaration``'s own ``logger.debug`` call);
+    # this composition site does not re-log it (review round 1: no duplicate
+    # log lines per suppression).
     built = tuple(entry.extension for entry in outcomes if entry.extension is not None)
-    for entry in outcomes:
-        if entry.extension is None and entry.reason:
-            logger.debug(
-                "mcp extension not declared identifier=%s reason=%s", entry.identifier, entry.reason
-            )
     return ExtensionsDeclaration(extensions=built, entries=outcomes)
 
 

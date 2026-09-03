@@ -18,12 +18,16 @@ from __future__ import annotations
 
 from fastmcp import Client
 from fastmcp.server.providers.proxy import ProxyClient
-from mcp.client.extension import ClientExtension
+from mcp.client.extension import ClientExtension, advertise
+from mcp.server.apps import Apps, client_supports_apps
+from mcp.server.mcpserver import Context as SDKContext
+from mcp.server.mcpserver import MCPServer
 
 from clio_agent.errors import MCP_TASKS_DECLARATION_SUPPRESSED
 from clio_agent.tools.mcp_extension_registry import (
     ENTERPRISE_MANAGED_AUTH_EXTENSION_ID,
     KNOWN_EXTENSIONS,
+    MCP_APP_MIME_TYPE,
     MCP_APPS_PROTOCOL_REVISION,
     OAUTH_CLIENT_CREDENTIALS_EXTENSION_ID,
     TASKS_EXTENSION_ID,
@@ -85,13 +89,18 @@ def test_extensions_declaration_a_proxy_client_suppresses_only_tasks() -> None:
 
 def test_extensions_declaration_ui_entry_is_ad_only() -> None:
     """The ui entry carries no claims/notifications -- a bare capability ad
-    (:func:`mcp.client.extension.advertise`), never behavior."""
+    (:func:`mcp.client.extension.advertise`), never behavior -- but its
+    settings are NOT empty (#1283 review round 1, F1): the SDK's own
+    ``client_supports_apps`` gate reads ``settings["mimeTypes"]``, so an
+    empty-settings ad would be inert against a spec-compliant server. See
+    ``test_ui_declaration_mime_types_pass_the_sdk_apps_gate`` below for the
+    live SDK-server proof of why this matters."""
 
     declaration = extensions_declaration(Client, object())
     ui_entry = next(entry for entry in declaration.entries if entry.identifier == UI_EXTENSION_ID)
 
     assert ui_entry.extension is not None
-    assert ui_entry.extension.settings() == {}
+    assert ui_entry.extension.settings() == {"mimeTypes": [MCP_APP_MIME_TYPE]}
     assert ui_entry.extension.claims() == ()
     assert ui_entry.extension.notifications() == ()
 
@@ -175,3 +184,70 @@ def test_mcp_apps_reads_the_revision_constant_not_a_literal() -> None:
     from clio_agent.gact import mcp_apps
 
     assert mcp_apps.MCP_APPS_PROTOCOL_REVISION is MCP_APPS_PROTOCOL_REVISION
+
+
+def test_mcp_apps_and_artifacts_wire_share_the_same_mime_object() -> None:
+    """Regression pin for the #1283 review-round F1 residual: the MIME
+    literal that used to be hand-typed independently in ``gact/mcp_apps.py``
+    AND ``gact/artifacts/wire.py`` now both alias the SAME registry constant."""
+
+    from clio_agent.gact import mcp_apps
+    from clio_agent.gact.artifacts import wire
+
+    assert mcp_apps.MCP_APP_MIME_TYPE is MCP_APP_MIME_TYPE
+    assert wire.UI_PAYLOAD_MIME is MCP_APP_MIME_TYPE
+
+
+# --------------------------------------------------------------------------- #
+# #1283 review round 1, F1 (MUST-FIX): the SDK's own MCP Apps compliance     #
+# gate (mcp.server.apps.client_supports_apps) requires settings["mimeTypes"] #
+# -- an empty-settings ad (the pre-fix shape) is INERT: no spec-compliant    #
+# server would ever attach _meta.ui for it. fastmcp's own servers stamp ui   #
+# in ServerCapabilities unconditionally (no client_supports_apps equivalent  #
+# exists in fastmcp), so this gap was invisible to every fastmcp-backed      #
+# test in this suite -- it needs the RAW SDK server to prove.                #
+# --------------------------------------------------------------------------- #
+
+
+def _build_sdk_apps_gate_server() -> MCPServer:
+    """A minimal raw-SDK ``MCPServer`` with the real ``Apps`` extension and one
+    tool that reports back whatever the SDK's own gate decides."""
+
+    apps = Apps()
+    server = MCPServer("sdk-apps-gate", extensions=[apps])
+
+    @server.tool()
+    def gate_probe(ctx: SDKContext) -> bool:
+        return client_supports_apps(ctx)
+
+    return server
+
+
+async def test_ui_declaration_mime_types_pass_the_sdk_apps_gate() -> None:
+    """RED-FIRST PROOF (review round 1): an ad-only ``ui`` declaration with NO
+    ``mimeTypes`` setting (the pre-fix shape -- what ``advertise(UI_EXTENSION_ID)``
+    alone produces) reads ``client_supports_apps(ctx) is False`` on a REAL SDK
+    server; the registry's actual ui entry (``mimeTypes`` set, post-fix) reads
+    ``True`` on the SAME server. This is the SDK's own MUST -- not something
+    the fastmcp-backed exerciser/conformance suites could ever catch, since
+    fastmcp declares no such gate at all.
+    """
+
+    server = _build_sdk_apps_gate_server()
+
+    # Pre-fix shape: an ad-only declaration with NO settings -- what this
+    # registry's ui entry declared before the F1 fix.
+    async with Client(server, extensions=[advertise(UI_EXTENSION_ID)]) as client:
+        pre_fix = await client.call_tool("gate_probe", {})
+    assert pre_fix.data.result is False, (
+        "an empty-settings ui ad must never pass the SDK's client_supports_apps gate"
+    )
+
+    # Post-fix: the registry's actual, currently-declared ui entry.
+    declaration = extensions_declaration(Client, object())
+    async with Client(server, extensions=list(declaration.extensions)) as client:
+        post_fix = await client.call_tool("gate_probe", {})
+    assert post_fix.data.result is True, (
+        "the registry's ui entry must declare mimeTypes so a spec-compliant "
+        "server actually attaches _meta.ui for this client"
+    )
