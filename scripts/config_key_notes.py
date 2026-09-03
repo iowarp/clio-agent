@@ -292,6 +292,10 @@ KEY_NOTES: dict[str, str] = {
         "Optional bearer token required on non-loopback GACT API requests; set to protect a server "
         "exposed beyond localhost."
     ),
+    "gact.ask_user.max_terminal_history": (
+        "Maximum answered, cancelled, or expired user questions retained in the process-local "
+        "interaction index; lower it to reduce resident history without pruning pending questions."
+    ),
     "gact.ask_user.max_ttl_s": (
         "Hard ceiling in seconds on an `ask_user` response window; a longer window requested by "
         "the model is clamped to this. Lower it to bound how long a question can hold a session."

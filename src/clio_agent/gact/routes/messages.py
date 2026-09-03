@@ -37,7 +37,7 @@ from fastapi.responses import JSONResponse
 
 from clio_agent.gact.agent_tasks import display_run_name
 from clio_agent.gact.events import Event
-from clio_agent.gact.message_submission import accept_message_async
+from clio_agent.gact.message_submission import accept_message, accept_message_async
 from clio_agent.gact.message_wire import normalize_thought_ownership
 from clio_agent.gact.messaging import raise_on_reserved_metadata
 from clio_agent.gact.protocol_v3 import project_for_request, transcript_entities
@@ -271,7 +271,17 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         # a worker thread BEFORE entering the synchronous acceptance path, so a
         # reference-carrying POST no longer hashes files and folds evidence
         # ledgers on the event loop.
-        ack, status_code = await accept_message_async(app, deps, sid, req)
+        # Keep the historical no-await acceptance path for ordinary messages.
+        # TestClient (and lightweight ASGI embedders) may use a request-scoped
+        # event loop: yielding to a worker before spawning the owned turn lets
+        # that loop close with the newly-created task still pending.  Only a
+        # structured context reference performs the disk/hash work that needs
+        # the worker boundary; text, image, and resource-ref turns retain their
+        # original start-before-response semantics.
+        if any(part.type == "context_ref" for part in req.parts):
+            ack, status_code = await accept_message_async(app, deps, sid, req)
+        else:
+            ack, status_code = accept_message(app, deps, sid, req)
         del background_tasks
         response.status_code = status_code
         return ack

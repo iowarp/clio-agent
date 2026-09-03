@@ -224,13 +224,20 @@ class _SdkSessionPool:
     ) -> tuple[str, dict[str, Any]]:
         """Complete one turn on the session keyed by ``(model, cwd, thinking)``."""
 
+        kwargs: dict[str, Any] = {
+            "prompt": prompt,
+            "model": model,
+            "timeout": timeout,
+            "cwd": cwd,
+            "thinking": thinking,
+        }
+        # Preserve the established pool/session call seam when this is a text
+        # turn.  Besides keeping third-party wrappers compatible, this makes
+        # "no attachment" observably identical to the pre-multimodal path.
+        if native_blocks:
+            kwargs["native_blocks"] = native_blocks
         return self._session_for(model, cwd, thinking_key(thinking)).complete(
-            prompt=prompt,
-            native_blocks=native_blocks,
-            model=model,
-            timeout=timeout,
-            cwd=cwd,
-            thinking=thinking,
+            **kwargs,
         )
 
     def close(self) -> None:
@@ -263,11 +270,13 @@ def _run_sdk(
     concurrently without reconnect thrash. Returns ``(text, usage)`` in the same
     shape as the exec transport.
     """
-    return _SDK_SESSION_POOL.complete(
-        prompt=prompt,
-        native_blocks=list(native_blocks or []),
-        model=model,
-        timeout=timeout,
-        cwd=cwd,
-        thinking=thinking,
-    )
+    kwargs: dict[str, Any] = {
+        "prompt": prompt,
+        "model": model,
+        "timeout": timeout,
+        "cwd": cwd,
+        "thinking": thinking,
+    }
+    if native_blocks:
+        kwargs["native_blocks"] = list(native_blocks)
+    return _SDK_SESSION_POOL.complete(**kwargs)

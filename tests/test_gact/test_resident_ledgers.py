@@ -396,9 +396,10 @@ def test_estimate_bytes_counts_nested_and_image_payloads() -> None:
     # mixin -- review_id/artifact_id/artifact_version/artifact_sha256/review_text/
     # anchor); and the action_card part (52387c2e, source/severity/title/body/
     # actions) -> 1,322. The composer re-land's resource_ref fields (resource_id/
-    # resource_revision/delivery_preference) -> 1,449. It remains three orders of
-    # magnitude lighter than either heavy payload.
-    assert 1_100 <= light_bytes < 1_500
+    # resource_revision/delivery_preference) -> 1,449; the campaign's structured
+    # context-reference identity fields move the serialized floor to 1,500. It
+    # remains three orders of magnitude lighter than either heavy payload.
+    assert 1_100 <= light_bytes < 1_650
 
 
 # The optional Part fields each 0.3 part type populates. The byte estimate must

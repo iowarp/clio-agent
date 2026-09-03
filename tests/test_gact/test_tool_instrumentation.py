@@ -565,6 +565,7 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
             # tool_call part must land either way.
             "workspace_resource_list": {},
             "workspace_resource_inspect": {"resource_id": "missing"},
+            "workspace_resource_wait": {"task_id": "missing", "timeout_s": 0.01},
             "workspace_resource_read": {"resource_id": "missing"},
             "workspace_resource_search": {"resource_id": "missing", "query": "proof"},
             "workspace_resource_structure": {"resource_id": "missing"},

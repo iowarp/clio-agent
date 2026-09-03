@@ -414,6 +414,12 @@ a2ui.max_string_chars: 16384
 # compaction; lower to compact earlier, raise to accumulate more.
 autocompact.pct: "0.85"
 
+# CLIO_GACT_ASK_USER_MAX_TERMINAL_HISTORY  (int)  <- src/clio_agent/gact/elicitation_bridge.py
+# Maximum answered, cancelled, or expired user questions retained in the
+# process-local interaction index; lower it to reduce resident history
+# without pruning pending questions.
+gact.ask_user.max_terminal_history: 256
+
 # CLIO_ASK_USER_MAX_TTL_S  (int)  <- src/clio_agent/gact/ask_user_tool.py
 # Hard ceiling in seconds on an `ask_user` response window; a longer window
 # requested by the model is clamped to this. Lower it to bound how long a
