@@ -90,7 +90,17 @@ class ResourceDeliveryRecord(BaseModel):
     evidence_generated_at: str = ""
     reason_code: str = ""
     reason: str
+    #: When the PLAN was recorded. The plan is a decision, not an outcome.
     delivered_at: str = Field(default_factory=_now_iso)
+    #: Whether the planned representation actually rode the request. ``None``
+    #: means the outcome has not been settled yet (the turn has not dispatched);
+    #: ``False`` carries ``delivery_reason_code``. Without this the ledger
+    #: reported a delivery whenever a plan existed, including for attachments the
+    #: attach step declined.
+    delivery_confirmed: bool | None = None
+    delivery_reason_code: str = ""
+    delivery_reason: str = ""
+    delivery_settled_at: str = ""
 
 
 class ResourceDeliveryStore:
@@ -166,6 +176,46 @@ class ResourceDeliveryStore:
             self._rows = self._compact_locked([*self._rows, record])
             self._flush_locked()
             return record.model_copy(deep=True)
+
+    def record_outcome(
+        self,
+        *,
+        workspace_id: str,
+        message_id: str,
+        resource_id: str,
+        resource_revision: str,
+        delivered: bool,
+        reason_code: str = "",
+        reason: str = "",
+    ) -> ResourceDeliveryRecord | None:
+        """Settle one planned row with what the attach step actually did.
+
+        Returns the updated row, or ``None`` when no plan matches (nothing to
+        settle — the caller is describing a resource this message never planned).
+        The row's PLAN fields are never rewritten: an honest ledger keeps the
+        decision and the outcome side by side.
+        """
+
+        with self._lock:
+            for index, row in enumerate(self._rows):
+                if (
+                    row.workspace_id == workspace_id
+                    and row.message_id == message_id
+                    and row.resource_id == resource_id
+                    and str(row.resource_revision) == str(resource_revision)
+                ):
+                    settled = row.model_copy(
+                        update={
+                            "delivery_confirmed": delivered,
+                            "delivery_reason_code": reason_code,
+                            "delivery_reason": reason,
+                            "delivery_settled_at": _now_iso(),
+                        }
+                    )
+                    self._rows[index] = settled
+                    self._flush_locked()
+                    return settled.model_copy(deep=True)
+        return None
 
     def list(self, workspace_id: str) -> list[ResourceDeliveryRecord]:
         with self._lock:

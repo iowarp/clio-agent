@@ -776,6 +776,11 @@ KEY_NOTES: dict[str, str] = {
         "Max simultaneous private CODEX_HOME credential-dir copies the Codex SDK transport keeps "
         "alive; raise for many concurrent Codex sessions."
     ),
+    "providers.native_image_url_allowlist": (
+        "Comma-separated hosts whose http(s) image URLs may be handed to a provider to fetch; "
+        "empty (the default) accepts only inline data: URIs, so no attachment leaves CLIO "
+        "unbounded and unattributed."
+    ),
     "providers.model_catalog_ttl_s": (
         "Seconds a discovered provider model catalog is served as fresh before every read marks "
         "it typed-stale (it is still served, never cleared); 0 disables the age check. Lower on "
@@ -800,6 +805,18 @@ KEY_NOTES: dict[str, str] = {
     "resources.max_bytes": (
         "Byte ceiling on a single uploaded workspace resource; raise for large scientific inputs, "
         "lower to bound per-workspace disk use."
+    ),
+    "resources.native_attachment_total_max_bytes": (
+        "Aggregate source-byte ceiling across every native image/PDF on ONE model request; "
+        "matches Anthropic's ~32 MB per-request limit. Refused before base64 expansion."
+    ),
+    "resources.native_document_max_bytes": (
+        "Source-byte ceiling on one natively delivered PDF; matches Anthropic's ~32 MB per-PDF "
+        "limit. Lower to bound per-request memory on constrained hosts."
+    ),
+    "resources.native_image_max_bytes": (
+        "Source-byte ceiling on one natively delivered image; matches Anthropic's ~5 MB "
+        "per-image limit. Refused before the file is read and base64-expanded."
     ),
     "resources.processor_cancel_timeout_s": (
         "Seconds to wait for the document processor to acknowledge a cancellation; raise only if "

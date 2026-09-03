@@ -197,6 +197,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_PROVENANCE_PROVIDERS` | `provenance.agentic.providers` | list | `jsonl` | `src/clio_agent/provenance_config.py` |
 | `CLIO_PROVENANCE_QUERY_DEFAULT` | `provenance.agentic.query_default` | str | `native` | `src/clio_agent/gact/routes/provenance.py` |
 | `CLIO_PROVENANCE_QUEUE_SIZE` | `provenance.agentic.queue_size` | int | `4096` | `src/clio_agent/gact/provenance/factory.py` |
+| `CLIO_PROVIDER_NATIVE_IMAGE_URL_ALLOWLIST` | `providers.native_image_url_allowlist` | str | _(unset)_ | `src/clio_agent/providers/claude_code_multimodal.py` |
 | `CLIO_RELAY_CLI_PATH` | `relay.install_surface.cli_path` | str | _(unset)_ | `src/clio_agent/tools/relay_cli_runner.py` |
 | `CLIO_RELAY_CLUSTER` | `relay.cluster` | str | _(unset)_ | `src/clio_agent/tools/relay_factory.py` |
 | `CLIO_RELAY_CONSOLE_ENABLED` | `relay.console.enabled` | bool | `true` | `src/clio_agent/tools/relay_console.py` |
@@ -228,6 +229,9 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_RESOURCE_DERIVATIVE_NAME_MAX_CHARS` | `resources.derivative_name_max_chars` | int | `48` | `src/clio_agent/gact/resource_processing.py` |
 | `CLIO_RESOURCE_LIST_MAX_RECORDS` | `resources.list_max_records` | int | `100` | `src/clio_agent/gact/resource_tools.py` |
 | `CLIO_RESOURCE_MAX_BYTES` | `resources.max_bytes` | int | `262144000` | `src/clio_agent/gact/composer_runtime.py` |
+| `CLIO_RESOURCE_NATIVE_ATTACHMENT_TOTAL_MAX_BYTES` | `resources.native_attachment_total_max_bytes` | int | `33554432` | `src/clio_agent/providers/native_attachment_bounds.py` |
+| `CLIO_RESOURCE_NATIVE_DOCUMENT_MAX_BYTES` | `resources.native_document_max_bytes` | int | `33554432` | `src/clio_agent/providers/native_attachment_bounds.py` |
+| `CLIO_RESOURCE_NATIVE_IMAGE_MAX_BYTES` | `resources.native_image_max_bytes` | int | `5242880` | `src/clio_agent/providers/native_attachment_bounds.py` |
 | `CLIO_RESOURCE_PROCESSOR_CANCEL_TIMEOUT_S` | `resources.processor_cancel_timeout_s` | float | `30.0` | `src/clio_agent/gact/resource_processing.py` |
 | `CLIO_RESOURCE_PROCESSOR_CONNECT_TIMEOUT_S` | `resources.processor_connect_timeout_s` | float | `5.0` | `src/clio_agent/gact/resource_processing.py` |
 | `CLIO_RESOURCE_PROCESSOR_POOL_TIMEOUT_S` | `resources.processor_pool_timeout_s` | float | `5.0` | `src/clio_agent/gact/resource_processing.py` |

@@ -221,6 +221,12 @@ providers.codex.credential_home_capacity: 4
 # often.
 providers.model_catalog_ttl_s: 86400.0
 
+# CLIO_PROVIDER_NATIVE_IMAGE_URL_ALLOWLIST  (str)  <- src/clio_agent/providers/claude_code_multimodal.py
+# Comma-separated hosts whose http(s) image URLs may be handed to a provider
+# to fetch; empty (the default) accepts only inline data: URIs, so no
+# attachment leaves CLIO unbounded and unattributed.
+# providers.native_image_url_allowlist:  # default unset; resolved in code
+
 # ==========================================================================
 # Limits, timeouts and retries
 # ==========================================================================
@@ -869,6 +875,23 @@ resources.list_max_records: 100
 # Byte ceiling on a single uploaded workspace resource; raise for large
 # scientific inputs, lower to bound per-workspace disk use.
 resources.max_bytes: 262144000
+
+# CLIO_RESOURCE_NATIVE_ATTACHMENT_TOTAL_MAX_BYTES  (int)  <- src/clio_agent/providers/native_attachment_bounds.py
+# Aggregate source-byte ceiling across every native image/PDF on ONE model
+# request; matches Anthropic's ~32 MB per-request limit. Refused before
+# base64 expansion.
+resources.native_attachment_total_max_bytes: 33554432
+
+# CLIO_RESOURCE_NATIVE_DOCUMENT_MAX_BYTES  (int)  <- src/clio_agent/providers/native_attachment_bounds.py
+# Source-byte ceiling on one natively delivered PDF; matches Anthropic's ~32
+# MB per-PDF limit. Lower to bound per-request memory on constrained hosts.
+resources.native_document_max_bytes: 33554432
+
+# CLIO_RESOURCE_NATIVE_IMAGE_MAX_BYTES  (int)  <- src/clio_agent/providers/native_attachment_bounds.py
+# Source-byte ceiling on one natively delivered image; matches Anthropic's
+# ~5 MB per-image limit. Refused before the file is read and
+# base64-expanded.
+resources.native_image_max_bytes: 5242880
 
 # CLIO_RESOURCE_PROCESSOR_CANCEL_TIMEOUT_S  (float)  <- src/clio_agent/gact/resource_processing.py
 # Seconds to wait for the document processor to acknowledge a cancellation;

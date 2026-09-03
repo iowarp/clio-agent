@@ -158,16 +158,26 @@ def new_turn_state(
     _ctx.set_turn_identity(app=app, session_id=sid, turn_id=turn_id, trace_id=trace_id)
     from clio_agent.gact.app import _dspy_images_from_parts  # noqa: PLC0415
     from clio_agent.gact.messaging import _dspy_files_from_parts  # noqa: PLC0415
+    from clio_agent.gact.native_delivery_outcome import (  # noqa: PLC0415
+        settle_native_deliveries,
+    )
 
+    workspace_id = str(getattr(sess, "workspace_id", "") or "")
     native_images = _dspy_images_from_parts(
         user_msg.parts,
         app=app,
-        workspace_id=str(getattr(sess, "workspace_id", "") or ""),
+        workspace_id=workspace_id,
     )
     native_files = _dspy_files_from_parts(
         user_msg.parts,
         app=app,
-        workspace_id=str(getattr(sess, "workspace_id", "") or ""),
+        workspace_id=workspace_id,
+    )
+    # The attach pass is done, so the ledger can stop reporting the PLAN as the
+    # outcome: every native-planned row is stamped delivered, or not-delivered
+    # with the typed reason the attach step recorded.
+    settle_native_deliveries(
+        app, workspace_id=workspace_id, message_id=user_msg.id, parts=list(user_msg.parts)
     )
     return TurnState(
         app=app,

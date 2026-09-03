@@ -31,12 +31,17 @@ from __future__ import annotations
 import base64
 import inspect
 import json
+import logging
 from collections.abc import Mapping
 from typing import Any
 
 from fastapi import HTTPException
 
 from clio_agent.gact.hooks.defer import HOOK_DEFER_RESUME_META
+from clio_agent.gact.native_delivery_outcome import (
+    NATIVE_ATTACHMENT_SKIP_REASONS,
+    note_delivery_outcome,
+)
 from clio_agent.gact.runtime.globals import _new_part_id
 from clio_agent.gact.types import (
     ErrorEnvelope,
@@ -45,7 +50,13 @@ from clio_agent.gact.types import (
     UserQuestion,
     UserQuestionOption,
 )
+from clio_agent.providers.native_attachment_bounds import (
+    NativeAttachmentTooLargeError,
+    check_block_bytes,
+)
 from clio_agent.tools.mcp_runtime import wire_value
+
+logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------------- #
 # Reserved client-metadata keys (#1057 B2)                                   #
@@ -351,24 +362,98 @@ def _image_part_summaries(parts: list[Part]) -> list[dict[str, Any]]:
     return rows
 
 
-def _resource_ref_image(part: Part, *, app: Any | None, workspace_id: str) -> Any | None:
-    """Return the DSPy image for a resource whose delivery plan chose ``native``."""
+def _resource_attachment_reason(
+    part: Part, *, app: Any | None, workspace_id: str, expected: str
+) -> tuple[Any, str]:
+    """Return ``(record, reason)`` for one native-planned resource attachment.
+
+    ``reason`` is empty exactly when the record is eligible; otherwise it is a
+    typed code from :data:`NATIVE_ATTACHMENT_SKIP_REASONS` naming which of the
+    eligibility conditions failed. The two attach helpers used to return ``None``
+    on five distinct conditions with no reason at all, so a resource the user
+    attached could simply not arrive with nothing anywhere saying why.
+
+    Args:
+        part: The ``resource_ref`` part being attached.
+        app: The GACT app owning the resource store (``None`` outside a turn).
+        workspace_id: The session's workspace.
+        expected: ``"image/"`` (prefix match) or an exact media type.
+    """
 
     delivery = part.metadata.get("delivery")
     representation = str(delivery.get("representation") or "") if isinstance(delivery, dict) else ""
-    if representation != "native" or app is None or not workspace_id:
-        return None
+    if representation != "native":
+        return None, "delivery_not_native"
+    if app is None or not workspace_id:
+        return None, "no_workspace_context"
     record = app.state.resource_store.get(workspace_id, part.resource_id)
-    if (
-        record is None
-        or str(record.revision) != str(part.resource_revision)
-        or record.state != "ready"
-        or not record.detected_mime.startswith("image/")
-    ):
+    if record is None:
+        return None, "resource_missing"
+    if str(record.revision) != str(part.resource_revision):
+        return record, "resource_revision_mismatch"
+    if record.state != "ready":
+        return record, "resource_not_ready"
+    matches = (
+        record.detected_mime.startswith(expected)
+        if expected.endswith("/")
+        else record.detected_mime == expected
+    )
+    if not matches:
+        return record, "resource_media_type_mismatch"
+    try:
+        check_block_bytes(
+            "image" if expected.endswith("/") else "document",
+            int(record.received_size or 0),
+            label=record.name,
+        )
+    except NativeAttachmentTooLargeError:
+        # Checked against the RECORDED size, before the file is read and
+        # base64-expanded: an oversized attachment costs neither the read nor the
+        # 1.33x expansion nor a doomed provider round-trip.
+        return record, "resource_over_attachment_bound"
+    return record, ""
+
+
+def _attach_outcome(
+    app: Any | None,
+    part: Part,
+    reason: str,
+    *,
+    kind: str,
+    record: Any = None,
+) -> None:
+    """Record why one planned native attachment did not ride the request.
+
+    A plan that says ``native`` is a promise the ledger later reports as
+    delivered. When the attach step declines, the delivery record must learn the
+    reason instead of quietly disagreeing with the plan.
+    """
+
+    if not reason or app is None:
+        return
+    note_delivery_outcome(
+        app,
+        resource_id=part.resource_id,
+        revision=str(part.resource_revision),
+        kind=kind,
+        reason=reason,
+        detail=NATIVE_ATTACHMENT_SKIP_REASONS.get(reason, ""),
+        resource_name=getattr(record, "name", "") or part.name or "",
+    )
+
+
+def _resource_ref_image(part: Part, *, app: Any | None, workspace_id: str) -> Any | None:
+    """Return the DSPy image for a resource whose delivery plan chose ``native``."""
+
+    record, reason = _resource_attachment_reason(
+        part, app=app, workspace_id=workspace_id, expected="image/"
+    )
+    if reason:
+        _attach_outcome(app, part, reason, kind="image", record=record)
         return None
     import dspy  # noqa: PLC0415
 
-    original = app.state.resource_store.content_path(record).read_bytes()
+    original = app.state.resource_store.content_path(record).read_bytes()  # type: ignore[union-attr]
     encoded = base64.b64encode(original).decode("ascii")
     return dspy.Image(f"data:{record.detected_mime};base64,{encoded}")
 
@@ -376,21 +461,15 @@ def _resource_ref_image(part: Part, *, app: Any | None, workspace_id: str) -> An
 def _resource_ref_file(part: Part, *, app: Any | None, workspace_id: str) -> Any | None:
     """Return a DSPy PDF for a resource whose delivery plan chose ``native``."""
 
-    delivery = part.metadata.get("delivery")
-    representation = str(delivery.get("representation") or "") if isinstance(delivery, dict) else ""
-    if representation != "native" or app is None or not workspace_id:
-        return None
-    record = app.state.resource_store.get(workspace_id, part.resource_id)
-    if (
-        record is None
-        or str(record.revision) != str(part.resource_revision)
-        or record.state != "ready"
-        or record.detected_mime != "application/pdf"
-    ):
+    record, reason = _resource_attachment_reason(
+        part, app=app, workspace_id=workspace_id, expected="application/pdf"
+    )
+    if reason:
+        _attach_outcome(app, part, reason, kind="document", record=record)
         return None
     import dspy  # noqa: PLC0415
 
-    original = app.state.resource_store.content_path(record).read_bytes()
+    original = app.state.resource_store.content_path(record).read_bytes()  # type: ignore[union-attr]
     return dspy.File.from_bytes(
         original,
         filename=record.name,
@@ -434,7 +513,15 @@ def _dspy_images_from_parts(
                     continue
                 media_type = part.media_type or part.metadata.get("media_type") or "image/png"
                 images.append(dspy.Image(f"data:{media_type};base64,{data}"))
-        except Exception:  # noqa: BLE001 - undecodable image part skipped
+        except Exception as exc:  # noqa: BLE001 - typed below, never a silent drop
+            # An INLINE image part has no delivery record to stamp (only uploaded
+            # resources are planned), so the typed reason lands in the log rather
+            # than the ledger -- but it lands.
+            logger.warning(
+                "dropped an inline image part reason=image_part_undecodable part_id=%s error=%r",
+                part.id,
+                exc,
+            )
             continue
     return images
 
