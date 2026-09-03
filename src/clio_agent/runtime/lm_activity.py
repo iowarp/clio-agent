@@ -480,7 +480,15 @@ def _emit_lm_call_started(call_id: Any, instance: Any, inputs: Any) -> None:
 
 
 def note_lm_start() -> None:
-    """Register an LM call as in flight, attributed to the active session."""
+    """Register an LM call as in flight, attributed to the active session.
+
+    Residual 4 (#1305 round 3): also resets ``queued_last`` to 0.0. With
+    >1 concurrent call in the SAME session, ``started``/``last`` were
+    already unconditionally overwritten here on every call; ``queued_last``
+    must be too, or a STALE queued regime from an earlier (already-ended)
+    call in this bucket would keep influencing :func:`_bucket_in_flight`'s
+    classification of a brand-new call that was never itself queued.
+    """
     key = _active_lm_session()
     with _LOCK:
         st = _bucket(key)
@@ -488,6 +496,7 @@ def note_lm_start() -> None:
         now = time.monotonic()
         st["started"] = now
         st["last"] = now
+        st["queued_last"] = 0.0
 
 
 def _touch_activity(key: str) -> None:

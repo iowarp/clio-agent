@@ -275,15 +275,17 @@ async def test_queued_connect_does_not_burn_the_per_call_sdk_timeout(
 async def test_abandoning_a_queued_stream_never_consumes_a_slot_or_spawns_a_cli(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A caller that abandons ``stream()`` WHILE still queued for a connect
-    slot (before ``register_sdk_stream`` ever ran -- kill-on-cancel has
-    nothing to grab onto yet) must not leave ``_pump()`` running: no slot may
-    ever be consumed, no CLI subprocess ever spawned, even once the slot
-    later frees up.
+    """B1(b) (#1305 round 3): a caller that abandons ``stream()`` WHILE still
+    queued for a connect slot (before ``register_sdk_stream`` ever ran) must
+    not leave ``_pump()`` running: no slot may ever be consumed, no CLI
+    subprocess ever spawned, even once the slot later frees up. Round 3
+    replaced the ``fut.cancel()`` mechanism with a ``threading.Event``
+    ``abandon`` flag consulted only inside ``await_connect_slot`` (see B1) --
+    this test pins the SAME observable guarantee under the new mechanism.
 
-    SABOTAGE: drop the ``fut.cancel()`` call from ``stream()``'s abandon path
-    -> ``_pump()`` keeps running queued, eventually acquires entry_a's freed
-    slot and connects -> ``state["connected"]`` goes to 2 -> this goes red.
+    SABOTAGE: drop the ``abandon.set()`` call from ``stream()``'s abandon
+    path -> ``_pump()`` keeps running queued, eventually acquires entry_a's
+    freed slot and connects -> ``state["connected"]`` goes to 2 -> red.
     """
     state = _install_fake_sdk(monkeypatch)
     slots = threading.Semaphore(1)
@@ -311,6 +313,106 @@ async def test_abandoning_a_queued_stream_never_consumes_a_slot_or_spawns_a_cli(
     await entry_a._areset_client()
     await asyncio.sleep(0.3)
     assert state["connected"] == 1  # only entry_a ever connected
+
+
+# --------------------------------------------------------------------------- #
+# B1 BLOCKER (#1305 round 3): fut.cancel() in stream()'s finally could
+# interrupt _areset_client's own in-progress disconnect() on an abnormal end
+# -- orphaning the CLI subprocess on essentially every error path. Replaced
+# with a threading.Event abandon flag that only the QUEUE WAIT consults.
+# --------------------------------------------------------------------------- #
+async def test_disconnect_runs_to_completion_despite_concurrent_consumer_unwind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B1(a): a concurrent consumer unwind (the caller raising out of its
+    async-for the instant an "exc" entry arrives) must never interrupt
+    _pump's own in-progress disconnect() -- proven by making disconnect()
+    await a real (short) sleep and asserting it RAN TO COMPLETION.
+
+    SABOTAGE: restore ``fut.cancel()`` in stream()'s finally -> the
+    consumer's fast unwind (it raises well before disconnect()'s sleep
+    finishes) cancels the still-running _pump() task, interrupting
+    disconnect() mid-sleep -> ``disconnect_completed`` stays False -> red.
+    """
+    state: dict[str, Any] = {"disconnect_started": False, "disconnect_completed": False}
+
+    class FakeOptions:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+    class FakeResultMessage:
+        pass
+
+    class FakeClient:
+        def __init__(self, options: FakeOptions) -> None:
+            self.options = options
+
+        async def connect(self) -> None:
+            return None
+
+        async def disconnect(self) -> None:
+            state["disconnect_started"] = True
+            await asyncio.sleep(0.2)  # gives the consumer's unwind time to race in
+            state["disconnect_completed"] = True
+
+        async def query(self, prompt: str, session_id: str = "default") -> None:
+            return None
+
+        async def receive_response(self) -> Any:
+            yield FakeResultMessage()
+            raise RuntimeError("boom")  # abnormal end AFTER connecting
+
+    fake_sdk = ModuleType("claude_agent_sdk")
+    fake_sdk.ClaudeAgentOptions = FakeOptions
+    fake_sdk.ClaudeSDKClient = FakeClient
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+
+    entry = ccs._StreamClientEntry(lambda: object())
+
+    with pytest.raises(RuntimeError, match="boom"):
+        async for _msg in entry.stream(
+            payload="p", session_id="s", timeout=None, on_construct=lambda: None
+        ):
+            pass  # drain fast -- the consumer raises the instant "exc" arrives
+
+    # The owner loop is still finishing disconnect() in the background --
+    # give it time to actually complete before asserting.
+    await asyncio.sleep(0.5)
+    assert state["disconnect_started"] is True
+    assert state["disconnect_completed"] is True
+
+
+async def test_abandon_landing_exactly_when_the_slot_was_just_acquired_releases_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B1(c): if ``abandon`` is set at the EXACT moment a bounded acquire
+    succeeds, the just-acquired slot must be released immediately (closes
+    the phantom-acquire window) rather than held forever by nobody.
+
+    SABOTAGE: drop the ``if acquired: slots.release()`` branch in
+    ``await_connect_slot`` -> the slot stays held, the follow-up acquire
+    below (proving it is free again) fails -> this goes red.
+    """
+    slots = threading.Semaphore(1)
+    abandon = threading.Event()
+    original_acquire = slots.acquire
+
+    def acquire_then_abandon(*args: Any, **kwargs: Any) -> Any:
+        result = original_acquire(*args, **kwargs)
+        if result:
+            # The caller gives up in the SAME instant the acquire succeeded --
+            # the exact race the phantom-acquire fix targets.
+            abandon.set()
+        return result
+
+    monkeypatch.setattr(slots, "acquire", acquire_then_abandon)
+
+    acquired = await csb.await_connect_slot(
+        slots, session_id="s", abandon=abandon, poll_interval_s=0.01
+    )
+
+    assert acquired is False  # the wait reports abandonment, not success
+    assert slots.acquire(False) is True  # the slot is free again
 
 
 # --------------------------------------------------------------------------- #

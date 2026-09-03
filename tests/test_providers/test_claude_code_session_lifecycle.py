@@ -109,6 +109,84 @@ def test_entry_for_never_tracks_ownership_for_the_shared_base_entry() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# B2 BLOCKER (#1305 round 3): release_session_resources_nonblocking must tell
+# the claude_code stateful delta registry, exactly like
+# reap_idle_stream_entry already does for the idle-TTL path (pinned in
+# test_claude_code_idle_reap.py's key-shape style: session_key =
+# (scope, model, cwd, thinking)).
+# --------------------------------------------------------------------------- #
+def test_release_session_resources_forces_the_next_stateful_send_to_a_full_resend() -> None:
+    """Without this, the registry still thinks its last-seen prefix is live
+    on the now-dead subprocess, and the next send on this scope would
+    classify as a DELTA (append-only tail) shipped to a fresh subprocess
+    that never saw the prefix -- a silent conversation-coherence bug, not
+    merely a reconnect.
+
+    SABOTAGE: drop the ``stateful_registry().note_provider_error(...)`` call
+    from ``release_session_resources_nonblocking`` -> the registry still
+    thinks its last-seen prefix is live, the next ``plan()`` call classifies
+    as delta, and this goes red.
+    """
+    from clio_agent.providers import claude_code_stateful as cst
+
+    cst.stateful_registry().reset_for_tests()
+    try:
+        pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
+        scope = "loop-a"
+        session_key = (scope, "m", "/w", None)
+        registry = cst.stateful_registry()
+        # Prime a live session: call 1 (full/first_call).
+        registry.plan(
+            session_key=session_key, scope_token=scope, messages=[{"role": "user", "content": "a"}]
+        )
+
+        pool.entry_for(model="m", cwd="/w", thinking=None, scope=scope, gact_session_id="sess-1")
+
+        pool.release_session_resources("sess-1")
+
+        # An append-only extension that WOULD be a delta (call 2 normally is)
+        # is instead forced full=provider_error because the connection died.
+        plan, _handle = registry.plan(
+            session_key=session_key,
+            scope_token=scope,
+            messages=[{"role": "user", "content": "a"}, {"role": "user", "content": "b"}],
+        )
+        assert plan.mode == "full"
+        assert plan.reason == "provider_error"
+    finally:
+        cst.stateful_registry().reset_for_tests()
+
+
+def test_release_session_resources_emits_a_typed_row_distinct_from_idle_reaped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The audit reason for a #1305 lifecycle release must be its OWN typed
+    reason, never ``idle_reaped`` -- misattributing a deterministic release
+    as an idle-TTL reap would misrepresent WHY the connection actually died.
+    """
+    from clio_agent.providers import claude_code_stateful as cst
+
+    cst.stateful_registry().reset_for_tests()
+    rows: list[dict[str, Any]] = []
+    monkeypatch.setattr(ccs, "stream_audit_enabled", lambda: True)
+    monkeypatch.setattr(
+        ccs, "stream_audit", lambda event, **fields: rows.append({"event": event, **fields})
+    )
+    try:
+        pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
+        pool.entry_for(model="m", cwd="/w", thinking=None, scope="loop-a", gact_session_id="sess-1")
+
+        pool.release_session_resources("sess-1")
+
+        released = [r for r in rows if r.get("reason") == "session_lifecycle_released"]
+        assert released  # SABOTAGE: drop the stream_audit call -> empty -> red
+        assert released[0]["category"] == "session_lifecycle_release"
+        assert not any(r.get("reason") == "idle_reaped" for r in rows)
+    finally:
+        cst.stateful_registry().reset_for_tests()
+
+
+# --------------------------------------------------------------------------- #
 # ClaudeStreamClientPool.release_session_resources -- the claude_code leg.
 # --------------------------------------------------------------------------- #
 def test_release_session_resources_closes_and_drops_the_scoped_entry() -> None:

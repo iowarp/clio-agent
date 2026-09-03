@@ -116,8 +116,15 @@ def finish_agent_task_transition(app: "FastAPI", outcome: AgentTaskFoldOutcome) 
     # child_forward.fail_child_task / _complete_forwarded_task -- also
     # terminalize a child task and now route through the SAME shared helper).
     # This one is race-guarded exactly-once by ``outcome.applied`` +
-    # ``outcome.task.is_terminal`` above; the other three carry their own
-    # equivalent guards at their own transition sites.
+    # ``outcome.task.is_terminal`` above; _cancel_one_child_task carries an
+    # equivalent guard (a swallowed transition exception returns early,
+    # never reaching the helper). fail_child_task / _complete_forwarded_task
+    # do NOT -- round 3 finding, stated honestly rather than silently
+    # papered over: both swallow a losing reg.transition() and fall back to
+    # the current row regardless, so either can double-fire SubagentStop (and
+    # a harmless redundant release call) on an already-terminal race. Real
+    # exactly-once hardening for those two is a tracked follow-up, not built
+    # here.
     finalize_child_task_terminal(app, outcome.task, outcome.task.child_session_id)
     enqueue_completion_wake(app, outcome.task)
     _admit_next_queued(app)

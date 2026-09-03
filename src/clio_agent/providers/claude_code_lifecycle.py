@@ -45,9 +45,22 @@ skip.
 race: the release runs on the server loop, the caller may be on a different
 executor thread). Each closed entry is marked ``_dead`` — a monotonic flag
 :class:`~clio_agent.providers.claude_code_sessions._StreamClientEntry`
-checks at the top of ``_ensure_client``: a late caller's connect is REFUSED
-(typed, retryable — see :func:`dead_entry_error_message`) rather than
-silently reconnecting a slot+CLI invisible to sweep/close.
+checks at the top of ``_ensure_client`` (and, round 3, at the very top of
+``stream()`` too, before a loop thread is even minted): a late caller's
+connect is REFUSED (typed, retryable — see :func:`dead_entry_error_message`)
+rather than silently reconnecting a slot+CLI invisible to sweep/close. This
+NARROWS the window (the flag is only checked at those points, not held
+continuously) rather than closing it outright.
+
+**Stateful-delta hazard (B2, round 3).** A popped entry may be a
+delta-CAPABLE (engaged) scope-keyed connection —
+:mod:`clio_agent.providers.claude_code_stateful`'s registry still thinks its
+last-seen prefix is live on that now-dead subprocess. Exactly like
+:func:`~clio_agent.providers.claude_code_stream_bounds.reap_idle_stream_entry`
+already does for the idle-TTL path, every popped entry here ALSO flags
+``stateful_registry().note_provider_error(...)`` so the next send on that
+scope is forced to a full resend — never a delta tail shipped to a fresh
+subprocess with no memory of the dropped prefix.
 """
 
 from __future__ import annotations
@@ -60,6 +73,7 @@ if TYPE_CHECKING:
 __all__ = [
     "DEAD_ENTRY_MARKER",
     "SESSION_RELEASE_REASONS",
+    "StreamAbandonedError",
     "dead_entry_error_message",
     "release_session_resources_nonblocking",
 ]
@@ -67,6 +81,18 @@ __all__ = [
 #: Marker substring the LM retry layer recognizes as transient (kept in sync
 #: with ``lm.io_logging._TRANSIENT_PROVIDER_MARKERS`` — see that module).
 DEAD_ENTRY_MARKER = "claude agent sdk entry released during a queued connect"
+
+
+class StreamAbandonedError(Exception):
+    """Internal sentinel (#1305 B1, round 3): the caller abandoned this
+    stream while it was still queued for a connect slot (``await_connect_slot``
+    returned ``False``). Never surfaced to a real caller -- nobody is
+    listening by definition, since the caller only sets ``abandon`` from its
+    own teardown path. Caught by ``_pump``'s own exception handling exactly
+    like any other abnormal end (queues an "exc" entry nobody reads, then
+    STREAM_END, then a no-op reset since no client was ever constructed).
+    """
+
 
 # --------------------------------------------------------------------------- #
 # Typed release-deferral catalog (no silent skip -- #775 ground rule, F2a).
@@ -83,6 +109,17 @@ SESSION_RELEASE_REASONS: dict[str, dict[str, Any]] = {
             "it out now would kill an in-flight query. Left untouched for "
             "the scope's own clean-exit teardown (stateful_scope) or the "
             "idle-TTL sweep to reclaim once it actually goes idle."
+        ),
+    },
+    "session_lifecycle_released": {
+        "category": "session_lifecycle_release",
+        "description": (
+            "A subagent's scope-keyed connection was closed by the #1305 "
+            "deterministic per-subagent release (an abnormal-termination "
+            "backstop -- a clean exit already released via stateful_scope). "
+            "The claude_code stateful delta registry is flagged provider_error "
+            "so the next send on this scope is a full resend, never a delta "
+            "shipped to a fresh subprocess with no memory of the dropped prefix."
         ),
     },
 }
@@ -104,17 +141,20 @@ def release_session_resources_nonblocking(pool: "ClaudeStreamClientPool", sessio
     """The claude_code #1305 release effect: non-blocking (F1), in-flight-safe (F2a).
 
     See this module's docstring for the full ABNORMAL-termination-backstop
-    framing. Pops every scope-keyed entry ``entry_for`` recorded for
-    ``session_id`` (:func:`~clio_agent.providers.claude_code_stream_bounds.scopes_for_session`)
-    that is NOT genuinely in flight, marks each ``_dead`` (F6b) and closes it
-    non-blocking; an in-flight entry is left untouched (typed, surfaced,
-    F2a). A session with nothing recorded (the common, clean-path case --
-    see module docstring) is a fast no-op.
+    framing (and B2 for the stateful-delta hazard this also closes). Pops
+    every scope-keyed entry ``entry_for`` recorded for ``session_id``
+    (:func:`~clio_agent.providers.claude_code_stream_bounds.scopes_for_session`)
+    that is NOT genuinely in flight, marks each ``_dead`` (F6b), tells the
+    claude_code stateful delta registry the scope's session is gone (B2), and
+    closes it non-blocking; an in-flight entry is left untouched (typed,
+    surfaced, F2a). A session with nothing recorded (the common, clean-path
+    case -- see module docstring) is a fast no-op.
     """
     from clio_agent.providers.claude_code_sessions import (  # noqa: PLC0415
         stream_audit,
         stream_audit_enabled,
     )
+    from clio_agent.providers.claude_code_stateful import stateful_registry  # noqa: PLC0415
     from clio_agent.providers.claude_code_stream_bounds import (  # noqa: PLC0415
         forget_scope_owner,
         scopes_for_session,
@@ -123,7 +163,7 @@ def release_session_resources_nonblocking(pool: "ClaudeStreamClientPool", sessio
     scopes = scopes_for_session(pool, session_id)
     if not scopes:
         return
-    to_close: list[Any] = []
+    to_close: list[tuple[tuple[str, str | None, str | None, str], Any]] = []
     deferred = 0
     with pool._guard:  # noqa: SLF001 - this module is claude_code_sessions' owner-split sibling
         for scope in scopes:
@@ -135,10 +175,26 @@ def release_session_resources_nonblocking(pool: "ClaudeStreamClientPool", sessio
                     continue
                 entry._dead = True  # noqa: SLF001 - refuse a late connect (F6b)
                 del pool._entries[key]  # noqa: SLF001
-                to_close.append(entry)
+                to_close.append((key, entry))
             forget_scope_owner(pool, scope)
-    for entry in to_close:
+    for key, entry in to_close:
+        model, cwd, thinking_id, scope = key
         entry.close_nonblocking()
+        # B2: the exact hazard reap_idle_stream_entry already documents and
+        # handles for the idle-TTL path -- without this, the registry still
+        # thinks its last-seen prefix is live on the now-dead subprocess, and
+        # the next send on this scope would classify as a DELTA (append-only
+        # tail) shipped to a fresh subprocess with no memory of the prefix.
+        stateful_registry().note_provider_error((scope, model, cwd, thinking_id), scope)
+        if stream_audit_enabled():
+            stream_audit(
+                "provider.transport_error",
+                provider="claude_code_sdk",
+                transport="sdk",
+                model=model,
+                reason="session_lifecycle_released",
+                **SESSION_RELEASE_REASONS["session_lifecycle_released"],
+            )
     if deferred and stream_audit_enabled():
         stream_audit(
             "provider.session_release",

@@ -219,7 +219,8 @@ async def await_connect_slot(
     session_id: str = "",
     reclaim_idle_slot: Callable[[], Any] | None = None,
     poll_interval_s: float = 0.2,
-) -> None:
+    abandon: "threading.Event | None" = None,
+) -> bool:
     """Wait for a free process-wide connect slot -- surfaced, typed, liveness-fed.
 
     #1305 root fix: this loop is UNBOUNDED by design (the cap's documented "a
@@ -243,20 +244,36 @@ async def await_connect_slot(
       what it is, a queue, not a stall.
 
     Polls the plain ``threading.Semaphore`` with a bounded per-attempt
-    ``run_in_executor`` acquire (not one unbounded blocking acquire) so
-    cancellation between polls is honored cleanly -- a caller cancelled while
-    queued (kill-on-cancel) abandons interest without leaving an orphaned OS
-    thread blocked on the semaphore (which would silently consume a LATER
-    release as a phantom acquire nothing pairs with). This mirrors the
-    pre-#1305 poll shape exactly -- only the side effects between polls
-    (surfacing + liveness feed) are new.
+    ``run_in_executor`` acquire (not one unbounded blocking acquire) so a
+    caller cancelled while queued never leaves an orphaned OS thread blocked
+    on the semaphore forever.
+
+    ``abandon`` (#1305 B1, round 3): checked after EVERY attempt, acquired or
+    not. This is what actually closes the phantom-acquire window -- the
+    bounded poll shape alone only bounds how long an orphaned thread could
+    block, it does not by itself stop a slot from being acquired the instant
+    the caller stops caring. When ``abandon`` is set: if this attempt just
+    acquired a slot, it is released right back (unused, held by nobody) and
+    the function returns ``False``; if it did not acquire, the loop simply
+    exits and returns ``False`` -- either way, no slot is left held on behalf
+    of an abandoned wait. Returns ``True`` iff the caller now holds an
+    acquired slot. ``stream()`` sets its own ``abandon`` event on caller
+    teardown -- see that method for why cancelling the pump task outright
+    (the pre-round-3 shape) was unsound instead.
     """
     loop = asyncio.get_running_loop()
     start = time.monotonic()
     attempt = 0
     next_surface_at = 0.0  # surface immediately on the first queued attempt
     surface_gap = _SURFACE_INITIAL_S
-    while not await loop.run_in_executor(None, slots.acquire, True, poll_interval_s):
+    while True:
+        acquired = await loop.run_in_executor(None, slots.acquire, True, poll_interval_s)
+        if abandon is not None and abandon.is_set():
+            if acquired:
+                slots.release()  # phantom acquire: hand it right back, unused
+            return False
+        if acquired:
+            return True
         attempt += 1
         if reclaim_idle_slot is not None:
             reclaim_idle_slot()

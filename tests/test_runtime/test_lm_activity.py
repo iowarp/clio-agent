@@ -195,6 +195,28 @@ def test_real_streaming_always_wins_over_a_stale_queued_signal(monkeypatch):
     assert lm_activity.lm_call_in_flight("sess-q3") is False
 
 
+def test_note_lm_start_resets_a_stale_queued_last_from_a_dirty_bucket():
+    """Residual 4 (#1305 round 3): with >1 concurrent call in the SAME
+    session, a NEW note_lm_start() must not let an earlier (already-ended)
+    call's ``queued_last`` survive -- a stale queued regime from a call that
+    is no longer even running must never influence a brand-new call's own
+    liveness classification.
+
+    SABOTAGE: drop the ``st["queued_last"] = 0.0`` line from
+    ``note_lm_start`` -> the dirty value survives -> this goes red.
+    """
+    # A dirty bucket: as if a PRIOR overlapping call in this session queued
+    # (and has since ended) without note_lm_start ever resetting it.
+    lm_activity._STATE[""] = {
+        "inflight": 1.0,
+        "started": 500.0,
+        "last": 500.0,
+        "queued_last": 900.0,
+    }
+    lm_activity.note_lm_start()
+    assert lm_activity._STATE[""]["queued_last"] == 0.0
+
+
 def test_idle_window_env_override(monkeypatch):
     monkeypatch.setenv("CLIO_LM_INTER_TOKEN_IDLE_S", "30")
     clk = _clock(monkeypatch)

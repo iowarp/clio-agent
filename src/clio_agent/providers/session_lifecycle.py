@@ -42,8 +42,13 @@ child-task terminal path calls (the completion fold
 ``task_fold.finish_agent_task_transition``, the cancel cascade
 ``turn_spawn._cancel_one_child_task``, and both ``child_forward.py`` HITL-edge
 terminals — #1305 review round F3 found and closed the three that used to
-bypass it), each already race-guarded exactly-once at its own transition
-site.
+bypass it). The fold and the cancel cascade are each race-guarded
+exactly-once at their own transition site; the two ``child_forward.py``
+terminals are NOT (round 3 finding, not hardened here — see
+``task_fold.py``'s own comment) and can double-fire this dispatch on an
+already-terminal race, which is harmless here (a second release call on an
+already-empty session is a no-op) but is stated honestly rather than implied
+away.
 
 Consumer #1 (this slice): claude_code's ``ClaudeStreamClientPool`` (see
 :meth:`clio_agent.providers.claude_code_sessions.ClaudeStreamClientPool.release_session_resources`).

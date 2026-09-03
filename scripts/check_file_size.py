@@ -721,22 +721,32 @@ RATCHET_BASELINE: dict[str, int] = {
     # BEFORE the abnormal-end reset in _pump's finally, so a cross-thread
     # lifecycle release stopping the owner loop can never strand the
     # consumer's unbounded chunks.get() (a one-thread-per-occurrence leak);
-    # (F4) stream()'s finally now cancels the still-queued _pump() future
-    # when the caller abandons before a slot was ever acquired (previously a
-    # "zombie" pump would eventually consume a slot and spawn a CLI nobody
-    # listens to); (F6b) a new monotonic ``_dead`` flag + a check at the top
-    # of _ensure_client refuses (typed, retryable) a connect from a caller
-    # holding an entry a #1305 lifecycle release already popped from the pool
-    # -- closing the orphaned-entry window where such a caller would
-    # otherwise reconnect+hold a slot invisible to sweep/close. All THREE are
-    # genuinely new _StreamClientEntry instance-state logic (the flag/queue-
-    # ordering/future the fixes touch), not extractable without breaking this
-    # class's own encapsulation; the much larger non-blocking release
-    # ORCHESTRATION those fixes support (F1/F2a) was moved OUT to the new
-    # owner module providers/claude_code_lifecycle.py instead of growing here
-    # (the #1305 release_session_resources() method itself now just delegates
-    # a single call). Ratchet back with the #714/#767 decomposition.
-    "src/clio_agent/providers/claude_code_sessions.py": 825,
+    # (F4, SUPERSEDED below) stream()'s finally cancelled the still-queued
+    # _pump() future on caller-abandon; (F6b) a new monotonic ``_dead`` flag +
+    # a check at the top of _ensure_client refuses (typed, retryable) a
+    # connect from a caller holding an entry a #1305 lifecycle release
+    # already popped from the pool -- narrowing the orphaned-entry window
+    # where such a caller would otherwise reconnect+hold a slot invisible to
+    # sweep/close. All are genuinely new _StreamClientEntry instance-state
+    # logic, not extractable without breaking this class's own
+    # encapsulation; the much larger non-blocking release ORCHESTRATION those
+    # fixes support (F1/F2a) was moved OUT to the new owner module
+    # providers/claude_code_lifecycle.py instead of growing here (the #1305
+    # release_session_resources() method itself now just delegates a single
+    # call).
+    # Round 3 (825 -> 863): B1 BLOCKER -- fut.cancel() (F4's mechanism above)
+    # could interrupt _pump's own in-progress _areset_client() await on an
+    # abnormal end, orphaning the CLI subprocess on essentially every error
+    # path (the slot released, disconnect() never completed). Replaced with a
+    # threading.Event `abandon` flag threaded through _ensure_client's slot
+    # wait only -- a pump that already has (or is obtaining) a client is
+    # never touched and runs its reset to completion; fut.cancel() is
+    # deleted outright. Residual 3: stream() now checks _dead before
+    # _ensure_loop (not just inside _ensure_client) so a doomed connect never
+    # mints a loop thread. Both are instance-state/control-flow changes on
+    # _StreamClientEntry.stream/_ensure_client themselves, not extractable.
+    # Ratchet back with the #714/#767 decomposition.
+    "src/clio_agent/providers/claude_code_sessions.py": 863,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
     # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
     # #947 DEBT (recorded 2026-07-18, #948 S4): residual over the pre-#947 count

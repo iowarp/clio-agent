@@ -385,24 +385,31 @@ class _StreamClientEntry:
                 return None
             return time.monotonic() - self._idle_since
 
-    async def _acquire_connect_slot(self, *, gact_session_id: str = "") -> None:
-        """Wait for a free process-wide connect slot (no-op if uncapped).
-
-        ``gact_session_id`` (distinct from :meth:`stream`'s SDK ``session_id``)
-        is threaded through to
+    async def _acquire_connect_slot(
+        self, *, gact_session_id: str = "", abandon: "threading.Event | None" = None
+    ) -> bool:
+        """Wait for a free process-wide connect slot ("acquired" no-op when
+        uncapped). ``gact_session_id``/``abandon`` (B1, round 3 — set to give
+        up on a still-queued wait) thread through to
         :func:`~clio_agent.providers.claude_code_stream_bounds.await_connect_slot`
-        (owner module + full #1305 rationale).
+        (full rationale there). Returns ``True`` iff a slot is now held.
         """
         if self._connect_slots is None:
-            return
-        await await_connect_slot(
+            return True
+        return await await_connect_slot(
             self._connect_slots,
             session_id=gact_session_id,
             reclaim_idle_slot=self._reclaim_idle_slot,
+            abandon=abandon,
         )
 
     async def _ensure_client(
-        self, on_construct: Any, *, gact_session_id: str = "", timeout: float | None = None
+        self,
+        on_construct: Any,
+        *,
+        gact_session_id: str = "",
+        timeout: float | None = None,
+        abandon: "threading.Event | None" = None,
     ) -> Any:
         """Connect the client once (runs on the owner loop, double-checked).
 
@@ -415,6 +422,13 @@ class _StreamClientEntry:
         F6b: refuses (typed, retryable) when :attr:`_dead` — a lifecycle
         release popped this entry while a caller already held it from an
         earlier ``entry_for()``. Monotonic, so no lock is needed here.
+
+        B1 (round 3): ``abandon``, if set while STILL QUEUED, raises
+        :class:`~clio_agent.providers.claude_code_lifecycle.StreamAbandonedError`
+        (no slot held, no client constructed) rather than cancelling this
+        coroutine outright (which risked interrupting an in-progress
+        ``client.disconnect()`` elsewhere, orphaning the CLI). Ignored once
+        past the slot wait — construct+connect always runs to completion.
         """
         if self._dead:
             from clio_agent.providers.claude_code_lifecycle import (  # noqa: PLC0415
@@ -429,7 +443,17 @@ class _StreamClientEntry:
                 return self._client
             from claude_agent_sdk import ClaudeSDKClient  # noqa: PLC0415
 
-            await self._acquire_connect_slot(gact_session_id=gact_session_id)  # UNBOUNDED (#1305)
+            # UNBOUNDED (#1305); may return False (abandoned) instead of
+            # raising -- see the abandon paragraph above.
+            acquired = await self._acquire_connect_slot(
+                gact_session_id=gact_session_id, abandon=abandon
+            )
+            if not acquired:
+                from clio_agent.providers.claude_code_lifecycle import (  # noqa: PLC0415
+                    StreamAbandonedError,
+                )
+
+                raise StreamAbandonedError
             try:
                 async with asyncio.timeout(timeout):
                     client = ClaudeSDKClient(options=self._options_factory())
@@ -487,6 +511,15 @@ class _StreamClientEntry:
         bridged to the caller's loop via a thread-safe queue. A timeout / transport
         error / caller-abandon drops the pooled client (no cross-call bleed).
         """
+        if self._dead:
+            # Residual 3 (round 3): refuse BEFORE minting a loop thread nobody
+            # will use -- _ensure_client's own check would catch this too, but
+            # only after paying for the thread.
+            from clio_agent.providers.claude_code_lifecycle import (  # noqa: PLC0415
+                dead_entry_error_message,
+            )
+
+            raise RuntimeError(dead_entry_error_message())
         self._ensure_loop()
         self._mark_busy()  # idle-reap must never pull this entry mid-stream
         caller_loop = asyncio.get_running_loop()
@@ -498,6 +531,9 @@ class _StreamClientEntry:
         # cancelling a session never kills a same-key sibling that is merely queued behind
         # the per-loop query lock (that sibling has not registered yet).
         gact_sid = _active_gact_session_id()
+        # #1305 B1: caller-abandon signal for a STILL-QUEUED connect only --
+        # see the finally below for why `fut` is never cancelled outright.
+        abandon = threading.Event()
 
         async def _pump() -> None:
             clean = False
@@ -506,7 +542,7 @@ class _StreamClientEntry:
                 # #1305: ensure_client's slot-wait is UNBOUNDED, outside this
                 # timeout entirely -- see its docstring for the accounting fix.
                 client = await self._ensure_client(
-                    on_construct, gact_session_id=gact_sid, timeout=timeout
+                    on_construct, gact_session_id=gact_sid, timeout=timeout, abandon=abandon
                 )
                 async with asyncio.timeout(timeout):
                     async with self._query_lock:
@@ -527,9 +563,12 @@ class _StreamClientEntry:
                 # then never arrive, permanently stranding that worker thread.
                 chunks.put((_STREAM_END, None))
                 if not clean:
-                    # Mid-cycle end (timeout/error/cancel/kill-on-cancel): drop the
-                    # connection so its leftover response can never bleed into the next
-                    # call. Idempotent with a kill-on-cancel reset that already ran.
+                    # Mid-cycle end: drop the connection so its leftover
+                    # response can never bleed into the next call (idempotent
+                    # with a kill-on-cancel reset that already ran). B1: never
+                    # interrupted by the caller's own unwind -- this coroutine
+                    # is no longer cancelled from stream()'s finally, so this
+                    # disconnect always runs to completion.
                     await self._areset_client()
 
         fut = asyncio.run_coroutine_threadsafe(_pump(), self._loop)
@@ -543,17 +582,16 @@ class _StreamClientEntry:
                 yield val
         finally:
             if not fut.done():
-                # #1305 F4 zombie-pump fix: a caller abandoning a still-QUEUED
-                # stream (before register_sdk_stream ever runs) previously left
-                # _pump() running forever, eventually spawning a CLI nobody
-                # listens to. Cancelling propagates to _pump() via
-                # run_coroutine_threadsafe's chaining, unwinding it at its next
-                # await (await_connect_slot's bounded poll) before it ever
-                # consumes a slot. Safe alongside the reset below regardless
-                # of which stage _pump() was actually in.
-                fut.cancel()
+                # #1305 B1: DO NOT cancel `fut` -- it could land inside
+                # _pump's own in-progress `_areset_client()` await on an
+                # abnormal end, interrupting `client.disconnect()` mid-flight
+                # (slot released, CLI never actually disconnected -- orphaned
+                # on essentially every error path). Only ask the queue wait
+                # to give up; a pump with a client already runs its reset to
+                # completion, untouched.
+                abandon.set()
                 # Caller abandoned mid-stream: reset the client on the owner loop so
-                # a half-drained connection is never reused.
+                # a half-drained (already-connected) connection is never reused.
                 with contextlib.suppress(Exception):
                     asyncio.run_coroutine_threadsafe(self._areset_client(), self._loop)
             self._mark_idle()
