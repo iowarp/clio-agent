@@ -25,6 +25,7 @@ tools:
   - v2ex_staller
   - v2ex_plain_staller
   - v2ex_silent_sleeper
+  - v2ex_ui_echo
 ---
 
 # V2EX Avenues Testing Agent

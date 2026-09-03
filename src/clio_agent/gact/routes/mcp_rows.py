@@ -39,10 +39,24 @@ def handshake_server_row(report: "MCPServerReport") -> dict[str, Any]:
         (#1201) ``execution_era`` / ``execution_downgrade_reason`` -- the latest
         era ANY execution-path connection actually observed for this server,
         which may differ from this probe's own ``protocol_version`` above.
+        (#1283, C1-S3) ``extensions`` -- the latest server-declared extension
+        identifier SET (:mod:`clio_agent.tools.mcp_extension_registry`'s read
+        side). ``None`` means GENUINELY UNOBSERVED (no execution-path connect
+        has landed for this server yet) -- distinct from an OBSERVED empty
+        list, which a real legacy/v1 server produces every time (the version
+        sieve strips ``capabilities.extensions`` there, per
+        ``mcp_connection_era.py``'s own contract: "``None`` must never read
+        as declares-nothing"). Conflating the two (review round 1, F2) would
+        have rendered ``[]`` for EVERY legacy server regardless of whether it
+        was ever probed. ``extensions_era`` names the protocol era that
+        observation landed on (``None`` alongside an unobserved ``extensions``).
+        Previously ``ServerCapabilities.extensions`` was not surfaced on any
+        wire row at all (LEG_C2.md avenue 8's finding).
     """
 
     status = report.to_integration_status()
     era = report.execution_era
+    extensions = report.declared_extensions
     return {
         "name": report.name,
         "reachable": report.ok,
@@ -57,6 +71,8 @@ def handshake_server_row(report: "MCPServerReport") -> dict[str, Any]:
         "instructions": report.instructions,
         "execution_era": era.era if era else None,
         "execution_downgrade_reason": era.degrade_reason if era else None,
+        "extensions": list(extensions.extensions) if extensions is not None else None,
+        "extensions_era": extensions.era if extensions is not None else None,
     }
 
 

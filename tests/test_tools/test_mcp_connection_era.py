@@ -27,12 +27,16 @@ from clio_agent.errors import (
     MCPUnsupportedProtocolVersionError,
 )
 from clio_agent.tools.mcp_connection_era import (
+    MCPServerExtensions,
     MCPTaskCapability,
+    all_latest_server_extensions,
     all_latest_task_capabilities,
     classify_connection_era,
     instrument_client_era,
     latest_mcp_connection_era,
+    latest_server_extensions,
     latest_task_capability,
+    record_server_extensions,
     record_task_capability,
     recorded_mcp_connection_downgrades,
 )
@@ -532,3 +536,128 @@ async def test_instrumented_connect_never_clobbers_an_earlier_true_verdict() -> 
     assert capability is not None
     assert capability.task_capable is True
     assert capability.source == "tool_execution"  # unchanged, not clobbered
+
+
+# --------------------------------------------------------------------------- #
+# #1283 (C1-S3): the GENERIC server-declared extension registry -- a THIRD,   #
+# separate write path (record_server_extensions / latest_server_extensions),  #
+# pure and I/O-free, mirroring the task-capability registry section above.    #
+# --------------------------------------------------------------------------- #
+
+
+def test_record_server_extensions_is_queryable_by_server_id() -> None:
+    record = record_server_extensions(
+        "ext-server-a", extensions=(TASKS_EXTENSION_ID, "io.modelcontextprotocol/ui")
+    )
+
+    assert record == MCPServerExtensions(
+        server_id="ext-server-a", extensions=(TASKS_EXTENSION_ID, "io.modelcontextprotocol/ui")
+    )
+    assert latest_server_extensions("ext-server-a") == record
+
+
+def test_latest_server_extensions_is_none_before_any_record() -> None:
+    assert latest_server_extensions("never-recorded-extensions-server") is None
+
+
+def test_record_server_extensions_overwrites_when_called_again() -> None:
+    """Mirrors ``_record_latest``/``record_task_capability``: "what do we know
+    right now", not "has this id ever been declared" -- a later record for the
+    SAME server_id replaces the earlier one wholesale (no demotion guard here:
+    unlike task capability, a shrinking extension set is not a fact this
+    registry needs to protect against)."""
+
+    record_server_extensions("ext-server-b", extensions=(TASKS_EXTENSION_ID,))
+    second = record_server_extensions("ext-server-b", extensions=())
+
+    assert latest_server_extensions("ext-server-b") == second
+    assert latest_server_extensions("ext-server-b").extensions == ()
+
+
+def test_record_server_extensions_is_a_noop_for_an_unlabeled_id() -> None:
+    """Mirrors every sibling record function's unlabeled-id no-op contract:
+    the record is still RETURNED (a caller may use it), but never stored
+    under the empty key."""
+
+    record = record_server_extensions("", extensions=(TASKS_EXTENSION_ID,))
+    assert record.extensions == (TASKS_EXTENSION_ID,)
+    assert "" not in all_latest_server_extensions()
+
+
+def test_all_latest_server_extensions_snapshots_every_server() -> None:
+    record_server_extensions("ext-snapshot-a", extensions=(TASKS_EXTENSION_ID,))
+    record_server_extensions("ext-snapshot-b", extensions=())
+
+    snapshot = all_latest_server_extensions()
+
+    assert snapshot["ext-snapshot-a"].extensions == (TASKS_EXTENSION_ID,)
+    assert snapshot["ext-snapshot-b"].extensions == ()
+
+
+# --------------------------------------------------------------------------- #
+# #1283 (C1-S3): the GENERIC capture piggybacked on the SAME __aenter__ seam  #
+# era + task-capability capture use -- proven with a NON-tasks, NON-ui        #
+# identifier (`_CapabilityAwareClient` already carries an arbitrary          #
+# `extensions` dict), the same proof the exerciser's SyntheticExtension       #
+# gives end to end in test_mcp_v2_conformance.py.                             #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_instrumented_connect_records_the_full_declared_extension_set() -> None:
+    """A real connect records EVERY declared identifier, not only the tasks
+    id -- the generic read side #1283 point 1 asks for."""
+
+    client = instrument_client_era(
+        _CapabilityAwareClient(
+            "2026-07-28",
+            extensions={TASKS_EXTENSION_ID: {}, "x-clio-agent/synthetic": {}},
+        ),
+        server_id="generic-capture-positive",
+    )
+
+    async with client:
+        pass
+
+    record = latest_server_extensions("generic-capture-positive")
+    assert record is not None
+    assert record.extensions == (TASKS_EXTENSION_ID, "x-clio-agent/synthetic")
+    assert record.era == "modern"
+
+
+@pytest.mark.asyncio
+async def test_instrumented_connect_records_an_empty_set_when_the_server_declares_none() -> None:
+    """Unlike task capability's positive-only capture, the generic set IS
+    recorded even when empty -- a real observation ("this server declared
+    nothing"), not a gap to leave unrecorded."""
+
+    client = instrument_client_era(
+        _CapabilityAwareClient("2026-07-28", extensions={}), server_id="generic-capture-empty"
+    )
+
+    async with client:
+        pass
+
+    record = latest_server_extensions("generic-capture-empty")
+    assert record is not None
+    assert record.extensions == ()
+
+
+@pytest.mark.asyncio
+async def test_instrumented_connect_overwrites_an_earlier_declared_set() -> None:
+    """The generic capture answers "what does this server declare right now",
+    so a later connect's set REPLACES an earlier one (no demotion guard --
+    that F7 protection is task-capability-specific)."""
+
+    record_server_extensions("generic-capture-replace", extensions=(TASKS_EXTENSION_ID,))
+    client = instrument_client_era(
+        _CapabilityAwareClient("2026-07-28", extensions={"x-clio-agent/synthetic": {}}),
+        server_id="generic-capture-replace",
+    )
+
+    async with client:
+        pass
+
+    record = latest_server_extensions("generic-capture-replace")
+    assert record is not None
+    assert record.extensions == ("x-clio-agent/synthetic",)

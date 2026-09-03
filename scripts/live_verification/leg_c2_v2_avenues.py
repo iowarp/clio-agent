@@ -23,35 +23,45 @@ Avenues (see ``LEG_C2.md`` for the full per-avenue writeup + citations):
  4. cache             -- BLOCKED: exerciser has no cache_ttl/cache_scope arm.
  5. waits-cancel      -- staller surfaces ``mcp_task.wait`` live-SSE events,
                          then a cancel ends the turn ``cancelled``, not hung.
- 6. pagination        -- the readiness gate's full 9-tool resolution is the
+ 6. pagination        -- the readiness gate's full 10-tool resolution is the
                          available (indirect) proof; no ``list_page_size``
                          control exists anywhere in clio_agent to force real
                          multi-page traversal.
  7. list-changed      -- BLOCKED: exerciser's tool set never changes; no
                          listChanged arm.
- 8. extensions        -- BLOCKED for a DIRECT assertion: the handshake row
-                         never surfaces ``ServerCapabilities.extensions``;
-                         ``execution_era`` is recorded as the closest indirect
-                         signal available today.
+ 8. extensions        -- C1-S3 (#1283) landed: the handshake row now surfaces
+                         the server-declared extension SET directly
+                         (``gact/routes/mcp_rows.py::handshake_server_row``'s
+                         ``extensions`` field). REAL assertion: the row must
+                         contain both the tasks id and the exerciser's own
+                         synthetic, non-built-in identifier
+                         (``x-clio-agent/exerciser-echo``) -- proving the read
+                         side is generic, not a tasks/ui shortlist. Headless
+                         (the handshake was already fetched for the readiness
+                         gate).
  9. adversarial       -- BLOCKED: no MUST-violating raw-responder/ASGI-shim
                          fixture exists in this repo.
 10. headers           -- a NEW header-capture HTTP MCP server
                          (``_header_capture_server.py``) probed through the
                          REST-install lane (``POST /v1/mcp/servers`` +
                          ``.../call``); genuinely live-tested, not assumed.
-11. apps-ui           -- BLOCKED: no exerciser tool carries a ``ui://``
-                         resource reference (``gact/mcp_apps.py``'s admission
-                         requirements are cited as evidence for what an arm
-                         would need).
+11. apps-ui           -- C1-S3 (#1283) landed: the exerciser now carries a
+                         real ui-serving arm (``ui_echo`` + ``ui://v2ex/
+                         panel``). REAL assertion: drives ``v2ex_ui_echo``
+                         through a real session turn and asserts an
+                         ``mcp_app`` Part is minted AND ``GET /v1/sessions/
+                         {sid}/mcp-apps/{app_id}`` actually serves the
+                         resource -- needs a model in the loop (the turn
+                         decides to call the tool), unlike avenue 8.
 
 Mechanics mirror ``leg_c_synthetic_session.py``: its own server boot on a
 free port, allow-all policies FIRST, the ``v2ex-avenues`` testing-agent pack
 (``agents/v2ex-avenues/`` -- a SIBLING of ``agents/v2ex-testing/``, not an
 edit to it, exposing every exerciser tool leg C's narrower pack does not),
 zero-LM readiness gate before any turn, ``claude_code``/``sonnet`` turns ONLY
-for the two avenues that genuinely need a model in the loop (1 and 5) --
-every other avenue is driven through a headless HTTP/SSE surface, per the
-house cost-aware-defaults + "prefer direct surfaces" rule.
+for the three avenues that genuinely need a model in the loop (1, 5, and 11
+as of C1-S3) -- every other avenue is driven through a headless HTTP/SSE
+surface, per the house cost-aware-defaults + "prefer direct surfaces" rule.
 
 Verdict JSON: ``out/live-verification/leg_c2_verdict.json``.
 
@@ -59,7 +69,7 @@ Usage::
 
     uv run python scripts/live_verification/leg_c2_v2_avenues.py --dry-run
     uv run python scripts/live_verification/leg_c2_v2_avenues.py --plumbing-only
-    uv run python scripts/live_verification/leg_c2_v2_avenues.py   # spends LM tokens (2 turns)
+    uv run python scripts/live_verification/leg_c2_v2_avenues.py   # spends LM tokens (3 turns)
 """
 
 from __future__ import annotations
@@ -82,6 +92,8 @@ from _sse_collector import SSECollector  # noqa: E402
 from tests.test_tools.mcp_exerciser import (  # noqa: E402
     EXERCISER_NAMESPACE,
     EXERCISER_PATH,
+    SYNTHETIC_EXTENSION_ID,
+    TASKS_EXTENSION_ID,
 )
 
 #: The v2ex-avenues pack template this leg materializes per run (sibling of
@@ -102,6 +114,7 @@ EXERCISER_EXPECTED_TOOLS = {
     "staller",
     "plain_staller",
     "silent_sleeper",
+    "ui_echo",
 }
 
 #: Every namespaced tool the pack's `main` expert must resolve before any
@@ -109,7 +122,7 @@ EXERCISER_EXPECTED_TOOLS = {
 NEEDED_AGENT_TOOLS = {f"{EXERCISER_NAMESPACE}_{name}" for name in EXERCISER_EXPECTED_TOOLS}
 
 #: Static avenue plan -- used by both --dry-run and (for cross-reference)
-#: LEG_C2.md's table. ``needs_lm`` marks the two avenues driven through a
+#: LEG_C2.md's table. ``needs_lm`` marks the three avenues driven through a
 #: real model turn; every other avenue is headless HTTP/SSE only.
 AVENUE_PLAN: list[dict[str, Any]] = [
     {
@@ -146,7 +159,7 @@ AVENUE_PLAN: list[dict[str, Any]] = [
         "avenue": "pagination",
         "needs_lm": False,
         "expect": "pass",
-        "summary": "readiness gate proves all 9 tools resolve (indirect; no page-size control exists)",
+        "summary": "readiness gate proves all 10 tools resolve (indirect; no page-size control exists)",
     },
     {
         "avenue": "list-changed",
@@ -157,8 +170,11 @@ AVENUE_PLAN: list[dict[str, Any]] = [
     {
         "avenue": "extensions",
         "needs_lm": False,
-        "expect": "blocked",
-        "summary": "handshake row never surfaces ServerCapabilities.extensions directly",
+        "expect": "pass",
+        "summary": (
+            "C1-S3 landed: the handshake row's extensions field must contain the tasks id "
+            "AND the exerciser's synthetic, non-built-in identifier"
+        ),
     },
     {
         "avenue": "adversarial",
@@ -174,9 +190,12 @@ AVENUE_PLAN: list[dict[str, Any]] = [
     },
     {
         "avenue": "apps-ui",
-        "needs_lm": False,
-        "expect": "blocked",
-        "summary": "no exerciser tool carries a ui:// resource reference",
+        "needs_lm": True,
+        "expect": "pass",
+        "summary": (
+            "C1-S3 landed: drives v2ex_ui_echo through a real turn and asserts the mcp_app "
+            "Part + GET .../mcp-apps/{app_id} serving"
+        ),
     },
 ]
 
@@ -201,7 +220,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--plumbing-only",
         action="store_true",
-        help="stop before any LM turn; avenues 1 and 5 are recorded 'blocked' (skipped)",
+        help="stop before any LM turn; avenues 1, 5, and 11 are recorded 'blocked' (skipped)",
     )
     parser.add_argument(
         "--dry-run",
@@ -256,10 +275,13 @@ def avenue_mrtr_methods() -> dict[str, Any]:
         "evidence": {
             "checked": ["tests/test_tools/mcp_exerciser.py", "src/clio_agent/gact/routes/mcp.py"],
             "finding": (
-                "(a) build_exerciser_server() registers 9 `@server.tool`s and "
-                "nothing else -- no `@server.resource`/`@server.prompt` handler "
-                "exists, so there is no MRTR-capable prompts/get or resources/read "
-                "arm to drive even in isolation. (b) independent of (a): the "
+                "(a) since C1-S3 (#1283) build_exerciser_server() registers 10 "
+                "`@server.tool`s and one `@server.resource` (the static ui panel "
+                "content resource `ui_echo` binds to, not an MRTR-capable path) -- "
+                "no `@server.prompt` exists at all, and no resource anywhere "
+                "returns `InputRequiredResult`, so there is still no MRTR-capable "
+                "prompts/get or resources/read arm to drive even in isolation. "
+                "(b) independent of (a): the "
                 "DECLARED session/turn surface this leg (and legs B/C) prove only "
                 "exposes an expert's frontmatter `tools:` list to the model -- "
                 "prompts/resources reach a session only through the SEPARATE "
@@ -314,7 +336,7 @@ def avenue_list_changed() -> dict[str, Any]:
             ],
             "finding": (
                 "the exerciser's tool set is fixed at server-build time "
-                "(build_exerciser_server() registers the same 9 tools every call) "
+                "(build_exerciser_server() registers the same 10 tools every call) "
                 "-- no tool dynamically adds/removes a tool or fires a "
                 "`notifications/tools/list_changed` notification. A repo-wide "
                 "grep for listChanged/list_changed found only unrelated hits "
@@ -367,79 +389,125 @@ def avenue_adversarial() -> dict[str, Any]:
     }
 
 
-def avenue_apps_ui(handshake_row: dict[str, Any] | None) -> dict[str, Any]:
+def avenue_apps_ui(
+    call: Any, wsid: str, sid: str, out_path: Path, *, turn_timeout_s: float
+) -> dict[str, Any]:
+    """C1-S3 (#1283) gave the exerciser a real ui-serving arm: ``ui_echo``
+    (``_meta.ui.resourceUri`` bound to ``ui://v2ex/panel``) + a matching
+    ``@server.resource`` handler serving ``text/html;profile=mcp-app`` HTML.
+    REAL assertion (review round 1, F3): drives ``v2ex_ui_echo`` through a
+    real session turn and asserts (1) an ``mcp_app`` Part is minted on the
+    persisted message stream (``gact/mcp_apps.py::_append_live_assistant_part``
+    writes through the SAME single-writer transcript ledger a real assistant
+    reply uses -- not the SSE-only transient path ``mcp_task.wait`` rides),
+    and (2) ``GET /v1/sessions/{sid}/mcp-apps/{app_id}`` actually resolves
+    and serves the ``text/html;profile=mcp-app`` resource. Needs a model in
+    the loop (the turn decides to call the tool), unlike avenue 8.
+    """
+
+    prompt = (
+        f"Call the {EXERCISER_NAMESPACE}_ui_echo tool with payload='panel-probe' "
+        "and report exactly what it returned."
+    )
+    common.post_message(call, sid, prompt)
+    status = common.wait_turn(call, wsid, sid, max_elapsed=turn_timeout_s)
+    messages = common.session_messages(call, sid)
+    common.dump_json(out_path.parent / "leg_c2_apps_ui_messages.json", messages)
+
+    mcp_app_parts = [
+        part
+        for message in messages
+        for part in (message.get("parts") or [])
+        if part.get("type") == "mcp_app"
+    ]
+    if not mcp_app_parts:
+        return {
+            "avenue": "apps-ui",
+            "status": "fail",
+            "evidence": {
+                "turn_status": status,
+                "messages_dump": "leg_c2_apps_ui_messages.json",
+            },
+            "error": "no mcp_app Part was minted for the ui_echo call",
+        }
+
+    part = mcp_app_parts[-1]
+    app_id = str(part.get("app_instance_id") or "")
+    data_ref = str(part.get("data_ref") or "")
+    resolved: dict[str, Any] = {}
+    resolve_error: str | None = None
+    try:
+        resolved = call(
+            "GET", f"/v1/sessions/{sid}/mcp-apps/{app_id}", params={"data_ref": data_ref}
+        )
+    except Exception as exc:  # noqa: BLE001 - captured into the verdict, never a bare traceback
+        resolve_error = str(exc)
+
+    resource = resolved.get("resource") or {}
+    # Inline literal, deliberately not imported: this script never imports
+    # clio_agent (it drives the gact server over HTTP as a subprocess, and
+    # the exerciser fixture it does import is clio_agent-free by design --
+    # see mcp_exerciser.py's own docstring). The single source of truth is
+    # clio_agent.tools.mcp_extension_registry.MCP_APP_MIME_TYPE (re-exports
+    # fastmcp.utilities.mime.UI_MIME_TYPE); pulling that module in here would
+    # drag the whole clio_agent import graph into a pure HTTP driver script.
+    served_ok = (
+        resolve_error is None
+        and resource.get("mime_type") == "text/html;profile=mcp-app"
+        and isinstance(resource.get("html"), str)
+        and bool(resource.get("html"))
+    )
+    ok = bool(app_id) and bool(data_ref) and served_ok
     return {
         "avenue": "apps-ui",
-        "status": "blocked",
+        "status": "pass" if ok else "fail",
         "evidence": {
-            "checked": ["tests/test_tools/mcp_exerciser.py", "src/clio_agent/gact/mcp_apps.py"],
-            "handshake_v2ex_row": handshake_row,
-            "finding": (
-                "the exerciser declares no tool with a `ui://` resource reference "
-                "at all: `mcp_apps.py::_resource_uri` (~line 104-108) requires a "
-                "tool's `_meta.ui.resourceUri` (or the flat `_meta['ui/"
-                "resourceUri']` key) to be a string starting with `ui://`; none "
-                "of the exerciser's 9 tools carry any `_meta`, so `_resource_uri` "
-                "would return `''` for every one of them and no MCP App would "
-                "ever admit."
-            ),
-            "what_an_arm_would_need": (
-                "(1) a tool whose FastMCP `_meta` declares `{'ui': {'resourceUri': "
-                "'ui://<namespace>/<name>'}}`; (2) a matching "
-                "`@server.resource('ui://...')` handler returning content with "
-                "`mimeType == 'text/html;profile=mcp-app'` (mcp_apps."
-                "MCP_APP_MIME_TYPE) and a `text` HTML body -- mcp_apps.py::"
-                "_resource_payload (~174-193) rejects anything else (not exactly "
-                "one content item, wrong mimeType, non-string text). Once "
-                "admitted, 'arrived' on the session surface means: an assistant "
-                "Part of type 'mcp_app' lands via `_append_live_assistant_part` "
-                "(mcp_apps.py:434-448, `metadata={'stream_source': 'live', "
-                "'protocol': '2026-01-26'}`) -- observable on `GET /v1/sessions/"
-                "{sid}/messages` or the SSE feed -- and `GET /v1/sessions/{sid}/"
-                "mcp-apps/{app_id}` (mcp_apps.py:617-637) resolves the actual "
-                "resource HTML/CSP/permissions, also pinning "
-                "`protocol_version: '2026-01-26'` (mcp_apps.py:626)."
-            ),
+            "turn_status": status,
+            "mcp_app_part": part,
+            "resolved_resource_mime_type": resource.get("mime_type"),
+            "resolve_error": resolve_error,
         },
-        "error": None,
+        "error": None
+        if ok
+        else "the ui_echo mcp_app Part or its mcp-apps resource route did not serve as expected",
     }
 
 
 def avenue_extensions(handshake_row: dict[str, Any] | None) -> dict[str, Any]:
-    era = (handshake_row or {}).get("execution_era")
+    """C1-S3 (#1283) landed the generic extension registry: the handshake row
+    now carries the server-declared extension SET directly
+    (``gact/routes/mcp_rows.py::handshake_server_row``'s ``extensions``
+    field, ``None`` when genuinely unobserved -- never conflated with a real
+    empty list). REAL assertion (review round 1, F3): the exerciser's row
+    must contain BOTH the well-known tasks id AND the exerciser's own
+    synthetic, non-built-in identifier -- proving the read side is generic
+    (records whatever a server actually declares), not a tasks/ui shortlist.
+    Headless: the handshake was already fetched for the readiness gate.
+    """
+
+    row = handshake_row or {}
+    extensions = row.get("extensions")
+    has_extensions_list = isinstance(extensions, list)
+    has_tasks = has_extensions_list and TASKS_EXTENSION_ID in extensions
+    has_synthetic = has_extensions_list and SYNTHETIC_EXTENSION_ID in extensions
+    ok = has_tasks and has_synthetic
     return {
         "avenue": "extensions",
-        "status": "blocked",
+        "status": "pass" if ok else "fail",
         "evidence": {
             "handshake_v2ex_row": handshake_row,
-            "execution_era": era,
-            "finding": (
-                "gact/routes/mcp_rows.py::handshake_server_row (the ONLY wire "
-                "shape GET /v1/mcp/handshake returns) does not surface "
-                "`ServerCapabilities.extensions` at all -- its fields are name/"
-                "reachable/state/transport/tools_count/tools/error/latency_ms/"
-                "protocol_version/server_version/instructions/execution_era/"
-                "execution_downgrade_reason. No other HTTP route exposes the "
-                "era/capability registry either (grepped gact/routes/*.py for "
-                "execution_era/latest_task_capability/latest_mcp_connection_era: "
-                "only mcp_rows.py and mcp.py reference them). So the raw "
-                "extensions dict (the tasks id + the fastmcp ui splice) cannot "
-                "be independently confirmed through any documented client-"
-                "facing surface today -- this is exactly the generic extension "
-                "registry docs/design/mcp-client-unification-2026-08.md's "
-                "C1-S3(a) has not landed yet."
-            ),
-            "indirect_signal": (
-                "execution_era for v2ex above should read 'modern' -- era "
-                "detection (mcp_connection_era.py) is keyed off the negotiated "
-                "protocol_version, and a genuinely modern, task-capable server "
-                "like the exerciser only lands modern by the client reading "
-                "capabilities.extensions during negotiation, so a 'modern' era "
-                "is CONSISTENT WITH (but not independent proof of) the "
-                "extensions dict actually carrying the tasks id."
-            ),
+            "extensions": extensions,
+            "extensions_era": row.get("extensions_era"),
+            "has_tasks_id": has_tasks,
+            "has_synthetic_id": has_synthetic,
         },
-        "error": None,
+        "error": None
+        if ok
+        else (
+            "handshake row's extensions did not contain both "
+            f"{TASKS_EXTENSION_ID!r} and {SYNTHETIC_EXTENSION_ID!r} "
+            f"(got {extensions!r})"
+        ),
     }
 
 
@@ -457,13 +525,13 @@ def avenue_pagination(resolved_main_tools: set[str]) -> dict[str, Any]:
                 "anywhere in clio_agent (repo-wide grep for list_page_size/"
                 "page_size/pagination/cursor across src/clio_agent/tools/*: zero "
                 "MCP-tools/list-paging-related hits), so this leg cannot FORCE "
-                "the exerciser's 9-tool tools/list to span multiple pages. "
+                "the exerciser's 10-tool tools/list to span multiple pages. "
                 "fastmcp's Client.list_tools() cursor-based pagination is "
                 "SDK-internal (obligations doc row B1, 'library-covered'), not "
                 "independently forceable to a small page size from this "
                 "codebase. This avenue instead proves pagination TRANSPARENCY "
                 "indirectly: if any page boundary were mishandled, some of the "
-                "9 expected tools would be missing from the resolved agent's "
+                "10 expected tools would be missing from the resolved agent's "
                 "toolset above -- they are not (when this avenue passes)."
             ),
         },
@@ -801,7 +869,6 @@ def main() -> int:
         avenues.append(avenue_list_changed())
         avenues.append(avenue_adversarial())
         avenues.append(avenue_extensions(v2ex_row))
-        avenues.append(avenue_apps_ui(v2ex_row))
         avenues.append(avenue_pagination(main_tools))
 
         # --- headers: headless HTTP, no LM needed ---
@@ -823,7 +890,7 @@ def main() -> int:
             avenues.append(avenue_headers(call, args.hcap_port, hcap_log))
 
         if not readiness_ready:
-            for avenue_id in ("task-modes", "waits-cancel"):
+            for avenue_id in ("task-modes", "waits-cancel", "apps-ui"):
                 avenues.append(
                     {
                         "avenue": avenue_id,
@@ -833,7 +900,7 @@ def main() -> int:
                     }
                 )
         elif args.plumbing_only:
-            for avenue_id in ("task-modes", "waits-cancel"):
+            for avenue_id in ("task-modes", "waits-cancel", "apps-ui"):
                 avenues.append(
                     {
                         "avenue": avenue_id,
@@ -859,6 +926,9 @@ def main() -> int:
                     wait_event_timeout_s=args.wait_event_timeout_s,
                     cancel_timeout_s=args.cancel_timeout_s,
                 )
+            )
+            avenues.append(
+                avenue_apps_ui(call, wsid, sid, out_path, turn_timeout_s=args.turn_timeout_s)
             )
 
         verdict["avenues"] = avenues

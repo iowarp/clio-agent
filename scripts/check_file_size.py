@@ -491,7 +491,16 @@ RATCHET_BASELINE: dict[str, int] = {
     # _bound_executor (the natural per-session executor-resolution reader
     # site for the MCP-Apps bridge); the event-building logic lives in the
     # owner module gact/mcp_connection_observability.py.
-    "src/clio_agent/gact/mcp_apps.py": 777,
+    # #1283 (C1-S3): +1 (777 -> 778) for the mcp_extension_registry import that
+    # replaces the two hand-typed "2026-01-26" revision literals (~:446/:626)
+    # with the registry's single MCP_APPS_PROTOCOL_REVISION constant. The Apps
+    # HOST's own behavior is unchanged/regression-locked; only the revision
+    # STRING's source moved.
+    # #1283 review round 1 (F1 residual): +2 (778 -> 780) to also single-source
+    # the MCP_APP_MIME_TYPE literal (was hand-typed here AND in gact/artifacts/
+    # wire.py) from the registry's re-export of fastmcp's own UI_MIME_TYPE.
+    # Zero behavior change -- the value is byte-identical.
+    "src/clio_agent/gact/mcp_apps.py": 780,
     # #895: +6 for threading the provider-generic thinking_level onto the LM bind
     # (LMProviderConfig arg + app.state.lm_config + the GET's thinking_level /
     # thinking_effective fields). The mapping logic itself lives in the owner

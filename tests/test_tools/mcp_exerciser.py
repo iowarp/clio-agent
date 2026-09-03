@@ -12,7 +12,15 @@ web MCP, whose ``fetch`` is ``task=required``) demand from a client:
   the forbidden arm sets ``Tool.execution`` EXPLICITLY because fastmcp omits
   the block for ``mode="forbidden"``, making it wire-identical to untagged;
 - an MRTR guard tool (one ``input_required`` round, SEP-2577 shape);
-- a staller (progress + sleep) for the C1-S2 wait-surfacing and cancel legs.
+- a staller (progress + sleep) for the C1-S2 wait-surfacing and cancel legs;
+- a synthetic, non-built-in :class:`~fastmcp.server.extensions.ServerExtension`
+  (#1283, C1-S3) -- proves the generic extension-registry READ side
+  (``tools/mcp_connection_era.py``'s ``record_server_extensions``) against an
+  ARBITRARY identifier, not just the already-special-cased tasks/ui ids;
+- a ui-serving tool + matching ``ui://`` resource (#1283, C1-S3 letter (d)) --
+  the exerciser's MCP Apps admission arm, built with fastmcp's native
+  ``fastmcp.apps`` support so the tool/resource ``_meta`` shape is
+  spec-correct without hand-rolling it.
 
 Import-only helper (``python_files = test_*.py`` keeps it uncollected), also
 runnable as a stdio server (``python mcp_exerciser.py``) so the DECLARED path
@@ -30,7 +38,9 @@ from typing import Any
 
 import mcp_types
 from fastmcp import Context, FastMCP
-from fastmcp.tools.base import Tool
+from fastmcp.apps import AppConfig, ResourceCSP, ResourcePermissions
+from fastmcp.server.extensions import ServerExtension
+from fastmcp.tools.base import Tool, ToolResult
 from fastmcp.utilities.tasks import TASKS_EXTENSION_ID, TaskConfig
 from fastmcp_tasks.extension import TasksExtension
 
@@ -38,7 +48,9 @@ __all__ = [
     "EXERCISER_NAMESPACE",
     "EXERCISER_PATH",
     "MODERN_PROTOCOL_VERSION",
+    "SYNTHETIC_EXTENSION_ID",
     "TASKS_EXTENSION_ID",
+    "UI_RESOURCE_URI",
     "build_exerciser_server",
 ]
 
@@ -51,6 +63,24 @@ MODERN_PROTOCOL_VERSION = "2026-07-28"
 # The declared-server namespace tests mount the exerciser under. Kept short and
 # underscore-free: tool routing splits ``<namespace>_<tool>`` on the FIRST "_".
 EXERCISER_NAMESPACE = "v2ex"
+
+#: A deliberately non-built-in, non-tasks, non-ui identifier (#1283, C1-S3):
+#: proves the generic extension-registry READ side records whatever a server
+#: ACTUALLY declares, not a hardcoded shortlist of known ids.
+SYNTHETIC_EXTENSION_ID = "x-clio-agent/exerciser-echo"
+
+#: The MCP App resource ``ui_echo`` binds to; ``ui_panel`` (below) serves it.
+UI_RESOURCE_URI = "ui://v2ex/panel"
+
+
+class SyntheticExtension(ServerExtension):
+    """A synthetic, exerciser-only extension (#1283): identifier-only, no
+    settings/methods/interceptor -- exists purely so the negotiated
+    ``ServerCapabilities.extensions`` carries an id the client-side registry
+    (:mod:`clio_agent.tools.mcp_extension_registry`) never special-cases,
+    proving its READ side is generic end to end."""
+
+    identifier = SYNTHETIC_EXTENSION_ID
 
 
 def _one_elicit(message: str) -> Any:
@@ -75,6 +105,7 @@ def build_exerciser_server() -> FastMCP:
 
     server = FastMCP(EXERCISER_NAMESPACE)
     server.add_extension(TasksExtension())
+    server.add_extension(SyntheticExtension())
 
     @server.tool(task=TaskConfig(mode="required", poll_interval=timedelta(milliseconds=50)))
     async def task_echo(payload: str) -> str:
@@ -189,6 +220,51 @@ def build_exerciser_server() -> FastMCP:
 
         await asyncio.sleep(max(0.0, seconds))
         return "slept-silently"
+
+    @server.tool(app=AppConfig(resource_uri=UI_RESOURCE_URI, visibility=["app", "model"]))
+    async def ui_echo(payload: str) -> ToolResult:
+        """Echo through a PLAIN tool bound to an MCP App resource (#1283).
+
+        ``app=AppConfig(...)`` stamps ``_meta.ui.resourceUri`` onto this
+        tool's DEFINITION -- ``gact/mcp_apps.py::_resource_uri`` reads exactly
+        that key. Paired with ``ui_panel`` below, this is the exerciser's
+        ui-serving arm: the conformance suite drives a real call through
+        here, then feeds the real result into the (regression-locked,
+        unmodified) Apps host's admission + serving logic (the observer
+        invocation itself is by hand there, not through the auto-firing
+        production hook -- see ``test_mcp_v2_conformance.py``'s Layer 6
+        scope note).
+
+        The RESULT (not just the definition) carries an extra, unrecognized
+        ``_meta`` namespace (``x-clio-agent/unknown``) on purpose -- the
+        exerciser's own proof that the Apps host's tolerate-unknown-metadata
+        behavior still holds on THIS newly-declared wire, not just the
+        pre-existing fake-executor fixture in ``tests/test_gact/
+        test_mcp_apps.py``.
+        """
+
+        return ToolResult(
+            content=[mcp_types.TextContent(type="text", text=f"ui:{payload}")],
+            meta={"x-clio-agent/unknown": {"scratch": True}},
+        )
+
+    @server.resource(
+        UI_RESOURCE_URI,
+        app=AppConfig(
+            csp=ResourceCSP(connect_domains=["http://127.0.0.1:*"], resource_domains=["blob:"]),
+            permissions=ResourcePermissions(clipboard_write={}),
+        ),
+    )
+    def ui_panel() -> str:
+        """Serve the MCP App HTML shell ``ui_echo`` binds to (#1283).
+
+        The ``ui://`` scheme resolves this resource's MIME type to
+        ``text/html;profile=mcp-app`` automatically (fastmcp's
+        ``resolve_ui_mime_type``) -- exactly what ``mcp_apps.py::
+        _resource_payload`` requires.
+        """
+
+        return "<!doctype html><title>v2ex panel</title><body>v2ex</body>"
 
     return server
 

@@ -80,6 +80,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
@@ -457,6 +458,96 @@ def _server_declares_tasks(client: Any) -> bool:
     return TASKS_EXTENSION_ID in extensions
 
 
+# --------------------------------------------------------------------------- #
+# #1283 (C1-S3): generic server-declared extension capture -- the READ side  #
+# of the generic extension registry (tools/mcp_extension_registry.py owns    #
+# the DECLARE side). Recorded BESIDE the era/capability records above,       #
+# mirroring their record/latest idiom exactly, but keyed on the FULL set of  #
+# extension identifiers a server declared -- not narrowed to any one id the  #
+# way `_server_declares_tasks` is. Before this, server-declared extensions   #
+# were never read anywhere (module docstring, #1283 point 1).                #
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class MCPServerExtensions:
+    """Every extension identifier ONE server declared at its latest negotiation.
+
+    Recorded at the SAME ``__aenter__`` seam as :class:`MCPConnectionEra` (every
+    real client connect, direct or a proxy's per-request backend clone), so a
+    server's declared extension SET is queryable the moment any execution path
+    has connected to it -- never inferred from behavior or timing. CAUTION
+    (mirrors the #1281 caution baked into ``_server_declares_tasks``): fastmcp
+    splices ``io.modelcontextprotocol/ui: {}`` onto EVERY modern server by
+    default, so an id's PRESENCE here is not independent proof a server
+    implements that extension's behavior -- only that it was in the
+    negotiated capability ad.
+    """
+
+    server_id: str
+    extensions: tuple[str, ...]
+    era: ProtocolEra = "unknown"
+
+
+#: Latest declared-extension set PER server, mirroring ``_LATEST_BY_SERVER``'s
+#: lock+dict idiom exactly -- a SEPARATE registry (a different fact than era
+#: or task capability) so none of the three concerns share a lock.
+_LATEST_SERVER_EXTENSIONS_BY_SERVER: dict[str, MCPServerExtensions] = {}
+_LATEST_SERVER_EXTENSIONS_LOCK = threading.Lock()
+
+
+def _declared_extension_identifiers(client: Any) -> tuple[str, ...]:
+    """Every extension identifier a connected client's SERVER declared, sorted.
+
+    Reads the SAME ``client.server_capabilities.extensions`` source
+    :func:`_server_declares_tasks` narrows to one id -- this capture is
+    generic on purpose (#1283): it records whatever the server actually
+    declared, known identifier or not (the exerciser's synthetic extension
+    proves this end to end, ``tests/test_tools/mcp_exerciser.py``).
+    """
+
+    capabilities = getattr(client, "server_capabilities", None)
+    extensions = getattr(capabilities, "extensions", None) or {}
+    return tuple(sorted(str(identifier) for identifier in extensions))
+
+
+def record_server_extensions(
+    server_id: str, *, extensions: Sequence[str], era: ProtocolEra = "unknown"
+) -> MCPServerExtensions:
+    """Record the FULL server-declared extension set for ``server_id``.
+
+    Overwrites the prior record (mirrors :func:`_record_latest`: "what do we
+    know right now", not "has this id ever been declared"). A no-op
+    (still returns the record) for an unlabeled id, matching every sibling
+    record function in this module.
+    """
+
+    record = MCPServerExtensions(server_id=server_id, extensions=tuple(extensions), era=era)
+    if not server_id:
+        return record
+    with _LATEST_SERVER_EXTENSIONS_LOCK:
+        _LATEST_SERVER_EXTENSIONS_BY_SERVER[server_id] = record
+    return record
+
+
+def latest_server_extensions(server_id: str) -> MCPServerExtensions | None:
+    """Return the most recent declared-extension set observed for ``server_id``.
+
+    ``None`` means genuinely UNOBSERVED (no execution-path connect has landed
+    for this server yet) -- never treated as "declares nothing" by a caller.
+    """
+
+    with _LATEST_SERVER_EXTENSIONS_LOCK:
+        return _LATEST_SERVER_EXTENSIONS_BY_SERVER.get(server_id)
+
+
+def all_latest_server_extensions() -> dict[str, MCPServerExtensions]:
+    """Return a snapshot of every observed server's latest declared-extension set."""
+
+    with _LATEST_SERVER_EXTENSIONS_LOCK:
+        return dict(_LATEST_SERVER_EXTENSIONS_BY_SERVER)
+
+
 _ClientT = TypeVar("_ClientT")
 
 #: Per-base-class instrumented subclasses, cached like
@@ -511,6 +602,14 @@ def _instrumented_class(base_cls: type) -> type:
                     source="capabilities_extensions",
                     era=negotiated_era.era,
                 )
+            # #1283 (C1-S3): the GENERIC read side -- every real connect records
+            # the server's FULL declared-extension set, not only the tasks id.
+            if server_id:
+                record_server_extensions(
+                    server_id,
+                    extensions=_declared_extension_identifiers(self),
+                    era=negotiated_era.era,
+                )
             return result
 
         subclass = type(
@@ -551,16 +650,20 @@ def instrument_client_era(client: _ClientT, *, server_id: str) -> _ClientT:
 
 __all__ = [
     "MCPConnectionEra",
+    "MCPServerExtensions",
     "MCPTaskCapability",
     "ProtocolEra",
     "TaskCapabilitySource",
     "all_latest_mcp_connection_eras",
+    "all_latest_server_extensions",
     "all_latest_task_capabilities",
     "classify_connection_era",
     "instrument_client_era",
     "latest_mcp_connection_era",
+    "latest_server_extensions",
     "latest_task_capability",
     "protocol_version_era",
+    "record_server_extensions",
     "record_task_capability",
     "recorded_mcp_connection_downgrades",
     "resolved_connect_mode",

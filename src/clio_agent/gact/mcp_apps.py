@@ -52,6 +52,10 @@ from clio_agent.gact.runtime.globals import (
 )
 from clio_agent.gact.turn_runner import session_busy_error_payload
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Part
+from clio_agent.tools.mcp_extension_registry import (
+    MCP_APP_MIME_TYPE as MCP_APP_MIME_TYPE,
+)
+from clio_agent.tools.mcp_extension_registry import MCP_APPS_PROTOCOL_REVISION
 from clio_agent.tools.mcp_results import (
     call_tool_result_to_observer as _call_tool_result_to_observer,
 )
@@ -61,7 +65,6 @@ if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
 
 
-MCP_APP_MIME_TYPE = "text/html;profile=mcp-app"
 _REGISTRY_LIMIT = 64
 _REGISTRY_TTL_S = 60 * 60
 _MAX_PRIVATE_RESULT_BYTES = 1024 * 1024
@@ -443,7 +446,7 @@ def _make_mcp_app_observer(app: FastAPI):
                 source_server=record.source_namespace or "",
                 data_ref=record.data_ref,
                 mime_type=MCP_APP_MIME_TYPE,
-                metadata={"stream_source": "live", "protocol": "2026-01-26"},
+                metadata={"stream_source": "live", "protocol": MCP_APPS_PROTOCOL_REVISION},
             ),
         )
 
@@ -623,7 +626,7 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         sandbox_path = f"/v1/sessions/{sid}/mcp-apps/{app_id}/sandbox?data_ref={data_ref}"
         return {
-            "protocol_version": "2026-01-26",
+            "protocol_version": MCP_APPS_PROTOCOL_REVISION,
             "resource": {
                 "uri": record.resource_uri,
                 "mime_type": MCP_APP_MIME_TYPE,
