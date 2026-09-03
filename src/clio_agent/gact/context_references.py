@@ -10,143 +10,46 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import hashlib
 import json
-import mimetypes
 import os
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.artifacts.storage import resolve_owned_artifact_path
 from clio_agent.gact.artifacts.wire import mime_for
+from clio_agent.gact.context_reference_domain import (
+    CONTEXT_REFERENCE_CAPABILITY,
+    CONTEXT_REFERENCE_KINDS,
+    REFERENCE_SEARCH_KINDS,
+    ContextReferenceError,
+)
+from clio_agent.gact.context_reference_domain import (
+    WorkspaceSession as _WorkspaceSession,
+)
+from clio_agent.gact.context_reference_file_io import (
+    file_media_type as _file_media_type,
+)
+from clio_agent.gact.context_reference_file_io import (
+    read_bounded_file as _read_bounded_file,
+)
+from clio_agent.gact.context_reference_file_io import (
+    sha256_file as _sha256_file,
+)
 from clio_agent.gact.runtime.constants import _CTX_MAX_BYTES
 from clio_agent.gact.runtime.globals import _ContextFileAccessError
-from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Message, Part
+from clio_agent.gact.types import ErrorInfo, Message, Part
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
 
-class _WorkspaceSession(Protocol):
-    """Minimum session ownership surface required at reference admission."""
-
-    @property
-    def id(self) -> str: ...
-
-    @property
-    def workspace_id(self) -> str: ...
-
-    @property
-    def title(self) -> str: ...
-
-    @property
-    def status(self) -> str: ...
-
-    @property
-    def message_count(self) -> int: ...
-
-    @property
-    def updated_at(self) -> str: ...
-
-
-ContextReferenceKind = Literal[
-    "workspace_file",
-    "artifact",
-    "session",
-    "agent_run",
-    "evidence_source",
-    "context_frame",
-    "diff",
-    "plan",
-]
-ReferenceSearchKind = Literal[
-    "workspace_file",
-    "resource",
-    "artifact",
-    "session",
-    "agent_run",
-    "evidence_source",
-    "context_frame",
-    "diff",
-    "plan",
-]
-
-CONTEXT_REFERENCE_KINDS: frozenset[str] = frozenset(
-    {
-        "workspace_file",
-        "artifact",
-        "session",
-        "agent_run",
-        "evidence_source",
-        "context_frame",
-        "diff",
-        "plan",
-    }
-)
-REFERENCE_SEARCH_KINDS: frozenset[str] = frozenset({*CONTEXT_REFERENCE_KINDS, "resource"})
-CONTEXT_REFERENCE_CAPABILITY: dict[str, Any] = {
-    "enabled": True,
-    "version": "1",
-    "part_type": "context_ref",
-    "kinds": sorted(CONTEXT_REFERENCE_KINDS),
-    "search_kinds": sorted(REFERENCE_SEARCH_KINDS),
-    "search_route": "/v1/workspaces/{workspace_id}/references",
-    "revision_pinned_kinds": [
-        "workspace_file",
-        "resource",
-        "artifact",
-        "evidence_source",
-        "context_frame",
-        "diff",
-        "plan",
-    ],
-}
 _SUMMARY_MESSAGE_LIMIT = 5
 _SUMMARY_EXCERPT_CHARS = 600
-_FILE_CHUNK_BYTES = 1024 * 1024
 _SUMMARY_REFERENCE_KINDS = frozenset(
     {"session", "agent_run", "evidence_source", "context_frame", "diff", "plan"}
 )
-
-
-@dataclass(frozen=True)
-class ContextReferenceError(Exception):
-    """Typed failure raised while resolving a client-supplied reference."""
-
-    status_code: int
-    error: str
-    message: str
-    details: dict[str, Any]
-    recoverable: bool = False
-
-    def http_exception(self) -> Exception:
-        """Project this domain failure to the server's typed HTTP envelope."""
-
-        from fastapi import HTTPException  # noqa: PLC0415
-
-        return HTTPException(
-            status_code=self.status_code,
-            detail=ErrorEnvelope(
-                error=ErrorInfo(
-                    error=self.error,
-                    message=self.message,
-                    details=self.details,
-                    recoverable=self.recoverable,
-                )
-            ).model_dump(exclude_none=True),
-        )
-
-
-@dataclass(frozen=True)
-class _BoundedFileSnapshot:
-    """One bounded prefix plus the digest of the exact bytes read."""
-
-    data: bytes
-    sha256: str
-    size_bytes: int
 
 
 def _failure(
@@ -166,39 +69,6 @@ def _failure(
         details={"ref_kind": ref_kind, "ref_id": ref_id, **details},
         recoverable=recoverable,
     )
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(_FILE_CHUNK_BYTES):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _read_bounded_file(path: Path) -> _BoundedFileSnapshot:
-    """Read at most the context limit while hashing the same file-handle stream."""
-
-    digest = hashlib.sha256()
-    prefix = bytearray()
-    size = 0
-    with path.open("rb") as handle:
-        while chunk := handle.read(_FILE_CHUNK_BYTES):
-            digest.update(chunk)
-            size += len(chunk)
-            remaining = _CTX_MAX_BYTES - len(prefix)
-            if remaining > 0:
-                prefix.extend(chunk[:remaining])
-    return _BoundedFileSnapshot(
-        data=bytes(prefix),
-        sha256=digest.hexdigest(),
-        size_bytes=size,
-    )
-
-
-def _file_media_type(path: Path) -> str:
-    guessed, _ = mimetypes.guess_type(path.name)
-    return guessed or "application/octet-stream"
 
 
 def _workspace_root(app: "FastAPI", workspace_id: str) -> Path:
@@ -901,6 +771,7 @@ from clio_agent.gact.context_reference_search import (  # noqa: E402
 )
 
 __all__ = [
+    "CONTEXT_REFERENCE_CAPABILITY",
     "CONTEXT_REFERENCE_KINDS",
     "REFERENCE_SEARCH_KINDS",
     "ContextReferenceError",
