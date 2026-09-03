@@ -6,9 +6,11 @@ contracts is future wire-work, not part of this slice.
 
 This module also owns :func:`make_mcp_client` (#1106) — the ONE construction
 site for **execution-path** FastMCP clients. It carries the :class:`MCPClientHandlers`
-slot (typed CLIO hooks; see :mod:`clio_agent.tools.mcp_handlers`) where P1
-attaches elicitation/progress/message/cancellation handlers (no-op-absent
-today). Execution paths route through it: the ``AsyncMCPToolExecutor`` default
+slot (typed CLIO hooks; see :mod:`clio_agent.tools.mcp_handlers`) that attaches
+elicitation/progress/message handlers (no-op-absent when unset; cancellation is
+a call-lifecycle operation, not a construction-time hook — see
+:class:`MCPClientHandlers`'s docstring). Execution paths route through it: the
+``AsyncMCPToolExecutor`` default
 ``client_factory``, the gateway proxy backend (``tools/gateway._proxy_for_spec``),
 the dynamic-agent external tool call (``gact/agents/builders``), the per-call
 dispatch in ``gact/routes/mcp.py``, and the ``providers/handshake/mcp.py`` probe.
@@ -40,7 +42,6 @@ from clio_agent.tools.mcp_handlers import (
 
 if TYPE_CHECKING:
     from mcp.client.auth.oauth2 import OAuthClientProvider
-    from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
     from clio_agent.tools.mcp_config import MCPAuthConfig
     from clio_agent.tools.mcp_handlers import (
@@ -62,38 +63,18 @@ _MISSING = object()
 _VALID_MODES: frozenset[str] = frozenset(("mcp_results", "mcp_apps", "gact_runtime"))
 
 
-class _MemoryOAuthTokenStorage:
-    """Process-local implementation of the MCP SDK ``TokenStorage`` protocol."""
-
-    def __init__(self) -> None:
-        self._tokens: OAuthToken | None = None
-        self._client_info: OAuthClientInformationFull | None = None
-
-    async def get_tokens(self) -> OAuthToken | None:
-        """Return the current OAuth token bundle."""
-        return self._tokens
-
-    async def set_tokens(self, tokens: OAuthToken) -> None:
-        """Replace the current OAuth token bundle."""
-        self._tokens = tokens
-
-    async def get_client_info(self) -> OAuthClientInformationFull | None:
-        """Return dynamically registered OAuth client information."""
-        return self._client_info
-
-    async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
-        """Replace dynamically registered OAuth client information."""
-        self._client_info = client_info
-
-
 def _oauth_provider_from_config(
     server_url: str, config: MCPAuthConfig | None
 ) -> OAuthClientProvider | None:
     """Build the installed MCP SDK OAuth provider at the client factory boundary.
 
     Invalid metadata is surfaced as a typed, credential-free transport error.
-    The default storage is intentionally process-local; callers that need durable
-    refresh tokens provide an SDK ``TokenStorage`` implementation in the auth block.
+    The default storage is durable (#1285 C1-S5: closes the "re-auth every
+    restart" gap -- ``tools/mcp_oauth_storage.py::DurableFileTokenStorage``,
+    keyed by ``server_url``, persists to the user's config dir); callers that
+    need a different backend (a secrets manager, an in-memory test double)
+    provide an SDK ``TokenStorage`` implementation in the auth block, which
+    always wins over the default.
     """
     if config is None:
         return None
@@ -103,6 +84,7 @@ def _oauth_provider_from_config(
     from pydantic import ValidationError  # noqa: PLC0415
 
     from clio_agent.tools.mcp_config import MCPTransportError  # noqa: PLC0415
+    from clio_agent.tools.mcp_oauth_storage import DurableFileTokenStorage  # noqa: PLC0415
 
     try:
         metadata = (
@@ -113,7 +95,7 @@ def _oauth_provider_from_config(
         return OAuthClientProvider(
             server_url=server_url,
             client_metadata=metadata,
-            storage=config.storage or _MemoryOAuthTokenStorage(),
+            storage=config.storage or DurableFileTokenStorage(server_url),
             redirect_handler=config.redirect_handler,
             callback_handler=config.callback_handler,
             client_metadata_url=config.client_metadata_url,
@@ -242,30 +224,35 @@ def wire_value(
 
 @dataclass(frozen=True)
 class MCPClientHandlers:
-    """Typed CLIO hook bundle — a CONSTRUCTION-TIME SLOT, not a live wiring.
+    """Typed CLIO hook bundle wired at client construction.
 
-    Every hook is absent today (``None`` => that handler is not installed,
+    Every hook defaults to absent (``None`` => that handler is not installed,
     identical to a bare client). The hooks are typed
     :mod:`clio_agent.tools.mcp_handlers` Protocols, not raw callbacks: each
-    receives an :class:`MCPInvocationContext` first argument that P1 will
-    populate. ``make_mcp_client`` wraps a populated hook in a signature adapter
-    and hands it to the matching ``fastmcp.Client`` keyword; ``message`` becomes
-    a :class:`MessageMultiplexer` that forwards to the CLIO hook. FastMCP 4
-    handles task notifications through client extensions. Cancellation is an
-    outbound call-lifecycle operation, not a ``Client`` callback keyword: #1116
-    cancels the active ``call_tool`` task so MCP's dispatcher emits the protocol
-    request id it allocated. The ``cancellation`` hook remains reserved for a
-    future server-originated cancellation policy.
+    receives an :class:`MCPInvocationContext` first argument. ``make_mcp_client``
+    wraps a populated hook in a signature adapter and hands it to the matching
+    ``fastmcp.Client`` keyword; ``message`` becomes a :class:`MessageMultiplexer`
+    that forwards to the CLIO hook. FastMCP 4 handles task notifications
+    through client extensions.
 
-    IMPORTANT: no hook may actually be *wired* until correlation-by-protocol-
-    identity lands (clio-agent#1111/#1113). See the ``mcp_handlers`` module
-    docstring for the two deferred review findings the P1 implementer must honor.
+    There is deliberately no ``cancellation`` slot here (#1285 C1-S5, closing
+    the factory cancellation gap this dataclass used to carry as a dead,
+    never-wired field -- fastmcp's ``Client`` constructor has no cancellation
+    callback keyword to hand it to, and nothing in this codebase ever
+    populated it). Cancellation is not a ``Client``-construction-time
+    callback at all: it is an outbound call-lifecycle operation (#1116)
+    cancelling the active ``call_tool`` task, which the SDK dispatcher
+    observes as a caller-cancelled write and emits the courtesy
+    ``notifications/cancelled`` for the request id it already allocated --
+    see ``mcp/shared/jsonrpc_dispatcher.py``'s ``anyio.get_cancelled_exc_class()``
+    handling. That mechanism needs no client-construction hook and is proven
+    live by the C1-S2 waits-cancel avenue
+    (``scripts/live_verification/leg_c2_v2_avenues.py::avenue_waits_cancel``).
     """
 
     elicitation: "ElicitationHook | None" = None
     progress: "ProgressHook | None" = None
     message: "MessageHook | None" = None
-    cancellation: "MessageHook | None" = None
 
 
 def input_required_max_rounds() -> int:
@@ -551,7 +538,6 @@ def make_mcp_client(
             kwargs["progress_handler"] = ProgressDispatcher(handlers.progress)
         if handlers.message is not None:
             kwargs["message_handler"] = MessageMultiplexer(handlers.message)
-        # `cancellation` has no fastmcp Client keyword today; P1 owns its wiring.
 
     # #1283 (C1-S3): every client built here folds in the FULL generic MCP
     # extension registry, not a single hardcoded tasks special case. Entry #1
