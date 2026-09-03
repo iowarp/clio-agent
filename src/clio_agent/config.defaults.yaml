@@ -220,6 +220,14 @@ providers.codex.credential_home_capacity: 4
 # Per-call byte/character/time bounds and bounded-retry budgets across the
 # tool and LM paths.
 
+# CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS  (int)  <- src/clio_agent/gact/agents/agent_task_output_digest.py
+# Character bound above which a completed spawned child's full output is
+# digested (excerpt + a durable session/message reference) instead of
+# inlined verbatim into the parent's wait_agent_tasks result; raise to
+# inline larger child answers, lower to bound coordinator context growth
+# sooner.
+limits.agent_task_output_digest_chars: 8000
+
 # CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S  (float)  <- src/clio_agent/providers/codex_stream.py
 # Max silence (seconds) for one Codex SDK exchange/event, resetting on every
 # progress event rather than a fixed clock; raise for long turns.
