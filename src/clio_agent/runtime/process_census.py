@@ -527,8 +527,9 @@ def reap_orphaned_processes(
     4. **Not a recycled PID** (#1303 F3): the live process now holding ``row.pid`` must
        have the SAME creation time the snapshot recorded (:func:`_live_create_time`,
        1.0s tolerance, mirroring :func:`clio_agent.serve._pid_alive`). The OS can hand
-       that PID to an unrelated process between snapshot and kill; a mismatch (or an
-       unresolvable live create_time) is skipped typed ``pid_recycled``.
+       that PID to an unrelated process between snapshot and kill; a mismatch is
+       skipped typed ``pid_recycled``, and an unresolvable live create_time (no proof
+       either way) is skipped typed ``pid_identity_unverified``.
 
     The breakaway shared clio-core daemon is ADDITIONALLY excluded BY CONSTRUCTION
     (belt-and-suspenders, not the primary guard): :func:`classify_parentage` never
@@ -541,12 +542,14 @@ def reap_orphaned_processes(
             :func:`probe_process_parentage` (injectable for tests).
         kill: ``pid -> None`` killer (injected for tests); defaults to
             :func:`_kill_pid` (a real ``psutil.Process(pid).kill()``).
-        skip_counts: Optional out-param (mutated in place, never read) -- when given,
-            every typed skip reason (``never_reap_kind`` / ``no_clio_evidence`` /
-            ``parent_alive_at_kill_time`` / ``pid_recycled``) increments its count here,
-            so a caller (:func:`boot_reap_off_loop`) can log a skip-count-by-reason
-            summary alongside the kill count instead of the per-pid lines being the
-            only trace of a reap that quietly skipped everything (#1303 F5).
+        skip_counts: Optional out-param -- when given, every typed skip reason
+            (``never_reap_kind`` / ``no_clio_evidence`` / ``parent_alive_at_kill_time``
+            / ``pid_recycled`` / ``pid_identity_unverified``) increments its count here
+            (existing counts are read via ``.get`` before incrementing, so a
+            pre-populated dict ACCUMULATES rather than resets), so a caller
+            (:func:`boot_reap_off_loop`) can log a skip-count-by-reason summary
+            alongside the kill count instead of the per-pid lines being the only
+            trace of a reap that quietly skipped everything (#1303 F5).
 
     Returns:
         One :class:`ReapedProcess` per pid actually killed. A typed
@@ -592,9 +595,11 @@ def reap_orphaned_processes(
             # #1303: name+dead-parent alone is NOT ownership evidence. No cmdline
             # marker match -> report-only, never a kill candidate (mirrors the
             # never_reap_kind / parent_alive_at_kill_time typed-skip shapes above).
-            # logger.info (not .debug): this is the difference between "reap works"
-            # and "reap is a permanent no-op" -- must not be invisible (#1303 F5).
-            logger.info(
+            # logger.debug (review round 3): the AGGREGATE skip-count-by-reason
+            # summary logged in boot_reap_off_loop is what satisfies the visibility
+            # rule -- one INFO line per unrelated machine-wide process on every boot
+            # would be noise, not signal.
+            logger.debug(
                 "orphan_reap_skipped pid=%s name=%s kind=%s reason=no_clio_evidence",
                 row.pid,
                 row.name,
@@ -616,9 +621,24 @@ def reap_orphaned_processes(
             _record_skip("parent_alive_at_kill_time")
             continue
         current_create_time = _live_create_time(row.pid)
-        if current_create_time is None or abs(current_create_time - node.create_time) >= 1.0:
-            # #1303 F3: the PID was recycled (or is no longer resolvable) between
-            # snapshot and kill -- never kill whatever now holds that number.
+        if current_create_time is None:
+            # #1303 F3 (review round 3: split from `pid_recycled`): the live creation
+            # time could not be resolved at all -- NoSuchProcess/AccessDenied/no psutil.
+            # This is NOT proof of recycling (the process may simply be gone, or the
+            # lookup denied) -- it is proof identity could not be CONFIRMED, which is
+            # conservatively just as disqualifying. Rare in practice (evidence + a
+            # dead-parent recheck already passed), so INFO stays warranted.
+            logger.info(
+                "orphan_reap_skipped pid=%s name=%s kind=%s reason=pid_identity_unverified",
+                row.pid,
+                row.name,
+                row.kind,
+            )
+            _record_skip("pid_identity_unverified")
+            continue
+        if abs(current_create_time - node.create_time) >= 1.0:
+            # #1303 F3: the PID was recycled between snapshot and kill -- the OS handed
+            # this number to an unrelated process -- never kill whatever now holds it.
             logger.info(
                 "orphan_reap_skipped pid=%s name=%s kind=%s reason=pid_recycled "
                 "snapshot_create_time=%s live_create_time=%s",

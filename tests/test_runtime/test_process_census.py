@@ -16,7 +16,7 @@ must descend from this process:
   parent), so a row with no matching cmdline is skipped typed ``no_clio_evidence``
   and never killed. The REPORT (``classify_parentage`` / ``probe_process_parentage``)
   stays machine-wide and unchanged — reporting never kills.
-* #1303 review round: the marker set is PRECISE invocation tokens only (mirroring
+* #1303 review round 2: the marker set is PRECISE invocation tokens only (mirroring
   ``disk_gc._CLIO_MARKERS``'s rationale, as its own separate constant) — a bare
   ``clio-agent``/``clio_agent`` substring would still match the venv interpreter's own
   absolute path (every ``uv run`` in this checkout puts the
@@ -24,10 +24,21 @@ must descend from this process:
   one hop down a detached launch chain; the evidence function was renamed
   ``_has_clio_product_evidence`` to be honest that it proves "some clio product
   process", not "this server's own child"; the reap now ALSO re-verifies each
-  candidate's live creation time against the snapshot (PID-reuse defeat, typed skip
-  ``pid_recycled``) before killing; and both the no-evidence and pid-recycled skips log
-  at ``INFO`` (not ``DEBUG``) with a skip-count-by-reason boot summary, since a reap
-  that quietly skips everything must not look identical to "nothing to reap".
+  candidate's live creation time against the snapshot (PID-reuse defeat) before
+  killing; and a skip-count-by-reason boot summary was added, since a reap that
+  quietly skips everything must not look identical to "nothing to reap".
+* #1303 review round 3: split the create-time recheck's reason into ``pid_recycled``
+  (a CONFIRMED mismatch) and ``pid_identity_unverified`` (an unresolvable lookup —
+  ``NoSuchProcess``/``AccessDenied``/no psutil); the per-pid ``no_clio_evidence`` skip
+  moved back to ``DEBUG`` (the AGGREGATE skip-count summary is what satisfies
+  visibility — one INFO line per unrelated machine-wide process on every boot would be
+  noise); and every negative reap test now pins ``_live_create_time`` via
+  ``_pin_live_create_time_matches_snapshot`` — without it, a synthetic pid's real
+  (unmocked) ``_live_create_time`` resolves to ``None`` on a real machine, so the NEW
+  ``pid_identity_unverified`` gate would incidentally skip the row AFTER the guard
+  each test isolates, masking that guard's own removal (proven live: deleting the
+  evidence gate, or emptying ``_NEVER_REAP_KINDS``, left the unpinned suite green with
+  ``skip_counts == {"pid_identity_unverified": 1}`` instead of red).
 """
 
 from __future__ import annotations
@@ -232,7 +243,7 @@ def test_reap_kills_provably_orphaned_process(monkeypatch: pytest.MonkeyPatch) -
     assert reaped[0] == pc.ReapedProcess(pid=700, name="clio-kit.exe", kind="mcp_stdio")
 
 
-def test_reap_skips_dead_parent_with_unrelated_cmdline() -> None:
+def test_reap_skips_dead_parent_with_unrelated_cmdline(monkeypatch: pytest.MonkeyPatch) -> None:
     """#1303: name-substring (``uv.exe``) + dead parent is NOT ownership evidence.
 
     Live evidence (2026-09-03): a gact boot killed pid 43472, an unrelated detached
@@ -240,7 +251,15 @@ def test_reap_skips_dead_parent_with_unrelated_cmdline() -> None:
     and its transient shell parent had exited -- the completely normal detached-launch
     shape on Windows. This process's cmdline never names a clio entry point; it must NOT
     be reaped, and the skip must be typed ``no_clio_evidence``.
+
+    #1303 review round 3: pins ``_live_create_time`` so this negative result is
+    PROVABLY caused by the evidence gate, not incidentally masked by the (unrelated)
+    ``pid_recycled``/``pid_identity_unverified`` gate that runs later -- on a real
+    machine pid 43472 almost certainly does not exist, so an unpinned
+    ``_live_create_time`` would return ``None`` and skip the row for THAT reason even
+    if the evidence gate were deleted, leaving this test green for the wrong reason.
     """
+    _pin_live_create_time_matches_snapshot(monkeypatch)
     nodes = [
         _node(_SERVER, 1, "python.exe"),
         _node(
@@ -258,8 +277,14 @@ def test_reap_skips_dead_parent_with_unrelated_cmdline() -> None:
     assert reaped == []
 
 
-def test_reap_skips_dead_parent_with_empty_cmdline() -> None:
-    """#1303: an unresolved (``AccessDenied``-shaped, empty) cmdline is NO evidence."""
+def test_reap_skips_dead_parent_with_empty_cmdline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#1303: an unresolved (``AccessDenied``-shaped, empty) cmdline is NO evidence.
+
+    #1303 review round 3: pinned so this is provably the evidence gate, not an
+    incidental ``pid_identity_unverified`` masking (see the sibling
+    ``test_reap_skips_dead_parent_with_unrelated_cmdline`` docstring for the mechanism).
+    """
+    _pin_live_create_time_matches_snapshot(monkeypatch)
     nodes = [
         _node(_SERVER, 1, "python.exe"),
         _node(500, 999, "python.exe", cmdline=()),  # cmdline never resolved
@@ -295,7 +320,9 @@ def test_reap_kills_dead_parent_with_clio_cmdline_evidence(
     assert reaped[0] == pc.ReapedProcess(pid=600, name="uv.exe", kind="mcp_launcher")
 
 
-def test_reap_skips_repo_path_cmdline_not_a_clio_marker() -> None:
+def test_reap_skips_repo_path_cmdline_not_a_clio_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """#1303 F1: a cmdline that merely sits under a ``clio-agent`` checkout path (the
     venv interpreter's own absolute path) is NOT clio ownership evidence -- only a
     PRECISE invocation token is (see ``_CLIO_CMDLINE_MARKERS``, mirroring
@@ -304,7 +331,11 @@ def test_reap_skips_repo_path_cmdline_not_a_clio_marker() -> None:
     script one hop down its own launch chain -- live-verified: every ``uv run`` in this
     checkout puts the venv interpreter's path in argv[0] -- the same #1303 bug
     relocated rather than fixed.
+
+    #1303 review round 3: pinned so this is provably the evidence gate, not an
+    incidental ``pid_identity_unverified`` masking.
     """
+    _pin_live_create_time_matches_snapshot(monkeypatch)
     nodes = [
         _node(_SERVER, 1, "python.exe"),
         _node(
@@ -356,7 +387,9 @@ def test_reap_excludes_daemon_root_by_construction(monkeypatch: pytest.MonkeyPat
     assert all(r.pid != _DAEMON for r in reaped)
 
 
-def test_reap_never_kills_any_clio_core_daemon_kind_row() -> None:
+def test_reap_never_kills_any_clio_core_daemon_kind_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """#1232 pt 4 safety hardening: a live test caught this exact scenario killing a
     REAL, in-use clio-core daemon holding live session data.
 
@@ -372,7 +405,13 @@ def test_reap_never_kills_any_clio_core_daemon_kind_row() -> None:
     #1303 F2a hardening: pid 900 carries REAL clio cmdline evidence, so the evidence
     gate alone would NOT have blocked this kill -- the ``_NEVER_REAP_KINDS`` guard is
     the only thing preventing it, which is exactly what this test must isolate.
+
+    #1303 review round 3: ``_live_create_time`` is ALSO pinned, so if the
+    ``_NEVER_REAP_KINDS`` guard were ever deleted, the row would proceed all the way
+    to a real kill (provably exposing the regression) instead of being incidentally
+    caught by the later ``pid_identity_unverified`` gate.
     """
+    _pin_live_create_time_matches_snapshot(monkeypatch)
     nodes = [
         _node(_SERVER, 1, "python.exe"),
         _node(_DAEMON, 1, "clio_run.exe"),  # the recorded (correctly-identified) daemon
@@ -406,7 +445,12 @@ def test_reap_skips_when_parent_alive_at_kill_time(monkeypatch: pytest.MonkeyPat
     #1303: cmdline evidence is attached so this row clears the evidence gate and the
     parent-alive recheck is actually the thing that skips it (not a false-positive
     evidence skip masking the behavior under test).
+
+    #1303 review round 3: ``_live_create_time`` is ALSO pinned, so if the
+    parent-alive recheck were ever deleted, the row would proceed all the way to a
+    real kill instead of being incidentally caught by the later pid-identity gate.
     """
+    _pin_live_create_time_matches_snapshot(monkeypatch)
     nodes = [
         _node(_SERVER, 1, "python.exe"),
         _node(
@@ -425,13 +469,18 @@ def test_reap_skips_when_parent_alive_at_kill_time(monkeypatch: pytest.MonkeyPat
     assert reaped == []
 
 
-def test_reap_ignores_non_orphaned_rows() -> None:
+def test_reap_ignores_non_orphaned_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     """A cleanly-rooted process is never a kill candidate.
 
     #1303 F2a hardening: pid 300 carries REAL clio cmdline evidence, so the evidence
     gate alone would NOT have blocked this kill -- the ``descends_from`` check (never
     consider a properly-rooted row at all) is the only thing preventing it.
+
+    #1303 review round 3: ``_live_create_time`` is ALSO pinned, so if the
+    ``descends_from`` guard were ever deleted, the row would proceed all the way to a
+    real kill instead of being incidentally caught by the later pid-identity gate.
     """
+    _pin_live_create_time_matches_snapshot(monkeypatch)
     nodes = [
         _node(_SERVER, 1, "python.exe"),
         _node(300, _SERVER, "clio-kit.exe", cmdline=("clio-kit.exe", "mcp-server", "ndp")),
@@ -468,6 +517,9 @@ def test_reap_skips_recycled_pid(monkeypatch: pytest.MonkeyPatch) -> None:
     RECYCLED pid -- the OS handed that number to an unrelated process between snapshot
     and kill. Never kill it; typed skip ``reason=pid_recycled`` (mirrors
     ``clio_agent.serve._pid_alive``'s PID-reuse defeat, 1.0s tolerance).
+
+    #1303 review round 3: asserts the DISTINCT ``pid_recycled`` token (split from the
+    ``pid_identity_unverified`` unresolvable-lookup case below) via ``skip_counts``.
     """
     nodes = [
         _node(_SERVER, 1, "python.exe"),
@@ -482,18 +534,29 @@ def test_reap_skips_recycled_pid(monkeypatch: pytest.MonkeyPatch) -> None:
     # The live process now AT pid 700 has a DIFFERENT creation time -> recycled.
     monkeypatch.setattr(pc, "_live_create_time", lambda pid: 5000.0)
     killed: list[int] = []
+    skip_counts: dict[str, int] = {}
     reaped = pc.reap_orphaned_processes(
-        nodes=nodes, server_root_pid=_SERVER, daemon_root_pid=None, kill=killed.append
+        nodes=nodes,
+        server_root_pid=_SERVER,
+        daemon_root_pid=None,
+        kill=killed.append,
+        skip_counts=skip_counts,
     )
     assert killed == []
     assert reaped == []
+    assert skip_counts == {"pid_recycled": 1}
 
 
 def test_reap_skips_recycled_pid_when_live_create_time_unresolvable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """#1303 F3: an unresolvable live create_time (``NoSuchProcess``/``AccessDenied``
-    shape, ``None``) is treated the SAME as a mismatch -- conservatively NOT killed.
+    shape, ``None``) is conservatively NOT killed.
+
+    #1303 review round 3: this is now its OWN typed reason, ``pid_identity_unverified``
+    -- split from ``pid_recycled`` (a confirmed MISMATCH) since "identity could not be
+    confirmed" and "identity was confirmed different" are distinct failure shapes worth
+    distinguishing in the skip-count summary. Asserted via ``skip_counts``.
     """
     nodes = [
         _node(_SERVER, 1, "python.exe"),
@@ -506,17 +569,28 @@ def test_reap_skips_recycled_pid_when_live_create_time_unresolvable(
     ]
     monkeypatch.setattr(pc, "_live_create_time", lambda pid: None)
     killed: list[int] = []
+    skip_counts: dict[str, int] = {}
     reaped = pc.reap_orphaned_processes(
-        nodes=nodes, server_root_pid=_SERVER, daemon_root_pid=None, kill=killed.append
+        nodes=nodes,
+        server_root_pid=_SERVER,
+        daemon_root_pid=None,
+        kill=killed.append,
+        skip_counts=skip_counts,
     )
     assert killed == []
     assert reaped == []
+    assert skip_counts == {"pid_identity_unverified": 1}
 
 
-def test_reap_records_skip_counts_by_reason() -> None:
+def test_reap_records_skip_counts_by_reason(monkeypatch: pytest.MonkeyPatch) -> None:
     """#1303 F5: the ``skip_counts`` out-param tallies every typed skip reason, so a
     caller (the boot hook) can log a skip-count-by-reason summary instead of the
     per-pid lines being the only trace of a reap that skipped everything.
+
+    #1303 review round 3: extended to also cover the two SPLIT create-time reasons
+    (``pid_recycled`` for a confirmed mismatch, ``pid_identity_unverified`` for an
+    unresolvable lookup) alongside the two pre-existing reasons, so all four distinct
+    tokens are pinned in one place.
     """
     nodes = [
         _node(_SERVER, 1, "python.exe"),
@@ -525,7 +599,26 @@ def test_reap_records_skip_counts_by_reason() -> None:
         _node(900, 88888, "clio_run.exe", cmdline=("clio_run.exe", "--port", "9413")),
         # no_clio_evidence: dead parent, no clio marker in cmdline.
         _node(910, 77777, "uv.exe", cmdline=("uv", "run", "python", "unrelated.py")),
+        # pid_recycled: real evidence, dead parent, live create_time MISMATCHES.
+        _node(
+            920,
+            66666,
+            "clio-kit.exe",
+            ctime=1000.0,
+            cmdline=("clio-kit.exe", "mcp-server", "ndp"),
+        ),
+        # pid_identity_unverified: real evidence, dead parent, live create_time UNRESOLVABLE.
+        _node(930, 55555, "clio-kit.exe", cmdline=("clio-kit.exe", "mcp-server", "ndp")),
     ]
+
+    def _fake_live_create_time(pid: int) -> float | None:
+        if pid == 920:
+            return 9999.0  # mismatches node 920's ctime=1000.0
+        if pid == 930:
+            return None
+        return 0.0  # unreached by the other nodes (blocked at an earlier gate)
+
+    monkeypatch.setattr(pc, "_live_create_time", _fake_live_create_time)
     skip_counts: dict[str, int] = {}
     reaped = pc.reap_orphaned_processes(
         nodes=nodes,
@@ -535,7 +628,12 @@ def test_reap_records_skip_counts_by_reason() -> None:
         skip_counts=skip_counts,
     )
     assert reaped == []
-    assert skip_counts == {"never_reap_kind": 1, "no_clio_evidence": 1}
+    assert skip_counts == {
+        "never_reap_kind": 1,
+        "no_clio_evidence": 1,
+        "pid_recycled": 1,
+        "pid_identity_unverified": 1,
+    }
 
 
 @pytest.mark.asyncio
