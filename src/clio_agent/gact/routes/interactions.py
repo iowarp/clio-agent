@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
 from clio_agent.gact.a2ui import SERVER_ACTIONS
 from clio_agent.gact.agent_tasks import descendant_session_ids
@@ -50,6 +50,22 @@ def _error(status_code: int, code: str, message: str, **details: Any) -> HTTPExc
             )
         ).model_dump(exclude_none=True),
     )
+
+
+def _permission_intercept(metadata: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Read the P2.6 approve-with-modify/synthesize payload out of the response.
+
+    Same shape ``POST /v1/permissions/{pid}`` accepts, carried under the
+    kind-neutral ``metadata`` this route already forwards: ``input`` runs the tool
+    with modified arguments, ``result`` skips the real call with a synthesized
+    result. ``resolve_permission`` honours it only on an allow.
+    """
+
+    if isinstance(metadata.get("input"), dict):
+        return {"input": metadata["input"]}
+    if "result" in metadata:
+        return {"result": metadata["result"]}
+    return None
 
 
 def _session_scope(app: FastAPI, root_session_id: str, include_children: bool) -> set[str]:
@@ -333,6 +349,7 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
         root_session_id: str,
         interaction_id: str,
         request: RespondInteractionRequest,
+        http_request: Request,
     ) -> dict[str, Any]:
         if app.state.sessions.get(root_session_id) is None:
             raise _error(404, "not_found", f"session not found: {root_session_id}")
@@ -388,7 +405,17 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
             action = request.action
             if action not in {"allow", "deny", "allow_session", "allow_workspace"}:
                 raise _error(422, "validation_error", "permission response action is invalid")
-            updated = resolve_permission(app, permission_id, action, grantor=GRANTOR_USER)
+            # P2.6 parity with ``POST /v1/permissions/{pid}``: an approved PreToolUse
+            # defer may carry the modify/synthesize the approval decides. Dropping it
+            # here made the normalized responder a strictly weaker door for the same
+            # decision — an approve-with-modified-args arrived as a plain allow.
+            updated = resolve_permission(
+                app,
+                permission_id,
+                action,
+                grantor=GRANTOR_USER,
+                intercept=_permission_intercept(request.metadata),
+            )
             if updated is None:
                 raise _error(409, "interaction_resolved", "interaction is already resolved")
             return {"interaction": _interaction_wire(_permission_interaction(app, updated))}
@@ -424,6 +451,7 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
                         "surface_id": surface_id,
                     },
                 },
+                protocol_version=getattr(http_request.state, "a2ui_protocol_version", None),
             )
             return {"interaction_id": interaction_id, "result": result}
 

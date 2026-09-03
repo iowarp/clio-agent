@@ -494,11 +494,16 @@ def test_child_a2ui_interaction_routes_to_owning_surface(tmp_path) -> None:
         }
         rejected = client.post(
             f"/v1/sessions/{root}/interactions/{row['id']}/respond",
+            headers=HEADERS,
             json={"message": mismatched},
         )
         assert rejected.status_code == 422
+        # The a2ui branch of the interaction responder enforces the SAME
+        # negotiation the canonical /a2ui/actions route does, so the headers are
+        # not decoration here.
         responded = client.post(
             f"/v1/sessions/{root}/interactions/{row['id']}/respond",
+            headers=HEADERS,
             json={"message": action},
         )
         assert responded.status_code == 200

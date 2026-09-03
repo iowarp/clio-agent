@@ -12,6 +12,7 @@ from clio_agent.gact.a2ui import (
     A2UIValidationError,
     validate_client_action,
 )
+from clio_agent.gact.agent_tasks import descendant_session_ids
 from clio_agent.gact.events import Event
 from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
 from clio_agent.gact.protocol_v3 import A2UI_V091, A2UI_V091_WIRE
@@ -104,9 +105,27 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
             "created_surface_ids": list(outcome.created_surface_ids),
         }
 
-    async def dispatch_action(sid: str, body: Mapping[str, Any]) -> dict[str, Any]:
-        """Dispatch a parsed action through the authoritative A2UI owner path."""
+    async def dispatch_action(
+        sid: str,
+        body: Mapping[str, Any],
+        *,
+        protocol_version: str | None,
+    ) -> dict[str, Any]:
+        """Dispatch a parsed action through the authoritative A2UI owner path.
 
+        ``protocol_version`` is the caller's negotiated ``x-a2ui-version``. The
+        check lives HERE, not on one route, so every door into the dispatcher
+        enforces the same negotiation: the normalized interaction responder used
+        to reach this function with no negotiation at all while the canonical
+        ``/a2ui/actions`` route 406'd without it.
+        """
+
+        if protocol_version != A2UI_V091:
+            raise _error(
+                406,
+                "unsupported_protocol",
+                f"A2UI {A2UI_V091} must be negotiated",
+            )
         sess = require_session(sid)
         if set(body) - {"message", "correlation"}:
             raise _error(422, "validation_error", "A2UI action body contains unknown fields")
@@ -157,8 +176,19 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
             decision = str(context.get("action") or "")
             if decision not in {"allow", "deny", "allow_session", "allow_workspace"}:
                 raise _error(422, "validation_error", "approval.respond has an invalid action")
+            # EXACT-OWNER routing, matching the ``permission:`` branch of the
+            # normalized interaction responder: a surface may only resolve a
+            # permission raised inside its OWN session scope (itself plus its
+            # spawned descendants). ``resolve_permission`` takes a bare id and has
+            # no session check of its own, so without this a surface in session A
+            # could grant a tool call parked in unrelated session B. An
+            # out-of-scope id is reported as not-found so existence does not leak.
+            pending = app.state.permissions.get(permission_id)
+            scope = {sid, *descendant_session_ids(app, sid)}
+            if pending is not None and str(pending.get("session_id") or "") not in scope:
+                raise _error(404, "not_found", f"permission not found: {permission_id}")
             row = resolve_permission(app, permission_id, decision, grantor=GRANTOR_USER)
-            if row is None and permission_id not in app.state.permissions:
+            if row is None and pending is None:
                 raise _error(404, "not_found", f"permission not found: {permission_id}")
             result["permission_id"] = permission_id
             result["resolution"] = decision
@@ -212,17 +242,16 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def handle_action(sid: str, request: Request) -> dict[str, Any]:
         """Validate and dispatch a registered official A2UI client action."""
 
-        if getattr(request.state, "a2ui_protocol_version", None) != A2UI_V091:
-            raise _error(
-                406,
-                "unsupported_protocol",
-                f"A2UI {A2UI_V091} must be negotiated",
-            )
         body = await json_body(request, route="POST /v1/sessions/{sid}/a2ui/actions")
-        return await dispatch_action(sid, body)
+        return await dispatch_action(
+            sid,
+            body,
+            protocol_version=getattr(request.state, "a2ui_protocol_version", None),
+        )
 
-    # The normalized interaction responder reuses this exact action dispatcher;
-    # protocol negotiation already happened on its own route.
+    # The normalized interaction responder reuses this exact action dispatcher AND
+    # its negotiation gate: it passes its own request's negotiated version through,
+    # so both doors refuse an un-negotiated A2UI action identically.
     app.state.dispatch_a2ui_action = dispatch_action
 
 

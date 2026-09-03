@@ -219,8 +219,25 @@ def _validate_action(value: Any) -> None:
 
 
 def _validate_value(
-    value: Any, *, key: str = "", depth: int = 0, max_string: int | None = None
+    value: Any,
+    *,
+    key: str = "",
+    depth: int = 0,
+    max_string: int | None = None,
+    free_form: bool = False,
 ) -> None:
+    """Walk one A2UI value, enforcing the catalog's structural + safety rules.
+
+    ``free_form`` marks a subtree that is an action/event ``context`` — arbitrary
+    producer/client DATA, not renderable structure. The SAFETY rules (forbidden
+    presentation keys, function calls, url literals, string/nesting bounds) still
+    apply there; only the STRUCTURAL Action-envelope rules are lifted. Without
+    that distinction ``approval.respond`` was unroutable: its own required
+    ``context.action`` ("allow") was read as a malformed Action envelope, so every
+    approval action 422'd on both the ``/a2ui/actions`` route and the normalized
+    interaction responder.
+    """
+
     if max_string is None:
         # Resolved ONCE at the top of the walk and threaded down: the recursion
         # visits every string node, which is no place for a config lookup.
@@ -235,7 +252,9 @@ def _validate_value(
         return
     if isinstance(value, list):
         for item in value:
-            _validate_value(item, key=key, depth=depth + 1, max_string=max_string)
+            _validate_value(
+                item, key=key, depth=depth + 1, max_string=max_string, free_form=free_form
+            )
         return
     if not isinstance(value, Mapping):
         return
@@ -243,6 +262,10 @@ def _validate_value(
         binding_path = value.get("path")
         if not isinstance(binding_path, str) or not binding_path.startswith("/"):
             raise A2UIValidationError("A2UI data bindings must use JSON Pointer paths")
+    # Both envelope shapes that carry a free-form payload — the ``event`` inside a
+    # component's action and the client action message itself — pair ``name`` with
+    # ``context``. Everything under that ``context`` is producer/client data.
+    carries_action_context = "name" in value and "context" in value
     for child_key, child_value in value.items():
         if not isinstance(child_key, str):
             raise A2UIValidationError("A2UI object keys must be strings")
@@ -261,13 +284,19 @@ def _validate_value(
             )
         if child_key == "functionCall" or child_key == "call":
             raise A2UIValidationError("A2UI client function calls are not trusted")
-        if child_key == "action":
+        if child_key == "action" and not free_form:
             _validate_action(child_value)
-        if child_key == "event" and isinstance(child_value, Mapping):
+        if child_key == "event" and not free_form and isinstance(child_value, Mapping):
             action = str(child_value.get("name") or "")
             if action not in SERVER_ACTIONS | CLIENT_ACTIONS:
                 raise A2UIValidationError(f"A2UI action is not registered: {action}")
-        _validate_value(child_value, key=child_key, depth=depth + 1, max_string=max_string)
+        _validate_value(
+            child_value,
+            key=child_key,
+            depth=depth + 1,
+            max_string=max_string,
+            free_form=free_form or (carries_action_context and child_key == "context"),
+        )
 
 
 def _validate_accessibility(component: Mapping[str, Any], component_name: str) -> None:
