@@ -225,12 +225,14 @@ def _snapshot_process_nodes(
             keep.add(pid)
             stack.extend(children_of.get(pid, ()))
 
-    owner_roots = tuple(
-        node.cwd
-        for root_pid in (server_root_pid, daemon_root_pid)
-        if root_pid is not None
-        if (node := raw.get(root_pid)) is not None and node.cwd
-    )
+    owner_root_values: list[str] = []
+    for root_pid in (server_root_pid, daemon_root_pid):
+        if root_pid is None:
+            continue
+        root_node = raw.get(root_pid)
+        if root_node is not None and root_node.cwd:
+            owner_root_values.append(root_node.cwd)
+    owner_roots = tuple(owner_root_values)
 
     # Reparented orphans: a CLIO-kind process whose parent is no longer alive and
     # that can still be attributed to this runtime. Names alone are deliberately
