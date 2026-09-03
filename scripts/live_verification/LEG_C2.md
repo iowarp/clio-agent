@@ -26,14 +26,18 @@ boot for `--dry-run`).
   gate, headless HITL answer via
   `POST /v1/sessions/{sid}/questions/{question_id}/answer`, verdict JSON to
   `out/`.
-- `tests/test_tools/mcp_exerciser.py` — the v2ex server: 10 tools
+- `tests/test_tools/mcp_exerciser.py` — the v2ex server: 13 tools
   (`task_echo`, `task_optional_echo`, `plain_echo`, `forbidden_echo`,
   `guarded_input`, `plain_guarded_input`, `staller`, `plain_staller`,
-  `silent_sleeper`, and — since C1-S3 (#1283) — `ui_echo`, bound to the
-  `ui://v2ex/panel` resource); a synthetic, non-built-in `ServerExtension`
-  (`x-clio-agent/exerciser-echo`); form-mode MRTR only; no resources/prompts
-  beyond the ui panel; no cache/listChanged arms — see each blocked avenue
-  below for the exact citation.
+  `silent_sleeper`, `ui_echo` (C1-S3, #1283, bound to the `ui://v2ex/panel`
+  resource), and — since C1-S4 (#1284) — `url_guarded_input`/
+  `plain_url_guarded_input`, the url-mode MRTR arm, plus (Opus review
+  addendum) `url_guarded_input_idn`, the IDN/`xn--` counterpart that proves
+  `punycode_warning=True`); one MRTR-capable
+  `@server.prompt` (`guarded_prompt`) and `@server.resource`
+  (`guarded_resource`, `res://v2ex/guarded`); a synthetic, non-built-in
+  `ServerExtension` (`x-clio-agent/exerciser-echo`); no cache/listChanged
+  arms — see each blocked avenue below for the exact citation.
 - `tests/test_tools/test_mcp_v2_conformance.py` — how the exerciser is
   driven in-process (this leg drives it through a REAL session instead).
 - `src/clio_agent/gact/mcp_task_events.py` — the `mcp_task.wait` SSE event
@@ -62,8 +66,8 @@ boot for `--dry-run`).
   middleware that logs every request's raw headers to a JSONL file.
   Standalone-runnable; avenue 10 boots it as a real subprocess.
 - `agents/v2ex-avenues/` — a SIBLING of `agents/v2ex-testing/` (not an edit
-  to it), exposing all 10 exerciser tools on one `main` expert so avenues 1
-  and 5 can share a single pack/session.
+  to it), exposing every exerciser tool on one `main` expert so avenues 1, 2,
+  5, and 11 can share a single pack/session.
 - `leg_c2_v2_avenues.py` — the runner.
 
 ## How to run
@@ -73,12 +77,13 @@ boot for `--dry-run`).
 uv run python scripts/live_verification/leg_c2_v2_avenues.py --dry-run
 
 # Boot the server, materialize+install+activate the pack, run every headless
-# avenue (2,3,4,6,7,8,9,10,11) AND the readiness gate; avenues 1 and 5 are
+# avenue (3,4,6,7,8,9,10) AND the readiness gate; avenues 1, 2, 5, and 11 are
 # recorded status="blocked" (reason: "plumbing-only run"). Zero LM spend.
 uv run python scripts/live_verification/leg_c2_v2_avenues.py --plumbing-only
 
-# Full run: everything above PLUS avenues 1 (task-modes) and 5 (waits-cancel)
-# through two directed claude_code/sonnet turns on one session.
+# Full run: everything above PLUS avenues 1 (task-modes), 2 (mrtr-url), 5
+# (waits-cancel), and 11 (apps-ui) through directed claude_code/sonnet turns
+# on one session.
 uv run python scripts/live_verification/leg_c2_v2_avenues.py --provider claude_code --model sonnet
 ```
 
@@ -94,11 +99,11 @@ message dumps and the SSE audit log land beside it.
 | # | Avenue | Needs LM? | Expected today | Why (citation) |
 |---|---|---|---|---|
 | 1 | task-modes | Yes | **pass** | optional/plain succeed like leg C's task_echo already proves; forbidden-explicit is asserted only to be terminal-fast (never hung) — see "On avenue 1's forbidden-explicit design" below for why a hard "-32021/-32022 or bust" assertion would be presumptuous. |
-| 2 | mrtr-url | No | **blocked** | `mcp_exerciser.py`'s only elicit helper, `_one_elicit()` (lines 56-64), always builds `mcp_types.ElicitRequestFormParams` — no URL-mode arm exists anywhere in this repo's exerciser. The only `ElicitRequestURLParams` construction in the repo is `tests/test_gact/test_elicitation_hitl.py`, fed DIRECTLY into `handle_elicitation()` in isolation (no real MCP tool round-trip). |
-| 3 | mrtr-methods | No | **blocked** | (a) since C1-S3 (#1283) the exerciser DOES declare one `@server.resource` (`ui_panel`, the static `ui://v2ex/panel` HTML the `ui_echo` tool binds to) — but it is a plain content resource, not an MRTR-capable `InputRequiredResult` path, so this avenue's finding is otherwise unchanged: no `@server.prompt` exists at all, and no resource anywhere returns `InputRequiredResult`; (b) even if one did, the declared session/turn surface only exposes an expert's frontmatter `tools:` list — prompts/resources reach a session only via the SEPARATE REST-install-lane inventory routes (`gact/routes/mcp.py` ~898-960), a different (direct, non-gateway) connection than the path this campaign targets. |
+| 2 | mrtr-url | Yes | **pass** (C1-S4, #1284, landed; extended Opus review addendum) | the exerciser gained `url_guarded_input`/`plain_url_guarded_input` (plain-ASCII origin) and, per the review addendum, `url_guarded_input_idn` (an `xn--` ACE-encoded IDN origin) — all `task=required`, all embedding a genuine `mcp_types.ElicitRequestURLParams` (`_one_url_elicit`) instead of `_one_elicit`'s form params. The avenue drives BOTH `v2ex_url_guarded_input` and `v2ex_url_guarded_input_idn`, in order, through one real turn (url-mode elicitation is only wired through the production tool-call path, `agents/builders.py::make_elicitation_client` — never the REST-install lane, so this needs a model in the loop like avenues 1/5/11) and asserts EACH question's `metadata.elicitation` carries the FULL url + the `punycode_warning`/`punycode_host`/`punycode_host_raw` fields (build item 3 + the B5 homograph fix, `gact/elicitation_schema.py::build_url_metadata`/`punycode_warning`) — critically, `punycode_warning` must be `False` on the ASCII arm AND `True` on the IDN arm: a leg that only ever drove the always-false ASCII tool could never prove the warning branch fires at all. Its readiness-gate plumbing is live-verified in `--plumbing-only` mode (recorded `blocked`, reason "plumbing-only run"); the LM-driven assertion itself awaits a live run under owner go-ahead. |
+| 3 | mrtr-methods | No | **pass** (C1-S4, #1284, landed; re-shaped Opus review B1/B2/B3) | the exerciser gained an MRTR-capable `guarded_prompt`/`guarded_resource` (mirroring `guarded_input`'s one-round shape). The DECLARED session/turn surface still cannot reach them (finding (b) below is architectural, unaffected by this landing) — so the avenue drives them via the REST-install lane instead (`POST /v1/mcp/servers` + `POST .../prompts/get`, a bare `make_mcp_client(transport, server_id=sid)` with NO elicitation handler wired, `gact/routes/mcp.py::_external_mcp_inventory`). **`pass` keys ONLY on `prompts/get`**: a typed, terminal-fast 502 `upstream_error` (checked structurally — `error.error == "upstream_error"` plus the JSON-RPC `-32600` code, never the free-text "Elicitation not supported" prose, which a reword could silently flip false — B2). **`resources/read` is INFORMATIONAL ONLY** (B1): this repo currently has no REST route for it (a LIVE 404, not assumed from source), but a future route existing would be a GOOD change — feature absence is NEVER a pass criterion either way; only a genuine hang/untyped status there would fail this avenue. The verdict JSON carries a `pass_means` string spelling out exactly what `pass` does and does not prove (B3), so it cannot be misread as "MRTR-on-prompts/resources works end to end" — that full round-trip (asked → answered → terminal), for both methods, on BOTH the direct and proxy routes, is proven separately (offline) in `tests/test_tools/test_mcp_v2_conformance.py` — the house pattern for per-path MRTR verification. Headless, LM-free, live-verified in `--plumbing-only` mode. |
 | 4 | cache | No | **blocked** | repo-wide grep for `cache_ttl`/`cache_scope`/`CacheConfig`/`cache_hint` found zero hits inside `src/clio_agent` or `tests/test_tools` — no client support and no exerciser arm exist yet. C1-S5 territory (`docs/design/mcp-client-unification-2026-08.md` line ~62-63). |
 | 5 | waits-cancel | Yes | **pass** | `staller` is `task=required` with a 50ms poll interval; `gact/mcp_task_events.py::publish_mcp_task_wait` fires `mcp_task.wait` on the session's SSE bus while it runs (transient, live-only — a NEW `_sse_collector.py` subscribes DURING the call to observe it); `POST /v1/sessions/{sid}/cancel` then ends the turn `cancelled` per `gact/routes/session_cancellation.py::cancel_session_state`. |
-| 6 | pagination | No | **pass (indirect)** | no `list_page_size`/page-size control exists anywhere in `clio_agent` (repo-wide grep: zero MCP-tools/list-paging-related hits) — this leg cannot FORCE multi-page traversal. It instead reuses the readiness gate: all 10 exerciser tools resolving onto the agent's toolset is indirect proof that whatever paging fastmcp's `Client.list_tools()` did internally (SDK-covered per obligations doc row B1) worked correctly. |
+| 6 | pagination | No | **pass (indirect)** | no `list_page_size`/page-size control exists anywhere in `clio_agent` (repo-wide grep: zero MCP-tools/list-paging-related hits) — this leg cannot FORCE multi-page traversal. It instead reuses the readiness gate: all 12 declared exerciser tools resolving onto the agent's toolset is indirect proof that whatever paging fastmcp's `Client.list_tools()` did internally (SDK-covered per obligations doc row B1) worked correctly. |
 | 7 | list-changed | No | **blocked** | the exerciser's tool set is fixed at server-build time — no tool adds/removes a tool or fires `notifications/tools/list_changed`. Repo-wide grep for `listChanged`/`list_changed`: only unrelated hits. C1-S5 territory. |
 | 8 | extensions | No | **pass** (C1-S3, #1283, landed) | `gact/routes/mcp_rows.py::handshake_server_row` now surfaces the recorded server-declared extension SET directly (`"extensions"` field, `None` when genuinely unobserved — never conflated with a real empty list, `"extensions_era"` alongside it). The avenue asserts the v2ex handshake row's `extensions` contains BOTH the well-known tasks id AND the exerciser's synthetic, non-built-in `x-clio-agent/exerciser-echo` id — proving the read side is generic, not a tasks/ui shortlist. Headless (the handshake was already fetched for the readiness gate); live-verified in `--plumbing-only` mode. |
 | 9 | adversarial | No | **blocked** | no standalone MUST-violating raw-responder/ASGI-shim fixture exists anywhere in this repo (searched `tests/test_tools/*` for "raw responder"/"ASGI shim": zero hits). The C1-S0 slice built well-behaved fixtures only. |
@@ -124,13 +129,8 @@ spin — and records whatever the live run actually observes (success or a
 typed refusal) as evidence either way. That is the honest test of the
 concern in play, not a guess dressed as a fixed expectation.
 
-## Exerciser gaps found (for C1-S3..S5 slice scoping)
+## Exerciser gaps found (for C1-S5 slice scoping)
 
-- **mrtr-url**: needs a new tool (e.g. `url_guarded_input`) whose
-  `InputRequiredResult` carries `mcp_types.ElicitRequestURLParams` instead of
-  `_one_elicit`'s form params.
-- **mrtr-methods**: needs at least one `@server.resource`/`@server.prompt`
-  handler with an MRTR-capable `InputRequiredResult` path.
 - **cache**: needs a tool returning a result annotated with a cache hint
   (`ttlMs`/`cacheScope` per the 2026-07-28 spec).
 - **list-changed**: needs a tool that mutates the server's own tool registry
@@ -146,8 +146,18 @@ concern in play, not a guess dressed as a fixed expectation.
 landed in C1-S3 (#1283) — the exerciser gained a synthetic `ServerExtension`
 (`x-clio-agent/exerciser-echo`) and a `ui_echo`/`ui://v2ex/panel` pair;
 `gact/routes/mcp_rows.py::handshake_server_row` now surfaces the recorded
-extension set. Both avenues are REAL assertions now (rows 8/11 above), not
-blocked findings.
+extension set. **mrtr-url** and **mrtr-methods** both landed in C1-S4
+(#1284) — the exerciser gained `url_guarded_input`/`plain_url_guarded_input`
+(a genuine `ElicitRequestURLParams` arm) and `guarded_prompt`/
+`guarded_resource` (MRTR-capable prompt/resource). All four avenues are REAL
+assertions now (rows 2/3/8/11 above), not blocked findings.
+
+**Still architectural, not an exerciser gap:** mrtr-methods finding (b) is
+unaffected by C1-S4 — the DECLARED session/turn surface still exposes only an
+expert's frontmatter `tools:` list; prompts/resources reach a session only
+through the REST-install lane (`gact/routes/mcp.py`), which has a
+`prompts/get` route but genuinely NO `resources/read` route at all (live-
+confirmed by a 404 in the avenue's own evidence, not assumed from source).
 
 None of these were added to `tests/` (existing-file rule) — each is recorded
 here, grounded, as a finding for a future slice.

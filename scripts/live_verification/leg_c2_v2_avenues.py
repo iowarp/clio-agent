@@ -16,14 +16,30 @@ Avenues (see ``LEG_C2.md`` for the full per-avenue writeup + citations):
 
  1. task-modes       -- optional/plain succeed; forbidden-explicit refuses (or
                          succeeds) but NEVER hangs.
- 2. mrtr-url          -- BLOCKED: no url-mode elicitation arm exists anywhere
-                         in this repo's exerciser (see module docstring below).
- 3. mrtr-methods      -- BLOCKED: exerciser declares no resources/prompts, and
-                         the declared session surface cannot reach them anyway.
+ 2. mrtr-url          -- C1-S4 (#1284) landed: the exerciser gained
+                         ``url_guarded_input`` (task=required, embeds a
+                         genuine ``ElicitRequestURLParams``). REAL assertion:
+                         drives it through a real session turn, asserts the
+                         resulting url-mode question payload carries the FULL
+                         url + the punycode-warning fields (build item 3),
+                         then answers it -- needs a model in the loop, like 1/5/11.
+ 3. mrtr-methods      -- C1-S4 (#1284) landed: the exerciser gained an
+                         MRTR-capable ``guarded_prompt``/``guarded_resource``.
+                         REAL, headless assertion via the REST-install lane
+                         (``POST /v1/mcp/servers`` + ``.../prompts/get``):
+                         proves MRTR genuinely dispatches on ``prompts/get``
+                         (a typed, terminal-fast refusal -- this lane's client
+                         wires no elicitation handler) and that
+                         ``resources/read`` genuinely has NO REST route in
+                         this repo (``gact/routes/mcp.py`` only lists
+                         resources) -- the full round-trip for both methods,
+                         through a properly elicitation-wired client on BOTH
+                         the direct and proxy routes, is proven instead in
+                         ``tests/test_tools/test_mcp_v2_conformance.py``.
  4. cache             -- BLOCKED: exerciser has no cache_ttl/cache_scope arm.
  5. waits-cancel      -- staller surfaces ``mcp_task.wait`` live-SSE events,
                          then a cancel ends the turn ``cancelled``, not hung.
- 6. pagination        -- the readiness gate's full 10-tool resolution is the
+ 6. pagination        -- the readiness gate's full 12-tool resolution is the
                          available (indirect) proof; no ``list_page_size``
                          control exists anywhere in clio_agent to force real
                          multi-page traversal.
@@ -59,8 +75,8 @@ free port, allow-all policies FIRST, the ``v2ex-avenues`` testing-agent pack
 (``agents/v2ex-avenues/`` -- a SIBLING of ``agents/v2ex-testing/``, not an
 edit to it, exposing every exerciser tool leg C's narrower pack does not),
 zero-LM readiness gate before any turn, ``claude_code``/``sonnet`` turns ONLY
-for the three avenues that genuinely need a model in the loop (1, 5, and 11
-as of C1-S3) -- every other avenue is driven through a headless HTTP/SSE
+for the FOUR avenues that genuinely need a model in the loop (1, 2, 5, and 11
+as of C1-S4) -- every other avenue is driven through a headless HTTP/SSE
 surface, per the house cost-aware-defaults + "prefer direct surfaces" rule.
 
 Verdict JSON: ``out/live-verification/leg_c2_verdict.json``.
@@ -81,6 +97,7 @@ import sys
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root, for tests.* import
@@ -94,6 +111,8 @@ from tests.test_tools.mcp_exerciser import (  # noqa: E402
     EXERCISER_PATH,
     SYNTHETIC_EXTENSION_ID,
     TASKS_EXTENSION_ID,
+    URL_GUARDED_INPUT_IDN_URL,
+    URL_GUARDED_INPUT_URL,
 )
 
 #: The v2ex-avenues pack template this leg materializes per run (sibling of
@@ -111,6 +130,8 @@ EXERCISER_EXPECTED_TOOLS = {
     "forbidden_echo",
     "guarded_input",
     "plain_guarded_input",
+    "url_guarded_input",  # C1-S4, #1284: the mrtr-url avenue's tool
+    "url_guarded_input_idn",  # Opus review addendum, C1-S4: the IDN counterpart
     "staller",
     "plain_staller",
     "silent_sleeper",
@@ -121,8 +142,23 @@ EXERCISER_EXPECTED_TOOLS = {
 #: turn is driven (the readiness gate; also avenue 6's evidence).
 NEEDED_AGENT_TOOLS = {f"{EXERCISER_NAMESPACE}_{name}" for name in EXERCISER_EXPECTED_TOOLS}
 
+
+#: The url-mode trust allow-list this leg boots the gact server with (C1-S4,
+#: #1284; extended for the IDN arm by the Opus review addendum): must stay
+#: in lockstep with the exerciser's own URL_GUARDED_INPUT_URL /
+#: URL_GUARDED_INPUT_IDN_URL constants, or the mrtr-url avenue's elicitation
+#: is auto-declined before a question ever mints
+#: (``elicitation_url_not_declared``). Comma-separated -- ``conf.as_csv``
+#: parses ``CLIO_MCP_ELICITATION_URL_TRUSTED_ORIGINS``.
+def _origin(url: str) -> str:
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+URL_TRUST_ORIGIN = ",".join((_origin(URL_GUARDED_INPUT_URL), _origin(URL_GUARDED_INPUT_IDN_URL)))
+
 #: Static avenue plan -- used by both --dry-run and (for cross-reference)
-#: LEG_C2.md's table. ``needs_lm`` marks the three avenues driven through a
+#: LEG_C2.md's table. ``needs_lm`` marks the FOUR avenues driven through a
 #: real model turn; every other avenue is headless HTTP/SSE only.
 AVENUE_PLAN: list[dict[str, Any]] = [
     {
@@ -133,15 +169,24 @@ AVENUE_PLAN: list[dict[str, Any]] = [
     },
     {
         "avenue": "mrtr-url",
-        "needs_lm": False,
-        "expect": "blocked",
-        "summary": "no url-mode elicitation arm in the exerciser",
+        "needs_lm": True,
+        "expect": "pass",
+        "summary": (
+            "C1-S4 (#1284) landed: url_guarded_input's question payload carries the "
+            "FULL url + punycode-warning fields; url_guarded_input_idn (Opus review "
+            "addendum) proves warning=True on an xn-- IDN origin alongside "
+            "warning=False on the plain-ASCII one"
+        ),
     },
     {
         "avenue": "mrtr-methods",
         "needs_lm": False,
-        "expect": "blocked",
-        "summary": "exerciser has no resources/prompts; declared path can't reach them anyway",
+        "expect": "pass",
+        "summary": (
+            "C1-S4 (#1284) landed: prompts/get dispatches a typed MRTR refusal through "
+            "the REST-install lane; resources/read genuinely has no REST route (proven "
+            "at the SDK conformance-suite layer instead)"
+        ),
     },
     {
         "avenue": "cache",
@@ -159,7 +204,7 @@ AVENUE_PLAN: list[dict[str, Any]] = [
         "avenue": "pagination",
         "needs_lm": False,
         "expect": "pass",
-        "summary": "readiness gate proves all 10 tools resolve (indirect; no page-size control exists)",
+        "summary": "readiness gate proves all 12 tools resolve (indirect; no page-size control exists)",
     },
     {
         "avenue": "list-changed",
@@ -220,7 +265,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--plumbing-only",
         action="store_true",
-        help="stop before any LM turn; avenues 1, 5, and 11 are recorded 'blocked' (skipped)",
+        help="stop before any LM turn; avenues 1, 2, 5, and 11 are recorded 'blocked' (skipped)",
     )
     parser.add_argument(
         "--dry-run",
@@ -235,65 +280,298 @@ def _print_dry_run() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Static (no server call needed) avenues -- each documents a genuine gap
-# found by reading the exerciser/client source, per the task's own
-# instruction that a gap is a FINDING, not a skip to hide.
+# C1-S4 (#1284): mrtr-url + mrtr-methods, flipped from static citations to
+# REAL, LIVE-DRIVEN assertions -- strengthening blocked->real when the
+# capability exists is the intended lifecycle (owner-authorized).
 # --------------------------------------------------------------------------- #
-def avenue_mrtr_url() -> dict[str, Any]:
+def avenue_mrtr_url(
+    call: Any, wsid: str, sid: str, out_path: Path, *, turn_timeout_s: float
+) -> dict[str, Any]:
+    """C1-S4 (#1284): url-mode MRTR through a real session turn.
+
+    The exerciser gained ``url_guarded_input`` (task=required, embeds a
+    genuine ``mcp_types.ElicitRequestURLParams``). This drives it through a
+    REAL declared-path turn (the model decides to call it -- url-mode
+    elicitation is only wired through the production tool-call path,
+    ``agents/builders.py::make_elicitation_client``, never the REST-install
+    lane -- needs_lm=True, like task-modes/waits-cancel/apps-ui), asserts the
+    resulting question payload carries the FULL url + the punycode-warning
+    fields (build item 3), answers it, and confirms the turn completes with
+    the tool succeeding.
+
+    Opus review addendum: drives ``url_guarded_input_idn`` too, in the SAME
+    turn -- ``URL_GUARDED_INPUT_URL`` is plain ASCII, so a leg that only ever
+    called it could observe ``punycode_warning=False`` and NEVER exercise the
+    ``warning=True`` branch B5 fixed; that would be a leg that only proves
+    half of what it claims. This drives BOTH arms and asserts each carries
+    the punycode_warning value ITS shape demands: False for the ASCII origin,
+    True for the ``xn--`` IDN one.
+    """
+
+    prompt = (
+        f"Call these {EXERCISER_NAMESPACE} tools IN ORDER and report each result "
+        "verbatim, including any error message if one occurs -- never skip a step "
+        "even if an earlier one errors:\n"
+        f"1. {EXERCISER_NAMESPACE}_url_guarded_input with no arguments\n"
+        f"2. {EXERCISER_NAMESPACE}_url_guarded_input_idn with no arguments"
+    )
+    common.post_message(call, sid, prompt)
+
+    # --- arm 1: plain-ASCII origin -- must warn FALSE ---
+    question1 = common.wait_pending_question(call, sid, source="mcp_elicitation", max_elapsed=60.0)
+    question1_seen = question1 is not None
+    elicitation1 = ((question1 or {}).get("metadata") or {}).get("elicitation") or {}
+    url1 = str(elicitation1.get("url") or "")
+    has_full_url1 = bool(url1) and url1 == URL_GUARDED_INPUT_URL
+    has_punycode_fields1 = "punycode_warning" in elicitation1 and "punycode_host" in elicitation1
+    warning_false_as_expected = elicitation1.get("punycode_warning") is False
+    if question1_seen:
+        common.answer_question(call, sid, question1["id"], "")
+
+    # --- arm 2: xn-- IDN origin -- must warn TRUE ---
+    question2 = common.wait_pending_question(call, sid, source="mcp_elicitation", max_elapsed=60.0)
+    question2_seen = question2 is not None
+    elicitation2 = ((question2 or {}).get("metadata") or {}).get("elicitation") or {}
+    url2 = str(elicitation2.get("url") or "")
+    has_full_url2 = bool(url2) and url2 == URL_GUARDED_INPUT_IDN_URL
+    has_punycode_fields2 = "punycode_warning" in elicitation2 and "punycode_host" in elicitation2
+    warning_true_as_expected = elicitation2.get("punycode_warning") is True
+    if question2_seen:
+        common.answer_question(call, sid, question2["id"], "")
+
+    status = common.wait_turn(call, wsid, sid, max_elapsed=turn_timeout_s)
+    messages = common.session_messages(call, sid)
+    common.dump_json(out_path.parent / "leg_c2_mrtr_url_messages.json", messages)
+
+    # _common.find_tool_calls matches by str.endswith, so "_url_guarded_input"
+    # and "_url_guarded_input_idn" are disjoint by construction (the former
+    # never matches a name ending "..._idn").
+    calls_ascii = common.find_tool_calls(messages, "_url_guarded_input")
+    calls_idn = common.find_tool_calls(messages, "_url_guarded_input_idn")
+    succeeded_ascii = [c for c in calls_ascii if common.tool_call_ok(c)]
+    succeeded_idn = [c for c in calls_idn if common.tool_call_ok(c)]
+
+    hung = status == "timed_out"
+    pass_ = bool(
+        question1_seen
+        and has_full_url1
+        and has_punycode_fields1
+        and warning_false_as_expected
+        and question2_seen
+        and has_full_url2
+        and has_punycode_fields2
+        and warning_true_as_expected
+        and not hung
+        and succeeded_ascii
+        and succeeded_idn
+    )
     return {
         "avenue": "mrtr-url",
-        "status": "blocked",
+        "status": "pass" if pass_ else "fail",
         "evidence": {
-            "checked": ["tests/test_tools/mcp_exerciser.py"],
-            "finding": (
-                "the exerciser's only elicitation helper is `_one_elicit()` "
-                "(mcp_exerciser.py:56-64), which always builds a FORM-mode "
-                "`mcp_types.ElicitRequestFormParams` request; both `guarded_input` "
-                "and `plain_guarded_input` call only `_one_elicit`. There is no "
-                "URL-mode arm anywhere in the exerciser. The only place in this "
-                "repo that constructs `mcp_types.ElicitRequestURLParams` is "
-                "tests/test_gact/test_elicitation_hitl.py, which feeds it DIRECTLY "
-                "into `elicitation_bridge.handle_elicitation()` in isolation "
-                "(bypassing a real MCP tool round-trip) -- no MCP TOOL in this "
-                "repo emits a genuine url-mode elicitation request over the wire."
-            ),
-            "what_is_missing": (
-                "a new exerciser tool (e.g. `url_guarded_input`) whose "
-                "InputRequiredResult carries "
-                "`mcp_types.ElicitRequestURLParams(message=..., url=...)` instead "
-                "of the form params `_one_elicit` builds."
-            ),
+            "turn_status": status,
+            "ascii_arm": {
+                "question_seen": question1_seen,
+                "question_metadata_elicitation": elicitation1,
+                "has_full_url": has_full_url1,
+                "has_punycode_fields": has_punycode_fields1,
+                "warning_false_as_expected": warning_false_as_expected,
+                "tool_calls": calls_ascii,
+                "tool_call_succeeded": bool(succeeded_ascii),
+            },
+            "idn_arm": {
+                "question_seen": question2_seen,
+                "question_metadata_elicitation": elicitation2,
+                "has_full_url": has_full_url2,
+                "has_punycode_fields": has_punycode_fields2,
+                "warning_true_as_expected": warning_true_as_expected,
+                "tool_calls": calls_idn,
+                "tool_call_succeeded": bool(succeeded_idn),
+            },
+            "hung": hung,
         },
-        "error": None,
+        "error": None
+        if pass_
+        else (
+            "one or both url-mode questions did not surface, carried an "
+            "incomplete payload, showed the WRONG punycode_warning value for "
+            "its arm (False expected on the ASCII origin, True on the IDN "
+            "one), or its tool call never completed"
+        ),
     }
 
 
-def avenue_mrtr_methods() -> dict[str, Any]:
+def _status_and_body(error_message: str) -> tuple[int | None, str]:
+    """Parse ``_common.client``'s RuntimeError text (``"{method} {path} -> "
+    "{status}: {body}"``) into ``(status_code, body)``."""
+
+    try:
+        arrow_tail = error_message.split("->", 1)[1]
+        status_text, _, body = arrow_tail.partition(":")
+        return int(status_text.strip()), body.strip()
+    except (IndexError, ValueError):
+        return None, error_message
+
+
+def _prompts_get_dispatched_typed_mrtr_refusal(status: int | None, body: str) -> bool:
+    """True when ``body`` is the TYPED 502 ``upstream_error`` shape MRTR's
+    unsupported-elicitation dispatch produces (Opus review, C1-S4 B2).
+
+    Keys on the STRUCTURED ``error.error`` field (a stable typed error class,
+    ``ErrorInfo.error``) plus the JSON-RPC ``-32600`` (Invalid Request) code
+    the SDK's refusal carries -- NEVER on the free-text "Elicitation not
+    supported" prose, which upstream could reword at any time and silently
+    flip this avenue false-red (the forbidden prose-keyword class this leg
+    must not repeat -- see ⚑ SUPERSEDING PRINCIPLES #1 in CLAUDE.md).
+    """
+
+    if status != 502:
+        return False
+    try:
+        parsed = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    error = parsed.get("error") if isinstance(parsed, dict) else None
+    if not isinstance(error, dict) or error.get("error") != "upstream_error":
+        return False
+    return "-32600" in str(error.get("message") or "")
+
+
+def avenue_mrtr_methods(call: Any) -> dict[str, Any]:
+    """C1-S4 (#1284): prompts/get + resources/read, headless and LM-free.
+
+    The exerciser gained an MRTR-capable ``guarded_prompt``/``guarded_resource``
+    (build item, mirroring ``guarded_input``'s one-round shape). Installs the
+    SAME exerciser server through the REST-install lane
+    (``POST /v1/mcp/servers`` -- a bare ``make_mcp_client(transport,
+    server_id=sid)`` with NO elicitation handler wired, ``gact/routes/mcp.py::
+    _external_mcp_inventory``) and calls ``POST .../prompts/get``: proves the
+    SDK's MRTR loop genuinely fires on ``prompts/get`` for real (a typed,
+    terminal-fast 502 ``upstream_error`` -- never a hang, because this lane's
+    client never wires a callback).
+
+    ``resources/read`` is INFORMATIONAL ONLY (Opus review, C1-S4 B1): this
+    repo currently has no ``resources/read`` REST route at all (only
+    ``GET .../resources`` LISTS), but a future route existing is a GOOD
+    change, not a regression -- ``pass``/``fail`` here NEVER keys on that
+    route's presence or absence either way. Only ``prompts/get`` dispatching
+    a typed refusal decides pass; ``resources/read`` fails this avenue ONLY
+    on a genuine hang or an untyped status (neither 404 nor 200) -- see
+    ``pass_means`` in the returned verdict.
+
+    The FULL round-trip (asked -> answered -> terminal) for BOTH methods,
+    through a properly elicitation-wired client on BOTH the direct and proxy
+    routes, is proven instead in the unit conformance suite
+    (``tests/test_tools/test_mcp_v2_conformance.py``) -- the house pattern for
+    per-path MRTR verification; this avenue's ``pass`` must never be read as
+    evidence MRTR-over-prompts/resources itself works end to end.
+    """
+
+    pass_means = (
+        "pass = the REST-install lane's declared session/turn surface "
+        "correctly REFUSES an MRTR-embedded prompts/get, typed and "
+        "terminal-fast (never a hang, never an untyped 500) -- because that "
+        "lane's client never wires an elicitation handler, BY DESIGN. This is "
+        "NOT evidence MRTR-on-prompts/resources works end to end; the full "
+        "round trip (asked -> answered -> terminal), for both methods, on "
+        "BOTH the direct and proxy routes, is proven separately (offline) in "
+        "tests/test_tools/test_mcp_v2_conformance.py. resources/read is "
+        "recorded for information only and never decides pass/fail either way."
+    )
+
+    install_body = {
+        "name": "v2ex-methods",
+        "transport": "stdio",
+        "command": sys.executable,
+        "args": [str(EXERCISER_PATH)],
+    }
+    try:
+        installed = call("POST", "/v1/mcp/servers", install_body, ok=(200, 201))
+    except Exception as exc:  # noqa: BLE001 - captured into the verdict
+        return {
+            "avenue": "mrtr-methods",
+            "status": "fail",
+            "pass_means": pass_means,
+            "evidence": {"install_error": f"{type(exc).__name__}: {exc}"},
+            "error": "failed to install the exerciser via POST /v1/mcp/servers",
+        }
+    server_id = str(installed.get("id") or "")
+
+    prompt_status: int | None = None
+    prompt_body = ""
+    try:
+        call(
+            "POST",
+            f"/v1/mcp/servers/{server_id}/prompts/get",
+            {"name": "guarded_prompt", "arguments": {}},
+            ok=(200,),
+        )
+        prompt_status = 200
+    except RuntimeError as exc:
+        prompt_status, prompt_body = _status_and_body(str(exc))
+    prompt_dispatched_mrtr = _prompts_get_dispatched_typed_mrtr_refusal(prompt_status, prompt_body)
+
+    resource_status: int | None = None
+    resource_body = ""
+    try:
+        call(
+            "POST",
+            f"/v1/mcp/servers/{server_id}/resources/read",
+            {"uri": "res://v2ex/guarded"},
+            ok=(200,),
+        )
+        resource_status = 200
+    except RuntimeError as exc:
+        resource_status, resource_body = _status_and_body(str(exc))
+    # B1 (Opus review, C1-S4): 404 (route absent, true today) and 200 (a
+    # future route existing -- a GOOD change) are BOTH acceptable; only a
+    # genuine untyped status is a real finding for THIS half of the avenue.
+    resource_untyped_failure = resource_status not in (200, 404)
+    if resource_status == 404:
+        resource_note = (
+            "informational, NOT a pass criterion: confirms live that this repo "
+            "currently has no resources/read REST route (gact/routes/mcp.py "
+            "only lists resources). A future route existing here would be a "
+            "GOOD change this avenue must never turn red for."
+        )
+    elif resource_status == 200:
+        resource_note = (
+            "informational, NOT a pass criterion: a resources/read REST route "
+            "now exists and answered successfully -- a legitimate change, "
+            "not a regression. The full MRTR round-trip for resources/read is "
+            "proven separately in tests/test_tools/test_mcp_v2_conformance.py."
+        )
+    else:
+        resource_note = (
+            "UNEXPECTED: neither a clean 200 nor a 404 -- unlike route "
+            "presence/absence, an untyped status here IS a real finding."
+        )
+
+    pass_ = bool(prompt_dispatched_mrtr and not resource_untyped_failure)
     return {
         "avenue": "mrtr-methods",
-        "status": "blocked",
+        "status": "pass" if pass_ else "fail",
+        "pass_means": pass_means,
         "evidence": {
-            "checked": ["tests/test_tools/mcp_exerciser.py", "src/clio_agent/gact/routes/mcp.py"],
-            "finding": (
-                "(a) since C1-S3 (#1283) build_exerciser_server() registers 10 "
-                "`@server.tool`s and one `@server.resource` (the static ui panel "
-                "content resource `ui_echo` binds to, not an MRTR-capable path) -- "
-                "no `@server.prompt` exists at all, and no resource anywhere "
-                "returns `InputRequiredResult`, so there is still no MRTR-capable "
-                "prompts/get or resources/read arm to drive even in isolation. "
-                "(b) independent of (a): the "
-                "DECLARED session/turn surface this leg (and legs B/C) prove only "
-                "exposes an expert's frontmatter `tools:` list to the model -- "
-                "prompts/resources reach a session only through the SEPARATE "
-                "REST-install-lane inventory routes (`GET /v1/mcp/servers/{sid}/"
-                "resources`, `/prompts`, `POST .../prompts/get` -- gact/routes/"
-                "mcp.py ~898-960), a bare direct client (`make_mcp_client`), NOT "
-                "the gateway/executor path this campaign targets. Even a "
-                "resource/prompt-serving exerciser would still need a different, "
-                "non-declared-path leg to reach it through a session."
-            ),
+            "install": installed,
+            "prompts_get": {
+                "status_code": prompt_status,
+                "body": prompt_body,
+                "dispatched_mrtr_typed_refusal": prompt_dispatched_mrtr,
+            },
+            "resources_read": {
+                "status_code": resource_status,
+                "body": resource_body,
+                "informational_only": True,
+                "note": resource_note,
+            },
         },
-        "error": None,
+        "error": None
+        if pass_
+        else (
+            "prompts/get did not dispatch a typed MRTR refusal, or "
+            "resources/read hung/failed with an untyped status"
+        ),
     }
 
 
@@ -336,7 +614,7 @@ def avenue_list_changed() -> dict[str, Any]:
             ],
             "finding": (
                 "the exerciser's tool set is fixed at server-build time "
-                "(build_exerciser_server() registers the same 10 tools every call) "
+                "(build_exerciser_server() registers the same 13 tools every call) "
                 "-- no tool dynamically adds/removes a tool or fires a "
                 "`notifications/tools/list_changed` notification. A repo-wide "
                 "grep for listChanged/list_changed found only unrelated hits "
@@ -525,13 +803,13 @@ def avenue_pagination(resolved_main_tools: set[str]) -> dict[str, Any]:
                 "anywhere in clio_agent (repo-wide grep for list_page_size/"
                 "page_size/pagination/cursor across src/clio_agent/tools/*: zero "
                 "MCP-tools/list-paging-related hits), so this leg cannot FORCE "
-                "the exerciser's 10-tool tools/list to span multiple pages. "
+                "the exerciser's 13-tool tools/list to span multiple pages. "
                 "fastmcp's Client.list_tools() cursor-based pagination is "
                 "SDK-internal (obligations doc row B1, 'library-covered'), not "
                 "independently forceable to a small page size from this "
                 "codebase. This avenue instead proves pagination TRANSPARENCY "
                 "indirectly: if any page boundary were mishandled, some of the "
-                "10 expected tools would be missing from the resolved agent's "
+                "12 expected tools would be missing from the resolved agent's "
                 "toolset above -- they are not (when this avenue passes)."
             ),
         },
@@ -816,7 +1094,15 @@ def main() -> int:
         return 1
 
     hcap_proc = None
-    proc = common.boot_server(args.port, cwd=ws_dir, sse_log=common.OUT_ROOT / "leg_c2_sse.log")
+    proc = common.boot_server(
+        args.port,
+        cwd=ws_dir,
+        sse_log=common.OUT_ROOT / "leg_c2_sse.log",
+        # C1-S4 (#1284): the mrtr-url avenue's url_guarded_input elicits
+        # URL_GUARDED_INPUT_URL; an undeclared trust list auto-declines it
+        # before a question ever mints (elicitation_url_not_declared).
+        extra_env={"CLIO_MCP_ELICITATION_URL_TRUSTED_ORIGINS": URL_TRUST_ORIGIN},
+    )
     try:
         hcap_proc = subprocess.Popen(
             [
@@ -863,15 +1149,13 @@ def main() -> int:
         }
 
         # --- static (no boot/network needed beyond what's already fetched) ---
-        avenues.append(avenue_mrtr_url())
-        avenues.append(avenue_mrtr_methods())
         avenues.append(avenue_cache())
         avenues.append(avenue_list_changed())
         avenues.append(avenue_adversarial())
         avenues.append(avenue_extensions(v2ex_row))
         avenues.append(avenue_pagination(main_tools))
 
-        # --- headers: headless HTTP, no LM needed ---
+        # --- headers + mrtr-methods: headless HTTP, no LM needed ---
         hcap_ready = common.expanding_wait(
             lambda: hcap_proc.poll() is None and _hcap_reachable(args.hcap_port),
             what="header-capture server reachable",
@@ -888,9 +1172,10 @@ def main() -> int:
             )
         else:
             avenues.append(avenue_headers(call, args.hcap_port, hcap_log))
+        avenues.append(avenue_mrtr_methods(call))
 
         if not readiness_ready:
-            for avenue_id in ("task-modes", "waits-cancel", "apps-ui"):
+            for avenue_id in ("task-modes", "mrtr-url", "waits-cancel", "apps-ui"):
                 avenues.append(
                     {
                         "avenue": avenue_id,
@@ -900,7 +1185,7 @@ def main() -> int:
                     }
                 )
         elif args.plumbing_only:
-            for avenue_id in ("task-modes", "waits-cancel", "apps-ui"):
+            for avenue_id in ("task-modes", "mrtr-url", "waits-cancel", "apps-ui"):
                 avenues.append(
                     {
                         "avenue": avenue_id,
@@ -915,6 +1200,9 @@ def main() -> int:
 
             avenues.append(
                 avenue_task_modes(call, wsid, sid, out_path, turn_timeout_s=args.turn_timeout_s)
+            )
+            avenues.append(
+                avenue_mrtr_url(call, wsid, sid, out_path, turn_timeout_s=args.turn_timeout_s)
             )
             avenues.append(
                 avenue_waits_cancel(

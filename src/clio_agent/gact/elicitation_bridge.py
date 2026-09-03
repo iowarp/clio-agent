@@ -41,8 +41,11 @@ from clio_agent.gact.elicitation_schema import (
     ELICITATION_QUESTION_SOURCE,
     FormTranslation,
     build_form_content,
+    build_form_metadata,
+    build_url_metadata,
     check_elicitation_answer,
     check_url_trust,
+    default_answer_metadata,
     translate_form_schema,
     validate_elicitation_answer,
 )
@@ -407,6 +410,7 @@ def _new_question(
     options: list[UserQuestionOption],
     metadata: dict[str, Any],
     source: str = ELICITATION_QUESTION_SOURCE,
+    answer_metadata: dict[str, Any] | None = None,
 ) -> UserQuestion:
     from clio_agent.gact.runtime.globals import _new_question_id  # noqa: PLC0415
 
@@ -422,6 +426,9 @@ def _new_question(
         updated_at=now_iso,
         source=source,
         metadata=metadata,
+        # SEP-1034: a form's declared defaults pre-populate this PENDING
+        # question's answer surface (see elicitation_schema.default_answer_metadata).
+        answer_metadata=answer_metadata or {},
     )
 
 
@@ -664,20 +671,14 @@ async def handle_elicitation(
             prompt=f"{message}\n\nOpen this URL to continue: {url}",
             kind="confirmation",
             options=[],
-            metadata={
-                "elicitation": {
-                    "mode": "url",
-                    "url": url,
-                    # Client MUST render in an isolated, non-inspectable container
-                    # (ephemeral, no shared session/referrer) — see module docstring.
-                    "container": "isolated",
-                    "request_id": getattr(params, "request_id", None),
-                    "namespace": invocation.namespace,
-                    "tool_name": invocation.tool_name,
-                    "invocation_id": invocation.invocation_id,
-                    "forwarded_from_session": forwarded_from,
-                },
-            },
+            metadata=build_url_metadata(
+                url,
+                request_id=getattr(params, "request_id", None),
+                namespace=invocation.namespace,
+                tool_name=invocation.tool_name,
+                invocation_id=invocation.invocation_id,
+                forwarded_from_session=forwarded_from,
+            ),
         )
     elif mode == "form":
         translation = translate_form_schema(getattr(params, "requested_schema", {}) or {})
@@ -689,18 +690,15 @@ async def handle_elicitation(
             prompt=message,
             kind=translation.kind,
             options=translation.options,
-            metadata={
-                "elicitation": {
-                    "mode": "form",
-                    "fields": translation.fields,
-                    "additional_properties": translation.additional_properties,
-                    "request_id": getattr(params, "request_id", None),
-                    "namespace": invocation.namespace,
-                    "tool_name": invocation.tool_name,
-                    "invocation_id": invocation.invocation_id,
-                    "forwarded_from_session": forwarded_from,
-                },
-            },
+            answer_metadata=default_answer_metadata(translation.fields),
+            metadata=build_form_metadata(
+                translation,
+                request_id=getattr(params, "request_id", None),
+                namespace=invocation.namespace,
+                tool_name=invocation.tool_name,
+                invocation_id=invocation.invocation_id,
+                forwarded_from_session=forwarded_from,
+            ),
         )
     else:
         _record_reason("elicitation_unknown_mode", mode=mode, tool=invocation.tool_name)

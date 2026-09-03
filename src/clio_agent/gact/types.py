@@ -661,7 +661,9 @@ class UserQuestion(BaseModel):
     session_id: str
     prompt: str
     status: Literal["pending", "answered", "cancelled", "expired"] = "pending"
-    kind: Literal["freeform", "choice", "confirmation"] = "freeform"
+    # "multi_choice" (SEP-1330, C1-S4/#1284): a multi-select elicitation field
+    # (a flat array-of-enum) -- distinct from "choice" (a single scalar enum).
+    kind: Literal["freeform", "choice", "confirmation", "multi_choice"] = "freeform"
     options: list[UserQuestionOption] = Field(default_factory=list)
     created_at: str
     updated_at: str

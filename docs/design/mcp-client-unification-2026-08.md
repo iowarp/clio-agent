@@ -247,7 +247,20 @@ ONE client pathway for every server (built-in, declared, relay):
 - **C1-S4 — (e) MRTR + elicitation completeness:** round bound, typed exhaustion, the
   single HITL surface all three input shapes converge on — surviving unification
   intact; per-mode form/url capability declaration, URL-mode consent MUSTs, SEP-1034
-  defaults, SEP-1330 multi-select enums, no removed elicitationId constructs.
+  defaults, SEP-1330 multi-select enums, no removed elicitationId constructs. LANDED
+  (#1284): SEP-1034 defaults now pre-populate the pending question's
+  `answer_metadata` (`elicitation_schema.py::default_answer_metadata`), verified
+  end-to-end; SEP-1330 multi-select (`kind="multi_choice"`, a flat array-of-enum)
+  through translation/content/validation; URL-mode consent data completeness (full
+  url + `punycode_warning`/`punycode_host`, `elicitation_schema.py::
+  build_url_metadata`/`punycode_warning`) — rendering stays gact-tui's lane. The
+  exerciser gained a genuine url-mode MRTR arm (`url_guarded_input`/
+  `plain_url_guarded_input`) and an MRTR-capable prompt/resource
+  (`guarded_prompt`/`guarded_resource`); `leg_c2_v2_avenues.py`'s mrtr-url and
+  mrtr-methods avenues flipped from blocked citations to real assertions
+  (`LEG_C2.md`). Per-path proof (direct + proxy, `run_input_required_driver`) lives
+  in `test_mcp_v2_conformance.py`. New CI guard: zero `elicitationId` residue
+  (`scripts/check_no_elicitation_id_vocabulary.py`).
 - **C1-S5 — (f) protocol-surface completion:** subscriptions/listen + listChanged→cache
   invalidation, server cache hints (`ttlMs`/`cacheScope` + caching MUST-NOTs),
   resultType/x-mcp-header/SSE re-issue-never-resume/era-gated removals, auth specifics

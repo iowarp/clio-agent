@@ -113,6 +113,14 @@ def _args_fingerprint(args: tuple[str, ...]) -> str:
     it changes. A non-file argument (a flag, a URL, an opaque token)
     contributes nothing -- only arguments that resolve to an existing local
     file are fingerprinted, so ordinary flags never spuriously invalidate.
+
+    A DIFFERENT staleness class stays uncovered BY DESIGN (Opus review, C1-S4
+    F2): a module/package-name launcher (``uvx <pkg>``, ``clio-kit
+    mcp-server X``, ``python -m <module>``) names no local file argument at
+    all, so this fingerprint sees nothing to invalidate on. An upstream
+    package update is invisible here and bounded ONLY by
+    :func:`listing_ttl_h`'s TTL -- the same bound already documented for
+    clio-kit's remote-registry servers above.
     """
 
     parts: list[str] = []

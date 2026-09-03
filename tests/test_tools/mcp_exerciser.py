@@ -47,10 +47,13 @@ from fastmcp_tasks.extension import TasksExtension
 __all__ = [
     "EXERCISER_NAMESPACE",
     "EXERCISER_PATH",
+    "GUARDED_RESOURCE_URI",
     "MODERN_PROTOCOL_VERSION",
     "SYNTHETIC_EXTENSION_ID",
     "TASKS_EXTENSION_ID",
     "UI_RESOURCE_URI",
+    "URL_GUARDED_INPUT_IDN_URL",
+    "URL_GUARDED_INPUT_URL",
     "build_exerciser_server",
 ]
 
@@ -72,6 +75,27 @@ SYNTHETIC_EXTENSION_ID = "x-clio-agent/exerciser-echo"
 #: The MCP App resource ``ui_echo`` binds to; ``ui_panel`` (below) serves it.
 UI_RESOURCE_URI = "ui://v2ex/panel"
 
+#: The url ``url_guarded_input`` elicits (C1-S4, #1284 mrtr-url avenue): a
+#: plain https origin a live-verification run declares trusted via
+#: ``CLIO_MCP_ELICITATION_URL_TRUSTED_ORIGINS`` before it can ever mint a
+#: question -- see ``check_url_trust`` (an undeclared trust list always
+#: declines, so this constant and that config value must stay in lockstep).
+URL_GUARDED_INPUT_URL = "https://mcp-clio.example.com/authorize"
+
+#: The IDN (ACE-encoded, ``xn--``) counterpart ``url_guarded_input_idn``
+#: elicits (Opus review addendum, C1-S4): the LIVE mrtr-url avenue can only
+#: ever prove ``punycode_warning`` with a plain-ASCII host, since
+#: ``URL_GUARDED_INPUT_URL`` above never trips it -- a live leg that never
+#: exercises the ``warning=True`` branch cannot prove that branch works.
+#: ``xn--nxasmq6b`` is the SAME real punycode-encoded (RFC 3492) IDN label
+#: ``tests/test_gact/test_elicitation_hitl.py`` already uses -- one known-good
+#: literal, not two independently-typed ones. Must stay in lockstep with the
+#: live-verification leg's trusted-origins env var, same as the ASCII url.
+URL_GUARDED_INPUT_IDN_URL = "https://xn--nxasmq6b.mcp-clio.example.com/authorize"
+
+#: The MRTR-capable resource ``guarded_resource`` serves (mrtr-methods avenue).
+GUARDED_RESOURCE_URI = "res://v2ex/guarded"
+
 
 class SyntheticExtension(ServerExtension):
     """A synthetic, exerciser-only extension (#1283): identifier-only, no
@@ -91,6 +115,24 @@ def _one_elicit(message: str) -> Any:
             message=message,
             requested_schema={"type": "object", "properties": {"value": {"type": "string"}}},
         )
+    )
+
+
+def _one_url_elicit(message: str, url: str = URL_GUARDED_INPUT_URL) -> Any:
+    """One serialized URL-mode ``ElicitRequest`` (C1-S4, #1284 mrtr-url avenue).
+
+    The exerciser's url-mode arms -- every other MRTR guard here
+    (``guarded_input``, ``plain_guarded_input``) is form-mode via
+    :func:`_one_elicit`. This is what a REAL URL-mode elicitation over the
+    wire looks like (LEG_C2.md's mrtr-url finding: no MCP tool anywhere in
+    this repo emitted one before this). ``url`` defaults to the plain-ASCII
+    origin; ``url_guarded_input_idn`` below passes the IDN counterpart so the
+    LIVE avenue can prove ``punycode_warning=True`` too, not just the
+    always-false ASCII case (Opus review addendum).
+    """
+
+    return mcp_types.ElicitRequest(
+        params=mcp_types.ElicitRequestURLParams(message=message, url=url)
     )
 
 
@@ -168,6 +210,72 @@ def build_exerciser_server() -> FastMCP:
         if not responses:
             return mcp_types.InputRequiredResult(
                 inputRequests={"q1": _one_elicit("Pick a value")},
+                requestState="round-1",
+                resultType="input_required",
+            )
+        answer = responses.get("q1")
+        return f"answered:{getattr(answer, 'content', None)}"
+
+    @server.tool(task=TaskConfig(mode="required", poll_interval=timedelta(milliseconds=50)))
+    async def url_guarded_input(ctx: Context) -> Any:
+        """Ask for URL-mode consent, then finish (C1-S4, #1284 mrtr-url avenue).
+
+        The exerciser's ONLY url-mode MRTR arm -- mirrors ``guarded_input``'s
+        shape exactly, but its ``InputRequiredResult`` carries
+        ``mcp_types.ElicitRequestURLParams`` (via :func:`_one_url_elicit`)
+        instead of form params, so the avenue can assert the url-mode
+        question payload (full URL + punycode-warning fields, build item 3).
+        """
+
+        responses = ctx.input_responses
+        if not responses:
+            return mcp_types.InputRequiredResult(
+                inputRequests={"q1": _one_url_elicit("Authorize CLIO")},
+                requestState="round-1",
+                resultType="input_required",
+            )
+        answer = responses.get("q1")
+        return f"answered:{getattr(answer, 'content', None)}"
+
+    @server.tool(task=TaskConfig(mode="required", poll_interval=timedelta(milliseconds=50)))
+    async def url_guarded_input_idn(ctx: Context) -> Any:
+        """IDN counterpart of ``url_guarded_input`` (Opus review addendum, C1-S4).
+
+        Identical shape, but elicits ``URL_GUARDED_INPUT_IDN_URL`` (an
+        ``xn--`` ACE-encoded host) instead of the plain-ASCII origin --
+        without this, the LIVE mrtr-url avenue can only ever observe
+        ``punycode_warning=False`` and never actually exercises the
+        ``warning=True`` branch it claims to prove (B5's homograph fix).
+        """
+
+        responses = ctx.input_responses
+        if not responses:
+            return mcp_types.InputRequiredResult(
+                inputRequests={
+                    "q1": _one_url_elicit("Authorize CLIO", url=URL_GUARDED_INPUT_IDN_URL)
+                },
+                requestState="round-1",
+                resultType="input_required",
+            )
+        answer = responses.get("q1")
+        return f"answered:{getattr(answer, 'content', None)}"
+
+    @server.tool
+    async def plain_url_guarded_input(ctx: Context) -> Any:
+        """URL-mode consent via the PLAIN (non-task) SEP-2322 MRTR shape.
+
+        Mirrors ``plain_guarded_input``'s reason for existing: unlike
+        ``url_guarded_input`` (task=required, refused typed-fast through a
+        naive proxy that never declares tasks -- the SAME defect mechanism
+        ``task_echo`` proves), this needs no tasks extension at all, so it
+        proves url-mode MRTR itself survives a ``create_proxy(ProxyClient(...))``
+        front -- the proxy-MOUNT axis, not the protocol-era axis.
+        """
+
+        responses = ctx.input_responses
+        if not responses:
+            return mcp_types.InputRequiredResult(
+                inputRequests={"q1": _one_url_elicit("Authorize CLIO")},
                 requestState="round-1",
                 resultType="input_required",
             )
@@ -265,6 +373,50 @@ def build_exerciser_server() -> FastMCP:
         """
 
         return "<!doctype html><title>v2ex panel</title><body>v2ex</body>"
+
+    @server.prompt
+    async def guarded_prompt(ctx: Context) -> Any:
+        """An MRTR-capable prompt (C1-S4, #1284 mrtr-methods avenue).
+
+        `InputRequiredResult` is a RESULT TYPE, not a ``tools/call``-only
+        feature (SEP-2322): fastmcp's ``FunctionPrompt`` wraps a raw return
+        of one in ``InputRequiredPromptResult`` exactly like a tool's does,
+        and the SDK's ``Client.get_prompt`` drives the SAME
+        ``run_input_required_driver`` loop (``mcp/client/client.py``) --
+        this is the exerciser's proof that MRTR genuinely fires on
+        ``prompts/get``, not just ``tools/call``. Mirrors ``guarded_input``'s
+        one-round shape.
+        """
+
+        responses = ctx.input_responses
+        if not responses:
+            return mcp_types.InputRequiredResult(
+                inputRequests={"q1": _one_elicit("Pick a value")},
+                requestState="round-1",
+                resultType="input_required",
+            )
+        answer = responses.get("q1")
+        return f"answered:{getattr(answer, 'content', None)}"
+
+    @server.resource(GUARDED_RESOURCE_URI)
+    async def guarded_resource(ctx: Context) -> Any:
+        """An MRTR-capable resource (C1-S4, #1284 mrtr-methods avenue).
+
+        Same proof as ``guarded_prompt``, for ``resources/read``: fastmcp's
+        ``convert_raw_to_resource_result`` wraps a raw ``InputRequiredResult``
+        return in ``InputRequiredResourceResult``, and ``Client.read_resource``
+        drives the SAME SDK driver. Mirrors ``guarded_input``'s one-round shape.
+        """
+
+        responses = ctx.input_responses
+        if not responses:
+            return mcp_types.InputRequiredResult(
+                inputRequests={"q1": _one_elicit("Pick a value")},
+                requestState="round-1",
+                resultType="input_required",
+            )
+        answer = responses.get("q1")
+        return f"answered:{getattr(answer, 'content', None)}"
 
     return server
 
