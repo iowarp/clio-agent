@@ -251,19 +251,12 @@ def test_interactions_aggregate_children_and_route_question_and_permission(
         assert cancelled.status_code == 200
         assert cancelled.json()["interaction"]["status"] == "cancelled"
 
-        compatibility = UserQuestion(
-            id="q_compatibility",
-            session_id=root,
-            prompt="Answer through the compatibility route",
-            created_at=now,
-            updated_at=now,
-        )
-        app.state.user_questions[compatibility.id] = compatibility
-        compatible = client.post(
-            f"/v1/sessions/{root}/interactions/question:q_compatibility/response",
+        # The day-one ``/response`` alias is gone: ``/respond`` is the one door.
+        retired = client.post(
+            f"/v1/sessions/{root}/interactions/question:q_cancel/response",
             json={"action": "answer", "answer": "kept"},
         )
-        assert compatible.status_code == 200
+        assert retired.status_code == 404
 
         expired = UserQuestion(
             id="q_expired",

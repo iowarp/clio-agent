@@ -306,7 +306,9 @@ def _causal_entities_and_edges(
                 session_id=session_id,
                 attributes={"interaction_id": interaction_id},
             )
-            if event_type.endswith((".resolved", ".answered", ".responded")):
+            # ``.resolved`` is the only settle suffix any emitted semantic event
+            # actually carries; ``.answered`` / ``.responded`` matched nothing.
+            if event_type.endswith(".resolved"):
                 response_edge = _edge(
                     owner_node, interaction_node, "responded_to", event_id=span_id
                 )

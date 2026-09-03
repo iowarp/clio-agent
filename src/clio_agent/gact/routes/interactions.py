@@ -10,7 +10,6 @@ from fastapi import FastAPI, HTTPException, Request
 from clio_agent import conf
 from clio_agent.gact.a2ui import SERVER_ACTIONS
 from clio_agent.gact.agent_tasks import descendant_session_ids
-from clio_agent.gact.ask_user_tool import restore_pending_ask_user_questions
 from clio_agent.gact.mcp_task_store import app_task_store
 from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
@@ -118,6 +117,11 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
     kind: Literal["question", "mcp_task_input"] = (
         "mcp_task_input" if is_mcp and task_id else "question"
     )
+    # An MCP-sourced question with no correlated task is a DOWNGRADE, not a plain
+    # question: the elicitation arrived, the SEP-2663 task it belongs to could not
+    # be resolved, and the row silently changed kind. The client sees the same
+    # answerable question either way, but the lost correlation is now stated.
+    downgraded = is_mcp and not task_id
     return PendingInteraction(
         id=f"{kind}:{question.id}",
         kind=kind,
@@ -142,6 +146,15 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
                 "allow_freeform": question.allow_freeform,
                 "expires_at": question.expires_at,
                 "input_key": correlation["input_key"],
+                "degraded": (
+                    {
+                        "reason": "mcp_task_correlation_missing",
+                        "declared_kind": "mcp_task_input",
+                        "projected_kind": "question",
+                    }
+                    if downgraded
+                    else None
+                ),
             }.items()
             if value not in ("", [], None)
         },
@@ -370,20 +383,24 @@ def _interaction_wire(row: PendingInteraction) -> dict[str, Any]:
 
 
 def _question_from_interaction_id(app: FastAPI, interaction_id: str) -> UserQuestion | None:
-    prefixes = ("question:", "mcp_task_input:")
-    question_id = interaction_id
-    for prefix in prefixes:
+    """Resolve a question from a PREFIXED interaction id, and only from one.
+
+    The bare-id fallback let a raw question id route here, which is not an
+    identity this projection ever mints -- and it let a ``permission:`` /
+    ``a2ui:`` id whose suffix happened to name a question be answered through the
+    wrong branch.
+    """
+
+    for prefix in ("question:", "mcp_task_input:"):
         if interaction_id.startswith(prefix):
-            question_id = interaction_id.removeprefix(prefix)
-            break
-    return app.state.user_questions.get(question_id)
+            return app.state.user_questions.get(interaction_id.removeprefix(prefix))
+    return None
 
 
 def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register normalized list/respond routes without introducing a state store."""
 
     del deps
-    restore_pending_ask_user_questions(app)
 
     @app.get("/v1/sessions/{root_session_id}/interactions")
     async def list_interactions(
@@ -397,10 +414,6 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
             "include_children": include_children,
         }
 
-    @app.post(
-        "/v1/sessions/{root_session_id}/interactions/{interaction_id}/response",
-        include_in_schema=False,
-    )
     @app.post("/v1/sessions/{root_session_id}/interactions/{interaction_id}/respond")
     async def respond_interaction(
         root_session_id: str,

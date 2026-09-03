@@ -57,7 +57,7 @@ from clio_agent import conf
 from clio_agent.gact import composer_runtime
 from clio_agent.gact.auth import configure_bearer_auth
 from clio_agent.gact.cors import gact_cors_origins as _gact_cors_origins
-from clio_agent.gact.error_middleware import install_error_envelope
+from clio_agent.gact.error_middleware import error_code_for_status, install_error_envelope
 from clio_agent.gact.protocol.negotiation import install_protocol_negotiation
 from clio_agent.gact.runtime.rework_state import initialize_a2ui_store, initialize_session_defaults
 from clio_agent.gact.semantic_events import (
@@ -378,6 +378,7 @@ from clio_agent.gact.agents.runtime import (  # noqa: E402,F401
     _retaining_react_cls,
     _summarize_segments_llm,
 )
+from clio_agent.gact.ask_user_tool import restore_pending_ask_user_questions  # noqa: E402
 
 # gact/delegation.py -- delegation + workflow-state derivation cluster.
 from clio_agent.gact.delegation import (  # noqa: E402,F401
@@ -2253,6 +2254,11 @@ def build_app(
     # resolution-derived-policy + validation/persistence data layer lives in
     # runtime/permission_policies.py (shared with the build_app startup load).
     register_permission_and_interaction_routes(app, deps)
+    # Crash recovery is APP ASSEMBLY, not route registration: rehydrating surfaced
+    # native questions from durable session metadata mutates live state, so it
+    # belongs here beside the other recovery steps rather than as a side effect of
+    # registering a route factory.
+    restore_pending_ask_user_questions(app)
 
     # ---- DELETE /v1/sessions/{sid}/messages/{id} + /v1/messages/{id} -
     # Both message-delete routes (session-scoped + the global, optionally
@@ -2260,17 +2266,6 @@ def build_app(
     # routes/messages.py and registered below via register_messages_routes(
     # app, deps); the destructive-action guard + ledger replace travel on
     # ``deps`` and both publish message.deleted for SSE subscribers.
-
-    def _error_code_for_status(status_code: int) -> str:
-        if status_code == 404:
-            return "not_found"
-        if status_code == 405:
-            return "unsupported"
-        if status_code in {400, 422}:
-            return "validation_error"
-        if status_code in {401, 403}:
-            return "permission_error"
-        return "internal_error" if status_code >= 500 else "request_error"
 
     @app.exception_handler(HTTPException)
     @app.exception_handler(StarletteHTTPException)
@@ -2282,7 +2277,7 @@ def build_app(
             return JSONResponse(status_code=exc.status_code, content=exc.detail)
         envelope = ErrorEnvelope(
             error=ErrorInfo(
-                error=_error_code_for_status(exc.status_code),
+                error=error_code_for_status(exc.status_code),
                 message=str(exc.detail) if exc.detail else "",
                 recoverable=exc.status_code < 500,
             )

@@ -304,7 +304,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # owner module agents/runners.py; the composer lanes added only an import
     # plus two one-line calls (initialize_composer_state/register_composer_routes)
     # and three forwarded args on the _start_background_user_turn wrapper.
-    "src/clio_agent/gact/app.py": 2493,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
+    "src/clio_agent/gact/app.py": 2488,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg

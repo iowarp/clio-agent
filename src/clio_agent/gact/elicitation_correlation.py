@@ -163,7 +163,14 @@ def invocation_with_request_correlation(
             if record.session_id == invocation.session_id
             and request_id.startswith(f"task-{record.task_id}-")
         ]
-    except Exception:  # noqa: BLE001 - correlation enrichment must not reject elicitation
+    except Exception as exc:  # noqa: BLE001 - enrichment must not reject an elicitation
+        logger.warning(
+            "elicitation correlation degraded reason=task_record_lookup_failed "
+            "request_id=%s session=%s err=%r",
+            request_id,
+            invocation.session_id,
+            exc,
+        )
         return invocation
     if len(candidates) != 1:
         return invocation

@@ -156,7 +156,7 @@ def test_async_process_projection_includes_nested_children(
 ) -> None:
     empty_store = SimpleNamespace(list=lambda: [])
     monkeypatch.setattr(
-        "clio_agent.gact.routes.async_processes.resolve_store", lambda _store: empty_store
+        "clio_agent.gact.routes.async_processes.app_task_store", lambda _app: empty_store
     )
 
     rows = project_session_async_processes(_app(), "root")

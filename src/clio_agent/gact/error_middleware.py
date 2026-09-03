@@ -35,11 +35,30 @@ if TYPE_CHECKING:
 
 __all__ = [
     "EnvelopeErrorMiddleware",
+    "error_code_for_status",
     "install_error_envelope",
     "unhandled_error_envelope",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def error_code_for_status(status_code: int) -> str:
+    """Map one HTTP status onto the envelope's ``error`` vocabulary.
+
+    Lives beside the envelope it fills rather than as a closure inside
+    ``build_app`` -- it closes over nothing.
+    """
+
+    if status_code == 404:
+        return "not_found"
+    if status_code == 405:
+        return "unsupported"
+    if status_code in {400, 422}:
+        return "validation_error"
+    if status_code in {401, 403}:
+        return "permission_error"
+    return "internal_error" if status_code >= 500 else "request_error"
 
 
 def unhandled_error_envelope(exc: BaseException) -> ErrorEnvelope:

@@ -883,6 +883,201 @@ def test_user_questions_ledger_evicts_terminal_rows_before_pending_ones(tmp_path
     assert all(row["ledger"] == "user_questions" for row in app.state.ledger_evictions)
 
 
+# --------------------------------------------------------------------------- #
+# Finding 10: the vocabulary names families that are actually emitted
+# --------------------------------------------------------------------------- #
+
+
+def test_provenance_kinds_classify_the_families_that_are_actually_emitted() -> None:
+    from clio_agent.gact.provenance.normalization import _event_kind
+
+    assert _event_kind("user_question.answered") == "interaction"
+    assert _event_kind("permission.resolved") == "interaction"
+    assert _event_kind("mcp_task.updated") == "interactive_work"
+    assert _event_kind("a2ui.action.received") == "interactive_work"
+    assert _event_kind("resource.ready") == "resource"
+    # The four prefixes nothing emits no longer claim a classification, and the
+    # ask-user family is not spelled ``question.`` (that is a v3 wire projection).
+    for dead in (
+        "interaction.opened",
+        "mcp.task.updated",
+        "context.reference.resolved",
+        "evidence.added",
+        "question.upserted",
+    ):
+        assert _event_kind(dead) == "event"
+
+
+def test_bare_question_ids_no_longer_route_through_the_question_branch(tmp_path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="ids")
+    _armed_question(app, session.id, "q_bare")
+
+    with TestClient(app) as client:
+        bare = client.post(
+            f"/v1/sessions/{session.id}/interactions/q_bare/respond",
+            headers=HEADERS,
+            json={"action": "answer", "answer": "no"},
+        )
+        # The day-one /response alias is gone; only /respond is served.
+        alias = client.post(
+            f"/v1/sessions/{session.id}/interactions/question:q_bare/response",
+            headers=HEADERS,
+            json={"action": "answer", "answer": "no"},
+        )
+        prefixed = client.post(
+            f"/v1/sessions/{session.id}/interactions/question:q_bare/respond",
+            headers=HEADERS,
+            json={"action": "answer", "answer": "yes"},
+        )
+
+    assert bare.status_code == 404
+    assert alias.status_code == 404
+    assert prefixed.status_code == 200
+    assert app.state.user_questions["q_bare"].status == "answered"
+
+
+def test_submit_repair_attempt_is_declared_trace_only() -> None:
+    from clio_agent.gact.semantic_events import (
+        SSE_TRACE_ONLY_EVENT_TYPES,
+        event_reaches_ui,
+    )
+
+    assert "agent.submit_repair.attempted" in SSE_TRACE_ONLY_EVENT_TYPES
+    assert event_reaches_ui("agent.submit_repair.attempted", "running") is False
+    # Even a failed emit stays off the served wire.
+    assert event_reaches_ui("agent.submit_repair.attempted", "failed") is False
+
+
+def test_registering_interaction_routes_does_not_mutate_live_state(tmp_path) -> None:
+    """Route registration is wiring; crash recovery is app assembly."""
+
+    import inspect
+
+    from clio_agent.gact.routes import interactions
+
+    source = inspect.getsource(interactions.register_interaction_routes)
+    assert "restore_pending_ask_user_questions" not in source
+    # ...but build_app still restores, so the behaviour did not move out of reach.
+    sessions_path = tmp_path / "sessions.json"
+    first = build_app(sessions_path=sessions_path)
+    session = first.state.sessions.create(workspace_id="ws_default", title="restart")
+    now = datetime.now(timezone.utc)
+    first.state.sessions.update(
+        session.id,
+        status="waiting_user",
+        metadata_patch={
+            "pending_user_question_id": "q_restored",
+            "pending_ask_user": {
+                "action": "ask_user",
+                "question": "Which system?",
+                "kind": "freeform",
+                "choices": [],
+                "allow_freeform": True,
+                "created_at": now.isoformat(),
+                "expires_at": (now + timedelta(minutes=10)).isoformat(),
+                "owner_session_id": session.id,
+                "attended_session_id": session.id,
+                "caller": {"agent_id": "main"},
+                "surfaced": True,
+                "question_id": "q_restored",
+            },
+        },
+    )
+
+    restarted = build_app(sessions_path=sessions_path)
+
+    assert "q_restored" in restarted.state.user_questions
+
+
+# --------------------------------------------------------------------------- #
+# Finding 11: typed degradations instead of silent ones
+# --------------------------------------------------------------------------- #
+
+
+def test_uncorrelated_mcp_question_states_its_kind_downgrade(tmp_path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="mcp")
+    now = datetime.now(timezone.utc).isoformat()
+    app.state.user_questions["q_mcp"] = UserQuestion(
+        id="q_mcp",
+        session_id=session.id,
+        owner_session_id=session.id,
+        attended_session_id=session.id,
+        prompt="Select format",
+        source="mcp_elicitation",
+        created_at=now,
+        updated_at=now,
+        metadata={"elicitation": {"tool_name": "earthscope_query", "invocation_id": "c1"}},
+    )
+
+    with TestClient(app) as client:
+        rows = client.get(f"/v1/sessions/{session.id}/interactions").json()["interactions"]
+
+    row = next(item for item in rows if item["id"] == "question:q_mcp")
+    assert row["kind"] == "question"
+    assert row["payload"]["degraded"] == {
+        "reason": "mcp_task_correlation_missing",
+        "declared_kind": "mcp_task_input",
+        "projected_kind": "question",
+    }
+
+
+def test_unreadable_resource_store_surfaces_a_typed_discovery_degradation(tmp_path) -> None:
+    from clio_agent.gact.context_reference_search import _resource_results
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    workspace = app.state.workspaces.create(name="ws", root_path=str(tmp_path / "ws"))
+
+    class _Broken:
+        def list(self, workspace_id: str):
+            raise ValueError("index quarantined")
+
+    app.state.resource_store = _Broken()
+
+    assert _resource_results(app, workspace.id) == []
+    degradations = app.state.reference_search_degradations
+    assert [row["reason"] for row in degradations] == ["resource_store_unreadable"]
+    assert "index quarantined" in degradations[0]["detail"]
+
+
+def test_content_addressed_duplicate_drop_is_reported(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from clio_agent.gact.context_reference_search import _resource_results
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    workspace = app.state.workspaces.create(name="ws", root_path=str(tmp_path / "ws"))
+    digest = "a" * 64
+
+    class _Store:
+        def list(self, workspace_id: str):
+            return [
+                SimpleNamespace(
+                    id="res_named",
+                    name="paper.md",
+                    sha256=digest,
+                    revision="1",
+                    detected_mime="text/markdown",
+                ),
+                SimpleNamespace(
+                    id="res_hashed",
+                    name=f"{digest}.md",
+                    sha256=digest,
+                    revision="1",
+                    detected_mime="text/markdown",
+                ),
+            ]
+
+    app.state.resource_store = _Store()
+
+    rows = _resource_results(app, workspace.id)
+
+    assert [row["id"] for row in rows] == ["res_named"]
+    reasons = [row["reason"] for row in app.state.reference_search_degradations]
+    assert reasons == ["resource_content_addressed_name_hidden"]
+
+
 def test_ask_user_ttl_default_and_clamp_are_config_resolved() -> None:
     from clio_agent.gact import ask_user_tool
 

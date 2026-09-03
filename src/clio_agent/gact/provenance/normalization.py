@@ -50,11 +50,16 @@ def _event_kind(event_type: str) -> str:
         return "tool"
     if event_type.startswith("artifact."):
         return "artifact"
-    if event_type.startswith(("permission.", "question.", "interaction.")):
+    # The families here are the ones actually emitted. ``question.`` was never one
+    # of them (the ask-user family is ``user_question.``; ``question.upserted`` is a
+    # v3 WIRE projection, not a semantic event), and ``interaction.`` / ``mcp.task.``
+    # / ``evidence.`` / ``context.reference.`` were never emitted at all -- four dead
+    # prefixes that made this look like it classified more than it did.
+    if event_type.startswith(("permission.", "user_question.")):
         return "interaction"
-    if event_type.startswith(("a2ui.", "mcp.task.", "mcp_task.")):
+    if event_type.startswith(("a2ui.", "mcp_task.")):
         return "interactive_work"
-    if event_type.startswith(("resource.", "evidence.", "context.reference.")):
+    if event_type.startswith("resource."):
         return "resource"
     return "event"
 
