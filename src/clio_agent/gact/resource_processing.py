@@ -217,6 +217,15 @@ class ResourceProcessingStore:
                     destination.write_text(content, encoding="utf-8")
                     entry["content_path"] = destination.name
                     entry["size"] = destination.stat().st_size
+                if not str(entry.get("name") or "").strip():
+                    source_stem = Path(record.name).stem or "document"
+                    suffix = {
+                        "html": ".html",
+                        "json": ".json",
+                        "markdown": ".md",
+                        "text": ".txt",
+                    }.get(str(entry.get("kind") or ""), "")
+                    entry["name"] = f"{source_stem}{suffix}"
                 persisted_entries.append(entry)
             saved_manifest = {
                 # Everything the processor said about the manifest as a WHOLE is
@@ -480,16 +489,46 @@ def _document_service_payload(payload: dict[str, Any]) -> dict[str, Any]:
     service, is what keeps the failure REASON reaching the trace instead of
     being replaced by a bare ``{"code": "failed"}`` placeholder.
 
-    Nothing else is rewritten. A completed result that does not carry a
-    derivative manifest is NOT patched up into one: it fails validation in
-    :meth:`ResourceProcessingStore.save_result` with a typed
-    ``processor_result_invalid``, which is the honest report.
+    The service's authoritative completed result exposes ``markdown`` beside
+    its canonical ``document``. CLIO stores named derivatives through a
+    manifest, so this adapter describes that exact markdown payload as the
+    ``markdown`` derivative. It does not infer content or repair arbitrary
+    converter results: missing markdown or canonical structure still fails
+    validation as ``processor_result_invalid``.
     """
 
     error = payload.get("error")
-    if isinstance(error, dict) and "failure" not in payload:
-        return {**payload, "failure": error}
-    return payload
+    adapted = (
+        {**payload, "failure": error}
+        if isinstance(error, dict) and "failure" not in payload
+        else payload
+    )
+    result = adapted.get("result")
+    if not isinstance(result, dict) or isinstance(result.get("derivatives"), dict):
+        return adapted
+    markdown = result.get("markdown")
+    document = result.get("document")
+    if not isinstance(markdown, str) or not isinstance(document, dict):
+        return adapted
+    if not isinstance(document.get("structure"), dict):
+        return adapted
+    return {
+        **adapted,
+        "result": {
+            **result,
+            "derivatives": {
+                "schema": "clio.resource-derivatives.v1",
+                "entries": [
+                    {
+                        "id": "markdown",
+                        "kind": "markdown",
+                        "media_type": "text/markdown",
+                        "content": markdown,
+                    }
+                ],
+            },
+        },
+    }
 
 
 class DocumentProcessorClient:

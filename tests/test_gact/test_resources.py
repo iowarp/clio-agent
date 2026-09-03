@@ -21,6 +21,7 @@ from clio_agent.gact.resource_processing import (
     ResourceConverterFactory,
     ResourceProcessingRecord,
     ResourceProcessingStore,
+    _document_service_payload,
     resource_processing_task_id,
 )
 from clio_agent.gact.resource_tools import (
@@ -34,6 +35,46 @@ from clio_agent.gact.resource_tools import (
 from tests.test_gact.test_post_messages import FakeClioAgent
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
+
+def test_document_service_markdown_becomes_a_named_clio_derivative(tmp_path: Path) -> None:
+    """Adapt the real clio-web-search result shape without inventing content."""
+
+    payload = _document_service_payload(
+        {
+            "id": "docling_job",
+            "status": "complete",
+            "result": {
+                "markdown": "# HStream\n",
+                "document": {
+                    "structure": {"texts": [{"text": "HStream"}]},
+                    "capabilities": ["markdown", "document_structure"],
+                },
+            },
+        }
+    )
+    store = ResourceStore(root=tmp_path / "resources", max_resource_bytes=1024)
+    record, _replay = store.create_or_resume(
+        workspace_id="ws_1",
+        name="paper.pdf",
+        declared_size=len(b"%PDF-test"),
+        claimed_mime="application/pdf",
+    )
+    record = store.append(record.id, offset=0, data=b"%PDF-test")
+    processing = ResourceProcessingStore(store)
+
+    completed = processing.save_result(
+        record,
+        processing.state(record),
+        payload["result"],
+    )
+    manifest = processing.manifest(record)
+
+    assert completed.derivatives_available is True
+    assert manifest is not None
+    assert manifest["entries"][0]["name"] == "paper.md"
+    derivative_path, _entry = processing.derivative_path(record, "markdown")
+    assert derivative_path.read_text(encoding="utf-8") == "# HStream\n"
 
 
 class _CompleteDocumentProcessor:
@@ -649,18 +690,10 @@ def test_resource_list_advances_pending_converter_state(tmp_path: Path) -> None:
         assert listed[0]["processing"]["state"] == "complete"
 
 
-def test_a_result_without_a_derivative_manifest_is_refused_not_patched_up(
+def test_a_generic_result_without_a_derivative_manifest_is_refused_not_patched_up(
     tmp_path: Path,
 ) -> None:
-    """The manifest is a contract term, so a missing one fails typed.
-
-    The document service emits ``derivatives`` on every completed result
-    (verified against clio-web-search: ``build_derivative_manifest`` always
-    yields at least the markdown entry). The consumer-side shim that used to
-    synthesize a manifest from ``markdown`` was therefore unreachable for
-    anything the service produces today, and silently "fixing" a shape CLIO
-    does not understand is exactly the repair core must not do.
-    """
+    """The generic converter contract still requires an explicit manifest."""
 
     store = ResourceStore(root=tmp_path / "resources", max_resource_bytes=1024)
     record, _replay = store.create_or_resume(
