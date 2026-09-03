@@ -444,13 +444,18 @@ def test_queue_promotion_authorizes_referenced_parts_exactly_once(
     # call, composer_runtime's own idle-transition auto-promotion consumes the
     # queued row first, and the manual call 404s on a row that is already gone.
     # Holding the turn open on an Event the test releases itself makes "the turn
-    # is still busy when we promote" a certainty, not a timing bet.
+    # is still busy when we promote" a certainty, not a timing bet -- so
+    # ``forward`` must NOT time out its own wait: a bounded wait reintroduces
+    # exactly the race under enough load (observed live: a full-suite run slow
+    # enough to blow a 10s ceiling let the held turn settle on its own, and the
+    # queue's own auto-promotion consumed the row before the manual call ran).
+    # The test's own ``finally`` is what prevents an actual hang, not this wait.
     release_turn = threading.Event()
 
     class HoldingAgent(FakeClioAgent):
         def forward(self, question: str, session_id: str) -> object:
             self.calls.append((question, session_id))
-            release_turn.wait(timeout=10.0)
+            release_turn.wait()
             return FakePrediction(answer=self.answer)
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=HoldingAgent())
@@ -468,52 +473,60 @@ def test_queue_promotion_authorizes_referenced_parts_exactly_once(
         message_submission, "authorize_context_reference_parts_sync", counting_authorize
     )
 
-    with TestClient(app) as client:
-        started = client.post(
-            f"/v1/sessions/{sid}/messages",
-            json={"parts": [{"type": "text", "text": "hold the slot"}]},
-        )
-        assert started.status_code == 200, started.text
-        deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline and not app.state.turn_runner.busy(sid):
-            time.sleep(0.02)
-        assert app.state.turn_runner.busy(sid)
+    try:
+        with TestClient(app) as client:
+            started = client.post(
+                f"/v1/sessions/{sid}/messages",
+                json={"parts": [{"type": "text", "text": "hold the slot"}]},
+            )
+            assert started.status_code == 200, started.text
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline and not app.state.turn_runner.busy(sid):
+                time.sleep(0.02)
+            assert app.state.turn_runner.busy(sid)
 
-        listed = client.get(
-            f"/v1/workspaces/{workspace_id}/references",
-            params={"kinds": "workspace_file"},
-            headers=HEADERS,
-        ).json()["references"]
-        row = next(item for item in listed if item["id"] == "notes.txt")
+            listed = client.get(
+                f"/v1/workspaces/{workspace_id}/references",
+                params={"kinds": "workspace_file"},
+                headers=HEADERS,
+            ).json()["references"]
+            row = next(item for item in listed if item["id"] == "notes.txt")
 
-        created = client.post(
-            f"/v1/sessions/{sid}/queued-messages",
-            json={
-                "parts": [
-                    {"type": "text", "text": "look at this"},
-                    {
-                        "type": "context_ref",
-                        "ref_kind": "workspace_file",
-                        "ref_id": "notes.txt",
-                        "revision": row["revision"],
-                    },
-                ],
-                "client_message_id": "msg_ref_future",
-                "idempotency_key": "queue-ref-1",
-            },
-        )
-        assert created.status_code == 201, created.text
-        queued = created.json()
+            created = client.post(
+                f"/v1/sessions/{sid}/queued-messages",
+                json={
+                    "parts": [
+                        {"type": "text", "text": "look at this"},
+                        {
+                            "type": "context_ref",
+                            "ref_kind": "workspace_file",
+                            "ref_id": "notes.txt",
+                            "revision": row["revision"],
+                        },
+                    ],
+                    "client_message_id": "msg_ref_future",
+                    "idempotency_key": "queue-ref-1",
+                },
+            )
+            assert created.status_code == 201, created.text
+            queued = created.json()
 
-        # Isolate the PROMOTE call's own authorization count; queueing legitimately
-        # authorized the reference once already, at a different point in time.
-        calls.clear()
-        promoted = client.post(
-            f"/v1/sessions/{sid}/queued-messages/{queued['id']}/promote",
-            json={"revision": queued["revision"], "delivery": "auto"},
-        )
-        assert promoted.status_code == 200, promoted.text
-        # Let the held first turn settle before the client (and app) tear down.
+            # The turn must still be busy: promotion is meant to run through the
+            # explicit manual door below, not the idle-hook auto-promoter.
+            assert app.state.turn_runner.busy(sid)
+
+            # Isolate the PROMOTE call's own authorization count; queueing
+            # legitimately authorized the reference once already, at a different
+            # point in time.
+            calls.clear()
+            promoted = client.post(
+                f"/v1/sessions/{sid}/queued-messages/{queued['id']}/promote",
+                json={"revision": queued["revision"], "delivery": "auto"},
+            )
+            assert promoted.status_code == 200, promoted.text
+    finally:
+        # Guaranteed even on assertion failure: never leave the held turn (and
+        # its blocked thread) hanging past this test.
         release_turn.set()
 
     assert len(calls) == 1
