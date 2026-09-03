@@ -1053,6 +1053,16 @@ def test_unreadable_resource_store_surfaces_a_typed_discovery_degradation(tmp_pa
     assert [row["reason"] for row in degradations] == ["resource_store_unreadable"]
     assert "index quarantined" in degradations[0]["detail"]
 
+    # And it reaches the client, not just the log.
+    with TestClient(app) as client:
+        body = client.get(
+            f"/v1/workspaces/{workspace.id}/references",
+            params={"kinds": "resource"},
+            headers=HEADERS,
+        ).json()
+    assert body["references"] == []
+    assert [row["reason"] for row in body["degradations"]] == ["resource_store_unreadable"]
+
 
 def test_content_addressed_duplicate_drop_is_reported(tmp_path) -> None:
     from types import SimpleNamespace

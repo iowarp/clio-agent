@@ -35,7 +35,13 @@ def register_reference_routes(app: FastAPI) -> None:
             )
         except ContextReferenceError as exc:
             raise exc.http_exception() from exc
-        return {"references": results}
+        # Same contract the A2UI surface listing keeps: a repository that could not
+        # be read, or a row deliberately hidden, rides the response so a short list
+        # is never mistaken for an empty workspace.
+        return {
+            "references": results,
+            "degradations": list(getattr(app.state, "reference_search_degradations", []) or []),
+        }
 
 
 __all__ = ["register_reference_routes"]
