@@ -228,7 +228,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # PR #1278 re-land: -22. The two dynamic-agent DSPy signatures moved to
     # their owner module agents/signatures.py; the additive `images` input +
     # its three forward params are what stayed.
-    "src/clio_agent/gact/agents/builders.py": 1975,
+    # #1285 (C1-S5, item 1): +4 to route the one direct-call ``client.call_tool``
+    # site through ``call_tool_with_header_retry`` (re-list-and-retry on -32020
+    # HeaderMismatch, SEP-2578) -- the retry logic itself lives in the owner
+    # module tools/mcp_header_mismatch.py; only the lazy import + call-site swap
+    # land here.
+    "src/clio_agent/gact/agents/builders.py": 1979,
     # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
     # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
     # tool callable this loop will ever run (MCP-bridged, instrumented
@@ -474,7 +479,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # prompt/list branches) -- the classification logic itself lives in the owner
     # module tools/mcp_connection_era.py; only the server_id= threading + one
     # instrument_client_era() wrap for the bare-Client list branch land here.
-    "src/clio_agent/gact/routes/mcp.py": 958,  # declared MCP assembly moved to routes/mcp_specs.py
+    # #1285 (C1-S5, item 1): +4 for the same header-retry call-site swap as
+    # builders.py above (owner module tools/mcp_header_mismatch.py).
+    "src/clio_agent/gact/routes/mcp.py": 962,  # declared MCP assembly moved to routes/mcp_specs.py
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
     # develop with the check job red). Recording current counts makes the debt
@@ -955,7 +962,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # activity backstop now passes -- the protocol previously omitted it
     # entirely (a bug, not a feature: 19 test doubles across the repo
     # conformed to the narrower, wrong contract until this review round).
-    "src/clio_agent/tools/mcp_executor.py": 936,
+    # #1285 (C1-S5, item 1): +5 for the two ``client.call_tool`` call sites
+    # (unbounded + activity-backstop-bounded) routed through
+    # ``call_tool_with_header_retry`` -- same owner module as above.
+    "src/clio_agent/tools/mcp_executor.py": 940,
     "src/clio_agent/tools/mcp_config.py": 817,
     # #1231 Part 1/2 (consumer half of the live-console feature): not previously
     # baselined -- this file was ALREADY 7 lines over the 800 cap before this
