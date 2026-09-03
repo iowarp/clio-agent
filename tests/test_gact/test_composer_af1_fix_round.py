@@ -436,9 +436,8 @@ def test_queue_promotion_authorizes_referenced_parts_exactly_once(
     import threading
     import time
 
-    from tests.test_gact.test_post_messages import FakeClioAgent, FakePrediction
-
     from clio_agent.gact import message_submission
+    from tests.test_gact.test_post_messages import FakeClioAgent, FakePrediction
 
     # A wall-clock delay races the auto-promotion idle hook under machine load:
     # if the turn happens to settle before this test reaches the manual promote
