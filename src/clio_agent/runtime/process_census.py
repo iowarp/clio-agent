@@ -53,13 +53,18 @@ class ProcessNode:
         ppid: The parent process id (0/dead when the parent is gone).
         name: The executable name (used only for the coarse ``kind`` classification
             and display -- see :func:`clio_agent.runtime.process_tree._classify_child`).
-        create_time: The process's start time (epoch seconds).
+        create_time: The process's start time (epoch seconds), from the SNAPSHOT.
+            The REAP re-verifies this against the live process right before killing
+            (#1303 F3, mirroring :func:`clio_agent.serve._pid_alive`'s PID-reuse
+            defeat): a PID recycled by the OS between snapshot and kill gets a
+            DIFFERENT creation time, so a stale row is never mistaken for the
+            process it named.
         kind: The coarse child kind.
         cmdline: The process's argv, captured best-effort (#1303). Empty by default --
             populated only for reparented-orphan candidates in the live
             :func:`_snapshot_process_nodes` scan (``AccessDenied``/any resolution
-            failure also yields empty). This is the REAP's positive ownership
-            evidence (see :func:`_has_clio_instance_evidence`): a name-substring
+            failure also yields empty). This is the REAP's positive product
+            evidence (see :func:`_has_clio_product_evidence`): a name-substring
             match plus a dead parent is NOT evidence on its own -- every detached
             job on the box has a dead parent -- so an empty cmdline is treated as
             NO evidence, never as implicit ownership.
@@ -180,21 +185,49 @@ def _daemon_root_pid() -> Optional[int]:
 #: terminal, a scheduled task, `Start-Process`) has a dead parent, so ANY unrelated
 #: uv/python/node/claude/codex process on the box would match by name alone. Only an
 #: invocation whose actual command line names a clio entry point/module counts.
+#:
+#: PRECISE invocation tokens ONLY -- deliberately NOT the bare ``"clio-agent"`` /
+#: ``"clio_agent"`` strings (review round, live-verified: every ``uv run`` in this
+#: checkout puts the venv interpreter's own ABSOLUTE PATH,
+#: ``D:\...\clio-agent\.venv\Scripts\python.exe``, in argv[0] -- a bare-substring
+#: marker would still match that path and kill a detached leg-runner script one hop
+#: down its own launch chain, the same bug relocated). This mirrors
+#: :data:`clio_agent.runtime.disk_gc._CLIO_MARKERS` (see its rationale comment: same
+#: "precise tokens, not the bare repo-path string" reasoning) but is intentionally its
+#: OWN constant, never shared/imported -- the two have OPPOSITE risk polarity.
+#: ``disk_gc``'s markers gate a "live peer, don't touch shared state" decision, where
+#: an under-match is the dangerous direction (a missed peer risks colliding with it);
+#: this constant gates a KILL, where an over-match is the dangerous direction (a false
+#: positive kills an unrelated process). Diverging in the future is expected and safe
+#: -- do not "simplify" by importing one into the other.
 _CLIO_CMDLINE_MARKERS: tuple[str, ...] = (
     "clio-kit",
+    "clio_kit",
     "clio_run",
     "clio-agent-gact",
-    "clio_agent",
-    "clio-agent",
+    "clio_agent.gact",
+    "clio-agent serve",
+    "clio_agent.ui.cli serve",
 )
 
 
-def _has_clio_instance_evidence(node: ProcessNode) -> bool:
+def _has_clio_product_evidence(node: ProcessNode) -> bool:
     """True when ``node.cmdline`` names a clio entry point (#1303 reap evidence gate).
 
     An empty ``cmdline`` (unresolved -- ``AccessDenied``, an already-exited process, or
     a synthetic test node that never set it) is treated as NO evidence, never as
     implicit ownership by name+dead-parent alone.
+
+    IMPORTANT scope limit (review round, deliberate): this proves the process is SOME
+    clio product invocation -- clio-kit, the gact server, the clio-core daemon -- NOT
+    that it is specifically THIS server's own child. A detached process from a
+    *parallel* clio stack on the same box still matches (its cmdline is equally a real
+    clio invocation) and would still be reaped by this pass. That is a pre-existing
+    limitation of parentage-plus-cmdline evidence, not something this gate can fix on
+    its own -- proving "mine, not a peer's" would need an owning-instance stamp (e.g.
+    an env var this server sets on every child it spawns), which is deliberately NOT
+    built here; it is out of scope for #1303 (which closes the far worse "any unrelated
+    non-clio process" hole). Do not read this function's name as "belongs to me".
     """
     if not node.cmdline:
         return False
@@ -208,7 +241,7 @@ def _process_cmdline(pid: int) -> tuple[str, ...]:
     Only called for reparented-orphan candidates in :func:`_snapshot_process_nodes`
     (never the whole machine-wide scan), so the extra per-process syscall stays cheap.
     Returns an empty tuple on ANY resolution failure -- already exited, permission
-    denied, a zombie, a psutil-less environment -- which :func:`_has_clio_instance_evidence`
+    denied, a zombie, a psutil-less environment -- which :func:`_has_clio_product_evidence`
     then correctly reads as no evidence, never as implicit ownership.
     """
     try:
@@ -276,7 +309,7 @@ def _snapshot_process_nodes(
     # #1303: name+dead-parent alone is NOT ownership evidence -- every detached job on
     # the box has a dead parent. Attach the live cmdline here (lazy, only for these
     # candidate rows -- never the whole machine-wide scan) so the REAP's evidence gate
-    # (`_has_clio_instance_evidence`) can require an actual clio marker before a kill
+    # (`_has_clio_product_evidence`) can require an actual clio marker before a kill
     # is ever considered. Rows already reachable from a root never pass through here;
     # they were never orphan candidates in the first place.
     for node in list(raw.values()):
@@ -410,6 +443,25 @@ def _kill_pid(pid: int) -> None:
     psutil.Process(pid).kill()
 
 
+def _live_create_time(pid: int) -> Optional[float]:
+    """Live process creation time (epoch seconds) via psutil, or ``None`` if unresolvable.
+
+    #1303 F3, PID-reuse defeat: mirrors :func:`clio_agent.serve._proc_create_time`. The
+    OS can recycle a PID between the census snapshot and the kill; a recycled PID gets a
+    DIFFERENT creation time, so comparing against it (see the reap's ``pid_recycled``
+    check) stops a stale snapshot row from being mistaken for the unrelated process now
+    holding that number. A module-level function (not inlined) so synthetic tests --
+    whose ``ProcessNode.create_time`` is a fabricated value with no real process behind
+    it -- can monkeypatch it to a matching value.
+    """
+    try:
+        import psutil  # noqa: PLC0415
+
+        return float(psutil.Process(pid).create_time())
+    except Exception:  # noqa: BLE001 - NoSuchProcess/AccessDenied/ImportError => unknown
+        return None
+
+
 #: Kinds NEVER auto-killed by :func:`reap_orphaned_processes`, no matter how
 #: "orphaned" they look. ``classify_parentage`` excludes the CURRENT
 #: ``daemon_root_pid`` by construction (roots are never emitted as rows), but
@@ -437,6 +489,7 @@ def reap_orphaned_processes(
     daemon_root_pid: Optional[int] = None,
     _daemon_unset: bool = True,
     kill: Optional[Callable[[int], None]] = None,
+    skip_counts: Optional[dict[str, int]] = None,
 ) -> list[ReapedProcess]:
     """KILL every provably-orphaned CLIO child — the census REAPS, not just reports (#1232 pt 4).
 
@@ -456,16 +509,26 @@ def reap_orphaned_processes(
     1. Not a :data:`_NEVER_REAP_KINDS` kind (see that constant: a real live clio-core
        daemon was killed this way during #1232 development, so daemon-kind rows stay
        report-only).
-    2. **Positive instance evidence** (#1303): :func:`_has_clio_instance_evidence`
+    2. **Positive product evidence** (#1303): :func:`_has_clio_product_evidence`
        requires the row's live ``cmdline`` (captured in :func:`_snapshot_process_nodes`'s
        "reparented orphans" pass — the only source of a non-descendant row in the LIVE
-       scan) to contain one of the conservative :data:`_CLIO_CMDLINE_MARKERS`. An
-       unresolved/empty cmdline (``AccessDenied``, already exited) is NO evidence, never
-       implicit ownership — the row is skipped typed ``no_instance_evidence`` and stays
-       report-only, exactly like any other unproven row.
+       scan) to contain one of the PRECISE invocation tokens in
+       :data:`_CLIO_CMDLINE_MARKERS`. An unresolved/empty cmdline (``AccessDenied``,
+       already exited) — or a cmdline that merely happens to sit under a
+       ``clio-agent`` checkout path (e.g. the venv interpreter's own absolute path) —
+       is NO evidence, never implicit ownership: the row is skipped typed
+       ``no_clio_evidence`` and stays report-only, exactly like any other unproven row.
+       This proves the process is SOME clio product invocation, not specifically THIS
+       server's child (see :func:`_has_clio_product_evidence`'s docstring for that
+       scope limit).
     3. **Still dead at kill time**: a fresh ``psutil`` check (guarding the
        snapshot-to-kill window) re-confirms the parent is STILL dead before acting;
        a row whose parent came back alive in that window is skipped, never killed.
+    4. **Not a recycled PID** (#1303 F3): the live process now holding ``row.pid`` must
+       have the SAME creation time the snapshot recorded (:func:`_live_create_time`,
+       1.0s tolerance, mirroring :func:`clio_agent.serve._pid_alive`). The OS can hand
+       that PID to an unrelated process between snapshot and kill; a mismatch (or an
+       unresolvable live create_time) is skipped typed ``pid_recycled``.
 
     The breakaway shared clio-core daemon is ADDITIONALLY excluded BY CONSTRUCTION
     (belt-and-suspenders, not the primary guard): :func:`classify_parentage` never
@@ -478,6 +541,12 @@ def reap_orphaned_processes(
             :func:`probe_process_parentage` (injectable for tests).
         kill: ``pid -> None`` killer (injected for tests); defaults to
             :func:`_kill_pid` (a real ``psutil.Process(pid).kill()``).
+        skip_counts: Optional out-param (mutated in place, never read) -- when given,
+            every typed skip reason (``never_reap_kind`` / ``no_clio_evidence`` /
+            ``parent_alive_at_kill_time`` / ``pid_recycled``) increments its count here,
+            so a caller (:func:`boot_reap_off_loop`) can log a skip-count-by-reason
+            summary alongside the kill count instead of the per-pid lines being the
+            only trace of a reap that quietly skipped everything (#1303 F5).
 
     Returns:
         One :class:`ReapedProcess` per pid actually killed. A typed
@@ -501,6 +570,10 @@ def reap_orphaned_processes(
     )
     killer = kill or _kill_pid
 
+    def _record_skip(reason: str) -> None:
+        if skip_counts is not None:
+            skip_counts[reason] = skip_counts.get(reason, 0) + 1
+
     reaped: list[ReapedProcess] = []
     for row in rows:
         if row.descends_from != ORPHANED_FROM_TREE:
@@ -512,18 +585,22 @@ def reap_orphaned_processes(
                 row.name,
                 row.kind,
             )
+            _record_skip("never_reap_kind")
             continue
         node = by_pid.get(row.pid)
-        if node is None or not _has_clio_instance_evidence(node):
+        if node is None or not _has_clio_product_evidence(node):
             # #1303: name+dead-parent alone is NOT ownership evidence. No cmdline
             # marker match -> report-only, never a kill candidate (mirrors the
             # never_reap_kind / parent_alive_at_kill_time typed-skip shapes above).
-            logger.debug(
-                "orphan_reap_skipped pid=%s name=%s kind=%s reason=no_instance_evidence",
+            # logger.info (not .debug): this is the difference between "reap works"
+            # and "reap is a permanent no-op" -- must not be invisible (#1303 F5).
+            logger.info(
+                "orphan_reap_skipped pid=%s name=%s kind=%s reason=no_clio_evidence",
                 row.pid,
                 row.name,
                 row.kind,
             )
+            _record_skip("no_clio_evidence")
             continue
         immediate_parent = node.ppid
         if _pid_alive(immediate_parent):
@@ -536,6 +613,22 @@ def reap_orphaned_processes(
                 row.name,
                 immediate_parent,
             )
+            _record_skip("parent_alive_at_kill_time")
+            continue
+        current_create_time = _live_create_time(row.pid)
+        if current_create_time is None or abs(current_create_time - node.create_time) >= 1.0:
+            # #1303 F3: the PID was recycled (or is no longer resolvable) between
+            # snapshot and kill -- never kill whatever now holds that number.
+            logger.info(
+                "orphan_reap_skipped pid=%s name=%s kind=%s reason=pid_recycled "
+                "snapshot_create_time=%s live_create_time=%s",
+                row.pid,
+                row.name,
+                row.kind,
+                node.create_time,
+                current_create_time,
+            )
+            _record_skip("pid_recycled")
             continue
         try:
             killer(row.pid)
@@ -583,14 +676,25 @@ async def boot_reap_off_loop() -> None:
     change needed in ``disk_gc.py`` itself. A ``psutil`` scan must never block
     uvicorn's port binding, so this runs in the default executor; best-effort
     (a failure is logged and swallowed, never breaks server boot).
+
+    Also logs a skip-count-by-reason summary (#1303 F5) when the reap skipped
+    anything: without it, a reap that skips EVERY candidate (e.g. the fleet
+    genuinely carries no clio-owned orphans right now, or a marker regression made
+    the evidence gate over-strict) looks identical in the boot log to "nothing to
+    reap" -- the per-pid ``orphan_reap_skipped`` lines exist but are easy to miss
+    among boot noise; this one-line summary is not.
     """
 
     import asyncio  # noqa: PLC0415
+    import functools  # noqa: PLC0415
     import logging  # noqa: PLC0415
 
     loop = asyncio.get_running_loop()
+    skip_counts: dict[str, int] = {}
     try:
-        reaped = await loop.run_in_executor(None, reap_orphaned_processes)
+        reaped = await loop.run_in_executor(
+            None, functools.partial(reap_orphaned_processes, skip_counts=skip_counts)
+        )
     except Exception:  # noqa: BLE001 - best-effort boot reap; a failure must never break server boot
         logging.getLogger(__name__).exception(
             "boot orphan-process reap failed (#1232 pt 4); continuing boot"
@@ -601,6 +705,11 @@ async def boot_reap_off_loop() -> None:
             "boot orphan-process reap killed %d process(es): %s",
             len(reaped),
             ", ".join(f"{r.name}(pid={r.pid})" for r in reaped),
+        )
+    if skip_counts:
+        logging.getLogger(__name__).info(
+            "boot orphan-process reap skip summary (#1303): %s",
+            ", ".join(f"{reason}={count}" for reason, count in sorted(skip_counts.items())),
         )
 
 
