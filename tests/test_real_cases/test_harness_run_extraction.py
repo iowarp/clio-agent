@@ -16,7 +16,10 @@ Plain unit test: no ``live`` / ``real_case`` marker, so it always runs (no
 
 from __future__ import annotations
 
+from agent_test import Run, ToolCall
+
 from tests.test_real_cases.clio_sut import ClioAgent
+from tests.test_real_cases.test_earthscope_case import staged_station_on_region
 
 
 def _assistant_message(tools_called: list[dict], *, message_id: str = "m1") -> dict:
@@ -152,6 +155,75 @@ def test_legacy_expert_handoffs_still_recognized():
     ]
     run = _run_from(messages)
     assert run.steps == [["analysis"]]
+
+
+def test_staged_station_on_region_verifies_truncated_envelope():
+    """seattle_alt regression: a large in-radius result (27 stations) blows the
+    model-tool-result size cap, so geo_filter_points_by_radius's recorded output
+    is a typed truncation envelope (``_clio.status=="truncated"``) carrying only
+    ``head``/``tail`` preserved-text excerpts, not the full ``points`` list. The
+    staged station's own row is preserved in ``head`` (nearest-first ordering),
+    so the matcher must verify from that text via regex instead of failing
+    outright."""
+    head_text = (
+        "Root(ok=True, center=(47.6062, -122.3321), radius_km=75.0, "
+        "points=[{'Site': 'SEAT', 'network': 'P1', 'distance_km': 5.7852, "
+        "'id': 'SEAT'}, {'Site': 'OTHER1', 'network': 'P1', "
+        "'distance_km': 12.1, 'id': 'OTHER1'}, ..."
+    )
+    tail_text = "..., {'Site': 'OTHER27', 'distance_km': 74.9, 'id': 'OTHER27'}])"
+    run = Run(
+        tool_calls=[
+            ToolCall(
+                name="geo_filter_points_by_radius",
+                args={"radius_km": 75.0},
+                output={
+                    "_clio": {
+                        "status": "truncated",
+                        "reason": "model_tool_result_oversize",
+                    },
+                    "head": head_text,
+                    "tail": tail_text,
+                },
+            ),
+            ToolCall(
+                name="pandas_profile_csv",
+                args={"data_path": "/workdir/SEAT.CI.LY_.20.csv"},
+                output={},
+            ),
+        ]
+    )
+    assert staged_station_on_region(run)
+
+
+def test_staged_station_on_region_truncated_envelope_honest_fail_when_row_missing():
+    """When the staged station's row fell in the truncated MIDDLE (present in
+    neither head nor tail), the matcher must fail honestly, never guess."""
+    run = Run(
+        tool_calls=[
+            ToolCall(
+                name="geo_filter_points_by_radius",
+                args={"radius_km": 75.0},
+                output={
+                    "_clio": {
+                        "status": "truncated",
+                        "reason": "model_tool_result_oversize",
+                    },
+                    "head": (
+                        "Root(ok=True, radius_km=75.0, points=[{'Site': 'OTHER1', "
+                        "'distance_km': 2.0, 'id': 'OTHER1'}, ..."
+                    ),
+                    "tail": "..., {'Site': 'OTHER27', 'distance_km': 74.9, 'id': 'OTHER27'}])",
+                },
+            ),
+            ToolCall(
+                name="pandas_profile_csv",
+                args={"data_path": "/workdir/SEAT.CI.LY_.20.csv"},
+                output={},
+            ),
+        ]
+    )
+    assert not staged_station_on_region(run)
 
 
 def test_constructor_repr_result_coerced_to_dict():

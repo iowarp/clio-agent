@@ -358,7 +358,37 @@ def agent(request: pytest.FixtureRequest, gact_server: GactServer) -> Any:
     config = request.config
     sut = resolve_active_sut(config)
     request.node.stash[CELL_KEY] = (provider, model)
-    if not sut.available(provider, model):
+    # FLAKY-SKIP fix (owner's wait doctrine: no single-probe verdicts —
+    # expanding retries, surfaced, never a silent skip). Verified live: a cell
+    # that boots right after a heavy previous-cell teardown (process reaping +
+    # CTE shutdown still running server-side) can time out its FIRST
+    # /v1/providers probe and get scored "skipped" ~20s after server boot even
+    # though the provider IS configured (sandiego_3/5, both immediately
+    # following a passing cell). Retry ``available()`` at 0s / +5s / +15s
+    # before trusting a False; a genuinely unconfigured provider still fails
+    # all three attempts (instantly), so upstream skip semantics are
+    # unchanged for the real "not configured here" case — only the
+    # transient-timeout false negative is fixed.
+    retry_delays = (0.0, 5.0, 15.0)
+    attempts = len(retry_delays)
+    is_available = False
+    for attempt, delay in enumerate(retry_delays, start=1):
+        if delay:
+            time.sleep(delay)
+        is_available = sut.available(provider, model)
+        if is_available:
+            break
+        remaining = retry_delays[attempt] if attempt < attempts else None
+        if remaining is not None:
+            print(
+                f"available() attempt {attempt}/{attempts} failed for "
+                f"{provider}/{model}; retrying in {remaining:g}s"
+            )
+        else:
+            print(
+                f"available() attempt {attempt}/{attempts} failed for {provider}/{model}; giving up"
+            )
+    if not is_available:
         pytest.skip(f"{provider}/{model} not available here")
     overrides = _parse_overrides(config)
     return sut.bind(provider, model, overrides=overrides)

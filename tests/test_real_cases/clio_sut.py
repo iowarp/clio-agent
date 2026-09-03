@@ -137,9 +137,18 @@ class ClioAgent(SUT):
         ``--matrix`` cleanly instead of erroring at bind time.
 
         Usability = the provider's ``is_authenticated`` from the registry, plus a
-        live Globus-token check for argonne (whose token isn't reflected there)."""
+        live Globus-token check for argonne (whose token isn't reflected there).
+
+        Timeout is 15s, not a snappier default: a cell booting right after a
+        heavy previous-cell teardown (process reaping + CTE shutdown still
+        running server-side) can make this FIRST probe genuinely slow without
+        the server being unavailable — the caller (the ``agent`` fixture in
+        conftest.py) is the one that turns a single False into a verdict via
+        expanding retries, so this method itself still returns fast on a truly
+        unreachable server; it just no longer mistakes "slow" for "down" on the
+        first probe."""
         try:
-            with httpx.Client(base_url=self._base_url, timeout=5.0) as http:
+            with httpx.Client(base_url=self._base_url, timeout=15.0) as http:
                 # A 503 here just means no LM is wired yet (bind fixes that);
                 # only a transport failure means the server is unreachable.
                 http.get("/v1/health")
