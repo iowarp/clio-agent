@@ -276,3 +276,220 @@ def test_delivery_ledger_is_idempotent_and_cascades_workspace_delete(tmp_path: P
     reloaded = ResourceDeliveryStore(tmp_path / "deliveries.json")
     assert reloaded.delete_workspace("ws_test") == 1
     assert reloaded.list("ws_test") == []
+
+
+def test_overlay_evidence_is_available_and_dates_itself_to_the_probe() -> None:
+    """A persisted discovery run is EVIDENCE, and carries its own timestamp.
+
+    The CLI providers have no HTTP models surface, so their whole catalog arrives
+    through the overlay. Treating only ``live`` as evidence would blank them; and
+    reporting the handshake run's wall clock over that cached evidence made a
+    months-old catalog look freshly generated.
+    """
+
+    preset = LMProviderPreset(
+        id="codex",
+        label="Codex",
+        provider="codex",
+        api_base="codex://sdk",
+        suggested_model="gpt-5.6-luna",
+    )
+    report = HandshakeReport(
+        provider_id="codex",
+        provider_kind="codex",
+        connectivity=ConnectivityState.OK,
+        auth=AuthState.NOT_REQUIRED,
+        models_source="overlay",
+        generated_at="2026-09-03T09:00:00+00:00",
+        evidence_generated_at="2026-01-02T03:04:05+00:00",
+        models=(
+            ModelProfile(
+                id="gpt-5.6-luna",
+                capabilities=("text", "image"),
+                evidence_generated_at="2026-01-02T03:04:05+00:00",
+            ),
+        ),
+    )
+
+    row = model_catalog_row(preset, report, report.models[0])
+
+    assert row["availability"] == "available"
+    assert row["modalities"] == ["image", "text"]
+    assert row["evidence"]["evidenced"] is True
+    # ``live`` means what it says: no probe ran on this handshake.
+    assert row["evidence"]["live"] is False
+    assert row["evidence"]["generated_at"] == "2026-01-02T03:04:05+00:00"
+    assert row["evidence"]["read_at"] == "2026-09-03T09:00:00+00:00"
+
+
+def test_static_catalog_rows_are_never_evidence() -> None:
+    preset = LMProviderPreset(
+        id="codex",
+        label="Codex",
+        provider="codex",
+        api_base="codex://sdk",
+        suggested_model="gpt-5.5",
+    )
+    report = HandshakeReport(
+        provider_id="codex",
+        provider_kind="codex",
+        connectivity=ConnectivityState.OK,
+        auth=AuthState.NOT_REQUIRED,
+        models_source="static",
+        generated_at="2026-09-03T09:00:00+00:00",
+        models=(ModelProfile(id="gpt-5.5", capabilities=("text", "image")),),
+    )
+
+    row = model_catalog_row(preset, report, report.models[0])
+
+    assert row["availability"] == "candidate"
+    assert row["modalities"] == ["text"]
+    assert row["evidence"]["evidenced"] is False
+    assert row["evidence"]["live"] is False
+
+
+def test_planner_accepts_overlay_evidence_and_keeps_its_probe_timestamp() -> None:
+    """Delivery planning must accept persisted discovery evidence, dated honestly."""
+
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            provider_catalog={
+                "providers": [
+                    {
+                        "id": "codex",
+                        "health": "ready",
+                        "models": [
+                            {
+                                "model_id": "gpt-5.6-luna",
+                                "availability": "available",
+                                "modalities": ["text", "image"],
+                                "evidence": {
+                                    "evidenced": True,
+                                    "live": False,
+                                    "source": "overlay",
+                                    "generated_at": "2026-01-02T03:04:05+00:00",
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+    )
+
+    planned = plan_resource_delivery(
+        app,
+        resource=_resource(media_type="image/png"),
+        message_id="m_overlay",
+        model=ModelRef(provider_id="codex", model_id="gpt-5.6-luna"),
+    )
+
+    assert planned.representation == "native"
+    assert planned.evidence_source == "discovery_overlay"
+    assert planned.evidence_generated_at == "2026-01-02T03:04:05+00:00"
+
+
+def test_a_stale_overlay_triggers_rediscovery_instead_of_being_served_forever(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    """A written overlay used to short-circuit the bootstrap for good.
+
+    Any non-empty ``models`` list satisfied the guard, so once an entry existed
+    nothing ever re-ran discovery and a rotated account catalog was served
+    indefinitely. The bootstrap now re-runs when the entry is typed-stale.
+    """
+
+    preset = LMProviderPreset(
+        id="codex",
+        label="Codex",
+        provider="codex",
+        api_base="codex://sdk",
+        suggested_model="",
+    )
+    refreshed: list[str] = []
+    stale = True
+
+    def _overlay(*_args: object) -> dict[str, object] | None:
+        entry: dict[str, object] = {"models": [{"id": "gpt-5.6-luna"}]}
+        if stale:
+            entry["staleness"] = {
+                "reason": "overlay_age_exceeded_ttl",
+                "description": "older than the configured freshness window",
+            }
+        return entry
+
+    async def _refresh(*, presets, only_configured):  # type: ignore[no-untyped-def]
+        nonlocal stale
+        del only_configured
+        refreshed.extend(provider.id for provider in presets)
+        stale = False
+        return [{"provider": "codex", "failed_reason": ""}]
+
+    async def _handshake(*_args: object, **_kwargs: object) -> HandshakeReport:
+        return HandshakeReport(
+            provider_id="codex",
+            provider_kind="codex",
+            connectivity=ConnectivityState.OK,
+            auth=AuthState.NOT_REQUIRED,
+            models_source="overlay",
+            models=(ModelProfile(id="gpt-5.6-luna"),),
+        )
+
+    monkeypatch.setattr(
+        "clio_agent.gact.provider_catalog.model_discovery.overlay_models_wire", _overlay
+    )
+    monkeypatch.setattr("clio_agent.gact.provider_catalog.model_discovery.refresh_all", _refresh)
+    monkeypatch.setattr("clio_agent.gact.provider_catalog.run_handshake", _handshake)
+
+    provider = asyncio.run(discover_provider(preset))
+
+    assert refreshed == ["codex"]
+    assert provider["health"] == "ready"
+    assert [model["model_id"] for model in provider["models"]] == ["gpt-5.6-luna"]
+
+
+def test_a_failed_rediscovery_over_prior_evidence_stays_available_but_marked_stale(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    """Prior evidence is not an availability failure -- but it is not fresh either."""
+
+    preset = LMProviderPreset(
+        id="codex",
+        label="Codex",
+        provider="codex",
+        api_base="codex://sdk",
+        suggested_model="",
+    )
+    staleness = {
+        "reason": "overlay_refresh_failed",
+        "description": "the most recent refresh failed",
+        "failed_reason": "SDK transport closed",
+    }
+
+    monkeypatch.setattr(
+        "clio_agent.gact.provider_catalog.model_discovery.overlay_models_wire",
+        lambda *_args: {"models": [{"id": "gpt-5.6-luna"}], "staleness": staleness},
+    )
+
+    async def _refresh(*, presets, only_configured):  # type: ignore[no-untyped-def]
+        del presets, only_configured
+        return [{"provider": "codex", "failed_reason": "SDK transport closed"}]
+
+    async def _handshake(*_args: object, **_kwargs: object) -> HandshakeReport:
+        return HandshakeReport(
+            provider_id="codex",
+            provider_kind="codex",
+            connectivity=ConnectivityState.OK,
+            auth=AuthState.NOT_REQUIRED,
+            models_source="overlay",
+            models=(ModelProfile(id="gpt-5.6-luna"),),
+        )
+
+    monkeypatch.setattr("clio_agent.gact.provider_catalog.model_discovery.refresh_all", _refresh)
+    monkeypatch.setattr("clio_agent.gact.provider_catalog.run_handshake", _handshake)
+
+    provider = asyncio.run(discover_provider(preset))
+
+    assert provider["health"] == "ready"
+    assert [model["model_id"] for model in provider["models"]] == ["gpt-5.6-luna"]
+    assert provider["freshness"]["staleness"]["reason"] == "overlay_refresh_failed"

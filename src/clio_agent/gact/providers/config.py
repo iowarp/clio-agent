@@ -52,6 +52,24 @@ def _provider_runtime_kind(provider_id: str) -> str:
     return provider_id
 
 
+def _with_vision_capability(app: "FastAPI", cfg: dict[str, Any]) -> dict[str, Any]:
+    """Stamp the derived image-input capability and the arm it came from.
+
+    Applied on EVERY return path of :func:`_effective_lm_config`, including the
+    unconfigured one, so the field the vision gate reads is always present. It
+    used to be read straight off the config dict -- a key no production writer
+    ever set -- so the gate always fell through to a provider-name allowlist and
+    the catalog's own ``supports_vision`` flags could never reach it.
+    """
+
+    supports_vision, vision_source = _vision_capability(
+        app, str(cfg.get("provider") or ""), str(cfg.get("model") or "")
+    )
+    cfg["supports_vision"] = supports_vision
+    cfg["supports_vision_source"] = vision_source
+    return cfg
+
+
 def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
     """Return the configured LM, falling back to the live agent config.
 
@@ -71,7 +89,7 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
     agent = getattr(app.state, "agent", None)
     provider_config = getattr(agent, "_provider_config", None)
     if provider_config is None:
-        return cfg
+        return _with_vision_capability(app, cfg)
 
     for key in (
         "provider",
@@ -114,7 +132,7 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
         # No-silent-fallback (#772): surface the degraded display with a typed
         # reason instead of omitting the field silently.
         cfg["thinking_effective"] = f"unavailable (reason=display_derivation_failed: {exc})"
-    return cfg
+    return _with_vision_capability(app, cfg)
 
 
 def _default_profile_spec(app: "FastAPI") -> Any:
@@ -212,13 +230,75 @@ def _unsupported_model_ref_error(
     )
 
 
-def _active_lm_supports_vision(app: "FastAPI") -> bool:
-    """Return whether the active provider transport can carry image parts."""
+#: Typed provenance for the active LM's vision answer. Each arm says WHY the gate
+#: answered as it did, so a refusal is explainable and a permission is auditable.
+VISION_CAPABILITY_REASONS: dict[str, str] = {
+    "live_modality_evidence": (
+        "the provider catalog holds discovery evidence for this exact provider/model and "
+        "that evidence names (or omits) image input"
+    ),
+    "catalog_default_no_modality_evidence_system": (
+        "this provider kind exposes no per-model modality evidence at all (an "
+        "OpenAI-compatible /models listing returns ids and nothing else), so the "
+        "registry's documented catalog-level supports_vision flag stands in for it"
+    ),
+    "modality_evidence_unavailable": (
+        "this provider kind CAN evidence input modalities but none has been recorded for "
+        "this model yet; the capability is unproven, so image parts are refused rather "
+        "than assumed. Run an explicit model refresh to evidence it"
+    ),
+    "no_active_model": (
+        "no provider/model is bound, so there is nothing whose capability could be "
+        "evidenced"
+    ),
+}
 
-    cfg = _effective_lm_config(app)
-    if "supports_vision" in cfg:
-        return bool(cfg.get("supports_vision"))
-    return str(cfg.get("provider") or "") in {"openai", "anthropic"}
+
+def _vision_capability(app: "FastAPI", provider_id: str, model_id: str) -> tuple[bool, str]:
+    """Resolve image-input capability for one provider/model, with a typed reason.
+
+    Consults the SAME evidence path delivery planning uses
+    (:func:`~clio_agent.gact.resource_delivery.live_model_modalities`), so the
+    route gate and the delivery planner cannot disagree about what a model can
+    receive. The static registry ``supports_vision`` flag is a documented
+    catalog-level DEFAULT, used only where no modality-evidence system exists for
+    that provider kind — never as a substitute for evidence that could have been
+    collected. There is deliberately no provider-name allowlist: the previous
+    gate ended in a literal ``{"openai", "anthropic"}`` set, which no static flag
+    could ever reach past.
+    """
+
+    if not provider_id or not model_id:
+        return False, "no_active_model"
+    from clio_agent.gact.resource_delivery import (  # noqa: PLC0415 - avoid import cycle
+        EVIDENCED_MODALITY_SOURCES,
+        live_model_modalities,
+    )
+    from clio_agent.gact.types import ModelRef  # noqa: PLC0415
+
+    modalities, evidence, _generated_at = live_model_modalities(
+        app, ModelRef(provider_id=provider_id, model_id=model_id)
+    )
+    if evidence in EVIDENCED_MODALITY_SOURCES:
+        return "image" in modalities, "live_modality_evidence"
+
+    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+    from clio_agent.providers.handshake import reports_input_modalities  # noqa: PLC0415
+
+    kind = _provider_runtime_kind(provider_id)
+    if reports_input_modalities(kind):
+        return False, "modality_evidence_unavailable"
+    provider = get_provider(provider_id) or get_provider(kind)
+    return (
+        bool(getattr(provider, "supports_vision", False)),
+        "catalog_default_no_modality_evidence_system",
+    )
+
+
+def _active_lm_supports_vision(app: "FastAPI") -> bool:
+    """Return whether the active provider/model can receive image parts."""
+
+    return bool(_effective_lm_config(app).get("supports_vision"))
 
 
 def _image_part_error(
@@ -235,8 +315,9 @@ def _image_part_error(
         error=ErrorInfo(
             error="unsupported_multimodal_image",
             message=(
-                "The active LM provider cannot receive image message parts. "
-                "Switch to a vision-capable direct provider or remove the image."
+                "The selected model has no evidenced image input, so image message parts "
+                "cannot be delivered. Select a model whose discovery evidence reports image "
+                "input, refresh the provider's model catalog, or remove the image."
             ),
             details={
                 "session_id": session_id,
@@ -245,7 +326,11 @@ def _image_part_error(
                 "model": model_id,
                 "supports_vision": False,
                 "recovery_actions": [
-                    "switch_to_openai_or_anthropic",
+                    # Not a provider-name instruction: the requirement is EVIDENCE
+                    # of image input for the selected model, which a refresh can
+                    # produce for a provider that has never been discovered.
+                    "select_a_model_with_evidenced_image_input",
+                    "refresh_provider_models",
                     "remove_image_part",
                     "attach_image_as_context_file_for_tool_inspection",
                 ],

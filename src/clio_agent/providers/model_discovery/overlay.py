@@ -24,6 +24,7 @@ import logging
 import os
 import threading
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,6 +52,87 @@ HTTP_SOURCE = "live_handshake"
 #: serves", and the CLI's own (still-recorded, honest) choice lives alongside
 #: it under ``cli_default``.
 CLAUDE_CODE_COST_DEFAULT_MODEL = "sonnet"
+
+#: Typed staleness reasons, in the ``stream_fallback`` reason-catalog style: the
+#: code is the queryable fact, the sentence is what a human reads. The overlay is
+#: a CACHE of discovery evidence and caches are accelerators, never truth — an
+#: entry served past its freshness window, or one whose last refresh failed, is
+#: still served (the documented no-silent-fallback contract keeps the prior good
+#: list) but is never presented as fresh.
+OVERLAY_STALENESS_REASONS: dict[str, str] = {
+    "overlay_age_exceeded_ttl": (
+        "this catalog was discovered longer ago than providers.model_catalog_ttl_s; it is "
+        "still served, but an account's served models may have changed since. Run an "
+        "explicit model refresh to re-evidence it"
+    ),
+    "overlay_refresh_failed": (
+        "the most recent refresh for this provider failed, so the PREVIOUS discovered list "
+        "is being served rather than cleared; it is prior evidence, not current evidence"
+    ),
+    "overlay_generated_at_unreadable": (
+        "this catalog carries no readable discovery timestamp, so its age cannot be "
+        "checked; it is treated as unverified rather than assumed fresh"
+    ),
+}
+
+
+def overlay_staleness_ttl_s() -> float:
+    """Seconds a discovered model catalog is considered fresh (``0`` disables the check)."""
+
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    return conf.resolve(
+        "providers.model_catalog_ttl_s",
+        env="CLIO_MODEL_CATALOG_TTL_S",
+        default=86400.0,
+        cast=conf.as_float,
+    )
+
+
+def _staleness_reason(code: str, **fields: Any) -> dict[str, Any]:
+    """Build one typed staleness marker, rejecting an uncatalogued code."""
+
+    if code not in OVERLAY_STALENESS_REASONS:
+        raise ValueError(f"Unknown overlay staleness reason: {code}")
+    return {"reason": code, "description": OVERLAY_STALENESS_REASONS[code], **fields}
+
+
+def entry_staleness(entry: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return a typed staleness marker for one overlay entry, or ``None`` when fresh.
+
+    Consulted at READ time rather than only at write time: an entry that was
+    fresh when it was written goes stale by the passage of time, and nothing
+    re-examines it until something asks. A failed refresh outranks age, because
+    "the last attempt to re-evidence this failed" is the more actionable fact.
+    """
+
+    failed = str(entry.get("failed_reason") or "")
+    if failed:
+        return _staleness_reason(
+            "overlay_refresh_failed",
+            failed_reason=failed,
+            last_attempt_at=str(entry.get("last_attempt_at") or ""),
+            generated_at=str(entry.get("generated_at") or ""),
+        )
+    ttl = overlay_staleness_ttl_s()
+    if ttl <= 0:
+        return None
+    generated_at = str(entry.get("generated_at") or "")
+    try:
+        produced = datetime.fromisoformat(generated_at)
+    except ValueError:
+        return _staleness_reason("overlay_generated_at_unreadable", generated_at=generated_at)
+    if produced.tzinfo is None:
+        produced = produced.replace(tzinfo=timezone.utc)
+    age_s = (datetime.now(timezone.utc) - produced).total_seconds()
+    if age_s <= ttl:
+        return None
+    return _staleness_reason(
+        "overlay_age_exceeded_ttl",
+        generated_at=generated_at,
+        age_s=round(age_s, 3),
+        ttl_s=ttl,
+    )
 
 
 class OverlayMalformedError(RuntimeError):
@@ -156,6 +238,12 @@ def overlay_models_wire(provider_id: str, provider_kind: str) -> dict[str, Any] 
     ``models`` list because this provider has never successfully discovered) —
     callers fall back to the static catalog. Propagates
     :class:`OverlayMalformedError` for a corrupt on-disk file (never silently {}).
+
+    A served-but-stale entry carries a typed ``staleness`` marker
+    (:func:`entry_staleness`) so a cached catalog is never handed to a caller as
+    if it were current. It is still SERVED — the documented contract keeps the
+    prior good list rather than clearing it — but the caller can see, and say,
+    that it is prior evidence.
     """
     db = read_overlay()
     entry = db.get(provider_id) or db.get(provider_kind)
@@ -170,6 +258,9 @@ def overlay_models_wire(provider_id: str, provider_kind: str) -> dict[str, Any] 
         "default_model": str(entry.get("default_model") or ""),
         "generated_at": str(entry.get("generated_at") or ""),
     }
+    staleness = entry_staleness(entry)
+    if staleness is not None:
+        wire["staleness"] = staleness
     if entry.get("rejected"):
         wire["rejected"] = entry["rejected"]
     if entry.get("cli_default"):
@@ -326,6 +417,12 @@ def record_refresh(result: ProviderDiscoveryResult) -> dict[str, Any]:
     }
     if result.failed_reason:
         wire["failed_reason"] = result.failed_reason
+    # A FAILED refresh keeps the prior list per the documented contract -- but the
+    # row it returns must say so. Serving a retained list with no marker is how a
+    # stale catalog passes for a fresh one.
+    staleness = entry_staleness(entry)
+    if staleness is not None:
+        wire["staleness"] = staleness
     if entry.get("default_model_reason"):
         wire["default_model_reason"] = entry["default_model_reason"]
     if entry.get("rejected"):
@@ -343,10 +440,13 @@ __all__ = [
     "CLAUDE_CODE_SOURCE",
     "CODEX_SOURCE",
     "HTTP_SOURCE",
+    "OVERLAY_STALENESS_REASONS",
     "OverlayMalformedError",
     "OverlayUnreadableError",
     "ProviderDiscoveryResult",
     "attach_context_limits",
+    "entry_staleness",
+    "overlay_staleness_ttl_s",
     "overlay_default_model",
     "overlay_models_wire",
     "overlay_path",

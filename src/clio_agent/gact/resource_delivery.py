@@ -214,6 +214,21 @@ def _modalities(values: Any) -> set[str]:
     return modalities
 
 
+#: Evidence-source labels a delivery plan may treat as real capability evidence.
+#: ``live_handshake`` is a probe this process ran; ``discovery_overlay`` is a
+#: persisted earlier discovery run (the Codex SDK catalog read / the claude_code
+#: alias probe) served through the passive handshake. Both were produced by
+#: asking the provider. Anything else -- notably ``unavailable`` -- is not
+#: evidence and can never justify handing the model an attachment's bytes.
+EVIDENCED_MODALITY_SOURCES: frozenset[str] = frozenset({"live_handshake", "discovery_overlay"})
+
+#: HandshakeReport.models_source -> the delivery-plan evidence label it earns.
+_EVIDENCE_LABEL_BY_SOURCE: dict[str, str] = {
+    "live": "live_handshake",
+    "overlay": "discovery_overlay",
+}
+
+
 def _catalog_modalities(app: Any, model: ModelRef) -> tuple[set[str], str, str]:
     catalog = getattr(app.state, "provider_catalog", None)
     if not isinstance(catalog, dict):
@@ -246,13 +261,17 @@ def _catalog_modalities(app: Any, model: ModelRef) -> tuple[set[str], str, str]:
     if profile is None or not isinstance(profile.get("evidence"), dict):
         return {"text"}, "unavailable", ""
     evidence = profile["evidence"]
-    if evidence.get("live") is not True:
-        return {"text"}, "unavailable", str(evidence.get("generated_at") or "")
-    return (
-        _modalities(profile.get("modalities")),
-        "live_handshake",
-        str(evidence.get("generated_at") or ""),
-    )
+    # ``evidenced`` covers both a live probe and a persisted discovery run; the
+    # older ``live`` key is honoured for a catalog payload written before the
+    # distinction existed, so an in-flight app's cached dict is not misread.
+    evidenced = evidence.get("evidenced")
+    if evidenced is None:
+        evidenced = evidence.get("live") is True
+    generated_at = str(evidence.get("generated_at") or "")
+    if evidenced is not True:
+        return {"text"}, "unavailable", generated_at
+    label = _EVIDENCE_LABEL_BY_SOURCE.get(str(evidence.get("source") or ""), "live_handshake")
+    return _modalities(profile.get("modalities")), label, generated_at
 
 
 def _live_modalities(app: Any, model: ModelRef) -> tuple[set[str], str, str]:
@@ -260,12 +279,20 @@ def _live_modalities(app: Any, model: ModelRef) -> tuple[set[str], str, str]:
     if (
         report is not None
         and report.ok
-        and report.models_source == "live"
+        and report.models_source in _EVIDENCE_LABEL_BY_SOURCE
         and model.provider_id in {report.provider_id, report.provider_kind, ""}
     ):
         profile = report.model(model.model_id)
         if profile is not None:
-            return _modalities(profile.capabilities), "live_handshake", report.generated_at
+            # The evidence's OWN timestamp, not the wall clock of the handshake
+            # run that read it -- a cached catalog must not date itself to now.
+            return (
+                _modalities(profile.capabilities),
+                _EVIDENCE_LABEL_BY_SOURCE[report.models_source],
+                profile.evidence_generated_at
+                or getattr(report, "evidence_generated_at", "")
+                or report.generated_at,
+            )
     return _catalog_modalities(app, model)
 
 
@@ -400,6 +427,7 @@ def plan_resource_delivery(
 
 __all__ = [
     "DELIVERY_REASONS",
+    "EVIDENCED_MODALITY_SOURCES",
     "DeliveryRepresentation",
     "ResourceDeliveryRecord",
     "ResourceDeliveryStore",

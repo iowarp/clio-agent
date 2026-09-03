@@ -776,6 +776,11 @@ KEY_NOTES: dict[str, str] = {
         "Max simultaneous private CODEX_HOME credential-dir copies the Codex SDK transport keeps "
         "alive; raise for many concurrent Codex sessions."
     ),
+    "providers.model_catalog_ttl_s": (
+        "Seconds a discovered provider model catalog is served as fresh before every read marks "
+        "it typed-stale (it is still served, never cleared); 0 disables the age check. Lower on "
+        "accounts whose served models rotate often."
+    ),
     "resources.delivery_ledger_max_records": (
         "Rows of resource-delivery provenance kept in resource_deliveries.json before the oldest "
         "are compacted away; raise to retain a longer attachment audit trail."

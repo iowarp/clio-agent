@@ -27,6 +27,7 @@ from clio_agent.gact.providers.config import (
     _model_ref_matches_active,
 )
 from clio_agent.gact.resource_delivery import (
+    EVIDENCED_MODALITY_SOURCES,
     ResourceDeliveryRecord,
     live_model_modalities,
     plan_resource_delivery,
@@ -252,12 +253,14 @@ def _validate_provider_and_payload(
     selected_model = _selected_model(app, deps, sess, req)
     if not _model_ref_matches_active(selected_model, app):
         # A selection the ACTIVE global LM does not serve is executable only when
-        # the provider catalog holds LIVE handshake evidence for that exact
-        # provider/model. Anything weaker is a typed 501 naming which layer asked
-        # for it -- a mismatch is explicit and never silently falls back to the
-        # active model (the session ref in particular is preserved, not cleared).
+        # the provider catalog holds real discovery EVIDENCE for that exact
+        # provider/model -- this run's probe, or a persisted discovery run for a
+        # provider with no HTTP models surface. Anything weaker is a typed 501
+        # naming which layer asked for it -- a mismatch is explicit and never
+        # silently falls back to the active model (the session ref in particular
+        # is preserved, not cleared).
         _modalities, evidence, _generated_at = live_model_modalities(app, selected_model)
-        if evidence != "live_handshake":
+        if evidence not in EVIDENCED_MODALITY_SOURCES:
             raise HTTPException(
                 status_code=501,
                 detail=deps.unsupported_model_ref_error(
@@ -275,8 +278,8 @@ def _validate_provider_and_payload(
     selected_modalities, selected_evidence, _generated_at = live_model_modalities(
         app, selected_model
     )
-    selected_image_capable = "image" in selected_modalities and (
-        selected_evidence == "live_handshake"
+    selected_image_capable = (
+        "image" in selected_modalities and selected_evidence in EVIDENCED_MODALITY_SOURCES
     )
     active_image_capable = _model_ref_matches_active(
         selected_model, app

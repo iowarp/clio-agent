@@ -1103,6 +1103,14 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             "transport": transport,
         }
         deps.clear_session_model_refs(app)
+        # Invalidate the normalized provider catalog. It is a per-app snapshot of
+        # ONE discovery pass, and delivery planning reads modalities straight out
+        # of it (resource_delivery._catalog_modalities). Leaving it in place after
+        # a provider swap meant the next attachment was routed against the
+        # PREVIOUS provider's capability evidence -- a sticky cache deciding what
+        # bytes reach a model it never described. The next GET /v1/provider-catalog
+        # repopulates it; until then the planner correctly finds no evidence.
+        app.state.provider_catalog = None
         # Publish so live SSE subscribers see the swap (TUI updates
         # its model chip without polling).
         app.state.bus.publish(

@@ -27,6 +27,10 @@ from clio_agent.providers.handshake.openai_compat import OpenAICompatHandshake
 class OllamaHandshake(OpenAICompatHandshake):
     """Ollama: list via ``/api/tags``, enrich each model via ``/api/show``."""
 
+    #: ``/api/show`` reports a per-model ``capabilities`` list (``vision``,
+    #: ``tools``), so this backend really can evidence input modalities.
+    reports_input_modalities = True
+
     @staticmethod
     def _native_root(api_base: str) -> str:
         """The native API root — ``api_base`` with a trailing ``/v1`` stripped."""

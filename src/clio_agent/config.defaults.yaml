@@ -214,6 +214,13 @@ providers.claude_code.stream_idle_ttl_s: 15.0
 # transport keeps alive; raise for many concurrent Codex sessions.
 providers.codex.credential_home_capacity: 4
 
+# CLIO_MODEL_CATALOG_TTL_S  (float)  <- src/clio_agent/providers/model_discovery/overlay.py
+# Seconds a discovered provider model catalog is served as fresh before
+# every read marks it typed-stale (it is still served, never cleared); 0
+# disables the age check. Lower on accounts whose served models rotate
+# often.
+providers.model_catalog_ttl_s: 86400.0
+
 # ==========================================================================
 # Limits, timeouts and retries
 # ==========================================================================

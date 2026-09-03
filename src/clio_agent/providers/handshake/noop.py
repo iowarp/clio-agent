@@ -42,6 +42,18 @@ class NoOpHandshake(ProviderHandshake):
     from the shared cascade, so CLI providers carry context like any HTTP one.
     """
 
+    def models_provenance(self, ctx: HandshakeContext) -> tuple[str, str]:
+        """Report ``static``: these rows are the compiled-in registry catalog.
+
+        This handshake makes zero network calls, so calling its output ``live``
+        (the pre-fix behaviour, which stamped ``live`` whenever ANY model
+        existed) claimed a probe that never happened -- and made a frozen
+        snapshot of candidate ids indistinguishable from account evidence.
+        """
+
+        del ctx
+        return "static", ""
+
     async def check_connectivity(self, client: Any, ctx: HandshakeContext) -> ConnectivityResult:
         """Report ``(OK, NOT_REQUIRED)`` without any network call.
 

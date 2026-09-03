@@ -450,7 +450,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # default deviates from "follows the CLI's own live default" for that one
     # provider) -- the policy ITSELF lives in providers/model_discovery/overlay.py's
     # record_refresh; this docstring update is the only change here.
-    "src/clio_agent/gact/routes/providers.py": 1343,
+    # AF-IMG (PR #1298): +8 -- one assignment plus its rationale comment. A
+    # provider bind now invalidates app.state.provider_catalog, which delivery
+    # planning reads modalities out of; leaving the previous provider's snapshot
+    # in place decided what bytes reached a model it never described. The catalog
+    # itself is built in gact/provider_catalog.py; only the invalidation lands here.
+    "src/clio_agent/gact/routes/providers.py": 1351,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the

@@ -34,6 +34,10 @@ from clio_agent.providers.handshake.model import (
 class LMStudioHandshake(ProviderHandshake):
     """Handshake for a local LM Studio backend (no auth, native ``/api/v0``)."""
 
+    #: ``/api/v0/models`` reports a per-model ``capabilities`` list (``vision``,
+    #: ``tool_use``), so this backend really can evidence input modalities.
+    reports_input_modalities = True
+
     @staticmethod
     def _root(api_base: str) -> str:
         """Return the host root for ``api_base`` by stripping a trailing ``/v1``.

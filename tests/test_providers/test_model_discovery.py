@@ -1374,3 +1374,130 @@ def test_discover_claude_code_live_single_alias() -> None:
     assert result.failed_reason is None, result.failed_reason
     assert [m["id"] for m in result.discovered] == ["haiku"]
     assert result.discovered[0]["capabilities"] == ["text", "image", "pdf"]
+
+
+# --------------------------------------------------------------------------- #
+# Overlay staleness: a cache is an accelerator, never truth (AF-IMG F4).
+# --------------------------------------------------------------------------- #
+
+
+def _write_overlay(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: dict[str, Any]) -> None:
+    overlay_file = tmp_path / "overlay.json"
+    overlay_file.write_text(json.dumps({"codex": entry}), encoding="utf-8")
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(overlay_file))
+
+
+def test_overlay_within_ttl_is_served_without_a_staleness_marker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from datetime import datetime, timezone
+
+    _write_overlay(
+        tmp_path,
+        monkeypatch,
+        {
+            "models": [{"id": "gpt-5.6-sol"}],
+            "source": "codex_sdk",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    wire = model_discovery.overlay_models_wire("codex", "codex")
+    assert wire is not None
+    assert "staleness" not in wire
+
+
+def test_overlay_older_than_ttl_is_still_served_but_marked_typed_stale(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The sticky cache: nothing ever re-examined an entry once written."""
+
+    from datetime import datetime, timedelta, timezone
+
+    old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    _write_overlay(
+        tmp_path,
+        monkeypatch,
+        {"models": [{"id": "gpt-5.6-sol"}], "source": "codex_sdk", "generated_at": old},
+    )
+
+    wire = model_discovery.overlay_models_wire("codex", "codex")
+
+    assert wire is not None
+    # Still SERVED -- the documented contract never clears a prior good list.
+    assert [m["id"] for m in wire["models"]] == ["gpt-5.6-sol"]
+    assert wire["staleness"]["reason"] == "overlay_age_exceeded_ttl"
+    assert wire["staleness"]["ttl_s"] == model_discovery.overlay_staleness_ttl_s()
+    assert wire["staleness"]["age_s"] > wire["staleness"]["ttl_s"]
+    assert wire["staleness"]["description"]
+
+
+def test_overlay_ttl_zero_disables_the_age_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from tests._config_layer import set_config
+
+    old = (datetime.now(timezone.utc) - timedelta(days=3650)).isoformat()
+    _write_overlay(
+        tmp_path,
+        monkeypatch,
+        {"models": [{"id": "gpt-5.6-sol"}], "source": "codex_sdk", "generated_at": old},
+    )
+    set_config("providers.model_catalog_ttl_s", 0)
+    wire = model_discovery.overlay_models_wire("codex", "codex")
+    assert wire is not None
+    assert "staleness" not in wire
+
+
+def test_overlay_with_unreadable_timestamp_is_unverified_not_assumed_fresh(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _write_overlay(
+        tmp_path,
+        monkeypatch,
+        {"models": [{"id": "gpt-5.6-sol"}], "source": "codex_sdk", "generated_at": "whenever"},
+    )
+    wire = model_discovery.overlay_models_wire("codex", "codex")
+    assert wire is not None
+    assert wire["staleness"]["reason"] == "overlay_generated_at_unreadable"
+
+
+def test_a_failed_refresh_keeps_the_prior_list_and_marks_it_typed_stale(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The retained list is PRIOR evidence -- it must never be served as fresh."""
+
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="codex",
+            discovered=[{"id": "gpt-5.6-sol", "name": "GPT-5.6-Sol", "description": ""}],
+            source=model_discovery.CODEX_SOURCE,
+            default_model="gpt-5.6-sol",
+        )
+    )
+
+    failed_row = model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="codex",
+            discovered=[],
+            source=model_discovery.CODEX_SOURCE,
+            failed_reason="Codex Python SDK model discovery failed: transport closed",
+        )
+    )
+
+    assert [m["id"] for m in failed_row["discovered"]] == ["gpt-5.6-sol"]
+    assert failed_row["staleness"]["reason"] == "overlay_refresh_failed"
+    assert "transport closed" in failed_row["staleness"]["failed_reason"]
+    # And every later READ of that entry keeps saying so.
+    wire = model_discovery.overlay_models_wire("codex", "codex")
+    assert wire is not None
+    assert wire["staleness"]["reason"] == "overlay_refresh_failed"
+
+
+def test_an_uncatalogued_staleness_reason_is_refused() -> None:
+    from clio_agent.providers.model_discovery import overlay as md_overlay
+
+    with pytest.raises(ValueError, match="Unknown overlay staleness reason"):
+        md_overlay._staleness_reason("silently_probably_fine")
