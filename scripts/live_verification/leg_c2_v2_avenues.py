@@ -21,8 +21,11 @@ Avenues (see ``LEG_C2.md`` for the full per-avenue writeup + citations):
  3. mrtr-methods      -- BLOCKED: exerciser declares no resources/prompts, and
                          the declared session surface cannot reach them anyway.
  4. cache             -- #1285 C1-S5: FLIPPED to a real assertion.
-                         ``make_mcp_client`` opts into SEP-2549 caching by
-                         default; a ``build_exerciser_server(cache_ttl=...,
+                         ``make_mcp_client`` opts INTO SEP-2549 caching when
+                         ``response_cache_enabled()`` is true (this probe
+                         flips the flag for its own duration, proving the
+                         factory's wiring, not a changed operator default);
+                         a ``build_exerciser_server(cache_ttl=...,
                          cache_scope=...)`` instance's second ``tools/list``
                          is served from cache (a recording store proves
                          exactly one ``set``, not two). Headless, in-process.
@@ -178,8 +181,9 @@ AVENUE_PLAN: list[dict[str, Any]] = [
         "needs_lm": False,
         "expect": "pass",
         "summary": (
-            "#1285 C1-S5: make_mcp_client opts into SEP-2549 caching by default; a "
-            "cache_ttl-hinted exerciser's second tools/list is served from cache"
+            "#1285 C1-S5: make_mcp_client opts INTO SEP-2549 caching when "
+            "response_cache_enabled() is true; a cache_ttl-hinted exerciser's "
+            "second tools/list is served from cache"
         ),
     },
     {
