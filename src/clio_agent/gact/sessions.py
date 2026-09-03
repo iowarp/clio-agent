@@ -42,7 +42,9 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, get_args
+
+from clio_agent.gact.types import Session as _WireSession
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +126,31 @@ def normalize_stored_mode(mode: str) -> str:
     return RETIRED_MODES.get(mode, UNKNOWN_MODE_FALLBACK)
 
 
+#: Statuses the wire model accepts (``clio_agent.gact.types.Session.status``),
+#: read off that Literal so the two cannot drift apart.
+SESSION_STATUSES: frozenset[str] = frozenset(
+    get_args(_WireSession.model_fields["status"].annotation)
+)
+
+#: Where an unreadable stored status lands. A status we cannot interpret is not
+#: evidence of health, so it resolves to ``error`` rather than to ``idle`` --
+#: the same "never resolve into MORE authority" rule ``UNKNOWN_MODE_FALLBACK``
+#: applies to modes.
+UNKNOWN_STATUS_FALLBACK = "error"
+
+
+def normalize_stored_status(status: str) -> str:
+    """Map a stored status onto one the wire model accepts.
+
+    ``SessionStore`` rows are a plain dataclass with ``status: str``, so nothing
+    validated the value on the way in and a store written by an older (or
+    buggier) build can hold anything. ``ListSessionsResponse`` DOES validate, so
+    one unreadable row would 500 the whole listing for every other session.
+    """
+
+    return status if status in SESSION_STATUSES else UNKNOWN_STATUS_FALLBACK
+
+
 @dataclass
 class Session:
     """A single GACT v0.2 session record.
@@ -197,6 +224,7 @@ class Session:
 
         wire = asdict(self)
         wire["mode"] = normalize_stored_mode(self.mode)
+        wire["status"] = normalize_stored_status(self.status)
         wire.pop("approval_profile", None)
         return wire
 
@@ -464,6 +492,17 @@ class SessionStore:
             if title is not None:
                 sess.title = title
             if status is not None:
+                # Every other closed vocabulary below is guarded; ``status`` was
+                # not, and a dataclass field takes anything. An invented status
+                # persists silently and only detonates at the wire boundary,
+                # where it 500s the listing for every OTHER session. Refuse it
+                # here -- loudly, because the caller is server code with a bug,
+                # not a client sending bad input.
+                if status not in SESSION_STATUSES:
+                    raise ValueError(
+                        f"session status {status!r} is outside the wire vocabulary "
+                        f"{sorted(SESSION_STATUSES)}"
+                    )
                 sess.status = status
             if message_count is not None:
                 sess.message_count = message_count

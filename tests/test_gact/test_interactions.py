@@ -29,7 +29,13 @@ HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
 
 
 def test_agent_init_failure_surfaces_a_deferred_question_resume() -> None:
-    """An answered question may remain queued, but it must not look silently idle."""
+    """An answered question may remain queued, but it must not look silently idle.
+
+    A failed construction is NOT terminal for the process: ``PUT /v1/providers/lm``
+    rebinds and calls ``mark_agent_ready``, which drains exactly these inboxes.
+    Destroying the parked items to "release" them therefore throws away work the
+    one recovery path could still deliver.
+    """
 
     class Sessions:
         def __init__(self) -> None:
@@ -68,11 +74,18 @@ def test_agent_init_failure_surfaces_a_deferred_question_resume() -> None:
 
     assert inbox.peek_nonempty(), "the recoverable answer should remain queued"
     assert sessions.updates[0][0] == "child_session"
-    assert sessions.updates[0][1]["status"] == "failed"
+    # "failed" is out of ``Session.status``'s vocabulary; "error" is the real one.
+    assert sessions.updates[0][1]["status"] == "error"
     event = bus.events[0]
-    assert event.type == "user_question.resume_failed"
-    assert event.payload["question_ids"] == ["question_1"]
+    assert event.type == "session.input_refused"
+    assert event.payload["question_id"] == "question_1"
     assert event.payload["reason"] == "agent_init_failed"
+    # The item is retained, so the refusal must say so and name the door that
+    # delivers it -- publishing ``recoverable: False`` next to recovery actions
+    # (which is what the drain-everything version did) is self-contradicting.
+    assert event.payload["recoverable"] is True
+    assert event.payload["retained"] is True
+    assert event.payload["recovery_actions"] == ["rebind_lm_provider"]
 
 
 def _root_and_child(app: object) -> tuple[str, str]:

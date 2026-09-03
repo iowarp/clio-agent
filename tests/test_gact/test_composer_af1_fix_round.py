@@ -422,9 +422,7 @@ def test_oversized_workspace_file_is_refused_with_a_typed_limit(tmp_path) -> Non
     assert detail["error"]["details"]["size_bytes"] == 64
 
 
-def test_queue_promotion_authorizes_referenced_parts_exactly_once(
-    tmp_path, monkeypatch
-) -> None:
+def test_queue_promotion_authorizes_referenced_parts_exactly_once(tmp_path, monkeypatch) -> None:
     """The promote door resolves references off-loop ONCE.
 
     Before this fix, ``prepare_references`` authorized a queued message's
@@ -644,7 +642,13 @@ def test_admitted_diff_reference_redelivers_its_snapshot_with_a_stale_marker(
 def test_init_failure_refuses_inputs_parked_for_an_agent_that_never_arrives(
     tmp_path,
 ) -> None:
-    """A restart-shaped scenario: the answer landed, then construction failed."""
+    """A restart-shaped scenario: the answer landed, then construction failed.
+
+    The session must stop looking idle, but the parked item is RETAINED: a
+    provider rebind (``PUT /v1/providers/lm`` -> ``mark_agent_ready``) drains
+    these inboxes, so the item is deliverable and destroying it loses the answer
+    the user already gave.
+    """
 
     from clio_agent.gact.agent_initialization import record_init_failure
     from clio_agent.gact.loop_inbox import enqueue_user_steer
@@ -674,9 +678,98 @@ def test_init_failure_refuses_inputs_parked_for_an_agent_that_never_arrives(
     assert len(refusals) == 1
     assert refusals[0]["reason"] == "agent_init_failed"
     assert refusals[0]["question_id"] == "q_parked"
-    assert refusals[0]["recoverable"] is False
+    assert refusals[0]["recoverable"] is True
+    assert refusals[0]["retained"] is True
+    assert refusals[0]["recovery_actions"] == ["rebind_lm_provider"]
     assert app.state.sessions.get(session.id).status == "error"
-    assert not app.state.loop_inboxes[session.id].peek_nonempty()
+    assert app.state.loop_inboxes[session.id].peek_nonempty(), (
+        "the parked answer must survive for the rebind that can still deliver it"
+    )
+    patch = app.state.sessions.get(session.id).metadata["agent_init_error"]
+    assert patch["retained_inputs"] == 1
+
+
+def test_a_rebind_after_an_init_failure_still_delivers_the_retained_answer(
+    tmp_path,
+) -> None:
+    """The retention claim, proven on the real recovery door rather than asserted."""
+
+    import asyncio
+
+    from clio_agent.gact.agent_initialization import mark_agent_ready, record_init_failure
+    from clio_agent.gact.loop_inbox import enqueue_user_steer
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="recovered")
+    app.state.agent = None
+    enqueue_user_steer(app, session.id, "the answer", {"ask_user_resume": True})
+    record_init_failure(app, RuntimeError("provider is not configured"), stage="init")
+
+    drained: list[str] = []
+
+    async def drive() -> None:
+        app.state.mcp_app_loop = asyncio.get_running_loop()
+        app.state.turn_runner.bind_loop(app.state.mcp_app_loop)
+        import clio_agent.gact.loop_inbox as loop_inbox
+
+        original = loop_inbox.drain_inbox_to_new_turn
+        loop_inbox.drain_inbox_to_new_turn = lambda _app, sid: drained.append(sid)
+        try:
+            mark_agent_ready(app, object())
+            await asyncio.sleep(0)
+        finally:
+            loop_inbox.drain_inbox_to_new_turn = original
+
+    asyncio.run(drive())
+
+    assert drained == [session.id]
+    assert app.state.loop_inboxes[session.id].peek_nonempty()
+
+
+def test_the_session_store_refuses_an_out_of_vocabulary_status(tmp_path) -> None:
+    """``status`` is a closed vocabulary on the wire; the store never checked it.
+
+    ``SessionStore.update`` guards ``mode``/``edit_mode``/``routing_mode``/
+    ``approval_mode`` against their vocabularies and then assigns ``status``
+    unchecked onto a plain dataclass -- so an invented status like ``"failed"``
+    persists silently and only detonates at the WIRE boundary, where
+    ``ListSessionsResponse`` validates ``types.Session``: one bad row 500s
+    ``GET /v1/sessions`` for every OTHER session in the store. Refuse the write,
+    and make a store that already holds a bad row still listable.
+    """
+
+    import json
+
+    from clio_agent.gact.sessions import SessionStore
+
+    path = tmp_path / "sessions.json"
+    store = SessionStore(path=path)
+    session = store.create(workspace_id="ws_default", title="vocabulary")
+
+    with pytest.raises(ValueError, match="failed"):
+        store.update(session.id, status="failed")
+    assert store.get(session.id).status == "idle"
+    # Every legal status still writes.
+    assert store.update(session.id, status="error").status == "error"
+
+    # A store that ALREADY holds a bad row (an older build, a hand-edited file)
+    # must not take the listing down with it.
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw[session.id]["status"] = "failed"
+    raw["sess_good"] = dict(raw[session.id], id="sess_good", status="idle")
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    reloaded = SessionStore(path=path)
+    app = build_app(sessions_path=path)
+    app.state.sessions = reloaded
+    with TestClient(app) as client:
+        listed = client.get("/v1/sessions")
+        assert listed.status_code == 200, listed.text
+        by_id = {row["id"]: row for row in listed.json()["sessions"]}
+        assert set(by_id) == {session.id, "sess_good"}
+        # An unreadable status resolves to ``error``, never to a healthier one.
+        assert by_id[session.id]["status"] == "error"
+        assert by_id["sess_good"]["status"] == "idle"
 
 
 def test_mark_agent_ready_drains_through_the_running_loop(tmp_path) -> None:
@@ -1176,9 +1269,7 @@ def test_content_addressed_duplicate_drop_is_reported(tmp_path) -> None:
     rows = _resource_results(app, workspace.id)
 
     assert [row["id"] for row in rows] == ["res_named"]
-    reasons = [
-        row["reason"] for row in app.state.reference_search_degradations[workspace.id]
-    ]
+    reasons = [row["reason"] for row in app.state.reference_search_degradations[workspace.id]]
     assert reasons == ["resource_content_addressed_name_hidden"]
 
 

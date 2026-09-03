@@ -10,8 +10,14 @@ from clio_agent.providers.lm_spec import spec_from_config
 
 logger = logging.getLogger(__name__)
 
-#: Typed reason stamped on every input released when the agent never arrives.
+#: Typed reason stamped on every input refused while the agent is absent.
 AGENT_INIT_FAILED_REASON = "agent_init_failed"
+
+#: The ONE door that re-runs construction and re-drives these inboxes:
+#: ``PUT /v1/providers/lm`` builds a fresh agent and calls
+#: :func:`mark_agent_ready`. Named on the refusal so the client is told what
+#: actually recovers the retained work, rather than "restart the server".
+AGENT_INIT_RECOVERY_ACTIONS = ["rebind_lm_provider"]
 
 
 def mark_agent_ready(app: Any, agent: Any) -> None:
@@ -35,13 +41,16 @@ def mark_agent_ready(app: Any, agent: Any) -> None:
 def record_init_failure(app: Any, exc: BaseException, *, stage: str) -> None:
     """Expose one typed deferred-construction failure without leaving partial state.
 
-    Construction failing is terminal for this process: nothing will ever call
-    :func:`mark_agent_ready`, which is the ONLY drain of the loop inboxes that
-    ``user_question_resume`` parks answers into while ``app.state.agent`` is
-    ``None``. Those answers used to sit there forever with their sessions
-    reporting ``idle`` -- the user answered a question and the session looked
-    ready, with nothing left in the process that could ever deliver it. Every
-    parked input is therefore released as a typed refusal here.
+    While ``app.state.agent`` is ``None`` the ask-user resume parks answers on the
+    loop inboxes, which only :func:`mark_agent_ready` drains. Left alone those
+    answers sit there with their sessions reporting ``idle`` -- the user answered
+    a question, the session looked ready, and nothing said otherwise.
+
+    Construction failing is NOT terminal for the process, though: ``PUT
+    /v1/providers/lm`` builds a fresh agent and calls :func:`mark_agent_ready`,
+    which drains exactly these inboxes. So the honest report is refuse-and-RETAIN
+    -- say per item that it will not be delivered now, name the door that still
+    delivers it, and leave it queued for that door.
     """
 
     print(
@@ -54,12 +63,18 @@ def record_init_failure(app: Any, exc: BaseException, *, stage: str) -> None:
 
 
 def refuse_parked_inputs(app: Any, *, stage: str, detail: str) -> int:
-    """Release every input parked for an agent that will never arrive.
+    """Refuse — without destroying — every input parked for an absent agent.
 
-    One ``session.input_refused`` event per stranded item (never one summary for
+    One ``session.input_refused`` event per parked item (never one summary for
     the batch: each is a distinct user intent that must be individually visible),
     and the owning session is surfaced ``error`` rather than the ``idle`` the
     defer path left behind. Returns the number of refused items.
+
+    The item itself STAYS on its inbox, and the durable steer intent behind it
+    stays ``pending``. Both are true: a provider rebind delivers this work, so
+    settling the intent would publish a cancellation the recovery drain then
+    contradicts, and draining the inbox would throw away an answer the user
+    already gave. ``recoverable``/``retained`` on the payload say exactly that.
     """
 
     from clio_agent.gact.events import Event  # noqa: PLC0415
@@ -67,12 +82,11 @@ def refuse_parked_inputs(app: Any, *, stage: str, detail: str) -> int:
     inboxes = getattr(app.state, "loop_inboxes", None) or {}
     refused = 0
     for session_id, inbox in list(inboxes.items()):
-        events = inbox.drain()
+        events = inbox.snapshot()
         if not events:
             continue
         for event in events:
             refused += 1
-            _release_intent(app, session_id, event)
             app.state.bus.publish(
                 Event(
                     type="session.input_refused",
@@ -86,16 +100,18 @@ def refuse_parked_inputs(app: Any, *, stage: str, detail: str) -> int:
                         "message_id": event.steer_message_id,
                         "task_id": event.task_id,
                         "question_id": str(event.metadata.get("question_id") or ""),
-                        "recoverable": False,
-                        "recovery_actions": ["fix_provider_configuration", "restart_server"],
+                        "recoverable": True,
+                        "retained": True,
+                        "recovery_actions": list(AGENT_INIT_RECOVERY_ACTIONS),
                     },
                 )
             )
         logger.error(
-            "parked inputs refused reason=%s session=%s stage=%s count=%d",
+            "parked inputs refused reason=%s session=%s stage=%s count=%d retained=%d",
             AGENT_INIT_FAILED_REASON,
             session_id,
             stage,
+            len(events),
             len(events),
         )
         app.state.sessions.update(
@@ -106,24 +122,12 @@ def refuse_parked_inputs(app: Any, *, stage: str, detail: str) -> int:
                     "reason": AGENT_INIT_FAILED_REASON,
                     "stage": stage,
                     "detail": detail,
-                    "refused_inputs": len(events),
+                    "retained_inputs": len(events),
+                    "recovery_actions": list(AGENT_INIT_RECOVERY_ACTIONS),
                 }
             },
         )
     return refused
-
-
-def _release_intent(app: Any, session_id: str, event: Any) -> None:
-    """Settle the durable steer intent behind a refused input, when it has one."""
-
-    message_id = getattr(event, "steer_message_id", "")
-    intents = getattr(app.state, "message_intents", None)
-    if not message_id or intents is None:
-        return
-    # ``cancel_pending`` is the existing terminal transition for an accepted but
-    # undelivered steer; reusing it keeps the intent ledger's own vocabulary
-    # rather than inventing a second settled state for this one case.
-    intents.cancel_pending(session_id, message_id)
 
 
 def update_provider_profile(app: Any, agent: Any) -> None:

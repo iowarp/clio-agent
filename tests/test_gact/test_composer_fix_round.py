@@ -724,7 +724,9 @@ def test_typed_cause_unwraps_every_acceptance_error_carrier() -> None:
     )
 
     dumped = _typed_cause(
-        HTTPException(status_code=409, detail=ErrorEnvelope(error=info).model_dump(exclude_none=True))
+        HTTPException(
+            status_code=409, detail=ErrorEnvelope(error=info).model_dump(exclude_none=True)
+        )
     )
     modeled = _typed_cause(HTTPException(status_code=409, detail=ErrorEnvelope(error=info)))
     carrier = _typed_cause(_ContextFileAccessError(info))
