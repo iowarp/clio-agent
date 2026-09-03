@@ -544,6 +544,206 @@ def test_admitted_diff_reference_redelivers_its_snapshot_with_a_stale_marker(
     assert '"status": "pending"' in enriched
 
 
+# --------------------------------------------------------------------------- #
+# Finding 7: an init failure releases parked inputs instead of stranding them
+# --------------------------------------------------------------------------- #
+
+
+def test_init_failure_refuses_inputs_parked_for_an_agent_that_never_arrives(
+    tmp_path,
+) -> None:
+    """A restart-shaped scenario: the answer landed, then construction failed."""
+
+    from clio_agent.gact.agent_initialization import record_init_failure
+    from clio_agent.gact.loop_inbox import enqueue_user_steer
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="stranded")
+    app.state.agent = None
+    enqueue_user_steer(
+        app,
+        session.id,
+        "the answer the user already gave",
+        {"question_id": "q_parked", "ask_user_resume": True},
+    )
+    app.state.sessions.update(session.id, status="idle")
+    refusals: list[dict[str, object]] = []
+    original_publish = app.state.bus.publish
+
+    def capture(event):
+        if event.type == "session.input_refused":
+            refusals.append(dict(event.payload))
+        return original_publish(event)
+
+    app.state.bus.publish = capture
+
+    record_init_failure(app, RuntimeError("provider is not configured"), stage="init")
+
+    assert len(refusals) == 1
+    assert refusals[0]["reason"] == "agent_init_failed"
+    assert refusals[0]["question_id"] == "q_parked"
+    assert refusals[0]["recoverable"] is False
+    assert app.state.sessions.get(session.id).status == "error"
+    assert not app.state.loop_inboxes[session.id].peek_nonempty()
+
+
+def test_mark_agent_ready_drains_through_the_running_loop(tmp_path) -> None:
+    """The production branch (loop.call_soon), not the monkeypatched drain."""
+
+    import asyncio
+
+    from clio_agent.gact.agent_initialization import mark_agent_ready
+    from clio_agent.gact.loop_inbox import enqueue_user_steer
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="deferred")
+    app.state.agent = None
+    enqueue_user_steer(app, session.id, "deferred answer", {"ask_user_resume": True})
+
+    async def drive() -> None:
+        app.state.mcp_app_loop = asyncio.get_running_loop()
+        app.state.turn_runner.bind_loop(app.state.mcp_app_loop)
+        mark_agent_ready(app, object())
+        # call_soon schedules on the loop; one yield runs it.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    asyncio.run(drive())
+
+    assert app.state.agent is not None
+    # The drain ran on the loop and promoted the parked steer into a real turn.
+    assert not app.state.loop_inboxes[session.id].peek_nonempty()
+
+
+# --------------------------------------------------------------------------- #
+# Finding 8: a terminally-failing queue head says so instead of looping
+# --------------------------------------------------------------------------- #
+
+
+def test_queue_head_that_fails_terminally_reports_its_typed_cause_once(
+    tmp_path, monkeypatch
+) -> None:
+    from fastapi import HTTPException
+
+    from clio_agent.gact import composer_runtime, message_submission
+    from clio_agent.gact.message_intents import QueuedMessage
+    from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Part
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="queue")
+    app.state.message_intents.create_queued(
+        QueuedMessage(
+            id="queued_head",
+            session_id=session.id,
+            parts=[Part(type="text", text="stale reference")],
+        )
+    )
+
+    def stale_accept(*_args, **_kwargs):
+        raise HTTPException(
+            status_code=409,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="context_ref_stale",
+                    message="workspace file changed after the reference was selected",
+                    details={
+                        "requested_revision": "sha256:old",
+                        "actual_revision": "sha256:new",
+                    },
+                    recoverable=True,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    monkeypatch.setattr(message_submission, "accept_message", stale_accept)
+    published: list[tuple[str, dict[str, object]]] = []
+    original_publish = app.state.bus.publish
+
+    def capture(event):
+        published.append((event.type, dict(event.payload)))
+        return original_publish(event)
+
+    app.state.bus.publish = capture
+
+    composer_runtime.promote_queue_head(app, object(), session.id)
+    first = list(published)
+    composer_runtime.promote_queue_head(app, object(), session.id)
+    composer_runtime.promote_queue_head(app, object(), session.id)
+
+    failures = [row for row in first if row[0] == "queued_message.promotion_failed"]
+    assert len(failures) == 1
+    payload = failures[0][1]
+    assert payload["cause"]["error"] == "context_ref_stale"
+    assert payload["cause"]["status_code"] == 409
+    assert payload["cause"]["details"]["actual_revision"] == "sha256:new"
+    assert payload["recoverable"] is False
+    assert "retry_on" not in payload
+    blocked = [row for row in first if row[0] == "queued_message.head_blocked"]
+    assert len(blocked) == 1
+    assert blocked[0][1]["queued_message_id"] == "queued_head"
+    assert blocked[0][1]["recovery_actions"] == [
+        "edit_queued_message",
+        "delete_queued_message",
+    ]
+    # Re-drives do NOT re-attempt the same head at the same revision.
+    assert published == first
+    # Nothing was deleted: the row is still there for the client to edit.
+    assert [row.id for row in app.state.message_intents.list_queued(session.id)] == [
+        "queued_head"
+    ]
+    assert composer_runtime.blocked_queue_head(app, session.id)["queued_message_id"] == (
+        "queued_head"
+    )
+
+
+def test_editing_a_blocked_queue_head_unfreezes_the_queue(tmp_path, monkeypatch) -> None:
+    from fastapi import HTTPException
+
+    from clio_agent.gact import composer_runtime, message_submission
+    from clio_agent.gact.message_intents import QueuedMessage
+    from clio_agent.gact.types import Part, PostMessageResponse
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="queue")
+    app.state.message_intents.create_queued(
+        QueuedMessage(
+            id="queued_head",
+            session_id=session.id,
+            parts=[Part(type="text", text="stale reference")],
+        )
+    )
+    monkeypatch.setattr(
+        message_submission,
+        "accept_message",
+        lambda *_a, **_k: (_ for _ in ()).throw(HTTPException(status_code=409, detail={})),
+    )
+    composer_runtime.promote_queue_head(app, object(), session.id)
+    assert composer_runtime.blocked_queue_head(app, session.id) is not None
+
+    accepted: list[str] = []
+
+    def good_accept(*_args, **_kwargs):
+        accepted.append("promoted")
+        return (
+            PostMessageResponse(
+                message_id="msg_1", accepted_at="now", delivery="start", state="started"
+            ),
+            200,
+        )
+
+    monkeypatch.setattr(message_submission, "accept_message", good_accept)
+    app.state.message_intents.update_queued(
+        session.id,
+        "queued_head",
+        1,
+        parts=[Part(type="text", text="fixed")],
+    )
+    composer_runtime.promote_queue_head(app, object(), session.id)
+
+    assert accepted == ["promoted"]
+    assert composer_runtime.blocked_queue_head(app, session.id) is None
+
+
 def test_ask_user_ttl_default_and_clamp_are_config_resolved() -> None:
     from clio_agent.gact import ask_user_tool
 
