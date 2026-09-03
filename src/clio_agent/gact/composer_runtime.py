@@ -315,8 +315,9 @@ def _typed_cause(exc: BaseException) -> dict[str, Any]:
 
     if not isinstance(exc, HTTPException):
         return {"status_code": 0, "error": type(exc).__name__, "message": str(exc)}
-    detail = exc.detail if isinstance(exc.detail, Mapping) else {}
-    error = detail.get("error") if isinstance(detail.get("error"), Mapping) else {}
+    detail: Mapping[str, Any] = exc.detail if isinstance(exc.detail, Mapping) else {}
+    raw_error = detail.get("error")
+    error: Mapping[str, Any] = raw_error if isinstance(raw_error, Mapping) else {}
     return {
         "status_code": int(exc.status_code),
         "error": str(error.get("error") or "http_error"),
