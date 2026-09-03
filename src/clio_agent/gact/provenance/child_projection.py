@@ -12,13 +12,11 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.agent_tasks import display_run_name
-from clio_agent.gact.session_descendants import _DEFAULT_DESCENDANT_DEPTH, descendant_sessions
+from clio_agent.gact.session_descendants import _DEFAULT_DESCENDANT_DEPTH, descendant_walk
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-#: A span whose ``session_id`` is in the lineage only via the session store.
-UNOWNED_SESSION_ATTRIBUTION = "session_fork"
 #: A span whose ``session_id`` is in NEITHER substrate. Reported, never
 #: re-attributed: silently folding it into the root invented ownership and made
 #: the root's task_id/task_path appear on work the root never did.
@@ -72,8 +70,8 @@ def child_session_lineage(
     ]
     task_by_id = _task_index(app)
     path_by_session: dict[str, list[str]] = {root_session_id: []}
-    truncated = False
-    for row in descendant_sessions(app, root_session_id, max_depth=max_depth):
+    descendants, truncated = descendant_walk(app, root_session_id, max_depth=max_depth)
+    for row in descendants:
         task = task_by_id.get(row.task_id) if row.task_id else None
         agent_ref = dict((task or {}).get("agent_ref") or {})
         agent_id = str(agent_ref.get("expert_id") or "") if task else ""
@@ -107,17 +105,7 @@ def child_session_lineage(
                 }
             )
         rows.append(entry)
-        if row.depth >= max_depth:
-            # The walk stopped here by policy, not because the tree ended: a
-            # child of this row would have existed at depth max_depth + 1.
-            truncated = truncated or bool(_has_children(app, row.session_id))
     return rows, truncated
-
-
-def _has_children(app: "FastAPI", session_id: str) -> bool:
-    """Whether the bounded walk left descendants of ``session_id`` unvisited."""
-
-    return bool(descendant_sessions(app, session_id, max_depth=1))
 
 
 def project_child_execution(

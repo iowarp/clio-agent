@@ -1796,7 +1796,8 @@ def test_route_session_artifacts_include_used_surfaces_dedup_reuse(tmp_path, mon
 
 
 def test_descendant_session_ids_bfs_bounded_and_cycle_safe():
-    from clio_agent.gact.agent_tasks import AgentTask, AgentTaskRegistry, descendant_session_ids
+    from clio_agent.gact.agent_tasks import AgentTask, AgentTaskRegistry
+    from clio_agent.gact.session_descendants import descendant_session_ids
 
     reg = AgentTaskRegistry()
     reg.register(

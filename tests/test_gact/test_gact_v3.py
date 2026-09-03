@@ -714,5 +714,8 @@ def test_v3_normalizes_question_permission_and_child_agent_events() -> None:
         "title": "data_expert #2",
         "state": "running",
         "agent_id": "data_expert",
+        # Where this run sits in the spawn tree. With no live registry bound the
+        # chain is the task itself -- never fabricated ancestors.
+        "task_path": ["task_1"],
         "child_session_id": "sess_child",
     }

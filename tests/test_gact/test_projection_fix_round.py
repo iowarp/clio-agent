@@ -20,8 +20,6 @@ from fastapi.testclient import TestClient
 from clio_agent.gact.agent_tasks import AgentTask
 from clio_agent.gact.app import build_app
 
-HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
-
 
 def _seed_task(app: Any, *, parent: str, child: str, task_id: str, depth: int = 1) -> AgentTask:
     """Register one delegated child through the authoritative registry."""
@@ -130,7 +128,7 @@ def test_the_descendant_scope_carries_forks_with_a_typed_marker(tmp_path) -> Non
     pending permission be invisible to every interactions poll.
     """
 
-    from clio_agent.gact.agent_tasks import descendant_session_ids, descendant_sessions
+    from clio_agent.gact.session_descendants import descendant_session_ids, descendant_sessions
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     root = app.state.sessions.create(workspace_id="ws_default", title="root")
@@ -265,8 +263,8 @@ def test_child_lineage_is_actually_bounded_and_says_when_it_truncates(tmp_path) 
     disagreed about what the tree even is.
     """
 
-    from clio_agent.gact.agent_tasks import _DEFAULT_DESCENDANT_DEPTH, MAX_SPAWN_DEPTH
     from clio_agent.gact.provenance.child_projection import child_session_lineage
+    from clio_agent.gact.session_descendants import _DEFAULT_DESCENDANT_DEPTH, MAX_SPAWN_DEPTH
 
     assert _DEFAULT_DESCENDANT_DEPTH == MAX_SPAWN_DEPTH, (
         "the aggregation cap must track the spawn backstop, not drift from it"
@@ -426,6 +424,36 @@ def test_the_execution_route_honours_include_children(tmp_path, include_children
     lineage = [row["session_id"] for row in body["session_lineage"]]
     assert lineage == ([root.id, child.id] if include_children else [root.id])
     assert body["lineage_truncated"] is False
+
+
+def test_one_unreadable_child_does_not_cost_the_parent_its_timeline() -> None:
+    """The ARC read raised straight out of the route: a 500 for the whole query.
+
+    A child whose event segments cannot be read is one gap, not a failed query --
+    and it must be NAMED, or the parent's timeline silently loses a branch.
+    """
+
+    from types import SimpleNamespace
+
+    from clio_agent.gact.routes.provenance import _native_events
+
+    def iterate(session_id: str) -> list[Any]:
+        if session_id == "child":
+            raise OSError("segment file is unreadable")
+        return []
+
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            arc=SimpleNamespace(_live=SimpleNamespace(iter_session_event_segments=iterate))
+        )
+    )
+
+    events, degradations = _native_events(app, ["root", "child"])
+
+    assert events == []
+    assert [row["reason"] for row in degradations] == ["child_events_unreadable"]
+    assert degradations[0]["session_id"] == "child"
+    assert "unreadable" in degradations[0]["detail"]
 
 
 def test_the_execution_route_survives_a_deleted_child(tmp_path) -> None:

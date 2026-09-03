@@ -356,6 +356,16 @@ def interactions_projection_limit() -> int:
     )
 
 
+def _owners_newest_first(app: FastAPI, owners: set[str]) -> list[str]:
+    """Order a scope by session creation time, newest first, ties by id."""
+
+    def key(owner: str) -> tuple[str, str]:
+        session = app.state.sessions.get(owner)
+        return (str(getattr(session, "created_at", "") or ""), owner)
+
+    return sorted(owners, key=key, reverse=True)
+
+
 @dataclass(frozen=True)
 class InteractionProjection:
     """The projected rows plus every typed reason they are partial."""
@@ -409,9 +419,10 @@ def project_pending_interactions(
         and str(permission.get("session_id") or "") in scope
     )
     limit = interactions_projection_limit()
-    # The root owns the attention lane, so it is walked first; the rest follow in
-    # a stable order so two polls agree on WHICH owners were skipped.
-    walk_order = [root_session_id, *sorted(scope - {root_session_id})]
+    # The root owns the attention lane, so it is walked first; the rest follow
+    # newest-created first, so the cap drops the stalest sessions and two polls
+    # agree on WHICH owners were skipped.
+    walk_order = [root_session_id, *_owners_newest_first(app, scope - {root_session_id})]
     walked, skipped = walk_order[:limit], walk_order[limit:]
     for owner in walked:
         owner_rows, owner_degradations = _a2ui_interactions(app, owner)

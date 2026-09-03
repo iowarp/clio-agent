@@ -244,19 +244,15 @@ def _task_path(payload: dict[str, Any]) -> list[str]:
     registry = getattr(getattr(app, "state", None), "agent_task_registry", None)
     if not task_id or registry is None:
         return [task_id] if task_id else []
+    # ONE snapshot, indexed by the child session each task owns: the ancestor
+    # chain is a lookup per step, not a scan per step.
+    owner_of = {task.child_session_id: task for task in registry.snapshot()}
     path = [task_id]
     parent_session_id = str(payload.get("parent_session_id") or "")
     seen = {task_id}
     for _ in range(MAX_SPAWN_DEPTH):
-        owner = next(
-            (
-                task
-                for task in registry.snapshot()
-                if task.child_session_id == parent_session_id and task.task_id not in seen
-            ),
-            None,
-        )
-        if owner is None:
+        owner = owner_of.get(parent_session_id)
+        if owner is None or owner.task_id in seen:
             break
         seen.add(owner.task_id)
         path.insert(0, owner.task_id)

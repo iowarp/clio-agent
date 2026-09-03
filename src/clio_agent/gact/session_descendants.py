@@ -59,43 +59,35 @@ class SessionDescendant:
     task_id: str = ""
 
 
-def child_session_ids(app: "FastAPI", parent_session_id: str) -> list[str]:
-    """Return the direct child session ids a parent spawned (via the task registry).
+def _session_store_index(app: "FastAPI") -> dict[str, list[str]]:
+    """Build the store's parent -> children index ONCE, for a whole walk.
 
-    Each :class:`AgentTask` carries the ``child_session_id`` of the real child
-    SESSION it projects (#948 S2 substrate). Empty when the registry is absent or
-    the session spawned nothing.
+    The session store keeps no parent index, so asking it for one session's
+    children is a full scan. Doing that per parent per depth made the walk
+    O(depth x frontier x sessions) -- on the interactions poll, which is the very
+    cost this walk exists to bound.
     """
-    reg = getattr(app.state, "agent_task_registry", None)
-    if reg is None:
-        return []
-    out: list[str] = []
-    for task in reg.for_parent(parent_session_id):
-        child = str(getattr(task, "child_session_id", "") or "")
-        if child:
-            out.append(child)
-    return out
-
-
-def _session_store_children(app: "FastAPI", parent_session_id: str) -> list[str]:
-    """Direct children of ``parent_session_id`` per the SESSION STORE's own pointer."""
 
     sessions = getattr(app.state, "sessions", None)
     if sessions is None:
-        return []
-    rows = sessions.list(workspace_id=None)
-    return [
-        str(getattr(row, "id", "") or "")
-        for row in rows
-        if str(getattr(row, "parent_session_id", "") or "") == parent_session_id
-        and str(getattr(row, "id", "") or "")
-    ]
+        return {}
+    index: dict[str, list[str]] = {}
+    for row in sessions.list(workspace_id=None):
+        parent = str(getattr(row, "parent_session_id", "") or "")
+        row_id = str(getattr(row, "id", "") or "")
+        if parent and row_id:
+            index.setdefault(parent, []).append(row_id)
+    return index
 
 
-def descendant_sessions(
+def descendant_walk(
     app: "FastAPI", root_session_id: str, *, max_depth: int = _DEFAULT_DESCENDANT_DEPTH
-) -> list[SessionDescendant]:
+) -> tuple[list[SessionDescendant], bool]:
     """Return every descendant of ``root_session_id`` (BFS, bounded), typed by origin.
+
+    The second element is TRUNCATED: the walk stopped at ``max_depth`` with a
+    frontier still to visit. A caller that serves the lineage needs it, and it is
+    free here -- deciding it afterwards costs another walk per boundary row.
 
     ONE walk over BOTH substrates, because neither alone is the topology: the
     agent-task registry knows which child a task delegated but cannot see a user
@@ -112,8 +104,9 @@ def descendant_sessions(
     """
 
     if max_depth < 1:
-        return []
+        return [], False
     reg = getattr(app.state, "agent_task_registry", None)
+    forks = _session_store_index(app)
     out: list[SessionDescendant] = []
     seen: set[str] = {root_session_id}
     frontier = [root_session_id]
@@ -127,7 +120,7 @@ def descendant_sessions(
                     (str(getattr(task, "child_session_id", "") or ""), task.task_id)
                     for task in reg.for_parent(parent)
                 ]
-            forked = [(child, "") for child in _session_store_children(app, parent)]
+            forked = [(child, "") for child in forks.get(parent, ())]
             for child, task_id in (*delegated, *forked):
                 if not child or child in seen:
                     continue
@@ -146,7 +139,30 @@ def descendant_sessions(
                 next_frontier.append(child)
         frontier = next_frontier
         depth += 1
-    return out
+    # Truncated means the CAP stopped the walk, not that the tree happened to end
+    # exactly at it: a frontier row with nothing unvisited below it is a leaf.
+    truncated = any(
+        any(
+            child and child not in seen
+            for child in (
+                *(
+                    str(getattr(task, "child_session_id", "") or "")
+                    for task in (reg.for_parent(node) if reg is not None else ())
+                ),
+                *forks.get(node, ()),
+            )
+        )
+        for node in frontier
+    )
+    return out, truncated
+
+
+def descendant_sessions(
+    app: "FastAPI", root_session_id: str, *, max_depth: int = _DEFAULT_DESCENDANT_DEPTH
+) -> list[SessionDescendant]:
+    """The rows-only view of :func:`descendant_walk`."""
+
+    return descendant_walk(app, root_session_id, max_depth=max_depth)[0]
 
 
 def descendant_session_ids(
