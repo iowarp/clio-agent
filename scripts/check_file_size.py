@@ -470,7 +470,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # the base commit's file already failed `ruff format --check`) -- no
     # additional logic, only canonical line-wrapping of untouched code. All
     # timer/registry logic lives in the owner module gact/runtime/bringup_timing.py.
-    "src/clio_agent/gact/routes/sessions.py": 1472,
+    "src/clio_agent/gact/routes/sessions.py": 1434,
     # #1215 S5: crossed the 800 new-file cap (793 -> 809) for enrich_turn_context —
     # a thin timed combinator wrapping the TWO existing enrichment calls
     # (_enrich_with_context_files + _enrich_with_requested_memory_search) in ONE

@@ -688,9 +688,7 @@ def test_queue_head_that_fails_terminally_reports_its_typed_cause_once(
     # Re-drives do NOT re-attempt the same head at the same revision.
     assert published == first
     # Nothing was deleted: the row is still there for the client to edit.
-    assert [row.id for row in app.state.message_intents.list_queued(session.id)] == [
-        "queued_head"
-    ]
+    assert [row.id for row in app.state.message_intents.list_queued(session.id)] == ["queued_head"]
     assert composer_runtime.blocked_queue_head(app, session.id)["queued_message_id"] == (
         "queued_head"
     )
@@ -742,6 +740,147 @@ def test_editing_a_blocked_queue_head_unfreezes_the_queue(tmp_path, monkeypatch)
 
     assert accepted == ["promoted"]
     assert composer_runtime.blocked_queue_head(app, session.id) is None
+
+
+# --------------------------------------------------------------------------- #
+# Finding 9: honest a2ui status, app-scoped MCP store, bounded projection
+# --------------------------------------------------------------------------- #
+
+
+def test_a2ui_surface_stops_reporting_pending_once_it_was_responded_to(tmp_path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="surface")
+    create = {
+        "version": "v0.9.1",
+        "createSurface": {"surfaceId": "form", "catalogId": CLIO_A2UI_CATALOG_ID},
+    }
+    components = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "form",
+            "components": [
+                {"id": "label", "component": "Text", "text": "Submit"},
+                {
+                    "id": "submit",
+                    "component": "Button",
+                    "child": "label",
+                    "action": {"event": {"name": "form.submit", "context": {"value": "x"}}},
+                },
+            ],
+        },
+    }
+    action = {
+        "version": "v0.9.1",
+        "action": {
+            "name": "form.submit",
+            "surfaceId": "form",
+            "sourceComponentId": "submit",
+            "timestamp": "2026-09-03T10:00:00Z",
+            "context": {"value": "x"},
+        },
+    }
+
+    with TestClient(app) as client:
+        client.post(
+            f"/v1/sessions/{session.id}/a2ui/messages",
+            headers=HEADERS,
+            json={"messages": [create, components]},
+        )
+        before = client.get(f"/v1/sessions/{session.id}/interactions").json()["interactions"]
+        assert [row["status"] for row in before if row["kind"] == "a2ui"] == ["pending"]
+
+        responded = client.post(
+            f"/v1/sessions/{session.id}/a2ui/actions",
+            headers=HEADERS,
+            json={"message": action},
+        )
+        assert responded.status_code == 200
+        after = client.get(f"/v1/sessions/{session.id}/interactions").json()["interactions"]
+
+    settled = [row for row in after if row["kind"] == "a2ui"]
+    assert [row["status"] for row in settled] == ["answered"]
+    assert settled[0]["payload"]["last_action"]["name"] == "form.submit"
+
+
+def test_interaction_projection_reads_this_apps_task_store_not_the_process_global(
+    tmp_path,
+) -> None:
+    """Two apps in one process: the newest SessionStore owns the module global."""
+
+    from clio_agent.tools.mcp_task_records import TaskKey, TaskRecord, resolve_store
+
+    first = build_app(sessions_path=tmp_path / "first.json")
+    first_session = first.state.sessions.create(workspace_id="ws_default", title="first")
+    first.state.sessions.task_store.put(
+        TaskRecord(
+            key=TaskKey(server_id="srv", session_id=first_session.id, task_id="task_first"),
+            tool="earthscope_query",
+            status="input_required",
+        )
+    )
+    # Building a SECOND app republishes the process-global onto its own registry.
+    second = build_app(sessions_path=tmp_path / "second.json")
+    assert resolve_store(None) is second.state.sessions.task_store
+
+    with TestClient(first) as client:
+        rows = client.get(f"/v1/sessions/{first_session.id}/interactions").json()["interactions"]
+
+    assert [row["id"] for row in rows if row["kind"] == "mcp_task_input"] == [
+        "mcp_task_input:srv:task_first"
+    ]
+
+
+def test_interaction_projection_is_bounded(tmp_path) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    set_config("gact.interactions.projection_limit", 3)
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="many")
+    for index in range(10):
+        app.state.permissions[f"perm_{index}"] = {
+            "id": f"perm_{index}",
+            "session_id": session.id,
+            "status": "pending",
+            "summary": f"Allow {index}",
+            "created_at": now,
+            "tool_call": {"tool_name": "fs_apply_edit_write"},
+        }
+
+    with TestClient(app) as client:
+        rows = client.get(f"/v1/sessions/{session.id}/interactions").json()["interactions"]
+
+    assert len(rows) == 3
+
+
+def test_user_questions_ledger_evicts_terminal_rows_before_pending_ones(tmp_path) -> None:
+    from clio_agent.gact.runtime import retention
+    from clio_agent.gact.user_question_ledger import record_user_question
+
+    set_config("gact.ledger_retention.user_questions.max", 2)
+    set_config("gact.ledger_retention.user_questions.hard", 3)
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="ledger")
+    rebuilt = retention.build_ledger_bounds()
+    retention.LEDGER_BOUNDS["user_questions"] = rebuilt["user_questions"]
+
+    now = datetime.now(timezone.utc).isoformat()
+    for index in range(4):
+        record_user_question(
+            app,
+            UserQuestion(
+                id=f"q_{index}",
+                session_id=session.id,
+                prompt=f"question {index}",
+                status="answered" if index < 3 else "pending",
+                created_at=now,
+                updated_at=now,
+            ),
+        )
+
+    assert "q_3" in app.state.user_questions
+    assert len(app.state.user_questions) <= 3
+    reasons = [row["reason"] for row in app.state.ledger_evictions]
+    assert reasons and all(reason.startswith("capacity_") for reason in reasons)
+    assert all(row["ledger"] == "user_questions" for row in app.state.ledger_evictions)
 
 
 def test_ask_user_ttl_default_and_clamp_are_config_resolved() -> None:

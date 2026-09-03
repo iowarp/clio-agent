@@ -7,9 +7,11 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent import conf
 from clio_agent.gact.a2ui import SERVER_ACTIONS
 from clio_agent.gact.agent_tasks import descendant_session_ids
 from clio_agent.gact.ask_user_tool import restore_pending_ask_user_questions
+from clio_agent.gact.mcp_task_store import app_task_store
 from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
 from clio_agent.gact.types import (
@@ -21,12 +23,16 @@ from clio_agent.gact.types import (
     RespondInteractionRequest,
     UserQuestion,
 )
-from clio_agent.tools.mcp_task_records import TaskRecord, resolve_store
+from clio_agent.tools.mcp_task_records import TaskRecord
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
 
-__all__ = ["project_pending_interactions", "register_permission_and_interaction_routes"]
+__all__ = [
+    "interactions_projection_limit",
+    "project_pending_interactions",
+    "register_permission_and_interaction_routes",
+]
 
 
 def register_permission_and_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
@@ -204,6 +210,28 @@ def _surface_actions(surface: Mapping[str, Any]) -> list[str]:
     return sorted(found)
 
 
+def _surface_last_action(surface: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the ``/lastAction`` the dispatcher wrote back, if the surface has one.
+
+    ``dispatch_action`` acknowledges every accepted action by folding an
+    ``updateDataModel`` at ``/lastAction`` into the surface. That fold IS the
+    server's record that this surface was responded to, so the projection reads it
+    rather than reporting every action-bearing surface ``pending`` forever.
+    """
+
+    latest: dict[str, Any] = {}
+    for message in surface.get("messages") or []:
+        if not isinstance(message, Mapping):
+            continue
+        update = message.get("updateDataModel")
+        if not isinstance(update, Mapping) or str(update.get("path") or "") != "/lastAction":
+            continue
+        value = update.get("value")
+        if isinstance(value, Mapping):
+            latest = dict(value)
+    return latest
+
+
 def _a2ui_interactions(app: FastAPI, owner: str) -> list[PendingInteraction]:
     rows: list[PendingInteraction] = []
     for surface in app.state.a2ui_store.list_wire(owner):
@@ -211,6 +239,16 @@ def _a2ui_interactions(app: FastAPI, owner: str) -> list[PendingInteraction]:
         if surface.get("state") == "deleted" or not actions:
             continue
         surface_id = str(surface.get("id") or "")
+        last_action = _surface_last_action(surface)
+        # A responded surface is SETTLED. It used to keep projecting ``pending``
+        # forever, so an attention lane showed a surface the user had already
+        # submitted, indefinitely and unboundedly. The action list is NOT cleared:
+        # a surface can legitimately be acted on again (a chat-like agent.submit),
+        # so the row states what happened rather than foreclosing what is offered.
+        settled = bool(last_action)
+        payload: dict[str, Any] = {"revision": surface.get("revision", 0)}
+        if settled:
+            payload["last_action"] = last_action
         rows.append(
             PendingInteraction(
                 id=f"a2ui:{owner}:{surface_id}",
@@ -218,6 +256,7 @@ def _a2ui_interactions(app: FastAPI, owner: str) -> list[PendingInteraction]:
                 owner_session_id=owner,
                 attended_session_id=attended_session_id(app, owner),
                 task_id=_task_id_for_owner(app, owner),
+                status="answered" if settled else "pending",
                 title="Interactive surface",
                 source=PendingInteractionSource(
                     protocol="native",
@@ -226,7 +265,7 @@ def _a2ui_interactions(app: FastAPI, owner: str) -> list[PendingInteraction]:
                     surface_id=surface_id,
                 ),
                 created_at=str(surface.get("created_at") or ""),
-                payload={"revision": surface.get("revision", 0)},
+                payload=payload,
                 actions=actions,
             )
         )
@@ -255,6 +294,22 @@ def _orphan_mcp_interaction(app: FastAPI, record: TaskRecord) -> PendingInteract
         created_at=record.created_at,
         payload={"server_id": record.key.server_id, "awaiting_question": True},
         actions=[],
+    )
+
+
+def interactions_projection_limit() -> int:
+    """Maximum interaction rows one projection returns, newest first.
+
+    The projection is a full scan of four ledgers with no bound of its own, and
+    ``include_children=true`` on a deep spawn tree multiplies it. Config:
+    ``gact.interactions.projection_limit`` / ``CLIO_INTERACTIONS_PROJECTION_LIMIT``.
+    """
+
+    return conf.resolve(
+        "gact.interactions.projection_limit",
+        env="CLIO_INTERACTIONS_PROJECTION_LIMIT",
+        default=200,
+        cast=conf.as_int,
     )
 
 
@@ -296,12 +351,14 @@ def project_pending_interactions(
         rows.extend(_a2ui_interactions(app, owner))
     rows.extend(
         _orphan_mcp_interaction(app, record)
-        for record in resolve_store(None).list()
+        for record in app_task_store(app).list()
         if record.display_status == "input_required"
         and str(record.session_id or "") in scope
         and record.task_id not in correlated_tasks
     )
-    return sorted(rows, key=lambda row: row.created_at, reverse=True)
+    return sorted(rows, key=lambda row: row.created_at, reverse=True)[
+        : interactions_projection_limit()
+    ]
 
 
 def _interaction_wire(row: PendingInteraction) -> dict[str, Any]:

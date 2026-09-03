@@ -51,6 +51,7 @@ from clio_agent.gact.planning import (
     recorded_playbook,
     transition_playbook_to_execution,
 )
+from clio_agent.gact.user_question_ledger import record_user_question
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
@@ -523,7 +524,7 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
             "source_user_message_id": state.user_msg.id,
         },
     )
-    app.state.user_questions[question.id] = question
+    record_user_question(app, question)
     updated = app.state.sessions.update(
         state.sid,
         status="waiting_user",

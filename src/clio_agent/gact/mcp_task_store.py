@@ -76,6 +76,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "SESSION_TASKS_METADATA_KEY",
     "SessionMetadataTaskStore",
+    "app_task_store",
     "install_session_task_store",
     "notify_session_deleted",
 ]
@@ -317,6 +318,32 @@ class SessionMetadataTaskStore:
 
         rows = (getattr(session, "metadata", None) or {}).get(SESSION_TASKS_METADATA_KEY)
         return rows if isinstance(rows, dict) else {}
+
+
+def app_task_store(app: Any) -> Any:
+    """Return THIS app's task-record store.
+
+    ``resolve_store(None)`` reads a module-global that the newest
+    :class:`~clio_agent.gact.sessions.SessionStore` construction overwrites, so in
+    a process holding two apps (a test suite, a second server) one app's routes
+    projected the OTHER app's tasks. Every read side therefore goes through the
+    handle THIS app's own session registry retained when it installed the store. An
+    app whose registry is non-durable (in-memory, which deliberately publishes no
+    store) falls back to the process store, and that fallback is announced rather
+    than taken silently.
+    """
+
+    store = getattr(getattr(app.state, "sessions", None), "task_store", None)
+    if store is not None:
+        return store
+    from clio_agent.tools.mcp_task_records import resolve_store  # noqa: PLC0415
+
+    logger.warning(
+        "mcp task store not app-scoped reason=app_task_store_absent "
+        "(reading the process-global store; a non-durable session registry "
+        "publishes no store of its own)"
+    )
+    return resolve_store(None)
 
 
 def install_session_task_store(sessions: "SessionStore") -> SessionMetadataTaskStore:

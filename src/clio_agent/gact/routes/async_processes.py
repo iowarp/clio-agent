@@ -25,9 +25,10 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException
 
 from clio_agent.gact.agent_tasks import AgentTask, descendant_session_ids, display_run_name
+from clio_agent.gact.mcp_task_store import app_task_store
 from clio_agent.gact.provenance.child_projection import child_session_lineage
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
-from clio_agent.tools.mcp_task_records import TaskRecord, resolve_store
+from clio_agent.tools.mcp_task_records import TaskRecord
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -133,7 +134,7 @@ def project_session_async_processes(
             "owner_session_id": record.session_id,
             "task_path": list(lineage_by_session.get(record.session_id, {}).get("task_path") or []),
         }
-        for record in resolve_store(None).list()
+        for record in app_task_store(app).list()
         if record.session_id in owner_session_ids and record.task_id not in agent_task_ids
     )
     return sorted(rows, key=lambda row: str(row.get("created_at") or ""), reverse=True)

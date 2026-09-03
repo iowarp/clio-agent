@@ -122,6 +122,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_HOOKS_MANAGED_CONFIG` | `hooks.managed_config` | str | _(unset)_ | `src/clio_agent/gact/hooks/dispatcher.py` |
 | `CLIO_HOOKS_STOP_LOOP_CAP` | `hooks.stop_loop_cap` | int | `8` | `src/clio_agent/gact/hooks/stop_loop.py` |
 | `CLIO_HOOKS_TRUST_STORE` | `hooks.trust_store` | str | _(unset)_ | `src/clio_agent/gact/hooks/dispatcher.py` |
+| `CLIO_INTERACTIONS_PROJECTION_LIMIT` | `gact.interactions.projection_limit` | int | `200` | `src/clio_agent/gact/routes/interactions.py` |
 | `CLIO_LEDGER_A2UI_MESSAGES_MAX` | `gact.ledger_retention.a2ui_messages.max` | int | `512` | `src/clio_agent/gact/a2ui.py` |
 | `CLIO_LEDGER_COMMAND_AUDIT_MAX` | `gact.ledger_retention.command_audit.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_CONTEXT_FRAMES_MAX` | `gact.ledger_retention.context_frames.max` | int | `200` | `src/clio_agent/gact/runtime/retention.py` |
@@ -134,6 +135,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LEDGER_SHARED_TOKENS_MAX` | `gact.ledger_retention.shared_tokens.max` | int | `5000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_TURN_ATTEMPTS_HARD` | `gact.ledger_retention.turn_attempts.hard` | int | `4000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_TURN_ATTEMPTS_MAX` | `gact.ledger_retention.turn_attempts.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
+| `CLIO_LEDGER_USER_QUESTIONS_HARD` | `gact.ledger_retention.user_questions.hard` | int | `4000` | `src/clio_agent/gact/runtime/retention.py` |
+| `CLIO_LEDGER_USER_QUESTIONS_MAX` | `gact.ledger_retention.user_questions.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LIVE_EDGE_STREAMING` | `gact.live_edge_streaming` | bool | `false` | `src/clio_agent/gact/live_edge.py` |
 | `CLIO_LIVE_STREAMING` | `runtime.live_streaming` | bool | `true` | `src/clio_agent/lm/adapters.py` |
 | `CLIO_LMSTUDIO_FLASH_ATTENTION` | `lm.lmstudio_flash_attention` | bool | `true` | `src/clio_agent/gact/routes/providers.py` |

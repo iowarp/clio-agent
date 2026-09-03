@@ -212,6 +212,15 @@ def _terminal_turn_attempt(row: Any) -> bool:
     return str(status or "") in {"completed", "failed", "cancelled", "denied", "error"}
 
 
+def _terminal_user_question(row: Any) -> bool:
+    """A user question is terminal once it is no longer awaiting a human."""
+
+    status = getattr(row, "status", None)
+    if status is None and isinstance(row, Mapping):
+        status = row.get("status")
+    return str(status or "pending") in {"answered", "cancelled", "expired"}
+
+
 def _terminal_shared_token(row: Any) -> bool:
     """A share token is terminal once its TTL has elapsed."""
 
@@ -282,6 +291,19 @@ def build_ledger_bounds() -> dict[str, LedgerBound]:
                 "gact.ledger_retention.turn_attempts.hard", "CLIO_LEDGER_TURN_ATTEMPTS_HARD", 4000
             ),
             is_terminal=_terminal_turn_attempt,
+        ),
+        # ``app.state.user_questions`` is the live ask-user / elicitation ledger and
+        # is scanned in full by the interaction projection. Terminal-first so a
+        # still-PENDING question -- someone is waiting on it -- survives a burst of
+        # answered ones, and only the hard cap ever force-evicts a pending row.
+        "user_questions": LedgerBound(
+            max_entries=_resolve_positive_int(
+                "gact.ledger_retention.user_questions.max", "CLIO_LEDGER_USER_QUESTIONS_MAX", 2000
+            ),
+            hard_cap=_resolve_positive_int(
+                "gact.ledger_retention.user_questions.hard", "CLIO_LEDGER_USER_QUESTIONS_HARD", 4000
+            ),
+            is_terminal=_terminal_user_question,
         ),
         "shared_tokens": LedgerBound(
             max_entries=_resolve_positive_int(

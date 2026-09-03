@@ -226,6 +226,7 @@ class SessionStore:
         self._lock = threading.Lock()
         self._sessions: dict[str, Session] = {}
         self._lifecycle_observer: Callable[[str, Session], None] | None = None
+        self.task_store: Any | None = None
         if path is not None:
             self._load()
             # #1115: a PERSISTENT session registry is the durable home for in-flight
@@ -237,7 +238,10 @@ class SessionStore:
                 install_session_task_store,
             )
 
-            install_session_task_store(self)
+            # Retained so ``build_app`` can publish an APP-SCOPED handle: the
+            # process-global the install also sets is overwritten by the next
+            # registry constructed in this process.
+            self.task_store = install_session_task_store(self)
 
     # ---- lifecycle ----------------------------------------------------
 

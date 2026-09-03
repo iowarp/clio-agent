@@ -11,6 +11,7 @@ from clio_agent.gact.messaging import _ask_user_options_from_action, _coerce_ask
 from clio_agent.gact.runtime.globals import _emit_semantic_event, _new_question_id
 from clio_agent.gact.turn_stream import settle_turn_transcript
 from clio_agent.gact.types import UserQuestion
+from clio_agent.gact.user_question_ledger import record_user_question
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -81,7 +82,7 @@ def maybe_pause_for_user(
             "route_reason": state.route_reason,
         },
     )
-    state.app.state.user_questions[question.id] = question
+    record_user_question(state.app, question)
     _emit_semantic_event(
         state.app,
         state.sid,

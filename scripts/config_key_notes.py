@@ -344,6 +344,18 @@ KEY_NOTES: dict[str, str] = {
         "Comma-separated browser origins allowed to call the GACT API cross-origin; set when "
         "serving a web UI from a different origin."
     ),
+    "gact.interactions.projection_limit": (
+        "Maximum rows one pending-interaction projection returns, newest first; the projection is "
+        "a full scan of four ledgers, so raise it only when a deep spawn tree genuinely needs more."
+    ),
+    "gact.ledger_retention.user_questions.hard": (
+        "Absolute ceiling on the in-memory ask-user question ledger; past this even a still-pending "
+        "question is force-evicted oldest-first."
+    ),
+    "gact.ledger_retention.user_questions.max": (
+        "Soft cap on the ask-user question ledger where terminal (answered/cancelled/expired) rows "
+        "evict first, protecting questions somebody is still waiting on."
+    ),
     "gact.ledger_retention.a2ui_messages.max": (
         "Retention bound on one A2UI surface's message log; the oldest non-createSurface message "
         "is evicted first past it."

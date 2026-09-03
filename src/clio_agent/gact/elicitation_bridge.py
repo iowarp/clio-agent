@@ -50,6 +50,7 @@ from clio_agent.gact.elicitation_schema import (
 )
 from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.types import UserQuestion, UserQuestionOption
+from clio_agent.gact.user_question_ledger import record_user_question
 from clio_agent.tools.mcp_handlers import MCPClientCapabilities, MCPInvocationContext
 
 logger = logging.getLogger(__name__)
@@ -380,7 +381,7 @@ def _clear_pending_anchor(app: Any, session_id: str, *, only_if: str = "") -> No
 def _publish_question_created(app: Any, question: UserQuestion) -> None:
     """Set the pending anchor + publish ``user_question.created`` (one surface)."""
 
-    app.state.user_questions[question.id] = question
+    record_user_question(app, question)
     sessions = getattr(app.state, "sessions", None)
     if sessions is not None:
         try:

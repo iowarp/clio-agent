@@ -11,6 +11,7 @@ from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents.tool_instrumentation import native_tool
 from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.types import UserQuestion, UserQuestionOption
+from clio_agent.gact.user_question_ledger import record_user_question
 
 PENDING_ASK_USER_META = "pending_ask_user"
 _KINDS = frozenset({"freeform", "choice", "confirmation"})
@@ -303,7 +304,7 @@ def restore_pending_ask_user_questions(app: Any) -> int:
                 },
             )
 
-        app.state.user_questions[question.id] = question
+        record_user_question(app, question)
         arm_ask_user_deadline(app, question)
         restored += 1
     return restored

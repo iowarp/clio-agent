@@ -37,6 +37,12 @@ from clio_agent.gact.routes._body import NonObjectBodyError, json_body
 from clio_agent.gact.routes.compaction import build_compact_summary_message
 from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui, split_preserved_a2ui
 from clio_agent.gact.routes.session_cancellation import cancel_session_state
+from clio_agent.gact.routes.session_question_helpers import (
+    normalize_question_options,
+    pending_user_questions,
+    question_already_resolved,
+    question_not_found,
+)
 from clio_agent.gact.routes.session_rows import filter_session_rows, rows_to_wire
 from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.constants import _installed_clio_agent_version
@@ -62,9 +68,9 @@ from clio_agent.gact.types import (
     TurnAttempt,
     UpdateSessionRequest,
     UserQuestion,
-    UserQuestionOption,
     Workspace,
 )
+from clio_agent.gact.user_question_ledger import record_user_question
 from clio_agent.gact.user_question_resume import resume_answered_question
 
 if TYPE_CHECKING:
@@ -996,40 +1002,6 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     # ---- Ask-user and retry protocol (#333) --------------------------
 
-    def _question_not_found(sid: str, question_id: str) -> HTTPException:
-        return HTTPException(
-            status_code=404,
-            detail=ErrorEnvelope(
-                error=ErrorInfo(
-                    error="not_found",
-                    message=f"user question not found: {question_id}",
-                    details={"session_id": sid, "question_id": question_id},
-                    recoverable=False,
-                )
-            ).model_dump(exclude_none=True),
-        )
-
-    def _question_already_resolved(sid: str, question_id: str) -> HTTPException:
-        # 409: question left ``pending`` before this write (concurrent answer/cancel/timeout).
-        return HTTPException(
-            status_code=409,
-            detail=ErrorEnvelope(
-                error=ErrorInfo(
-                    error="bad_request",
-                    message="user question is already resolved",
-                    details={"session_id": sid, "question_id": question_id},
-                    recoverable=False,
-                )
-            ).model_dump(exclude_none=True),
-        )
-
-    def _pending_user_questions(sid: str) -> list[UserQuestion]:
-        return [
-            q
-            for q in app.state.user_questions.values()
-            if q.session_id == sid and q.status == "pending"
-        ]
-
     def _set_session_status(
         sid: str,
         status: str,
@@ -1054,16 +1026,6 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 },
             )
         )
-
-    def _normalize_question_options(
-        req: CreateUserQuestionRequest,
-    ) -> list[UserQuestionOption]:
-        if req.kind == "confirmation" and not req.options:
-            return [
-                UserQuestionOption(label="Yes", value="yes", description=""),
-                UserQuestionOption(label="No", value="no", description=""),
-            ]
-        return list(req.options)
 
     def _message_text(message: Message) -> str:
         return "\n".join(
@@ -1127,7 +1089,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             attended_session_id=attended_session_id(app, sid),
             prompt=prompt,
             kind=req.kind,
-            options=_normalize_question_options(req),
+            options=normalize_question_options(req),
             allow_freeform=req.allow_freeform,
             created_at=now_iso,
             updated_at=now_iso,
@@ -1137,7 +1099,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             attempt_id=req.attempt_id,
             metadata=req.metadata,
         )
-        app.state.user_questions[row.id] = row
+        record_user_question(app, row)
         _set_session_status(
             sid,
             "waiting_user",
@@ -1163,9 +1125,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             raise _session_not_found(sid)
         row = app.state.user_questions.get(question_id)
         if row is None or row.session_id != sid:
-            raise _question_not_found(sid, question_id)
+            raise question_not_found(sid, question_id)
         if row.status != "pending":
-            raise _question_already_resolved(sid, question_id)
+            raise question_already_resolved(sid, question_id)
         allowed_values = {o.value or o.label for o in row.options}
         selected = [s for s in req.selected_options if s]
         if allowed_values and selected and any(s not in allowed_values for s in selected):
@@ -1202,7 +1164,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             answer_metadata=req.metadata,
         )
         if updated is None:
-            raise _question_already_resolved(sid, question_id)
+            raise question_already_resolved(sid, question_id)
         # P1.4 #1066 (plan-exit) + P1.3 #1113 (elicitation) dispatch non-default resolution.
         if resolve_answered_question(app, deps, sid, updated):
             return updated
@@ -1211,7 +1173,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             deps,
             sid,
             updated,
-            has_pending=bool(_pending_user_questions(sid)),
+            has_pending=bool(pending_user_questions(app, sid)),
             set_session_status=_set_session_status,
         )
         app.state.bus.publish(
@@ -1229,7 +1191,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             raise _session_not_found(sid)
         row = app.state.user_questions.get(question_id)
         if row is None or row.session_id != sid:
-            raise _question_not_found(sid, question_id)
+            raise question_not_found(sid, question_id)
         # #1113 finding 6: atomic pending->cancelled (first-wins); if a concurrent
         # answer/timeout already terminalized it, keep the existing row (idempotent).
         from clio_agent.gact.elicitation_bridge import claim_question_transition  # noqa: PLC0415
@@ -1239,7 +1201,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         row = claim_question_transition(app, question_id, "cancelled") or row
         # P1.3 #1113: cancelled elicitation/forwarded-mirror resolves down, not to idle.
-        if not resolve_cancelled_question(app, row) and not _pending_user_questions(sid):
+        if not resolve_cancelled_question(app, row) and not pending_user_questions(app, sid):
             sess = app.state.sessions.get(sid)
             _set_session_status(
                 sid,

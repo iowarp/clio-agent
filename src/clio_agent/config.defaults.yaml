@@ -486,6 +486,12 @@ gact.context_references.summary_messages: 5
 # set when serving a web UI from a different origin.
 # gact.cors.origins:  # default unset; resolved in code
 
+# CLIO_INTERACTIONS_PROJECTION_LIMIT  (int)  <- src/clio_agent/gact/routes/interactions.py
+# Maximum rows one pending-interaction projection returns, newest first; the
+# projection is a full scan of four ledgers, so raise it only when a deep
+# spawn tree genuinely needs more.
+gact.interactions.projection_limit: 200
+
 # CLIO_LEDGER_A2UI_MESSAGES_MAX  (int)  <- src/clio_agent/gact/a2ui.py
 # Retention bound on one A2UI surface's message log; the oldest non-
 # createSurface message is evicted first past it.
@@ -545,6 +551,17 @@ gact.ledger_retention.turn_attempts.hard: 4000
 # Soft cap on the turn-attempts ledger where terminal entries evict first,
 # protecting still-pending turn attempts.
 gact.ledger_retention.turn_attempts.max: 2000
+
+# CLIO_LEDGER_USER_QUESTIONS_HARD  (int)  <- src/clio_agent/gact/runtime/retention.py
+# Absolute ceiling on the in-memory ask-user question ledger; past this even
+# a still-pending question is force-evicted oldest-first.
+gact.ledger_retention.user_questions.hard: 4000
+
+# CLIO_LEDGER_USER_QUESTIONS_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py
+# Soft cap on the ask-user question ledger where terminal
+# (answered/cancelled/expired) rows evict first, protecting questions
+# somebody is still waiting on.
+gact.ledger_retention.user_questions.max: 2000
 
 # CLIO_LIVE_EDGE_STREAMING  (bool)  <- src/clio_agent/gact/live_edge.py
 # Experimental flag enabling live-edge SSE atom sealing (default off); only
