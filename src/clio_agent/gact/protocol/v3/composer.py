@@ -177,18 +177,32 @@ def queued_message_promoted(event: Event, payload: dict[str, Any], session: Any)
 def queued_message_promotion_failed(
     event: Event, payload: dict[str, Any], session: Any
 ) -> Projection:
-    """A promotion that did not take. The row stays durable and retryable."""
+    """A promotion that did not take. The row stays durable; ``cause`` says why.
+
+    ``error`` names the EVENT; the machine-readable acceptance reason rides
+    ``cause`` (status code, typed error, message, details). This projector used to
+    whitelist ``error``/``recoverable``/``retry_on`` only, so the typed cause the
+    server had already unwrapped never reached the client -- the client saw the
+    generic ``queue_auto_promotion_failed`` the unwrap exists to replace. A
+    TERMINAL failure also carries ``blocks_queue`` + ``recovery_actions`` (and no
+    ``retry_on``), because the queue behind that head is frozen until it is edited.
+    """
 
     del session
     entity_id = str(payload.get("queued_message_id") or "")
-    projected = {
+    projected: dict[str, Any] = {
         "id": entity_id,
         "session_id": event.session_id,
         "error": str(payload.get("error") or "queue_auto_promotion_failed"),
+        "cause": dict(_mapping(payload.get("cause"))),
         "recoverable": bool(payload.get("recoverable", True)),
-        "retry_on": list(payload.get("retry_on") or []),
         "failed_at": event.occurred_at,
     }
+    if payload.get("blocks_queue"):
+        projected["blocks_queue"] = True
+        projected["recovery_actions"] = list(payload.get("recovery_actions") or [])
+    else:
+        projected["retry_on"] = list(payload.get("retry_on") or [])
     return Projection("queued_message.promotion_failed", projected, entity_id)
 
 

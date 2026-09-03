@@ -653,7 +653,12 @@ def test_a_failed_promotion_stays_typed_and_retryable(
 def test_a_failed_promotion_preserves_the_typed_acceptance_cause(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The queue event must retain a typed HTTP refusal instead of flattening it."""
+    """The queue event must retain a typed HTTP refusal instead of flattening it.
+
+    ``payload["error"]`` names the EVENT (this promotion failed); the machine-
+    readable acceptance reason rides ``payload["cause"]``, which is also what
+    decides terminal-vs-retryable. A 4xx refusal must arrive terminal.
+    """
 
     from fastapi import HTTPException
 
@@ -675,7 +680,7 @@ def test_a_failed_promotion_preserves_the_typed_acceptance_cause(
                         message="The selected revision is stale.",
                         recoverable=True,
                     )
-                ).model_dump(exclude_none=True),
+                ),
             )
 
         monkeypatch.setattr(submission, "accept_message", reject)
@@ -686,7 +691,62 @@ def test_a_failed_promotion_preserves_the_typed_acceptance_cause(
         assert created.status_code == 201, created.text
 
         failure = _projected(app, sid, "queued_message.promotion_failed")[0]
-        assert failure["payload"]["error"] == "context_reference_stale"
+        assert failure["payload"]["error"] == "queue_auto_promotion_failed"
+        cause = failure["payload"]["cause"]
+        assert cause["error"] == "context_reference_stale"
+        assert cause["status_code"] == 422
+        assert cause["message"] == "The selected revision is stale."
+        assert failure["payload"]["recoverable"] is False
+        assert failure["payload"]["blocks_queue"] is True
+
+
+def test_typed_cause_unwraps_every_acceptance_error_carrier() -> None:
+    """``except Exception`` is a catch-all seam; each typed carrier must survive it.
+
+    The acceptance stack raises three shapes: an ``HTTPException`` whose detail is
+    an already-dumped envelope, an ``HTTPException`` whose detail is the envelope
+    MODEL (nothing dumped it on the way out), and a bare carrier holding an
+    ``ErrorInfo`` on ``error_info`` (``_ContextFileAccessError``). Flattening any
+    of them to the exception class name is the bug this pins.
+    """
+
+    from fastapi import HTTPException
+
+    from clio_agent.gact.composer_runtime import _typed_cause
+    from clio_agent.gact.runtime.globals import _ContextFileAccessError
+    from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
+
+    info = ErrorInfo(
+        error="context_ref_stale",
+        message="revision moved",
+        details={"resource_id": "res_1"},
+        recoverable=True,
+    )
+
+    dumped = _typed_cause(
+        HTTPException(status_code=409, detail=ErrorEnvelope(error=info).model_dump(exclude_none=True))
+    )
+    modeled = _typed_cause(HTTPException(status_code=409, detail=ErrorEnvelope(error=info)))
+    carrier = _typed_cause(_ContextFileAccessError(info))
+
+    assert dumped == modeled, "a Pydantic detail must unwrap exactly like a dumped one"
+    for cause in (dumped, modeled):
+        assert cause["error"] == "context_ref_stale"
+        assert cause["status_code"] == 409
+        assert cause["details"] == {"resource_id": "res_1"}
+        assert cause["recoverable"] is True
+    # A bare carrier has no HTTP status of its own; it must still name its reason
+    # rather than degrading to ``_ContextFileAccessError``.
+    assert carrier["error"] == "context_ref_stale"
+    assert carrier["message"] == "revision moved"
+    assert carrier["details"] == {"resource_id": "res_1"}
+    assert carrier["recoverable"] is True
+
+    # An exception carrying nothing typed still reports its own class, never a
+    # fabricated typed reason.
+    opaque = _typed_cause(RuntimeError("boom"))
+    assert opaque["error"] == "RuntimeError"
+    assert opaque["message"] == "boom"
 
 
 def test_an_unclaimable_steer_does_not_strand_the_steers_behind_it(tmp_path: Path) -> None:

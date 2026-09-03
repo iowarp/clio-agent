@@ -313,17 +313,57 @@ def _typed_cause(exc: BaseException) -> dict[str, Any]:
 
     from fastapi import HTTPException  # noqa: PLC0415
 
+    # The acceptance stack raises the SAME typed envelope in three carriers, and the
+    # ``except Exception`` seam above sees all of them: an ``HTTPException`` whose
+    # detail was already ``model_dump``-ed, one whose detail is still the envelope
+    # MODEL, and a bare carrier holding an ``ErrorInfo`` on ``error_info``
+    # (``_ContextFileAccessError``). Unwrapping only the first flattened the other
+    # two to the exception class name.
+    carried = _error_info_fields(getattr(exc, "error_info", None))
     if not isinstance(exc, HTTPException):
+        if carried is not None:
+            # No HTTP status of its own: this reason never reached a route boundary.
+            return {"status_code": 0, **carried}
         return {"status_code": 0, "error": type(exc).__name__, "message": str(exc)}
-    detail: Mapping[str, Any] = exc.detail if isinstance(exc.detail, Mapping) else {}
-    raw_error = detail.get("error")
-    error: Mapping[str, Any] = raw_error if isinstance(raw_error, Mapping) else {}
+    error = _error_info_fields(_envelope_error(exc.detail)) or {
+        "error": "http_error",
+        "message": "",
+        "details": {},
+        "recoverable": False,
+    }
+    return {"status_code": int(exc.status_code), **error}
+
+
+def _as_mapping(value: Any) -> Mapping[str, Any] | None:
+    """Read a Pydantic model or a plain mapping through one shape."""
+
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        value = dump(exclude_none=True)
+    return value if isinstance(value, Mapping) else None
+
+
+def _envelope_error(detail: Any) -> Any:
+    """Pull the ``error`` member out of an ``ErrorEnvelope`` in either carrier."""
+
+    envelope = _as_mapping(detail)
+    return None if envelope is None else envelope.get("error")
+
+
+def _error_info_fields(error: Any) -> dict[str, Any] | None:
+    """Project one ``ErrorInfo`` (model or mapping) onto the cause's field set."""
+
+    fields = _as_mapping(error)
+    if fields is None:
+        return None
+    typed = str(fields.get("error") or "").strip()
+    if not typed:
+        return None
     return {
-        "status_code": int(exc.status_code),
-        "error": str(error.get("error") or "http_error"),
-        "message": str(error.get("message") or ""),
-        "details": dict(error.get("details") or {}),
-        "recoverable": bool(error.get("recoverable", False)),
+        "error": typed,
+        "message": str(fields.get("message") or ""),
+        "details": dict(fields.get("details") or {}),
+        "recoverable": bool(fields.get("recoverable", False)),
     }
 
 
