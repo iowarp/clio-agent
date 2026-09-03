@@ -250,6 +250,7 @@ def test_v3_session_and_transcript_are_normalized(tmp_path: Path) -> None:
         },
     )
     app.state.messages[session.id] = [message]
+    app.state.sessions.update(session.id, message_count=1)
     client = TestClient(app)
 
     sessions = client.get(
@@ -261,6 +262,7 @@ def test_v3_session_and_transcript_are_normalized(tmp_path: Path) -> None:
     assert transcript["cursor"].isdigit()
     assert session_row["state"] == "completed"
     assert session_row["agent_id"] == "main"
+    assert session_row["message_count"] == 1
     projected = transcript["messages"][0]
     assert [block["type"] for block in projected["blocks"]] == ["reasoning", "text", "tool"]
     assert projected["blocks"][0] == {

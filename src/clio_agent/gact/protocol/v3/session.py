@@ -43,6 +43,7 @@ def session_to_v3(session: Any) -> dict[str, Any]:
             or getattr(session, "created_at", "")
             or utcnow_iso()
         ),
+        "message_count": max(0, int(getattr(session, "message_count", 0) or 0)),
         "pinned": bool(metadata.get("pinned", False)),
         "archived": bool(getattr(session, "archived", False)),
     }
