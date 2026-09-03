@@ -23,6 +23,7 @@ REAL exerciser, because fastmcp servers verifiably DO emit
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import pytest
 from fastmcp import Client
@@ -186,3 +187,91 @@ def test_invalidate_namespace_drops_only_matching_entries(tmp_path, monkeypatch)
 def test_invalidate_namespace_is_false_when_nothing_cached(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(listing_cache, "_cache_path", lambda: tmp_path / "cache.json")
     assert listing_cache.invalidate_namespace("never-cached") is False
+
+
+# --------------------------------------------------------------------------- #
+# make_mcp_client wiring (#1285 review round, MUST 1): the production choke   #
+# point. Before this fix, watch_list_changed/list_changed_message_handler had #
+# ZERO production callers (repo-wide grep: only this test file + the         #
+# live-verification leg drove them) -- a real server's unsolicited           #
+# notifications/tools/list_changed never reached the listing cache through   #
+# any actual execution path. The exact stale-definition class #1308 cost a   #
+# live rerun.                                                                #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_make_mcp_client_wires_list_changed_invalidation_when_server_id_known(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(listing_cache, "_cache_path", lambda: tmp_path / "cache.json")
+    from mcp.types import Tool
+
+    from clio_agent.tools.mcp_runtime import make_mcp_client
+
+    tool = Tool(name="t", description="", inputSchema={"type": "object"})
+    listing_cache.store_listing(EXERCISER_NAMESPACE, "python", ("a.py",), [tool])
+    listing_cache.store_listing("other-namespace", "python", ("b.py",), [tool])
+
+    server = build_exerciser_server()
+    client = make_mcp_client(server, server_id=EXERCISER_NAMESPACE)
+    async with client:
+        await client.call_tool(LIST_CHANGED_TOOL_NAME, {})
+        await asyncio.sleep(0.2)  # unsolicited notification delivery is async
+
+    assert listing_cache.load_listing(EXERCISER_NAMESPACE, "python", ("a.py",)) is None, (
+        "a real make_mcp_client(server_id=...)-built client must invalidate "
+        "its OWN namespace's listing on a live list_changed notification"
+    )
+    assert listing_cache.load_listing("other-namespace", "python", ("b.py",)) is not None, (
+        "an UNRELATED namespace's cached listing must survive untouched"
+    )
+
+
+@pytest.mark.asyncio
+async def test_make_mcp_client_composes_list_changed_with_a_caller_supplied_message_hook(
+    tmp_path, monkeypatch
+) -> None:
+    """Neither handler silently drops the other (#1285 review round)."""
+
+    monkeypatch.setattr(listing_cache, "_cache_path", lambda: tmp_path / "cache.json")
+    from mcp.types import Tool
+
+    from clio_agent.tools.mcp_runtime import MCPClientHandlers, make_mcp_client
+
+    tool = Tool(name="t", description="", inputSchema={"type": "object"})
+    listing_cache.store_listing(EXERCISER_NAMESPACE, "python", ("a.py",), [tool])
+
+    received: list[Any] = []
+
+    async def _hook(_ctx: Any, message: Any) -> None:
+        received.append(message)
+
+    server = build_exerciser_server()
+    client = make_mcp_client(
+        server,
+        handlers=MCPClientHandlers(message=_hook),
+        server_id=EXERCISER_NAMESPACE,
+    )
+    async with client:
+        await client.call_tool(LIST_CHANGED_TOOL_NAME, {})
+        await asyncio.sleep(0.2)
+
+    assert listing_cache.load_listing(EXERCISER_NAMESPACE, "python", ("a.py",)) is None
+    assert received, "the caller-supplied message hook must still receive the notification"
+
+
+def test_make_mcp_client_never_installs_list_changed_when_server_id_absent() -> None:
+    """``server_id=""`` (the default) means no identity is known for the push-
+    invalidation wiring either -- consistent with era instrumentation
+    (``instrument_client_era``), which also only fires when ``server_id`` is
+    truthy."""
+
+    from clio_agent.tools.mcp_runtime import make_mcp_client
+
+    class _FakeClient:
+        def __init__(self, target: Any, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+    client = make_mcp_client(build_exerciser_server(), client_cls=_FakeClient)
+    assert "message_handler" not in client.kwargs

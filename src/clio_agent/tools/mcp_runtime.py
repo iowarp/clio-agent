@@ -536,8 +536,23 @@ def make_mcp_client(
             kwargs["elicitation_handler"] = ElicitationDispatcher(handlers.elicitation)
         if handlers.progress is not None:
             kwargs["progress_handler"] = ProgressDispatcher(handlers.progress)
-        if handlers.message is not None:
-            kwargs["message_handler"] = MessageMultiplexer(handlers.message)
+
+    # #1285 review round (MUST 1): fold push-invalidation into EVERY client
+    # built with a known server_id -- make_mcp_client is the ONE production
+    # construction site (see the module docstring), so this is the choke
+    # point that closes the gap watch_list_changed/list_changed_message_handler
+    # left open (zero production callers before this: only tests + the
+    # live-verification leg drove them). A caller-supplied message hook is
+    # composed in, never overwritten (tools/mcp_listen.py::combined_message_handler).
+    message_handler: Callable[[Any], Any] | None = (
+        MessageMultiplexer(handlers.message) if handlers is not None and handlers.message else None
+    )
+    if server_id:
+        from clio_agent.tools.mcp_listen import combined_message_handler  # noqa: PLC0415
+
+        message_handler = combined_message_handler(server_id, message_handler)
+    if message_handler is not None:
+        kwargs["message_handler"] = message_handler
 
     # #1283 (C1-S3): every client built here folds in the FULL generic MCP
     # extension registry, not a single hardcoded tasks special case. Entry #1

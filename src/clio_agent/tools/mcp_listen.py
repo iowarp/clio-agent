@@ -37,7 +37,12 @@ from typing import Any, Protocol
 
 from clio_agent.runtime import trace
 
-__all__ = ["ListenUnsupported", "list_changed_message_handler", "watch_list_changed"]
+__all__ = [
+    "ListenUnsupported",
+    "combined_message_handler",
+    "list_changed_message_handler",
+    "watch_list_changed",
+]
 
 
 class ListenUnsupported(RuntimeError):
@@ -142,5 +147,40 @@ def list_changed_message_handler(namespace: str) -> Callable[[Any], Awaitable[No
 
             listing_cache.invalidate_namespace(namespace, reason="list_changed")
             trace.event("TOOLS", "mcp_listen_tools_list_changed namespace=%s", namespace)
+
+    return _handler
+
+
+def combined_message_handler(
+    namespace: str,
+    user_handler: Callable[[Any], Awaitable[None]] | None = None,
+) -> Callable[[Any], Awaitable[None]]:
+    """Compose :func:`list_changed_message_handler` with an optional caller handler.
+
+    #1285 review round (MUST 1): ``make_mcp_client`` is the ONE production
+    construction site for execution-path clients, so it is the choke point
+    that must fold push-invalidation in -- before this, ``watch_list_changed``/
+    ``list_changed_message_handler`` had ZERO production callers (only this
+    module's own tests and the live-verification leg drove them), so a real
+    server's unsolicited ``notifications/tools/list_changed`` never reached
+    ``tools/listing_cache.py`` through any actual execution path -- the exact
+    stale-definition class #1308 cost a live rerun.
+
+    Both handlers fire, in order, for EVERY message that arrives -- the
+    push-invalidation always runs first (it self-filters to
+    ``ToolListChangedNotification`` and is otherwise a no-op), then a
+    caller-supplied handler (e.g. a CLIO :class:`MessageMultiplexer` forwarding
+    to a user-wired hook) still sees the message. Neither is ever silently
+    dropped by installing the other.
+    """
+
+    invalidate = list_changed_message_handler(namespace)
+
+    async def _handler(message: Any) -> None:
+        await invalidate(message)
+        if user_handler is not None:
+            await user_handler(message)
+
+    return _handler
 
     return _handler

@@ -20,7 +20,10 @@ from mcp.shared.exceptions import MCPError
 from mcp.shared.inbound import find_invalid_x_mcp_header, mcp_param_headers, x_mcp_header_map
 from mcp_types.jsonrpc import HEADER_MISMATCH
 
-from clio_agent.tools.mcp_header_mismatch import call_tool_with_header_retry
+from clio_agent.tools.mcp_header_mismatch import (
+    call_tool_with_header_retry,
+    trace_dropped_x_mcp_header_tools,
+)
 from tests.test_tools.mcp_exerciser import (
     HEADER_ANNOTATED_TOOL_NAME,
     INVALID_HEADER_TOOL_NAME,
@@ -138,3 +141,79 @@ async def test_success_never_relists() -> None:
     assert result == "ok"
     assert client.call_count == 1
     assert client.list_count == 0
+
+
+# --------------------------------------------------------------------------- #
+# trace_dropped_x_mcp_header_tools (#1285 review round, SHOULD 3): the SDK's  #
+# own drop of INVALID_HEADER_TOOL_NAME is library-side-log only -- this must  #
+# reach CLIO's OWN typed trace, and the tool must still be absent from the    #
+# listing served.                                                            #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_dropped_invalid_header_tool_yields_a_typed_reason_and_stays_absent(
+    monkeypatch,
+) -> None:
+    import clio_agent.tools.mcp_header_mismatch as header_mismatch_mod
+
+    events: list[tuple[Any, ...]] = []
+    orig_event = header_mismatch_mod.trace.event
+
+    def _spy(tag: str, fmt: str, *args: Any) -> None:
+        events.append((tag, fmt, *args))
+        orig_event(tag, fmt, *args)
+
+    monkeypatch.setattr(header_mismatch_mod.trace, "event", _spy)
+
+    server = build_exerciser_server()
+    async with Client(server) as client:
+        listed = await client.list_tools()
+        names = {t.name for t in listed}
+        assert INVALID_HEADER_TOOL_NAME not in names, (
+            "regression guard: the SDK must still drop the invalid tool "
+            "before this diagnostic even runs"
+        )
+
+        await trace_dropped_x_mcp_header_tools(client, "v2ex", listed)
+
+    drop_events = [e for e in events if e[1].startswith("mcp_x_mcp_header_dropped")]
+    assert len(drop_events) == 1, f"expected exactly one drop event, got {events!r}"
+    _tag, fmt, namespace, tool, reason = drop_events[0]
+    assert namespace == "v2ex"
+    assert tool == INVALID_HEADER_TOOL_NAME
+    assert "number" in reason or "type" in reason
+
+
+@pytest.mark.asyncio
+async def test_no_drop_events_when_every_tool_is_valid(monkeypatch) -> None:
+    """Regression guard: the diagnostic must not fire spuriously.
+
+    Uses a fresh, minimal server with no ``x-mcp-header`` annotation at
+    all (the real exerciser always carries the deliberately-invalid tool,
+    so it cannot exercise the zero-drops case)."""
+
+    from fastmcp import FastMCP
+
+    import clio_agent.tools.mcp_header_mismatch as header_mismatch_mod
+
+    server = FastMCP("clean")
+
+    @server.tool
+    async def plain(payload: str) -> str:
+        return f"echo:{payload}"
+
+    events: list[tuple[Any, ...]] = []
+    orig_event = header_mismatch_mod.trace.event
+
+    def _spy(tag: str, fmt: str, *args: Any) -> None:
+        events.append((tag, fmt, *args))
+        orig_event(tag, fmt, *args)
+
+    monkeypatch.setattr(header_mismatch_mod.trace, "event", _spy)
+
+    async with Client(server) as client:
+        listed = await client.list_tools()
+        await trace_dropped_x_mcp_header_tools(client, "clean", listed)
+
+    assert not [e for e in events if e[1].startswith("mcp_x_mcp_header_dropped")]

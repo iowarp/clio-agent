@@ -9,7 +9,11 @@ survives a process boundary) and the factory's default wiring.
 
 from __future__ import annotations
 
+import json
+import stat
+import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
@@ -99,6 +103,61 @@ async def test_unwritable_directory_degrades_without_raising(tmp_path: Path, mon
 
     monkeypatch.setattr(Path, "mkdir", _boom)
     await storage.set_tokens(OAuthToken(access_token="tok", token_type="Bearer"))  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_chmod_failure_emits_a_typed_reason_not_a_silent_swallow(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """#1285 review round SHOULD 5: os.chmod failing on the security-control
+    re-assertion must reach the trace, typed -- never a bare `except OSError:
+    pass``. The write itself must still succeed (durability is not the same
+    control as the permission tightening)."""
+
+    import os as os_mod
+
+    import clio_agent.tools.mcp_oauth_storage as storage_mod
+
+    events: list[tuple[Any, ...]] = []
+    orig_event = storage_mod.trace.event
+
+    def _spy(tag: str, fmt: str, *args: Any) -> None:
+        events.append((tag, fmt, *args))
+        orig_event(tag, fmt, *args)
+
+    monkeypatch.setattr(storage_mod.trace, "event", _spy)
+
+    real_chmod = os_mod.chmod
+
+    def _boom(path, mode, *a, **k):
+        if str(path).endswith("oauth.json"):
+            raise OSError("simulated chmod failure")
+        return real_chmod(path, mode, *a, **k)
+
+    monkeypatch.setattr(storage_mod.os, "chmod", _boom)
+
+    path = tmp_path / "oauth.json"
+    storage = DurableFileTokenStorage("https://x.example.com", path=path)
+    await storage.set_tokens(OAuthToken(access_token="tok", token_type="Bearer"))
+
+    chmod_events = [e for e in events if e[1].startswith("mcp_oauth_storage_chmod_failed")]
+    assert len(chmod_events) == 1, f"expected exactly one typed chmod-failure event, got {events!r}"
+    assert path.exists(), "the write itself must still succeed despite the chmod failure"
+    assert json.loads(path.read_text(encoding="utf-8"))["entries"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits only")
+@pytest.mark.asyncio
+async def test_saved_file_is_0600_from_creation_no_world_readable_window(tmp_path: Path) -> None:
+    """#1285 review round SHOULD 5: the tmp file must be created AT 0o600,
+    not written world-readable then chmod-ed afterward."""
+
+    path = tmp_path / "oauth.json"
+    storage = DurableFileTokenStorage("https://x.example.com", path=path)
+    await storage.set_tokens(OAuthToken(access_token="tok", token_type="Bearer"))
+
+    mode = stat.S_IMODE(path.stat().st_mode)
+    assert mode == 0o600, f"expected 0o600, got {oct(mode)}"
 
 
 def test_factory_defaults_to_durable_storage() -> None:

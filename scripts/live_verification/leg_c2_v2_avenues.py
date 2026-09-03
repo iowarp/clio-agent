@@ -701,16 +701,26 @@ async def _run_cache_probe() -> dict[str, Any]:
 def avenue_cache() -> dict[str, Any]:
     """#1285 C1-S5 item 3: flipped blocked -> real (was: no client/exerciser support existed).
 
-    ``tools/mcp_runtime.py::make_mcp_client`` now opts every execution-path
-    client into SEP-2549 response caching by default, and
+    ``tools/mcp_runtime.py::make_mcp_client`` opts execution-path clients into
+    SEP-2549 response caching WHEN ``response_cache_enabled()`` is true (this
+    probe flips the flag for its own duration -- see the note below), and
     ``mcp_exerciser.py::build_exerciser_server`` accepts ``cache_ttl``/
     ``cache_scope`` (fastmcp applies the hint server-wide -- no per-tool knob
     exists in the library). This avenue asserts BOTH: the production factory
-    sets ``cache=True``, and a hinted server's second ``tools/list`` is served
-    from cache (exactly one store ``set``, not two).
+    sets ``cache=True`` when enabled, and a hinted server's second
+    ``tools/list`` is served from cache (exactly one store ``set``, not two).
     """
 
     import asyncio as _asyncio
+
+    pass_means = (
+        "opt-in feature, default OFF (tools.mcp.response_cache_enabled / "
+        "CLIO_MCP_RESPONSE_CACHE_ENABLED). A pass here proves the factory's "
+        "WIRING is correct when an operator turns it on, and that a hinted "
+        "server's repeat tools/list is genuinely served from cache -- it is "
+        "NOT a claim that caching is on by default for any execution-path "
+        "client today."
+    )
 
     try:
         evidence = _asyncio.run(_run_cache_probe())
@@ -718,6 +728,7 @@ def avenue_cache() -> dict[str, Any]:
         return {
             "avenue": "cache",
             "status": "fail",
+            "pass_means": pass_means,
             "evidence": {},
             "error": f"{type(exc).__name__}: {exc}",
         }
@@ -730,13 +741,16 @@ def avenue_cache() -> dict[str, Any]:
     return {
         "avenue": "cache",
         "status": "pass" if ok else "fail",
+        "pass_means": pass_means,
         "evidence": evidence,
         "error": None if ok else "cache hint was not honored end to end",
     }
 
 
 async def _run_list_changed_probe() -> dict[str, Any]:
-    """Drive a REAL registry mutation + its notification end to end (#1285 C1-S5 item 2).
+    """Drive a REAL registry mutation + its notification through the
+    PRODUCTION wiring end to end (#1285 C1-S5 item 2; #1285 review round
+    MUST 1).
 
     In-process (no gact server, no HTTP): live-verified that fastmcp's SERVER
     implements NO ``subscriptions/listen`` support at all (-32601
@@ -745,17 +759,20 @@ async def _run_list_changed_probe() -> dict[str, Any]:
     tests/test_tools/test_mcp_listen.py's regression lock), so
     ``watch_list_changed`` (spec-correct SEP-2575) cannot be live-proven
     against THIS exerciser. What fastmcp servers verifiably DO send is the
-    notification UNSOLICITED over the plain connection -- this probe drives
-    ``list_changed_message_handler`` (the path that works against today's
-    fastmcp fleet) against a real ``mutate_and_notify_list_changed`` call.
+    notification UNSOLICITED over the plain connection. The review round's
+    MUST 1 folded ``list_changed_message_handler`` into ``tools/mcp_runtime.
+    py::make_mcp_client`` itself -- the ONE production client-construction
+    site -- so this probe drives THAT factory (``server_id=`` set, no manual
+    ``message_handler=``), not the standalone helper directly: proving the
+    production choke point actually installs the wiring, not just that the
+    underlying helper works in isolation (that unit-level proof lives in
+    ``test_mcp_listen.py``).
     """
 
     import asyncio as _asyncio
 
-    from fastmcp import Client
-
     from clio_agent.tools import listing_cache
-    from clio_agent.tools.mcp_listen import list_changed_message_handler
+    from clio_agent.tools.mcp_runtime import make_mcp_client
     from tests.test_tools.mcp_exerciser import build_exerciser_server
 
     server = build_exerciser_server()
@@ -765,8 +782,8 @@ async def _run_list_changed_probe() -> dict[str, Any]:
         lambda namespace, **_: invalidated.append(namespace) or True
     )
     try:
-        handler = list_changed_message_handler(EXERCISER_NAMESPACE)
-        async with Client(server, message_handler=handler) as caller:
+        client = make_mcp_client(server, server_id=EXERCISER_NAMESPACE)
+        async with client as caller:
             mutate_result = await caller.call_tool(LIST_CHANGED_TOOL_NAME, {})
             await _asyncio.sleep(0.3)  # unsolicited notification delivery is async
     finally:
@@ -783,16 +800,29 @@ def avenue_list_changed() -> dict[str, Any]:
 
     ``mutate_and_notify_list_changed`` hides ``list_changed_target`` via
     fastmcp's own ``ctx.disable_components`` -- a REAL registry mutation, not
-    a synthetic notification -- and asserts ``tools/mcp_listen.py::
-    list_changed_message_handler`` actually invalidates ``tools/
-    listing_cache.py`` when the resulting unsolicited
+    a synthetic notification -- and asserts that a ``make_mcp_client(server_id=
+    ...)``-built client (the review round's MUST 1: every production
+    execution path routes through this ONE factory) actually invalidates
+    ``tools/listing_cache.py`` when the resulting unsolicited
     ``notifications/tools/list_changed`` arrives. See ``_run_list_changed_
-    probe``'s docstring for why this uses the message_handler path rather
-    than ``watch_list_changed``'s spec-correct ``subscriptions/listen``
-    (a verified fastmcp server-side gap, not a clio gap).
+    probe``'s docstring for why this drives the production factory rather
+    than the standalone ``list_changed_message_handler`` helper directly, and
+    for why this uses that helper's legacy-push path rather than
+    ``watch_list_changed``'s spec-correct ``subscriptions/listen`` (a
+    verified fastmcp server-side gap, not a clio gap).
     """
 
     import asyncio as _asyncio
+
+    pass_means = (
+        "a make_mcp_client(server_id=...)-built client -- the PRODUCTION "
+        "construction site every execution path uses, not a hand-wired "
+        "message_handler -- invalidates its own namespace's listing_cache "
+        "entry on a live, unsolicited notifications/tools/list_changed "
+        "(#1285 review round MUST 1). Does NOT prove watch_list_changed's "
+        "spec-correct subscriptions/listen path (fastmcp's server does not "
+        "implement it, a pinned library gap)."
+    )
 
     try:
         evidence = _asyncio.run(_run_list_changed_probe())
@@ -800,6 +830,7 @@ def avenue_list_changed() -> dict[str, Any]:
         return {
             "avenue": "list-changed",
             "status": "fail",
+            "pass_means": pass_means,
             "evidence": {},
             "error": f"{type(exc).__name__}: {exc}",
         }
@@ -808,6 +839,7 @@ def avenue_list_changed() -> dict[str, Any]:
     return {
         "avenue": "list-changed",
         "status": "pass" if observed else "fail",
+        "pass_means": pass_means,
         "evidence": evidence,
         "error": None if observed else "listing_cache.invalidate_namespace was never called",
     }
@@ -844,11 +876,32 @@ async def _run_adversarial_probe() -> dict[str, Any]:
     async with run_adversarial_lifespan(app):
         transport = adversarial_in_process_transport(app)
         async with Client(transport) as client:
-            result = await client.call_tool(BAD_RESULT_TYPE_TOOL, {"payload": "x"})
-            evidence["bad_result_type"] = {
-                "is_error": result.is_error,
-                "crashed": False,
-            }
+            # #1285 review round MUST 1: accept EITHER upstream behavior for an
+            # unrecognized resultType -- today's observed SDK silently coerces
+            # it (no exception, isError as the fixture set it), but a future,
+            # stricter SDK that starts explicitly REJECTING an unrecognized
+            # resultType would be equally spec-compliant, not a regression.
+            # Only a genuinely UNEXPECTED exception type is a real finding.
+            try:
+                result = await client.call_tool(BAD_RESULT_TYPE_TOOL, {"payload": "x"})
+                evidence["bad_result_type"] = {
+                    "outcome": "silently_coerced",
+                    "is_error": result.is_error,
+                    "crashed": False,
+                }
+            except MCPError as exc:
+                evidence["bad_result_type"] = {
+                    "outcome": "typed_rejection",
+                    "crashed": False,
+                    "code": exc.code,
+                    "message": exc.message,
+                }
+            except Exception as exc:  # noqa: BLE001 - genuinely unexpected, a real finding
+                evidence["bad_result_type"] = {
+                    "outcome": "unexpected_exception",
+                    "crashed": True,
+                    "exception": f"{type(exc).__name__}: {exc}",
+                }
 
             try:
                 await client.call_tool(BAD_MISSING_CAPS_TOOL, {"payload": "x"})
@@ -874,16 +927,31 @@ async def _run_adversarial_probe() -> dict[str, Any]:
 
             tools = await client.list_tools()
             names = sorted(t.name for t in tools)
+            second_page_reached = PAGINATED_TOOL_2 in names
             evidence["pagination"] = {
                 "resolved_tool_names": names,
-                "second_page_reached": PAGINATED_TOOL_2 in names,
+                "second_page_reached": second_page_reached,
+                # #1285 review round MUST 1: accept EITHER upstream behavior --
+                # today's OBSERVED library bug (empty-string cursor treated as
+                # terminal, stopping at page 1) OR a future, spec-compliant fix
+                # (both pages resolved) are equally acceptable outcomes; only
+                # something outside BOTH known-good sets (a crash, a hang, or
+                # neither page's tool present) is a real finding.
+                "observed": (
+                    "spec_compliant_both_pages_resolved"
+                    if second_page_reached
+                    else "library_bug_empty_string_cursor_treated_as_terminal"
+                ),
                 "note": (
                     "verified LIBRARY gap, not a clio gap: fastmcp's Client."
                     "list_tools() checks `if not result.next_cursor: break` "
                     "(fastmcp/client/mixins/tools.py), so an EMPTY-STRING "
                     "cursor (E10: valid, non-terminal) is treated as the end "
                     "-- clio never implements its own pagination, it always "
-                    "calls client.list_tools() and trusts the result"
+                    "calls client.list_tools() and trusts the result. If "
+                    "'observed' above ever reads spec_compliant_both_pages_"
+                    "resolved, fastmcp fixed the bug upstream -- update this "
+                    "note, don't treat it as a regression."
                 ),
             }
 
@@ -893,14 +961,30 @@ async def _run_adversarial_probe() -> dict[str, Any]:
 def avenue_adversarial() -> dict[str, Any]:
     """#1285 C1-S5 item 4: flipped blocked -> real (was: no fixture existed).
 
-    Asserts clio's typed handling of all four violations, including a
-    verified fastmcp CLIENT-side bug (empty-string pagination cursor treated
-    as terminal) this avenue documents rather than hides.
+    Asserts clio SURVIVES four kinds of upstream/library non-compliance
+    typed, never that clio crashes or hangs -- NOT a claim that the fastmcp
+    SDK itself is spec-compliant (#1285 review round MUST 2: the original
+    criteria for ``bad_result_type``/``pagination`` accidentally asserted the
+    OPPOSITE -- they passed only while a specific upstream bug/laxness held,
+    and would have gone red the moment fastmcp fixed it upstream, penalizing
+    a library improvement as if it were a clio regression).
     """
 
     import asyncio as _asyncio
 
-    from tests.test_tools.mcp_adversarial_fixture import PAGINATED_TOOL
+    from tests.test_tools.mcp_adversarial_fixture import PAGINATED_TOOL, PAGINATED_TOOL_2
+
+    pass_means = (
+        "clio survives four kinds of library non-compliance TYPED (never a "
+        "crash or a hang) -- not a claim that fastmcp itself is spec-"
+        "compliant. bad_result_type and pagination each accept EITHER "
+        "today's observed upstream behavior OR a future, stricter/spec-"
+        "compliant fix (see each field's 'outcome'/'observed' evidence for "
+        "which one actually fired this run); only an outcome outside both "
+        "known-good sets fails. bad_missing_caps and bad_header_mismatch are "
+        "clio's OWN defensive code (typed-capability mapping, bounded "
+        "header-mismatch retry) and have exactly one correct outcome each."
+    )
 
     try:
         evidence = _asyncio.run(_run_adversarial_probe())
@@ -908,20 +992,33 @@ def avenue_adversarial() -> dict[str, Any]:
         return {
             "avenue": "adversarial",
             "status": "fail",
+            "pass_means": pass_means,
             "evidence": {},
             "error": f"{type(exc).__name__}: {exc}",
         }
 
+    # #1285 review round MUST 2: accept EITHER upstream behavior on both axes
+    # -- only a genuinely unexpected/untyped outcome (a crash, a hang, or a
+    # tool set matching NEITHER known-good page-resolution) fails.
+    bad_result_type_ok = evidence["bad_result_type"]["outcome"] in (
+        "silently_coerced",
+        "typed_rejection",
+    )
+    pagination_ok = evidence["pagination"]["resolved_tool_names"] in (
+        [PAGINATED_TOOL],
+        sorted([PAGINATED_TOOL, PAGINATED_TOOL_2]),
+    )
     ok = (
-        not evidence["bad_result_type"]["crashed"]
+        bad_result_type_ok
         and evidence["bad_missing_caps"]["raised"]
         and evidence["bad_missing_caps"].get("typed_ok") is True
         and evidence["bad_header_mismatch"]["bounded"]
-        and evidence["pagination"]["resolved_tool_names"] == [PAGINATED_TOOL]
+        and pagination_ok
     )
     return {
         "avenue": "adversarial",
         "status": "pass" if ok else "fail",
+        "pass_means": pass_means,
         "evidence": evidence,
         "error": None if ok else "one or more adversarial violations were not handled as expected",
     }

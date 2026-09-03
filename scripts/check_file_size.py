@@ -1067,7 +1067,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # factory when `proxy_factory` was injected (tests: an in-process double
     # with no real transport behind the spec). Both decision/read logic
     # stays in tools/mcp_task_routing.py; only these call sites land here.
-    "src/clio_agent/tools/gateway.py": 949,
+    # #1285 review round (SHOULD 3): +11 to call the new typed x-mcp-header
+    # drop diagnostic (tools/mcp_header_mismatch.py::
+    # trace_dropped_x_mcp_header_tools) at the listing choke point -- the
+    # diagnostic's own logic lives in that owner module; only the lazy
+    # import + one await land here.
+    "src/clio_agent/tools/gateway.py": 960,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.

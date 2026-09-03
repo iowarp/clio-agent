@@ -78,18 +78,36 @@ class DurableFileTokenStorage:
     def _save_entries(self, entries: dict[str, dict[str, object]]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_suffix(".tmp")
-        tmp.write_text(
-            json.dumps({"schema": _SCHEMA, "entries": entries}, indent=1), encoding="utf-8"
-        )
+        payload = json.dumps({"schema": _SCHEMA, "entries": entries}, indent=1)
+        # #1285 review round (SHOULD 5): create the tmp file AT 0o600 from the
+        # moment it exists -- writing via `tmp.write_text(...)` then chmod-ing
+        # the FINAL path afterward left a real window where an OAuth token
+        # bundle sat on disk at the default (umask-derived, typically
+        # world-readable) mode between creation and the chmod call. `os.open`'s
+        # mode has no group/other bits to mask, so it applies exactly
+        # regardless of umask, and `os.replace` preserves the source file's
+        # mode on POSIX, so no window opens at the final path either.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(payload)
         os.replace(tmp, self._path)
         # Best-effort OS file-permission restriction (POSIX only -- os.chmod on
         # Windows cannot express owner-only ACLs; the user profile directory's
         # own ACL is Windows's access boundary for this file, same posture as
-        # every other clio_agent user-config file. Never fatal either way.
+        # every other clio_agent user-config file). The file is already 0o600
+        # from creation above; this re-asserts it defensively (e.g. a
+        # filesystem/rename implementation that does not preserve mode). A
+        # failure here is a real security-control gap, never a silent swallow
+        # (#1285 review round SHOULD 5): it reaches the trace, typed.
         try:
             os.chmod(self._path, 0o600)
-        except OSError:
-            pass
+        except OSError as exc:
+            trace.event(
+                "TOOLS",
+                "mcp_oauth_storage_chmod_failed path=%s reason=%s",
+                self._path,
+                exc,
+            )
 
     async def get_tokens(self) -> "OAuthToken | None":
         """Return the persisted token bundle, or ``None`` on a miss/unreadable entry."""
