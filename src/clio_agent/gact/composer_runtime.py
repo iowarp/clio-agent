@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -222,13 +222,18 @@ def promote_queue_head(app: Any, deps: Any, session_id: str) -> None:
             )
             _publish_promotion_failure(app, session_id, head.id, "queue_revision_conflict")
             return
-        except Exception:  # noqa: BLE001 - retain the durable row and emit typed failure
+        except Exception as exc:  # noqa: BLE001 - retain the durable row and emit typed failure
             logger.exception(
                 "queued-message auto-promotion failed session=%s message=%s",
                 session_id,
                 head.id,
             )
-            _publish_promotion_failure(app, session_id, head.id, "queue_auto_promotion_failed")
+            _publish_promotion_failure(
+                app,
+                session_id,
+                head.id,
+                _promotion_error_code(exc),
+            )
             return
         if promoted is None:
             return
@@ -246,6 +251,31 @@ def promote_queue_head(app: Any, deps: Any, session_id: str) -> None:
             )
         )
         return
+
+
+def _promotion_error_code(exc: BaseException) -> str:
+    """Preserve an acceptance boundary's machine-readable cause when available."""
+
+    error_info = getattr(exc, "error_info", None)
+    typed = str(getattr(error_info, "error", "") or "").strip()
+    if typed:
+        return typed
+    detail = getattr(exc, "detail", None)
+    serialize_detail = getattr(detail, "model_dump", None)
+    if callable(serialize_detail):
+        detail = serialize_detail(exclude_none=True)
+    if isinstance(detail, Mapping):
+        nested = detail.get("error")
+        serialize_nested = getattr(nested, "model_dump", None)
+        if callable(serialize_nested):
+            nested = serialize_nested(exclude_none=True)
+        if isinstance(nested, Mapping):
+            typed = str(nested.get("error") or nested.get("code") or "").strip()
+        else:
+            typed = str(detail.get("code") or "").strip()
+        if typed:
+            return typed
+    return "queue_auto_promotion_failed"
 
 
 def _publish_promotion_failure(app: Any, session_id: str, message_id: str, error: str) -> None:

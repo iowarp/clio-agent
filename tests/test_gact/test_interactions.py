@@ -11,7 +11,7 @@ from dspy.utils.dummies import DummyLM
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as gact_context
-from clio_agent.gact.agent_initialization import mark_agent_ready
+from clio_agent.gact.agent_initialization import mark_agent_ready, record_init_failure
 from clio_agent.gact.agent_tasks import AgentTask
 from clio_agent.gact.agents.auto_tools import build_auto_react_tools
 from clio_agent.gact.agents.builders import _dynamic_agent_tools
@@ -19,12 +19,60 @@ from clio_agent.gact.agents.reactv2 import retaining_reactv2_cls
 from clio_agent.gact.app import build_app
 from clio_agent.gact.ask_user_tool import arm_ask_user_deadline
 from clio_agent.gact.elicitation_bridge import invocation_with_request_correlation
+from clio_agent.gact.loop_inbox import InboxEvent, LoopInbox
 from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
 from clio_agent.gact.types import AgentDef, UserQuestion, UserQuestionOption
 from clio_agent.tools.mcp_handlers import MCPInvocationContext
 from clio_agent.tools.mcp_task_records import TaskKey, TaskRecord, resolve_store
 
 HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
+
+
+def test_agent_init_failure_surfaces_a_deferred_question_resume() -> None:
+    """An answered question may remain queued, but it must not look silently idle."""
+
+    class Sessions:
+        def __init__(self) -> None:
+            self.updates: list[tuple[str, dict[str, object]]] = []
+
+        def update(self, session_id: str, **changes: object) -> None:
+            self.updates.append((session_id, changes))
+
+    class Bus:
+        def __init__(self) -> None:
+            self.events: list[object] = []
+
+        def publish(self, event: object) -> None:
+            self.events.append(event)
+
+    inbox = LoopInbox()
+    inbox.put(
+        InboxEvent(
+            kind="user_message",
+            task_id="",
+            metadata={"ask_user_resume": True, "question_id": "question_1"},
+        )
+    )
+    sessions = Sessions()
+    bus = Bus()
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            agent_init_error=None,
+            bus=bus,
+            loop_inboxes={"child_session": inbox},
+            sessions=sessions,
+        )
+    )
+
+    record_init_failure(app, RuntimeError("provider unavailable"), stage="init")
+
+    assert inbox.peek_nonempty(), "the recoverable answer should remain queued"
+    assert sessions.updates[0][0] == "child_session"
+    assert sessions.updates[0][1]["status"] == "failed"
+    event = bus.events[0]
+    assert event.type == "user_question.resume_failed"
+    assert event.payload["question_ids"] == ["question_1"]
+    assert event.payload["reason"] == "agent_init_failed"
 
 
 def _root_and_child(app: object) -> tuple[str, str]:

@@ -50,7 +50,7 @@ def _event_kind(event_type: str) -> str:
         return "tool"
     if event_type.startswith("artifact."):
         return "artifact"
-    if event_type.startswith(("permission.", "question.", "interaction.")):
+    if event_type.startswith(("permission.", "question.", "user_question.", "interaction.")):
         return "interaction"
     if event_type.startswith(("a2ui.", "mcp.task.", "mcp_task.")):
         return "interactive_work"

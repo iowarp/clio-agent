@@ -168,6 +168,36 @@ def _now_iso() -> str:
 #: timeout / forwarded expiry): first out of ``pending`` wins, closing the race where an
 #: answer and a timeout both "won" (HTTP 200 while the tool got cancel) — #1113 finding 6.
 _QUESTIONS_LOCK = threading.Lock()
+_DEFAULT_TERMINAL_QUESTION_HISTORY = 256
+
+
+def _terminal_question_history_limit() -> int:
+    """Maximum settled native questions retained in the process-local index."""
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return max(
+        0,
+        conf.resolve(
+            "gact.ask_user.max_terminal_history",
+            env="CLIO_GACT_ASK_USER_MAX_TERMINAL_HISTORY",
+            default=_DEFAULT_TERMINAL_QUESTION_HISTORY,
+            cast=conf.as_int,
+        ),
+    )
+
+
+def _prune_terminal_questions(questions: dict[str, UserQuestion]) -> None:
+    """Bound settled rows while never removing a pending interaction."""
+
+    limit = _terminal_question_history_limit()
+    terminal = sorted(
+        (row for row in questions.values() if row.status != "pending"),
+        key=lambda row: (row.updated_at, row.created_at, row.id),
+        reverse=True,
+    )
+    for row in terminal[limit:]:
+        questions.pop(row.id, None)
 
 
 def claim_question_transition(
@@ -201,6 +231,7 @@ def claim_question_transition(
             update["answer_metadata"] = dict(answer_metadata or {})
         updated = row.model_copy(update=update)
         questions[question_id] = updated
+        _prune_terminal_questions(questions)
     # The ONE serialization point is also the one place the armed expiry timer is
     # released, so no settled question leaves a live timer behind (outside the lock).
     cancel_ask_user_deadline(app, question_id)

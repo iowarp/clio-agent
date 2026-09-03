@@ -903,6 +903,35 @@ def test_terminalize_never_overwrites_a_landed_answer(client: TestClient) -> Non
     assert app.state.user_questions[qid].answer == "x"
 
 
+def test_terminal_question_index_is_bounded_without_pruning_pending(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Settled question history has a cap; unresolved interactions never do."""
+
+    from clio_agent.gact import elicitation_bridge
+    from clio_agent.gact.types import UserQuestion
+
+    app = client.app
+    monkeypatch.setattr(elicitation_bridge, "_terminal_question_history_limit", lambda: 1)
+    for index in range(3):
+        app.state.user_questions[f"q{index}"] = UserQuestion(
+            id=f"q{index}",
+            session_id="session",
+            owner_session_id="session",
+            attended_session_id="session",
+            prompt=f"Question {index}",
+            created_at=f"2026-09-03T00:00:0{index}+00:00",
+            updated_at=f"2026-09-03T00:00:0{index}+00:00",
+        )
+
+    assert elicitation_bridge.claim_question_transition(app, "q0", "answered") is not None
+    assert elicitation_bridge.claim_question_transition(app, "q1", "cancelled") is not None
+
+    assert "q0" not in app.state.user_questions
+    assert app.state.user_questions["q1"].status == "cancelled"
+    assert app.state.user_questions["q2"].status == "pending"
+
+
 def test_answer_vs_answer_second_is_409(client: TestClient) -> None:
     """Two answers to the same question: one 200, the other 409 (atomic claim)."""
 

@@ -27,7 +27,13 @@ def mark_agent_ready(app: Any, agent: Any) -> None:
 
 
 def record_init_failure(app: Any, exc: BaseException, *, stage: str) -> None:
-    """Expose one typed deferred-construction failure without leaving partial state."""
+    """Expose one typed deferred-construction failure without leaving partial state.
+
+    Answers submitted while the agent is initializing stay durably queued, but a
+    failed initialization must not leave their sessions looking idle forever.
+    Publish a typed failure and mark only those affected sessions failed; a later
+    successful provider bind still drains the retained inbox normally.
+    """
 
     print(
         f"[clio-agent-gact] deferred agent {stage} failed ({exc!r}); "
@@ -35,6 +41,41 @@ def record_init_failure(app: Any, exc: BaseException, *, stage: str) -> None:
         flush=True,
     )
     app.state.agent_init_error = repr(exc)
+    from clio_agent.gact.events import Event  # noqa: PLC0415
+
+    for session_id, inbox in list(getattr(app.state, "loop_inboxes", {}).items()):
+        deferred_questions = [
+            str(event.metadata.get("question_id") or "")
+            for event in inbox.snapshot()
+            if event.kind == "user_message" and event.metadata.get("ask_user_resume")
+        ]
+        deferred_questions = [question_id for question_id in deferred_questions if question_id]
+        if not deferred_questions:
+            continue
+        app.state.sessions.update(
+            session_id,
+            status="failed",
+            metadata_patch={
+                "deferred_resume_error": {
+                    "reason": "agent_init_failed",
+                    "stage": stage,
+                    "question_ids": deferred_questions,
+                }
+            },
+        )
+        app.state.bus.publish(
+            Event(
+                type="user_question.resume_failed",
+                session_id=session_id,
+                payload={
+                    "session_id": session_id,
+                    "question_ids": deferred_questions,
+                    "reason": "agent_init_failed",
+                    "stage": stage,
+                    "recoverable": True,
+                },
+            )
+        )
 
 
 def update_provider_profile(app: Any, agent: Any) -> None:
