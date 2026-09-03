@@ -35,28 +35,65 @@ def _typed_error(
     )
 
 
+#: The ARC event plane refused to hand over one session's segments. Reported per
+#: session rather than allowed to fail the whole query: one unreadable child must
+#: not cost the caller its parent's timeline.
+CHILD_EVENTS_UNREADABLE = "child_events_unreadable"
+#: No ARC event plane is configured at all, so the native provider has nothing to
+#: read. Previously an empty list indistinguishable from "this session did nothing".
+NATIVE_EVENT_PLANE_ABSENT = "native_event_plane_absent"
+
+
 def _child_session_ids(app: FastAPI, sid: str) -> list[str]:
-    """Return delegated child sessions, excluding ordinary user-created forks."""
+    """Return every descendant session, delegated children and user forks alike.
+
+    Both substrates, one walk (:func:`descendant_sessions`): the task registry
+    cannot see a fork and the session store cannot say which task owns a child.
+    The lineage rows carry which is which, so the projection attributes them
+    honestly rather than this walk deciding one of them does not exist.
+    """
 
     return descendant_session_ids(app, sid)
 
 
-def _native_events(app: FastAPI, session_ids: list[str]) -> list[dict[str, Any]]:
+def _native_events(
+    app: FastAPI, session_ids: list[str]
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Read each session's semantic segments, naming any the plane refuses."""
+
     arc = getattr(app.state, "arc", None)
     live = getattr(arc, "_live", None)
     iterator = getattr(live, "iter_session_event_segments", None)
     if arc is None or not callable(iterator):
-        return []
+        return [], [
+            {
+                "reason": NATIVE_EVENT_PLANE_ABSENT,
+                "session_id": session_ids[0] if session_ids else "",
+                "detail": "no ARC live event plane is installed; the native timeline is empty",
+            }
+        ]
     events: list[dict[str, Any]] = []
+    degradations: list[dict[str, str]] = []
     for session_id in session_ids:
-        for segment in iterator(session_id):
+        try:
+            segments = list(iterator(session_id))
+        except Exception as exc:  # noqa: BLE001 - one child must not fail the parent
+            degradations.append(
+                {
+                    "reason": CHILD_EVENTS_UNREADABLE,
+                    "session_id": session_id,
+                    "detail": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            continue
+        for segment in segments:
             event = semantic_event_from_events_content(
                 segment.content,
                 session_id=session_id,
                 turn_id=str(segment.turn_id or ""),
             )
             events.append(event.to_dict())
-    return events
+    return events, degradations
 
 
 def register_provenance_routes(app: FastAPI, deps: "GactDeps") -> None:
@@ -150,16 +187,23 @@ def register_provenance_routes(app: FastAPI, deps: "GactDeps") -> None:
             # *some* rows produces a silently truncated timeline. Use ARC only
             # when no native durable reader is configured.
             if not isinstance(reader, ExecutionProvenanceReader):
-                events = await run_in_threadpool(_native_events, app, [sid, *child_ids])
+                events, read_degradations = await run_in_threadpool(
+                    _native_events, app, [sid, *child_ids]
+                )
+                normalized = normalize_semantic_events(
+                    events,
+                    provider="native",
+                    session_id=sid,
+                    limit=limit,
+                )
+                normalized["degradations"] = [
+                    *(normalized.get("degradations") or []),
+                    *read_degradations,
+                ]
                 return project_child_execution(
                     app,
                     sid,
-                    normalize_semantic_events(
-                        events,
-                        provider="native",
-                        session_id=sid,
-                        limit=limit,
-                    ),
+                    normalized,
                     include_children=include_children,
                 )
         else:

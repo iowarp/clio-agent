@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
 
 __all__ = [
+    "InteractionProjection",
     "interactions_projection_limit",
     "project_pending_interactions",
     "register_permission_and_interaction_routes",
@@ -74,6 +76,13 @@ def _permission_intercept(metadata: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def _session_scope(app: FastAPI, root_session_id: str, include_children: bool) -> set[str]:
+    """Every session whose interactions this root is answerable for.
+
+    ``descendant_session_ids`` walks BOTH substrates, so a permission raised
+    inside a user FORK (a session-store child with no ``AgentTask``) is listable
+    here. Reading the task registry alone made those invisible to every poll.
+    """
+
     scope = {root_session_id}
     if include_children:
         scope.update(descendant_session_ids(app, root_session_id))
@@ -137,6 +146,7 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
             invocation_id=correlation["invocation_id"],
         ),
         created_at=question.created_at,
+        revision=question.updated_at,
         payload={
             key: value
             for key, value in {
@@ -194,6 +204,9 @@ def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInte
             ),
         ),
         created_at=str(row.get("created_at") or ""),
+        revision=str(
+            row.get("updated_at") or row.get("resolved_at") or row.get("created_at") or ""
+        ),
         payload={"permission_id": str(row.get("id") or ""), "tool_call": dict(tool_call)},
         actions=(
             ["allow", "deny", "allow_session", "allow_workspace"] if status == "pending" else []
@@ -245,9 +258,24 @@ def _surface_last_action(surface: Mapping[str, Any]) -> dict[str, Any]:
     return latest
 
 
-def _a2ui_interactions(app: FastAPI, owner: str) -> list[PendingInteraction]:
+def _a2ui_interactions(
+    app: FastAPI, owner: str
+) -> tuple[list[PendingInteraction], list[dict[str, str]]]:
+    """Project one owner's actionable surfaces, plus the store's quarantine rows.
+
+    ONE derivation per owner: ``list_wire`` and ``projection_degradations`` each
+    re-walk the owner's whole message ledger, and ``task_id`` / ``attended`` used
+    to be recomputed per SURFACE (a full registry snapshot + sort each time), so a
+    poll cost O(surfaces x tasks) on top of two ledger walks.
+    """
+
+    surfaces, quarantined = app.state.a2ui_store.list_wire_with_degradations(owner)
     rows: list[PendingInteraction] = []
-    for surface in app.state.a2ui_store.list_wire(owner):
+    if not surfaces:
+        return rows, list(quarantined)
+    owner_task_id = _task_id_for_owner(app, owner)
+    owner_attended = attended_session_id(app, owner)
+    for surface in surfaces:
         actions = _surface_actions(surface)
         if surface.get("state") == "deleted" or not actions:
             continue
@@ -267,8 +295,8 @@ def _a2ui_interactions(app: FastAPI, owner: str) -> list[PendingInteraction]:
                 id=f"a2ui:{owner}:{surface_id}",
                 kind="a2ui",
                 owner_session_id=owner,
-                attended_session_id=attended_session_id(app, owner),
-                task_id=_task_id_for_owner(app, owner),
+                attended_session_id=owner_attended,
+                task_id=owner_task_id,
                 status="answered" if settled else "pending",
                 title="Interactive surface",
                 source=PendingInteractionSource(
@@ -278,11 +306,12 @@ def _a2ui_interactions(app: FastAPI, owner: str) -> list[PendingInteraction]:
                     surface_id=surface_id,
                 ),
                 created_at=str(surface.get("created_at") or ""),
+                revision=str(surface.get("revision", "")),
                 payload=payload,
                 actions=actions,
             )
         )
-    return rows
+    return rows, list(quarantined)
 
 
 def _task_id_for_owner(app: FastAPI, owner: str) -> str:
@@ -305,6 +334,7 @@ def _orphan_mcp_interaction(app: FastAPI, record: TaskRecord) -> PendingInteract
         title=f"{record.tool or 'MCP task'} requires input",
         source=PendingInteractionSource(protocol="mcp", tool_name=record.tool),
         created_at=record.created_at,
+        revision=str(getattr(record, "updated_at", "") or record.created_at),
         payload={"server_id": record.key.server_id, "awaiting_question": True},
         actions=[],
     )
@@ -326,12 +356,30 @@ def interactions_projection_limit() -> int:
     )
 
 
+@dataclass(frozen=True)
+class InteractionProjection:
+    """The projected rows plus every typed reason they are partial."""
+
+    rows: list[PendingInteraction] = field(default_factory=list)
+    degradations: list[dict[str, str]] = field(default_factory=list)
+
+
 def project_pending_interactions(
     app: FastAPI, root_session_id: str, *, include_children: bool
-) -> list[PendingInteraction]:
-    """Project pending interactions from the existing authoritative ledgers."""
+) -> InteractionProjection:
+    """Project pending interactions from the existing authoritative ledgers.
+
+    Two bounds, both typed rather than silent. The A2UI half re-derives a whole
+    message ledger PER OWNER, so ``include_children`` on a wide tree multiplied
+    that by the descendant count with nothing capping it -- the projection limit
+    trimmed the finished ROWS, after every ledger had already been walked. Owners
+    are now capped by the same limit, newest session first, and the surfaces the
+    cap skipped are reported. So are the store's own quarantine rows, which this
+    projection used to compute and discard.
+    """
 
     scope = _session_scope(app, root_session_id, include_children)
+    degradations: list[dict[str, str]] = []
     questions = [
         question
         for question in app.state.user_questions.values()
@@ -360,8 +408,26 @@ def project_pending_interactions(
         if permission.get("status") == "pending"
         and str(permission.get("session_id") or "") in scope
     )
-    for owner in scope:
-        rows.extend(_a2ui_interactions(app, owner))
+    limit = interactions_projection_limit()
+    # The root owns the attention lane, so it is walked first; the rest follow in
+    # a stable order so two polls agree on WHICH owners were skipped.
+    walk_order = [root_session_id, *sorted(scope - {root_session_id})]
+    walked, skipped = walk_order[:limit], walk_order[limit:]
+    for owner in walked:
+        owner_rows, owner_degradations = _a2ui_interactions(app, owner)
+        rows.extend(owner_rows)
+        degradations.extend(owner_degradations)
+    if skipped:
+        degradations.append(
+            {
+                "reason": "interaction_projection_owner_cap",
+                "detail": (
+                    f"{len(skipped)} of {len(walk_order)} sessions in scope were not walked for "
+                    f"interactive surfaces (gact.interactions.projection_limit={limit}); "
+                    "narrow the scope with include_children=false or raise the limit"
+                ),
+            }
+        )
     rows.extend(
         _orphan_mcp_interaction(app, record)
         for record in app_task_store(app).list()
@@ -369,9 +435,18 @@ def project_pending_interactions(
         and str(record.session_id or "") in scope
         and record.task_id not in correlated_tasks
     )
-    return sorted(rows, key=lambda row: row.created_at, reverse=True)[
-        : interactions_projection_limit()
-    ]
+    ordered = sorted(rows, key=lambda row: row.created_at, reverse=True)
+    if len(ordered) > limit:
+        degradations.append(
+            {
+                "reason": "interaction_projection_truncated",
+                "detail": (
+                    f"{len(ordered) - limit} of {len(ordered)} pending interactions were dropped "
+                    f"(gact.interactions.projection_limit={limit}); the newest are returned"
+                ),
+            }
+        )
+    return InteractionProjection(rows=ordered[:limit], degradations=degradations)
 
 
 def _interaction_wire(row: PendingInteraction) -> dict[str, Any]:
@@ -408,10 +483,15 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
     ) -> dict[str, Any]:
         if app.state.sessions.get(root_session_id) is None:
             raise _error(404, "not_found", f"session not found: {root_session_id}")
-        rows = project_pending_interactions(app, root_session_id, include_children=include_children)
+        projection = project_pending_interactions(
+            app, root_session_id, include_children=include_children
+        )
         return {
-            "interactions": [_interaction_wire(row) for row in rows],
+            "interactions": [_interaction_wire(row) for row in projection.rows],
             "include_children": include_children,
+            # Typed reasons this lane is partial (quarantined surfaces, an owner
+            # or row cap). A shorter attention lane is never served as complete.
+            "degradations": projection.degradations,
         }
 
     @app.post("/v1/sessions/{root_session_id}/interactions/{interaction_id}/respond")

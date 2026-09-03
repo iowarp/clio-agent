@@ -24,6 +24,7 @@ from clio_agent.gact.agent_tasks import (
     persist_agent_task,
     publish_agent_task_event,
 )
+from clio_agent.gact.agent_tasks import MAX_SPAWN_DEPTH as _MAX_SPAWN_DEPTH
 from clio_agent.gact.runtime.permission_policies import inherit_child_session_policies
 from clio_agent.gact.spawn_context import validate_task_spec
 from clio_agent.gact.task_fold import finish_agent_task_transition, fold_agent_task_transition
@@ -63,7 +64,10 @@ def _err_code(error_info: Any) -> str:
 # deep chains (tier-1 → tier-2 → tier-2 → tier-2 → tier-3s) are legitimate. This
 # only refuses a spawn whose computed depth would exceed the backstop, bounding
 # runaway self-spawning (and, per the per-depth pools below, the number of pools).
-MAX_SPAWN_DEPTH = 8
+# It now LIVES in ``agent_tasks`` (the leaf this module already imports) so the
+# read-side descendant/lineage walks bound themselves by the same number instead
+# of carrying an independent copy that drifts.
+MAX_SPAWN_DEPTH = _MAX_SPAWN_DEPTH
 _ANSWER_EXCERPT_MAX = 2000
 
 # P1.1 (#1031 governance-surfaces, "subagents inherit structurally"): a child spawned

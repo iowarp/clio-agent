@@ -59,16 +59,27 @@ class _Registry:
 
 
 class _Sessions:
+    """The session store's read surface the projection actually uses.
+
+    ``list`` is here because the descendant walk reads BOTH substrates: the
+    registry cannot see ``fork`` (no task delegated it) and the store cannot say
+    which task owns ``child``.
+    """
+
     def __init__(self) -> None:
         self.rows = {
-            "root": SimpleNamespace(title="Investigation"),
-            "child": SimpleNamespace(title="Evidence child"),
-            "leaf": SimpleNamespace(title="Evidence leaf"),
-            "fork": SimpleNamespace(title="User fork", parent_session_id="root"),
+            "root": SimpleNamespace(id="root", title="Investigation", parent_session_id=""),
+            "child": SimpleNamespace(id="child", title="Evidence child", parent_session_id=""),
+            "leaf": SimpleNamespace(id="leaf", title="Evidence leaf", parent_session_id=""),
+            "fork": SimpleNamespace(id="fork", title="User fork", parent_session_id="root"),
         }
 
     def get(self, session_id: str) -> Any:
         return self.rows.get(session_id)
+
+    def list(self, workspace_id: str | None = None) -> list[Any]:
+        del workspace_id
+        return list(self.rows.values())
 
 
 def _app() -> Any:
@@ -82,12 +93,20 @@ def _app() -> Any:
 
 
 def test_child_lineage_preserves_nested_task_identity() -> None:
-    rows = child_session_lineage(_app(), "root")
+    rows, truncated = child_session_lineage(_app(), "root")
 
-    assert [row["session_id"] for row in rows] == ["root", "child", "leaf"]
-    assert rows[2]["task_path"] == ["task_child", "task_leaf"]
-    assert rows[2]["depth"] == 2
-    assert rows[2]["agent_id"] == "critic"
+    by_id = {row["session_id"]: row for row in rows}
+    assert set(by_id) == {"root", "child", "leaf", "fork"}
+    assert truncated is False
+    assert by_id["leaf"]["task_path"] == ["task_child", "task_leaf"]
+    assert by_id["leaf"]["depth"] == 2
+    assert by_id["leaf"]["agent_id"] == "critic"
+    assert by_id["leaf"]["attribution"] == "agent_task"
+    # A user fork is real topology with no task: it carries neither a task id
+    # nor an inherited path, and says which substrate found it.
+    assert by_id["fork"]["attribution"] == "session_fork"
+    assert by_id["fork"]["task_id"] == ""
+    assert by_id["fork"]["task_path"] == []
 
 
 def test_projection_adds_typed_delegation_and_artifact_edges() -> None:
@@ -140,12 +159,15 @@ def test_projection_without_children_does_not_leak_delegation_topology() -> None
     result = project_child_execution(_app(), "root", normalized, include_children=False)
 
     assert [row["session_id"] for row in result["session_lineage"]] == ["root"]
+    assert result["lineage_truncated"] is False
     assert not [node for node in result["nodes"] if node["id"].startswith("task:")]
     assert not [edge for edge in result["edges"] if edge["kind"] == "delegated"]
 
 
-def test_child_provenance_scope_excludes_ordinary_user_forks() -> None:
-    assert _child_session_ids(_app(), "root") == ["child", "leaf"]
+def test_child_provenance_scope_covers_forks_as_well_as_delegated_children() -> None:
+    """Both substrates, one walk — a fork's events are readable, not invisible."""
+
+    assert set(_child_session_ids(_app(), "root")) == {"child", "leaf", "fork"}
 
 
 def test_normalization_preserves_interaction_correlation_without_prompt_content() -> None:

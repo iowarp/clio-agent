@@ -176,9 +176,23 @@ class A2UIStore:
     def list_wire(self, session_id: str) -> list[dict[str, Any]]:
         """Return transcript-derived surfaces ordered by creation time."""
 
-        rows = list(self._project(session_id)[0].values())
-        rows.sort(key=lambda row: row.created_at)
-        return [row.to_wire() for row in rows]
+        return self.list_wire_with_degradations(session_id)[0]
+
+    def list_wire_with_degradations(
+        self, session_id: str
+    ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+        """Return the surfaces AND why any persisted part was quarantined.
+
+        One projection pass for both. A caller that wanted the rows and the
+        reasons had to call :meth:`list_wire` and
+        :meth:`projection_degradations` separately, walking the session's whole
+        message ledger twice — and the pending-interaction projection, which
+        needs both, took the first walk and dropped the reasons on the floor.
+        """
+
+        surfaces, degradations = self._project(session_id)
+        rows = sorted(surfaces.values(), key=lambda row: row.created_at)
+        return [row.to_wire() for row in rows], list(degradations)
 
     def announce_ledger_clear(self, session_id: str, reason: str) -> list[str]:
         """Publish a typed lifecycle deletion for every surface a wipe removes.

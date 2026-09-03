@@ -105,7 +105,7 @@ def project_session_async_processes(
     dedupe idiom ``project_runs`` uses.
     """
 
-    lineage = child_session_lineage(app, session_id)
+    lineage, _truncated = child_session_lineage(app, session_id)
     lineage_by_session = {str(row["session_id"]): row for row in lineage}
     owner_session_ids = [session_id]
     if include_children:

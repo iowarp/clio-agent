@@ -11,10 +11,24 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.gact.agent_tasks import display_run_name
+from clio_agent.gact.agent_tasks import (
+    _DEFAULT_DESCENDANT_DEPTH,
+    descendant_sessions,
+    display_run_name,
+)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
+#: A span whose ``session_id`` is in the lineage only via the session store.
+UNOWNED_SESSION_ATTRIBUTION = "session_fork"
+#: A span whose ``session_id`` is in NEITHER substrate. Reported, never
+#: re-attributed: silently folding it into the root invented ownership and made
+#: the root's task_id/task_path appear on work the root never did.
+UNATTRIBUTED_SESSION = "unattributed_session"
+#: A lineage row whose session the store no longer has (a deleted child, a torn
+#: write between the two stores).
+LINEAGE_SESSION_MISSING = "lineage_session_missing"
 
 CHILD_ACTIVITY_PROJECTION_CAPABILITY: dict[str, Any] = {
     "include_children": True,
@@ -30,12 +44,21 @@ CHILD_ACTIVITY_PROJECTION_CAPABILITY: dict[str, Any] = {
 }
 
 
-def child_session_lineage(app: "FastAPI", root_session_id: str) -> list[dict[str, Any]]:
-    """Return a bounded, breadth-first lineage for ``root_session_id``.
+def child_session_lineage(
+    app: "FastAPI", root_session_id: str, *, max_depth: int = _DEFAULT_DESCENDANT_DEPTH
+) -> tuple[list[dict[str, Any]], bool]:
+    """Return a bounded, breadth-first lineage plus whether the walk was cut short.
 
-    Every row is derived from the durable ``AgentTask`` projection.  The root is
-    included at depth zero; descendants carry their owning task and a complete
-    task path so clients can render nested branches without timing heuristics.
+    "Bounded" used to be a docstring claim only: the walk had no depth cap at all,
+    while ``descendant_sessions`` -- the substrate the SAME routes use to pick
+    which sessions to read -- stopped at ``MAX_SPAWN_DEPTH``. The two therefore
+    disagreed about what the tree is. Both now stop at the same constant, and a
+    walk that hit the cap says so instead of serving a partial tree as complete.
+
+    The root is included at depth zero; descendants carry their owning task and a
+    complete task path so clients can render nested branches without timing
+    heuristics. A descendant reached only through the session store (a user fork)
+    carries no task identity -- it has none -- and is typed ``session_fork``.
     """
 
     rows: list[dict[str, Any]] = [
@@ -47,39 +70,57 @@ def child_session_lineage(app: "FastAPI", root_session_id: str) -> list[dict[str
             "label": _session_label(app, root_session_id),
             "depth": 0,
             "task_path": [],
+            "attribution": "root",
         }
     ]
-    registry = getattr(app.state, "agent_task_registry", None)
-    if registry is None:
-        return rows
-
-    seen = {root_session_id}
-    frontier: list[tuple[str, int, list[str]]] = [(root_session_id, 0, [])]
-    while frontier:
-        parent_session_id, parent_depth, parent_path = frontier.pop(0)
-        for task in registry.for_parent(parent_session_id):
-            child_session_id = str(task.child_session_id or "")
-            if not child_session_id or child_session_id in seen:
-                continue
-            seen.add(child_session_id)
-            agent_id = str(task.agent_ref.get("expert_id") or "agent")
-            task_path = [*parent_path, task.task_id]
-            rows.append(
+    task_by_id = _task_index(app)
+    path_by_session: dict[str, list[str]] = {root_session_id: []}
+    truncated = False
+    for row in descendant_sessions(app, root_session_id, max_depth=max_depth):
+        task = task_by_id.get(row.task_id) if row.task_id else None
+        agent_ref = dict((task or {}).get("agent_ref") or {})
+        agent_id = str(agent_ref.get("expert_id") or "") if task else ""
+        task_path = [*path_by_session.get(row.parent_session_id, []), *([row.task_id] or [])]
+        task_path = [step for step in task_path if step]
+        path_by_session[row.session_id] = task_path
+        entry: dict[str, Any] = {
+            "session_id": row.session_id,
+            "parent_session_id": row.parent_session_id,
+            "task_id": row.task_id,
+            "agent_id": agent_id,
+            "label": (
+                display_run_name(
+                    agent_id or "agent",
+                    int((task or {}).get("run_index") or 0),
+                    str((task or {}).get("run_label") or ""),
+                )
+                if task
+                else _session_label(app, row.session_id)
+            ),
+            "depth": row.depth,
+            "task_path": task_path,
+            "attribution": row.attribution,
+        }
+        if task is not None:
+            entry.update(
                 {
-                    "session_id": child_session_id,
-                    "parent_session_id": parent_session_id,
-                    "task_id": task.task_id,
-                    "agent_id": agent_id,
-                    "label": display_run_name(agent_id, task.run_index, task.run_label),
-                    "depth": parent_depth + 1,
-                    "task_path": task_path,
-                    "status": task.status,
-                    "created_at": task.created_at,
-                    "updated_at": task.updated_at,
+                    "status": str(task.get("status") or ""),
+                    "created_at": str(task.get("created_at") or ""),
+                    "updated_at": str(task.get("updated_at") or ""),
                 }
             )
-            frontier.append((child_session_id, parent_depth + 1, task_path))
-    return rows
+        rows.append(entry)
+        if row.depth >= max_depth:
+            # The walk stopped here by policy, not because the tree ended: a
+            # child of this row would have existed at depth max_depth + 1.
+            truncated = truncated or bool(_has_children(app, row.session_id))
+    return rows, truncated
+
+
+def _has_children(app: "FastAPI", session_id: str) -> bool:
+    """Whether the bounded walk left descendants of ``session_id`` unvisited."""
+
+    return bool(descendant_sessions(app, session_id, max_depth=1))
 
 
 def project_child_execution(
@@ -95,47 +136,69 @@ def project_child_execution(
     fields.  Graph entities are derived from those spans and the authoritative
     ``AgentTask`` lineage.  Hidden reasoning and child message content are never
     read by this projection.
+
+    A span from a session the lineage does not contain is REPORTED, never
+    re-attributed: the old ``by_session.get(sid, by_session[root])`` fallback gave
+    such a span the ROOT's ``task_id`` and ``task_path`` -- a fabricated ownership
+    the client could not tell from a real one -- and then minted a ``contains``
+    edge onto a ``session:<sid>`` node that was never in the graph. Every reason
+    the projection is partial rides ``degradations``.
     """
 
     projected = dict(result)
-    lineage = child_session_lineage(app, root_session_id)
+    lineage, truncated = child_session_lineage(app, root_session_id)
     if not include_children:
-        lineage = lineage[:1]
+        lineage, truncated = lineage[:1], False
     by_session = {str(row["session_id"]): row for row in lineage}
     task_by_id = _task_index(app)
+    degradations: list[dict[str, str]] = [
+        row for row in (result.get("degradations") or []) if isinstance(row, dict)
+    ]
+    unattributed: dict[str, str] = {}
+
+    def _owner(session_id: str) -> dict[str, Any]:
+        """The lineage row for ``session_id``, or a typed unowned stand-in."""
+
+        row = by_session.get(session_id)
+        if row is not None:
+            return row
+        attribution = unattributed.setdefault(session_id, UNATTRIBUTED_SESSION)
+        return {
+            "session_id": session_id,
+            "parent_session_id": "",
+            "task_id": "",
+            "agent_id": "",
+            "label": session_id,
+            "depth": 0,
+            "task_path": [],
+            "attribution": attribution,
+        }
 
     spans: list[dict[str, Any]] = []
     for raw_span in result.get("spans") or []:
         span = dict(raw_span)
         session_id = str(span.get("session_id") or root_session_id)
-        owner = by_session.get(session_id, by_session[root_session_id])
+        owner = _owner(session_id)
         attributes = dict(span.get("attributes") or {})
         task_id = str(
             span.get("task_id") or attributes.get("task_id") or owner.get("task_id") or ""
         )
-        span.update(
-            {
-                "root_session_id": root_session_id,
-                "owner_session_id": session_id,
-                "task_id": task_id,
-                "task_path": list(owner.get("task_path") or []),
-            }
-        )
-        attributes.update(
-            {
-                "root_session_id": root_session_id,
-                "owner_session_id": session_id,
-                "task_id": task_id,
-                "task_path": list(owner.get("task_path") or []),
-            }
-        )
+        attribution = {
+            "root_session_id": root_session_id,
+            "owner_session_id": session_id,
+            "task_id": task_id,
+            "task_path": list(owner.get("task_path") or []),
+            "attribution": str(owner.get("attribution") or ""),
+        }
+        span.update(attribution)
+        attributes.update(attribution)
         span["attributes"] = attributes
         spans.append(span)
 
     nodes = [dict(node) for node in result.get("nodes") or []]
     for node in nodes:
         session_id = str(node.get("session_id") or root_session_id)
-        owner = by_session.get(session_id, by_session[root_session_id])
+        owner = _owner(session_id)
         attributes = dict(node.get("attributes") or {})
         attributes.update(
             {
@@ -143,13 +206,16 @@ def project_child_execution(
                 "owner_session_id": session_id,
                 "task_id": str(attributes.get("task_id") or owner.get("task_id") or ""),
                 "task_path": list(owner.get("task_path") or []),
+                "attribution": str(owner.get("attribution") or ""),
             }
         )
         node["attributes"] = attributes
 
     entity_nodes, causal_edges = _causal_entities_and_edges(
         root_session_id=root_session_id,
-        lineage=lineage,
+        # Sessions a span named but the lineage does not own still get a node, so
+        # the ``contains`` edge minted for that span lands somewhere.
+        lineage=[*lineage, *(_owner(sid) for sid in sorted(unattributed))],
         spans=spans,
         task_by_id=task_by_id,
     )
@@ -160,10 +226,32 @@ def project_child_execution(
     existing_edge_ids = {str(edge.get("id") or "") for edge in edges}
     edges.extend(edge for edge in causal_edges if edge["id"] not in existing_edge_ids)
 
+    degradations.extend(
+        {
+            "reason": UNATTRIBUTED_SESSION,
+            "session_id": session_id,
+            "detail": "a span named a session that is in neither the task registry nor the "
+            "session store's lineage; it is reported unowned rather than folded into the root",
+        }
+        for session_id in sorted(unattributed)
+    )
+    degradations.extend(
+        {
+            "reason": LINEAGE_SESSION_MISSING,
+            "session_id": str(row["session_id"]),
+            "detail": "the task registry names this child but the session store no longer has it",
+        }
+        for row in lineage
+        if row["depth"] and app.state.sessions.get(str(row["session_id"])) is None
+    )
+
     projected.update(
         {
             "root_session_id": root_session_id,
             "session_lineage": lineage,
+            "lineage_depth": max((int(row.get("depth") or 0) for row in lineage), default=0),
+            "lineage_truncated": truncated,
+            "degradations": degradations,
             "spans": spans,
             "nodes": nodes,
             "edges": edges,
@@ -243,6 +331,11 @@ def _causal_entities_and_edges(
                 "task_id": str(row.get("task_id") or ""),
                 "task_path": list(row.get("task_path") or []),
                 "depth": int(row.get("depth") or 0),
+                # HOW this session entered the graph: delegated by a task, reached
+                # only through the session store (a fork), or named by a span and
+                # owned by neither. A client rendering the tree needs the
+                # difference; the old graph stated only the first.
+                "attribution": str(row.get("attribution") or ""),
             },
         )
         task_id = str(row.get("task_id") or "")

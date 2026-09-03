@@ -99,6 +99,12 @@ class PendingInteraction(BaseModel):
     prompt: str = ""
     source: PendingInteractionSource
     created_at: str
+    #: Monotonic-per-row marker of the version this projection saw. A poll is a
+    #: full re-derivation from four ledgers, so two responses can arrive out of
+    #: order; without a revision a client cannot tell a stale one from an update
+    #: and re-renders a settled interaction as pending. Empty when the underlying
+    #: row carries no version of its own.
+    revision: str = ""
     payload: dict[str, Any] = Field(default_factory=dict)
     actions: list[str] = Field(default_factory=list)
 

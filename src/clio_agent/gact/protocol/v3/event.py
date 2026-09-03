@@ -226,6 +226,44 @@ def _question_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Pr
     return _Projection("question.upserted", payload, entity_id)
 
 
+def _task_path(payload: dict[str, Any]) -> list[str]:
+    """Walk this task's ancestors to the root, newest step last.
+
+    Without it a client holding a ``subagent.upserted`` frame knows the run exists
+    but not WHERE in the tree it belongs, so a nested spawn renders as another
+    top-level row. The chain is read off the live registry (the same one the
+    provenance lineage reads) and bounded by the spawn backstop, so a cyclic or
+    torn projection terminates.
+    """
+
+    from clio_agent.gact.agent_tasks import MAX_SPAWN_DEPTH  # noqa: PLC0415 - avoid cycle
+    from clio_agent.gact.context import active_app  # noqa: PLC0415 - avoid cycle
+
+    task_id = str(payload.get("task_id") or "")
+    app = active_app()
+    registry = getattr(getattr(app, "state", None), "agent_task_registry", None)
+    if not task_id or registry is None:
+        return [task_id] if task_id else []
+    path = [task_id]
+    parent_session_id = str(payload.get("parent_session_id") or "")
+    seen = {task_id}
+    for _ in range(MAX_SPAWN_DEPTH):
+        owner = next(
+            (
+                task
+                for task in registry.snapshot()
+                if task.child_session_id == parent_session_id and task.task_id not in seen
+            ),
+            None,
+        )
+        if owner is None:
+            break
+        seen.add(owner.task_id)
+        path.insert(0, owner.task_id)
+        parent_session_id = owner.parent_session_id
+    return path
+
+
 def _subagent_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Projection:
     del session
     entity_id = str(payload.get("task_id") or payload.get("handle_id") or "")
@@ -251,6 +289,7 @@ def _subagent_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Pr
         "title": title,
         "state": _LIVE_WORK_STATE.get(raw_state, "interrupted"),
         "agent_id": expert_id,
+        "task_path": _task_path(payload),
         **(
             {"child_session_id": str(payload["child_session_id"])}
             if payload.get("child_session_id")
