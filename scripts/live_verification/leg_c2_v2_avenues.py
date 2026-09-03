@@ -23,7 +23,7 @@ Avenues (see ``LEG_C2.md`` for the full per-avenue writeup + citations):
  4. cache             -- BLOCKED: exerciser has no cache_ttl/cache_scope arm.
  5. waits-cancel      -- staller surfaces ``mcp_task.wait`` live-SSE events,
                          then a cancel ends the turn ``cancelled``, not hung.
- 6. pagination        -- the readiness gate's full 9-tool resolution is the
+ 6. pagination        -- the readiness gate's full 10-tool resolution is the
                          available (indirect) proof; no ``list_page_size``
                          control exists anywhere in clio_agent to force real
                          multi-page traversal.
@@ -122,7 +122,7 @@ EXERCISER_EXPECTED_TOOLS = {
 NEEDED_AGENT_TOOLS = {f"{EXERCISER_NAMESPACE}_{name}" for name in EXERCISER_EXPECTED_TOOLS}
 
 #: Static avenue plan -- used by both --dry-run and (for cross-reference)
-#: LEG_C2.md's table. ``needs_lm`` marks the two avenues driven through a
+#: LEG_C2.md's table. ``needs_lm`` marks the three avenues driven through a
 #: real model turn; every other avenue is headless HTTP/SSE only.
 AVENUE_PLAN: list[dict[str, Any]] = [
     {
@@ -159,7 +159,7 @@ AVENUE_PLAN: list[dict[str, Any]] = [
         "avenue": "pagination",
         "needs_lm": False,
         "expect": "pass",
-        "summary": "readiness gate proves all 9 tools resolve (indirect; no page-size control exists)",
+        "summary": "readiness gate proves all 10 tools resolve (indirect; no page-size control exists)",
     },
     {
         "avenue": "list-changed",
@@ -275,10 +275,13 @@ def avenue_mrtr_methods() -> dict[str, Any]:
         "evidence": {
             "checked": ["tests/test_tools/mcp_exerciser.py", "src/clio_agent/gact/routes/mcp.py"],
             "finding": (
-                "(a) build_exerciser_server() registers 9 `@server.tool`s and "
-                "nothing else -- no `@server.resource`/`@server.prompt` handler "
-                "exists, so there is no MRTR-capable prompts/get or resources/read "
-                "arm to drive even in isolation. (b) independent of (a): the "
+                "(a) since C1-S3 (#1283) build_exerciser_server() registers 10 "
+                "`@server.tool`s and one `@server.resource` (the static ui panel "
+                "content resource `ui_echo` binds to, not an MRTR-capable path) -- "
+                "no `@server.prompt` exists at all, and no resource anywhere "
+                "returns `InputRequiredResult`, so there is still no MRTR-capable "
+                "prompts/get or resources/read arm to drive even in isolation. "
+                "(b) independent of (a): the "
                 "DECLARED session/turn surface this leg (and legs B/C) prove only "
                 "exposes an expert's frontmatter `tools:` list to the model -- "
                 "prompts/resources reach a session only through the SEPARATE "
@@ -333,7 +336,7 @@ def avenue_list_changed() -> dict[str, Any]:
             ],
             "finding": (
                 "the exerciser's tool set is fixed at server-build time "
-                "(build_exerciser_server() registers the same 9 tools every call) "
+                "(build_exerciser_server() registers the same 10 tools every call) "
                 "-- no tool dynamically adds/removes a tool or fires a "
                 "`notifications/tools/list_changed` notification. A repo-wide "
                 "grep for listChanged/list_changed found only unrelated hits "
@@ -441,6 +444,13 @@ def avenue_apps_ui(
         resolve_error = str(exc)
 
     resource = resolved.get("resource") or {}
+    # Inline literal, deliberately not imported: this script never imports
+    # clio_agent (it drives the gact server over HTTP as a subprocess, and
+    # the exerciser fixture it does import is clio_agent-free by design --
+    # see mcp_exerciser.py's own docstring). The single source of truth is
+    # clio_agent.tools.mcp_extension_registry.MCP_APP_MIME_TYPE (re-exports
+    # fastmcp.utilities.mime.UI_MIME_TYPE); pulling that module in here would
+    # drag the whole clio_agent import graph into a pure HTTP driver script.
     served_ok = (
         resolve_error is None
         and resource.get("mime_type") == "text/html;profile=mcp-app"
@@ -515,13 +525,13 @@ def avenue_pagination(resolved_main_tools: set[str]) -> dict[str, Any]:
                 "anywhere in clio_agent (repo-wide grep for list_page_size/"
                 "page_size/pagination/cursor across src/clio_agent/tools/*: zero "
                 "MCP-tools/list-paging-related hits), so this leg cannot FORCE "
-                "the exerciser's 9-tool tools/list to span multiple pages. "
+                "the exerciser's 10-tool tools/list to span multiple pages. "
                 "fastmcp's Client.list_tools() cursor-based pagination is "
                 "SDK-internal (obligations doc row B1, 'library-covered'), not "
                 "independently forceable to a small page size from this "
                 "codebase. This avenue instead proves pagination TRANSPARENCY "
                 "indirectly: if any page boundary were mishandled, some of the "
-                "9 expected tools would be missing from the resolved agent's "
+                "10 expected tools would be missing from the resolved agent's "
                 "toolset above -- they are not (when this avenue passes)."
             ),
         },
