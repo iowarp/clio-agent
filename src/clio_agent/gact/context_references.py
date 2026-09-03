@@ -624,6 +624,20 @@ def resource_part_from_reference(app: "FastAPI", workspace_id: str, part: Part) 
             requested_revision=part.revision,
             actual_revision=actual_revision,
         )
+    if record.state != "ready":
+        # The same gate the ``resource_ref`` admission path applies. Checking it
+        # HERE (not only downstream) keeps both acceptance doors identical: the
+        # off-loop-prepared path re-runs the resource loop over the mapped part,
+        # the fully synchronous one does not.
+        raise _failure(
+            status_code=409,
+            error="resource_not_ready",
+            message="resource must finish upload and validation before submission",
+            ref_kind="resource",
+            ref_id=part.ref_id,
+            recoverable=True,
+            state=record.state,
+        )
     return Part(
         type="resource_ref",
         id=part.id,

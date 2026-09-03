@@ -470,6 +470,19 @@ def test_resource_reference_search_row_attaches_as_a_resource_ref_part(tmp_path)
     assert attached[0].resource_revision == str(ready.revision)
     assert attached[0].media_type == ready.detected_mime
 
+    # A still-uploading resource is refused at the SAME gate the resource_ref
+    # admission path uses, on both acceptance doors.
+    uploading, _resumed = app.state.resource_store.create_or_resume(
+        workspace_id=workspace_id, name="wip.md", declared_size=32
+    )
+    with pytest.raises(Exception) as refused:  # noqa: PT011 - HTTPException envelope
+        authorize_context_reference_parts_sync(
+            app,
+            session,
+            [Part(type="context_ref", ref_kind="resource", ref_id=uploading.id)],
+        )
+    assert refused.value.detail["error"]["error"] == "resource_not_ready"
+
 
 def test_capability_documents_the_part_type_mapping_and_the_agent_mechanism() -> None:
     from clio_agent.gact.context_reference_domain import CONTEXT_REFERENCE_CAPABILITY
