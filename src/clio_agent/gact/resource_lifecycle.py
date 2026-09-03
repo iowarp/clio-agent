@@ -35,6 +35,7 @@ from clio_agent.gact.resource_processing import (
     ResourceConverterUnavailable,
     ResourceCustodyGone,
     ResourceProcessingRecord,
+    bounded_processing_events,
 )
 
 logger = logging.getLogger(__name__)
@@ -209,6 +210,16 @@ async def refresh_processing(app: Any, record: ResourceRecord) -> ResourceProces
             "progress_kind": progress_kind,
             "stage": str(stage) if stage is not None else state.stage,
             "message": str(message) if message is not None else state.message,
+            "events": (
+                bounded_processing_events(
+                    payload.get("events"),
+                    default_progress_kind=cast(
+                        Literal["unknown", "stage", "measured"], progress_kind
+                    ),
+                )
+                if isinstance(payload.get("events"), list)
+                else state.events
+            ),
         }
     )
     if remote_state == "complete":
@@ -326,6 +337,14 @@ async def submit_processing(
         ),
         stage=str(submitted.get("stage") or "queued"),
         message=str(submitted.get("message") or ""),
+        events=bounded_processing_events(
+            submitted.get("events"),
+            default_progress_kind=(
+                cast(Literal["unknown", "stage", "measured"], submitted["progress_kind"])
+                if submitted.get("progress_kind") in {"unknown", "stage", "measured"}
+                else "unknown"
+            ),
+        ),
         derivatives_available=current.derivatives_available,
     )
     latest = app.state.resource_processing_store.state(record)

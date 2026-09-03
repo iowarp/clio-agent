@@ -39,6 +39,10 @@ _PROCESSOR_WRITE_TIMEOUT_FLOOR_S = 60.0
 
 logger = logging.getLogger(__name__)
 
+_MAX_PROCESSING_EVENTS = 100
+_MAX_PROCESSING_EVENT_MESSAGE_CHARS = 1000
+_MAX_PROCESSING_EVENT_STAGE_CHARS = 80
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -90,6 +94,81 @@ class ResourceCustodyGone(RuntimeError):
     """Raised when processing state is written for a resource that was deleted."""
 
 
+class ResourceProcessingEvent(BaseModel):
+    """One bounded, durable event reported by a resource converter."""
+
+    sequence: int = Field(ge=0)
+    created_at: str
+    level: Literal["info", "warning", "error"] = "info"
+    progress: int = Field(default=0, ge=0, le=100)
+    progress_kind: Literal["unknown", "stage", "measured"] = "unknown"
+    stage: str = ""
+    message: str
+
+
+def bounded_processing_events(
+    value: Any,
+    *,
+    default_progress_kind: Literal["unknown", "stage", "measured"] = "unknown",
+) -> list[ResourceProcessingEvent]:
+    """Normalize an untrusted converter event list into a small public activity window."""
+
+    if not isinstance(value, list):
+        return []
+    normalized: list[ResourceProcessingEvent] = []
+    for fallback_sequence, raw in enumerate(value[-_MAX_PROCESSING_EVENTS:], start=1):
+        if not isinstance(raw, dict):
+            continue
+        message = " ".join(str(raw.get("message") or "").split())[
+            :_MAX_PROCESSING_EVENT_MESSAGE_CHARS
+        ]
+        if not message:
+            continue
+        raw_sequence = raw.get("sequence")
+        sequence = (
+            int(raw_sequence)
+            if isinstance(raw_sequence, int | float) and int(raw_sequence) >= 0
+            else fallback_sequence
+        )
+        raw_created_at = raw.get("created_at")
+        if isinstance(raw_created_at, int | float):
+            created_at = datetime.fromtimestamp(float(raw_created_at), timezone.utc).isoformat()
+        elif isinstance(raw_created_at, str) and raw_created_at.strip():
+            created_at = raw_created_at.strip()[:64]
+        else:
+            created_at = _now_iso()
+        raw_progress = raw.get("progress")
+        progress = (
+            min(max(int(raw_progress), 0), 100) if isinstance(raw_progress, int | float) else 0
+        )
+        raw_progress_kind = raw.get("progress_kind")
+        progress_kind = (
+            raw_progress_kind
+            if raw_progress_kind in {"unknown", "stage", "measured"}
+            else default_progress_kind
+        )
+        raw_level = str(raw.get("level") or "info").lower()
+        level: Literal["info", "warning", "error"]
+        if raw_level == "warning":
+            level = "warning"
+        elif raw_level == "error":
+            level = "error"
+        else:
+            level = "info"
+        normalized.append(
+            ResourceProcessingEvent(
+                sequence=sequence,
+                created_at=created_at,
+                level=level,
+                progress=progress,
+                progress_kind=progress_kind,
+                stage=str(raw.get("stage") or "")[:_MAX_PROCESSING_EVENT_STAGE_CHARS],
+                message=message,
+            )
+        )
+    return normalized
+
+
 class ResourceProcessingRecord(BaseModel):
     """Durable state for one resource revision's processing job."""
 
@@ -110,6 +189,7 @@ class ResourceProcessingRecord(BaseModel):
     progress_kind: Literal["unknown", "stage", "measured"] = "unknown"
     stage: str = ""
     message: str = ""
+    events: list[ResourceProcessingEvent] = Field(default_factory=list)
     # Consecutive failed status polls. Reset on any answered poll; past
     # ``resources.status_poll_failure_threshold`` the record degrades to a typed
     # ``converter_status_unavailable`` failure instead of waiting forever.
@@ -693,6 +773,7 @@ class DocumentProcessorClient:
 
 
 __all__ = [
+    "bounded_processing_events",
     "ConverterSubmission",
     "DocumentProcessorClient",
     "ResourceConverter",
@@ -700,6 +781,7 @@ __all__ = [
     "ResourceConverterUnavailable",
     "ResourceCustodyGone",
     "ResourceProcessingRecord",
+    "ResourceProcessingEvent",
     "resource_processing_task_id",
     "ResourceProcessingStore",
 ]

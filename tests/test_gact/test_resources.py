@@ -95,6 +95,63 @@ def test_document_service_marks_progress_as_stage_based() -> None:
     assert payload["stage"] == "docling"
 
 
+def test_resource_processing_exposes_bounded_converter_activity(tmp_path: Path) -> None:
+    """Carry real converter events without exposing an unbounded log response."""
+
+    class _EventfulDocumentProcessor(_CompleteDocumentProcessor):
+        async def submit(self, record: object, content_path: Path) -> dict[str, Any]:
+            del record, content_path
+            return {"id": "eventful_job", "status": "processing"}
+
+        async def status(self, job_id: str) -> dict[str, Any]:
+            assert job_id == "eventful_job"
+            return {
+                "id": job_id,
+                "status": "processing",
+                "progress": 40,
+                "progress_kind": "stage",
+                "stage": "docling",
+                "events": [
+                    {
+                        "sequence": sequence,
+                        "created_at": 1_788_300_000 + sequence,
+                        "level": "warning" if sequence == 104 else "info",
+                        "progress": 40,
+                        "stage": "docling",
+                        "message": f"converter event {sequence}" + ("x" * 2_000),
+                    }
+                    for sequence in range(1, 105)
+                ],
+            }
+
+    app = build_app(
+        sessions_path=tmp_path / "sessions.json",
+        agent=FakeClioAgent(answer="unused"),
+    )
+    app.state.resource_converter_factory = ResourceConverterFactory([_EventfulDocumentProcessor()])
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+        resource = _upload(
+            client,
+            workspace_id,
+            name="activity.md",
+            content=b"# Activity\n",
+            media_type="text/markdown",
+        )
+        payload = client.get(
+            f"/v1/workspaces/{workspace_id}/resources/{resource['id']}/derivatives"
+        ).json()
+
+    events = payload["processor"]["events"]
+    assert len(events) == 100
+    assert events[0]["sequence"] == 5
+    assert events[-1]["sequence"] == 104
+    assert events[-1]["level"] == "warning"
+    assert events[-1]["progress_kind"] == "stage"
+    assert events[-1]["created_at"].endswith("+00:00")
+    assert len(events[-1]["message"]) == 1_000
+
+
 class _CompleteDocumentProcessor:
     id = "test-docling"
     priority = 20
