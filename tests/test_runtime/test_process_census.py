@@ -17,6 +17,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -27,10 +28,49 @@ _SERVER = 100
 _DAEMON = 200
 
 
-def _node(pid: int, ppid: int, name: str, *, ctime: float = 0.0) -> pc.ProcessNode:
+def _node(
+    pid: int,
+    ppid: int,
+    name: str,
+    *,
+    ctime: float = 0.0,
+    executable: str = "",
+    cwd: str = "",
+) -> pc.ProcessNode:
     return pc.ProcessNode(
-        pid=pid, ppid=ppid, name=name, create_time=ctime, kind=pc._classify_child(name)
+        pid=pid,
+        ppid=ppid,
+        name=name,
+        create_time=ctime,
+        kind=pc._classify_child(name),
+        executable=executable,
+        cwd=cwd,
     )
+
+
+def test_detached_process_requires_runtime_path_ownership(tmp_path: Path) -> None:
+    """A parallel installation's surviving daemon is not this server's orphan."""
+
+    owner_path = tmp_path / "contained" / "worktrees" / "clio-agent"
+    owner_root = str(owner_path)
+    owned = _node(
+        700,
+        650,
+        "clio_run.exe",
+        executable=str(owner_path / ".venv/Lib/site-packages/iowarp_core/bin/clio_run"),
+        cwd=owner_root,
+    )
+    parallel_root = tmp_path / "other-stack"
+    parallel = _node(
+        701,
+        651,
+        "clio_run.exe",
+        executable=str(parallel_root / ".venv/Lib/site-packages/iowarp_core/bin/clio_run"),
+        cwd=str(parallel_root),
+    )
+
+    assert pc._belongs_to_runtime(owned, (owner_root,)) is True
+    assert pc._belongs_to_runtime(parallel, (owner_root,)) is False
 
 
 def test_children_classified_to_their_root() -> None:
