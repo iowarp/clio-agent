@@ -31,11 +31,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import dspy
+import mcp_types
 import psutil
 import pytest
 from dspy.utils.dummies import DummyLM
 from fastmcp import Client
-from fastmcp.exceptions import MCPError
+from fastmcp.exceptions import MCPError, ToolError
 from fastmcp.server import create_proxy
 from fastmcp.server.providers.proxy import ProxyClient
 
@@ -71,7 +72,7 @@ from clio_agent.tools.mcp_connection_era import (
 from clio_agent.tools.mcp_errors import typed_mcp_protocol_error
 from clio_agent.tools.mcp_executor import AsyncMCPToolExecutor
 from clio_agent.tools.mcp_extension_registry import UI_EXTENSION_ID, extensions_declaration
-from clio_agent.tools.mcp_runtime import make_mcp_client
+from clio_agent.tools.mcp_runtime import MCPClientCapabilities, MCPClientHandlers, make_mcp_client
 from clio_agent.tools.mcp_task_extension import tasks_declaration
 from clio_agent.tools.mcp_task_records import InMemoryTaskRecordStore, set_task_record_store
 from clio_agent.tools.mcp_task_routing import (
@@ -86,10 +87,12 @@ from clio_agent.tools.mcp_task_routing import (
 from .mcp_exerciser import (
     EXERCISER_NAMESPACE,
     EXERCISER_PATH,
+    GUARDED_RESOURCE_URI,
     MODERN_PROTOCOL_VERSION,
     SYNTHETIC_EXTENSION_ID,
     TASKS_EXTENSION_ID,
     UI_RESOURCE_URI,
+    URL_GUARDED_INPUT_URL,
     build_exerciser_server,
 )
 from .mcp_v1_fixture import V1_FIXTURE_PATH, V1_PROTOCOL_VERSION, V1_TOOL_NAME
@@ -1024,6 +1027,153 @@ def test_handshake_row_extensions_unobserved_is_none() -> None:
     row = handshake_server_row(report)
     assert row["extensions"] is None
     assert row["extensions_era"] is None
+
+
+# --------------------------------------------------------------------------
+# C1-S4 (#1284): MRTR + elicitation completeness -- the two LEG_C2.md avenues
+# this slice flips from blocked to real (mrtr-url, mrtr-methods). Per-path
+# verification: the SDK ``run_input_required_driver`` loop against the
+# exerciser on BOTH the direct and proxy routes -- a plain ``Client(server)``
+# IS the direct route; the proxy route is ``Client(create_proxy(ProxyClient(
+# server, mode="auto")))``. ``mode="auto"`` is REQUIRED here: a directly
+# constructed ``ProxyClient`` defaults its OWN backend connection to
+# ``mode="legacy"`` (fastmcp's own documented default -- era MIRRORING of the
+# front's negotiated era only applies when ``create_proxy`` is given a
+# non-Client target; a hand-built ``ProxyClient`` opts out of that mirroring
+# unless its ``mode`` is passed explicitly), which would silently downgrade
+# every MRTR-over-proxy assertion below to the WRONG era instead of proving
+# anything about the modern-era proxy route.
+# --------------------------------------------------------------------------
+
+
+async def _accept_elicit(
+    context: Any, message: Any, response_type: Any, params: Any, request_context: Any
+) -> Any:
+    from fastmcp.client.elicitation import ElicitResult
+
+    return ElicitResult(action="accept", content={"value": "x"})
+
+
+def _elicit_client(target: Any) -> Any:
+    """A client wired for BOTH elicitation modes -- the shape every genuine
+    consent-capable client declares (mirrors ``test_mrtr.py``'s
+    ``_auto_accept_factory``, plus url mode for the mrtr-url avenue)."""
+
+    return make_mcp_client(
+        target,
+        handlers=MCPClientHandlers(elicitation=_accept_elicit),
+        capabilities=MCPClientCapabilities(elicitation_form=True, elicitation_url=True),
+    )
+
+
+def _modern_proxy() -> Any:
+    """A ``create_proxy(ProxyClient(...))`` front whose BACKEND connection
+    genuinely negotiates the modern era (see the section docstring above)."""
+
+    return create_proxy(ProxyClient(build_exerciser_server(), mode="auto"))
+
+
+async def test_url_guarded_input_direct_client_carries_the_url_mode_input_request() -> None:
+    """mrtr-url avenue (LEG_C2.md, flipped from blocked): the exerciser's
+    ``url_guarded_input`` embeds a genuine ``ElicitRequestURLParams`` -- the
+    shape no MCP tool in this repo emitted before C1-S4 (#1284)."""
+
+    seen: list[Any] = []
+
+    async def _capture(
+        context: Any, message: Any, response_type: Any, params: Any, request_context: Any
+    ) -> Any:
+        seen.append(params)
+        return await _accept_elicit(context, message, response_type, params, request_context)
+
+    client = make_mcp_client(
+        build_exerciser_server(),
+        handlers=MCPClientHandlers(elicitation=_capture),
+        capabilities=MCPClientCapabilities(elicitation_url=True),
+    )
+    async with client as c:
+        result = await c.call_tool("url_guarded_input", {})
+    assert result.content[0].text == "answered:{'value': 'x'}"
+    assert len(seen) == 1
+    assert isinstance(seen[0], mcp_types.ElicitRequestURLParams)
+    assert seen[0].url == URL_GUARDED_INPUT_URL
+
+
+async def test_url_guarded_input_task_required_naive_proxy_fails_typed_never_hangs() -> None:
+    """``url_guarded_input`` is ``task=required`` AND embeds a modern-only
+    (SEP-2322) ``InputRequiredResult``. A directly-constructed ``ProxyClient``
+    (no explicit ``mode=``) defaults ITS OWN backend connection to
+    ``mode="legacy"`` (see the section docstring): relaying a modern-front
+    call for a tool that needs BOTH the tasks extension and MRTR through that
+    legacy-pinned backend fails with a typed protocol-era ``MCPError`` --
+    never a hang, the SAME terminal-fast contract
+    ``test_unopted_client_receives_the_self_describing_refusal`` proves for
+    the simpler (non-elicit) task_echo case."""
+
+    async with _elicit_client(create_proxy(ProxyClient(build_exerciser_server()))) as client:
+        # The relay failure surfaces as an in-band CallToolResult(is_error=True)
+        # the client unwraps to ToolError (NOT the bare protocol-level MCPError
+        # the other naive-client refusals above raise directly) -- both mean
+        # the same thing here: a typed exception, never a silent hang.
+        with pytest.raises((MCPError, ToolError)):
+            await client.call_tool("url_guarded_input", {})
+
+
+async def test_plain_url_guarded_input_completes_mrtr_through_the_proxy_route() -> None:
+    """The url-mode MRTR round-trip ITSELF survives a ``create_proxy(
+    ProxyClient(...))`` front (the proxy-MOUNT axis, distinct from the
+    task/era axis above -- mirrors ``plain_guarded_input``'s reason for
+    existing, for url mode). Uses the modern-backend proxy (``_modern_proxy``)
+    since this tool is PLAIN (no tasks extension needed) but still embeds a
+    modern-only ``InputRequiredResult``, which needs the backend to have
+    negotiated 2026-07-28 to be representable at all."""
+
+    async with _elicit_client(_modern_proxy()) as client:
+        result = await client.call_tool("plain_url_guarded_input", {})
+    assert result.content[0].text == "answered:{'value': 'x'}"
+
+
+async def test_guarded_prompt_completes_mrtr_on_the_direct_route() -> None:
+    """mrtr-methods avenue (LEG_C2.md, flipped from blocked): MRTR genuinely
+    fires on ``prompts/get``, not just ``tools/call`` -- the SDK's
+    ``Client.get_prompt`` drives the SAME ``run_input_required_driver``."""
+
+    async with _elicit_client(build_exerciser_server()) as client:
+        result = await client.get_prompt("guarded_prompt", {})
+    assert result.messages[0].content.text == "answered:{'value': 'x'}"
+
+
+async def test_guarded_prompt_completes_mrtr_through_the_proxy_route() -> None:
+    async with _elicit_client(_modern_proxy()) as client:
+        result = await client.get_prompt("guarded_prompt", {})
+    assert result.messages[0].content.text == "answered:{'value': 'x'}"
+
+
+async def test_guarded_resource_completes_mrtr_on_the_direct_route() -> None:
+    """Same proof as ``guarded_prompt``, for ``resources/read``."""
+
+    async with _elicit_client(build_exerciser_server()) as client:
+        result = await client.read_resource(GUARDED_RESOURCE_URI)
+    assert result[0].text == "answered:{'value': 'x'}"
+
+
+async def test_guarded_resource_completes_mrtr_through_the_proxy_route() -> None:
+    async with _elicit_client(_modern_proxy()) as client:
+        result = await client.read_resource(GUARDED_RESOURCE_URI)
+    assert result[0].text == "answered:{'value': 'x'}"
+
+
+async def test_unwired_client_gets_a_typed_terminal_refusal_not_a_hang_on_prompts_get() -> None:
+    """A client with NO elicitation handler wired (the REST-install lane's
+    ``make_mcp_client(transport, server_id=sid)`` shape,
+    ``gact/routes/mcp.py::_external_mcp_inventory``) fails FAST and TYPED on
+    an MRTR-embedded prompt -- never hangs. Grounds
+    ``leg_c2_v2_avenues.py::avenue_mrtr_methods``'s live REST-lane assertion."""
+
+    async with Client(build_exerciser_server()) as client:
+        with pytest.raises(MCPError) as excinfo:
+            await client.get_prompt("guarded_prompt", {})
+    assert "elicitation" in str(excinfo.value).lower()
 
 
 async def test_declared_path_ui_resource_admits_and_serves_through_the_apps_host(

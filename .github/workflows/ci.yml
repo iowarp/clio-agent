@@ -38,6 +38,8 @@ jobs:
         run: uv run python scripts/check_no_summaries.py
       - name: "guard: no settle/synthesis routing vocabulary (baseline 0) (#948)"
         run: uv run python scripts/check_no_settle_vocabulary.py
+      - name: "guard: no elicitationId residue (baseline 0) (SEP-2577, C1-S4 #1284)"
+        run: uv run python scripts/check_no_elicitation_id_vocabulary.py
       - name: "guard: no bare dspy.Tool outside the instrumentation factory/bridge (baseline 0)"
         run: uv run python scripts/check_tool_instrumentation.py
       - name: "warn: ruff complexity (C901, PLR0915) (#714)"

@@ -22,6 +22,7 @@ tools:
   - v2ex_forbidden_echo
   - v2ex_guarded_input
   - v2ex_plain_guarded_input
+  - v2ex_url_guarded_input
   - v2ex_staller
   - v2ex_plain_staller
   - v2ex_silent_sleeper
