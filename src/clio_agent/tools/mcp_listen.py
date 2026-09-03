@@ -11,11 +11,13 @@ namespace's ``tools/listing_cache.py`` entry so the next boot/refresh
 re-lists live instead of serving a listing that has gone stale for up to the
 TTL.
 
-**Verified library gap (#1285 C1-S5):** fastmcp 4.0.0b1's SERVER has NO
+**Verified library gap (#1285 C1-S5):** fastmcp's SERVER has NO
 ``subscriptions/listen`` support at all -- a repo-wide + venv-wide grep for
 "Subscription"/"subscriptions/listen" under ``fastmcp/`` returns zero hits,
 and a live probe against the exerciser confirms it: ``listen()`` raises
-``-32601 Method not found``. The raw mcp SDK's OWN high-level server
+``-32601 Method not found``. Reconfirmed unchanged across the C1-S5 item-5
+fastmcp b1->b5 bump (``test_exerciser_server_does_not_implement_subscriptions_listen``
+is the regression lock). The raw mcp SDK's OWN high-level server
 (``mcp.server.mcpserver.server.MCPServer``, a DIFFERENT class from
 ``fastmcp.FastMCP``) DOES wire ``on_subscriptions_listen`` -- so this is a
 fastmcp-specific gap, not a protocol-wide one, and :func:`watch_list_changed`

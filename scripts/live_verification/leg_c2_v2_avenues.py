@@ -44,10 +44,11 @@ Avenues (see ``LEG_C2.md`` for the full per-avenue writeup + citations):
                          list_changed_message_handler`` invalidates
                          ``tools/listing_cache.py`` on receipt. Uses the
                          message_handler path, not ``watch_list_changed``'s
-                         spec-correct ``subscriptions/listen``: fastmcp
-                         4.0.0b1's SERVER implements zero listen support
-                         (live-verified -32601; see that module's docstring
-                         for the full finding). Headless, in-process.
+                         spec-correct ``subscriptions/listen``: fastmcp's
+                         SERVER implements zero listen support (live-verified
+                         -32601, reconfirmed unchanged across the b1->b5 bump;
+                         see that module's docstring for the full finding).
+                         Headless, in-process.
  8. extensions        -- C1-S3 (#1283) landed: the handshake row now surfaces
                          the server-declared extension SET directly
                          (``gact/routes/mcp_rows.py::handshake_server_row``'s
@@ -459,10 +460,11 @@ def avenue_cache() -> dict[str, Any]:
 async def _run_list_changed_probe() -> dict[str, Any]:
     """Drive a REAL registry mutation + its notification end to end (#1285 C1-S5 item 2).
 
-    In-process (no gact server, no HTTP): live-verified that fastmcp 4.0.0b1's
-    SERVER implements NO ``subscriptions/listen`` support at all (-32601
-    Method not found -- see tools/mcp_listen.py's module docstring for the
-    full finding + tests/test_tools/test_mcp_listen.py's regression lock), so
+    In-process (no gact server, no HTTP): live-verified that fastmcp's SERVER
+    implements NO ``subscriptions/listen`` support at all (-32601
+    Method not found, reconfirmed unchanged across the C1-S5 item-5 b1->b5
+    bump -- see tools/mcp_listen.py's module docstring for the full finding +
+    tests/test_tools/test_mcp_listen.py's regression lock), so
     ``watch_list_changed`` (spec-correct SEP-2575) cannot be live-proven
     against THIS exerciser. What fastmcp servers verifiably DO send is the
     notification UNSOLICITED over the plain connection -- this probe drives

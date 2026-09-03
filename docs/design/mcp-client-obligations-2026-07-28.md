@@ -1,10 +1,13 @@
 # MCP 2026-07-28 — complete client-side obligations checklist (research record, 2026-08-29)
 
 Companion to iowarp/clio-agent#1274 (comments carry the decision summaries; this file preserves the
-full per-item table). PIN FACT (corrected vs the sweep's stale premise): clio-agent develop is
-ALREADY on fastmcp/fastmcp-tasks 4.0.0b1 + mcp 2.0.0 (uv.lock-verified) — the 2026-07-28-capable
-line; upstream fastmcp is at 4.0.0b5. Library slice = beta-track hardening b1→b5, not a 3.x migration.
-"LIBRARY-GAP→v4" rows below therefore read as ALREADY-COVERED-ON-OUR-PIN unless b1 predates the item.
+full per-item table). PIN FACT (corrected vs the sweep's stale premise, and updated after #1285
+C1-S5's b1→b5 bump landed): clio-agent develop is on fastmcp/fastmcp-tasks 4.0.0b5 + mcp 2.0.0
+(uv.lock-verified) — the 2026-07-28-capable line, beta-track hardening only (never a 3.x migration).
+The two library findings this campaign pinned as regression locks (fastmcp's SERVER has zero
+subscriptions/listen support; `Client.list_tools()` treats an empty-string pagination cursor as
+terminal) were reconfirmed unchanged on b5 (`test_mcp_listen.py`, `test_mcp_adversarial.py`).
+"LIBRARY-GAP→v4" rows below therefore read as ALREADY-COVERED-ON-OUR-PIN unless the row says otherwise.
 
 Pre-covered by other campaign work: MRTR (SEP-2322), MCP Apps (SEP-1865, host exists at rev
 2026-01-26 in gact/mcp_apps.py), formal extensions framework (the registry gap is the campaign's core).

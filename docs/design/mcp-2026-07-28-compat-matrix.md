@@ -5,8 +5,8 @@ CLIO upgrades to the released FastMCP 4 beta line that negotiates MCP
 
 | Package | Constraint | Resolution proved by the migration spike |
 |---|---|---|
-| `fastmcp` | `==4.0.0b1` | `fastmcp-slim==4.0.0b1` |
-| `fastmcp-tasks` | `==4.0.0b1` | SEP-2663 task extension |
+| `fastmcp` | `==4.0.0b5` | `fastmcp-slim==4.0.0b5` (bumped from b1, #1285 C1-S5 item 5 -- everything else in this table's migration spike verified green on b1 first) |
+| `fastmcp-tasks` | `==4.0.0b5` | SEP-2663 task extension |
 | `mcp` | transitive | `2.0.0` |
 | `mcp-types` | transitive | `2.0.0` |
 | `fastapi` | `>=0.140` | `0.141.1` in the spike |

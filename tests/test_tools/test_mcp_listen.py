@@ -4,12 +4,14 @@ fastmcp's ``Client`` has no ``.listen()`` (verified: no ``def listen`` under
 ``fastmcp/client/``) -- ``watch_list_changed`` drives the raw SDK
 ``mcp.client.subscriptions.listen(client.session, ...)`` directly.
 
-**Verified library gap:** fastmcp 4.0.0b1's SERVER has zero
-``subscriptions/listen`` support (grepped the whole installed ``fastmcp``
-package for "Subscription": no hits) -- a live call against the exerciser
-raises ``-32601 Method not found``, proven by
-``test_exerciser_server_does_not_implement_subscriptions_listen`` below. So
-``watch_list_changed`` is tested here against a FAKE session driving the real
+**Verified library gap:** fastmcp's SERVER has zero ``subscriptions/listen``
+support (grepped the whole installed ``fastmcp`` package for "Subscription":
+no hits) -- a live call against the exerciser raises ``-32601 Method not
+found``, proven by ``test_exerciser_server_does_not_implement_subscriptions_listen``
+below. Reconfirmed unchanged across the #1285 C1-S5 item-5 fastmcp b1->b5
+bump (this test is the regression lock -- if a future bump ever flips it, that
+IS the signal to swap this module to ``watch_list_changed`` as the primary
+path). So ``watch_list_changed`` is tested here against a FAKE session driving the real
 SDK ``listen()`` machinery in-process (no server needed -- ``listen()`` talks
 to ``session._dispatcher``/``session._register_listen_route``, which a bare
 ``ClientSession`` subclass provides without a live connection). The OTHER
