@@ -20,7 +20,12 @@ Avenues (see ``LEG_C2.md`` for the full per-avenue writeup + citations):
                          in this repo's exerciser (see module docstring below).
  3. mrtr-methods      -- BLOCKED: exerciser declares no resources/prompts, and
                          the declared session surface cannot reach them anyway.
- 4. cache             -- BLOCKED: exerciser has no cache_ttl/cache_scope arm.
+ 4. cache             -- #1285 C1-S5: FLIPPED to a real assertion.
+                         ``make_mcp_client`` opts into SEP-2549 caching by
+                         default; a ``build_exerciser_server(cache_ttl=...,
+                         cache_scope=...)`` instance's second ``tools/list``
+                         is served from cache (a recording store proves
+                         exactly one ``set``, not two). Headless, in-process.
  5. waits-cancel      -- staller surfaces ``mcp_task.wait`` live-SSE events,
                          then a cancel ends the turn ``cancelled``, not hung.
  6. pagination        -- the readiness gate's full-tool-matrix resolution is
@@ -164,8 +169,11 @@ AVENUE_PLAN: list[dict[str, Any]] = [
     {
         "avenue": "cache",
         "needs_lm": False,
-        "expect": "blocked",
-        "summary": "exerciser has no cache_ttl/cache_scope arm",
+        "expect": "pass",
+        "summary": (
+            "#1285 C1-S5: make_mcp_client opts into SEP-2549 caching by default; a "
+            "cache_ttl-hinted exerciser's second tools/list is served from cache"
+        ),
     },
     {
         "avenue": "waits-cancel",
@@ -318,31 +326,119 @@ def avenue_mrtr_methods() -> dict[str, Any]:
     }
 
 
+async def _run_cache_probe() -> dict[str, Any]:
+    """Prove server cache hints end to end (#1285 C1-S5 item 3): CLIO's factory
+    opts in, and a hinted server's second list is served from cache, not re-fetched.
+
+    In-process (no gact server): builds the exerciser WITH a cache hint
+    (``build_exerciser_server(cache_ttl=..., cache_scope=...)`` -- fastmcp
+    applies it server-wide, there is no per-tool knob) and drives it through
+    TWO checks: (a) ``tools/mcp_runtime.py::make_mcp_client`` (the REAL
+    production factory) sets ``cache=True`` by default; (b) a raw
+    ``fastmcp.Client`` with a RECORDING store proves the second
+    ``list_tools()`` never calls the store's ``set`` again (a cache hit, not a
+    live re-fetch).
+    """
+
+    from dataclasses import dataclass, field
+
+    from fastmcp import Client
+    from mcp.client.caching import CacheConfig, CacheEntry, CacheKey
+
+    from clio_agent.tools.mcp_runtime import make_mcp_client
+    from tests.test_tools.mcp_exerciser import build_exerciser_server
+
+    @dataclass
+    class _RecordingStore:
+        entries: dict[Any, Any] = field(default_factory=dict)
+        get_calls: int = 0
+        set_calls: int = 0
+
+        async def get(self, key: CacheKey) -> CacheEntry | None:
+            self.get_calls += 1
+            return self.entries.get(key)
+
+        async def set(self, key: CacheKey, entry: CacheEntry) -> None:
+            self.set_calls += 1
+            self.entries[key] = entry
+
+        async def delete(self, key: CacheKey) -> None:
+            self.entries.pop(key, None)
+
+        async def clear(self) -> None:
+            self.entries.clear()
+
+    class _FakeClientCls:
+        def __init__(self, target: Any, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+    # response_cache_enabled() defaults False (opt-in, tools/mcp_runtime.py::
+    # response_cache_enabled's own docstring explains why) -- flip it on for
+    # this probe of the factory's WIRING, independent of the operator default.
+    import os
+
+    os.environ["CLIO_MCP_RESPONSE_CACHE_ENABLED"] = "true"
+    try:
+        from clio_agent import conf as _conf
+
+        _conf.reload()
+        factory_client = make_mcp_client(build_exerciser_server(), client_cls=_FakeClientCls)
+        factory_sets_cache = factory_client.kwargs.get("cache") is True
+    finally:
+        del os.environ["CLIO_MCP_RESPONSE_CACHE_ENABLED"]
+        _conf.reload()
+
+    hinted_server = build_exerciser_server(cache_ttl=60, cache_scope="private")
+    store = _RecordingStore()
+    async with Client(
+        hinted_server, cache=CacheConfig(store=store, partition="leg-c2", target_id="v2ex-cache-probe")
+    ) as client:
+        first = await client.list_tools()
+        second = await client.list_tools()
+
+    return {
+        "factory_sets_cache_true": factory_sets_cache,
+        "first_list_tool_count": len(first),
+        "second_list_tool_count": len(second),
+        "store_set_calls": store.set_calls,
+        "store_get_calls": store.get_calls,
+    }
+
+
 def avenue_cache() -> dict[str, Any]:
+    """#1285 C1-S5 item 3: flipped blocked -> real (was: no client/exerciser support existed).
+
+    ``tools/mcp_runtime.py::make_mcp_client`` now opts every execution-path
+    client into SEP-2549 response caching by default, and
+    ``mcp_exerciser.py::build_exerciser_server`` accepts ``cache_ttl``/
+    ``cache_scope`` (fastmcp applies the hint server-wide -- no per-tool knob
+    exists in the library). This avenue asserts BOTH: the production factory
+    sets ``cache=True``, and a hinted server's second ``tools/list`` is served
+    from cache (exactly one store ``set``, not two).
+    """
+
+    import asyncio as _asyncio
+
+    try:
+        evidence = _asyncio.run(_run_cache_probe())
+    except Exception as exc:  # noqa: BLE001 - captured into the verdict
+        return {
+            "avenue": "cache",
+            "status": "fail",
+            "evidence": {},
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    ok = (
+        evidence["factory_sets_cache_true"]
+        and evidence["first_list_tool_count"] == evidence["second_list_tool_count"]
+        and evidence["store_set_calls"] == 1
+    )
     return {
         "avenue": "cache",
-        "status": "blocked",
-        "evidence": {
-            "checked": [
-                "tests/test_tools/mcp_exerciser.py",
-                "repo-wide grep: cache_ttl|cache_scope|CacheConfig|cache_hint",
-            ],
-            "finding": (
-                "no tool in the exerciser declares a cache hint (ttlMs/cacheScope); "
-                "a repo-wide grep for cache_ttl/cache_scope/CacheConfig/cache_hint "
-                "found zero hits inside src/clio_agent or tests/test_tools -- the "
-                "client has no cache-hint handling to exercise yet at all. "
-                "docs/design/mcp-client-unification-2026-08.md's C1-S5 line "
-                "('server cache hints (ttlMs/cacheScope + the caching MUST-NOTs)') "
-                "is where both the client support and an exerciser arm would land."
-            ),
-            "what_is_missing": (
-                "a new exerciser tool returning a result annotated with a cache "
-                "hint (ttlMs and/or cacheScope) so a call-twice-compare-behavior "
-                "probe becomes possible."
-            ),
-        },
-        "error": None,
+        "status": "pass" if ok else "fail",
+        "evidence": evidence,
+        "error": None if ok else "cache hint was not honored end to end",
     }
 
 

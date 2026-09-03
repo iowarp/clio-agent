@@ -122,6 +122,37 @@ def _oauth_provider_from_config(
         raise MCPTransportError("invalid MCP OAuth configuration") from None
 
 
+def response_cache_enabled() -> bool:
+    """Whether execution-path clients opt into SEP-2549 response caching (#1285 C1-S5 item 3).
+
+    Config key ``tools.mcp.response_cache_enabled`` / env
+    ``CLIO_MCP_RESPONSE_CACHE_ENABLED``; defaults ``False``. The mechanism is
+    fully implemented and tested (``tests/test_tools/test_mcp_response_cache.py``)
+    but ships opt-IN, not opt-out: fastmcp's own default posture is opt-in
+    (``cache=None`` disables it), and enabling it wraps ``message_handler``
+    in ``mcp.client.caching._evicting_message_handler`` -- a caller
+    introspecting the message-handler chain by type (e.g. an
+    ``isinstance(handler, MessageMultiplexer)`` check) sees the wrapper, not
+    the original, so this stays a deliberate operator opt-in until that
+    interaction is reconciled, rather than a silent behavior change across
+    every execution-path client. The cache is a pure read-side accelerator
+    (a disabled cache degrades to always-live listing/reading, the pre-#1285
+    behavior), so this is a plain feature flag, not a typed-degrade decision
+    point.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return bool(
+        conf.resolve(
+            "tools.mcp.response_cache_enabled",
+            env="CLIO_MCP_RESPONSE_CACHE_ENABLED",
+            default=False,
+            cast=conf.as_bool,
+        )
+    )
+
+
 def _dump_mcp_results_model(value: Any, *, exclude_none: bool) -> Any:
     """Return the historical MCP-results Pydantic projection when available."""
 
@@ -494,6 +525,25 @@ def make_mcp_client(
     )
     if connect_mode and connect_mode != "auto":
         kwargs["mode"] = connect_mode
+
+    # #1285 (C1-S5, item 3): SEP-2549 response caching, opt-in per fastmcp's own
+    # `cache=` keyword. `True` uses the SDK default (a fresh, per-client
+    # InMemoryResponseCacheStore -- no cross-client/cross-session leakage since
+    # every make_mcp_client() call builds its own client instance) and honors
+    # every server-set ttlMs/cacheScope hint at modern protocol versions only
+    # (inert on legacy connections -- ClientResponseCache._resolve gates on the
+    # negotiated era). The caching MUST-NOTs (SEP-2549) are structural, not
+    # something this factory has to enforce: only list/read methods are ever
+    # cacheable (tools/call -- and therefore any MRTR retry result -- is never
+    # in the cacheable-method set), and fastmcp wraps the message handler with
+    # its own eviction hook so a listChanged/resourceUpdated notification
+    # invalidates the affected entries automatically (see fastmcp.client.
+    # client._evicting_message_handler) -- independent of, and in addition to,
+    # tools/mcp_listen.py's push-invalidation of the SEPARATE boot listing
+    # cache this same notification also drives.
+    if response_cache_enabled():
+        kwargs["cache"] = True
+
     if handlers is not None:
         if handlers.elicitation is not None:
             kwargs["elicitation_handler"] = ElicitationDispatcher(handlers.elicitation)

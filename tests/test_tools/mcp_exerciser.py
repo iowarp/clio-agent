@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import mcp_types
 from fastmcp import Context, FastMCP
@@ -113,8 +113,21 @@ def _one_elicit(message: str) -> Any:
     )
 
 
-def build_exerciser_server() -> FastMCP:
+def build_exerciser_server(
+    *,
+    cache_ttl: int | None = None,
+    cache_scope: Literal["public", "private"] | None = None,
+) -> FastMCP:
     """Build the v2 exerciser server (fresh instance per call).
+
+    ``cache_ttl``/``cache_scope`` (#1285 C1-S5 item 3, both default ``None`` --
+    every EXISTING caller's behavior is unchanged) forward verbatim to
+    ``FastMCP(cache_ttl=..., cache_scope=...)``, which fastmcp applies
+    UNIFORMLY to every SDK-cacheable result the server emits (tools/list,
+    prompts/list, resources/list, resources/templates/list, resources/read,
+    server/discover -- "no per-component surface and no aggregation", per
+    fastmcp's own ``server/caching.py`` docstring). A per-tool cache hint does
+    not exist in fastmcp; server-wide is the only knob the library offers.
 
     Returns:
         A ``FastMCP`` server with the SEP-2663 tasks extension and the C1-S0
@@ -122,7 +135,7 @@ def build_exerciser_server() -> FastMCP:
         (docket ``memory://``) -- zero external infrastructure.
     """
 
-    server = FastMCP(EXERCISER_NAMESPACE)
+    server = FastMCP(EXERCISER_NAMESPACE, cache_ttl=cache_ttl, cache_scope=cache_scope)
     server.add_extension(TasksExtension())
     server.add_extension(SyntheticExtension())
 
