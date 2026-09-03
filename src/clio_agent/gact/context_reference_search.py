@@ -55,6 +55,35 @@ def search_limit() -> int:
     )
 
 
+def _degradation_bucket(app: "FastAPI", workspace_id: str) -> list[dict[str, str]]:
+    """Return THIS workspace's degradation list, creating an empty one if needed.
+
+    Keyed by workspace so one workspace's discovery trouble can never ride the
+    response of a search against an unrelated one.
+    """
+
+    buckets = getattr(app.state, "reference_search_degradations", None)
+    if not isinstance(buckets, dict):
+        buckets = {}
+        app.state.reference_search_degradations = buckets
+    return buckets.setdefault(workspace_id, [])
+
+
+def _reset_degradation_bucket(app: "FastAPI", workspace_id: str) -> None:
+    """Clear one workspace's degradations before a fresh search repopulates them.
+
+    Without this, a degradation recorded on one request kept riding every later
+    response for that workspace forever -- including after the repository that
+    failed had recovered -- because nothing ever cleared the accumulator.
+    """
+
+    buckets = getattr(app.state, "reference_search_degradations", None)
+    if not isinstance(buckets, dict):
+        buckets = {}
+        app.state.reference_search_degradations = buckets
+    buckets[workspace_id] = []
+
+
 def _degradation(app: "FastAPI", workspace_id: str, reason: str, detail: str) -> None:
     """Record one typed discovery degradation on the app's quarantine surface.
 
@@ -69,10 +98,7 @@ def _degradation(app: "FastAPI", workspace_id: str, reason: str, detail: str) ->
         workspace_id,
         detail,
     )
-    rows = getattr(app.state, "reference_search_degradations", None)
-    if rows is None:
-        rows = []
-        app.state.reference_search_degradations = rows
+    rows = _degradation_bucket(app, workspace_id)
     row = {"reason": reason, "workspace_id": workspace_id, "detail": detail}
     if row not in rows:
         rows.append(row)
@@ -328,6 +354,10 @@ async def search_workspace_references(
     needle = query.strip().casefold()
     limit = search_limit()
     browse_limit = empty_query_limit_per_kind()
+    # Reset THIS workspace's degradation bucket before the producers run again:
+    # a repository that failed on a past search and has since recovered must not
+    # keep reporting that failure on every later response for this workspace.
+    _reset_degradation_bucket(app, workspace_id)
     # EVERY producer walks a repository: a filesystem tree, a durable resource
     # index, the session/message ledgers, or -- most expensive of all -- the
     # evidence snapshot builder, which folds every message part of every session
@@ -406,8 +436,23 @@ def _collect_reference_results(
     return results
 
 
+def workspace_search_degradations(app: "FastAPI", workspace_id: str) -> list[dict[str, str]]:
+    """Read-side accessor: THIS workspace's degradations from its most recent search.
+
+    Scoped and freshly reset per :func:`search_workspace_references` call, so a
+    search against one workspace never rides another's response, and a repository
+    that has since recovered stops being reported once it is searched again.
+    """
+
+    buckets = getattr(app.state, "reference_search_degradations", None)
+    if not isinstance(buckets, dict):
+        return []
+    return list(buckets.get(workspace_id, []))
+
+
 __all__ = [
     "empty_query_limit_per_kind",
     "search_limit",
     "search_workspace_references",
+    "workspace_search_degradations",
 ]

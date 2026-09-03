@@ -1049,7 +1049,7 @@ def test_unreadable_resource_store_surfaces_a_typed_discovery_degradation(tmp_pa
     app.state.resource_store = _Broken()
 
     assert _resource_results(app, workspace.id) == []
-    degradations = app.state.reference_search_degradations
+    degradations = app.state.reference_search_degradations[workspace.id]
     assert [row["reason"] for row in degradations] == ["resource_store_unreadable"]
     assert "index quarantined" in degradations[0]["detail"]
 
@@ -1097,8 +1097,71 @@ def test_content_addressed_duplicate_drop_is_reported(tmp_path) -> None:
     rows = _resource_results(app, workspace.id)
 
     assert [row["id"] for row in rows] == ["res_named"]
-    reasons = [row["reason"] for row in app.state.reference_search_degradations]
+    reasons = [
+        row["reason"] for row in app.state.reference_search_degradations[workspace.id]
+    ]
     assert reasons == ["resource_content_addressed_name_hidden"]
+
+
+# --------------------------------------------------------------------------- #
+# Review finding: reference-discovery degradations must not leak or go stale
+# --------------------------------------------------------------------------- #
+
+
+def test_reference_discovery_degradations_are_scoped_and_reset_per_workspace(
+    tmp_path,
+) -> None:
+    """``reference_search_degradations`` used to be one flat, never-reset,
+    process-lifetime list, and the route served the WHOLE thing regardless of
+    which workspace was searched: workspace B's client saw workspace A's
+    degradation, and would keep seeing it forever -- even after A's store
+    recovered, since nothing ever cleared the accumulator.
+    """
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    broken_ws = app.state.workspaces.create(name="broken", root_path=str(tmp_path / "broken"))
+    clean_ws = app.state.workspaces.create(name="clean", root_path=str(tmp_path / "clean"))
+
+    class _SelectivelyBroken:
+        healthy = False
+
+        def list(self, workspace_id: str):
+            if workspace_id == broken_ws.id and not self.healthy:
+                raise ValueError("index quarantined")
+            return []
+
+    store = _SelectivelyBroken()
+    app.state.resource_store = store
+
+    with TestClient(app) as client:
+        broken_body = client.get(
+            f"/v1/workspaces/{broken_ws.id}/references",
+            params={"kinds": "resource"},
+            headers=HEADERS,
+        ).json()
+        clean_body = client.get(
+            f"/v1/workspaces/{clean_ws.id}/references",
+            params={"kinds": "resource"},
+            headers=HEADERS,
+        ).json()
+
+        # Cross-workspace: the clean workspace must never see the broken one's
+        # degradation, even though both searches ran against the SAME store.
+        assert [row["reason"] for row in broken_body["degradations"]] == [
+            "resource_store_unreadable"
+        ]
+        assert clean_body["degradations"] == []
+
+        # Staleness: once the store recovers, a fresh search of the SAME
+        # workspace must stop reporting the old failure rather than repeating it
+        # forever.
+        store.healthy = True
+        recovered_body = client.get(
+            f"/v1/workspaces/{broken_ws.id}/references",
+            params={"kinds": "resource"},
+            headers=HEADERS,
+        ).json()
+        assert recovered_body["degradations"] == []
 
 
 def test_ask_user_ttl_default_and_clamp_are_config_resolved() -> None:

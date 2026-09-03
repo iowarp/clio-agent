@@ -7,7 +7,10 @@ from typing import Annotated, Any
 from fastapi import FastAPI, Query
 
 from clio_agent.gact.context_reference_domain import ContextReferenceError
-from clio_agent.gact.context_reference_search import search_workspace_references
+from clio_agent.gact.context_reference_search import (
+    search_workspace_references,
+    workspace_search_degradations,
+)
 
 
 def register_reference_routes(app: FastAPI) -> None:
@@ -37,10 +40,12 @@ def register_reference_routes(app: FastAPI) -> None:
             raise exc.http_exception() from exc
         # Same contract the A2UI surface listing keeps: a repository that could not
         # be read, or a row deliberately hidden, rides the response so a short list
-        # is never mistaken for an empty workspace.
+        # is never mistaken for an empty workspace. Scoped to THIS workspace and
+        # reset by the search that just ran, so it neither leaks another
+        # workspace's trouble nor outlives a repository's recovery.
         return {
             "references": results,
-            "degradations": list(getattr(app.state, "reference_search_degradations", []) or []),
+            "degradations": workspace_search_degradations(app, wid),
         }
 
 
