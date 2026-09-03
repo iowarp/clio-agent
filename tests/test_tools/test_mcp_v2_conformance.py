@@ -22,7 +22,9 @@ Three layers, each load-bearing for the campaign:
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
@@ -49,7 +51,9 @@ from clio_agent.errors import (
 )
 from clio_agent.gact.app import build_app
 from clio_agent.gact.mcp_apps import _resource_uri, call_tool_result_to_wire
+from clio_agent.gact.mcp_readiness import mount_namespace_for_session
 from clio_agent.gact.runtime.globals import _gact_app_context, _tool_session_context
+from clio_agent.tools import listing_cache
 from clio_agent.tools.execution import SyncMCPToolExecutor
 from clio_agent.tools.gateway import (
     _list_declared_tools,
@@ -867,6 +871,14 @@ def test_permanent_protocol_refusal_terminates_the_react_loop_fast() -> None:
 # ``tools/execution.py::_call_tool_inner`` (the ``current_tool_runtime()``
 # hook resolution that fires the observer on a real completed call without
 # anyone calling it directly).
+#
+# #1308 (below, after the two hand-invoked tests above): the AUTO-firing gap
+# named just above turned out to be exactly where a live production defect
+# hid -- ``test_ui_bearing_call_auto_fires_the_production_observer_hook``
+# closes it (proves the auto-firing wiring itself is sound) and
+# ``test_stale_listing_cache_entry_silently_defeats_the_ui_meta_wiring``
+# reproduces the actual root cause (a stale ``tools.listing_cache`` entry
+# feeding that auto-firing path a meta-less tool definition).
 # --------------------------------------------------------------------------
 
 
@@ -1215,6 +1227,256 @@ async def test_ui_bearing_result_survives_the_proxy_relay_to_the_apps_host(
             part = app.state.live_assistant_parts[sid][-1].to_wire()
             assert part["type"] == "mcp_app"
             assert record.resource_uri == UI_RESOURCE_URI
+    finally:
+        if executor is not None:
+            executor.close()
+        _reap("mcp_exerciser.py")
+
+
+async def test_ui_bearing_call_auto_fires_the_production_observer_hook(
+    tmp_path: Path,
+) -> None:
+    """#1308: proves the AUTO-firing wiring itself is sound when the mounted
+    tool definition is correct -- i.e. this is NOT the #1308 reproduction
+    (see ``test_stale_listing_cache_entry_silently_defeats_the_ui_meta_wiring``
+    below for that); it isolates and rules OUT the wiring as the root cause.
+
+    Every existing ui-bearing test above (and ``tests/test_gact/
+    test_mcp_apps.py``) invokes the observer directly, matching each other's
+    docstrings' own scope note that this does NOT exercise ``tools/
+    execution.py::_call_tool_inner``'s auto-firing wiring (the
+    ``current_tool_runtime()`` hook resolution that calls the observer on a
+    real completed tool call without anyone calling it directly). #1308's
+    live evidence (2026-09-03, leg C2, real CTE) drove a real session turn's
+    ``ui_echo`` call through claude_code/sonnet and got NO ``mcp_app`` Part --
+    while the in-suite tests all passed, because none of them actually fires
+    the hook this way.
+
+    This test closes THAT gap: it calls ``SyncMCPToolExecutor.call_tool``
+    (the ordinary MODEL-facing entry point tool calls actually use in a live
+    turn -- ``call_tool_result`` is reserved for the Apps bridge itself, see
+    its docstring), bound under the SAME two context managers
+    ``gact/turn_forward.py`` binds around every live tool call
+    (``_gact_app_context`` -- what the turn keystone's ``set_turn_identity``
+    binds for the whole turn; ``_tool_session_context`` -- what
+    ``forward_turn`` binds for the whole turn body), and asserts the Part
+    lands with NO hand-invocation anywhere in this test. It PASSES against
+    current code: the wiring correctly delivers a well-formed tool definition
+    to the observer. The root cause of #1308 is further upstream -- see below.
+    """
+
+    namespace = "v2exuiauto"
+    executor: Any = None
+    try:
+        spec = _exerciser_spec(namespace)
+        listed = _list_declared_tools(spec)
+        gw = build_gateway({namespace: spec})
+        executor = SyncMCPToolExecutor(
+            gw,
+            namespace_servers=namespace_proxies(gw),
+            preloaded_tools=_preloaded_tools_from_listing(namespace, listed),
+        )
+
+        tool_definition = executor._mcp_tools.get(f"{namespace}_ui_echo")  # noqa: SLF001
+        assert tool_definition is not None
+        assert _resource_uri(tool_definition) == UI_RESOURCE_URI, (
+            "sanity: the mounted tool definition must carry its resourceUri "
+            "BEFORE the auto-firing call below, so a later failure to mint a "
+            "Part can only be the wiring, never a missing declaration"
+        )
+
+        from fastapi.testclient import TestClient
+
+        agent = SimpleNamespace(_active_tool_executor=lambda: executor)
+        app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
+
+        with TestClient(app, base_url="http://127.0.0.1:8100") as client:
+            sid = client.post("/v1/sessions", json={"title": "C1-S3-auto"}).json()["id"]
+
+            # The ORDINARY tool_observer (durable telemetry: semantic events,
+            # ARC, the tool_call_ledger) and the permission gate (``ui_echo``
+            # is not readOnlyHint-annotated, so the real gate falls through
+            # to its no-policy-matched HITL block -- a threading.Event with a
+            # 600s default timeout) are both orthogonal to #1308: separate
+            # hooks on the SAME ToolRuntimeHooks bundle, whose real
+            # production implementations assume a fully-booted
+            # ClioAgent/ARC/HITL stack this bare fixture agent does not
+            # provide. Stub both to no-ops so the test isolates EXACTLY the
+            # #1308 wiring under test (current_tool_runtime() resolving and
+            # auto-firing pending_mcp_app_observer, untouched and REAL)
+            # without dragging in unrelated production machinery or hanging.
+            app.state.pending_tool_observer = lambda *a, **k: None
+            app.state.pending_permission_gate = lambda *a, **k: "allow"
+
+            # THE production wiring, nothing hand-invoked: real executor,
+            # real installed app.state.pending_mcp_app_observer (via
+            # build_app -> install_mcp_app_runtime), real
+            # current_tool_runtime() resolver (build_app ->
+            # set_tool_runtime_resolver), bound under the exact context
+            # managers a live turn binds around a tool call.
+            with _gact_app_context(app), _tool_session_context(sid):
+                model_text = executor.call_tool(f"{namespace}_ui_echo", {"payload": "auto"})
+
+            assert model_text == "ui:auto"
+
+            live_parts = app.state.live_assistant_parts.get(sid, [])
+            mcp_app_parts = [p for p in live_parts if p.type == "mcp_app"]
+            assert mcp_app_parts, (
+                "no mcp_app Part was minted for an auto-fired ui-bearing tool "
+                "call -- #1308's live symptom, reproduced offline"
+            )
+            part = mcp_app_parts[-1].to_wire()
+            assert part["resource_uri"] == UI_RESOURCE_URI
+            assert part["source_server"] == namespace
+
+            registry = app.state.mcp_app_registry
+            records = registry.records_for_session(sid)
+            assert records, "the observer must have registered a private App record"
+    finally:
+        if executor is not None:
+            executor.close()
+        _reap("mcp_exerciser.py")
+
+
+async def test_stale_listing_cache_entry_silently_defeats_the_ui_meta_wiring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1308 ROOT CAUSE, reproduced offline: a STALE ``tools.listing_cache``
+    entry (#942/#1237) can silently serve a ui_echo definition with no
+    ``_meta.ui`` to the on-demand mount path
+    (``gact/mcp_readiness.mount_namespace_for_session`` -> ``tools.
+    mcp_discovery.ensure_namespace`` -> ``_list_one_namespace``, the ONLY
+    discovery a live declared-namespace session's first turn goes through,
+    #1237) -- with the wiring proven sound above (the sibling test), THIS is
+    what actually kills #1308's live symptom.
+
+    A pre-#1308-fix cache entry (schema ``...v3``, the schema in production
+    when #1283 landed the MCP Apps ``_meta.ui`` declaration) was never
+    invalidated by an edit to the DECLARING SCRIPT: ``_launcher_fingerprint``
+    only ever fingerprinted ``command`` (the interpreter, e.g.
+    ``sys.executable``), never the SCRIPT argument that, for a
+    ``python <script>``-shaped stdio launcher (the exerciser's own shape --
+    ``_exerciser_spec`` above), actually defines the served tools. On the
+    live-verification box, ``v2ex`` was listed and cached by an EARLIER pass
+    (leg C1 / an earlier C2 attempt, possibly before #1283's App declaration
+    landed) using this SAME ``sys.executable`` + exerciser-script command
+    line; #1308's "final rerun" silently inherited that stale, meta-less v3
+    entry for up to a 24h TTL.
+
+    This plants exactly that condition hermetically (an isolated cache file;
+    a hand-written v3-schema entry -- never through ``store_listing``, which
+    always writes today's live schema, so this stays a faithful "here is
+    what an old build left behind" fixture regardless of schema bumps): the
+    REAL exerciser's tool list with ``ui_echo``'s ``_meta.ui`` key stripped,
+    tagged with the OLD schema string. It then drives a real call through
+    the REAL on-demand mount + auto-firing observer path and asserts an
+    ``mcp_app`` Part DOES land, with the ordinary tool call still
+    succeeding. Before #1308's fix (``listing_cache._SCHEMA`` still
+    ``...v3``) this is RED: the v3 entry is a cache HIT, replays the
+    meta-less definition, and the observer silently drops the result -- NO
+    Part, reproducing the live symptom exactly. The fix (bumping ``_SCHEMA``
+    to ``...v4`` so no v3 entry is ever trusted again, drop-and-relist-live)
+    makes this GREEN.
+    """
+
+    namespace = "v2exuistale"
+    executor: Any = None
+    try:
+        cache_path = tmp_path / "listing_cache.json"
+        monkeypatch.setattr(listing_cache, "_cache_path", lambda: cache_path)
+
+        spec = _exerciser_spec(namespace)
+        live_listed = _list_declared_tools(spec)
+        ui_tool = next(t for t in live_listed if t.name == "ui_echo")
+        assert "ui" in (ui_tool.meta or {}), (
+            "sanity: the REAL exerciser's ui_echo carries _meta.ui today, so "
+            "the stale variant planted below is a genuine STRIP, not a no-op"
+        )
+        stale_listed = [
+            (
+                t.model_copy(
+                    update={"meta": {k: v for k, v in (t.meta or {}).items() if k != "ui"}}
+                )
+                if t.name == "ui_echo"
+                else t
+            )
+            for t in live_listed
+        ]
+        launcher_fp = listing_cache._launcher_fingerprint(spec.command)  # noqa: SLF001
+        assert launcher_fp is not None
+        key = listing_cache.entry_key(spec.command, tuple(spec.args), None)
+        cache_path.write_text(
+            json.dumps(
+                {
+                    # A HAND-WRITTEN v3 entry: exactly what pre-#1308-fix
+                    # production code (whose _SCHEMA WAS this string) would
+                    # have persisted for this namespace -- no args_fingerprint
+                    # field (that field didn't exist in v3), a stale
+                    # meta-less ui_echo, and a launcher fingerprint that
+                    # matches TODAY's real interpreter (so only the schema
+                    # bump -- never a launcher/TTL check -- decides this
+                    # entry's fate).
+                    "schema": "clio-agent.mcp-listing-cache.v3",
+                    "entries": {
+                        key: {
+                            "namespace": namespace,
+                            "launcher_fingerprint": launcher_fp,
+                            "listed_at": time.time(),
+                            "tools": [
+                                t.model_dump(mode="json", by_alias=True, exclude_none=True)
+                                for t in stale_listed
+                            ],
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        gw = build_gateway({namespace: spec})
+        executor = SyncMCPToolExecutor(
+            gw,
+            namespace_servers=namespace_proxies(gw),
+            # Empty, not None: production's cold-workspace/on-demand-mount
+            # shape (#1237 Gap 1, ``builders.py``'s ``_available_tools_...``
+            # docstring above) -- _mcp_tools starts EMPTY; mount_namespace_
+            # for_session (called below, the SAME call site builders.py uses)
+            # populates it from the planted entry, never a fresh composite
+            # client.list_tools() fan-out.
+            preloaded_tools={},
+        )
+        mount_namespace_for_session(executor, namespace, spec)
+
+        tool_definition = executor._mcp_tools.get(f"{namespace}_ui_echo")  # noqa: SLF001
+        assert tool_definition is not None
+
+        from fastapi.testclient import TestClient
+
+        agent = SimpleNamespace(_active_tool_executor=lambda: executor)
+        app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
+
+        with TestClient(app, base_url="http://127.0.0.1:8100") as client:
+            sid = client.post("/v1/sessions", json={"title": "C1-S3-stale"}).json()["id"]
+            # Same rationale as the sibling wiring test above: isolate #1308,
+            # never block on unrelated production machinery.
+            app.state.pending_tool_observer = lambda *a, **k: None
+            app.state.pending_permission_gate = lambda *a, **k: "allow"
+
+            with _gact_app_context(app), _tool_session_context(sid):
+                model_text = executor.call_tool(f"{namespace}_ui_echo", {"payload": "stale"})
+
+            # The live symptom, or its fix: the ordinary call succeeds either way --
+            assert model_text == "ui:stale"
+            # -- the Part landing (or not) is the whole question.
+            live_parts = app.state.live_assistant_parts.get(sid, [])
+            mcp_app_parts = [p for p in live_parts if p.type == "mcp_app"]
+            assert mcp_app_parts, (
+                "no mcp_app Part landed -- a v3-schema listing-cache entry "
+                "(planted here to stand in for one an old build left behind) "
+                "is still being trusted; #1308 is NOT fixed"
+            )
+            part = mcp_app_parts[-1].to_wire()
+            assert part["resource_uri"] == UI_RESOURCE_URI
     finally:
         if executor is not None:
             executor.close()

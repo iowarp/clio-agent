@@ -16,16 +16,20 @@ This cache removes the trade-off:
   reaps each chain before the next spawns — and the result is stored.
 
 Validity is strict reality-gating, the #934 discipline: entries are keyed by
-(launcher, args, env-hash), invalidated by launcher fingerprint (size:mtime)
-change and by TTL (``CLIO_MCP_LISTING_TTL_H``, default 24h — clio-kit servers
-resolve from remote registry state, so listings must expire for upstream tool
-changes to reach users; for shim launchers the binary essentially never moves,
-so the TTL is the ONLY invalidation in the common case). Every stale/invalid
-entry is dropped with a typed reason; a cache miss is not a degradation (the
-first boot always lists live). Staleness while an entry lives: a tool ADDED
-upstream is invisible (calls to it raise typed unknown-tool), a tool REMOVED
-upstream stays listed (calls fail typed at the server) — both self-heal at
-expiry, the same bounded trade as the #934 spawn diet.
+(launcher, args, env-hash), invalidated by the launcher fingerprint (size:
+mtime of ``command``) AND the args fingerprint (size:mtime of every LOCAL
+FILE argument — #1308: for a ``python <script>``/``node <script>``-shaped
+stdio launcher the SCRIPT argument, not the interpreter, defines the served
+tools) changing, and by TTL (``CLIO_MCP_LISTING_TTL_H``, default 24h —
+clio-kit servers resolve from remote registry state, so listings must expire
+for upstream tool changes to reach users; for shim launchers neither the
+binary nor a script argument typically moves, so the TTL is the ONLY
+invalidation in the common case). Every stale/invalid entry is dropped with
+a typed reason; a cache miss is not a degradation (the first boot always
+lists live). Staleness while an entry lives: a tool ADDED upstream is
+invisible (calls to it raise typed unknown-tool), a tool REMOVED upstream
+stays listed (calls fail typed at the server) — both self-heal at expiry,
+the same bounded trade as the #934 spawn diet.
 """
 
 from __future__ import annotations
@@ -50,7 +54,19 @@ from clio_agent.runtime import trace
 #: silently defeated the definitive read on every cache HIT for a whole TTL
 #: window -- the entry now carries the negotiated verdict, and every hit
 #: replays it through ``record_task_capability`` (see :func:`load_listing`).
-_SCHEMA = "clio-agent.mcp-listing-cache.v3"
+#: Bumped v3 -> v4 (#1308): a v3 entry never fingerprinted its ARGS -- for a
+#: ``python <script>``/``node <script>``-shaped stdio launcher (the common
+#: shape for a declared MCP server), the SCRIPT that defines the served
+#: tools is an arg, not ``command``, so editing it (e.g. adding an MCP Apps
+#: ``ui`` declaration to a tool) never invalidated a v3 entry cached before
+#: the edit -- a stale, meta-less tool definition silently served for up to
+#: the TTL, which is exactly what made #1308's live Apps-host symptom
+#: (a ui-bearing tool call succeeds with no ``mcp_app`` Part, zero trace)
+#: undiagnosable. The bump drops every v3 entry outright (some may have
+#: legitimately been fresh; they simply re-list live once, same cost as any
+#: cold miss) and :func:`load_listing`/:func:`store_listing` now also check
+#: :func:`_args_fingerprint` so a future script edit is caught going forward.
+_SCHEMA = "clio-agent.mcp-listing-cache.v4"
 _CACHE_BASENAME = "mcp_listing_cache.json"
 
 _lock = threading.Lock()
@@ -84,6 +100,32 @@ def _launcher_fingerprint(command: str) -> str | None:
     except OSError:
         return None
     return f"{st.st_size}:{int(st.st_mtime)}"
+
+
+def _args_fingerprint(args: tuple[str, ...]) -> str:
+    """size:mtime of every LOCAL FILE argument, joined in order (#1308).
+
+    ``_launcher_fingerprint`` alone only sees ``command`` -- the interpreter
+    binary for a ``python <script>``/``node <script>``-shaped stdio launcher.
+    For that common shape the SCRIPT argument, not the interpreter, defines
+    the tools actually served (including their MCP Apps ``_meta.ui``
+    declarations), so it must independently invalidate a cached entry when
+    it changes. A non-file argument (a flag, a URL, an opaque token)
+    contributes nothing -- only arguments that resolve to an existing local
+    file are fingerprinted, so ordinary flags never spuriously invalidate.
+    """
+
+    parts: list[str] = []
+    for arg in args:
+        try:
+            path = Path(arg)
+            if not path.is_file():
+                continue
+            st = path.stat()
+        except OSError:
+            continue
+        parts.append(f"{arg}:{st.st_size}:{int(st.st_mtime)}")
+    return "|".join(parts)
 
 
 def entry_key(command: str, args: tuple[str, ...], env: Any = None) -> str:
@@ -175,6 +217,12 @@ def load_listing(
     if fingerprint is None or entry.get("launcher_fingerprint") != fingerprint:
         _drop("launcher_changed")
         return None
+    # #1308: the SCRIPT argument (not just the interpreter) defines what a
+    # ``python <script>``-shaped launcher actually serves -- see
+    # _args_fingerprint's docstring.
+    if entry.get("args_fingerprint") != _args_fingerprint(args):
+        _drop("args_changed")
+        return None
     listed_at = entry.get("listed_at")
     if not isinstance(listed_at, (int, float)) or (
         time.time() - listed_at > listing_ttl_h() * 3600
@@ -241,6 +289,7 @@ def store_listing(
             entry: dict[str, Any] = {
                 "namespace": namespace,
                 "launcher_fingerprint": fingerprint,
+                "args_fingerprint": _args_fingerprint(args),
                 "listed_at": time.time(),
                 # by_alias is LOAD-BEARING: Tool.meta is aliased "_meta" and
                 # the model does not populate_by_name — without it the round

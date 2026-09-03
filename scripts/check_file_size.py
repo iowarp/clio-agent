@@ -500,7 +500,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # the MCP_APP_MIME_TYPE literal (was hand-typed here AND in gact/artifacts/
     # wire.py) from the registry's re-export of fastmcp's own UI_MIME_TYPE.
     # Zero behavior change -- the value is byte-identical.
-    "src/clio_agent/gact/mcp_apps.py": 780,
+    # #1308: +22 (780 -> 802) for the three typed no-silent-fallback call sites
+    # in the observer's early-return gates (mcp_app_skipped_no_resource_uri /
+    # _error_result / _no_session) plus the two re-export imports. The reason
+    # CATALOG + recording/query logic itself lives in the NEW owner module
+    # gact/mcp_app_observer_reasons.py (no-accretion) -- only the minimal
+    # per-gate call + a re-export land here.
+    "src/clio_agent/gact/mcp_apps.py": 802,
     # #895: +6 for threading the provider-generic thinking_level onto the LM bind
     # (LMProviderConfig arg + app.state.lm_config + the GET's thinking_level /
     # thinking_effective fields). The mapping logic itself lives in the owner
