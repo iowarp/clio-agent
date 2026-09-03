@@ -293,6 +293,33 @@ def gact_server(request: pytest.FixtureRequest) -> Generator[GactServer, None, N
             f"{SERVER_HEALTH_TIMEOUT_S:g}s (see {server_log})"
         )
 
+    # TRAP: headless runs must pre-allow permissions BEFORE the first turn, or a
+    # gated tool insta-denies mid-run (verified live: PermissionError: tool call
+    # 'ndp_stage_resource' denied by permission gate, fired inside a grandchild
+    # session where no human was ever present to click "allow"). PUT /v1/policies
+    # is server-global (src/clio_agent/gact/routes/permissions.py:218) — one PUT
+    # here covers every session this fixture's server will host. Sanctioned
+    # pattern proven live in scripts/live_verification/_common.py:277-278.
+    with httpx.Client(timeout=30.0) as http:
+        policy_resp = http.put(
+            f"{GACT_URL}/v1/policies",
+            json={
+                "policies": [{"scope": "workspace", "action": "allow", "tool_name_pattern": "*"}]
+            },
+        )
+    if not (200 <= policy_resp.status_code < 300):
+        _reap_process_group(process)
+        log_fh.close()
+        _kill_port(GACT_PORT)
+        if prev_url is None:
+            os.environ.pop("CLIO_GACT_URL", None)
+        else:
+            os.environ["CLIO_GACT_URL"] = prev_url
+        pytest.fail(
+            f"pre-allow policy PUT /v1/policies failed: "
+            f"{policy_resp.status_code} {policy_resp.text}"
+        )
+
     try:
         yield GactServer(
             url=GACT_URL,

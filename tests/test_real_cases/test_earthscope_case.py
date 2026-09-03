@@ -158,9 +158,13 @@ def test_earthscope_gnss_region(agent, gact_server, cell, tmp_path):
         )
         return
 
-    # Route: geography/acquisition -> analysis -> visualization -> synthesis.
+    # Route: geospatial -> data -> analysis -> visualization, with the main
+    # itself authoring the final answer (no separate "synthesis" child exists in
+    # this pack -- earthscope-gnss-region/experts/main.md: "there is no separate
+    # final-responder child"). A positive cell must reach visualization: the
+    # PNG matchers below require its output.
     assert run.routed_to("data"), run.steps
-    assert run.routed_to("synthesis"), run.steps
+    assert run.routed_to("visualization"), run.steps
 
     # Data pathway: the full real pipeline ran (not just "some tool fired").
     assert ran_acquisition_to_plot_pipeline(run), run.tool_names
