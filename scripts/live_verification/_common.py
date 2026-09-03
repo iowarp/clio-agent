@@ -25,13 +25,35 @@ directory, so a leg's declared server reaches BOTH the handshake probe and the
 real tool executor. A live leg that boots with one cwd and writes mcp.yaml
 into a different one would see the handshake pass (false-green) while the
 real turn's tool call fails to find the namespace -- exactly the trap #1286
-leg (ii) warns about.
+leg (ii) warns about. ``write_mcp_yaml``/``quoted_command`` remain here as
+general infra (``quoted_command`` is still used by the testing-pack
+materializer below), but legs B/C (C1-S6, #1301) no longer call
+``write_mcp_yaml`` themselves -- see the next paragraph.
+
+TESTING-AGENT PACK PATH (C1-S6, #1301): legs B/C drive a purpose-built
+single-expert Agent Blueprint pack (``agents/web-testing``,
+``agents/v2ex-testing``) instead of a bare session + workspace ``mcp.yaml``.
+Investigation proved the bare-session builtin main's toolset is a hardcoded
+4-tool list, so a declared server's tools never reach it regardless of any
+``mcp.yaml`` -- the Python builtin main is being dissolved upstream (#1301).
+The Agent Blueprint path is the one real marketplace packs use, and it is
+provably the WORKING path: ``agent.py::_build_tool_gateway`` resolves a
+blueprint's declared ``mcp_servers`` into an ALREADY-RESOLVED spec dict
+(``_discover_pack_servers(blueprint_id, cwd=cwd)``, cwd correctly threaded
+from the per-workspace gateway) before ever reaching the
+``load_mcp_servers(pack_servers=...)`` call the paragraph above flags --  so
+a testing-agent pack's declared servers sidestep the workspace-``mcp.yaml``
+cwd-threading gap entirely, by construction, not by convention. See
+:func:`materialize_testing_pack`, :func:`install_blueprint`,
+:func:`activate_blueprint`, and :func:`resolved_agent_tools` below, and
+``RUNBOOK.md``'s "Testing-agent pack mechanism" section.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -405,6 +427,122 @@ def quoted_command(*tokens: str) -> str:
     """
 
     return " ".join(f'"{token}"' for token in tokens)
+
+
+# --------------------------------------------------------------------------- #
+# Testing-agent pack: the WORKING path (#1301) -- an Agent Blueprint whose
+# declared ``mcp_servers`` reaches the REAL per-turn tool gateway
+# (``agent.py::_build_tool_gateway`` -> ``_discover_pack_servers`` ->
+# ``load_mcp_servers(pack_servers=...)``), unlike the bare-session builtin
+# main (a hardcoded 4-tool list a declared server's tools never reach). See
+# ``scripts/live_verification/agents/{web-testing,v2ex-testing}/`` for the
+# committed templates and the module docstrings there.
+# --------------------------------------------------------------------------- #
+def materialize_testing_pack(template_dir: Path, ws_dir: Path, mcp_servers: dict[str, str]) -> Path:
+    """Copy a testing-agent pack template into ``ws_dir`` and rewrite its
+    ``AGENT.md`` frontmatter's ``mcp_servers`` block to ``mcp_servers``.
+
+    ``AGENT.md`` frontmatter is a static file, but a server command may carry
+    a per-run resolved path (the v2ex exerciser's absolute interpreter +
+    script path -- see ``leg_c_synthetic_session.py``) that must never be a
+    hardcoded drive path committed to source (the same constraint
+    ``quoted_command`` documents for workspace ``mcp.yaml``: an unquoted
+    Windows path fed through POSIX-mode ``shlex.split`` has its backslashes
+    eaten). This materializes the template into the run's own workspace dir
+    and patches ONLY the ``mcp_servers`` key, so the committed template's
+    value stays a portable placeholder (``web-testing``'s is already a real,
+    static command -- routed through here too, for one mechanism instead of
+    two).
+
+    Returns the materialized pack's root directory (containing ``AGENT.md``),
+    suitable as the ``source`` for :func:`install_blueprint`.
+    """
+
+    import yaml
+
+    dest = ws_dir / "testing-packs" / template_dir.name
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(template_dir, dest)
+
+    agent_md = dest / "AGENT.md"
+    text = agent_md.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise ValueError(f"{agent_md} has no YAML frontmatter to rewrite")
+    end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), -1)
+    if end < 0:
+        raise ValueError(f"{agent_md} frontmatter has no closing '---'")
+    meta = yaml.safe_load("\n".join(lines[1:end])) or {}
+    if not isinstance(meta, dict):
+        raise ValueError(f"{agent_md} frontmatter did not parse to a mapping")
+    meta["mcp_servers"] = dict(mcp_servers)
+    body = "\n".join(lines[end + 1 :])
+    rewritten = (
+        "---\n" + yaml.safe_dump(meta, default_flow_style=False, sort_keys=False) + "---\n" + body
+    )
+    agent_md.write_text(rewritten, encoding="utf-8")
+    return dest
+
+
+def install_blueprint(
+    call: Callable[..., Any], source_path: Path, workspace_id: str
+) -> dict[str, Any]:
+    """``POST /v1/agent-blueprints/install`` a local pack, workspace-scoped.
+
+    Matches the shape ``tests/test_real_cases/clio_sut.py::invoke`` uses for
+    a ``marketplace_source`` install. Returns the installed blueprint's own
+    wire row (``{"id": ..., "root_expert": ..., ...}``), the entry an
+    activation call's ``blueprint_id`` needs. Idempotent: the underlying
+    installer overwrites an existing install at the same id/scope, so
+    re-running a leg never needs a manual uninstall first.
+    """
+
+    resp = call(
+        "POST",
+        "/v1/agent-blueprints/install",
+        {"source": str(source_path), "scope": "workspace", "workspace_id": workspace_id},
+        ok=(200, 201),
+    )
+    installed = resp.get("installed") or []
+    if not installed:
+        raise RuntimeError(f"agent blueprint install produced no installed rows: {resp}")
+    return installed[0]
+
+
+def activate_blueprint(call: Callable[..., Any], sid: str, blueprint_id: str) -> dict[str, Any]:
+    """``POST /v1/sessions/{sid}/agent-blueprint`` -- bind ``blueprint_id`` to ``sid``.
+
+    NOTE the verb: ``POST``, not ``PUT`` (verified against
+    ``gact/routes/blueprints.py::set_session_agent_blueprint`` and the exact
+    call ``clio_sut.py`` makes for the same activation).
+    """
+
+    return call("POST", f"/v1/sessions/{sid}/agent-blueprint", {"blueprint_id": blueprint_id})
+
+
+def resolved_agent_tools(
+    call: Callable[..., Any], sid: str, *, workspace_id: str = ""
+) -> dict[str, list[str]]:
+    """``GET /v1/agents?session_id=...`` -- the resolved per-agent toolset.
+
+    This is the seam ``gact/agents/resolution.py::_runtime_active_agent_
+    blueprint_rows`` shares with the REAL turn path (the route and the
+    executing agent can never disagree on what an agent resolves to -- #770
+    C1), so it is the pre-turn PROOF that a testing-agent pack's declared
+    ``tools:`` actually reached this session's active agent -- not merely
+    that the frontmatter parsed. Returns ``{agent_id: [tool_name, ...]}``.
+    ``session_id`` alone resolves the active blueprint; ``workspace_id`` is
+    passed too for the same cwd-discovery robustness the handshake call
+    uses.
+    """
+
+    params: dict[str, str] = {"session_id": sid}
+    if workspace_id:
+        params["workspace_id"] = workspace_id
+    resp = call("GET", "/v1/agents", params=params)
+    rows = resp.get("agents") or []
+    return {str(row.get("id") or ""): list(row.get("tools") or []) for row in rows}
 
 
 # --------------------------------------------------------------------------- #

@@ -4,9 +4,23 @@
 Every existing exerciser conformance test drives it through an in-process
 ``AsyncMCPToolExecutor``/``Client(server)`` -- never through a live gact
 session with a real model turn. This leg closes that gap: declare the
-exerciser as a workspace MCP server (``.clio/mcp.yaml``: ``v2ex: "<python>"
-"<EXERCISER_PATH>"`` -- see the quoting note below), boot a gact server, and
-drive it through two real turns on ONE session.
+exerciser as a purpose-built single-expert Agent Blueprint pack's declared
+MCP server (``agents/v2ex-testing/`` -- ``AGENT.md`` frontmatter's
+``mcp_servers: {v2ex: "<python>" "<EXERCISER_PATH>"}``, materialized at run
+time -- see the quoting note below and ``_common.py::
+materialize_testing_pack``), boot a gact server, and drive it through two
+real turns on ONE session.
+
+This leg used to declare the exerciser via a bare session + workspace
+``.clio/mcp.yaml``. Investigation proved the bare-session builtin main's
+toolset is a hardcoded 4-tool list, so a declared server's tools never reach
+it no matter what ``mcp.yaml`` declares (#1301, deferred upstream -- the
+Python builtin main is being dissolved). This leg now rides the WORKING path
+instead: the ``v2ex-testing`` pack's ``main`` expert declares ``tools:
+[v2ex_task_echo, v2ex_guarded_input]`` -- the same Agent Blueprint mechanism
+every real marketplace pack uses. The workspace ``mcp.yaml`` declaration this
+leg used to write is now REDUNDANT (the pack frontmatter declares the
+server) and has been dropped.
 
 Turn 1 proves live task=required plumbing through a real model turn: instruct
 the agent to call ``task_echo`` with a given payload and report the result;
@@ -29,8 +43,11 @@ then asserts the round completed with the answered value. No interactive-only
 gap was found; if a live run ever finds the question never surfaces within
 the wait window, the verdict below fails NAMED (never silently passes).
 
-``--plumbing-only`` stops after the handshake assertion (``v2ex`` reachable
-with its 9 tools) -- before provider bind, before either turn.
+``--plumbing-only`` stops after the PRE-TURN READINESS GATE (``v2ex``
+reachable with its 9 tools at handshake, AND the resolved ``main`` agent's
+``tools`` include ``v2ex_task_echo``/``v2ex_guarded_input`` --
+``GET /v1/agents?session_id=...``) -- before provider bind, before either
+turn.
 
 Verdict JSON: ``out/live-verification/leg_c_synthetic_session.json``.
 
@@ -70,6 +87,17 @@ EXPECTED_TOOLS = {
     "silent_sleeper",
 }
 
+#: The v2ex-testing pack template this leg materializes per run.
+PACK_TEMPLATE_DIR = Path(__file__).resolve().parent / "agents" / "v2ex-testing"
+
+#: The root ``main`` expert's tools that must be resolved BEFORE any turn is
+#: driven (mind the ``<namespace>_<tool>`` naming -- the readiness gate that
+#: proves the blueprint path, not the old hardcoded-4-tool bare-session path).
+NEEDED_AGENT_TOOLS = {
+    f"{EXERCISER_NAMESPACE}_task_echo",
+    f"{EXERCISER_NAMESPACE}_guarded_input",
+}
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -87,13 +115,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--plumbing-only",
         action="store_true",
-        help="stop after the handshake assertion; never bind a provider or drive a turn",
+        help="stop after the readiness gate; never bind a provider or drive a turn",
     )
     return parser
 
 
-def _assert_v2ex_handshake(call: Any, wsid: str) -> dict[str, Any]:
-    handshake = call("GET", "/v1/mcp/handshake", params={"workspace_id": wsid})
+def _assert_v2ex_handshake(call: Any, wsid: str, sid: str) -> dict[str, Any]:
+    # ``session_id`` is REQUIRED to see the pack-declared server -- see
+    # leg_b_web_fetch.py's ``_assert_web_handshake`` for the same note.
+    handshake = call("GET", "/v1/mcp/handshake", params={"workspace_id": wsid, "session_id": sid})
     rows = handshake.get("servers") or []
     row = next((r for r in rows if r.get("name") == EXERCISER_NAMESPACE), None)
     result: dict[str, Any] = {"handshake_rows": rows, "v2ex_row": row}
@@ -106,6 +136,22 @@ def _assert_v2ex_handshake(call: Any, wsid: str) -> dict[str, Any]:
     return result
 
 
+def _assert_readiness(call: Any, sid: str, wsid: str) -> dict[str, Any]:
+    """PRE-TURN READINESS GATE: the resolved ``main`` agent must already carry
+    ``NEEDED_AGENT_TOOLS`` before any provider is bound or turn is driven."""
+
+    resolved = common.resolved_agent_tools(call, sid, workspace_id=wsid)
+    main_tools = set(resolved.get("main") or [])
+    return {
+        "resolved_agent_tools": resolved,
+        "readiness_gate": {
+            "needed_tools": sorted(NEEDED_AGENT_TOOLS),
+            "main_tools": sorted(main_tools),
+            "ready": NEEDED_AGENT_TOOLS.issubset(main_tools),
+        },
+    }
+
+
 def main() -> int:
     args = build_parser().parse_args()
     out_path = Path(args.out)
@@ -116,15 +162,20 @@ def main() -> int:
     # string-command form parses via shlex.split (POSIX mode) -- an unquoted
     # Windows backslash path is silently mangled (backslashes eaten). Verified
     # both the failure and the fix (double-quote every token) directly against
-    # shlex.split, matching mcp_config's exact call.
+    # shlex.split, matching mcp_config's exact call. The SAME format governs an
+    # Agent Blueprint's ``mcp_servers`` frontmatter value, so the exerciser's
+    # command must be resolved at RUN time (never a hardcoded drive path
+    # committed to the template) -- materialize_testing_pack patches it in.
     command = common.quoted_command(sys.executable, str(EXERCISER_PATH))
-    mcp_yaml = common.write_mcp_yaml(ws_dir, {EXERCISER_NAMESPACE: command})
+    pack_root = common.materialize_testing_pack(
+        PACK_TEMPLATE_DIR, ws_dir, {EXERCISER_NAMESPACE: command}
+    )
 
     base = f"http://127.0.0.1:{args.port}"
     verdict: dict[str, Any] = {
         "leg": "c_synthetic_session",
-        "mcp_yaml": str(mcp_yaml),
-        "mcp_yaml_command": command,
+        "pack_root": str(pack_root),
+        "mcp_command": command,
         "namespace": EXERCISER_NAMESPACE,
         "plumbing_only": args.plumbing_only,
     }
@@ -149,18 +200,30 @@ def main() -> int:
         verdict["workspace_id"] = wsid
         verdict["session_id"] = sid
 
-        handshake_result = _assert_v2ex_handshake(call, wsid)
+        install_result = common.install_blueprint(call, pack_root, wsid)
+        blueprint_id = str(install_result.get("id") or "")
+        common.activate_blueprint(call, sid, blueprint_id)
+        verdict["blueprint_id"] = blueprint_id
+
+        handshake_result = _assert_v2ex_handshake(call, wsid, sid)
         verdict.update(handshake_result)
 
+        readiness_result = _assert_readiness(call, sid, wsid)
+        verdict.update(readiness_result)
+        readiness_ok = readiness_result["readiness_gate"]["ready"]
+
+        handshake_ok = handshake_result["v2ex_ready"] and handshake_result["v2ex_tools_match"]
+
         if args.plumbing_only:
-            verdict["pass"] = bool(
-                handshake_result["v2ex_ready"] and handshake_result["v2ex_tools_match"]
-            )
+            verdict["pass"] = bool(handshake_ok and readiness_ok)
             common.write_verdict(out_path, verdict)
             return 0 if verdict["pass"] else 1
 
-        if not (handshake_result["v2ex_ready"] and handshake_result["v2ex_tools_match"]):
-            verdict["error"] = "v2ex not ready/complete at handshake; refusing to spend a turn"
+        if not (handshake_ok and readiness_ok):
+            verdict["error"] = (
+                "v2ex not ready/complete at handshake, or the resolved agent's "
+                "tools are missing a needed tool; refusing to spend a turn"
+            )
             verdict["pass"] = False
             common.write_verdict(out_path, verdict)
             return 1
