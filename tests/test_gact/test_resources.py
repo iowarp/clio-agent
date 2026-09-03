@@ -77,6 +77,24 @@ def test_document_service_markdown_becomes_a_named_clio_derivative(tmp_path: Pat
     assert derivative_path.read_text(encoding="utf-8") == "# HStream\n"
 
 
+def test_document_service_marks_progress_as_stage_based() -> None:
+    """Do not present fixed Docling milestones as measured completion."""
+
+    payload = _document_service_payload(
+        {
+            "id": "docling_job",
+            "status": "running",
+            "progress": 40,
+            "stage": "docling",
+            "message": "Docling is still processing (15s elapsed)",
+        }
+    )
+
+    assert payload["progress"] == 40
+    assert payload["progress_kind"] == "stage"
+    assert payload["stage"] == "docling"
+
+
 class _CompleteDocumentProcessor:
     id = "test-docling"
     priority = 20
@@ -1201,7 +1219,14 @@ def test_resource_conversion_wait_times_out_without_cancelling_work(tmp_path: Pa
             return {"id": "remote_long_job", "status": "processing"}
 
         async def status(self, job_id: str) -> dict[str, Any]:
-            return {"id": job_id, "status": "processing", "progress": 42}
+            return {
+                "id": job_id,
+                "status": "processing",
+                "progress": 42,
+                "progress_kind": "stage",
+                "stage": "docling",
+                "message": "Docling is processing the document",
+            }
 
     app = build_app(
         sessions_path=tmp_path / "sessions.json",
@@ -1239,6 +1264,9 @@ def test_resource_conversion_wait_times_out_without_cancelling_work(tmp_path: Pa
         assert waited["timed_out"] is True
         assert waited["processing"]["state"] == "processing"
         assert waited["processing"]["progress"] == 42
+        assert waited["processing"]["progress_kind"] == "stage"
+        assert waited["processing"]["stage"] == "docling"
+        assert waited["processing"]["message"] == "Docling is processing the document"
         assert app.state.resource_processing_store.state(record).state == "processing"
 
 

@@ -197,6 +197,20 @@ async def refresh_processing(app: Any, record: ResourceRecord) -> ResourceProces
     state = state.model_copy(update={"poll_failures": 0})
 
     remote_state = str(payload.get("status") or "processing")
+    progress = payload.get("progress", state.progress)
+    progress_kind = payload.get("progress_kind", state.progress_kind)
+    if progress_kind not in {"unknown", "stage", "measured"}:
+        progress_kind = state.progress_kind
+    stage = payload.get("stage", state.stage)
+    message = payload.get("message", state.message)
+    state = state.model_copy(
+        update={
+            "progress": int(progress) if isinstance(progress, int | float) else state.progress,
+            "progress_kind": progress_kind,
+            "stage": str(stage) if stage is not None else state.stage,
+            "message": str(message) if message is not None else state.message,
+        }
+    )
     if remote_state == "complete":
         result = payload.get("result")
         if not isinstance(result, dict):
@@ -227,11 +241,9 @@ async def refresh_processing(app: Any, record: ResourceRecord) -> ResourceProces
                 app, record.workspace_id, "resource.processing_failed", failed.model_dump()
             )
         return failed
-    progress = payload.get("progress", state.progress)
     updated = state.model_copy(
         update={
             "state": "processing",
-            "progress": int(progress) if isinstance(progress, int | float) else state.progress,
             "updated_at": _now_iso(),
         }
     )
@@ -304,6 +316,18 @@ async def submit_processing(
         processor_url=converter.endpoint,
         job_id=str(submitted["id"]),
         state="submitted",
+        progress=(
+            int(submitted["progress"])
+            if isinstance(submitted.get("progress"), int | float)
+            else 0
+        ),
+        progress_kind=(
+            str(submitted["progress_kind"])
+            if submitted.get("progress_kind") in {"unknown", "stage", "measured"}
+            else "unknown"
+        ),
+        stage=str(submitted.get("stage") or "queued"),
+        message=str(submitted.get("message") or ""),
         derivatives_available=current.derivatives_available,
     )
     latest = app.state.resource_processing_store.state(record)

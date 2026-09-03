@@ -104,6 +104,12 @@ class ResourceProcessingRecord(BaseModel):
         "not_started"
     )
     progress: int = 0
+    # A converter may expose an actual measured fraction or only milestones.
+    # The document processor currently reports fixed phase markers, so clients
+    # must not present those values as measured completion percentages.
+    progress_kind: Literal["unknown", "stage", "measured"] = "unknown"
+    stage: str = ""
+    message: str = ""
     # Consecutive failed status polls. Reset on any answered poll; past
     # ``resources.status_poll_failure_threshold`` the record degrades to a typed
     # ``converter_status_unavailable`` failure instead of waiting forever.
@@ -254,6 +260,8 @@ class ResourceProcessingStore:
                 update={
                     "state": "complete",
                     "progress": 100,
+                    "stage": "complete",
+                    "message": "Conversion complete",
                     "derivatives_available": True,
                     "updated_at": _now_iso(),
                 }
@@ -503,6 +511,9 @@ def _document_service_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if isinstance(error, dict) and "failure" not in payload
         else payload
     )
+    # clio-web-search uses fixed values to order conversion phases (Docling,
+    # export, GROBID). They are milestones, not measurements of work remaining.
+    adapted = {**adapted, "progress_kind": "stage"}
     result = adapted.get("result")
     if not isinstance(result, dict) or isinstance(result.get("derivatives"), dict):
         return adapted
