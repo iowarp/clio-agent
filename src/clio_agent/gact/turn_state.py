@@ -156,7 +156,8 @@ def new_turn_state(
     # wrappers -- makes active_app()/active_session_id() reliable on the executor
     # rail for ALL turn paths, incl. the CLIO orchestrator forward (#735 3).
     _ctx.set_turn_identity(app=app, session_id=sid, turn_id=turn_id, trace_id=trace_id)
-    from clio_agent.gact.app import _dspy_files_from_parts, _dspy_images_from_parts  # noqa: PLC0415
+    from clio_agent.gact.app import _dspy_images_from_parts  # noqa: PLC0415
+    from clio_agent.gact.messaging import _dspy_files_from_parts  # noqa: PLC0415
 
     native_images = _dspy_images_from_parts(
         user_msg.parts,

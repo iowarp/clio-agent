@@ -45,6 +45,13 @@ from clio_agent.gact.agents.composition import (
 )
 from clio_agent.gact.agents.declared_native_tools import resolve_declared_native_tools
 from clio_agent.gact.agents.reactv2_events import is_turn_yield_prediction
+from clio_agent.gact.agents.reactv2_submit import (
+    adapter_tool_intent_from_exception as _adapter_tool_intent_from_exception,
+)
+from clio_agent.gact.agents.reactv2_submit import (
+    call_recovered_dspy_tool as _call_recovered_dspy_tool,
+)
+from clio_agent.gact.agents.reactv2_submit import tool_names as _tool_names
 from clio_agent.gact.agents.resolution import _active_workflow_state_schema
 from clio_agent.gact.agents.runtime import (
     _retaining_react_cls,
@@ -693,58 +700,6 @@ def _dynamic_agent_tools(
             app, agent_def.id, missing_tools, mount_failures=mount_failures
         )
     return [_recording_blueprint_tool(available_tools[name]) for name in resolved_tools]
-
-
-def _tool_names(tools: Iterable[Any]) -> list[str]:
-    """Return stable tool names from DSPy tool-like objects."""
-
-    names: list[str] = []
-    for tool in tools:
-        name = str(getattr(tool, "name", "") or "").strip()
-        if name:
-            names.append(name)
-    return names
-
-
-def _adapter_tool_intent_from_exception(
-    exc: BaseException,
-    *,
-    allowed_tools: Iterable[str],
-) -> dict[str, Any] | None:
-    """Recover a typed tool intent emitted where DSPy expected final fields."""
-
-    from clio_agent.gact.app import (  # noqa: PLC0415
-        _json_objects_from_text,
-    )
-
-    allowed = {str(name).strip() for name in allowed_tools if str(name).strip()}
-    if not allowed:
-        return None
-    message = str(exc)
-    if "tool_name" not in message or "tool_args" not in message:
-        return None
-    for obj in _json_objects_from_text(message):
-        if not isinstance(obj, Mapping):
-            continue
-        tool_name = str(obj.get("tool_name") or obj.get("name") or "").strip()
-        if tool_name not in allowed:
-            continue
-        tool_args = obj.get("tool_args") or obj.get("args") or obj.get("arguments") or {}
-        if not isinstance(tool_args, Mapping):
-            tool_args = {}
-        return {"tool_name": tool_name, "tool_args": dict(tool_args)}
-    return None
-
-
-def _call_recovered_dspy_tool(tool: Any, args: Mapping[str, Any]) -> Any:
-    """Call a DSPy tool recovered from malformed ReAct adapter output."""
-
-    if callable(tool):
-        return tool(**dict(args))
-    func = getattr(tool, "func", None)
-    if callable(func):
-        return func(**dict(args))
-    raise TypeError(f"tool is not callable: {getattr(tool, 'name', '<unknown>')}")
 
 
 def _extract_repair_attempts() -> int:

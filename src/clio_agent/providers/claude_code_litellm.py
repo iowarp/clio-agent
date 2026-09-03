@@ -1,16 +1,7 @@
-"""LiteLLM ``CustomLLM`` provider for Claude Code.
+"""LiteLLM provider for Claude Code's persistent Agent SDK transport.
 
-Routes ``dspy.LM(model="claude_code/<model>", ...)`` calls through the
-Claude Agent SDK (persistent pooled CLI session) so CLIO can use the user's
-Claude Code subscription auth without bypassing the DSPy/LiteLLM provider
-contract. One transport since the v0.8.0 cleanup: the legacy ``exec`` batch
-transport (one ``claude -p`` subprocess per call, no token stream) was
-deleted — #891 evidence showed the SDK path is strictly better (pooled
-session reuse, streaming TTFT, prompt-cache continuity).
-
-The Claude Code process is used as a bare model transport. Built-in tools
-are disabled; CLIO's planner and MCP/tool gateway remain the only tool
-execution layer.
+CLIO owns planning and tools; Claude's built-in tools remain disabled. The
+legacy per-call ``claude -p`` transport was removed in v0.8.0 (#891).
 """
 
 from __future__ import annotations
@@ -57,6 +48,12 @@ from clio_agent.providers.claude_code_sessions import (
 from clio_agent.providers.claude_code_stateful import (
     StatefulSend,
     resolve_stateful_send,
+)
+from clio_agent.providers.claude_code_stream_events import (
+    stream_event_text as _sdk_stream_event_text,
+)
+from clio_agent.providers.claude_code_stream_events import (
+    stream_event_thinking as _sdk_stream_event_thinking,
 )
 from clio_agent.providers.claude_code_thinking_split import (
     _split_provider_thinking_contract_delta,
@@ -152,36 +149,6 @@ def _messages_to_claude_input(
 # The SDK transport machinery (the blocking-path pool in ``claude_code_sdk_pool`` and
 # the #891 pooled streaming transport in ``claude_code_sessions``) is imported at the
 # top and re-exported below for the historical import seams (#775 no-accretion).
-
-
-def _sdk_stream_event_text(event: dict[str, Any]) -> str:
-    """Extract user-visible text from a Claude SDK raw stream event."""
-    event_type = str(event.get("type") or "")
-    if event_type == "content_block_delta":
-        delta = event.get("delta")
-        if isinstance(delta, dict):
-            if delta.get("type") == "text_delta":
-                return str(delta.get("text") or "")
-            if isinstance(delta.get("text"), str):
-                return delta["text"]
-    if event_type == "content_block_start":
-        block = event.get("content_block")
-        if isinstance(block, dict) and block.get("type") == "text":
-            return str(block.get("text") or "")
-    return ""
-
-
-def _sdk_stream_event_thinking(event: dict[str, Any]) -> str:
-    """Extract provider-internal thinking from a Claude SDK raw stream event."""
-    event_type = str(event.get("type") or "")
-    if event_type != "content_block_delta":
-        return ""
-    delta = event.get("delta")
-    if not isinstance(delta, dict):
-        return ""
-    if delta.get("type") == "thinking_delta":
-        return str(delta.get("thinking") or "")
-    return ""
 
 
 async def _astream_sdk(

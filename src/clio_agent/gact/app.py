@@ -416,7 +416,6 @@ from clio_agent.gact.messaging import (  # noqa: E402,F401
     _ask_user_options_from_action,
     _ask_user_resume_text,
     _coerce_ask_user_action,
-    _dspy_files_from_parts,
     _dspy_images_from_parts,
     _format_subagent_input,
     _image_part_summaries,

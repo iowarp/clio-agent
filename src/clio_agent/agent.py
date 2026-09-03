@@ -718,12 +718,7 @@ class ClioAgent(dspy.Module):
         images: list[Any] | None = None,
         files: list[Any] | None = None,
     ) -> str:
-        """Generate a single-shot conversational reply through DSPy/LiteLLM.
-
-        Plain LM synthesis over the chat signature — no tool loop. Reused by the
-        session-compaction summarizer (routes/sessions.py) to fold a transcript
-        into a compact summary.
-        """
+        """Generate a tool-free reply, also used by session compaction."""
         self._raise_if_cancelled("chat_before")
         chat_context = self._chat_session_context(session_context)
         image_inputs = list(images or [])

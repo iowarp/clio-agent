@@ -50,6 +50,7 @@ from clio_agent.gact.agent_invocation import (
 from clio_agent.gact.agent_invocation import (
     _run_dynamic_agent_compat as _run_dynamic_agent_compat,
 )
+from clio_agent.gact.agent_invocation import _select_accepted_kwargs
 from clio_agent.gact.events import Event
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.providers.config import _provider_runtime_kind
@@ -73,35 +74,6 @@ from clio_agent.runtime.stream_audit import stream_audit
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
-
-
-def _select_accepted_kwargs(func: Any, candidate: dict[str, Any]) -> dict[str, Any] | None:
-    """Return the subset of ``candidate`` keyword args that ``func`` accepts.
-
-    Signature inspection replaces the old TypeError-message sniffing: we decide
-    which optional kwargs a callee understands *before* invoking it, so the call
-    happens exactly once and any ``TypeError`` raised from inside the callee
-    propagates as-is rather than being mistaken for a signature mismatch.
-
-    Returns ``None`` when ``func`` cannot be introspected (some C-level /
-    builtin callables raise ``ValueError``/``TypeError`` from
-    :func:`inspect.signature`); the caller then makes a single best-effort
-    attempt with the full candidate set instead of guessing.
-    """
-
-    try:
-        sig = inspect.signature(func)
-    except (ValueError, TypeError):
-        return None
-    params = sig.parameters.values()
-    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params):
-        return dict(candidate)
-    accepted = {
-        p.name
-        for p in params
-        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-    }
-    return {name: value for name, value in candidate.items() if name in accepted}
 
 
 async def _try_streamed_forward_compat(
