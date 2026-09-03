@@ -115,6 +115,12 @@ class ResourceProcessingRecord(BaseModel):
     updated_at: str = Field(default_factory=_now_iso)
 
 
+def resource_processing_task_id(record: ResourceRecord) -> str:
+    """Return the stable local task identity for one conversion revision."""
+
+    return f"resource-processing:{record.id}:v{record.revision}"
+
+
 class ResourceProcessingStore:
     """Persist processor state and named derivatives beside the original bytes."""
 
@@ -644,5 +650,6 @@ __all__ = [
     "ResourceConverterUnavailable",
     "ResourceCustodyGone",
     "ResourceProcessingRecord",
+    "resource_processing_task_id",
     "ResourceProcessingStore",
 ]

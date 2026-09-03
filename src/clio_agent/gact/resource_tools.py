@@ -21,11 +21,15 @@ the same semantic bound.
 
 from __future__ import annotations
 
+import asyncio
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from clio_agent import conf
 from clio_agent.gact.resource_custody import ResourceRecord
+from clio_agent.gact.resource_lifecycle import refresh_processing
+from clio_agent.gact.resource_processing import resource_processing_task_id
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -167,6 +171,69 @@ def inspect_workspace_resource(
         "derivatives": derivatives,
         "deliveries": deliveries,
     }
+
+
+def _processing_task_record(app: "FastAPI", workspace_id: str, task_id: str) -> ResourceRecord:
+    """Resolve a stable conversion task without trusting a remote processor id."""
+
+    prefix = "resource-processing:"
+    if not task_id.startswith(prefix) or ":v" not in task_id:
+        raise ResourceQueryError(
+            "invalid_processing_task",
+            f"invalid resource conversion task id: {task_id}",
+            task_id=task_id,
+        )
+    resource_id, revision = task_id.removeprefix(prefix).rsplit(":v", maxsplit=1)
+    record = _record(app, workspace_id, resource_id)
+    if revision != str(record.revision) or task_id != resource_processing_task_id(record):
+        raise ResourceQueryError(
+            "stale_processing_task",
+            "resource conversion task does not match the current resource revision",
+            task_id=task_id,
+            resource_id=resource_id,
+            current_revision=record.revision,
+        )
+    return record
+
+
+async def wait_for_workspace_resource_processing(
+    app: "FastAPI", workspace_id: str, task_id: str, timeout_s: float
+) -> dict[str, Any]:
+    """Wait once for a conversion task, advancing its remote status until settlement.
+
+    The caller supplies the wait budget. Timing out does not cancel conversion and
+    still returns the latest durable state, so a long-running processor remains
+    observable without forcing the model into repeated inspect calls.
+    """
+
+    if not math.isfinite(timeout_s) or timeout_s <= 0:
+        raise ResourceQueryError(
+            "invalid_wait_timeout",
+            "timeout_s must be a positive finite number",
+            timeout_s=timeout_s,
+        )
+    record = _processing_task_record(app, workspace_id, task_id)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    terminal_states = {"complete", "failed", "cancelled", "not_started"}
+    while True:
+        state = await refresh_processing(app, record)
+        if state.state in terminal_states:
+            return {
+                "task_id": task_id,
+                "terminal": True,
+                "timed_out": False,
+                "processing": state.model_dump(),
+            }
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return {
+                "task_id": task_id,
+                "terminal": False,
+                "timed_out": True,
+                "processing": state.model_dump(),
+            }
+        await asyncio.sleep(min(0.5, remaining))
 
 
 def _search_path(path: Path, query: str) -> tuple[list[dict[str, Any]], bool]:
@@ -352,6 +419,12 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
         app, workspace_id = active()
         return inspect_workspace_resource(app, workspace_id, resource_id)
 
+    def resource_wait(task_id: str, timeout_s: float) -> dict[str, Any]:
+        app, workspace_id = active()
+        return asyncio.run(
+            wait_for_workspace_resource_processing(app, workspace_id, task_id, timeout_s)
+        )
+
     def resource_search(resource_id: str, query: str, derivative_id: str = "") -> dict[str, Any]:
         app, workspace_id = active()
         return search_workspace_resource(app, workspace_id, resource_id, query, derivative_id)
@@ -388,6 +461,28 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
                 "structured-processing, derivative, and provider-delivery provenance."
             ),
             args={"resource_id": {"type": "string", "description": "Immutable resource id."}},
+        ),
+        native_tool(
+            resource_wait,
+            name="workspace_resource_wait",
+            title="Wait for Resource Conversion",
+            representation="row",
+            desc=(
+                "Wait once for a workspace resource conversion task to complete, fail, or be "
+                "cancelled. A timeout returns the latest durable state without cancelling work. "
+                "Use the stable task id supplied in attachment context instead of repeatedly "
+                "polling workspace_resource_inspect."
+            ),
+            args={
+                "task_id": {
+                    "type": "string",
+                    "description": "Stable resource-processing task id from attachment context.",
+                },
+                "timeout_s": {
+                    "type": "number",
+                    "description": "Positive caller-selected wait budget in seconds.",
+                },
+            },
         ),
         native_tool(
             resource_read,
@@ -456,4 +551,5 @@ __all__ = [
     "read_workspace_resource_text",
     "read_workspace_resource_structure",
     "search_workspace_resource",
+    "wait_for_workspace_resource_processing",
 ]

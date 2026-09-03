@@ -18,10 +18,10 @@ ATTACHMENT_PREAMBLE = (
     "private custody paths in the response."
 )
 
-# The tool an agent uses to inspect a conversion that has not produced
+# The tool an agent uses to await a conversion that has not produced
 # derivatives yet. A constant, not per-record state: it is the same tool for
 # every resource, so carrying it on ResourceProcessingRecord only invited drift.
-PROCESSING_QUERY_TOOL = "workspace_resource_inspect"
+PROCESSING_QUERY_TOOL = "workspace_resource_wait"
 
 
 def _conversion_warnings(manifest: Mapping | None) -> str:
@@ -125,13 +125,17 @@ def describe_resource_parts(app: "FastAPI", sid: str, parts: list) -> list[str]:
             )
             continue
         if processing.state in {"submitted", "processing"}:
-            task_id = processing.job_id or (f"resource-processing:{record.id}:v{record.revision}")
+            from clio_agent.gact.resource_processing import (  # noqa: PLC0415
+                resource_processing_task_id,
+            )
+
+            task_id = resource_processing_task_id(record)
             state_label = processing.state if processing.job_id else "queued"
             blocks.append(
                 header
                 + f" Structured conversion is still {state_label} as task "
-                + f"{task_id!r}; query resource {record.id!r} with "
-                + f"{PROCESSING_QUERY_TOOL} before reading non-text content."
+                + f"{task_id!r}; wait once with {PROCESSING_QUERY_TOOL} using that task id "
+                + "before reading non-text content. Do not repeatedly poll inspection."
             )
             continue
         if processing.state == "complete":

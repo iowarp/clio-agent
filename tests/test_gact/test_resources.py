@@ -21,6 +21,7 @@ from clio_agent.gact.resource_processing import (
     ResourceConverterFactory,
     ResourceProcessingRecord,
     ResourceProcessingStore,
+    resource_processing_task_id,
 )
 from clio_agent.gact.resource_tools import (
     inspect_workspace_resource,
@@ -28,6 +29,7 @@ from clio_agent.gact.resource_tools import (
     read_workspace_resource_structure,
     read_workspace_resource_text,
     search_workspace_resource,
+    wait_for_workspace_resource_processing,
 )
 from tests.test_gact.test_post_messages import FakeClioAgent
 
@@ -1084,8 +1086,127 @@ def test_resource_context_exposes_durable_local_conversion_task_before_remote_jo
         prompt, called_sid = agent.calls[0]
         assert called_sid == sid
         assert f"resource-processing:{record.id}:v{record.revision}" in prompt
-        assert f"query resource {record.id!r} with workspace_resource_inspect" in prompt
+        assert "wait once with workspace_resource_wait" in prompt
+        assert "Do not repeatedly poll inspection" in prompt
         assert "No structured converter was selected" not in prompt
+
+
+def test_resource_conversion_wait_uses_one_stable_local_task_to_completion(
+    tmp_path: Path,
+) -> None:
+    class _DelayedDocumentProcessor(_CompleteDocumentProcessor):
+        async def submit(self, record: object, content_path: Path) -> dict[str, Any]:
+            del record
+            assert content_path.read_text(encoding="utf-8") == "# Structured\n"
+            return {"id": "remote_doc_job", "status": "processing"}
+
+        async def status(self, job_id: str) -> dict[str, Any]:
+            assert job_id == "remote_doc_job"
+            return {
+                "id": job_id,
+                "status": "complete",
+                "result": {
+                    "document": {"structure": {"texts": [{"text": "Structured"}]}},
+                    "derivatives": {
+                        "schema": "clio.resource-derivatives.v1",
+                        "entries": [
+                            {
+                                "id": "markdown",
+                                "name": "structured.md",
+                                "kind": "markdown",
+                                "media_type": "text/markdown",
+                                "content": "# Structured\n",
+                            }
+                        ],
+                    },
+                },
+            }
+
+    app = build_app(
+        sessions_path=tmp_path / "sessions.json",
+        agent=FakeClioAgent(answer="unused"),
+    )
+    app.state.resource_converter_factory = ResourceConverterFactory([_DelayedDocumentProcessor()])
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+        created = client.post(
+            f"/v1/workspaces/{workspace_id}/resources",
+            json={
+                "name": "structured.md",
+                "size": len(b"# Structured\n"),
+                "media_type": "text/markdown",
+            },
+        ).json()
+        appended = client.patch(
+            created["upload_url"],
+            headers={"Upload-Offset": "0"},
+            content=b"# Structured\n",
+        )
+        assert appended.status_code == 204
+        record = app.state.resource_store.get(workspace_id, str(created["id"]))
+        assert record is not None
+        task_id = resource_processing_task_id(record)
+        submitted = app.state.resource_processing_store.state(record)
+        assert submitted.job_id == "remote_doc_job"
+        assert task_id != submitted.job_id
+
+        waited = asyncio.run(
+            wait_for_workspace_resource_processing(app, workspace_id, task_id, 1.0)
+        )
+
+        assert waited["task_id"] == task_id
+        assert waited["terminal"] is True
+        assert waited["timed_out"] is False
+        assert waited["processing"]["state"] == "complete"
+        assert waited["processing"]["job_id"] == "remote_doc_job"
+
+
+def test_resource_conversion_wait_times_out_without_cancelling_work(tmp_path: Path) -> None:
+    class _LongDocumentProcessor(_CompleteDocumentProcessor):
+        async def submit(self, record: object, content_path: Path) -> dict[str, Any]:
+            del record, content_path
+            return {"id": "remote_long_job", "status": "processing"}
+
+        async def status(self, job_id: str) -> dict[str, Any]:
+            return {"id": job_id, "status": "processing", "progress": 42}
+
+    app = build_app(
+        sessions_path=tmp_path / "sessions.json",
+        agent=FakeClioAgent(answer="unused"),
+    )
+    app.state.resource_converter_factory = ResourceConverterFactory([_LongDocumentProcessor()])
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+        created = client.post(
+            f"/v1/workspaces/{workspace_id}/resources",
+            json={
+                "name": "structured.md",
+                "size": len(b"# Structured\n"),
+                "media_type": "text/markdown",
+            },
+        ).json()
+        assert (
+            client.patch(
+                created["upload_url"],
+                headers={"Upload-Offset": "0"},
+                content=b"# Structured\n",
+            ).status_code
+            == 204
+        )
+        record = app.state.resource_store.get(workspace_id, str(created["id"]))
+        assert record is not None
+
+        waited = asyncio.run(
+            wait_for_workspace_resource_processing(
+                app, workspace_id, resource_processing_task_id(record), 0.01
+            )
+        )
+
+        assert waited["terminal"] is False
+        assert waited["timed_out"] is True
+        assert waited["processing"]["state"] == "processing"
+        assert waited["processing"]["progress"] == 42
+        assert app.state.resource_processing_store.state(record).state == "processing"
 
 
 def test_resource_processing_can_be_cancelled_before_remote_job_assignment(
