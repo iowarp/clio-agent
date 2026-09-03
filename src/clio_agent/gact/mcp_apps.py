@@ -23,6 +23,12 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
+from clio_agent.gact.mcp_app_observer_reasons import (
+    record_observer_skip as _record_observer_skip,
+)
+from clio_agent.gact.mcp_app_observer_reasons import (
+    recorded_mcp_app_observer_skips as recorded_mcp_app_observer_skips,
+)
 from clio_agent.gact.mcp_app_sandbox import (
     _SANDBOX_DOCUMENT as _SANDBOX_DOCUMENT,
 )
@@ -406,12 +412,27 @@ def _make_mcp_app_observer(app: FastAPI):
     ) -> None:
         uri = _resource_uri(tool)
         if not uri:
+            _record_observer_skip(
+                "mcp_app_skipped_no_resource_uri",
+                tool=name,
+                source_namespace=source_namespace or "",
+            )
             return
         result_wire = call_tool_result_to_wire(raw_result)
         if result_wire.get("isError") is True:
+            _record_observer_skip(
+                "mcp_app_skipped_error_result",
+                tool=name,
+                source_namespace=source_namespace or "",
+            )
             return
         sid, _session = _resolve_tool_session(app)
         if not sid:
+            _record_observer_skip(
+                "mcp_app_skipped_no_session",
+                tool=name,
+                source_namespace=source_namespace or "",
+            )
             return
         try:
             record = _registry(app).register(
@@ -776,5 +797,6 @@ __all__ = [
     "cleanup_session_mcp_apps",
     "install_mcp_app_runtime",
     "read_resource_result_to_wire",
+    "recorded_mcp_app_observer_skips",
     "register_mcp_app_routes",
 ]
