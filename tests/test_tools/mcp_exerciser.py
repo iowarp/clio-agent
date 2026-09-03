@@ -46,6 +46,8 @@ from fastmcp_tasks.extension import TasksExtension
 from pydantic import Field
 
 __all__ = [
+    "AGENT_AUDIENCE_META_KEY",
+    "AGENT_GUARDED_INPUT_TOOL_NAME",
     "EXERCISER_NAMESPACE",
     "EXERCISER_PATH",
     "GUARDED_RESOURCE_URI",
@@ -115,6 +117,16 @@ URL_GUARDED_INPUT_IDN_URL = "https://xn--nxasmq6b.mcp-clio.example.com/authorize
 #: The MRTR-capable resource ``guarded_resource`` serves (mrtr-methods avenue).
 GUARDED_RESOURCE_URI = "res://v2ex/guarded"
 
+#: C1-S7 (#1309): the reverse-DNS ``_meta`` key clio's agent-driven-elicitation
+#: convention reads to mark a question "for the agent, not the human" (mirrors
+#: the existing ``x-clio-agent/*`` vendor-namespace convention this exerciser
+#: already uses for ``SYNTHETIC_EXTENSION_ID`` / the ``ui_echo`` unknown-meta
+#: probe). See ``clio_agent.gact.agent_elicitation``.
+AGENT_AUDIENCE_META_KEY = "x-clio-agent/audience"
+
+#: ``agent_guarded_input``'s tool name (leg_c2 avenue 12, "agent-elicitation").
+AGENT_GUARDED_INPUT_TOOL_NAME = "agent_guarded_input"
+
 
 class SyntheticExtension(ServerExtension):
     """A synthetic, exerciser-only extension (#1283): identifier-only, no
@@ -152,6 +164,23 @@ def _one_url_elicit(message: str, url: str = URL_GUARDED_INPUT_URL) -> Any:
 
     return mcp_types.ElicitRequest(
         params=mcp_types.ElicitRequestURLParams(message=message, url=url)
+    )
+
+
+def _one_agent_elicit(message: str, requested_schema: dict[str, Any]) -> Any:
+    """One serialized form-mode ``ElicitRequest`` carrying the agent-audience
+    ``_meta`` hint (C1-S7, #1309): the exerciser's proof that a server can mark
+    a question "for the agent, not the human" via clio's declared convention.
+    """
+
+    return mcp_types.ElicitRequest(
+        params=mcp_types.ElicitRequestFormParams(
+            message=message,
+            requested_schema=requested_schema,
+            # the wire alias, not the python attribute name -- required for
+            # mypy's pydantic-model constructor stub (runtime accepts both).
+            _meta={AGENT_AUDIENCE_META_KEY: "agent"},
+        )
     )
 
 
@@ -222,6 +251,41 @@ def build_exerciser_server(
             )
         answer = responses.get("q1")
         return f"answered:{getattr(answer, 'content', None)}"
+
+    @server.tool(task=TaskConfig(mode="required", poll_interval=timedelta(milliseconds=50)))
+    async def agent_guarded_input(ctx: Context) -> Any:
+        """Ask a question ONLY the SESSION'S AGENT can answer (C1-S7, #1309).
+
+        Mirrors ``guarded_input``'s one-round MRTR shape exactly, except its
+        ``ElicitRequest`` carries the ``x-clio-agent/audience: "agent"`` ``_meta``
+        hint (:func:`_one_agent_elicit`) and its question asks for a value the
+        server itself never told the client -- a nonce the TURN PROMPT planted
+        earlier in the conversation. No human answering headlessly could ever
+        produce the right value; only an agent holding this session's own
+        transcript can. Proves the point leg_c2's avenue 12 ("agent-elicitation")
+        exists to prove: the answer round-trips through the AGENT, not the human,
+        and the server never sees a model, only a typed answer to its own
+        declared schema.
+        """
+
+        responses = ctx.input_responses
+        if not responses:
+            return mcp_types.InputRequiredResult(
+                inputRequests={
+                    "q1": _one_agent_elicit(
+                        "What nonce did the user state earlier in this conversation?",
+                        {
+                            "type": "object",
+                            "properties": {"nonce": {"type": "string"}},
+                            "required": ["nonce"],
+                        },
+                    )
+                },
+                requestState="round-1",
+                resultType="input_required",
+            )
+        answer = responses.get("q1")
+        return f"agent-answered:{getattr(answer, 'content', None)}"
 
     @server.tool
     async def plain_guarded_input(ctx: Context) -> Any:
@@ -408,9 +472,7 @@ def build_exerciser_server(
 
     @server.tool
     async def header_annotated_echo(
-        trace_id: Annotated[
-            str, Field(json_schema_extra={"x-mcp-header": "Trace-Id"})
-        ],
+        trace_id: Annotated[str, Field(json_schema_extra={"x-mcp-header": "Trace-Id"})],
         payload: str,
     ) -> str:
         """Echo ``payload``; ``trace_id`` carries an ``x-mcp-header`` annotation
@@ -421,9 +483,7 @@ def build_exerciser_server(
 
     @server.tool
     async def invalid_header_echo(
-        amount: Annotated[
-            float, Field(json_schema_extra={"x-mcp-header": "Amount"})
-        ],
+        amount: Annotated[float, Field(json_schema_extra={"x-mcp-header": "Amount"})],
     ) -> str:
         """Deliberately INVALID ``x-mcp-header`` (a ``number``-typed property --
         SEP-2578 forbids float→str mirroring). Never reachable: a modern-era

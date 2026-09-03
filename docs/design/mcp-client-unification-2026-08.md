@@ -273,6 +273,40 @@ ONE client pathway for every server (built-in, declared, relay):
   (iv) the marketplace deep-research expert works on clio-agent; optional non-gating
   sanity leg against a public internet v2 server. On pass: land on develop, make the
   full-v2-support claim.
+- **C1-S7 (GATE) — agent-driven elicitation** (#1309, owner re-scope 2026-09-03:
+  "I am not accepting mcp v2 without this" — CAMPAIGN-1 GATE SCOPE, #1310 does not
+  merge without it). An MCP server marks a form-mode elicitation question
+  `_meta` with clio's declared audience hint (`x-clio-agent/audience: "agent"`,
+  the same `x-clio-agent/*` vendor-namespace convention the exerciser already
+  uses); a per-server-opt-out, default-ON policy
+  (`tools.mcp.elicitation.agent_audience.*`) then routes it to the SESSION'S
+  agent instead of the human — a bounded, self-directed child turn spawned
+  through the EXISTING invoker/spawn-child-turn machinery (no new turn-state
+  machine), seeded with the answering session's own transcript excerpt so it
+  runs on the user's chosen provider with the session's own context, never a
+  bare side-model call. The answer feeds the SAME atomic
+  `claim_question_transition` / `resolve_elicitation` primitives a human's
+  answer would, so the MRTR retry resumes the server unchanged. THE SEMANTIC
+  FIREWALL (the design invariant, not a gate byproduct): this is NOT sampling
+  and adds no inference channel — the server gets no model access, no
+  free-form completions, no prompt control, only a typed answer to its own
+  declared `requestedSchema`, validated for an agent's answer EXACTLY as for a
+  human's; a schema-invalid or unparseable/declined/timed-out/recursion-bounded
+  agent answer ALWAYS falls back to the human, typed
+  (`agent_elicitation_fallback_to_human` + a detail key), never dropped, never
+  looped — the human remains the terminal fallback. url-mode elicitation is
+  explicitly excluded from agent routing (consent to open a URL stays a human
+  action). New owner module `gact/agent_elicitation.py`; `UserQuestion` gains
+  four additive, `None`-default wire fields (`audience` /
+  `agent_elicitation_routing` / `agent_elicitation_fallback_detail` /
+  `answered_by`) so a no-hint question stays byte-identical to today. Exerciser
+  gains `agent_guarded_input` (a question only the session's own transcript can
+  answer — a planted nonce); `leg_c2_v2_avenues.py` gains avenue 12
+  ("agent-elicitation", `needs_lm: true`), asserting agent attribution AND the
+  round-tripped value. F7's sampling-vocabulary ratchet
+  (`test_mcp_era_gated_removals.py`) stays green — this slice adds no
+  `createMessage`/`sampling_callback` vocabulary anywhere; it is deliberately
+  named "agent-driven elicitation" throughout, never "sampling".
 
 ## Campaign 2 slices (relay after-fact — separate process, re-planned at its kickoff)
 

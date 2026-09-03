@@ -482,6 +482,26 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1285 (C1-S5, item 1): +4 for the same header-retry call-site swap as
     # builders.py above (owner module tools/mcp_header_mismatch.py).
     "src/clio_agent/gact/routes/mcp.py": 962,  # declared MCP assembly moved to routes/mcp_specs.py
+    # NEW entry (C1-S7, #1309): crossed the flat 800 cap (795 -> 882) for the
+    # agent-driven-elicitation call sites this module is the ONLY safe home
+    # for, since every one of them shares a lock or a state-machine invariant
+    # already private to this file: (1) claim_question_transition grows one
+    # optional ``answered_by`` kwarg, stamped inside the SAME atomic lock a
+    # human answer uses; (2) the new stamp_question_routing_fields helper
+    # reuses the SAME _QUESTIONS_LOCK for its own race-safe attribution write
+    # (exporting the lock instead would be the identical coupling, uglier);
+    # (3) _await_answer grows one optional ``on_published`` hook, fired at the
+    # ONE safe point between "the question exists + its waiter is registered"
+    # and "the call parks" — the exact ordering invariant this file already
+    # owns; (4) _new_question grows one ``audience`` field passthrough; (5)
+    # handle_elicitation's form/url branches compute the routing decision and
+    # wire the hook. Every actual decision (policy, recursion depth, the
+    # bounded answer invocation, the semantic-firewall schema validation, the
+    # typed fallback catalog) lives entirely in the new owner module
+    # gact/agent_elicitation.py — this file gained call sites only, no
+    # decision logic. Ratchets back if a future decomposition splits the
+    # question-store lock machinery out of this file.
+    "src/clio_agent/gact/elicitation_bridge.py": 882,
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
     # develop with the check job red). Recording current counts makes the debt
@@ -751,7 +771,17 @@ RATCHET_BASELINE: dict[str, int] = {
     # multi-select elicitation) + its one-line rationale comment; the schema
     # translation that PRODUCES this kind lives in the owner module
     # gact/elicitation_schema.py, only the wire-model literal lands here.
-    "src/clio_agent/gact/types.py": 896,
+    # C1-S7 (#1309): +26 (896 -> 922) for four additive, all-Optional
+    # attribution/routing wire fields on UserQuestion (audience / answered_by /
+    # agent_elicitation_routing / agent_elicitation_fallback_detail) — every
+    # decision/dispatch/validation LOGIC these fields carry lives entirely in
+    # the new owner module gact/agent_elicitation.py; only the wire-model
+    # declarations (+ their per-field rationale docstrings, most of this
+    # delta) land here. All four default to ``None`` and are excluded by
+    # ``exclude_none`` on every existing dump, so a no-audience-hint question
+    # is byte-identical to the pre-#1309 shape (regression-locked,
+    # test_agent_elicitation.py::test_no_audience_hint_mints_a_question_with_no_new_fields).
+    "src/clio_agent/gact/types.py": 922,
     # -120 (#891): the SDK-session machinery moved out to sibling owner modules —
     # the blocking-path pool to providers/claude_code_sdk_pool.py and the per-expert
     # streaming session/delta transport to providers/claude_code_sessions.py; this
