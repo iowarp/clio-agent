@@ -168,6 +168,14 @@ class MCPServerSpec:
     probe_timeout_retries: int | None = None
     source: str = ""
     validation_errors: tuple[str, ...] = ()
+    #: Pre-expansion declaration text for the three fields :func:`expand_env`
+    #: rewrites -- ``command`` / ``args`` / ``url``. ``${GITHUB_TOKEN}`` in a
+    #: declaration becomes the TOKEN in ``args`` before anything redacts the
+    #: spec, so :func:`redact_mcp_spec` serves this instead: names kept, values
+    #: gone, the same rule ``env`` and ``headers`` already follow. Empty on a
+    #: spec built without expansion (a client-supplied installed server), whose
+    #: fields are literal and were never credentials-by-reference.
+    declared: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @property
     def usable(self) -> bool:
@@ -266,7 +274,33 @@ def redact_mcp_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     env = redacted.get("env")
     if isinstance(env, Mapping):
         redacted["env"] = {str(key): "<redacted>" for key in env}
+    # ...and argv/url are the SECOND carrier: `--token ${GITHUB_TOKEN}` is already
+    # the token by the time a spec exists. Serve the declaration instead.
+    declared = redacted.pop("declared", None)
+    declared = declared if isinstance(declared, Mapping) else {}
+    for key in ("command", "url"):
+        text = declared.get(key)
+        if isinstance(text, str) and text:
+            redacted[key] = text
+    redacted["args"] = _redacted_argv(redacted.get("args"), declared.get("args"))
     return redacted
+
+
+def _redacted_argv(expanded: Any, declared: Any) -> list[str]:
+    """Return argv as DECLARED, masking wholesale when expansion re-shaped it.
+
+    An expanded value carrying whitespace re-splits the vector, so positions no
+    longer align with the declaration and substituting element-wise would hand
+    back the wrong token. A misaligned argv is masked rather than guessed at.
+    """
+
+    argv = [str(value) for value in expanded or ()]
+    if not isinstance(declared, Sequence) or isinstance(declared, (str, bytes)):
+        return argv
+    declared_argv = [str(value) for value in declared]
+    if len(declared_argv) != len(argv):
+        return ["<redacted>"] * len(argv)
+    return declared_argv
 
 
 def _spec_from_string(
@@ -281,8 +315,17 @@ def _spec_from_string(
             name=name, transport="stdio", source=source, validation_errors=(str(exc),)
         )
 
+    # The pre-expansion text, split the SAME way, is what redaction serves in
+    # place of any field a ``${VAR}`` wrote a credential into.
+    declared_parts = shlex.split(value.strip())
     if text.startswith(_URL_PREFIXES):
-        return MCPServerSpec(name=name, transport="http", url=text, source=source)
+        return MCPServerSpec(
+            name=name,
+            transport="http",
+            url=text,
+            source=source,
+            declared={"url": value.strip()},
+        )
 
     parts = shlex.split(text)
     if not parts:
@@ -296,6 +339,10 @@ def _spec_from_string(
         command=parts[0],
         args=tuple(parts[1:]),
         source=source,
+        declared={
+            "command": declared_parts[0] if declared_parts else "",
+            "args": tuple(declared_parts[1:]),
+        },
     )
 
 
@@ -320,8 +367,12 @@ def _spec_from_mapping(
     url = ""
     headers: dict[str, str] = {}
     auth: MCPAuthConfig | None = None
+    # Pre-expansion text for every field ``expand_env`` rewrites, so redaction can
+    # serve the declaration instead of the credential a ``${VAR}`` expanded into.
+    declared_text: dict[str, Any] = {}
     try:
         if transport == "stdio":
+            declared_text["command"] = str(entry.get("command", "")).strip()
             command = expand_env(str(entry.get("command", "")), env=env).strip()
             if not command:
                 errors.append("stdio MCP server requires a 'command'")
@@ -331,6 +382,7 @@ def _spec_from_mapping(
             elif not isinstance(raw_args, Sequence):
                 errors.append("'args' must be a list or string")
                 raw_args = []
+            declared_text["args"] = tuple(str(value) for value in raw_args)
             args = _expand_seq(raw_args, env=env)
             raw_env = entry.get("env") or {}
             if not isinstance(raw_env, Mapping):
@@ -338,6 +390,7 @@ def _spec_from_mapping(
                 raw_env = {}
             env_map = _expand_map(raw_env, env=env)
         else:
+            declared_text["url"] = str(entry.get("url", "")).strip()
             url = expand_env(str(entry.get("url", "")), env=env).strip()
             if not url:
                 errors.append("http MCP server requires a 'url'")
@@ -370,6 +423,7 @@ def _spec_from_mapping(
         probe_timeout_retries=probe_timeout_retries,
         source=source,
         validation_errors=tuple(errors),
+        declared=declared_text,
     )
 
 
