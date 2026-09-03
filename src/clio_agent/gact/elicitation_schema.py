@@ -25,8 +25,12 @@ __all__ = [
     "ELICITATION_QUESTION_SOURCE",
     "FormTranslation",
     "build_form_content",
+    "build_form_metadata",
+    "build_url_metadata",
     "check_elicitation_answer",
     "check_url_trust",
+    "default_answer_metadata",
+    "punycode_warning",
     "translate_form_schema",
     "validate_elicitation_answer",
 ]
@@ -49,9 +53,14 @@ class FormTranslation:
     ``degrade`` is a key in ``ELICITATION_REASONS`` when the schema cannot be
     served (non-object / non-flat / unsupported field); all other fields are then
     empty and the caller declines the elicitation with that typed reason.
+
+    ``kind="multi_choice"`` (SEP-1330) is the ONE new kind this module adds: a
+    single flat array-of-enum field (``{"type": "array", "items": {"enum": [...]}}``)
+    -- a multi-select whose options are the item enum values, distinct from
+    ``"choice"`` (a single SCALAR enum field, still exactly one selection).
     """
 
-    kind: Literal["freeform", "choice", "confirmation"] = "freeform"
+    kind: Literal["freeform", "choice", "confirmation", "multi_choice"] = "freeform"
     options: list[UserQuestionOption] = field(default_factory=list)
     fields: list[dict[str, Any]] = field(default_factory=list)
     additional_properties: bool = True
@@ -68,19 +77,136 @@ def _enum_options(values: Sequence[Any], names: Sequence[Any] | None) -> list[Us
     return options
 
 
+def _flat_multi_select(spec: Mapping[str, Any]) -> tuple[list[Any], str, list[Any] | None] | None:
+    """Return ``(enum, item_type, enum_names)`` for a flat array-of-enum ``spec``.
+
+    SEP-1330 multi-select: only a FLAT array whose ``items`` is itself an
+    enum-bearing scalar is admitted -- a missing/nested/unconstrained ``items``
+    returns ``None`` so the caller degrades ``elicitation_schema_not_flat``,
+    exactly like a bare (non-enum) array field was already rejected before
+    this shape existed. Only the multi-select-enum exception is newly opened.
+    """
+
+    items = spec.get("items")
+    if (
+        not isinstance(items, Mapping)
+        or items.get("type") in {"object", "array"}
+        or "properties" in items
+        or "items" in items
+    ):
+        return None
+    item_enum = items.get("enum")
+    if not (isinstance(item_enum, Sequence) and not isinstance(item_enum, (str, bytes))):
+        return None
+    names = items.get("enumNames")
+    enum_names = (
+        list(names) if isinstance(names, Sequence) and not isinstance(names, (str, bytes)) else None
+    )
+    return list(item_enum), str(items.get("type") or "string"), enum_names
+
+
+def _bounded_int(value: Any) -> int | None:
+    """Return ``value`` when it is a genuine non-negative int, else ``None``.
+
+    Guards ``minItems``/``maxItems`` extraction: a malformed schema (a bool,
+    a string, a negative number) degrades to "no bound declared" rather than
+    carrying a nonsensical constraint forward -- ``bool`` is excluded
+    explicitly since it is an ``int`` subclass in Python.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _array_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dict[str, Any] | str:
+    """Build one multi-select field descriptor, or return a typed degrade reason."""
+
+    multi = _flat_multi_select(spec)
+    if multi is None:
+        return "elicitation_schema_not_flat"
+    item_enum, item_type, item_enum_names = multi
+    return {
+        "name": str(name),
+        "type": "array",
+        "enum": item_enum,
+        "enum_names": item_enum_names,
+        "multi": True,
+        "item_type": item_type,
+        # SEP-1330 finding (Opus review, C1-S4): minItems/maxItems are
+        # standard JSON-Schema array constraints on the ARRAY field itself
+        # (not on ``items``) -- carried through so a multi-select's selection
+        # COUNT is enforced, not just per-element enum membership (see
+        # :func:`_valid_multi_enum`).
+        "min_items": _bounded_int(spec.get("minItems")),
+        "max_items": _bounded_int(spec.get("maxItems")),
+        "default": spec.get("default"),
+        "title": str(spec.get("title") or name),
+        "description": str(spec.get("description") or ""),
+        "required": str(name) in required,
+    }
+
+
+def _scalar_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dict[str, Any] | str:
+    """Build one scalar/enum field descriptor, or return a typed degrade reason."""
+
+    field_type = spec.get("type")
+    enum = spec.get("enum")
+    # A nested object (with or without a declared type) is not flat.
+    if field_type == "object" or "properties" in spec or "items" in spec:
+        return "elicitation_schema_not_flat"
+    if enum is None and field_type not in _SUPPORTED_SCALAR_TYPES:
+        return "elicitation_unsupported_field_type"
+    return {
+        "name": str(name),
+        "type": str(field_type or ("string" if enum is not None else "")),
+        # Keep the enum's ORIGINAL types so membership stays type-preserving
+        # (``1`` must not satisfy an enum of ``['1']``) — finding 7 remnant.
+        "enum": list(enum)
+        if isinstance(enum, Sequence) and not isinstance(enum, (str, bytes))
+        else None,
+        "enum_names": None,
+        "multi": False,
+        "item_type": "",
+        "min_items": None,
+        "max_items": None,
+        "default": spec.get("default"),
+        "title": str(spec.get("title") or name),
+        "description": str(spec.get("description") or ""),
+        "required": str(name) in required,
+    }
+
+
+def _single_field_kind(
+    only: Mapping[str, Any], properties: Mapping[str, Any]
+) -> Literal["choice", "confirmation", "multi_choice"] | None:
+    """Return the ``FormTranslation.kind`` a single-field schema resolves to, or
+    ``None`` when it stays ``freeform`` (multi-field forms never call this)."""
+
+    if only["enum"]:
+        return "multi_choice" if only["multi"] else "choice"
+    if only["type"] == "boolean":
+        return "confirmation"
+    return None
+
+
 def translate_form_schema(requested_schema: Mapping[str, Any]) -> FormTranslation:
     """Translate a flat restricted JSON Schema into a UserQuestion shape.
 
     Accepts the MCP form-mode subset: a top-level ``{"type": "object",
     "properties": {...}}`` whose property values are scalar (string / number /
-    integer / boolean) or enum, optionally with ``default`` / ``title`` /
-    ``description``. Nesting (object / array property values) or an unsupported
-    field type returns a typed :attr:`FormTranslation.degrade` instead of raising.
+    integer / boolean), enum, or a flat array-of-enum (SEP-1330 multi-select),
+    optionally with ``default`` / ``title`` / ``description``. Any other
+    nesting (a plain object, an unconstrained/nested array) or an unsupported
+    scalar type returns a typed :attr:`FormTranslation.degrade` instead of
+    raising.
 
-    Kind selection: a single boolean field -> ``confirmation``; a single enum
-    field -> ``choice`` (options are the enum values); anything else ->
-    ``freeform`` (the UI renders the multi-field / scalar form from the
-    ``fields`` descriptor carried in the question metadata).
+    Kind selection: a single boolean field -> ``confirmation``; a single
+    scalar-enum field -> ``choice``; a single array-of-enum field ->
+    ``multi_choice`` (SEP-1330); anything else -> ``freeform`` (the UI renders
+    the multi-field / scalar form from the ``fields`` descriptor carried in
+    the question metadata -- a multi-select field inside a multi-field form
+    still renders this way, keyed by that field's own ``multi``/``item_type``).
     """
 
     if not isinstance(requested_schema, Mapping) or requested_schema.get("type") != "object":
@@ -95,44 +221,113 @@ def translate_form_schema(requested_schema: Mapping[str, Any]) -> FormTranslatio
     for name, spec in properties.items():
         if not isinstance(spec, Mapping):
             return FormTranslation(degrade="elicitation_schema_not_flat")
-        field_type = spec.get("type")
-        enum = spec.get("enum")
-        # A nested object/array (with or without a declared type) is not flat.
-        if field_type in {"object", "array"} or "properties" in spec or "items" in spec:
-            return FormTranslation(degrade="elicitation_schema_not_flat")
-        if enum is None and field_type not in _SUPPORTED_SCALAR_TYPES:
-            return FormTranslation(degrade="elicitation_unsupported_field_type")
-        fields.append(
-            {
-                "name": str(name),
-                "type": str(field_type or ("string" if enum is not None else "")),
-                # Keep the enum's ORIGINAL types so membership stays type-preserving
-                # (``1`` must not satisfy an enum of ``['1']``) — finding 7 remnant.
-                "enum": list(enum)
-                if isinstance(enum, Sequence) and not isinstance(enum, (str, bytes))
-                else None,
-                "default": spec.get("default"),
-                "title": str(spec.get("title") or name),
-                "description": str(spec.get("description") or ""),
-                "required": str(name) in required,
-            }
-        )
+        builder = _array_field if spec.get("type") == "array" else _scalar_field
+        built = builder(name, spec, required)
+        if isinstance(built, str):
+            return FormTranslation(degrade=built)
+        fields.append(built)
 
     if len(fields) == 1:
-        only = fields[0]
-        if only["enum"]:
-            names = properties[only["name"]].get("enumNames")
-            return FormTranslation(
-                kind="choice",
-                options=_enum_options(only["enum"], names if isinstance(names, Sequence) else None),
-                fields=fields,
-                additional_properties=additional,
+        kind = _single_field_kind(fields[0], properties)
+        if kind is not None:
+            names = fields[0].get("enum_names") or properties[fields[0]["name"]].get("enumNames")
+            options = (
+                _enum_options(fields[0]["enum"], names if isinstance(names, Sequence) else None)
+                if kind != "confirmation"
+                else []
             )
-        if only["type"] == "boolean":
             return FormTranslation(
-                kind="confirmation", fields=fields, additional_properties=additional
+                kind=kind, options=options, fields=fields, additional_properties=additional
             )
     return FormTranslation(kind="freeform", fields=fields, additional_properties=additional)
+
+
+def default_answer_metadata(fields: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Pre-populate the answer-metadata surface from each field's default (SEP-1034).
+
+    Every field carrying a non-``None`` ``default`` (already preserved verbatim
+    by :func:`translate_form_schema`) is copied onto the returned dict, keyed by
+    field name -- the SAME shape :func:`build_form_content` reads back at submit
+    time (its highest-precedence source). A caller mints the PENDING question
+    with this as its ``answer_metadata``, so a client that renders the pending
+    question's ``answer_metadata`` as pre-filled form values, then submits
+    unchanged, round-trips through the exact declared default -- not just a
+    value carried inertly on ``metadata.elicitation.fields[i].default`` that no
+    one reads until submit.
+    """
+
+    prefill: dict[str, Any] = {}
+    for spec in fields:
+        default = spec.get("default")
+        if default is not None:
+            prefill[str(spec["name"])] = default
+    return prefill
+
+
+def build_form_metadata(
+    translation: FormTranslation,
+    *,
+    request_id: Any,
+    namespace: str | None,
+    tool_name: str | None,
+    invocation_id: str,
+    forwarded_from_session: str,
+) -> dict[str, dict[str, Any]]:
+    """Assemble the form-mode ``metadata.elicitation`` block for a new question."""
+
+    return {
+        "elicitation": {
+            "mode": "form",
+            "fields": translation.fields,
+            "additional_properties": translation.additional_properties,
+            "request_id": request_id,
+            "namespace": namespace,
+            "tool_name": tool_name,
+            "invocation_id": invocation_id,
+            "forwarded_from_session": forwarded_from_session,
+        }
+    }
+
+
+def build_url_metadata(
+    url: str,
+    *,
+    request_id: Any,
+    namespace: str | None,
+    tool_name: str | None,
+    invocation_id: str,
+    forwarded_from_session: str,
+) -> dict[str, dict[str, Any]]:
+    """Assemble the url-mode ``metadata.elicitation`` block for a new question.
+
+    Carries the FULL url verbatim plus the F3 punycode-warning fields
+    (``punycode_warning`` / ``punycode_host`` / ``punycode_host_raw``)
+    alongside it -- URL-mode consent data completeness (C1-S4/#1284 build
+    item 3); rendering the warning is the UI's lane, this is the data it
+    renders from. ``punycode_host_raw`` carries the host EXACTLY as it
+    appeared (still ACE-encoded for an ``xn--`` host) alongside the decoded
+    ``punycode_host``, so a consent surface can show both forms rather than
+    only the decoded one (Opus review, C1-S4).
+    """
+
+    warning, display_host, raw_host = punycode_warning(url)
+    return {
+        "elicitation": {
+            "mode": "url",
+            "url": url,
+            # Client MUST render in an isolated, non-inspectable container
+            # (ephemeral, no shared session/referrer) — see the bridge module docstring.
+            "container": "isolated",
+            "punycode_warning": warning,
+            "punycode_host": display_host,
+            "punycode_host_raw": raw_host,
+            "request_id": request_id,
+            "namespace": namespace,
+            "tool_name": tool_name,
+            "invocation_id": invocation_id,
+            "forwarded_from_session": forwarded_from_session,
+        }
+    }
 
 
 # --- URL trust (url mode) ---
@@ -166,6 +361,45 @@ def check_url_trust(url: str, trusted_origins: Sequence[str]) -> str | None:
     if origin not in allowed and host not in allowed:
         return "elicitation_url_untrusted_origin"
     return None
+
+
+def punycode_warning(url: str) -> tuple[bool, str, str]:
+    """Detect an IDN/punycode homograph host in ``url`` (F3: URL-mode consent MUST).
+
+    Returns ``(warning, display_host, raw_host)``. Two DISTINCT homograph
+    shapes both warn (Opus review, C1-S4: the original ACE-only check missed
+    the textbook case the MUST exists for):
+
+    - a RAW-UNICODE host (e.g. ``https://аpple.com`` -- Cyrillic а, no
+      ``xn--`` anywhere): checked FIRST via ``str.isascii()`` per label, since
+      an already-Unicode host has no ACE form to decode.
+    - an ACE-ENCODED host (an ``xn--`` prefix, RFC 3492): decoded best-effort
+      for display.
+
+    ``display_host`` is the best-effort Unicode/decoded form for a
+    side-by-side "shown next to the raw url" comparison; on any ACE-decode
+    failure it falls back to the raw (still-encoded) host rather than
+    raising -- this function never fails a caller's flow. ``raw_host`` is
+    ALWAYS the host exactly as it appeared (the still-ACE-encoded string for
+    the xn-- case, identical to ``display_host`` for the raw-Unicode and
+    plain-ASCII cases) -- carried alongside so a consent surface can show
+    both forms rather than only the decoded (spoofable-looking-safe) one.
+    The FULL original url is never altered by this check (see
+    :func:`build_url_metadata`).
+    """
+
+    host = urlsplit(url).hostname or ""
+    labels = host.split(".")
+    if any(not label.isascii() for label in labels):
+        # Already Unicode -- no ACE form exists to decode; the raw string
+        # itself IS the display string, and it's exactly what must be flagged.
+        return True, host, host
+    if not any(label.lower().startswith("xn--") for label in labels):
+        return False, host, host
+    try:
+        return True, host.encode("ascii").decode("idna"), host
+    except (UnicodeError, LookupError):
+        return True, host, host
 
 
 # --- Answer -> content + validation ---
@@ -231,6 +465,38 @@ def _valid_scalar(value: Any, field_type: str, enum: Sequence[Any] | None) -> bo
     return True  # unconstrained (no declared type, no enum)
 
 
+def _valid_multi_enum(
+    value: Any,
+    item_type: str,
+    enum: Sequence[Any],
+    *,
+    min_items: int | None = None,
+    max_items: int | None = None,
+) -> bool:
+    """Validate a SEP-1330 multi-select answer: a list, every element a
+    type-preserving member of the declared item ``enum`` (checked per-element
+    through :func:`_valid_scalar`, so the same type-preserving rule applies),
+    AND its length within ``[min_items, max_items]`` when the schema declared
+    either bound.
+
+    ``min_items`` is enforced independently of the field's own ``required``
+    flag: ``required`` governs whether the field may be ABSENT; a PRESENT
+    field (an explicit, possibly-empty selection) must still meet its own
+    ``minItems`` -- an optional field that carries a schema-declared minimum
+    selection count is not the same thing as an optional field, and a
+    reviewer-measured gap (Opus review, C1-S4) let an empty selection slip
+    through minItems:1 exactly because the two were conflated before.
+    """
+
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return False
+    if min_items is not None and len(value) < min_items:
+        return False
+    if max_items is not None and len(value) > max_items:
+        return False
+    return all(_valid_scalar(v, item_type, enum) for v in value)
+
+
 def build_form_content(
     fields: Sequence[Mapping[str, Any]],
     *,
@@ -243,7 +509,10 @@ def build_form_content(
     Precedence per field: an explicit value in ``answer_metadata`` (a multi-field
     form submits ``{field: value}`` there), else the single-field shorthand
     (``selected_options`` for a choice, ``answer`` for freeform/confirmation),
-    else the schema default. Values are coerced to the declared scalar type.
+    else the schema default. Values are coerced to the declared scalar type. A
+    ``multi`` field (SEP-1330) instead coerces EVERY element to its ``item_type``
+    and yields a list value; ``selected_options`` (a multi-select's own natural
+    shape) is taken whole rather than only its first entry.
     """
 
     content: dict[str, Any] = {}
@@ -251,15 +520,61 @@ def build_form_content(
     for spec in fields:
         name = str(spec["name"])
         field_type = str(spec.get("type") or "string")
+        multi = bool(spec.get("multi"))
+        item_type = str(spec.get("item_type") or "string")
         if name in answer_metadata:
-            content[name] = _coerce(answer_metadata[name], field_type)
+            raw = answer_metadata[name]
+            if multi and isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+                content[name] = [_coerce(v, item_type) for v in raw]
+            else:
+                content[name] = _coerce(raw, field_type)
         elif single and selected_options:
-            content[name] = _coerce(selected_options[0], field_type)
+            content[name] = (
+                [_coerce(v, item_type) for v in selected_options]
+                if multi
+                else _coerce(selected_options[0], field_type)
+            )
         elif single and answer != "":
             content[name] = _coerce(answer, field_type)
         elif spec.get("default") is not None:
             content[name] = spec["default"]
     return content
+
+
+def _field_validation_error(spec: Mapping[str, Any], content: Mapping[str, Any]) -> str | None:
+    """Validate one field's derived value against its descriptor.
+
+    Returns a 422 error message, or ``None`` when the field is absent-and-
+    optional or valid. Multi-select (SEP-1330) and scalar fields validate
+    through the same type-preserving primitives (:func:`_valid_multi_enum` /
+    :func:`_valid_scalar`), just checked against a list vs. a bare value.
+    """
+
+    name = str(spec["name"])
+    if name not in content:
+        return f"missing required field: {name!r}" if spec.get("required") else None
+    value = content[name]
+    enum = spec.get("enum")
+    field_type = str(spec.get("type") or "string")
+    if spec.get("multi"):
+        item_type = str(spec.get("item_type") or "string")
+        min_items = spec.get("min_items")
+        max_items = spec.get("max_items")
+        if _valid_multi_enum(
+            value, item_type, enum or [], min_items=min_items, max_items=max_items
+        ):
+            return None
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            if min_items is not None and len(value) < min_items:
+                return f"field {name!r} must select at least {min_items} of {list(enum or [])}"
+            if max_items is not None and len(value) > max_items:
+                return f"field {name!r} must select at most {max_items} of {list(enum or [])}"
+        return f"field {name!r} must be a list of values from {list(enum or [])}"
+    if _valid_scalar(value, field_type, enum):
+        return None
+    if enum is not None:
+        return f"field {name!r} must be one of {list(enum)}"
+    return f"field {name!r} must be a valid {field_type}"
 
 
 def validate_elicitation_answer(
@@ -297,19 +612,9 @@ def validate_elicitation_answer(
         answer_metadata=answer_metadata,
     )
     for spec in fields:
-        name = str(spec["name"])
-        present = name in content
-        if spec.get("required") and not present:
-            return f"missing required field: {name!r}"
-        if not present:
-            continue
-        value = content[name]
-        enum = spec.get("enum")
-        field_type = str(spec.get("type") or "string")
-        if not _valid_scalar(value, field_type, enum):
-            if enum is not None:
-                return f"field {name!r} must be one of {list(enum)}"
-            return f"field {name!r} must be a valid {field_type}"
+        error = _field_validation_error(spec, content)
+        if error is not None:
+            return error
     return None
 
 

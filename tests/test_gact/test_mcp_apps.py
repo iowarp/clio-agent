@@ -271,6 +271,44 @@ def test_observer_skip_no_session_is_typed_not_silent(tmp_path: Path) -> None:
     assert skips[-1]["reason"] == "mcp_app_skipped_no_session"
 
 
+def test_burst_of_ordinary_skips_never_evicts_a_recorded_no_session_row(tmp_path: Path) -> None:
+    """Opus review, #1308 F1: a burst of ordinary ``no_resource_uri`` skips --
+    the majority-case reason fired by every plain, non-App tool call -- must
+    NEVER evict a rare ``no_session`` row from the queryable ring.
+
+    Before the fix, both reasons shared ONE 256-slot ring; a burst larger
+    than that cap would silently push the diagnostic row out from under a
+    caller trying to query exactly the symptom #1308 needed diagnosed. The
+    fix splits the ring by reason (``mcp_app_observer_reasons.py``'s module
+    docstring) so the high-volume reason can never touch the rare one's slots.
+    """
+
+    executor = _Executor()
+    agent = SimpleNamespace(_active_tool_executor=lambda: executor)
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
+    vigil_tool = executor.definitions["vigil_open"]
+    ordinary_tool = executor.definitions["other_escape"]  # no resourceUri
+    marker = "vigil_open_skip_probe_burst_survivor"
+
+    # 1) Record the RARE row first (no session ever created/bound).
+    with _gact_app_context(app):
+        app.state.pending_mcp_app_observer(marker, {}, vigil_tool, _open_result(), "vigil")
+
+    # 2) Flood with FAR more ordinary skips than the ring's 256-slot cap.
+    with TestClient(app, base_url="http://127.0.0.1:8100") as client:
+        sid = client.post("/v1/sessions", json={"title": "BURST"}).json()["id"]
+        with _gact_app_context(app), _tool_session_context(sid):
+            for i in range(400):
+                app.state.pending_mcp_app_observer(
+                    f"vigil_ordinary_burst_{i}", {}, ordinary_tool, _open_result(), "vigil"
+                )
+
+    # 3) The rare row must still be queryable -- untouched by the flood.
+    survivors = [r for r in recorded_mcp_app_observer_skips() if r.get("tool") == marker]
+    assert survivors, "a burst of ordinary skips evicted the rare no_session row"
+    assert survivors[-1]["reason"] == "mcp_app_skipped_no_session"
+
+
 def test_registry_rejects_overflow_without_evicting_cleanup_ownership(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

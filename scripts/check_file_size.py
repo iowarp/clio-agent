@@ -747,7 +747,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # PR #1278 re-land: -48. MessageBehavior + the PostMessage request/response
     # contract moved to their owner module gact/message_contract.py; this file
     # re-exports all three so existing imports keep resolving.
-    "src/clio_agent/gact/types.py": 894,
+    # C1-S4 (#1284): +2 for the "multi_choice" UserQuestion.kind arm (SEP-1330
+    # multi-select elicitation) + its one-line rationale comment; the schema
+    # translation that PRODUCES this kind lives in the owner module
+    # gact/elicitation_schema.py, only the wire-model literal lands here.
+    "src/clio_agent/gact/types.py": 896,
     # -120 (#891): the SDK-session machinery moved out to sibling owner modules —
     # the blocking-path pool to providers/claude_code_sdk_pool.py and the per-expert
     # streaming session/delta transport to providers/claude_code_sessions.py; this
