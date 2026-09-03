@@ -52,25 +52,64 @@ class _WorkspaceSession(Protocol):
     def updated_at(self) -> str: ...
 
 
-ContextReferenceKind = Literal["workspace_file", "artifact", "session", "agent_run"]
-ReferenceSearchKind = Literal["workspace_file", "resource", "artifact", "session", "agent_run"]
+ContextReferenceKind = Literal[
+    "workspace_file",
+    "artifact",
+    "session",
+    "agent_run",
+    "evidence_source",
+    "context_frame",
+    "diff",
+    "plan",
+]
+ReferenceSearchKind = Literal[
+    "workspace_file",
+    "resource",
+    "artifact",
+    "session",
+    "agent_run",
+    "evidence_source",
+    "context_frame",
+    "diff",
+    "plan",
+]
 
 CONTEXT_REFERENCE_KINDS: frozenset[str] = frozenset(
-    {"workspace_file", "artifact", "session", "agent_run"}
+    {
+        "workspace_file",
+        "artifact",
+        "session",
+        "agent_run",
+        "evidence_source",
+        "context_frame",
+        "diff",
+        "plan",
+    }
 )
 REFERENCE_SEARCH_KINDS: frozenset[str] = frozenset({*CONTEXT_REFERENCE_KINDS, "resource"})
 CONTEXT_REFERENCE_CAPABILITY: dict[str, Any] = {
     "enabled": True,
     "version": "1",
     "part_type": "context_ref",
-    "kinds": ["workspace_file", "artifact", "session", "agent_run"],
-    "search_kinds": ["workspace_file", "resource", "artifact", "session", "agent_run"],
+    "kinds": sorted(CONTEXT_REFERENCE_KINDS),
+    "search_kinds": sorted(REFERENCE_SEARCH_KINDS),
     "search_route": "/v1/workspaces/{workspace_id}/references",
-    "revision_pinned_kinds": ["workspace_file", "resource", "artifact"],
+    "revision_pinned_kinds": [
+        "workspace_file",
+        "resource",
+        "artifact",
+        "evidence_source",
+        "context_frame",
+        "diff",
+        "plan",
+    ],
 }
 _SUMMARY_MESSAGE_LIMIT = 5
 _SUMMARY_EXCERPT_CHARS = 600
 _FILE_CHUNK_BYTES = 1024 * 1024
+_SUMMARY_REFERENCE_KINDS = frozenset(
+    {"session", "agent_run", "evidence_source", "context_frame", "diff", "plan"}
+)
 
 
 @dataclass(frozen=True)
@@ -328,6 +367,7 @@ def _resolve_file(
         "requested_revision": requested,
         "resolved_revision": actual_revision,
         "media_type": media_type,
+        "navigation": {"workspace_id": workspace_id, "path": part.ref_id},
         "delivery": {
             "mode": "inline_text" if media_type.startswith("text/") else "metadata",
             "sha256": actual_sha,
@@ -439,6 +479,10 @@ def _resolve_artifact(app: "FastAPI", workspace_id: str, part: Part) -> tuple[Pa
         "requested_revision": part.revision,
         "resolved_revision": actual_revision,
         "media_type": media_type,
+        "navigation": {
+            "workspace_id": workspace_id,
+            "artifact_id": version.artifact_id,
+        },
         "delivery": {
             "mode": "inline_text" if media_type.startswith("text/") and path else "metadata",
             "sha256": actual_sha or recorded_sha,
@@ -482,6 +526,7 @@ def _resolve_session(app: "FastAPI", workspace_id: str, part: Part) -> tuple[Par
         "requested_revision": part.revision,
         "resolved_revision": target.updated_at,
         "media_type": "application/vnd.clio.session-summary+json",
+        "navigation": {"workspace_id": workspace_id, "session_id": target.id},
         "delivery": {"mode": "bounded_summary", "summary": summary},
         "provenance": summary["provenance"],
     }
@@ -522,6 +567,11 @@ def _resolve_agent_run(
         "requested_revision": part.revision,
         "resolved_revision": task.updated_at,
         "media_type": "application/vnd.clio.agent-run-summary+json",
+        "navigation": {
+            "workspace_id": workspace_id,
+            "task_id": task.task_id,
+            "session_id": task.child_session_id,
+        },
         "delivery": {"mode": "task_summary", "summary": summary},
         "provenance": summary["provenance"],
     }
@@ -529,6 +579,82 @@ def _resolve_agent_run(
         update={
             "label": label,
             "revision": task.updated_at,
+            "metadata": {**dict(part.metadata), "context_reference": metadata},
+        }
+    )
+    return resolved, metadata
+
+
+def _resolve_evidence_snapshot(
+    app: "FastAPI",
+    workspace_id: str,
+    part: Part,
+    *,
+    enforce_revision: bool,
+) -> tuple[Part, dict[str, Any]]:
+    from clio_agent.gact.context_reference_search import (  # noqa: PLC0415
+        find_evidence_reference_snapshot,
+    )
+
+    found = find_evidence_reference_snapshot(app, workspace_id, part.ref_kind, part.ref_id)
+    if found is None:
+        raise _failure(
+            status_code=404,
+            error="context_ref_inaccessible",
+            message="evidence reference is missing or outside the active workspace",
+            ref_kind=part.ref_kind,
+            ref_id=part.ref_id,
+            workspace_id=workspace_id,
+            recoverable=True,
+        )
+    reference, payload = found
+    actual_revision = str(reference["revision"])
+    if not part.revision:
+        raise _failure(
+            status_code=400,
+            error="context_ref_revision_required",
+            message="evidence references must pin the selected snapshot revision",
+            ref_kind=part.ref_kind,
+            ref_id=part.ref_id,
+            recoverable=True,
+            actual_revision=actual_revision,
+        )
+    if enforce_revision and part.revision != actual_revision:
+        raise _failure(
+            status_code=409,
+            error="context_ref_stale",
+            message="evidence changed after the reference was selected",
+            ref_kind=part.ref_kind,
+            ref_id=part.ref_id,
+            recoverable=True,
+            requested_revision=part.revision,
+            actual_revision=actual_revision,
+        )
+    summary = {
+        "kind": part.ref_kind,
+        "id": part.ref_id,
+        "label": reference["label"],
+        "detail": reference["detail"],
+        "snapshot": payload,
+    }
+    metadata = {
+        "kind": part.ref_kind,
+        "ref_id": part.ref_id,
+        "workspace_id": workspace_id,
+        "requested_revision": part.revision,
+        "resolved_revision": actual_revision,
+        "media_type": reference["media_type"],
+        "navigation": reference["navigation"],
+        "delivery": {"mode": "bounded_summary", "summary": summary},
+        "provenance": {
+            "source": "session_evidence_repository",
+            "session_id": reference["navigation"].get("session_id", ""),
+        },
+    }
+    resolved = part.model_copy(
+        update={
+            "label": str(reference["label"]),
+            "revision": actual_revision,
             "metadata": {**dict(part.metadata), "context_reference": metadata},
         }
     )
@@ -563,7 +689,9 @@ def _resolve_part_sync(
         return _resolve_artifact(app, workspace_id, part)
     if part.ref_kind == "session":
         return _resolve_session(app, workspace_id, part)
-    return _resolve_agent_run(app, workspace_id, part)
+    if part.ref_kind == "agent_run":
+        return _resolve_agent_run(app, workspace_id, part)
+    return _resolve_evidence_snapshot(app, workspace_id, part, enforce_revision=enforce_revision)
 
 
 def authorize_context_reference_parts_sync(
@@ -654,7 +782,7 @@ def enrich_with_context_references(
             canonical, current_metadata = _resolve_part_sync(
                 app, session.workspace_id, part, enforce_revision=True
             )
-            if canonical.ref_kind in {"session", "agent_run"}:
+            if canonical.ref_kind in _SUMMARY_REFERENCE_KINDS:
                 metadata, uses_recorded_snapshot = _recorded_delivery_metadata(
                     part, session.workspace_id, current_metadata
                 )
@@ -663,7 +791,7 @@ def enrich_with_context_references(
             else:
                 metadata = current_metadata
             delivery = metadata["delivery"]
-            if canonical.ref_kind in {"session", "agent_run"}:
+            if canonical.ref_kind in _SUMMARY_REFERENCE_KINDS:
                 summary = delivery["summary"]
                 blocks.append(
                     f"### {canonical.ref_kind}: {canonical.label} [{canonical.ref_id}]\n"

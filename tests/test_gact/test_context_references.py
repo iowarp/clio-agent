@@ -34,6 +34,7 @@ from clio_agent.gact.loop_inbox import (
     enqueue_user_steer,
 )
 from clio_agent.gact.messaging import _user_message_parts
+from clio_agent.gact.protocol_v3 import part_to_v3_block
 from clio_agent.gact.routes.references import register_reference_routes
 from clio_agent.gact.runtime.constants import _CTX_MAX_BYTES
 from clio_agent.gact.runtime.globals import _ContextFileAccessError, _gact_app_context
@@ -170,6 +171,8 @@ def _app(tmp_path: Path) -> SimpleNamespace:
         agent_task_registry=registry,
         artifact_registry=ArtifactRegistry(),
         resource_store=_Resources(),
+        pending_diffs={},
+        context_frames={},
         loop_inboxes={},
     )
     return SimpleNamespace(state=state)
@@ -220,6 +223,36 @@ def test_context_ref_wire_keeps_part_identity_separate() -> None:
         "ref_id": "data/input.csv",
         "label": "input.csv",
         "revision": "sha256:abc",
+    }
+
+
+def test_context_reference_projects_as_a_navigable_message_block() -> None:
+    block = part_to_v3_block(
+        Part(
+            id="part_reference",
+            type="context_ref",
+            ref_kind="workspace_file",
+            ref_id="README.md",
+            label="README.md",
+            revision="sha256:abc",
+            metadata={
+                "context_reference": {
+                    "media_type": "text/markdown",
+                    "navigation": {"workspace_id": "ws_a", "path": "README.md"},
+                }
+            },
+        ).to_wire()
+    )
+
+    assert block == {
+        "id": "part_reference",
+        "type": "context_reference",
+        "ref_kind": "workspace_file",
+        "ref_id": "README.md",
+        "label": "README.md",
+        "revision": "sha256:abc",
+        "media_type": "text/markdown",
+        "navigation": {"workspace_id": "ws_a", "path": "README.md"},
     }
 
 
@@ -288,6 +321,108 @@ def test_search_aggregates_repositories_with_exact_shape_and_duplicate_labels(
     assert all(row["id"] in row["detail"] for row in duplicate_artifacts)
 
 
+def test_search_and_delivery_share_the_evidence_inventory(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    session = app.state.sessions.get("sess_a")
+    assert session is not None
+    app.state.messages["sess_a"].append(
+        Message(
+            id="msg_evidence",
+            session_id="sess_a",
+            role="assistant",
+            created_at="2026-09-02T12:00:00+00:00",
+            updated_at="2026-09-02T12:00:00+00:00",
+            parts=[
+                Part(
+                    id="plan_1",
+                    type="plan",
+                    title="Verify station evidence",
+                    summary="Compare the station table with the displacement source.",
+                ),
+                Part(
+                    id="source_1",
+                    type="resource_link",
+                    name="Station catalog",
+                    uri="https://example.test/stations",
+                ),
+            ],
+        )
+    )
+    app.state.pending_diffs["sess_a"] = [
+        {
+            "path": "analysis/stations.py",
+            "status": "pending",
+            "unified_diff": "--- a\n+++ b\n",
+            "message_id": "msg_evidence",
+            "part_id": "diff_1",
+        }
+    ]
+    app.state.context_frames["sess_a"] = [
+        {
+            "id": "frame_1",
+            "session_id": "sess_a",
+            "status": "completed",
+            "items": [{"kind": "context_ref", "source_id": "source_1"}],
+        }
+    ]
+
+    results = asyncio.run(
+        search_workspace_references(
+            app,
+            "ws_a",
+            kinds=["evidence_source", "context_frame", "diff", "plan"],
+        )
+    )
+    assert {row["kind"] for row in results} == {
+        "evidence_source",
+        "context_frame",
+        "diff",
+        "plan",
+    }
+    for row in results:
+        assert row["revision"].startswith("sha256:")
+        resolved = asyncio.run(
+            authorize_context_reference_parts(
+                app,
+                session,
+                [
+                    Part(
+                        type="context_ref",
+                        ref_kind=row["kind"],
+                        ref_id=row["id"],
+                        label="untrusted",
+                        revision=row["revision"],
+                    )
+                ],
+            )
+        )[0]
+        assert resolved.label == row["label"]
+        assert resolved.metadata["context_reference"]["delivery"]["summary"]["snapshot"]
+
+    source = next(row for row in results if row["kind"] == "evidence_source")
+    assert source["navigation"]["uri"] == "https://example.test/stations"
+    changed = app.state.messages["sess_a"][-1].parts[0]
+    changed.summary = "The plan changed after selection."
+    plan = next(row for row in results if row["kind"] == "plan")
+    with pytest.raises(HTTPException) as stale:
+        asyncio.run(
+            authorize_context_reference_parts(
+                app,
+                session,
+                [
+                    Part(
+                        type="context_ref",
+                        ref_kind="plan",
+                        ref_id=plan["id"],
+                        revision=plan["revision"],
+                    )
+                ],
+            )
+        )
+    assert stale.value.status_code == 409
+    assert stale.value.detail["error"]["error"] == "context_ref_stale"
+
+
 def test_empty_reference_search_is_bounded_without_hiding_deep_matches(tmp_path: Path) -> None:
     app = _app(tmp_path)
     workspace = tmp_path / "a"
@@ -297,9 +432,7 @@ def test_empty_reference_search_is_bounded_without_hiding_deep_matches(tmp_path:
     deep_match = workspace / "zz-deep-match.txt"
     deep_match.write_text("found", encoding="utf-8")
 
-    initial = asyncio.run(
-        search_workspace_references(app, "ws_a", kinds=["workspace_file"])
-    )
+    initial = asyncio.run(search_workspace_references(app, "ws_a", kinds=["workspace_file"]))
     searched = asyncio.run(
         search_workspace_references(
             app,
