@@ -298,7 +298,16 @@ RATCHET_BASELINE: dict[str, int] = {
     # wait_agent_tasks's own scope), and the 18-line digested-row construction
     # extracted to the owner module's digested_model_row(payload, task_result)
     # helper, collapsing that call site to one line.
-    "src/clio_agent/gact/agents/spawn_runtime.py": 997,
+    # #1306 final review round: +21 (997 -> 1018) for finding N4 (transcript
+    # honesty) -- resolve_input_task_evidence now returns the validated id list
+    # alongside the briefing text, so _do_spawn unpacks a tuple and forwards
+    # the bounded ids (never text) into emit_spawn_started's new keyword-only
+    # input_task_ids parameter. The malformed-input guard (N2), the delimiter
+    # sanitization (B1), and the fallback-marker folding (N1) all live entirely
+    # in the owner module agents/agent_task_input_refs.py; only this file's own
+    # tuple-unpack + one added kwarg on two call sites (emit_spawn_started's
+    # wrapper + _do_spawn's own call) landed here.
+    "src/clio_agent/gact/agents/spawn_runtime.py": 1018,
     # (invoker.py's entry retired 2026-08: RelayExpertInvoker moved to its own
     # owner module agents/relay_expert_invoker.py, dropping invoker.py under the
     # 800 default cap — the #1221/#1222 contract-alignment growth that broke the

@@ -67,8 +67,17 @@ def emit_spawn_started(
     task_text: str,
     depth: int,
     spawned: Any,
+    *,
+    input_task_ids: list[str] | None = None,
 ) -> None:
-    """Publish a child launch through the patchable runtime event seams."""
+    """Publish a child launch through the patchable runtime event seams.
+
+    ``input_task_ids`` (#1306 final review round, finding N4) rides the
+    STARTED Part's metadata as the bounded id LIST ONLY -- never the
+    evidence text those ids resolved to -- so the parent's own transcript
+    honestly shows an input existed without ever holding the forwarded
+    material itself.
+    """
     _emit_spawn_started(
         app,
         session_id,
@@ -79,6 +88,7 @@ def emit_spawn_started(
         spawned,
         emit_semantic_event=_emit_semantic_event,
         append_live_part=_append_live_assistant_part,
+        input_task_ids=input_task_ids,
     )
 
 
@@ -515,7 +525,9 @@ def build_spawn_runtime_tools(
         # reachable (a root session spawns at depth 1) (#948 S4 adversarial review).
         depth = _current_session_depth(app, session_id) + 1
         try:
-            briefing = resolve_input_task_evidence(app, session_id, task, input_task_ids)
+            briefing, evidence_task_ids = resolve_input_task_evidence(
+                app, session_id, task, input_task_ids
+            )
             binding = invoker_for_placement(app, session_id, placement)
             spawned = binding.invoker.invoke(
                 bind_task_spec_to_parent(
@@ -553,7 +565,16 @@ def build_spawn_runtime_tools(
                     _failed_spawn_handoff_part(agent_def, agent, spawn_group_id, group_size, exc),
                 )
             return json.dumps({"error": exc.reason, "message": str(exc)}, sort_keys=True)
-        emit_spawn_started(app, session_id, agent_def, agent, task, depth, spawned)
+        emit_spawn_started(
+            app,
+            session_id,
+            agent_def,
+            agent,
+            task,
+            depth,
+            spawned,
+            input_task_ids=evidence_task_ids,
+        )
         return json.dumps(
             {
                 "task_id": spawned.task_id,

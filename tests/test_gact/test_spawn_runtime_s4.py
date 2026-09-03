@@ -1248,6 +1248,53 @@ def test_spawn_agent_task_input_task_ids_forwards_full_evidence_to_child(monkeyp
     assert "researcher" in briefing
 
 
+def test_spawn_input_task_ids_started_part_stays_bare_but_names_the_ids(monkeypatch) -> None:
+    """#1306 final review round, findings N3 + N4: the PARENT's own STARTED
+    handoff Part must stay lean (bare task text, never the evidence text the
+    child received) while still being transcript-honest that an input
+    existed -- the bounded id LIST, never the material itself."""
+
+    registry = AgentTaskRegistry()
+    _register_completed_researcher(registry, "task_r1", "child_r1")
+    app = _fake_app(
+        registry,
+        messages={
+            "child_r1": [_assistant_message("msg_1", "child_r1", "researcher's full report")]
+        },
+    )
+    spy = _InvokeSpy()
+    app.state.expert_invoker = spy
+    parts = _capture_parts(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"researcher", "critic"}, monkeypatch)
+        tools["spawn_agent_task"].func(
+            agent="critic", task="synthesize a verdict", input_task_ids=["task_r1"]
+        )
+
+    (_sid, part) = parts[0]
+    assert part.metadata["question"] == "synthesize a verdict"  # N3: the BARE task
+    assert "researcher's full report" not in part.metadata["question"]  # N3: never the evidence
+    assert part.metadata["input_task_ids"] == ["task_r1"]  # N4: ids only
+
+
+def test_spawn_without_input_task_ids_started_part_carries_no_field(monkeypatch) -> None:
+    """The absent-not-empty convention this Part already follows for
+    spawn_group_id/group_size: a bare spawn never invents the field."""
+
+    app = _fake_app()
+    spy = _InvokeSpy()
+    app.state.expert_invoker = spy
+    parts = _capture_parts(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        tools["spawn_agent_task"].func(agent="data_expert", task="profile the CSV")
+
+    (_sid, part) = parts[0]
+    assert "input_task_ids" not in part.metadata
+
+
 def test_spawn_agents_parallel_per_entry_input_task_ids(monkeypatch) -> None:
     """The batch path threads input_task_ids per spawn entry -- one child gets
     evidence, its sibling in the SAME batch call is unaffected."""
