@@ -697,7 +697,20 @@ class ClioAgent(SUT):
                     try:
                         result = _json.loads(result)
                     except _json.JSONDecodeError:
-                        pass
+                        # Structured tool results can be recorded as a Python
+                        # constructor-repr ("Root(ok=True, radius_km=50.0, ...)")
+                        # rather than JSON. Reuse the owner adapter (format-only
+                        # coercion, no semantic change); it raises on anything
+                        # that is not such a repr, in which case the raw string
+                        # stands.
+                        from clio_agent.lm.adapters import (  # noqa: PLC0415
+                            _coerce_constructor_repr_to_jsonable,
+                        )
+
+                        try:
+                            result = _coerce_constructor_repr_to_jsonable(result)
+                        except Exception:  # noqa: BLE001 - raise==not-a-repr contract
+                            pass
                 tool_calls.append(ToolCall(name=name, args=args, output=result))
                 if name == "spawn_agent_task":
                     agent_id = args.get("agent")

@@ -152,3 +152,33 @@ def test_legacy_expert_handoffs_still_recognized():
     ]
     run = _run_from(messages)
     assert run.steps == [["analysis"]]
+
+
+def test_constructor_repr_result_coerced_to_dict():
+    """A structured tool result recorded as a Python constructor-repr (the shape
+    matchers hit live: "Root(ok=True, radius_km=50.0, ...)") is coerced to a
+    nested dict via the owner adapter, so dict-output matchers can read it. A
+    plain non-repr string stays a string (raise==not-a-repr contract)."""
+    messages = [
+        _assistant_message(
+            [
+                {
+                    "name": "geo_filter_points_by_radius",
+                    "args": {},
+                    "result": (
+                        "Root(ok=True, count=1, radius_km=50.0, "
+                        "center=Root(lat=32.7, lon=-117.1), "
+                        "points=[{'id': 'P475', 'distance_km': 6.2}])"
+                    ),
+                },
+                {"name": "shell_run", "args": {}, "result": "plain text output"},
+            ]
+        )
+    ]
+    run = _run_from(messages)
+    filt = run.tool_calls[0].output
+    assert isinstance(filt, dict), filt
+    assert filt["radius_km"] == 50.0
+    assert filt["center"] == {"lat": 32.7, "lon": -117.1}
+    assert filt["points"][0]["id"] == "P475"
+    assert run.tool_calls[1].output == "plain text output"
