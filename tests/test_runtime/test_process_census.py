@@ -1,4 +1,4 @@
-"""Parent-chain census + orphan detection (#900, PART B).
+"""Parent-chain census + orphan detection (#900, PART B; reap evidence gate #1303).
 
 Pins the pure parentage classifier and the doctor row it feeds, plus a real spawn that
 must descend from this process:
@@ -9,7 +9,13 @@ must descend from this process:
   correct root;
 * the ``child_parentage`` doctor row goes DEGRADED (surfaced, not silent) on an orphan
   and READY otherwise;
-* a really-spawned subprocess is a psutil descendant of the current process.
+* a really-spawned subprocess is a psutil descendant of the current process;
+* #1303: the REAP requires POSITIVE cmdline evidence (a conservative clio marker) before
+  killing an ``orphaned_from_tree`` row — name-substring (``uv``/``python``/``node``/...)
+  plus a dead parent is NOT ownership evidence (every detached job on Windows has a dead
+  parent), so a row with no matching cmdline is skipped typed ``no_instance_evidence``
+  and never killed. The REPORT (``classify_parentage`` / ``probe_process_parentage``)
+  stays machine-wide and unchanged — reporting never kills.
 """
 
 from __future__ import annotations
@@ -27,9 +33,21 @@ _SERVER = 100
 _DAEMON = 200
 
 
-def _node(pid: int, ppid: int, name: str, *, ctime: float = 0.0) -> pc.ProcessNode:
+def _node(
+    pid: int,
+    ppid: int,
+    name: str,
+    *,
+    ctime: float = 0.0,
+    cmdline: tuple[str, ...] = (),
+) -> pc.ProcessNode:
     return pc.ProcessNode(
-        pid=pid, ppid=ppid, name=name, create_time=ctime, kind=pc._classify_child(name)
+        pid=pid,
+        ppid=ppid,
+        name=name,
+        create_time=ctime,
+        kind=pc._classify_child(name),
+        cmdline=cmdline,
     )
 
 
@@ -107,11 +125,16 @@ def test_probe_row_ready_when_all_rooted() -> None:
 
 
 def test_reap_kills_provably_orphaned_process() -> None:
-    """#1232 pt 4: a dead-parent CLIO child is REAPED (killed), not just reported."""
+    """#1232 pt 4 / #1303: a dead-parent CLIO child WITH cmdline evidence is REAPED."""
     nodes = [
         _node(_SERVER, 1, "python.exe"),
         _node(_DAEMON, 1, "clio_run.exe"),
-        _node(700, 650, "clio-kit.exe"),  # parent 650 is GONE from the table
+        _node(
+            700,
+            650,
+            "clio-kit.exe",  # parent 650 is GONE from the table
+            cmdline=("clio-kit.exe", "mcp-server", "ndp"),
+        ),
     ]
     killed: list[int] = []
     reaped = pc.reap_orphaned_processes(
@@ -125,6 +148,66 @@ def test_reap_kills_provably_orphaned_process() -> None:
     assert reaped[0] == pc.ReapedProcess(pid=700, name="clio-kit.exe", kind="mcp_stdio")
 
 
+def test_reap_skips_dead_parent_with_unrelated_cmdline() -> None:
+    """#1303: name-substring (``uv.exe``) + dead parent is NOT ownership evidence.
+
+    Live evidence (2026-09-03): a gact boot killed pid 43472, an unrelated detached
+    ``uv run python ...`` launcher, purely because ``"uv"`` name-matched ``mcp_launcher``
+    and its transient shell parent had exited -- the completely normal detached-launch
+    shape on Windows. This process's cmdline never names a clio entry point; it must NOT
+    be reaped, and the skip must be typed ``no_instance_evidence``.
+    """
+    nodes = [
+        _node(_SERVER, 1, "python.exe"),
+        _node(
+            43472,
+            999,  # the transient PowerShell parent has exited -> classic detached-launch shape
+            "uv.exe",
+            cmdline=("uv", "run", "python", "my_script.py"),
+        ),
+    ]
+    killed: list[int] = []
+    reaped = pc.reap_orphaned_processes(
+        nodes=nodes, server_root_pid=_SERVER, daemon_root_pid=None, kill=killed.append
+    )
+    assert killed == []
+    assert reaped == []
+
+
+def test_reap_skips_dead_parent_with_empty_cmdline() -> None:
+    """#1303: an unresolved (``AccessDenied``-shaped, empty) cmdline is NO evidence."""
+    nodes = [
+        _node(_SERVER, 1, "python.exe"),
+        _node(500, 999, "python.exe", cmdline=()),  # cmdline never resolved
+    ]
+    killed: list[int] = []
+    reaped = pc.reap_orphaned_processes(
+        nodes=nodes, server_root_pid=_SERVER, daemon_root_pid=None, kill=killed.append
+    )
+    assert killed == []
+    assert reaped == []
+
+
+def test_reap_kills_dead_parent_with_clio_cmdline_evidence() -> None:
+    """#1303: a dead-parent ``uv.exe`` whose cmdline actually launches clio-kit IS reaped."""
+    nodes = [
+        _node(_SERVER, 1, "python.exe"),
+        _node(
+            600,
+            999,
+            "uv.exe",
+            cmdline=("uv", "run", "clio-kit", "mcp-server", "ndp"),
+        ),
+    ]
+    killed: list[int] = []
+    reaped = pc.reap_orphaned_processes(
+        nodes=nodes, server_root_pid=_SERVER, daemon_root_pid=None, kill=killed.append
+    )
+    assert killed == [600]
+    assert len(reaped) == 1
+    assert reaped[0] == pc.ReapedProcess(pid=600, name="uv.exe", kind="mcp_launcher")
+
+
 def test_reap_excludes_daemon_root_by_construction() -> None:
     """#1232 pt 4: the breakaway clio-core daemon is NEVER a kill candidate.
 
@@ -136,7 +219,12 @@ def test_reap_excludes_daemon_root_by_construction() -> None:
     nodes = [
         _node(_SERVER, 1, "python.exe"),
         _node(_DAEMON, 99999, "clio_run.exe"),  # daemon's own ppid is dead/unknown
-        _node(700, 650, "clio-kit.exe"),  # a genuine orphan, for contrast
+        _node(
+            700,
+            650,
+            "clio-kit.exe",  # a genuine orphan, for contrast
+            cmdline=("clio-kit.exe", "mcp-server", "ndp"),
+        ),
     ]
     killed: list[int] = []
     reaped = pc.reap_orphaned_processes(
@@ -186,10 +274,20 @@ def test_reap_never_kills_any_clio_core_daemon_kind_row() -> None:
 
 
 def test_reap_skips_when_parent_alive_at_kill_time(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A parent that came back alive between snapshot and kill is NEVER reaped."""
+    """A parent that came back alive between snapshot and kill is NEVER reaped.
+
+    #1303: cmdline evidence is attached so this row clears the evidence gate and the
+    parent-alive recheck is actually the thing that skips it (not a false-positive
+    evidence skip masking the behavior under test).
+    """
     nodes = [
         _node(_SERVER, 1, "python.exe"),
-        _node(700, 650, "clio-kit.exe"),  # snapshot says parent 650 is dead
+        _node(
+            700,
+            650,  # snapshot says parent 650 is dead
+            "clio-kit.exe",
+            cmdline=("clio-kit.exe", "mcp-server", "ndp"),
+        ),
     ]
     monkeypatch.setattr(pc, "_pid_alive", lambda pid: pid == 650)  # ...but it is alive NOW
     killed: list[int] = []
@@ -218,8 +316,8 @@ def test_reap_continues_after_one_kill_failure() -> None:
     """A kill that raises (already exited, access denied) is typed-skipped, never aborts the pass."""
     nodes = [
         _node(_SERVER, 1, "python.exe"),
-        _node(700, 650, "clio-kit.exe"),
-        _node(701, 651, "uvx.exe"),
+        _node(700, 650, "clio-kit.exe", cmdline=("clio-kit.exe", "mcp-server", "ndp")),
+        _node(701, 651, "uvx.exe", cmdline=("uvx", "clio-agent", "mcp-server")),
     ]
 
     def _flaky_kill(pid: int) -> None:

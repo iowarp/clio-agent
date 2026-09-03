@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 from clio_agent.errors import PROCESS_CENSUS_ORPHAN_REAPED
@@ -46,13 +46,31 @@ _MAX_CHAIN_DEPTH = 64  # guard against a cyclic/self-referential ppid table
 
 @dataclass(frozen=True)
 class ProcessNode:
-    """One process in a census snapshot (the minimal fields parentage needs)."""
+    """One process in a census snapshot (the minimal fields parentage needs).
+
+    Attributes:
+        pid: The process id.
+        ppid: The parent process id (0/dead when the parent is gone).
+        name: The executable name (used only for the coarse ``kind`` classification
+            and display -- see :func:`clio_agent.runtime.process_tree._classify_child`).
+        create_time: The process's start time (epoch seconds).
+        kind: The coarse child kind.
+        cmdline: The process's argv, captured best-effort (#1303). Empty by default --
+            populated only for reparented-orphan candidates in the live
+            :func:`_snapshot_process_nodes` scan (``AccessDenied``/any resolution
+            failure also yields empty). This is the REAP's positive ownership
+            evidence (see :func:`_has_clio_instance_evidence`): a name-substring
+            match plus a dead parent is NOT evidence on its own -- every detached
+            job on the box has a dead parent -- so an empty cmdline is treated as
+            NO evidence, never as implicit ownership.
+    """
 
     pid: int
     ppid: int
     name: str
     create_time: float
     kind: str
+    cmdline: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -155,6 +173,54 @@ def _daemon_root_pid() -> Optional[int]:
         return None
 
 
+#: Conservative clio ownership markers matched against a process's CMDLINE, never its
+#: bare executable name (#1303). A name-substring match (``"uv"``, ``"python"``,
+#: ``"node"``, ``"claude"``, ``"codex"`` -- see ``process_tree._CHILD_KINDS``) plus a
+#: dead parent is NOT ownership evidence: every detached job on Windows (a closed
+#: terminal, a scheduled task, `Start-Process`) has a dead parent, so ANY unrelated
+#: uv/python/node/claude/codex process on the box would match by name alone. Only an
+#: invocation whose actual command line names a clio entry point/module counts.
+_CLIO_CMDLINE_MARKERS: tuple[str, ...] = (
+    "clio-kit",
+    "clio_run",
+    "clio-agent-gact",
+    "clio_agent",
+    "clio-agent",
+)
+
+
+def _has_clio_instance_evidence(node: ProcessNode) -> bool:
+    """True when ``node.cmdline`` names a clio entry point (#1303 reap evidence gate).
+
+    An empty ``cmdline`` (unresolved -- ``AccessDenied``, an already-exited process, or
+    a synthetic test node that never set it) is treated as NO evidence, never as
+    implicit ownership by name+dead-parent alone.
+    """
+    if not node.cmdline:
+        return False
+    joined = " ".join(node.cmdline).lower()
+    return any(marker in joined for marker in _CLIO_CMDLINE_MARKERS)
+
+
+def _process_cmdline(pid: int) -> tuple[str, ...]:
+    """Best-effort live ``cmdline()`` for ``pid`` (#1303 instance-evidence gate).
+
+    Only called for reparented-orphan candidates in :func:`_snapshot_process_nodes`
+    (never the whole machine-wide scan), so the extra per-process syscall stays cheap.
+    Returns an empty tuple on ANY resolution failure -- already exited, permission
+    denied, a zombie, a psutil-less environment -- which :func:`_has_clio_instance_evidence`
+    then correctly reads as no evidence, never as implicit ownership.
+    """
+    try:
+        import psutil  # noqa: PLC0415
+    except ImportError:
+        return ()
+    try:
+        return tuple(psutil.Process(pid).cmdline())
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
+        return ()
+
+
 def _snapshot_process_nodes(
     server_root_pid: int, daemon_root_pid: Optional[int]
 ) -> list[ProcessNode]:
@@ -207,8 +273,15 @@ def _snapshot_process_nodes(
             stack.extend(children_of.get(pid, ()))
 
     # Reparented orphans: a CLIO-kind process whose parent is no longer alive.
-    for node in raw.values():
+    # #1303: name+dead-parent alone is NOT ownership evidence -- every detached job on
+    # the box has a dead parent. Attach the live cmdline here (lazy, only for these
+    # candidate rows -- never the whole machine-wide scan) so the REAP's evidence gate
+    # (`_has_clio_instance_evidence`) can require an actual clio marker before a kill
+    # is ever considered. Rows already reachable from a root never pass through here;
+    # they were never orphan candidates in the first place.
+    for node in list(raw.values()):
         if node.kind != "other" and node.ppid not in alive and node.pid not in keep:
+            raw[node.pid] = replace(node, cmdline=_process_cmdline(node.pid))
             keep.add(node.pid)
 
     return [raw[pid] for pid in keep if pid in raw]
@@ -370,16 +443,29 @@ def reap_orphaned_processes(
     Owner-observed: 7+ orphaned ``clio_run.exe`` children from prior hard-kills sat
     reported (``orphaned_from_tree``) across multiple boots, holding lock-adjacent
     state, while the census "listed them and moved on". This is a PARTIAL fix for
-    that: every row :func:`classify_parentage` marks :data:`ORPHANED_FROM_TREE` is,
-    BY THAT FUNCTION'S OWN CONSTRUCTION (see :func:`_snapshot_process_nodes`'s
-    "reparented orphans" pass — the only source of a non-descendant row in the LIVE
-    scan), a CLIO-kind process (``kind != "other"``) whose IMMEDIATE parent pid was
-    already confirmed dead at snapshot time — EXCEPT any :data:`_NEVER_REAP_KINDS`
-    kind (see that constant: a real live clio-core daemon was killed this way during
-    development, so daemon-kind rows stay report-only). Kill time re-confirms the
-    parent is STILL dead (a fresh ``psutil`` check, guarding the snapshot-to-kill
-    window) before acting, and skips — never kills — a row whose parent came back
-    alive in that window.
+    that: every row :func:`classify_parentage` marks :data:`ORPHANED_FROM_TREE` is a
+    CLIO-KIND process (``kind != "other"``, a NAME-substring classification — see
+    :func:`clio_agent.runtime.process_tree._classify_child`) whose IMMEDIATE parent pid
+    was already confirmed dead at snapshot time. **Name-substring + dead parent is NOT
+    ownership evidence** (#1303, proven live: a gact boot killed pid 43472, an unrelated
+    detached ``uv run python ...`` launcher, purely because ``"uv"`` matched
+    ``mcp_launcher`` and its transient shell parent had exited — every detached job on
+    Windows has a dead parent). So a row is only ever a KILL candidate when it clears
+    ALL of:
+
+    1. Not a :data:`_NEVER_REAP_KINDS` kind (see that constant: a real live clio-core
+       daemon was killed this way during #1232 development, so daemon-kind rows stay
+       report-only).
+    2. **Positive instance evidence** (#1303): :func:`_has_clio_instance_evidence`
+       requires the row's live ``cmdline`` (captured in :func:`_snapshot_process_nodes`'s
+       "reparented orphans" pass — the only source of a non-descendant row in the LIVE
+       scan) to contain one of the conservative :data:`_CLIO_CMDLINE_MARKERS`. An
+       unresolved/empty cmdline (``AccessDenied``, already exited) is NO evidence, never
+       implicit ownership — the row is skipped typed ``no_instance_evidence`` and stays
+       report-only, exactly like any other unproven row.
+    3. **Still dead at kill time**: a fresh ``psutil`` check (guarding the
+       snapshot-to-kill window) re-confirms the parent is STILL dead before acting;
+       a row whose parent came back alive in that window is skipped, never killed.
 
     The breakaway shared clio-core daemon is ADDITIONALLY excluded BY CONSTRUCTION
     (belt-and-suspenders, not the primary guard): :func:`classify_parentage` never
@@ -428,8 +514,19 @@ def reap_orphaned_processes(
             )
             continue
         node = by_pid.get(row.pid)
-        immediate_parent = node.ppid if node is not None else None
-        if immediate_parent is not None and _pid_alive(immediate_parent):
+        if node is None or not _has_clio_instance_evidence(node):
+            # #1303: name+dead-parent alone is NOT ownership evidence. No cmdline
+            # marker match -> report-only, never a kill candidate (mirrors the
+            # never_reap_kind / parent_alive_at_kill_time typed-skip shapes above).
+            logger.debug(
+                "orphan_reap_skipped pid=%s name=%s kind=%s reason=no_instance_evidence",
+                row.pid,
+                row.name,
+                row.kind,
+            )
+            continue
+        immediate_parent = node.ppid
+        if _pid_alive(immediate_parent):
             # The snapshot-to-kill window closed: the parent came back (or a
             # slower scan caught it mid-restart). Never kill a child whose
             # parent is provably alive right now — re-probed next pass.
