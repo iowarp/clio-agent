@@ -833,6 +833,12 @@ class ClioAgent(SUT):
                 "active_agent_blueprint_id": active_id,
                 "blueprint_activated": active_id == blueprint_id,
                 "child_session_ids": [str(c.get("id")) for c in children],
+                # Full child rows (workspace-scoped listing — bare GET /v1/sessions
+                # defaults to ws_default and HIDES per-cell-workspace children, the
+                # trap fixed in invoke): case modules must consume THIS instead of
+                # re-listing (the deep-researcher case's own bare re-fetch saw zero
+                # children on a run that spawned six — proven live 2026-09-03).
+                "child_sessions": [dict(c) for c in children],
                 "stop_reason": str(assistant.get("stop_reason") or ""),
                 "provider": self._provider,
                 "model": self._model,

@@ -104,16 +104,6 @@ def _load_prompt() -> str:
 # Child-session evidence gathering (kept in the TEST file, per case13's
 # precedent — clio_sut.py stays the shared, case-agnostic driver).
 # --------------------------------------------------------------------------- #
-def _child_sessions(http: httpx.Client, parent_session_id: str) -> list[dict[str, Any]]:
-    """Direct child sessions the coordinator spawned via ``spawn_agent_task``/
-    ``spawn_agents_parallel`` (C1-S1 capability-keyed routing, not
-    declared-workflow handoffs) — same filter
-    ``tests/test_stress_benchmark/test_local_scientific_workflows.py``'s
-    ``_children`` helper already uses live."""
-    sessions = http.get("/v1/sessions").json().get("sessions") or []
-    return [row for row in sessions if str(row.get("parent_session_id") or "") == parent_session_id]
-
-
 def _session_tool_calls(http: httpx.Client, session_id: str) -> list[Any]:
     """One session's own ``tools_called`` — the exact extraction
     ``clio_sut.ClioAgent._to_run`` uses (``clio_sut.py`` around the
@@ -177,11 +167,15 @@ def _augment_with_deep_researcher_evidence(
     ``_augment_with_case13_evidence``."""
     run.extra["run_spec"] = dict(run_spec)
     session_id = str(run.extra.get("session_id") or "")
-    children: list[dict[str, Any]] = []
+    # Child rows come from the harness's OWN workspace-scoped listing
+    # (clio_sut._to_run extra["child_sessions"]) — never re-list here: a bare
+    # GET /v1/sessions defaults to ws_default and hides the per-run-workspace
+    # children (this module's original bare re-fetch saw ZERO children on a
+    # live run that spawned five researchers + a critic, 2026-09-03).
+    children: list[dict[str, Any]] = list(run.extra.get("child_sessions") or [])
     by_expert: dict[str, list[Any]] = {}
     if session_id:
         with httpx.Client(base_url=gact_server.url, timeout=60.0) as http:
-            children = _child_sessions(http, session_id)
             for child in children:
                 expert_id = str((child.get("agent") or {}).get("id") or "")
                 calls = _session_tool_calls(http, str(child.get("id") or ""))
