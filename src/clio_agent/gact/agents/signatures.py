@@ -13,6 +13,7 @@ class PromptUserAgentSignature(dspy.Signature):
     system_prompt: str = dspy.InputField(desc="Registered agent instructions")
     question: str = dspy.InputField(desc="User message for this agent")
     images: list[dspy.Image] = dspy.InputField(desc="User-provided images for this turn")
+    files: list[dspy.File] = dspy.InputField(desc="User-provided PDF documents for this turn")
     answer: str = dspy.OutputField(desc="User-facing answer")
     expert_handoffs: str = dspy.OutputField(
         desc=(
@@ -28,6 +29,7 @@ class ToolUserAgentSignature(dspy.Signature):
     system_prompt: str = dspy.InputField(desc="Registered agent instructions")
     question: str = dspy.InputField(desc="User message for this agent")
     images: list[dspy.Image] = dspy.InputField(desc="User-provided images for this turn")
+    files: list[dspy.File] = dspy.InputField(desc="User-provided PDF documents for this turn")
     answer: str = dspy.OutputField(desc="User-facing answer")
     expert_handoffs: str = dspy.OutputField(
         desc=(

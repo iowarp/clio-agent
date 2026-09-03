@@ -417,6 +417,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
                 "prompt_resolution": state.prompt_resolution,
                 "agent_runtime": state.agent_runtime,
                 "native_image_count": len(state.native_images),
+                "native_file_count": len(state.native_files),
             },
         )
         with _cancellation_checker(cancel_cb), _tool_session_context(state.sid):
@@ -431,6 +432,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
                     session_edit_mode=getattr(state.sess, "edit_mode", "diff"),
                     agent_override=module,
                     images=state.native_images,
+                    files=state.native_files,
                     cancel_requested=cancel_cb,
                 ),
             )
@@ -489,6 +491,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
                     "prompt_resolution": state.prompt_resolution,
                     "agent_runtime": state.agent_runtime,
                     "native_image_count": len(state.native_images),
+                    "native_file_count": len(state.native_files),
                 },
             )
             with _cancellation_checker(cancel_cb), _tool_session_context(state.sid):
@@ -507,6 +510,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
                             state.sid,
                             cancel_cb,
                             state.native_images,
+                            state.native_files,
                         ),
                     ),
                 )

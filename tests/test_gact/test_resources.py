@@ -13,10 +13,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
-from clio_agent.gact.messaging import _dspy_images_from_parts
+from clio_agent.gact.messaging import _dspy_files_from_parts, _dspy_images_from_parts
 from clio_agent.gact.parts import Part
 from clio_agent.gact.protocol.v3.message import part_to_v3_block
 from clio_agent.gact.resource_custody import ResourceLimitError, ResourceStore
+from clio_agent.gact.resource_enrichment import describe_resource_parts
 from clio_agent.gact.resource_processing import (
     ResourceConverterFactory,
     ResourceProcessingRecord,
@@ -1033,6 +1034,58 @@ def test_non_native_image_resource_ref_never_becomes_model_image_input(tmp_path:
     assert _dspy_images_from_parts([part], app=app, workspace_id="ws_text_only") == []
 
 
+def test_native_pdf_resource_ref_becomes_model_file_input(tmp_path: Path) -> None:
+    """A native-planned PDF supplies its immutable original to DSPy."""
+
+    pdf = b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n"
+    store = ResourceStore(root=tmp_path / "resources", max_resource_bytes=1024)
+    record, _replay = store.create_or_resume(
+        workspace_id="ws_pdf",
+        name="paper.pdf",
+        declared_size=len(pdf),
+        claimed_mime="application/pdf",
+    )
+    record = store.append(record.id, offset=0, data=pdf)
+    part = Part(
+        type="resource_ref",
+        resource_id=record.id,
+        resource_revision=str(record.revision),
+        name=record.name,
+        media_type=record.detected_mime,
+        metadata={"delivery": {"representation": "native"}},
+    )
+    app = SimpleNamespace(state=SimpleNamespace(resource_store=store))
+
+    files = _dspy_files_from_parts([part], app=app, workspace_id="ws_pdf")
+
+    assert len(files) == 1
+    assert files[0].filename == "paper.pdf"
+    assert files[0].file_data.startswith("data:application/pdf;base64,")
+
+
+def test_non_native_pdf_resource_ref_never_becomes_model_file_input(tmp_path: Path) -> None:
+    pdf = b"%PDF-1.4\n%%EOF\n"
+    store = ResourceStore(root=tmp_path / "resources", max_resource_bytes=1024)
+    record, _replay = store.create_or_resume(
+        workspace_id="ws_pdf_tools",
+        name="paper.pdf",
+        declared_size=len(pdf),
+        claimed_mime="application/pdf",
+    )
+    record = store.append(record.id, offset=0, data=pdf)
+    part = Part(
+        type="resource_ref",
+        resource_id=record.id,
+        resource_revision=str(record.revision),
+        name=record.name,
+        media_type=record.detected_mime,
+        metadata={"delivery": {"representation": "structured_document"}},
+    )
+    app = SimpleNamespace(state=SimpleNamespace(resource_store=store))
+
+    assert _dspy_files_from_parts([part], app=app, workspace_id="ws_pdf_tools") == []
+
+
 def test_resource_reference_projects_as_attachment_block() -> None:
     block = part_to_v3_block(
         {
@@ -1197,6 +1250,58 @@ def test_resource_context_exposes_durable_local_conversion_task_before_remote_jo
         assert "wait once with workspace_resource_wait" in prompt
         assert "Do not repeatedly poll inspection" in prompt
         assert "No structured converter was selected" not in prompt
+
+
+def test_native_resource_context_does_not_block_on_parallel_conversion(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeClioAgent(answer="unused"))
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+        resource = _upload(
+            client,
+            workspace_id,
+            name="paper.pdf",
+            content=b"%PDF-1.4\n",
+            media_type="application/pdf",
+        )
+        record = app.state.resource_store.get(workspace_id, str(resource["id"]))
+        assert record is not None
+        app.state.resource_processing_store.save_state(
+            record,
+            ResourceProcessingRecord(
+                workspace_id=workspace_id,
+                resource_id=record.id,
+                resource_revision=record.revision,
+                source_sha256=record.sha256,
+                processor="test-docling",
+                processor_url="http://processor.test",
+                state="processing",
+                job_id="remote-processing-job",
+            ),
+        )
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "native while converting", "workspace_id": workspace_id},
+        ).json()["id"]
+
+        blocks = describe_resource_parts(
+            app,
+            sid,
+            [
+                Part(
+                    type="resource_ref",
+                    resource_id=record.id,
+                    resource_revision=str(record.revision),
+                    name=record.name,
+                    metadata={"delivery": {"representation": "native"}},
+                )
+            ],
+        )
+
+        assert len(blocks) == 1
+        assert "included directly in this model input" in blocks[0]
+        assert "does not block native reading" in blocks[0]
+        assert "wait once with workspace_resource_wait" not in blocks[0]
+        assert "resource-processing:" not in blocks[0]
 
 
 def test_resource_conversion_wait_uses_one_stable_local_task_to_completion(

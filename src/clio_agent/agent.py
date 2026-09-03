@@ -716,6 +716,7 @@ class ClioAgent(dspy.Module):
         session_context: str,
         *,
         images: list[Any] | None = None,
+        files: list[Any] | None = None,
     ) -> str:
         """Generate a single-shot conversational reply through DSPy/LiteLLM.
 
@@ -726,6 +727,7 @@ class ClioAgent(dspy.Module):
         self._raise_if_cancelled("chat_before")
         chat_context = self._chat_session_context(session_context)
         image_inputs = list(images or [])
+        file_inputs = list(files or [])
         # P2.4: per-request BeforeModel/AfterModel wrapper (pure pass-through when no
         # model hook is configured, so this legacy chat/compaction path is unchanged).
         from clio_agent.lm.hooked_lm import wrap_lm_with_hooks  # noqa: PLC0415
@@ -735,6 +737,7 @@ class ClioAgent(dspy.Module):
                 result = self.chat_agent(
                     question=question,
                     images=image_inputs,
+                    files=file_inputs,
                     session_context=chat_context,
                 )
             answer = self._coerce_text(getattr(result, "answer", None)).strip()

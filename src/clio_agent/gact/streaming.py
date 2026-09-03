@@ -113,6 +113,7 @@ async def _try_streamed_forward_compat(
     session_mode: str = "edit",
     session_edit_mode: str = "diff",
     images: list[Any] | None = None,
+    files: list[Any] | None = None,
     agent_override: Any | None = None,
     cancel_requested: Any | None = None,
 ) -> Optional[Any]:
@@ -127,6 +128,7 @@ async def _try_streamed_forward_compat(
         "session_mode": session_mode,
         "session_edit_mode": session_edit_mode,
         "images": images or [],
+        "files": files or [],
         "cancel_requested": cancel_requested,
     }
     if agent_override is not None:
@@ -472,6 +474,7 @@ async def _try_streamed_forward(
     session_edit_mode: str = "diff",
     agent_override: Any | None = None,
     images: list[Any] | None = None,
+    files: list[Any] | None = None,
     cancel_requested: Any | None = None,
 ) -> Optional[Any]:
     """Run the agent's forward via dspy.streamify, pumping every
@@ -595,7 +598,12 @@ async def _try_streamed_forward(
         if field_name:
             previous_stream_field = field_name
 
-    stream_input = {"question": enriched_text, "session_id": sid, "images": list(images or [])}
+    stream_input = {
+        "question": enriched_text,
+        "session_id": sid,
+        "images": list(images or []),
+        "files": list(files or []),
+    }
     try:
         # StreamListener emits ``StreamResponse`` instances that
         # carry the cleaned chunk in ``.chunk``. Keep the legacy

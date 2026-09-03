@@ -33,6 +33,7 @@ def _run_dynamic_agent_compat(
     sid: str,
     cancel_requested: Any | None,
     images: list[Any] | None = None,
+    files: list[Any] | None = None,
 ) -> Any:
     """Call one dynamic-agent runner exactly once with its accepted arguments."""
 
@@ -41,6 +42,8 @@ def _run_dynamic_agent_compat(
         args.append(cancel_requested)
     if _callable_positional_slots(runner, 6):
         args.append(list(images or []))
+    if _callable_positional_slots(runner, 7):
+        args.append(list(files or []))
     return runner(*args)
 
 

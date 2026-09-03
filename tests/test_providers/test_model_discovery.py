@@ -638,6 +638,40 @@ def test_discover_claude_code_all_aliases_validate_default_follows_bare_probe(
     assert result.default_model == "fable"
     assert result.default_model_reason == ""
     assert result.rejected == []
+    assert all(model["capabilities"] == ["text", "image", "pdf"] for model in result.discovered)
+
+
+def test_probe_claude_uses_native_image_and_pdf_stream_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def _run(args: list[str], **kwargs: Any) -> Any:
+        seen["args"] = args
+        seen["input"] = kwargs["input"]
+        result = {
+            "type": "result",
+            "is_error": False,
+            "modelUsage": {"claude-sonnet-5": {}},
+        }
+        return SimpleNamespace(
+            stdout="\n".join([json.dumps({"type": "system"}), json.dumps(result)]),
+            stderr="",
+            returncode=0,
+        )
+
+    monkeypatch.setattr(md_claude_code.subprocess, "run", _run)
+
+    probe = md_claude_code._probe_claude("claude", "sonnet", timeout=5.0)
+
+    assert probe["outcome"] == "accepted"
+    assert probe["capabilities"] == ["text", "image", "pdf"]
+    assert seen["args"][seen["args"].index("--input-format") + 1] == "stream-json"
+    request = json.loads(seen["input"])
+    content = request["message"]["content"]
+    assert [part["type"] for part in content] == ["image", "document", "text"]
+    assert content[0]["source"]["media_type"] == "image/png"
+    assert content[1]["source"]["media_type"] == "application/pdf"
 
 
 def test_discover_claude_code_one_alias_rejected_others_still_validate(
@@ -1248,7 +1282,8 @@ def test_discover_codex_live() -> None:
     "billed API call)",
 )
 def test_discover_claude_code_live_single_alias() -> None:
-    """Real ``claude -p`` probe -- bounded to ONE alias (a real billed call)."""
+    """Real native image/PDF probe -- bounded to one alias (a billed call)."""
     result = model_discovery.discover_claude_code(candidates=("haiku",), timeout=60.0)
     assert result.failed_reason is None, result.failed_reason
     assert [m["id"] for m in result.discovered] == ["haiku"]
+    assert result.discovered[0]["capabilities"] == ["text", "image", "pdf"]

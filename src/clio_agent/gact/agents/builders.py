@@ -254,6 +254,7 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
             images: list[Any] | None = None,
+            files: list[Any] | None = None,
         ) -> Any:
             _ = (
                 session_mode,
@@ -278,6 +279,7 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
                     system_prompt=self.system_prompt,
                     question=question,
                     images=list(images or []),
+                    files=list(files or []),
                 )
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
@@ -1057,6 +1059,7 @@ def _blueprint_runtime_signature(
     *,
     app: Any = None,
     include_images: bool = False,
+    include_files: bool = False,
 ) -> Any:
     """Build a DSPy Signature from a blueprint's ordered signature fields.
 
@@ -1129,6 +1132,8 @@ def _blueprint_runtime_signature(
         ]
     if include_images and not any(name == "images" for name, _, _ in inputs):
         inputs.append(("images", "User-provided images for this turn", list[dspy.Image]))
+    if include_files and not any(name == "files" for name, _, _ in inputs):
+        inputs.append(("files", "User-provided PDF documents for this turn", list[dspy.File]))
     outputs = _ordered_fields(raw_outputs, [("answer", "User-facing answer", str)])
     structured = (
         agent_def.structured_outputs if isinstance(agent_def.structured_outputs, Mapping) else {}
@@ -1291,7 +1296,11 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             self._cred_resolver = CredentialResolver()
             self.config = self._resolved_spec.materialize(self._cred_resolver)
             self._provider_config = self.config
-            self.signature = _blueprint_runtime_signature(agent_def, include_images=True)
+            self.signature = _blueprint_runtime_signature(
+                agent_def,
+                include_images=True,
+                include_files=True,
+            )
             self.tools: list[Any] = []
             skill_rt = _skill_runtime.skill_runtime_for_agent(
                 _ctx.active_app(), agent_def, session_id=_ctx.active_session_id()
@@ -1437,6 +1446,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
             images: list[Any] | None = None,
+            files: list[Any] | None = None,
         ) -> Any:
             _ = (
                 session_mode,
@@ -1486,6 +1496,8 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 kwargs["system_prompt"] = runtime_system_prompt
             if "images" in self.signature.input_fields:
                 kwargs["images"] = list(images or [])
+            if "files" in self.signature.input_fields:
+                kwargs["files"] = list(files or [])
             if trace.HF_ON:
                 trace.hot("FWD-A", "%s child-context+seed-done", getattr(self.agent_def, "id", "?"))
             blueprint_tool_rows: list[dict[str, Any]] = []
@@ -1881,6 +1893,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
             images: list[Any] | None = None,
+            files: list[Any] | None = None,
         ) -> Any:
             _ = (
                 session_mode,
@@ -1916,6 +1929,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                         system_prompt=self.system_prompt,
                         question=question,
                         images=list(images or []),
+                        files=list(files or []),
                     )
             except Exception as exc:
                 app = _ctx.active_app()
