@@ -1043,6 +1043,20 @@ def test_handshake_row_extensions_unobserved_is_none() -> None:
 # unless its ``mode`` is passed explicitly), which would silently downgrade
 # every MRTR-over-proxy assertion below to the WRONG era instead of proving
 # anything about the modern-era proxy route.
+#
+# Correction (Opus review, C1-S4 §4): this "direct vs. proxy" pair is a RAW
+# SDK-level construction (``Client`` / ``create_proxy(ProxyClient(...))``) --
+# it is NOT the F12 route-forcing technique used elsewhere in this file
+# (``test_ui_bearing_result_survives_the_proxy_relay_to_the_apps_host``:
+# force the proxy path through ``SyncMCPToolExecutor`` by threading NO
+# direct-client factory, ``executor._async_executor._clio_namespace_direct_
+# factories = {}``). Those are two DIFFERENT proxy axes: this one proves
+# what the SDK driver itself does at the wire; F12 proves what CLIO's OWN
+# executor does when it chooses (or is forced away from) the direct route.
+# C1-S2 proved refusal/wait behavior CAN differ through the executor, so an
+# executor-level MRTR arm is added below (``test_plain_guarded_input_
+# completes_mrtr_through_the_sync_executor_forced_proxy_route``) using the
+# REAL F12 technique, rather than leaving MRTR's executor path unverified.
 # --------------------------------------------------------------------------
 
 
@@ -1174,6 +1188,65 @@ async def test_unwired_client_gets_a_typed_terminal_refusal_not_a_hang_on_prompt
         with pytest.raises(MCPError) as excinfo:
             await client.get_prompt("guarded_prompt", {})
     assert "elicitation" in str(excinfo.value).lower()
+
+
+async def test_plain_guarded_input_completes_mrtr_through_the_sync_executor_forced_proxy_route() -> (
+    None
+):
+    """Opus review, C1-S4 §4: a genuine F12-technique executor-level MRTR arm.
+
+    The per-path tests above prove MRTR through a RAW SDK ``Client`` /
+    ``create_proxy(ProxyClient(...))`` construction -- that is a DIFFERENT
+    proxy axis from CLIO's OWN ``SyncMCPToolExecutor`` (see the section
+    docstring correction above). C1-S2 proved refusal/wait behavior CAN
+    differ through the executor, so MRTR's round-trip through it was an
+    unverified gap until now.
+
+    Uses ``plain_guarded_input`` (NOT ``guarded_input``) deliberately: the
+    PLAIN variant isolates the executor-proxy MRTR axis this test targets
+    from the SEPARATE tasks-extension axis (a task=required tool additionally
+    needs the client to declare the tasks extension, which
+    :func:`_elicit_client` does not model -- that combination is already
+    covered, as an EXPECTED typed refusal, by
+    ``test_url_guarded_input_task_required_naive_proxy_fails_typed_never_hangs``).
+
+    Uses the REAL F12 technique
+    (``test_ui_bearing_result_survives_the_proxy_relay_to_the_apps_host``):
+    no direct-client factory threaded for this namespace, so
+    ``AsyncMCPToolExecutor.call_tool``'s ``ctx = direct_client if ... else
+    self._client_factory(proxy)`` fallback is what actually connects --
+    wired here with :func:`_elicit_client` (elicitation-capable, both modes)
+    as the executor's OWN ``client_factory`` so the forced-proxy route can
+    genuinely complete a form-mode MRTR round trip end to end.
+    """
+
+    namespace = "v2exmrtrexec"
+    executor: Any = None
+    try:
+        spec = _exerciser_spec(namespace)
+        listed = _list_declared_tools(spec)
+        gw = build_gateway({namespace: spec})
+        executor = SyncMCPToolExecutor(
+            gw,
+            namespace_servers=namespace_proxies(gw),
+            preloaded_tools=_preloaded_tools_from_listing(namespace, listed),
+            client_factory=_elicit_client,
+        )
+        # F12 technique: force the PROXY path by threading NO direct-client
+        # factory for this namespace.
+        executor._async_executor._clio_namespace_direct_factories = {}  # noqa: SLF001
+
+        model_text = executor.call_tool(f"{namespace}_plain_guarded_input", {})
+        assert model_text == "answered:{'value': 'x'}"
+
+        decisions = [d for ns, d in recorded_task_route_decisions() if ns == namespace]
+        assert decisions, "no route decision recorded for the proxy-forced namespace"
+        assert decisions[-1].use_direct is False
+        assert decisions[-1].reason == MCP_TASK_DIRECT_FACTORY_MISSING
+    finally:
+        if executor is not None:
+            executor.close()
+        _reap("mcp_exerciser.py")
 
 
 async def test_declared_path_ui_resource_admits_and_serves_through_the_apps_host(

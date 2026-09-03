@@ -528,6 +528,7 @@ def test_url_elicitation_plain_ascii_host_carries_no_punycode_warning(client: Te
     elicitation = question["metadata"]["elicitation"]
     assert elicitation["punycode_warning"] is False
     assert elicitation["punycode_host"] == "trusted.example"
+    assert elicitation["punycode_host_raw"] == "trusted.example"
 
     resp = client.post(f"/v1/sessions/{sid}/questions/{question['id']}/answer", json={})
     assert resp.status_code == 200, resp.text
@@ -573,6 +574,9 @@ def test_url_elicitation_punycode_host_carries_a_warning_and_decoded_host(
     assert elicitation["url"] == punycode_url  # the FULL url is still carried verbatim
     assert elicitation["punycode_warning"] is True
     assert elicitation["punycode_host"] != "xn--nxasmq6b.example"  # decoded, not the raw ACE form
+    # The raw (still-ACE-encoded) host is carried ALONGSIDE the decoded one
+    # (Opus review, C1-S4) so a consent surface can show both forms.
+    assert elicitation["punycode_host_raw"] == "xn--nxasmq6b.example"
 
     resp = client.post(f"/v1/sessions/{sid}/questions/{question['id']}/answer", json={})
     assert resp.status_code == 200, resp.text
@@ -582,16 +586,20 @@ def test_url_elicitation_punycode_host_carries_a_warning_and_decoded_host(
 def test_punycode_warning_helper_detects_ace_labels() -> None:
     from clio_agent.gact.elicitation_schema import punycode_warning
 
-    warning, host = punycode_warning("https://plain.example/x")
+    warning, host, raw = punycode_warning("https://plain.example/x")
     assert warning is False
     assert host == "plain.example"
+    assert raw == "plain.example"
 
-    warning, host = punycode_warning("https://xn--nxasmq6b.example/x")
+    warning, host, raw = punycode_warning("https://xn--nxasmq6b.example/x")
     assert warning is True
     # Computed via the SAME stdlib codec this helper uses, not hand-transcribed
     # (a real punycode-encoded Greek IDN label) — avoids a mistyped Unicode literal.
     assert host == "xn--nxasmq6b".encode("ascii").decode("idna") + ".example"
     assert host != "xn--nxasmq6b.example"
+    # The raw ACE host is carried ALONGSIDE the decoded display host (Opus
+    # review, C1-S4) -- callers must never lose access to the wire form.
+    assert raw == "xn--nxasmq6b.example"
 
 
 def test_punycode_warning_falls_back_to_raw_host_on_bad_decode() -> None:
@@ -599,9 +607,73 @@ def test_punycode_warning_falls_back_to_raw_host_on_bad_decode() -> None:
 
     from clio_agent.gact.elicitation_schema import punycode_warning
 
-    warning, host = punycode_warning("https://xn--/x")
+    warning, host, raw = punycode_warning("https://xn--/x")
     assert warning is True
     assert host  # some non-empty fallback, never a crash
+    assert raw == host  # the fallback IS the raw host in this branch
+
+
+def test_punycode_warning_detects_raw_unicode_homograph_host() -> None:
+    """The textbook MUST case (Opus review, C1-S4): a RAW-UNICODE homograph
+    host with NO ``xn--`` prefix anywhere -- the original ACE-only check
+    passed this with NO warning, which is exactly the risk F3 exists to flag.
+
+    ``аpple.com`` uses Cyrillic CYRILLIC SMALL LETTER A (U+0430) in place
+    of Latin "a" -- a real, well-known homograph of ``apple.com``.
+    """
+
+    from clio_agent.gact.elicitation_schema import punycode_warning
+
+    homograph_host = "аpple.com"
+    assert not homograph_host.isascii()  # sanity: genuinely non-ASCII, not a typo
+    warning, host, raw = punycode_warning(f"https://{homograph_host}/oauth")
+    assert warning is True
+    # Nothing to ACE-decode -- the raw Unicode host IS the display host.
+    assert host == homograph_host
+    assert raw == homograph_host
+
+
+def test_url_elicitation_raw_unicode_homograph_host_carries_a_warning(
+    client: TestClient,
+) -> None:
+    """End-to-end: a raw-Unicode homograph url-mode question flags the
+    consent payload, through the SAME path a real elicitation takes."""
+
+    import mcp_types
+
+    from clio_agent.gact.elicitation_bridge import handle_elicitation
+
+    app = client.app  # type: ignore[attr-defined]
+    sid = _create_session(client)
+    invocation = MCPInvocationContext(
+        invocation_id="inv", session_id=sid, namespace="ext", tool_name="authorize"
+    )
+    homograph_url = "https://аpple.com/oauth"
+    params = mcp_types.ElicitRequestURLParams(message="Authorize CLIO", url=homograph_url)
+    holder: dict[str, Any] = {}
+
+    def _worker() -> None:
+        holder["result"] = asyncio.run(
+            handle_elicitation(
+                app,
+                invocation,
+                "Authorize CLIO",
+                params,
+                url_trusted_origins=["https://аpple.com"],
+            )
+        )
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+
+    question = _wait_for_pending_question(client, sid)
+    elicitation = question["metadata"]["elicitation"]
+    assert elicitation["url"] == homograph_url
+    assert elicitation["punycode_warning"] is True
+
+    resp = client.post(f"/v1/sessions/{sid}/questions/{question['id']}/answer", json={})
+    assert resp.status_code == 200, resp.text
+    thread.join(timeout=10.0)
 
 
 # ---------------------------------------------------------------------------
@@ -814,6 +886,110 @@ def test_multi_select_answer_validates_membership() -> None:
         row, selected_options=[], answer="", answer_metadata={"colors": ["r", "purple"]}
     )
     assert bad is not None and "colors" in bad
+
+
+def _bounded_multi_select_translation() -> Any:
+    """The reviewer's exact measured case (Opus review, C1-S4): a 3-enum
+    multi-select with ``minItems: 1`` / ``maxItems: 2``."""
+
+    from clio_agent.gact.elicitation_bridge import translate_form_schema
+
+    return translate_form_schema(
+        {
+            "type": "object",
+            "properties": {
+                "colors": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["r", "g", "b"]},
+                    "minItems": 1,
+                    "maxItems": 2,
+                },
+            },
+        }
+    )
+
+
+def test_translate_multi_select_carries_min_max_items_onto_the_field_descriptor() -> None:
+    """minItems/maxItems must SURVIVE translation onto the field descriptor
+    (Opus review, C1-S4 B4): before this fix a repo-wide grep found zero
+    hits -- they were silently dropped."""
+
+    t = _bounded_multi_select_translation()
+    assert t.degrade is None
+    field = t.fields[0]
+    assert field["min_items"] == 1
+    assert field["max_items"] == 2
+
+
+def test_multi_select_answer_rejects_more_selections_than_max_items() -> None:
+    """maxItems:2 over a 3-enum: 3 selections must reject (Opus review,
+    C1-S4 B4 -- the reviewer's exact measured case). Before the fix this
+    silently accepted."""
+
+    from clio_agent.gact.elicitation_bridge import validate_elicitation_answer
+    from clio_agent.gact.types import UserQuestion
+
+    t = _bounded_multi_select_translation()
+    row = UserQuestion(
+        id="q1",
+        session_id="s1",
+        prompt="pick",
+        kind=t.kind,  # type: ignore[arg-type]
+        options=t.options,
+        created_at="",
+        updated_at="",
+        source="mcp_elicitation",
+        metadata={
+            "elicitation": {"mode": "form", "fields": t.fields, "additional_properties": True}
+        },
+    )
+    ok = validate_elicitation_answer(
+        row, selected_options=["r", "g"], answer="", answer_metadata={}
+    )
+    assert ok is None, "2 selections is within maxItems:2 -- must accept"
+
+    bad = validate_elicitation_answer(
+        row, selected_options=["r", "g", "b"], answer="", answer_metadata={}
+    )
+    assert bad is not None and "colors" in bad and "2" in bad
+
+
+def test_multi_select_answer_rejects_empty_selection_via_min_items_even_when_not_required() -> None:
+    """minItems:1 rejects an EMPTY selection even though the field itself is
+    not marked ``required`` in the JSON-Schema sense (Opus review, C1-S4 B4
+    -- the reviewer's exact measured case). ``required`` governs whether the
+    field may be ABSENT; a PRESENT-but-empty selection is a different
+    question minItems answers on its own. Before the fix an empty list
+    satisfied ``all(...)`` over zero elements and silently passed.
+    """
+
+    from clio_agent.gact.elicitation_bridge import validate_elicitation_answer
+    from clio_agent.gact.types import UserQuestion
+
+    t = _bounded_multi_select_translation()
+    assert t.fields[0]["required"] is False, "sanity: this field is NOT required"
+    row = UserQuestion(
+        id="q1",
+        session_id="s1",
+        prompt="pick",
+        kind=t.kind,  # type: ignore[arg-type]
+        options=t.options,
+        created_at="",
+        updated_at="",
+        source="mcp_elicitation",
+        metadata={
+            "elicitation": {"mode": "form", "fields": t.fields, "additional_properties": True}
+        },
+    )
+    # An explicit, PRESENT empty selection (not an absent field -- see
+    # build_form_content precedence: an explicit answer_metadata entry wins).
+    bad = validate_elicitation_answer(
+        row, selected_options=[], answer="", answer_metadata={"colors": []}
+    )
+    assert bad is not None and "colors" in bad and "1" in bad
+    # An ABSENT field is still fine -- required=False permits omission entirely.
+    ok = validate_elicitation_answer(row, selected_options=[], answer="", answer_metadata={})
+    assert ok is None
 
 
 # ---------------------------------------------------------------------------

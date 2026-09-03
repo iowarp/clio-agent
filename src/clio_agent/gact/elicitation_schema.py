@@ -105,6 +105,20 @@ def _flat_multi_select(spec: Mapping[str, Any]) -> tuple[list[Any], str, list[An
     return list(item_enum), str(items.get("type") or "string"), enum_names
 
 
+def _bounded_int(value: Any) -> int | None:
+    """Return ``value`` when it is a genuine non-negative int, else ``None``.
+
+    Guards ``minItems``/``maxItems`` extraction: a malformed schema (a bool,
+    a string, a negative number) degrades to "no bound declared" rather than
+    carrying a nonsensical constraint forward -- ``bool`` is excluded
+    explicitly since it is an ``int`` subclass in Python.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
 def _array_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dict[str, Any] | str:
     """Build one multi-select field descriptor, or return a typed degrade reason."""
 
@@ -119,6 +133,13 @@ def _array_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dict
         "enum_names": item_enum_names,
         "multi": True,
         "item_type": item_type,
+        # SEP-1330 finding (Opus review, C1-S4): minItems/maxItems are
+        # standard JSON-Schema array constraints on the ARRAY field itself
+        # (not on ``items``) -- carried through so a multi-select's selection
+        # COUNT is enforced, not just per-element enum membership (see
+        # :func:`_valid_multi_enum`).
+        "min_items": _bounded_int(spec.get("minItems")),
+        "max_items": _bounded_int(spec.get("maxItems")),
         "default": spec.get("default"),
         "title": str(spec.get("title") or name),
         "description": str(spec.get("description") or ""),
@@ -147,6 +168,8 @@ def _scalar_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dic
         "enum_names": None,
         "multi": False,
         "item_type": "",
+        "min_items": None,
+        "max_items": None,
         "default": spec.get("default"),
         "title": str(spec.get("title") or name),
         "description": str(spec.get("description") or ""),
@@ -278,12 +301,16 @@ def build_url_metadata(
     """Assemble the url-mode ``metadata.elicitation`` block for a new question.
 
     Carries the FULL url verbatim plus the F3 punycode-warning fields
-    (``punycode_warning`` / ``punycode_host``) alongside it -- URL-mode consent
-    data completeness (C1-S4/#1284 build item 3); rendering the warning is the
-    UI's lane, this is the data it renders from.
+    (``punycode_warning`` / ``punycode_host`` / ``punycode_host_raw``)
+    alongside it -- URL-mode consent data completeness (C1-S4/#1284 build
+    item 3); rendering the warning is the UI's lane, this is the data it
+    renders from. ``punycode_host_raw`` carries the host EXACTLY as it
+    appeared (still ACE-encoded for an ``xn--`` host) alongside the decoded
+    ``punycode_host``, so a consent surface can show both forms rather than
+    only the decoded one (Opus review, C1-S4).
     """
 
-    warning, display_host = punycode_warning(url)
+    warning, display_host, raw_host = punycode_warning(url)
     return {
         "elicitation": {
             "mode": "url",
@@ -293,6 +320,7 @@ def build_url_metadata(
             "container": "isolated",
             "punycode_warning": warning,
             "punycode_host": display_host,
+            "punycode_host_raw": raw_host,
             "request_id": request_id,
             "namespace": namespace,
             "tool_name": tool_name,
@@ -335,26 +363,43 @@ def check_url_trust(url: str, trusted_origins: Sequence[str]) -> str | None:
     return None
 
 
-def punycode_warning(url: str) -> tuple[bool, str]:
-    """Detect an IDN/punycode host in ``url`` (F3: URL-mode consent MUST).
+def punycode_warning(url: str) -> tuple[bool, str, str]:
+    """Detect an IDN/punycode homograph host in ``url`` (F3: URL-mode consent MUST).
 
-    Returns ``(warning, display_host)``: ``warning`` is ``True`` when the
-    host carries any ACE-encoded label (an ``xn--`` prefix, RFC 3492) -- the
-    classic homograph-attack surface a consent surface must flag; the FULL
-    original url is never altered by this check (see :func:`build_url_metadata`).
-    ``display_host`` is the best-effort Unicode-decoded host, for a
-    side-by-side "shown next to the raw url" comparison; on any decode
+    Returns ``(warning, display_host, raw_host)``. Two DISTINCT homograph
+    shapes both warn (Opus review, C1-S4: the original ACE-only check missed
+    the textbook case the MUST exists for):
+
+    - a RAW-UNICODE host (e.g. ``https://аpple.com`` -- Cyrillic а, no
+      ``xn--`` anywhere): checked FIRST via ``str.isascii()`` per label, since
+      an already-Unicode host has no ACE form to decode.
+    - an ACE-ENCODED host (an ``xn--`` prefix, RFC 3492): decoded best-effort
+      for display.
+
+    ``display_host`` is the best-effort Unicode/decoded form for a
+    side-by-side "shown next to the raw url" comparison; on any ACE-decode
     failure it falls back to the raw (still-encoded) host rather than
-    raising -- this function never fails a caller's flow.
+    raising -- this function never fails a caller's flow. ``raw_host`` is
+    ALWAYS the host exactly as it appeared (the still-ACE-encoded string for
+    the xn-- case, identical to ``display_host`` for the raw-Unicode and
+    plain-ASCII cases) -- carried alongside so a consent surface can show
+    both forms rather than only the decoded (spoofable-looking-safe) one.
+    The FULL original url is never altered by this check (see
+    :func:`build_url_metadata`).
     """
 
     host = urlsplit(url).hostname or ""
-    if not any(label.lower().startswith("xn--") for label in host.split(".")):
-        return False, host
+    labels = host.split(".")
+    if any(not label.isascii() for label in labels):
+        # Already Unicode -- no ACE form exists to decode; the raw string
+        # itself IS the display string, and it's exactly what must be flagged.
+        return True, host, host
+    if not any(label.lower().startswith("xn--") for label in labels):
+        return False, host, host
     try:
-        return True, host.encode("ascii").decode("idna")
+        return True, host.encode("ascii").decode("idna"), host
     except (UnicodeError, LookupError):
-        return True, host
+        return True, host, host
 
 
 # --- Answer -> content + validation ---
@@ -420,12 +465,34 @@ def _valid_scalar(value: Any, field_type: str, enum: Sequence[Any] | None) -> bo
     return True  # unconstrained (no declared type, no enum)
 
 
-def _valid_multi_enum(value: Any, item_type: str, enum: Sequence[Any]) -> bool:
+def _valid_multi_enum(
+    value: Any,
+    item_type: str,
+    enum: Sequence[Any],
+    *,
+    min_items: int | None = None,
+    max_items: int | None = None,
+) -> bool:
     """Validate a SEP-1330 multi-select answer: a list, every element a
     type-preserving member of the declared item ``enum`` (checked per-element
-    through :func:`_valid_scalar`, so the same type-preserving rule applies)."""
+    through :func:`_valid_scalar`, so the same type-preserving rule applies),
+    AND its length within ``[min_items, max_items]`` when the schema declared
+    either bound.
+
+    ``min_items`` is enforced independently of the field's own ``required``
+    flag: ``required`` governs whether the field may be ABSENT; a PRESENT
+    field (an explicit, possibly-empty selection) must still meet its own
+    ``minItems`` -- an optional field that carries a schema-declared minimum
+    selection count is not the same thing as an optional field, and a
+    reviewer-measured gap (Opus review, C1-S4) let an empty selection slip
+    through minItems:1 exactly because the two were conflated before.
+    """
 
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return False
+    if min_items is not None and len(value) < min_items:
+        return False
+    if max_items is not None and len(value) > max_items:
         return False
     return all(_valid_scalar(v, item_type, enum) for v in value)
 
@@ -491,8 +558,17 @@ def _field_validation_error(spec: Mapping[str, Any], content: Mapping[str, Any])
     field_type = str(spec.get("type") or "string")
     if spec.get("multi"):
         item_type = str(spec.get("item_type") or "string")
-        if _valid_multi_enum(value, item_type, enum or []):
+        min_items = spec.get("min_items")
+        max_items = spec.get("max_items")
+        if _valid_multi_enum(
+            value, item_type, enum or [], min_items=min_items, max_items=max_items
+        ):
             return None
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            if min_items is not None and len(value) < min_items:
+                return f"field {name!r} must select at least {min_items} of {list(enum or [])}"
+            if max_items is not None and len(value) > max_items:
+                return f"field {name!r} must select at most {max_items} of {list(enum or [])}"
         return f"field {name!r} must be a list of values from {list(enum or [])}"
     if _valid_scalar(value, field_type, enum):
         return None

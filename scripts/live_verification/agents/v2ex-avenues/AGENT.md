@@ -34,7 +34,8 @@ the synthetic v2 exerciser MCP server and a single `main` expert whose
 `tools:` frontmatter names every namespaced tool the exerciser serves
 (`v2ex_task_echo`, `v2ex_task_optional_echo`, `v2ex_plain_echo`,
 `v2ex_forbidden_echo`, `v2ex_guarded_input`, `v2ex_plain_guarded_input`,
-`v2ex_url_guarded_input` (C1-S4, #1284), `v2ex_staller`, `v2ex_plain_staller`,
+`v2ex_url_guarded_input` (C1-S4, #1284), `v2ex_url_guarded_input_idn` (Opus
+review addendum, C1-S4), `v2ex_staller`, `v2ex_plain_staller`,
 `v2ex_silent_sleeper`, `v2ex_ui_echo`) -- the same Agent Blueprint mechanism
 `agents/v2ex-testing/` and `agents/web-testing/` already prove works (#1301).
 Rides the SAME materialization mechanics

@@ -52,6 +52,7 @@ __all__ = [
     "SYNTHETIC_EXTENSION_ID",
     "TASKS_EXTENSION_ID",
     "UI_RESOURCE_URI",
+    "URL_GUARDED_INPUT_IDN_URL",
     "URL_GUARDED_INPUT_URL",
     "build_exerciser_server",
 ]
@@ -81,6 +82,17 @@ UI_RESOURCE_URI = "ui://v2ex/panel"
 #: declines, so this constant and that config value must stay in lockstep).
 URL_GUARDED_INPUT_URL = "https://mcp-clio.example.com/authorize"
 
+#: The IDN (ACE-encoded, ``xn--``) counterpart ``url_guarded_input_idn``
+#: elicits (Opus review addendum, C1-S4): the LIVE mrtr-url avenue can only
+#: ever prove ``punycode_warning`` with a plain-ASCII host, since
+#: ``URL_GUARDED_INPUT_URL`` above never trips it -- a live leg that never
+#: exercises the ``warning=True`` branch cannot prove that branch works.
+#: ``xn--nxasmq6b`` is the SAME real punycode-encoded (RFC 3492) IDN label
+#: ``tests/test_gact/test_elicitation_hitl.py`` already uses -- one known-good
+#: literal, not two independently-typed ones. Must stay in lockstep with the
+#: live-verification leg's trusted-origins env var, same as the ASCII url.
+URL_GUARDED_INPUT_IDN_URL = "https://xn--nxasmq6b.mcp-clio.example.com/authorize"
+
 #: The MRTR-capable resource ``guarded_resource`` serves (mrtr-methods avenue).
 GUARDED_RESOURCE_URI = "res://v2ex/guarded"
 
@@ -106,18 +118,21 @@ def _one_elicit(message: str) -> Any:
     )
 
 
-def _one_url_elicit(message: str) -> Any:
+def _one_url_elicit(message: str, url: str = URL_GUARDED_INPUT_URL) -> Any:
     """One serialized URL-mode ``ElicitRequest`` (C1-S4, #1284 mrtr-url avenue).
 
-    The exerciser's ONLY url-mode arm -- every other MRTR guard here
+    The exerciser's url-mode arms -- every other MRTR guard here
     (``guarded_input``, ``plain_guarded_input``) is form-mode via
     :func:`_one_elicit`. This is what a REAL URL-mode elicitation over the
     wire looks like (LEG_C2.md's mrtr-url finding: no MCP tool anywhere in
-    this repo emitted one before this).
+    this repo emitted one before this). ``url`` defaults to the plain-ASCII
+    origin; ``url_guarded_input_idn`` below passes the IDN counterpart so the
+    LIVE avenue can prove ``punycode_warning=True`` too, not just the
+    always-false ASCII case (Opus review addendum).
     """
 
     return mcp_types.ElicitRequest(
-        params=mcp_types.ElicitRequestURLParams(message=message, url=URL_GUARDED_INPUT_URL)
+        params=mcp_types.ElicitRequestURLParams(message=message, url=url)
     )
 
 
@@ -216,6 +231,29 @@ def build_exerciser_server() -> FastMCP:
         if not responses:
             return mcp_types.InputRequiredResult(
                 inputRequests={"q1": _one_url_elicit("Authorize CLIO")},
+                requestState="round-1",
+                resultType="input_required",
+            )
+        answer = responses.get("q1")
+        return f"answered:{getattr(answer, 'content', None)}"
+
+    @server.tool(task=TaskConfig(mode="required", poll_interval=timedelta(milliseconds=50)))
+    async def url_guarded_input_idn(ctx: Context) -> Any:
+        """IDN counterpart of ``url_guarded_input`` (Opus review addendum, C1-S4).
+
+        Identical shape, but elicits ``URL_GUARDED_INPUT_IDN_URL`` (an
+        ``xn--`` ACE-encoded host) instead of the plain-ASCII origin --
+        without this, the LIVE mrtr-url avenue can only ever observe
+        ``punycode_warning=False`` and never actually exercises the
+        ``warning=True`` branch it claims to prove (B5's homograph fix).
+        """
+
+        responses = ctx.input_responses
+        if not responses:
+            return mcp_types.InputRequiredResult(
+                inputRequests={
+                    "q1": _one_url_elicit("Authorize CLIO", url=URL_GUARDED_INPUT_IDN_URL)
+                },
                 requestState="round-1",
                 resultType="input_required",
             )
