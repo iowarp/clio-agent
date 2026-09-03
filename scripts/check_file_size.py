@@ -273,7 +273,14 @@ RATCHET_BASELINE: dict[str, int] = {
     # own treatment) at its one return site; the tally/format logic lives in the new
     # owner module agents/task_summary.py (shared with observe_agent_tasks), so only
     # the two-import + one-call declaration site landed here.
-    "src/clio_agent/gact/agents/spawn_runtime.py": 927,
+    # #1306: +27 for wait_agent_tasks's model-facing row now digesting an oversize
+    # completed child's output (durable session/message reference, never silent
+    # loss) and the new get_agent_task_output collector tool's registration --
+    # the digest function, the config-resolved cap, and the tool builder itself
+    # all live in the new owner module agents/agent_task_output_digest.py; only
+    # the two import blocks + the wait-loop's dict-spread call site + the one
+    # tools-list append + one collection_names entry landed here.
+    "src/clio_agent/gact/agents/spawn_runtime.py": 954,
     # (invoker.py's entry retired 2026-08: RelayExpertInvoker moved to its own
     # owner module agents/relay_expert_invoker.py, dropping invoker.py under the
     # 800 default cap — the #1221/#1222 contract-alignment growth that broke the

@@ -133,6 +133,7 @@ def test_react_main_with_children_gets_spawn_tools(tmp_path: Path, monkeypatch) 
             "check_agent_tasks",
             "message_agent",
             "observe_agent_tasks",
+            "get_agent_task_output",
             "spawn_agents_parallel",
         }
 
@@ -162,6 +163,7 @@ def test_spawn_effect_leaf_gets_collectors_not_declared_child_spawners(
             "check_agent_tasks",
             "message_agent",
             "observe_agent_tasks",
+            "get_agent_task_output",
         }
         assert "spawn_agent_task" not in names
         assert "spawn_agents_parallel" not in names
@@ -918,8 +920,11 @@ def test_spawn_agent_task_bare_spawn_error_still_emits_nothing(monkeypatch) -> N
 def test_wait_returns_child_answer_verbatim_past_the_excerpt_bound(monkeypatch) -> None:
     # No leading/trailing whitespace: _message_text strips (as it does when minting
     # the excerpt), so the verbatim contract is byte-for-byte on the stripped body.
-    big = " | ".join(f"line-{i:04d} the child's deliverable" for i in range(400))
-    assert len(big) > 2000, "fixture must exceed the 2000-char excerpt bound"
+    # Past the 2000-char excerpt bound but well under the #1306 digest cap (8000) --
+    # the oversize/digest case has its OWN test below with a fixture sized past
+    # that cap (test_wait_digests_oversize_child_answer_with_durable_reference).
+    big = " | ".join(f"line-{i:04d} the child's deliverable" for i in range(120))
+    assert 2000 < len(big) < 8_000, "fixture must sit strictly between the two bounds"
     registry = AgentTaskRegistry()
     registry.register(
         AgentTask(
@@ -945,6 +950,155 @@ def test_wait_returns_child_answer_verbatim_past_the_excerpt_bound(monkeypatch) 
     assert payload["output"] == big
     assert len(payload["output"]) == len(big) > 2000
     assert "output_source" not in payload
+
+
+# ---------------------------------------------------------------------------
+# #1306: an oversize completed child's output is DIGESTED on the model-facing
+# wait_agent_tasks row (a durable reference replaces the inline full text),
+# while the UI/semantic-event lane (the #880 return Part + delegation event)
+# keeps carrying the FULL verbatim output untouched — a different lane, same
+# split mcp_result_projection.py already draws for one MCP call's result.
+# ---------------------------------------------------------------------------
+
+
+def test_wait_digests_oversize_child_answer_with_durable_reference(monkeypatch) -> None:
+    # Sized to match the #1306 live evidence: one completed research child's own
+    # output measured roughly 14-15K chars (the proven-bad two-child observation
+    # totalled 30,546 chars). Comfortably over the 8000-char digest cap.
+    big = " | ".join(f"line-{i:04d} the child's deliverable" for i in range(400))
+    assert len(big) > 8_000, "fixture must exceed the #1306 digest cap"
+    registry = AgentTaskRegistry()
+    registry.register(
+        AgentTask(
+            task_id="task_big",
+            parent_session_id="sess_x",
+            child_session_id="child_big",
+            agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
+            status="completed",
+            result={"answer_excerpt": big[:2000], "workflow_state": {}, "message_ref": "msg_big"},
+        )
+    )
+    app = _fake_app(
+        registry, messages={"child_big": [_assistant_message("msg_big", "child_big", big)]}
+    )
+    emitted = _capture_emits(monkeypatch)
+    parts = _capture_parts(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_big"], timeout_s=1.0))
+
+    (payload,) = result["results"]
+    # The MODEL-facing row never carries the raw full text a second time.
+    assert big not in payload["output"]
+    envelope = json.loads(payload["output"])
+    assert envelope["_clio"]["status"] == "digested"
+    assert envelope["_clio"]["reason"] == "agent_task_output_oversize"
+    assert envelope["_clio"]["original_chars"] == len(big)
+    assert envelope["answer_excerpt"] == big[:2000]
+    assert envelope["task_id"] == "task_big"
+    assert envelope["child_session_id"] == "child_big"
+    assert envelope["message_ref"] == "msg_big"
+    assert envelope["fetch_full_output"] == {
+        "tool": "get_agent_task_output",
+        "args": {"task_id": "task_big"},
+    }
+
+    # The UI return Part + the delegation.completed semantic event are UNTOUCHED —
+    # the #880 verbatim contract still holds on that separate lane.
+    assert len(parts) == 1
+    _sid, part = parts[0]
+    assert part.metadata["output"] == big
+    completed = next(e for e in emitted if e["event_type"] == "blueprint.delegation.completed")
+    assert completed["payload"]["output"] == big
+
+
+def test_check_agent_tasks_never_inlines_full_output_regardless_of_size(monkeypatch) -> None:
+    """Regression pin: check_agent_tasks already returns only the bounded
+    ``answer_excerpt`` (never the raw ``output``) — true both below and above
+    the #1306 digest cap, so this tool needed no change to satisfy #1306."""
+
+    big = " | ".join(f"line-{i:04d} the child's deliverable" for i in range(400))
+    assert len(big) > 8_000
+    registry = AgentTaskRegistry()
+    registry.register(
+        AgentTask(
+            task_id="task_big",
+            parent_session_id="sess_x",
+            child_session_id="child_big",
+            agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
+            status="completed",
+            result={"answer_excerpt": big[:2000], "workflow_state": {}, "message_ref": "msg_big"},
+        )
+    )
+    app = _fake_app(
+        registry, messages={"child_big": [_assistant_message("msg_big", "child_big", big)]}
+    )
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        result = json.loads(tools["check_agent_tasks"].func(task_ids=["task_big"]))
+
+    (row,) = result["tasks"]
+    assert "output" not in row["result"]
+    assert row["result"]["answer_excerpt"] == big[:2000]
+    assert row["result"]["message_ref"] == "msg_big"
+    assert row["result"]["child_session_id"] == "child_big"
+
+
+def test_get_agent_task_output_tool_fetches_full_output_for_completed_task(monkeypatch) -> None:
+    """The #1306 recoverability half: the digest envelope's fetch_full_output
+    names this tool, and it resolves the FULL stored output verbatim."""
+
+    big = " | ".join(f"line-{i:04d} the child's deliverable" for i in range(400))
+    registry = AgentTaskRegistry()
+    registry.register(_completed_task("task_big"))
+    app = _fake_app(
+        registry,
+        messages={"child_1": [_assistant_message("msg_1", "child_1", big)]},
+    )
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        result = json.loads(tools["get_agent_task_output"].func(task_id="task_big"))
+
+    assert result["task_id"] == "task_big"
+    assert result["status"] == "completed"
+    assert result["output"] == big
+
+
+def test_get_agent_task_output_tool_typed_error_for_unknown_task(monkeypatch) -> None:
+    app = _fake_app()
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        result = json.loads(tools["get_agent_task_output"].func(task_id="task_ghost"))
+
+    assert result == {"error": "unknown_task", "task_id": "task_ghost"}
+
+
+def test_get_agent_task_output_tool_typed_error_for_non_terminal_task(monkeypatch) -> None:
+    registry = AgentTaskRegistry()
+    registry.register(
+        AgentTask(
+            task_id="task_running",
+            parent_session_id="sess_x",
+            child_session_id="child_1",
+            agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
+            status="running",
+        )
+    )
+    app = _fake_app(registry)
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        result = json.loads(tools["get_agent_task_output"].func(task_id="task_running"))
+
+    assert result == {"error": "task_not_terminal", "task_id": "task_running", "status": "running"}
 
 
 def test_wait_falls_back_to_excerpt_with_typed_marker_when_message_gone(monkeypatch) -> None:

@@ -435,6 +435,9 @@ def build_spawn_runtime_tools(
     """
 
     from clio_agent.gact.agent_messaging import build_message_agent_tool  # noqa: PLC0415
+    from clio_agent.gact.agents.agent_task_output_digest import (  # noqa: PLC0415
+        build_agent_task_output_tool,
+    )
     from clio_agent.gact.agents.invoker import (  # noqa: PLC0415
         InvokerError,
         SpawnError,
@@ -572,6 +575,9 @@ def build_spawn_runtime_tools(
             consume_notification,
             display_run_name,
         )
+        from clio_agent.gact.agents.agent_task_output_digest import (  # noqa: PLC0415
+            digest_agent_task_output,
+        )
 
         call_start = _time.monotonic()
         deadline = call_start + max(0.0, float(timeout_s or 0.0))
@@ -601,7 +607,24 @@ def build_spawn_runtime_tools(
                 structured_rows.append(wait_structured_row(tid, exc.reason, 0.0, ""))
                 continue
             payload = _completion_payload(app, task_result)
-            results.append(payload)
+            # #1306: the MODEL-facing row digests an oversize output (durable
+            # session/message reference + get_agent_task_output, never silent
+            # loss); the UI/semantic-event lane above (_emit_delegation_terminal,
+            # reached via task_result, never this dict) keeps the #880 verbatim
+            # payload untouched -- a different lane, same split
+            # mcp_result_projection.py already draws for one MCP call's result.
+            results.append(
+                {
+                    **payload,
+                    "output": digest_agent_task_output(
+                        payload["output"],
+                        task_id=task_result.task_id,
+                        child_session_id=task_result.child_session_id,
+                        message_ref=payload.get("message_ref", ""),
+                        answer_excerpt=str((task_result.result or {}).get("answer_excerpt", "")),
+                    ),
+                }
+            )
             structured_rows.append(
                 wait_structured_row(
                     display_run_name(
@@ -880,6 +903,9 @@ def build_spawn_runtime_tools(
         # OBSERVE posture (#1000): the read-only sibling of check_agent_tasks, built in
         # its owner module (observe_runtime) so this file stays under the size ratchet.
         build_observe_tool(),
+        # #1306 recoverability: fetches a digested (oversize) completed task's full
+        # stored output on demand; built in its own owner module for the same reason.
+        build_agent_task_output_tool(),
         native_tool(
             spawn_agents_parallel,
             name="spawn_agents_parallel",
@@ -901,6 +927,7 @@ def build_spawn_runtime_tools(
             "check_agent_tasks",
             "message_agent",
             "observe_agent_tasks",
+            "get_agent_task_output",
         }
         tools = [tool for tool in tools if getattr(tool, "name", "") in collection_names]
 
