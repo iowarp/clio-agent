@@ -473,7 +473,12 @@ class ClioAgent(SUT):
                     )
                 seen_ids.update(str(m.get("id")) for m in snapshot)
             messages = http.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
-            all_sessions = http.get("/v1/sessions").json()["sessions"]
+            # Scope to the run's workspace: the bare listing defaults to
+            # "ws_default" (routes/sessions.py list_sessions), which silently
+            # hid every spawned child session of a per-cell workspace run.
+            all_sessions = http.get("/v1/sessions", params={"workspace_id": workspace_id}).json()[
+                "sessions"
+            ]
             children = [r for r in all_sessions if r.get("parent_session_id") == session_id]
             # Full descendant tree (children of children, ...): child experts run
             # as REAL child sessions that spawn their own declared children in
