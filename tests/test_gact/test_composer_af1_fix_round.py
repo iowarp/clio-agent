@@ -422,6 +422,88 @@ def test_oversized_workspace_file_is_refused_with_a_typed_limit(tmp_path) -> Non
     assert detail["error"]["details"]["size_bytes"] == 64
 
 
+def test_queue_promotion_authorizes_referenced_parts_exactly_once(
+    tmp_path, monkeypatch
+) -> None:
+    """The promote door resolves references off-loop ONCE.
+
+    Before this fix, ``prepare_references`` authorized a queued message's
+    ``context_ref`` parts off-loop, and the synchronous ``accept_message`` it
+    handed off to re-authorized the SAME parts again on the loop thread -- the
+    digest work F1 moved off-loop ran twice per promotion instead of once.
+    """
+
+    import time
+
+    from clio_agent.gact import message_submission
+    from tests.test_gact.test_post_messages import SlowClioAgent
+
+    app = build_app(
+        sessions_path=tmp_path / "sessions.json", agent=SlowClioAgent(delay_s=2.0)
+    )
+    workspace_id, sid = _workspace_session(app, tmp_path, name="promote")
+    (tmp_path / "promote" / "notes.txt").write_text("hello reference", encoding="utf-8")
+
+    calls: list[int] = []
+    real_authorize = message_submission.authorize_context_reference_parts_sync
+
+    def counting_authorize(app_, session_, parts_):
+        calls.append(1)
+        return real_authorize(app_, session_, parts_)
+
+    monkeypatch.setattr(
+        message_submission, "authorize_context_reference_parts_sync", counting_authorize
+    )
+
+    with TestClient(app) as client:
+        started = client.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "hold the slot"}]},
+        )
+        assert started.status_code == 200, started.text
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not app.state.turn_runner.busy(sid):
+            time.sleep(0.02)
+        assert app.state.turn_runner.busy(sid)
+
+        listed = client.get(
+            f"/v1/workspaces/{workspace_id}/references",
+            params={"kinds": "workspace_file"},
+            headers=HEADERS,
+        ).json()["references"]
+        row = next(item for item in listed if item["id"] == "notes.txt")
+
+        created = client.post(
+            f"/v1/sessions/{sid}/queued-messages",
+            json={
+                "parts": [
+                    {"type": "text", "text": "look at this"},
+                    {
+                        "type": "context_ref",
+                        "ref_kind": "workspace_file",
+                        "ref_id": "notes.txt",
+                        "revision": row["revision"],
+                    },
+                ],
+                "client_message_id": "msg_ref_future",
+                "idempotency_key": "queue-ref-1",
+            },
+        )
+        assert created.status_code == 201, created.text
+        queued = created.json()
+
+        # Isolate the PROMOTE call's own authorization count; queueing legitimately
+        # authorized the reference once already, at a different point in time.
+        calls.clear()
+        promoted = client.post(
+            f"/v1/sessions/{sid}/queued-messages/{queued['id']}/promote",
+            json={"revision": queued["revision"], "delivery": "auto"},
+        )
+        assert promoted.status_code == 200, promoted.text
+
+    assert len(calls) == 1
+
+
 # --------------------------------------------------------------------------- #
 # Finding 5: a picked resource is attachable end to end
 # --------------------------------------------------------------------------- #
