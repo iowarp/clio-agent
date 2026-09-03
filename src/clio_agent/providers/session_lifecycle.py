@@ -9,13 +9,23 @@ extreme: every subagent keeps its OWN provider connection for its whole life
 (concurrency = live agents, parallel by default — the process-wide
 concurrency cap in :mod:`clio_agent.providers.claude_code_stream_bounds`
 survives only as a resource BACKSTOP, a computed runaway guard like
-``MAX_SPAWN_DEPTH``, never a correctness rule), and that connection dies
-DETERMINISTICALLY the instant the subagent's work is done — never guessed at
-by an idle-TTL sweep (the TTL stays as a safety net for paths this hook
-misses, not the primary release). Resurrection is automatic: a released
-provider simply reconnects on its next use (the existing connect-on-demand
-path every provider already has); this module supplies the missing half,
-deterministic release.
+``MAX_SPAWN_DEPTH``, never a correctness rule).
+
+**This module is the ABNORMAL-termination backstop, not the primary release
+(#1305 review round, the structural finding).** A CLEAN react-forward exit
+already releases deterministically today: a provider's own scope-teardown
+seam (for claude_code, ``stateful_common.stateful_scope``'s ``finally`` —
+see :mod:`clio_agent.providers.claude_code_lifecycle`) fires the moment
+``forward()`` returns, well BEFORE the AgentTask itself reaches terminal and
+this module's dispatch ever runs. So on the healthy, common path,
+:func:`release_session_resources` finds nothing to release — a clean no-op,
+and that is correct, not wasted work. What this module actually completes is
+the ABNORMAL paths where a provider's own clean-exit teardown never ran (a
+hard-cancelled child turn, a crashed forward) or narrowly raced it — the
+missing half the idle-TTL sweep alone cannot cover deterministically.
+Resurrection is automatic either way: a released provider simply reconnects
+on its next use (the existing connect-on-demand path every provider already
+has).
 
 **The seam is generic, not a claude_code special.** Any provider that holds
 per-session resources (a persistent SDK client, a pooled subprocess, a
@@ -26,12 +36,14 @@ established pattern — a SEPARATE registry because that one is keyed by an
 internal, session-UNRELATED react-loop scope token, minted fresh per
 ``forward()`` call, while THIS one is keyed by the GACT session id the
 completion hook actually has in hand). :func:`release_session_resources` is
-the single dispatch point, called from the ONE choke point every child
-agent-task completion path funnels through —
-``gact/task_fold.py::finish_agent_task_transition``, already race-guarded
-exactly-once by that fold's own ``applied``/``is_terminal`` winner check (see
-that module for why it — not ``agent_tasks.py``'s raw registry transition,
-which fires for every racing caller including the loser — is the right hook).
+the single dispatch point, called from ``gact/turn_spawn.py``'s
+``finalize_child_task_terminal`` — the shared terminal-effects helper EVERY
+child-task terminal path calls (the completion fold
+``task_fold.finish_agent_task_transition``, the cancel cascade
+``turn_spawn._cancel_one_child_task``, and both ``child_forward.py`` HITL-edge
+terminals — #1305 review round F3 found and closed the three that used to
+bypass it), each already race-guarded exactly-once at its own transition
+site.
 
 Consumer #1 (this slice): claude_code's ``ClaudeStreamClientPool`` (see
 :meth:`clio_agent.providers.claude_code_sessions.ClaudeStreamClientPool.release_session_resources`).
@@ -45,6 +57,13 @@ Dispatch is best-effort per provider: one provider's release failure is
 logged with a typed, queryable reason (#775 no-silent-fallback — never a bare
 ``except: pass``) and must never stop another provider's release, and must
 never propagate into the agent-task completion path that triggered it.
+
+**Contract (F9): must not block.** :func:`release_session_resources` is
+dispatched from ``gact/turn_spawn.py``'s terminal-effects helper on the
+SERVER'S OWN event loop (the task done-callback chain) — a registered
+provider's callback MUST NOT block that loop (no synchronous multi-second
+waits); see :func:`~clio_agent.providers.claude_code_lifecycle.release_session_resources_nonblocking`
+for the claude_code leg's non-blocking shape.
 """
 
 from __future__ import annotations
@@ -56,11 +75,16 @@ from collections.abc import Callable
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "NO_PROVIDERS_REGISTERED_REASON",
     "SESSION_RELEASE_FAILED_REASON",
     "register_session_lifecycle_provider",
     "release_session_resources",
     "reset_for_tests",
 ]
+
+#: Typed reason (F9) for a dispatch with zero registered providers -- distinct
+#: from a provider running and finding nothing to release for a given session.
+NO_PROVIDERS_REGISTERED_REASON = "session_lifecycle_no_providers_registered"
 
 #: Typed reason (#775 catalog discipline) for a provider's release callback
 #: raising. Not a full reason-catalog dict (this module has exactly one
@@ -89,22 +113,37 @@ def register_session_lifecycle_provider(release: Callable[[str], None]) -> None:
 def release_session_resources(session_id: str) -> None:
     """Dispatch one subagent's completion to every registered provider (#1305).
 
-    Called from the single choke point every child agent-task completion path
-    funnels through (``gact/task_fold.py::finish_agent_task_transition``) the
-    moment that subagent's ``AgentTask`` reaches a terminal status. A no-op
-    for an empty/missing ``session_id`` (defensive — this must never be the
-    reason a completion path breaks).
+    Called from ``gact/turn_spawn.py``'s ``finalize_child_task_terminal`` —
+    the shared terminal-effects helper every child-task terminal path calls,
+    the moment that subagent's ``AgentTask`` reaches a terminal status (see
+    module docstring for the full list of callers and why none of them is a
+    sole "choke point"). MUST NOT BLOCK (F9): dispatched on the server's own
+    event loop. A no-op for an empty/missing ``session_id`` (defensive — this
+    must never be the reason a completion path breaks).
 
     Best-effort per provider: a release failure is logged (typed,
     :data:`SESSION_RELEASE_FAILED_REASON`) and does NOT stop the remaining
     providers from running, and never propagates into the caller — the
     agent-task completion path that triggered this must never fail or stall
     because a provider's own cleanup misbehaved.
+
+    F9: zero registered providers is logged distinctly
+    (:data:`NO_PROVIDERS_REGISTERED_REASON`) from a provider running and
+    finding nothing to release for THIS session (a silent, provider-free
+    no-op vs. "ran, released nothing" must stay distinguishable in the trace).
     """
     if not session_id:
         return
     with _GUARD:
         providers = list(_PROVIDERS)
+    if not providers:
+        logger.debug(
+            "session lifecycle release: reason=%s session_id=%s -- no providers "
+            "registered (distinct from a provider running and releasing nothing)",
+            NO_PROVIDERS_REGISTERED_REASON,
+            session_id,
+        )
+        return
     for release in providers:
         try:
             release(session_id)

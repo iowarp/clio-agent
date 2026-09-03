@@ -113,6 +113,88 @@ def test_streaming_steady_tokens_stay_alive_past_idle(monkeypatch):
         assert lm_activity.lm_call_in_flight() is True
 
 
+def test_note_lm_activity_for_is_a_noop_for_the_unattributed_bucket(monkeypatch):
+    """``session_id=""`` (unattributed/off-turn) is falsy -- ``note_lm_activity_for``
+    must no-op for it exactly like an empty ``session_id`` anywhere else in
+    this module, never silently landing on the wrong (global) bucket."""
+    lm_activity.note_lm_start()  # lands in the "" unattributed bucket
+    lm_activity.note_lm_activity_for("")
+    assert lm_activity._STATE[""]["queued_last"] == 0.0
+
+
+def test_queued_signal_keeps_prefill_ceiling_past_the_streaming_idle_window(monkeypatch):
+    """F5 (#1305 review round): a queued connect-slot wait (note_lm_activity_for)
+    must NOT silently flip the call into STREAMING regime -- it stays under the
+    generous prefill ceiling, refreshed off ``queued_last``, not the tight
+    120s inter-token-idle window.
+
+    SABOTAGE: have ``note_lm_activity_for`` write ``last`` instead of a
+    distinct ``queued_last`` -> ``last > started`` becomes true -> the call
+    is misclassified STREAMING and this goes red at the 121s mark.
+    """
+    clk = _clock(monkeypatch)
+    lm_activity._STATE["sess-q1"] = {
+        "inflight": 1.0,
+        "started": clk["now"],
+        "last": clk["now"],
+        "queued_last": 0.0,
+    }
+    lm_activity.note_lm_activity_for("sess-q1")
+    clk["now"] += 121.0  # past the 120s STREAMING idle window
+    # Still in flight: queued regime uses the prefill ceiling, not the
+    # streaming idle window -- this would be False if misclassified.
+    assert lm_activity.lm_call_in_flight("sess-q1") is True
+
+
+def test_queued_signal_extends_past_the_static_started_ceiling_when_refreshed(monkeypatch):
+    """F5: a queue that genuinely outlasts the per-call ceiling measured off
+    ``started`` still counts as progress for as long as it keeps refreshing
+    ``queued_last`` -- the whole point of a REFRESHED queued signal over the
+    static NON-STREAMING fallback.
+    """
+    clk = _clock(monkeypatch)
+    lm_activity._STATE["sess-q2"] = {
+        "inflight": 1.0,
+        "started": clk["now"],
+        "last": clk["now"],
+        "queued_last": 0.0,
+    }
+    for _ in range(20):
+        clk["now"] += 200.0  # 20 * 200 = 4000s total, past the 1800s ceiling
+        lm_activity.note_lm_activity_for("sess-q2")
+        assert lm_activity.lm_call_in_flight("sess-q2") is True
+
+
+def test_queued_signal_without_refresh_still_falls_back_to_started_ceiling(monkeypatch):
+    """F5: a bucket that was NEVER queued (``queued_last`` stays 0) is
+    unaffected by the new regime -- the original NON-STREAMING/prefill
+    fallback measured off ``started`` is unchanged."""
+    clk = _clock(monkeypatch)
+    lm_activity.note_lm_start()
+    clk["now"] += 1801.0
+    assert lm_activity.lm_call_in_flight() is False
+
+
+def test_real_streaming_always_wins_over_a_stale_queued_signal(monkeypatch):
+    """F5: once a real token has streamed (``last`` > ``started``), the
+    STREAMING regime's tighter idle window is authoritative regardless of
+    whether ``queued_last`` is also fresh -- a queued signal must never
+    resurrect a call the streaming regime has already judged dead.
+    """
+    clk = _clock(monkeypatch)
+    lm_activity._STATE["sess-q3"] = {
+        "inflight": 1.0,
+        "started": clk["now"],
+        "last": clk["now"],
+        "queued_last": 0.0,
+    }
+    lm_activity.note_lm_activity_for("sess-q3")  # queued BEFORE the connect landed
+    clk["now"] += 5.0
+    lm_activity._STATE["sess-q3"]["last"] = clk["now"]  # first real token -> STREAMING engaged
+    clk["now"] += 121.0  # past the 120s inter-token window; queued_last is stale
+    assert lm_activity.lm_call_in_flight("sess-q3") is False
+
+
 def test_idle_window_env_override(monkeypatch):
     monkeypatch.setenv("CLIO_LM_INTER_TOKEN_IDLE_S", "30")
     clk = _clock(monkeypatch)
@@ -387,9 +469,7 @@ def test_note_lm_retry_reset_calls_bound_discard_hook():
     matching ``record_dedup``'s calling convention."""
 
     calls: list[int] = []
-    token = lm_activity._LIVE_CHUNK_EMITTER.set(
-        (None, None, None, lambda: calls.append(1))
-    )
+    token = lm_activity._LIVE_CHUNK_EMITTER.set((None, None, None, lambda: calls.append(1)))
     try:
         lm_activity.note_lm_retry_reset()
     finally:

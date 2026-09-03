@@ -132,13 +132,15 @@ def max_concurrent_claude_processes() -> int:
     tracks actively-streaming agents, not a growing leak) and (b) typed,
     liveness-feeding surfacing for any wait that DOES queue behind the cap
     (:func:`await_connect_slot`) — so a queued connect can no longer silently
-    burn either timeout. N=4 was validated live (deep-researcher run 5: zero
-    stalls; ~300-360 MB RSS per CLI process, scripts/mcp_mem_attribution.py) —
-    a fresh peak-budget recording against ``scripts/mcp_mem_budget.json`` at
-    N=4 is done by the release orchestrator on the live box at merge time (not
-    in this worktree — see #1305). Raise the default further only alongside
-    ANOTHER fresh, re-verified budget recording, never to make a regression
-    pass.
+    burn either timeout. N=4 was validated live -- see the iowarp/clio-agent#1305
+    comment dated 2026-09-03 (deep-researcher run 5: zero stalls at N=4,
+    verdict recorded on #1286; traces preserved under ``.grind/traces/``) for
+    the evidence; ~300-360 MB RSS per CLI process,
+    scripts/mcp_mem_attribution.py. A fresh peak-budget recording against
+    ``scripts/mcp_mem_budget.json`` at N=4 is done by the release orchestrator
+    on the live box at merge time (not in this worktree — see #1305). Raise
+    the default further only alongside ANOTHER fresh, re-verified budget
+    recording, never to make a regression pass.
 
     **The original N=1 measurement (historical, superseded above).** Against
     the recorded 1.42 GB peak budget (5% tolerance), N=4 measured 1.98 GB

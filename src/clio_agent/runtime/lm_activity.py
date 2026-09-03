@@ -50,7 +50,7 @@ _STATE: dict[str, dict[str, float]] = {}
 
 def _new_bucket() -> dict[str, float]:
     """A fresh, empty in-flight record for one session."""
-    return {"inflight": 0.0, "started": 0.0, "last": 0.0}
+    return {"inflight": 0.0, "started": 0.0, "last": 0.0, "queued_last": 0.0}
 
 
 def _bucket(session_id: str) -> dict[str, float]:
@@ -509,7 +509,7 @@ def note_lm_activity() -> None:
 
 
 def note_lm_activity_for(session_id: str) -> None:
-    """Refresh a SPECIFIC session's last-activity timestamp (#1305).
+    """Refresh a SPECIFIC session's QUEUED-connect liveness signal (#1305).
 
     :func:`note_lm_activity` resolves the session from the ``active_session_id``
     contextvar, which is only bound on the thread/task that has it in scope. The
@@ -521,6 +521,20 @@ def note_lm_activity_for(session_id: str) -> None:
     GACT session id explicitly (the same closure-captured ``gact_sid`` pattern
     ``_StreamClientEntry.stream`` already uses for kill-on-cancel) and passes it
     straight through.
+
+    **Regime honesty (#1305 review round, F5)**: this writes ``queued_last``,
+    a THIRD, DISTINCT signal from ``last`` -- never ``last`` itself. A queued
+    connect has produced ZERO tokens, so touching ``last`` would silently flip
+    :func:`_bucket_in_flight` from the generous prefill/non-streaming ceiling
+    (:func:`_max_lm_call_seconds`, ~1800s) to the much tighter inter-token-idle
+    window (:func:`_inter_token_idle_seconds`, ~120s) -- misclassifying "still
+    queued, zero tokens" as "actively streaming a token" and silently
+    shrinking the very ceiling the queue-wait is trying to keep the call under.
+    ``queued_last`` instead REFRESHES the prefill-style ceiling on its own
+    terms (see :func:`_bucket_in_flight`'s regime table), so a queue that
+    outlasts the per-call ceiling measured from ``started`` still counts as
+    progress for as long as the queue-wait itself keeps refreshing it -- and
+    is NEVER read once real streaming begins (``last > started`` always wins).
 
     A true no-op when no bucket exists yet for ``session_id`` -- unlike
     :func:`note_lm_activity` (which always operates through :func:`_bucket`,
@@ -537,7 +551,7 @@ def note_lm_activity_for(session_id: str) -> None:
     with _LOCK:
         st = _STATE.get(session_id)
         if st is not None:
-            st["last"] = time.monotonic()
+            st["queued_last"] = time.monotonic()
 
 
 def note_lm_end() -> None:
@@ -565,23 +579,45 @@ def note_lm_end() -> None:
 def _bucket_in_flight(st: dict[str, float]) -> bool:
     """True when one session's in-flight record still counts as progress.
 
-    Two regimes, picked by whether a token has actually streamed:
-    - STREAMING (``last`` > ``started`` -- ``note_lm_activity`` fired): the
-      inter-token idle window is authoritative. A genuinely generating reasoning
-      model keeps refreshing it per chunk and is never false-killed however long
-      it runs; a frozen (0-token) call stops refreshing and is abandoned at the
-      idle window. The coarse per-call ceiling does NOT apply here -- it only ever
-      existed because there was no finer wedge signal, which streaming now provides.
-    - NON-STREAMING / pre-first-token (``last`` == ``started``): no per-token
-      signal, so fall back to the per-call ceiling (wedge backstop). This also
-      covers prefill latency before the first token, so a still-prefilling call is
-      never false-killed at the idle window.
+    THREE regimes (#1305 review round, F5 added the QUEUED row), picked by
+    which signal is both PRESENT and MOST SPECIFIC to what is actually
+    happening -- never conflating "queued, zero tokens" with "streaming":
+
+    | regime      | trigger                          | ceiling                        | refreshed by            |
+    |-------------|-----------------------------------|---------------------------------|--------------------------|
+    | STREAMING   | ``last`` > ``started``            | ``_inter_token_idle_seconds()`` | ``note_lm_activity()``   |
+    | QUEUED      | ``last`` == ``started`` AND       | ``_max_lm_call_seconds()``      | ``note_lm_activity_for()``|
+    |             | ``queued_last`` > 0               | (prefill ceiling, REFRESHED)    |                          |
+    | NON-STREAMING| ``last`` == ``started`` AND      | ``_max_lm_call_seconds()``      | nothing (measured off    |
+    | (prefill)   | ``queued_last`` == 0              | (prefill ceiling, from ``started``)| ``started`` only)   |
+
+    - STREAMING: a real token has arrived (``note_lm_activity`` fired). The
+      inter-token idle window is authoritative -- a genuinely generating
+      reasoning model keeps refreshing it per chunk and is never false-killed
+      however long it runs; a frozen (0-token) call stops refreshing and is
+      abandoned at the idle window. STRICTLY CHECKED FIRST: once real tokens
+      flow, ``queued_last`` (a stale artifact of an earlier connect wait, if
+      any) is never consulted again.
+    - QUEUED: no token has streamed, but the connect-slot wait is actively
+      refreshing ``queued_last`` (:func:`~clio_agent.runtime.lm_activity.note_lm_activity_for`,
+      called from the claude_code connect-slot wait loop). Uses the SAME
+      generous prefill ceiling as NON-STREAMING below -- a queued call is not
+      generating any more than a still-connecting one is -- but measured off
+      ``queued_last`` (refreshed every poll attempt) rather than the static
+      ``started`` timestamp, so a queue that genuinely outlasts the per-call
+      ceiling still counts as progress for as long as it keeps refreshing.
+    - NON-STREAMING / pre-first-token, never queued (``last`` == ``started``
+      and ``queued_last`` == 0): no per-token OR per-queue-poll signal at all,
+      so fall back to the per-call ceiling measured off ``started`` (the
+      original prefill-latency wedge backstop, unchanged).
     """
     if st["inflight"] <= 0:
         return False
     now = time.monotonic()
     if st["last"] > st["started"]:
         return (now - st["last"]) < _inter_token_idle_seconds()
+    if st.get("queued_last", 0.0) > 0.0:
+        return (now - st["queued_last"]) < _max_lm_call_seconds()
     return (now - st["started"]) < _max_lm_call_seconds()
 
 

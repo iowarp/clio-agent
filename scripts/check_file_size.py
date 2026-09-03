@@ -715,6 +715,28 @@ RATCHET_BASELINE: dict[str, int] = {
     # lives in the owner modules providers/claude_code_stream_bounds.py and
     # providers/session_lifecycle.py -- only the threaded kwarg is here.
     "src/clio_agent/providers/claude_code_litellm.py": 868,
+    # NEW entry (#1305 review round): crossed the flat 800 cap (800 -> 825)
+    # for the F2/F4/F6b fixes an adversarial review demanded on
+    # _StreamClientEntry itself: (F2) the STREAM_END sentinel now queues
+    # BEFORE the abnormal-end reset in _pump's finally, so a cross-thread
+    # lifecycle release stopping the owner loop can never strand the
+    # consumer's unbounded chunks.get() (a one-thread-per-occurrence leak);
+    # (F4) stream()'s finally now cancels the still-queued _pump() future
+    # when the caller abandons before a slot was ever acquired (previously a
+    # "zombie" pump would eventually consume a slot and spawn a CLI nobody
+    # listens to); (F6b) a new monotonic ``_dead`` flag + a check at the top
+    # of _ensure_client refuses (typed, retryable) a connect from a caller
+    # holding an entry a #1305 lifecycle release already popped from the pool
+    # -- closing the orphaned-entry window where such a caller would
+    # otherwise reconnect+hold a slot invisible to sweep/close. All THREE are
+    # genuinely new _StreamClientEntry instance-state logic (the flag/queue-
+    # ordering/future the fixes touch), not extractable without breaking this
+    # class's own encapsulation; the much larger non-blocking release
+    # ORCHESTRATION those fixes support (F1/F2a) was moved OUT to the new
+    # owner module providers/claude_code_lifecycle.py instead of growing here
+    # (the #1305 release_session_resources() method itself now just delegates
+    # a single call). Ratchet back with the #714/#767 decomposition.
+    "src/clio_agent/providers/claude_code_sessions.py": 825,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
     # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
     # #947 DEBT (recorded 2026-07-18, #948 S4): residual over the pre-#947 count

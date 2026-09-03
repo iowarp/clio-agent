@@ -123,6 +123,49 @@ async def test_await_connect_slot_emits_typed_surfacing(monkeypatch: pytest.Monk
     assert "next_retry_s" in first
 
 
+async def test_await_connect_slot_surfacing_cadence_expands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F8: pin the surfacing CADENCE itself -- at least 2 rows, with the gap
+    between successive rows GROWING (mirrors arc.rpc_liveness's per-attempt
+    backoff), never a flat every-poll-attempt spam.
+
+    SABOTAGE: drop the ``elapsed >= next_surface_at`` gate (surface on every
+    failed poll attempt instead) -> dozens of rows with a ~poll_interval_s
+    flat gap, not a growing one -> the ``gaps == sorted(gaps)`` /
+    non-degenerate-growth assertions go red.
+    """
+    rows: list[dict[str, Any]] = []
+    monkeypatch.setattr(ccs, "stream_audit_enabled", lambda: True)
+    monkeypatch.setattr(
+        ccs, "stream_audit", lambda event, **fields: rows.append({"event": event, **fields})
+    )
+    # Shrink the cadence constants (not the poll interval) so the test proves
+    # the SHAPE of the backoff in well under a second of real wall-clock time.
+    monkeypatch.setattr(csb, "_SURFACE_INITIAL_S", 0.02)
+    monkeypatch.setattr(csb, "_SURFACE_MAX_S", 1.0)
+    monkeypatch.setattr(csb, "_SURFACE_BACKOFF_FACTOR", 3.0)
+
+    slots = threading.Semaphore(0)
+    task = asyncio.create_task(
+        csb.await_connect_slot(slots, session_id="sess-cadence", poll_interval_s=0.01)
+    )
+    try:
+        await asyncio.sleep(0.3)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    connect_rows = [r for r in rows if r["event"] == "provider.connect_wait"]
+    assert len(connect_rows) >= 2  # SABOTAGE: surface once and never again -> red
+    elapsed = [r["elapsed_s"] for r in connect_rows]
+    gaps = [b - a for a, b in zip(elapsed, elapsed[1:], strict=False)]
+    assert all(g > 0 for g in gaps)  # strictly forward progress between rows
+    assert gaps == sorted(gaps)  # the gap between rows never SHRINKS (backoff grows)
+    assert gaps[-1] > gaps[0]  # and it genuinely widened, not a flat cadence
+
+
 # --------------------------------------------------------------------------- #
 # (c) Progress-feed: the queue counts as turn-watchdog liveness.
 # --------------------------------------------------------------------------- #
@@ -133,13 +176,18 @@ async def test_await_connect_slot_feeds_lm_activity_liveness(
     (the SAME record the 900s no-progress watchdog reads via
     ``lm_call_in_flight``) -- a queued turn is progress, never a stall.
 
+    F5 (#1305 review round): the refresh must land on the DISTINCT
+    ``queued_last`` field, never ``last`` -- writing ``last`` would silently
+    flip the bucket into STREAMING regime (a much tighter ceiling) despite
+    zero tokens ever having flowed.
+
     SABOTAGE: drop the ``note_lm_activity_for(session_id)`` call from the poll
-    loop -> ``last`` never advances past the seeded 0.0 -> this goes red.
+    loop -> ``queued_last`` never advances past the seeded 0.0 -> this goes red.
     """
     sid = "sess-liveness"
     # Seed an existing in-flight bucket, mirroring note_lm_start() having
     # already fired (before the transport call began) for a real LM call.
-    lm_activity._STATE[sid] = {"inflight": 1.0, "started": 0.0, "last": 0.0}
+    lm_activity._STATE[sid] = {"inflight": 1.0, "started": 0.0, "last": 0.0, "queued_last": 0.0}
     try:
         slots = threading.Semaphore(0)
         task = asyncio.create_task(
@@ -151,7 +199,8 @@ async def test_await_connect_slot_feeds_lm_activity_liveness(
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-        assert lm_activity._STATE[sid]["last"] > 0.0
+        assert lm_activity._STATE[sid]["queued_last"] > 0.0
+        assert lm_activity._STATE[sid]["last"] == 0.0  # never touched -- still NON-STREAMING
         assert lm_activity.lm_call_in_flight(sid) is True
     finally:
         lm_activity._STATE.pop(sid, None)
@@ -201,8 +250,13 @@ async def test_queued_connect_does_not_burn_the_per_call_sdk_timeout(
     )
     try:
         await asyncio.sleep(0.4)  # >> the 0.05s "call timeout"
+        # F8: the prior form (``assert X is None if done else True``) parses as
+        # ``assert (X is None) if done else True`` -- since done is False here
+        # it silently reduces to ``assert True``, a vacuous no-op. Assert the
+        # real property: the task is still genuinely pending (no result AND no
+        # exception set), not merely "not done" by some other stalled path.
         assert not task_b.done()  # still queued, not failed/timed out
-        assert task_b.exception() is None if task_b.done() else True
+        assert not task_b.cancelled()
 
         await entry_a._areset_client()  # free the slot
         result = await asyncio.wait_for(task_b, timeout=1.0)
@@ -211,6 +265,52 @@ async def test_queued_connect_does_not_burn_the_per_call_sdk_timeout(
             task_b.cancel()
     assert result  # entry_b's own (fresh, un-starved) SDK exchange completed
     assert state["connected"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# F4 (#1305 review round): a caller that abandons a STILL-QUEUED stream must
+# never leave a "zombie" pump behind -- one that eventually acquires the slot
+# and spawns a CLI subprocess nobody is listening to.
+# --------------------------------------------------------------------------- #
+async def test_abandoning_a_queued_stream_never_consumes_a_slot_or_spawns_a_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller that abandons ``stream()`` WHILE still queued for a connect
+    slot (before ``register_sdk_stream`` ever ran -- kill-on-cancel has
+    nothing to grab onto yet) must not leave ``_pump()`` running: no slot may
+    ever be consumed, no CLI subprocess ever spawned, even once the slot
+    later frees up.
+
+    SABOTAGE: drop the ``fut.cancel()`` call from ``stream()``'s abandon path
+    -> ``_pump()`` keeps running queued, eventually acquires entry_a's freed
+    slot and connects -> ``state["connected"]`` goes to 2 -> this goes red.
+    """
+    state = _install_fake_sdk(monkeypatch)
+    slots = threading.Semaphore(1)
+    entry_a = ccs._StreamClientEntry(lambda: object(), connect_slots=slots)
+    entry_b = ccs._StreamClientEntry(lambda: object(), connect_slots=slots)
+
+    await entry_a._ensure_client(lambda: None)  # holds the only slot
+    assert state["connected"] == 1
+
+    gen = entry_b.stream(payload="p", session_id="sid-b", timeout=None, on_construct=lambda: None)
+    anext_task = asyncio.create_task(gen.__anext__())
+    await asyncio.sleep(0.1)  # let entry_b genuinely start queueing
+    assert not anext_task.done()
+
+    # The caller abandons: cancel its own await (the async-generator-driving
+    # task), never having drained anything.
+    anext_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
+        await anext_task
+    with contextlib.suppress(Exception):
+        await gen.aclose()
+
+    # NOW free entry_a's slot. A zombie entry_b pump would silently consume
+    # it and connect a CLI nobody is listening to.
+    await entry_a._areset_client()
+    await asyncio.sleep(0.3)
+    assert state["connected"] == 1  # only entry_a ever connected
 
 
 # --------------------------------------------------------------------------- #

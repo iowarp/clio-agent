@@ -53,8 +53,8 @@ def fail_child_task(app: "FastAPI", task: Any, child_sid: str, reason: str, mode
 
     from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
         _admit_next_queued,
-        _fire_subagent_stop,
         _now,
+        finalize_child_task_terminal,
     )
 
     reg = app.state.agent_task_registry
@@ -70,7 +70,7 @@ def fail_child_task(app: "FastAPI", task: Any, child_sid: str, reason: str, mode
         updated = reg.get(task.task_id) or task
     persist_agent_task(app, updated)
     publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[updated.status])
-    _fire_subagent_stop(app, updated, child_sid)
+    finalize_child_task_terminal(app, updated, child_sid)  # #1305 review round F3
     _admit_next_queued(app)
 
 
@@ -167,8 +167,8 @@ def _complete_forwarded_task(app: "FastAPI", task: Any) -> None:
 
     from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
         _admit_next_queued,
-        _fire_subagent_stop,
         _now,
+        finalize_child_task_terminal,
     )
 
     reg = app.state.agent_task_registry
@@ -188,5 +188,5 @@ def _complete_forwarded_task(app: "FastAPI", task: Any) -> None:
         updated = reg.get(task.task_id) or task
     persist_agent_task(app, updated)
     publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[updated.status])
-    _fire_subagent_stop(app, updated, task.child_session_id)
+    finalize_child_task_terminal(app, updated, task.child_session_id)  # #1305 review round F3
     _admit_next_queued(app)

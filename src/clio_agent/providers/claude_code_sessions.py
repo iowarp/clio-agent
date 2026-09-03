@@ -84,7 +84,6 @@ from clio_agent.providers.claude_code_stream_bounds import (
     max_concurrent_claude_processes,
     note_scope_owner,
     reap_idle_stream_entry,
-    scopes_for_session,
     stream_idle_ttl_s,
     sweep_idle_scoped_entries,
 )
@@ -346,6 +345,10 @@ class _StreamClientEntry:
         self._activity_lock = threading.Lock()
         self._in_flight = False
         self._idle_since = time.monotonic()
+        # #1305 F6b: set when claude_code_lifecycle pops this entry out of the
+        # pool -- refuses a LATE connect from a caller already holding it
+        # from an earlier entry_for() (closes the orphaned-entry window).
+        self._dead = False
 
     def _ensure_loop(self) -> None:
         with self._lock:
@@ -405,15 +408,20 @@ class _StreamClientEntry:
 
         WAITS for a free process-wide connect slot before connecting when one
         is configured — never fails or degrades (:meth:`_acquire_connect_slot`).
+        That wait is UNBOUNDED and runs BEFORE ``timeout`` applies to anything
+        — only construct+connect below is bounded by it (#1305 accounting
+        fix; full rationale: ``claude_code_stream_bounds.await_connect_slot``).
 
-        **#1305 accounting fix**: that wait is UNBOUNDED and runs BEFORE
-        ``timeout`` applies to anything; only construct+connect below is
-        bounded by it. Previously ONE ``asyncio.timeout`` wrapped the slot
-        wait AND the query/receive exchange together, so a queued connect
-        silently burned the SDK bridge's per-call timeout purely from waiting
-        (root-caused live, #1305 — full rationale:
-        ``claude_code_stream_bounds.await_connect_slot``).
+        F6b: refuses (typed, retryable) when :attr:`_dead` — a lifecycle
+        release popped this entry while a caller already held it from an
+        earlier ``entry_for()``. Monotonic, so no lock is needed here.
         """
+        if self._dead:
+            from clio_agent.providers.claude_code_lifecycle import (  # noqa: PLC0415
+                dead_entry_error_message,
+            )
+
+            raise RuntimeError(dead_entry_error_message())
         if self._client is not None:
             return self._client
         async with self._connect_lock:
@@ -458,11 +466,10 @@ class _StreamClientEntry:
         owner loop (#993 kill-on-cancel).
 
         Scheduled cross-thread from the cancel path: disconnecting the pooled
-        ``ClaudeSDKClient`` terminates its ``claude`` CLI subprocess, which ends the
-        in-flight ``receive_response()`` and stops the late-op flood. Only THIS entry's
-        connection is dropped (the next same-key caller reconnects on demand); other
-        pooled entries and other sessions' streams are untouched. Best-effort — a closed
-        owner loop (teardown) or a scheduling fault is swallowed, never raised into cancel.
+        ``ClaudeSDKClient`` ends its CLI subprocess (and the in-flight
+        ``receive_response()``, stopping the late-op flood). Only THIS entry
+        drops — other pooled entries/sessions are untouched. Best-effort: a
+        closed owner loop or scheduling fault is swallowed, never raised.
         """
 
         loop = self._loop
@@ -513,12 +520,17 @@ class _StreamClientEntry:
             finally:
                 if handle is not None:
                     unregister_sdk_stream(handle)
+                # #1305 F2 strand fix: END BEFORE the reset below -- the caller
+                # blocks in an UNBOUNDED chunks.get() on a worker thread; a
+                # cross-thread lifecycle release can stop THIS owner loop out
+                # from under the reset's await, and END queued after it would
+                # then never arrive, permanently stranding that worker thread.
+                chunks.put((_STREAM_END, None))
                 if not clean:
                     # Mid-cycle end (timeout/error/cancel/kill-on-cancel): drop the
                     # connection so its leftover response can never bleed into the next
                     # call. Idempotent with a kill-on-cancel reset that already ran.
                     await self._areset_client()
-                chunks.put((_STREAM_END, None))
 
         fut = asyncio.run_coroutine_threadsafe(_pump(), self._loop)
         try:
@@ -531,6 +543,15 @@ class _StreamClientEntry:
                 yield val
         finally:
             if not fut.done():
+                # #1305 F4 zombie-pump fix: a caller abandoning a still-QUEUED
+                # stream (before register_sdk_stream ever runs) previously left
+                # _pump() running forever, eventually spawning a CLI nobody
+                # listens to. Cancelling propagates to _pump() via
+                # run_coroutine_threadsafe's chaining, unwinding it at its next
+                # await (await_connect_slot's bounded poll) before it ever
+                # consumes a slot. Safe alongside the reset below regardless
+                # of which stage _pump() was actually in.
+                fut.cancel()
                 # Caller abandoned mid-stream: reset the client on the owner loop so
                 # a half-drained connection is never reused.
                 with contextlib.suppress(Exception):
@@ -613,13 +634,12 @@ class ClaudeStreamClientPool:
         every ENGAGED (delta-capable) send: a delta rides the conversation state of
         the connection it is sent on, so two concurrent expert loops multiplexing
         delta runs over ONE connection cross their conversations — the AGENT-COPPER12
-        defect, where a child expert's delta send under its own ``session_id``
-        returned the PARENT's continuation (the SDK connection, not the per-call
-        ``session_id``, is the real conversation boundary for resumed sends).
-        Scope-keyed entries give each stateful loop its own connection; the loop's
-        many iterations still amortize the one connect (#891). Non-engaged sends
-        (full prompt under a fresh ``session_id``) stay on the shared base entry —
-        the per-call boundary IS proven for those.
+        defect (a child's delta returned the PARENT's continuation, since the
+        SDK connection — not the per-call ``session_id`` — is the real resume
+        boundary). Scope-keyed entries give each stateful loop its own
+        connection; the loop's many iterations still amortize the one connect
+        (#891). Non-engaged sends (full prompt, fresh ``session_id``) stay on
+        the shared base entry — the per-call boundary IS proven for those.
 
         ``gact_session_id`` (#1305) records the owning session for
         :meth:`release_session_resources` (``note_scope_owner``). A
@@ -666,8 +686,11 @@ class ClaudeStreamClientPool:
         """Close and drop every entry keyed to ``scope`` (loop/scope teardown).
 
         Called by :func:`~clio_agent.providers.stateful_common.stateful_scope`
-        on loop end (#900) AND by :meth:`release_session_resources` (#1305) —
-        idempotent either way. Also trims the #1305 bookkeeping via
+        on clean loop end (#900) — the primary, common-path release; see
+        :meth:`release_session_resources` for the (non-blocking) abnormal-path
+        backstop. This BLOCKS (``close_blocking``, up to 15s/entry) so it must
+        only ever run off the server's own event loop (a react forward's own
+        thread, atexit, tests). Also trims the #1305 bookkeeping via
         ``forget_scope_owner``. Best-effort: logged by the entry, never raised.
         """
         if not scope:
@@ -681,16 +704,18 @@ class ClaudeStreamClientPool:
                 entry.close_blocking()
 
     def release_session_resources(self, session_id: str) -> None:
-        """Provider-agnostic per-subagent connection release (#1305).
-
-        The claude_code leg of :mod:`clio_agent.providers.session_lifecycle`
-        (full rationale + dispatch point there): releases every scope-keyed
-        entry ``note_scope_owner`` recorded for ``session_id`` — none is a
-        clean no-op. Resurrection is automatic (:meth:`entry_for` reconnects
-        on next use). The shared BASE entry is never touched here.
+        """Provider-agnostic per-subagent connection release (#1305) --
+        the ABNORMAL-termination backstop (a clean exit already released via
+        :meth:`release`, see :mod:`clio_agent.providers.claude_code_lifecycle`'s
+        docstring). Delegates there (not :meth:`release`) because THIS runs on
+        the server's own event loop and must never block or evict an in-flight
+        entry.
         """
-        for scope in scopes_for_session(self, session_id):
-            self.release(scope)
+        from clio_agent.providers.claude_code_lifecycle import (  # noqa: PLC0415
+            release_session_resources_nonblocking,
+        )
+
+        release_session_resources_nonblocking(self, session_id)
 
     def mark_reset(self, scope: str, reason: str) -> None:
         """Scope-registry protocol no-op: a prefix reset keeps the connection.

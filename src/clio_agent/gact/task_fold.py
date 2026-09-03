@@ -94,10 +94,7 @@ def finish_agent_task_transition(app: "FastAPI", outcome: AgentTaskFoldOutcome) 
     from clio_agent.gact.loop_inbox import enqueue_completion_wake  # noqa: PLC0415
     from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
         _admit_next_queued,
-        _fire_subagent_stop,
-    )
-    from clio_agent.providers.session_lifecycle import (  # noqa: PLC0415
-        release_session_resources,
+        finalize_child_task_terminal,
     )
 
     # Clean-wire (owner, 2026-08-05): the child's final assistant message carries
@@ -111,19 +108,17 @@ def finish_agent_task_transition(app: "FastAPI", outcome: AgentTaskFoldOutcome) 
     # independent of whether/when the parent gets another turn. Idempotent and
     # never-raising, the same discipline as stamp_delegation_return above.
     reconcile_stored_handoff_part(app, outcome.task)
-    _fire_subagent_stop(app, outcome.task, outcome.task.child_session_id)
-    # #1305: this is THE single choke point every child agent-task completion
-    # path funnels through (the local done-callback via ``_on_child_done`` AND
-    # the remote/transport fold via ``fold_agent_task_event`` both land here),
-    # already race-guarded exactly-once by ``outcome.applied`` +
-    # ``outcome.task.is_terminal`` above -- so this is where a subagent's
-    # provider connection(s) die DETERMINISTICALLY, not left to an idle-TTL
-    # sweep to eventually notice. Generic across providers (claude_code today,
-    # codex a documented follow-on) -- see ``providers/session_lifecycle.py``.
-    # Best-effort/never-raising by contract: a release failure must never
-    # break task-completion bookkeeping or strand the freed-slot admission
-    # below.
-    release_session_resources(outcome.task.child_session_id)
+    # #1305: fires SubagentStop + releases the child's provider connection(s)
+    # deterministically (see turn_spawn.finalize_child_task_terminal). This is
+    # ONE of FOUR terminal paths that call it -- NOT the sole choke point (a
+    # prior version of this comment claimed that; #1305 review round F3
+    # proved 3 others -- turn_spawn._cancel_one_child_task and
+    # child_forward.fail_child_task / _complete_forwarded_task -- also
+    # terminalize a child task and now route through the SAME shared helper).
+    # This one is race-guarded exactly-once by ``outcome.applied`` +
+    # ``outcome.task.is_terminal`` above; the other three carry their own
+    # equivalent guards at their own transition sites.
+    finalize_child_task_terminal(app, outcome.task, outcome.task.child_session_id)
     enqueue_completion_wake(app, outcome.task)
     _admit_next_queued(app)
 
