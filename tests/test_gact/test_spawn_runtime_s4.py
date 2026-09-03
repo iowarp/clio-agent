@@ -989,9 +989,15 @@ def test_wait_digests_oversize_child_answer_with_durable_reference(monkeypatch) 
         result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_big"], timeout_s=1.0))
 
     (payload,) = result["results"]
-    # The MODEL-facing row never carries the raw full text a second time.
-    assert big not in payload["output"]
-    envelope = json.loads(payload["output"])
+    # The MODEL-facing row never carries the raw full text a second time. The
+    # envelope is a nested OBJECT (finding 3 of the #1306 review round) -- the
+    # WHOLE wait_agent_tasks return was already one json.loads above, so
+    # payload["output"] is already a parsed dict here, never a second
+    # JSON-encoded string to re-parse (that double-encoding was the bug).
+    envelope = payload["output"]
+    assert isinstance(envelope, dict)
+    assert "output" not in envelope
+    assert big not in json.dumps(envelope)
     assert envelope["_clio"]["status"] == "digested"
     assert envelope["_clio"]["reason"] == "agent_task_output_oversize"
     assert envelope["_clio"]["original_chars"] == len(big)
@@ -1011,6 +1017,44 @@ def test_wait_digests_oversize_child_answer_with_durable_reference(monkeypatch) 
     assert part.metadata["output"] == big
     completed = next(e for e in emitted if e["event_type"] == "blueprint.delegation.completed")
     assert completed["payload"]["output"] == big
+
+
+def test_wait_verbatim_at_default_cap_boundary_through_real_path(monkeypatch) -> None:
+    """#1306 review round, finding 9a: a verbatim regression pin at the DEFAULT
+    cap boundary (no set_config override) through the REAL wait path -- proves
+    the boundary itself (len(output) <= cap stays inline), not a reconfigured
+    one, so drift in the resolved default silently breaks this."""
+
+    from clio_agent.gact.agents.agent_task_output_digest import (
+        agent_task_output_digest_chars,
+    )
+
+    default_cap = agent_task_output_digest_chars()
+    assert default_cap == 8_000, "this pin assumes the documented default; update it if it moves"
+    exact = "x" * default_cap
+    registry = AgentTaskRegistry()
+    registry.register(
+        AgentTask(
+            task_id="task_exact",
+            parent_session_id="sess_x",
+            child_session_id="child_exact",
+            agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
+            status="completed",
+            result={"answer_excerpt": exact[:2000], "workflow_state": {}, "message_ref": "msg_e"},
+        )
+    )
+    app = _fake_app(
+        registry, messages={"child_exact": [_assistant_message("msg_e", "child_exact", exact)]}
+    )
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_exact"], timeout_s=1.0))
+
+    (payload,) = result["results"]
+    assert payload["output"] == exact
+    assert len(payload["output"]) == default_cap
 
 
 def test_check_agent_tasks_never_inlines_full_output_regardless_of_size(monkeypatch) -> None:
@@ -1067,6 +1111,268 @@ def test_get_agent_task_output_tool_fetches_full_output_for_completed_task(monke
     assert result["task_id"] == "task_big"
     assert result["status"] == "completed"
     assert result["output"] == big
+
+
+def test_get_agent_task_output_tool_exempt_from_model_tool_result_chars(monkeypatch) -> None:
+    """#1306 review round, finding 7: the crux regression pin. get_agent_task_output
+    is a NATIVE tool, not an MCP call -- it must never be silently swept into the
+    generic MCP-result bound a future cleanup could apply uniformly. Fetch
+    something longer than model_tool_result_chars() through the REAL tool and
+    assert byte-length equality: the truncation exemption is an emergent
+    property today (only mcp_executor.py calls bounded_model_tool_result), not
+    an enforced contract -- this pin is what would catch it silently regressing."""
+
+    from clio_agent.tools.mcp_result_projection import model_tool_result_chars
+
+    bound = model_tool_result_chars()
+    big = "x" * (bound + 5_000)
+    assert len(big) > bound
+    registry = AgentTaskRegistry()
+    registry.register(_completed_task("task_huge"))
+    app = _fake_app(
+        registry,
+        messages={"child_1": [_assistant_message("msg_1", "child_1", big)]},
+    )
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        result = json.loads(tools["get_agent_task_output"].func(task_id="task_huge"))
+
+    assert len(result["output"]) == len(big)
+    assert result["output"] == big
+
+
+def test_get_agent_task_output_tool_returns_material_for_failed_task(monkeypatch) -> None:
+    """#1306 review round, finding 9b: the chosen contract for get_agent_task_output
+    on a FAILED (terminal, not completed) task is the FULL stored material --
+    whatever answer text existed plus the typed error_reason -- never a refusal.
+    Only an unknown id or a still-in-flight one refuses."""
+
+    registry = AgentTaskRegistry()
+    registry.register(
+        AgentTask(
+            task_id="task_bad",
+            parent_session_id="sess_x",
+            child_session_id="child_1",
+            agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
+            status="failed",
+            error_reason="agent_error",
+            result={
+                "answer_excerpt": "partial draft before it failed",
+                "workflow_state": {},
+                "message_ref": "msg_1",
+            },
+        )
+    )
+    app = _fake_app(
+        registry,
+        messages={
+            "child_1": [_assistant_message("msg_1", "child_1", "partial draft before it failed")]
+        },
+    )
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        result = json.loads(tools["get_agent_task_output"].func(task_id="task_bad"))
+
+    assert "error" not in result
+    assert result["status"] == "failed"
+    assert result["output"] == "partial draft before it failed"
+    assert result["error_reason"] == "agent_error"
+
+
+# ---------------------------------------------------------------------------
+# #1306 review round, finding 1 (the crux): input_task_ids on spawn_agent_task /
+# spawn_agents_parallel -- the OTHER recoverability direction. The parent hands
+# a CHILD (never itself) the full stored output of its own already-finished
+# tasks as labeled evidence, so a critic never forces the coordinator to
+# fetch-and-reinline researcher material through itself.
+# ---------------------------------------------------------------------------
+
+
+def _register_completed_researcher(
+    registry: AgentTaskRegistry, task_id: str, child_session_id: str
+) -> None:
+    registry.register(
+        AgentTask(
+            task_id=task_id,
+            parent_session_id="sess_x",
+            child_session_id=child_session_id,
+            agent_ref={"expert_id": "researcher", "requesting_expert_id": "main"},
+            status="completed",
+            result={"answer_excerpt": "excerpt", "workflow_state": {}, "message_ref": "msg_1"},
+        )
+    )
+
+
+def test_spawn_agent_task_input_task_ids_forwards_full_evidence_to_child(monkeypatch) -> None:
+    """The crux flow: a parent spawns a critic with two already-finished
+    researchers' full output as evidence. The CHILD's own briefing carries
+    both full answers, clearly labeled; the parent's spawn call itself never
+    touches that text (it only passed ids)."""
+
+    registry = AgentTaskRegistry()
+    _register_completed_researcher(registry, "task_r1", "child_r1")
+    _register_completed_researcher(registry, "task_r2", "child_r2")
+    app = _fake_app(
+        registry,
+        messages={
+            "child_r1": [_assistant_message("msg_1", "child_r1", "researcher ONE's full report")],
+            "child_r2": [_assistant_message("msg_1", "child_r2", "researcher TWO's full report")],
+        },
+    )
+    spy = _InvokeSpy()
+    app.state.expert_invoker = spy
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"researcher", "critic"}, monkeypatch)
+        result = json.loads(
+            tools["spawn_agent_task"].func(
+                agent="critic",
+                task="synthesize a verdict",
+                input_task_ids=["task_r1", "task_r2"],
+            )
+        )
+
+    assert result["task_id"] == "task_via_invoker"
+    assert len(spy.specs) == 1
+    briefing = spy.specs[0].task_text
+    assert briefing.startswith("synthesize a verdict")
+    assert "researcher ONE's full report" in briefing
+    assert "researcher TWO's full report" in briefing
+    assert "task_r1" in briefing
+    assert "task_r2" in briefing
+    assert "researcher" in briefing
+
+
+def test_spawn_agents_parallel_per_entry_input_task_ids(monkeypatch) -> None:
+    """The batch path threads input_task_ids per spawn entry -- one child gets
+    evidence, its sibling in the SAME batch call is unaffected."""
+
+    registry = AgentTaskRegistry()
+    _register_completed_researcher(registry, "task_r1", "child_r1")
+    app = _fake_app(
+        registry,
+        messages={
+            "child_r1": [_assistant_message("msg_1", "child_r1", "researcher's full report")]
+        },
+    )
+    spy = _InvokeSpy()
+    app.state.expert_invoker = spy
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"researcher", "critic"}, monkeypatch)
+        result = json.loads(
+            tools["spawn_agents_parallel"].func(
+                spawns=[
+                    {"agent": "critic", "task": "review", "input_task_ids": ["task_r1"]},
+                    {"agent": "researcher", "task": "dig deeper"},
+                ]
+            )
+        )
+
+    assert len(result["spawned"]) == 2
+    assert len(spy.specs) == 2
+    assert "researcher's full report" in spy.specs[0].task_text
+    assert spy.specs[1].task_text == "dig deeper"
+
+
+def test_spawn_agent_task_input_task_ids_unknown_refuses_no_child_created(monkeypatch) -> None:
+    """Failing-first: a foreign/unknown/incomplete id refuses the WHOLE spawn --
+    no child is ever created (the invoker is never even called)."""
+
+    app = _fake_app()
+    spy = _InvokeSpy()
+    app.state.expert_invoker = spy
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"critic"}, monkeypatch)
+        result = json.loads(
+            tools["spawn_agent_task"].func(
+                agent="critic", task="review", input_task_ids=["task_ghost"]
+            )
+        )
+
+    assert result["error"] == "task_ref_unknown"
+    assert spy.specs == []
+
+
+def test_spawn_agent_task_input_task_ids_foreign_refuses_no_child_created(monkeypatch) -> None:
+    registry = AgentTaskRegistry()
+    registry.register(
+        AgentTask(
+            task_id="task_other",
+            parent_session_id="sess_someone_else",
+            child_session_id="child_1",
+            agent_ref={"expert_id": "researcher", "requesting_expert_id": "someone_else"},
+            status="completed",
+            result={"answer_excerpt": "", "workflow_state": {}, "message_ref": ""},
+        )
+    )
+    app = _fake_app(registry)
+    spy = _InvokeSpy()
+    app.state.expert_invoker = spy
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"critic"}, monkeypatch)
+        result = json.loads(
+            tools["spawn_agent_task"].func(
+                agent="critic", task="review", input_task_ids=["task_other"]
+            )
+        )
+
+    assert result["error"] == "task_ref_not_yours"
+    assert spy.specs == []
+
+
+def test_spawn_agent_task_input_task_ids_incomplete_refuses_no_child_created(monkeypatch) -> None:
+    registry = AgentTaskRegistry()
+    registry.register(
+        AgentTask(
+            task_id="task_running",
+            parent_session_id="sess_x",
+            child_session_id="child_1",
+            agent_ref={"expert_id": "researcher", "requesting_expert_id": "main"},
+            status="running",
+        )
+    )
+    app = _fake_app(registry)
+    spy = _InvokeSpy()
+    app.state.expert_invoker = spy
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"researcher", "critic"}, monkeypatch)
+        result = json.loads(
+            tools["spawn_agent_task"].func(
+                agent="critic", task="review", input_task_ids=["task_running"]
+            )
+        )
+
+    assert result["error"] == "task_ref_not_terminal"
+    assert spy.specs == []
+
+
+def test_spawn_agent_task_without_input_task_ids_is_unaffected(monkeypatch) -> None:
+    """Regression pin: a bare spawn_agent_task call (no input_task_ids) keeps
+    the child's task_text byte-identical to today's passing flows."""
+
+    app = _fake_app()
+    spy = _InvokeSpy()
+    app.state.expert_invoker = spy
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        tools["spawn_agent_task"].func(agent="data_expert", task="profile the CSV")
+
+    assert spy.specs[0].task_text == "profile the CSV"
 
 
 def test_get_agent_task_output_tool_typed_error_for_unknown_task(monkeypatch) -> None:

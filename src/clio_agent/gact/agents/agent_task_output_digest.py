@@ -28,6 +28,11 @@ in ``spawn_runtime.build_spawn_runtime_tools``) fetches it verbatim on
 demand -- recoverability is mandatory, per #1306. Nothing here decides
 anything FOR the model: the envelope only states what happened and how to
 get the rest; the model chooses whether to fetch it.
+
+The OTHER recoverability direction -- handing a child the full material of
+tasks the PARENT already collected, so a critic never has to round-trip
+through the parent at all -- lives in the sibling owner module
+``agent_task_input_refs.py`` (#1306 review round, finding 1).
 """
 
 from __future__ import annotations
@@ -87,7 +92,7 @@ def digest_agent_task_output(
     child_session_id: str,
     message_ref: str,
     answer_excerpt: str,
-) -> str:
+) -> str | dict[str, Any]:
     """Bound ONE completed child's model-facing ``output``.
 
     Below :func:`agent_task_output_digest_chars`, ``output`` is returned
@@ -104,6 +109,14 @@ def digest_agent_task_output(
     store); this only stops it being duplicated a second time into the
     parent's own context.
 
+    ``output``/``answer_excerpt`` are coerced with ``str(x or "")`` before any
+    length check: a boot-rebuilt or hand-edited task record
+    (``AgentTask.from_session``) can carry a literal ``None`` where a string
+    is expected, and ``len(None)`` would otherwise crash the WHOLE
+    ``wait_agent_tasks`` collect batch on one malformed row (#1306 review
+    round, finding 5) -- a bare ``None`` reads honestly as an empty answer,
+    never a crash.
+
     Args:
         output: The child's full, verbatim final-message text.
         task_id: The completed task's id (``get_agent_task_output``'s input).
@@ -114,22 +127,31 @@ def digest_agent_task_output(
             re-sliced ``output`` a second time).
 
     Returns:
-        ``output`` unchanged when it fits under the bound, else the
-        JSON-encoded digest envelope (itself a plain ``str``, matching
-        ``output``'s own type on the wire).
+        ``output`` unchanged (a plain ``str``) when it fits under the bound.
+        Otherwise the digest envelope as a nested ``dict`` -- deliberately
+        NOT pre-encoded JSON, so the caller's own outer ``json.dumps``
+        (:func:`digested_model_row`'s caller, ``wait_agent_tasks``'s
+        ``results`` list) encodes it exactly once. Encoding it here too
+        would double-escape the blob, and a quote/newline-dense excerpt can
+        then inflate the SECOND encoding past the very cap the first
+        encoding was meant to enforce -- the identical lesson
+        ``bounded_model_tool_result`` already documents for the sibling
+        MCP-result envelope (#1306 review round, finding 3).
     """
 
+    output = str(output or "")
     cap = agent_task_output_digest_chars()
     if len(output) <= cap:
         return output
-    envelope: dict[str, Any] = {
+    excerpt = str(answer_excerpt or "")
+    return {
         "_clio": {
             "status": "digested",
             "reason": AGENT_TASK_OUTPUT_OVERSIZE_REASON,
             "original_chars": len(output),
-            "excerpt_chars": len(answer_excerpt),
+            "excerpt_chars": len(excerpt),
         },
-        "answer_excerpt": answer_excerpt,
+        "answer_excerpt": excerpt,
         "task_id": task_id,
         "child_session_id": child_session_id,
         "message_ref": message_ref,
@@ -138,11 +160,43 @@ def digest_agent_task_output(
             "args": {"task_id": task_id},
         },
     }
-    return json.dumps(envelope, ensure_ascii=False, sort_keys=True)
+
+
+def digested_model_row(payload: dict[str, Any], task_result: Any) -> dict[str, Any]:
+    """The MODEL-facing ``wait_agent_tasks`` row: ``payload`` with ``output`` digested.
+
+    ``payload`` (``spawn_runtime._completion_payload``) already carries the
+    child's FULL verbatim output (the #880 contract) for the UI/semantic-event
+    lane (``_emit_delegation_terminal``, built independently from
+    ``task_result`` -- never this returned dict). This returns a SEPARATE
+    dict for the model-facing ``results`` row so that lane is never touched:
+    the same split ``mcp_result_projection.py`` already draws for one MCP
+    call's result, applied one layer up here (bytes accumulate ACROSS
+    children collected into the parent's context, not just within one call).
+    """
+
+    return {
+        **payload,
+        "output": digest_agent_task_output(
+            payload["output"],
+            task_id=task_result.task_id,
+            child_session_id=task_result.child_session_id,
+            message_ref=payload.get("message_ref", ""),
+            answer_excerpt=str((task_result.result or {}).get("answer_excerpt", "")),
+        ),
+    }
 
 
 def get_agent_task_output_impl(app: Any, task_id: str) -> str:
     """Resolve ``task_id``'s full stored output, or a typed error row.
+
+    Works for ANY terminal task, success or failure alike (mirrors
+    ``check_agent_tasks``'s "uniform fields for every terminal task" rule):
+    a FAILED task's stored material (whatever answer text it produced before
+    failing, plus its typed ``error_reason``) is returned the SAME way a
+    completed one's is -- never a refusal. Only an unknown id or one that has
+    not yet reached ANY terminal status is refused (#1306 review round,
+    finding 9).
 
     Separated from :func:`build_agent_task_output_tool`'s closure so it is
     directly unit-testable without building the whole tool/context
@@ -152,21 +206,39 @@ def get_agent_task_output_impl(app: Any, task_id: str) -> str:
     """
 
     registry = getattr(app.state, "agent_task_registry", None)
-    task = registry.get(task_id) if registry is not None else None
+    if registry is None:
+        # A missing registry is an INFRASTRUCTURE gap, not "no such task" -- the
+        # id may well exist; the process just cannot look it up right now.
+        # Collapsing this into unknown_task would tell the model to give up on
+        # a reference that is actually fine (#1306 review round, finding 6).
+        return json.dumps(
+            {"error": "registry_unavailable", "task_id": task_id},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    task = registry.get(task_id)
     if task is None:
-        return json.dumps({"error": "unknown_task", "task_id": task_id}, sort_keys=True)
+        return json.dumps(
+            {"error": "unknown_task", "task_id": task_id}, ensure_ascii=False, sort_keys=True
+        )
     if not task.is_terminal:
         return json.dumps(
             {"error": "task_not_terminal", "task_id": task_id, "status": task.status},
+            ensure_ascii=False,
             sort_keys=True,
         )
 
     from clio_agent.gact.agents.spawn_runtime import _resolve_verbatim_output  # noqa: PLC0415
 
     output, markers = _resolve_verbatim_output(app, task)
-    result: dict[str, Any] = {"task_id": task_id, "status": task.status, "output": output}
+    result: dict[str, Any] = {
+        "task_id": task_id,
+        "status": task.status,
+        "output": output,
+        "error_reason": task.error_reason,
+    }
     result.update(markers)
-    return json.dumps(result, sort_keys=True)
+    return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
 
 def build_agent_task_output_tool() -> Any:
@@ -193,8 +265,10 @@ def build_agent_task_output_tool() -> Any:
 
         Use this after wait_agent_tasks returns a "digested" envelope
         (output too large to inline) -- the envelope's fetch_full_output
-        names this tool. Returns a typed error for an unknown task id or one
-        that has not reached a terminal status yet."""
+        names this tool. Works for a FAILED task too (returns whatever
+        material it produced plus its error_reason, never a refusal).
+        Returns a typed error only for an unknown task id or one that has
+        not reached ANY terminal status yet."""
 
         app = _ctx.active_app()
         if app is None:

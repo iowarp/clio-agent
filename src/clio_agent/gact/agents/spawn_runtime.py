@@ -435,8 +435,12 @@ def build_spawn_runtime_tools(
     """
 
     from clio_agent.gact.agent_messaging import build_message_agent_tool  # noqa: PLC0415
+    from clio_agent.gact.agents.agent_task_input_refs import (  # noqa: PLC0415
+        resolve_input_task_evidence,
+    )
     from clio_agent.gact.agents.agent_task_output_digest import (  # noqa: PLC0415
         build_agent_task_output_tool,
+        digested_model_row,
     )
     from clio_agent.gact.agents.invoker import (  # noqa: PLC0415
         InvokerError,
@@ -484,6 +488,7 @@ def build_spawn_runtime_tools(
         placement: str | None = None,
         spawn_group_id: str = "",
         group_size: int = 0,
+        input_task_ids: list[str] | None = None,
     ) -> str:
         """Spawn one declared child through the invoker + emit the started wire
         parity. ``fanout_bound`` (> 0) caps how many of THIS parent's concurrent
@@ -491,7 +496,18 @@ def build_spawn_runtime_tools(
         bound (#948 S5); 0 means only the global per-depth cap applies. ``spawn_group_id``
         / ``group_size`` (P5 wire semantics) are set ONLY by ``spawn_agents_parallel``
         (one id shared by the whole batch) — a bare ``spawn_agent_task`` call leaves
-        them at their empty/0 default, so the minted record carries neither field."""
+        them at their empty/0 default, so the minted record carries neither field.
+
+        ``input_task_ids`` (#1306 review round, finding 1) resolves through
+        ``resolve_input_task_evidence`` BEFORE the child ever spawns: each
+        referenced task's full stored output is appended, labeled, to the
+        CHILD's own task briefing — the parent stays lean (it passed ids, never
+        text). A bad reference raises ``SpawnError`` from inside THIS try block,
+        so it is caught by the SAME except clause below and no child is created
+        (a batch sibling's slot still reconciles like any other refused spawn).
+        The STARTED handoff Part keeps showing the bare ``task`` text (never the
+        evidence-augmented briefing) — that Part lands in the PARENT's own
+        transcript, and the whole point is to keep the parent lean too."""
 
         app, session_id = _ctx_app_session()
         # Computed depth: a child spawns at (its own depth) + 1, so nesting
@@ -499,13 +515,14 @@ def build_spawn_runtime_tools(
         # reachable (a root session spawns at depth 1) (#948 S4 adversarial review).
         depth = _current_session_depth(app, session_id) + 1
         try:
+            briefing = resolve_input_task_evidence(app, session_id, task, input_task_ids)
             binding = invoker_for_placement(app, session_id, placement)
             spawned = binding.invoker.invoke(
                 bind_task_spec_to_parent(
                     app,
                     TaskSpec(
                         child_expert_id=agent,
-                        task_text=task,
+                        task_text=briefing,
                         parent_session_id=session_id,
                         requesting_expert_id=agent_def.id,
                         # #953 [2]/[8]: stamp the ACTIVE turn id so run_index resets per
@@ -550,14 +567,27 @@ def build_spawn_runtime_tools(
             sort_keys=True,
         )
 
-    def spawn_agent_task(agent: str, task: str, placement: str | None = None) -> str:
+    def spawn_agent_task(
+        agent: str,
+        task: str,
+        placement: str | None = None,
+        input_task_ids: list[str] | None = None,
+    ) -> str:
         """Spawn a declared child expert as a background child turn; returns its
         task_id IMMEDIATELY (status queued|running). Fire-and-forget: the child runs
         untied to this turn — collect it now with wait_agent_tasks, poll it with
         check_agent_tasks, or let its result surface in your NEXT turn. Prefer to spawn
-        ALL independent children before waiting on any."""
+        ALL independent children before waiting on any.
 
-        return _do_spawn(agent, task, placement=placement)
+        Pass input_task_ids to hand THIS child the FULL stored output of tasks
+        you already spawned yourself — as labeled evidence in ITS OWN briefing,
+        never inlined into your own context. Use this to chain children (e.g. a
+        critic that needs two researchers' complete material) without you ever
+        holding their full text: each id must be one of your own spawned tasks
+        and already finished, or the spawn is refused with a typed reason and no
+        child is created."""
+
+        return _do_spawn(agent, task, placement=placement, input_task_ids=input_task_ids)
 
     def wait_agent_tasks(task_ids: list[str], timeout_s: float) -> str:
         """Block until the given spawned tasks finish (up to timeout_s), then return
@@ -565,7 +595,11 @@ def build_spawn_runtime_tools(
         timeout you get the current statuses and YOU decide (keep waiting, keep
         working, or finish). The children run on a dedicated pool, so waiting here
         never starves them. Prefer a short budget (e.g. 30-60s) and continue on a
-        partial — don't block the whole turn on one long child."""
+        partial — don't block the whole turn on one long child. An oversize
+        result (past a configured character bound) comes back as a digest
+        naming its fetch tool (get_agent_task_output) instead of the full text
+        inline — or hand that task's id straight to your NEXT spawn as
+        input_task_ids instead of fetching it yourself."""
 
         app, session_id = _ctx_app_session()
         registry = app.state.agent_task_registry
@@ -574,9 +608,6 @@ def build_spawn_runtime_tools(
         from clio_agent.gact.agent_tasks import (  # noqa: PLC0415
             consume_notification,
             display_run_name,
-        )
-        from clio_agent.gact.agents.agent_task_output_digest import (  # noqa: PLC0415
-            digest_agent_task_output,
         )
 
         call_start = _time.monotonic()
@@ -607,24 +638,11 @@ def build_spawn_runtime_tools(
                 structured_rows.append(wait_structured_row(tid, exc.reason, 0.0, ""))
                 continue
             payload = _completion_payload(app, task_result)
-            # #1306: the MODEL-facing row digests an oversize output (durable
-            # session/message reference + get_agent_task_output, never silent
-            # loss); the UI/semantic-event lane above (_emit_delegation_terminal,
-            # reached via task_result, never this dict) keeps the #880 verbatim
-            # payload untouched -- a different lane, same split
-            # mcp_result_projection.py already draws for one MCP call's result.
-            results.append(
-                {
-                    **payload,
-                    "output": digest_agent_task_output(
-                        payload["output"],
-                        task_id=task_result.task_id,
-                        child_session_id=task_result.child_session_id,
-                        message_ref=payload.get("message_ref", ""),
-                        answer_excerpt=str((task_result.result or {}).get("answer_excerpt", "")),
-                    ),
-                }
-            )
+            # #1306: digested_model_row (owner module) digests an oversize output
+            # for THIS model-facing row only -- _emit_delegation_terminal below
+            # reaches task_result directly and keeps the #880 verbatim payload
+            # untouched on its own separate UI/semantic-event lane.
+            results.append(digested_model_row(payload, task_result))
             structured_rows.append(
                 wait_structured_row(
                     display_run_name(
@@ -688,8 +706,9 @@ def build_spawn_runtime_tools(
             }
         )
         # The model-facing return stays the FULL-fidelity per-task rows (verbatim
-        # #880 output, typed conflicts, merged state) — compact is a UI concern,
-        # not a fidelity cut. Key order matches the declared shape's tail (harmless
+        # #880 output below the #1306 digest cap, a typed digest envelope above
+        # it, typed conflicts, merged state) — compact is a UI concern, not a
+        # fidelity cut. Key order matches the declared shape's tail (harmless
         # + helps the raw-JSON view); it is NOT the presentation mechanism.
         return json.dumps(
             {
@@ -703,7 +722,8 @@ def build_spawn_runtime_tools(
     def check_agent_tasks(task_ids: list[str] | None = None) -> str:
         """Non-blocking poll of this session's spawned tasks: each one's status AND,
         for finished tasks, a bounded result excerpt + message_ref (full text via
-        wait_agent_tasks). Pass ``task_ids`` to poll a subset, or omit for all.
+        get_agent_task_output, or hand the task_id straight to your next spawn as
+        input_task_ids). Pass ``task_ids`` to poll a subset, or omit for all.
         Polling a finished task collects it (its result won't re-surface next turn).
         Use it to collect finished children while you keep working, instead of
         blocking in wait."""
@@ -774,7 +794,10 @@ def build_spawn_runtime_tools(
 
     def spawn_agents_parallel(spawns: list[dict], placement: str | None = None) -> str:
         """Fan out several declared children at once. ``spawns`` is a list of
-        {agent, task}; returns their task_ids (collect with wait_agent_tasks).
+        {agent, task, input_task_ids?}; returns their task_ids (collect with
+        wait_agent_tasks). Each entry's optional input_task_ids works exactly
+        like spawn_agent_task's own parameter — hands that ONE child the full
+        stored output of your own already-finished tasks as labeled evidence.
 
         When this parent declares ``fanout.max_workers`` (#948 S5), the batch's
         concurrent admission is bounded by it: spawns beyond the bound QUEUE with a
@@ -812,6 +835,7 @@ def build_spawn_runtime_tools(
         for entry in spawn_list:
             agent = str((entry or {}).get("agent") or "")
             task = str((entry or {}).get("task") or "")
+            input_task_ids = (entry or {}).get("input_task_ids") or None
             out.append(
                 json.loads(
                     _do_spawn(
@@ -821,6 +845,7 @@ def build_spawn_runtime_tools(
                         placement=placement,
                         spawn_group_id=spawn_group_id,
                         group_size=group_size,
+                        input_task_ids=input_task_ids,
                     )
                 )
             )
@@ -864,6 +889,17 @@ def build_spawn_runtime_tools(
                     "description": (
                         "Optional execution placement: local or relay:<cluster>. "
                         "Omit to use the session policy, then the local default."
+                    ),
+                },
+                "input_task_ids": {
+                    "type": "array",
+                    "description": (
+                        "Optional ids of YOUR OWN already-finished spawned tasks whose "
+                        "full stored output to hand this child as labeled evidence in "
+                        "its own briefing (e.g. a critic reviewing researchers' full "
+                        "material) -- the parent never sees this text. A foreign, "
+                        "unknown, or still-running id refuses the spawn (typed reason; "
+                        "no child created)."
                     ),
                 },
             },
@@ -913,7 +949,14 @@ def build_spawn_runtime_tools(
             title="Spawn Agents",
             representation="handoff",
             args={
-                "spawns": {"type": "array", "description": "List of {agent, task} to fan out."},
+                "spawns": {
+                    "type": "array",
+                    "description": (
+                        "List of {agent, task, input_task_ids?} to fan out. "
+                        "input_task_ids works exactly like spawn_agent_task's own "
+                        "parameter, per entry."
+                    ),
+                },
                 "placement": {
                     "type": "string",
                     "description": ("Optional placement applied to every spawn in this batch."),

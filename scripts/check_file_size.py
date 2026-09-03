@@ -280,7 +280,25 @@ RATCHET_BASELINE: dict[str, int] = {
     # all live in the new owner module agents/agent_task_output_digest.py; only
     # the two import blocks + the wait-loop's dict-spread call site + the one
     # tools-list append + one collection_names entry landed here.
-    "src/clio_agent/gact/agents/spawn_runtime.py": 954,
+    # #1306 review round (finding 1, the crux): +43 net (954 -> 997) for the
+    # OTHER recoverability direction -- an optional input_task_ids on
+    # spawn_agent_task / spawn_agents_parallel's per-entry spawns that hands a
+    # CHILD (never the parent) the full stored output of the spawning session's
+    # own already-finished tasks as labeled evidence, so a critic never forces
+    # the coordinator to fetch-and-reinline researcher material itself. The
+    # validate + evidence-block-build logic lives in the new owner module
+    # agents/agent_task_input_refs.py (resolve_input_task_evidence, raises the
+    # existing typed SpawnError so _do_spawn's existing except clause refuses
+    # the whole spawn -- no new error-handling branch); only the one import,
+    # _do_spawn's one resolve call + its briefing var, the two tool signatures'
+    # new parameter, and the docstring/arg-schema grounding for both tools plus
+    # wait_agent_tasks/check_agent_tasks (finding 2) landed here. Offset by
+    # finding 8's compression: the two agent_task_output_digest lazy-import
+    # blocks merged into one (digest_agent_task_output no longer imported at
+    # wait_agent_tasks's own scope), and the 18-line digested-row construction
+    # extracted to the owner module's digested_model_row(payload, task_result)
+    # helper, collapsing that call site to one line.
+    "src/clio_agent/gact/agents/spawn_runtime.py": 997,
     # (invoker.py's entry retired 2026-08: RelayExpertInvoker moved to its own
     # owner module agents/relay_expert_invoker.py, dropping invoker.py under the
     # 800 default cap — the #1221/#1222 contract-alignment growth that broke the
