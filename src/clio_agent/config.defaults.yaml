@@ -192,7 +192,7 @@ lm.provider: "lm_studio"
 # CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
 # Process-wide cap on concurrently-connected claude CLI subprocesses; a
 # connect beyond it waits, raise for more concurrent sessions.
-providers.claude_code.max_concurrent_processes: 1.0
+providers.claude_code.max_concurrent_processes: 4.0
 
 # CLIO_CLAUDE_CODE_SESSION_REUSE  (bool)  <- src/clio_agent/providers/claude_code_sessions.py
 # Keeps a pooled/reused SDK connection per scope instead of a fresh client

@@ -96,6 +96,9 @@ def finish_agent_task_transition(app: "FastAPI", outcome: AgentTaskFoldOutcome) 
         _admit_next_queued,
         _fire_subagent_stop,
     )
+    from clio_agent.providers.session_lifecycle import (  # noqa: PLC0415
+        release_session_resources,
+    )
 
     # Clean-wire (owner, 2026-08-05): the child's final assistant message carries
     # its return-to-parent edge on the persisted record BEFORE any downstream
@@ -109,6 +112,18 @@ def finish_agent_task_transition(app: "FastAPI", outcome: AgentTaskFoldOutcome) 
     # never-raising, the same discipline as stamp_delegation_return above.
     reconcile_stored_handoff_part(app, outcome.task)
     _fire_subagent_stop(app, outcome.task, outcome.task.child_session_id)
+    # #1305: this is THE single choke point every child agent-task completion
+    # path funnels through (the local done-callback via ``_on_child_done`` AND
+    # the remote/transport fold via ``fold_agent_task_event`` both land here),
+    # already race-guarded exactly-once by ``outcome.applied`` +
+    # ``outcome.task.is_terminal`` above -- so this is where a subagent's
+    # provider connection(s) die DETERMINISTICALLY, not left to an idle-TTL
+    # sweep to eventually notice. Generic across providers (claude_code today,
+    # codex a documented follow-on) -- see ``providers/session_lifecycle.py``.
+    # Best-effort/never-raising by contract: a release failure must never
+    # break task-completion bookkeeping or strand the freed-slot admission
+    # below.
+    release_session_resources(outcome.task.child_session_id)
     enqueue_completion_wake(app, outcome.task)
     _admit_next_queued(app)
 

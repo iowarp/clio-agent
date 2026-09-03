@@ -490,6 +490,12 @@ def note_lm_start() -> None:
         st["last"] = now
 
 
+def _touch_activity(key: str) -> None:
+    """Refresh ``key``'s bucket ``last`` timestamp (shared by both touch entry points)."""
+    with _LOCK:
+        _bucket(key)["last"] = time.monotonic()
+
+
 def note_lm_activity() -> None:
     """Refresh the active session's last-activity timestamp -- called per streamed
     token/chunk.
@@ -499,9 +505,39 @@ def note_lm_activity() -> None:
     the watchdog on every chunk, while a genuinely frozen call (0 tokens) stops
     refreshing and is aborted fast.
     """
-    key = _active_lm_session()
+    _touch_activity(_active_lm_session())
+
+
+def note_lm_activity_for(session_id: str) -> None:
+    """Refresh a SPECIFIC session's last-activity timestamp (#1305).
+
+    :func:`note_lm_activity` resolves the session from the ``active_session_id``
+    contextvar, which is only bound on the thread/task that has it in scope. The
+    claude_code streaming pool's connect-slot wait
+    (:func:`~clio_agent.providers.claude_code_stream_bounds.await_connect_slot`)
+    deliberately runs on the pooled entry's OWN private loop-thread (never the
+    caller's -- see ``claude_code_sessions._StreamClientEntry``'s docstring), so
+    the contextvar is unavailable there; the caller instead captures the owning
+    GACT session id explicitly (the same closure-captured ``gact_sid`` pattern
+    ``_StreamClientEntry.stream`` already uses for kill-on-cancel) and passes it
+    straight through.
+
+    A true no-op when no bucket exists yet for ``session_id`` -- unlike
+    :func:`note_lm_activity` (which always operates through :func:`_bucket`,
+    auto-vivifying), this function deliberately does NOT create one: it only
+    ever REFRESHES an already-registered in-flight call (``note_lm_start``
+    fires before the transport call begins, so a genuine LM call's bucket
+    exists by the time a connect is queued behind it). Never fabricates
+    progress for a session with no LM call actually running, and never leaves
+    a stray empty (``inflight=0``) bucket behind for #757's no-unbounded-
+    growth discipline to worry about.
+    """
+    if not session_id:
+        return
     with _LOCK:
-        _bucket(key)["last"] = time.monotonic()
+        st = _STATE.get(session_id)
+        if st is not None:
+            st["last"] = time.monotonic()
 
 
 def note_lm_end() -> None:

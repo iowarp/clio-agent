@@ -706,7 +706,15 @@ RATCHET_BASELINE: dict[str, int] = {
     # _cli_provider.py) instead of a bare ClaudeCodeExecError -- so the account's
     # rejection reaches the trace/transcript honestly instead of a misleading
     # LMTransportError, and is never retried as transient.
-    "src/clio_agent/providers/claude_code_litellm.py": 861,
+    # #1305: +7 (861 -> 868) to thread gact_session_id through the ONE
+    # entry_for() call site (an import + a one-line comment + the new kwarg,
+    # which pushes the call past the one-line width so ruff format expands it
+    # to one-arg-per-line) so ClaudeStreamClientPool.release_session_resources
+    # can find and deterministically free this scope-keyed connection when the
+    # owning agent task reaches a terminal status. All registry/dispatch logic
+    # lives in the owner modules providers/claude_code_stream_bounds.py and
+    # providers/session_lifecycle.py -- only the threaded kwarg is here.
+    "src/clio_agent/providers/claude_code_litellm.py": 868,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
     # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
     # #947 DEBT (recorded 2026-07-18, #948 S4): residual over the pre-#947 count
