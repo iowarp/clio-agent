@@ -172,6 +172,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MCP_LISTING_TTL_H` | `tools.mcp.listing_ttl_h` | float | `24.0` | `src/clio_agent/tools/listing_cache.py` |
 | `CLIO_MCP_MOUNT_RETRY_DELAYS_S` | `tools.mcp.mount_retry_delays_s` | list | `0.5,1.5` | `src/clio_agent/gact/mcp_readiness.py` |
 | `CLIO_MCP_PROBE_TIMEOUT_RETRIES` | `tools.mcp.probe_timeout_retries` | int | `3` | `src/clio_agent/tools/mcp_probe_hardening.py` |
+| `CLIO_MCP_RESPONSE_CACHE_ENABLED` | `tools.mcp.response_cache_enabled` | bool | `false` | `src/clio_agent/tools/mcp_runtime.py` |
 | `CLIO_MCP_SETUP_TIMEOUT_S` | `tools.mcp.setup_timeout_s` | float | `10.0` | `src/clio_agent/gact/mcp_readiness.py` |
 | `CLIO_MCP_SPAWN_DIET` | `tools.mcp.spawn_diet` | bool | `true` | `src/clio_agent/tools/spawn_diet.py` |
 | `CLIO_MCP_SPAWN_DIET_TTL_H` | `tools.mcp.spawn_diet_ttl_h` | float | `24.0` | `src/clio_agent/tools/spawn_diet.py` |
