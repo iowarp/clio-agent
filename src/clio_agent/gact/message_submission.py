@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, HTTPException
 
-from clio_agent.gact.context_references import (
-    authorize_context_reference_parts_sync,
+from clio_agent.gact.context_reference_delivery import (
     context_reference_deliveries,
     enrich_with_context_references,
 )
+from clio_agent.gact.context_references import authorize_context_reference_parts_sync
 from clio_agent.gact.events import Event
 from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.message_intents import DuplicateIntentError, PendingSteer
@@ -47,6 +49,27 @@ from clio_agent.gact.types import (
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
+
+
+@dataclass(frozen=True)
+class PreparedReferences:
+    """One submission's reference work, done OFF the event loop.
+
+    Resolving a ``context_ref`` is not cheap bookkeeping: pinning a
+    ``workspace_file`` revision digests the whole file, and building the
+    model-facing block reads it again, while the evidence kinds fold every
+    message part of every session in the workspace. All of that used to run
+    inside the async ``POST /messages`` handler, on the loop thread, so one
+    reference-carrying submission stalled every other session's SSE stream.
+
+    ``parts`` are the canonical, authorized parts and ``model_text`` is the
+    enriched prompt for the steer branch. Acceptance itself stays synchronous
+    (it hands work to ``TurnRunner.spawn``, which must run on the loop), so the
+    expensive half is hoisted out in front of it rather than moved wholesale.
+    """
+
+    parts: list[Part]
+    model_text: str
 
 
 def _session_not_found(sid: str) -> HTTPException:
@@ -193,6 +216,8 @@ def _validate_provider_and_payload(
     deps: "GactDeps",
     sid: str,
     req: PostMessageRequest,
+    *,
+    prepared: PreparedReferences | None = None,
 ) -> tuple[Session, ModelRef, str, list[Part], list[Part]]:
     sess = app.state.sessions.get(sid)
     if sess is None:
@@ -286,7 +311,11 @@ def _validate_provider_and_payload(
             ).model_dump(exclude_none=True),
         )
     resolved_parts: list[Part] = []
-    for part in req.parts:
+    # A caller that already authorized off-loop hands the canonical parts in;
+    # re-authorizing them here would digest every referenced file a second time
+    # (and, for the queued-message promote door, a third).
+    request_parts = prepared.parts if prepared is not None else list(req.parts)
+    for part in request_parts:
         if part.type != "resource_ref":
             resolved_parts.append(part)
             continue
@@ -367,8 +396,67 @@ def _validate_provider_and_payload(
                 }
             )
         )
-    resolved_parts = authorize_context_reference_parts_sync(app, sess, resolved_parts)
+    if prepared is None:
+        resolved_parts = authorize_context_reference_parts_sync(app, sess, resolved_parts)
     return sess, selected_model, text, images, resolved_parts
+
+
+def prepare_references_sync(
+    app: FastAPI, session: Session, req: PostMessageRequest
+) -> PreparedReferences:
+    """Authorize this submission's references and build its model-facing text.
+
+    The whole synchronous, I/O-heavy half of acceptance, in ONE callable so it can
+    be handed to a worker thread by :func:`prepare_references`.
+    """
+
+    parts = authorize_context_reference_parts_sync(app, session, list(req.parts))
+    text = req.extract_text()
+    probe = Message(
+        id="",
+        turn_id="",
+        session_id=session.id,
+        role="user",
+        created_at="",
+        updated_at="",
+        parts=_user_message_parts(request_parts=parts, user_text=text),
+        metadata={},
+    )
+    return PreparedReferences(parts=parts, model_text=_model_text(app, session.id, text, probe))
+
+
+async def prepare_references(app: FastAPI, sid: str, req: PostMessageRequest) -> PreparedReferences:
+    """Off-loop entry point for the async producers (POST /messages, promote)."""
+
+    session = app.state.sessions.get(sid)
+    if session is None:
+        raise _session_not_found(sid)
+    return await asyncio.to_thread(prepare_references_sync, app, session, req)
+
+
+def _model_text(app: FastAPI, sid: str, user_text: str, message: Message) -> str:
+    """Enrich the prompt with resolved references, projecting failures to HTTP."""
+
+    try:
+        return enrich_with_context_references(app, sid, user_text, message)
+    except _ContextFileAccessError as exc:
+        status_code = 409 if exc.error_info.error == "context_ref_stale" else 404
+        raise HTTPException(
+            status_code=status_code,
+            detail=ErrorEnvelope(error=exc.error_info).model_dump(exclude_none=True),
+        ) from exc
+
+
+async def accept_message_async(
+    app: FastAPI,
+    deps: "GactDeps",
+    sid: str,
+    req: PostMessageRequest,
+) -> tuple[PostMessageResponse, int]:
+    """Accept one message from an async producer, resolving references off-loop."""
+
+    prepared = await prepare_references(app, sid, req)
+    return accept_message(app, deps, sid, req, prepared=prepared)
 
 
 def accept_message(
@@ -376,11 +464,21 @@ def accept_message(
     deps: "GactDeps",
     sid: str,
     req: PostMessageRequest,
+    *,
+    prepared: PreparedReferences | None = None,
 ) -> tuple[PostMessageResponse, int]:
     """Accept one message using explicit start-or-steer semantics.
 
     Returns the wire response and HTTP status. A pending steer is durable and
     visible in the transcript before this function returns.
+
+    ``prepared`` carries reference work an async caller already did off the event
+    loop (see :func:`accept_message_async`). Omitting it keeps the fully
+    synchronous behaviour, which the in-process idle-hook queue promoter
+    (``composer_runtime.promote_queue_head``) still uses: it runs from a
+    turn-task done-callback, so it has no ``await`` to hoist the work behind.
+    That promoter is bounded by the queue head (ONE row per idle transition),
+    unlike the request path this seam exists for.
     """
 
     key = _idempotency_key(req)
@@ -389,7 +487,7 @@ def accept_message(
         return _acceptance_replay(prior), 202 if prior.state == "pending_steer" else 200
 
     sess, effective_model, user_text, _images, resolved_parts = _validate_provider_and_payload(
-        app, deps, sid, req
+        app, deps, sid, req, prepared=prepared
     )
     message_id = req.client_message_id.strip() or _new_message_id("user")
     resolved_parts, resource_deliveries = _plan_resource_parts(
@@ -475,14 +573,11 @@ def accept_message(
             parts=parts,
             metadata=metadata,
         )
-        try:
-            model_text = enrich_with_context_references(app, sid, user_text, message)
-        except _ContextFileAccessError as exc:
-            status_code = 409 if exc.error_info.error == "context_ref_stale" else 404
-            raise HTTPException(
-                status_code=status_code,
-                detail=ErrorEnvelope(error=exc.error_info).model_dump(exclude_none=True),
-            ) from exc
+        model_text = (
+            prepared.model_text
+            if prepared is not None
+            else _model_text(app, sid, user_text, message)
+        )
         ack = PostMessageResponse(
             message_id=message_id,
             accepted_at=accepted_at,
@@ -579,4 +674,10 @@ def accept_message(
     return ack, 200
 
 
-__all__ = ["accept_message"]
+__all__ = [
+    "PreparedReferences",
+    "accept_message",
+    "accept_message_async",
+    "prepare_references",
+    "prepare_references_sync",
+]

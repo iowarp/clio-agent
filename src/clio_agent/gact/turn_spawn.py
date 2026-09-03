@@ -639,7 +639,7 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
             arm_forward_deadline,
             fail_child_task,
         )
-        from clio_agent.gact.elicitation_bridge import (  # noqa: PLC0415
+        from clio_agent.gact.elicitation_forwarding import (  # noqa: PLC0415
             forward_child_question_to_parent,
         )
 

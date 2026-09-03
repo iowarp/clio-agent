@@ -1,21 +1,23 @@
-"""Discovery, authorization, and delivery of structured workspace references.
+"""Discovery and authorization of structured workspace references.
 
 ``context_ref`` parts are display-light handles supplied by a client.  This
 module resolves every handle against the repositories already owned by the
 active GACT app and replaces all display/provenance fields with server-owned
 values before the part reaches the durable message ledger.
+
+The model-facing DELIVERY of an admitted part lives in its own owner module,
+:mod:`clio_agent.gact.context_reference_delivery`.
 """
 
 from __future__ import annotations
 
 import asyncio
-import copy
-import json
 import os
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent import conf
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.artifacts.storage import resolve_owned_artifact_path
 from clio_agent.gact.artifacts.wire import mime_for
@@ -23,6 +25,7 @@ from clio_agent.gact.context_reference_domain import (
     CONTEXT_REFERENCE_CAPABILITY,
     CONTEXT_REFERENCE_KINDS,
     REFERENCE_SEARCH_KINDS,
+    SUMMARY_REFERENCE_KINDS,
     ContextReferenceError,
 )
 from clio_agent.gact.context_reference_domain import (
@@ -32,24 +35,62 @@ from clio_agent.gact.context_reference_file_io import (
     file_media_type as _file_media_type,
 )
 from clio_agent.gact.context_reference_file_io import (
-    read_bounded_file as _read_bounded_file,
-)
-from clio_agent.gact.context_reference_file_io import (
     sha256_file as _sha256_file,
 )
-from clio_agent.gact.runtime.constants import _CTX_MAX_BYTES
-from clio_agent.gact.runtime.globals import _ContextFileAccessError
-from clio_agent.gact.types import ErrorInfo, Message, Part
+from clio_agent.gact.types import Message, Part
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
 
-_SUMMARY_MESSAGE_LIMIT = 5
-_SUMMARY_EXCERPT_CHARS = 600
-_SUMMARY_REFERENCE_KINDS = frozenset(
-    {"session", "agent_run", "evidence_source", "context_frame", "diff", "plan"}
-)
+def summary_message_limit() -> int:
+    """How many recent messages a bounded session summary may carry.
+
+    Config: ``gact.context_references.summary_messages`` /
+    ``CLIO_CONTEXT_REFERENCE_SUMMARY_MESSAGES``.
+    """
+
+    return conf.resolve(
+        "gact.context_references.summary_messages",
+        env="CLIO_CONTEXT_REFERENCE_SUMMARY_MESSAGES",
+        default=5,
+        cast=conf.as_int,
+    )
+
+
+def summary_excerpt_chars() -> int:
+    """Character ceiling for one excerpt inside a bounded reference summary.
+
+    Config: ``gact.context_references.summary_excerpt_chars`` /
+    ``CLIO_CONTEXT_REFERENCE_SUMMARY_EXCERPT_CHARS``.
+    """
+
+    return conf.resolve(
+        "gact.context_references.summary_excerpt_chars",
+        env="CLIO_CONTEXT_REFERENCE_SUMMARY_EXCERPT_CHARS",
+        default=600,
+        cast=conf.as_int,
+    )
+
+
+def max_hashable_bytes() -> int:
+    """Byte ceiling on a workspace file admitted as a ``context_ref``.
+
+    Admission digests the WHOLE file to pin its revision, so an unbounded
+    reference to a multi-gigabyte artefact is a per-request read of that size.
+    A file above this ceiling is REFUSED with a typed reason naming the limit --
+    never silently admitted with a partial or skipped digest.
+
+    Config: ``gact.context_references.max_hashable_bytes`` /
+    ``CLIO_CONTEXT_REFERENCE_MAX_HASHABLE_BYTES``.
+    """
+
+    return conf.resolve(
+        "gact.context_references.max_hashable_bytes",
+        env="CLIO_CONTEXT_REFERENCE_MAX_HASHABLE_BYTES",
+        default=64 * 1024 * 1024,
+        cast=conf.as_int,
+    )
 
 
 def _failure(
@@ -125,27 +166,12 @@ def _stat_revision(path: Path) -> str:
     return f"stat:{stat.st_mtime_ns}:{stat.st_size}"
 
 
-async def search_workspace_references(
-    app: "FastAPI",
-    workspace_id: str,
-    *,
-    query: str = "",
-    kinds: Iterable[str] | None = None,
-) -> list[dict[str, Any]]:
-    """Search existing repositories through the focused discovery owner."""
-
-    from clio_agent.gact.context_reference_search import (  # noqa: PLC0415
-        search_workspace_references as search,
-    )
-
-    return await search(app, workspace_id, query=query, kinds=kinds)
-
-
 def _summary_excerpt(text: str) -> str:
+    limit = summary_excerpt_chars()
     clean = " ".join(text.split())
-    if len(clean) <= _SUMMARY_EXCERPT_CHARS:
+    if len(clean) <= limit:
         return clean
-    return clean[: _SUMMARY_EXCERPT_CHARS - 1] + "…"
+    return clean[: limit - 1] + "…"
 
 
 def _message_excerpt(message: Message) -> str:
@@ -155,7 +181,9 @@ def _message_excerpt(message: Message) -> str:
 
 
 def _session_summary(app: "FastAPI", session: _WorkspaceSession) -> dict[str, Any]:
-    messages = list(app.state.messages.get(session.id, []))[-_SUMMARY_MESSAGE_LIMIT:]
+    message_limit = summary_message_limit()
+    excerpt_limit = summary_excerpt_chars()
+    messages = list(app.state.messages.get(session.id, []))[-message_limit:]
     return {
         "session_id": session.id,
         "title": session.title,
@@ -170,8 +198,8 @@ def _session_summary(app: "FastAPI", session: _WorkspaceSession) -> dict[str, An
         "provenance": {
             "source": "session_message_repository",
             "bounded": True,
-            "message_limit": _SUMMARY_MESSAGE_LIMIT,
-            "excerpt_char_limit": _SUMMARY_EXCERPT_CHARS,
+            "message_limit": message_limit,
+            "excerpt_char_limit": excerpt_limit,
         },
     }
 
@@ -190,9 +218,36 @@ def _agent_run_summary(task: Any) -> dict[str, Any]:
         "provenance": {
             "source": "agent_task_repository",
             "bounded": True,
-            "excerpt_char_limit": _SUMMARY_EXCERPT_CHARS,
+            "excerpt_char_limit": summary_excerpt_chars(),
         },
     }
+
+
+def _refuse_unhashable_file(ref_id: str, workspace_id: str, size: int) -> None:
+    """Refuse a workspace file too large to digest at admission.
+
+    Pinning a ``workspace_file`` revision means digesting the WHOLE file, so an
+    unbounded reference turns one POST into a read of that many bytes on a
+    request path. Past the ceiling the reference is REFUSED with the limit and
+    the actual size in the payload -- never admitted with a skipped or partial
+    digest, which would make the pinned revision a lie.
+    """
+
+    limit = max_hashable_bytes()
+    if size <= limit:
+        return
+    raise _failure(
+        status_code=413,
+        error="context_ref_too_large",
+        message="workspace file is larger than the referenceable size limit",
+        ref_kind="workspace_file",
+        ref_id=ref_id,
+        workspace_id=workspace_id,
+        recoverable=True,
+        size_bytes=size,
+        max_bytes=limit,
+        recovery_actions=["reference_a_smaller_file", "raise_max_hashable_bytes"],
+    )
 
 
 def _resolve_file(
@@ -202,8 +257,9 @@ def _resolve_file(
     requested = part.revision
     try:
         stat_revision = _stat_revision(path)
-        actual_sha = _sha256_file(path)
         size = path.stat().st_size
+        _refuse_unhashable_file(part.ref_id, workspace_id, size)
+        actual_sha = _sha256_file(path)
     except OSError as exc:
         raise _failure(
             status_code=404,
@@ -462,7 +518,7 @@ def _resolve_evidence_snapshot(
     *,
     enforce_revision: bool,
 ) -> tuple[Part, dict[str, Any]]:
-    from clio_agent.gact.context_reference_search import (  # noqa: PLC0415
+    from clio_agent.gact.context_reference_evidence import (  # noqa: PLC0415
         find_evidence_reference_snapshot,
     )
 
@@ -531,6 +587,57 @@ def _resolve_evidence_snapshot(
     return resolved, metadata
 
 
+def resource_part_from_reference(app: "FastAPI", workspace_id: str, part: Part) -> Part:
+    """Turn a ``context_ref{ref_kind: resource}`` handle into a ``resource_ref`` part.
+
+    ``resource`` is a SEARCHABLE kind (the picker lists uploaded sources) but not a
+    context-reference kind, so picking a resource row used to 400 with
+    ``context_ref_kind_invalid`` -- a row the server offered and then refused. It
+    is not a new attachment mechanism either: the composer already delivers an
+    uploaded source as a ``resource_ref`` part with its own custody, revision and
+    per-model delivery planning. So admission MAPS the picked handle onto that
+    existing part type, revision-checked against the custody record, and the rest
+    of the pipeline is unchanged.
+    """
+
+    store = getattr(app.state, "resource_store", None)
+    record = store.get(workspace_id, part.ref_id) if store is not None else None
+    if record is None:
+        raise _failure(
+            status_code=404,
+            error="context_ref_inaccessible",
+            message="resource reference is missing or outside the active workspace",
+            ref_kind="resource",
+            ref_id=part.ref_id,
+            workspace_id=workspace_id,
+            recoverable=True,
+        )
+    actual_revision = str(record.revision)
+    if part.revision and part.revision != actual_revision:
+        raise _failure(
+            status_code=409,
+            error="context_ref_stale",
+            message="resource reference does not name the current immutable revision",
+            ref_kind="resource",
+            ref_id=part.ref_id,
+            recoverable=True,
+            requested_revision=part.revision,
+            actual_revision=actual_revision,
+        )
+    return Part(
+        type="resource_ref",
+        id=part.id,
+        resource_id=record.id,
+        resource_revision=actual_revision,
+        name=record.name,
+        media_type=record.detected_mime,
+        metadata={
+            **dict(part.metadata),
+            "picked_as": {"ref_kind": "resource", "ref_id": part.ref_id},
+        },
+    )
+
+
 def _resolve_part_sync(
     app: "FastAPI", workspace_id: str, part: Part, *, enforce_revision: bool
 ) -> tuple[Part, dict[str, Any]]:
@@ -575,6 +682,9 @@ def authorize_context_reference_parts_sync(
             resolved.append(part)
             continue
         try:
+            if part.ref_kind == "resource":
+                resolved.append(resource_part_from_reference(app, session.workspace_id, part))
+                continue
             canonical, _metadata = _resolve_part_sync(
                 app,
                 session.workspace_id,
@@ -597,189 +707,16 @@ async def authorize_context_reference_parts(
     )
 
 
-def context_reference_deliveries(parts: Iterable[Part]) -> list[dict[str, Any]]:
-    """Copy server-resolved delivery records from canonical message parts."""
-
-    deliveries: list[dict[str, Any]] = []
-    for part in parts:
-        if part.type != "context_ref":
-            continue
-        metadata = part.metadata.get("context_reference")
-        if isinstance(metadata, Mapping):
-            deliveries.append(copy.deepcopy(dict(metadata)))
-    return deliveries
-
-
-def record_context_reference_deliveries(metadata: dict[str, Any], parts: Iterable[Part]) -> None:
-    """Attach canonical context-reference delivery records to message metadata."""
-
-    deliveries = context_reference_deliveries(parts)
-    if deliveries:
-        metadata["context_reference_deliveries"] = deliveries
-
-
-def _recorded_delivery_metadata(
-    part: Part, workspace_id: str, current: dict[str, Any]
-) -> tuple[dict[str, Any], bool]:
-    """Use the admitted summary snapshot after rechecking current ownership."""
-
-    recorded = part.metadata.get("context_reference")
-    if not isinstance(recorded, Mapping):
-        return current, False
-    if (
-        recorded.get("kind") != part.ref_kind
-        or recorded.get("ref_id") != part.ref_id
-        or recorded.get("workspace_id") != workspace_id
-        or recorded.get("resolved_revision") != part.revision
-    ):
-        return current, False
-    return copy.deepcopy(dict(recorded)), True
-
-
-def enrich_with_context_references(
-    app: "FastAPI", sid: str, user_text: str, user_message: Message
-) -> str:
-    """Resolve typed parts again and prepend their bounded model-facing content."""
-
-    session = app.state.sessions.get(sid)
-    if session is None:
-        return user_text
-    blocks: list[str] = []
-    try:
-        for part in user_message.parts:
-            if part.type != "context_ref":
-                continue
-            canonical, current_metadata = _resolve_part_sync(
-                app, session.workspace_id, part, enforce_revision=True
-            )
-            if canonical.ref_kind in _SUMMARY_REFERENCE_KINDS:
-                metadata, uses_recorded_snapshot = _recorded_delivery_metadata(
-                    part, session.workspace_id, current_metadata
-                )
-                if uses_recorded_snapshot:
-                    canonical = part
-            else:
-                metadata = current_metadata
-            delivery = metadata["delivery"]
-            if canonical.ref_kind in _SUMMARY_REFERENCE_KINDS:
-                summary = delivery["summary"]
-                blocks.append(
-                    f"### {canonical.ref_kind}: {canonical.label} [{canonical.ref_id}]\n"
-                    f"{json.dumps(summary, sort_keys=True)}"
-                )
-                continue
-            if delivery["mode"] == "inline_text":
-                content_path: Path | None
-                if canonical.ref_kind == "workspace_file":
-                    _root, content_path = _contained_file(
-                        app, session.workspace_id, canonical.ref_id
-                    )
-                else:
-                    found = get_registry(app).get_by_artifact_id(canonical.ref_id)
-                    assert found is not None
-                    content_path = _artifact_path(app, found[0], found[1])
-                if content_path is not None:
-                    snapshot = _read_bounded_file(content_path)
-                    expected_sha = str(delivery.get("sha256") or "")
-                    if expected_sha and snapshot.sha256 != expected_sha:
-                        raise _failure(
-                            status_code=409,
-                            error="context_ref_stale",
-                            message="context reference changed while preparing delivery",
-                            ref_kind=canonical.ref_kind,
-                            ref_id=canonical.ref_id,
-                            recoverable=True,
-                            expected_sha256=expected_sha,
-                            actual_sha256=snapshot.sha256,
-                        )
-                    text = snapshot.data.decode("utf-8", errors="replace")
-                    truncated = snapshot.size_bytes - len(snapshot.data)
-                    suffix = f"\n... ({truncated} more bytes truncated)" if truncated > 0 else ""
-                    blocks.append(
-                        f"### {canonical.ref_kind}: {canonical.label} "
-                        f"[{canonical.ref_id}@{canonical.revision}]\n```\n{text}{suffix}\n```"
-                    )
-                    continue
-            blocks.append(
-                f"### {canonical.ref_kind}: {canonical.label} "
-                f"[{canonical.ref_id}@{canonical.revision}]\n"
-                f"media_type={metadata['media_type']}; delivery=metadata-only; "
-                f"sha256={delivery.get('sha256', '')}"
-            )
-    except (ContextReferenceError, OSError) as exc:
-        if isinstance(exc, ContextReferenceError):
-            info = ErrorInfo(
-                error=exc.error,
-                message=exc.message,
-                details=exc.details,
-                recoverable=exc.recoverable,
-            )
-        else:
-            info = ErrorInfo(
-                error="context_ref_inaccessible",
-                message="context reference could not be read for delivery",
-                details={"operation": "read", "original_error": type(exc).__name__},
-                recoverable=True,
-            )
-        raise _ContextFileAccessError(info) from exc
-    if not blocks:
-        return user_text
-    return (
-        "## Structured context references (server-resolved)\n\n"
-        + "\n\n".join(blocks)
-        + "\n\n## User question\n\n"
-        + user_text
-    )
-
-
-def context_reference_frame_items(message: Message) -> list[dict[str, Any]]:
-    """Return provenance-bearing frame rows for resolved context-reference parts."""
-
-    rows: list[dict[str, Any]] = []
-    for part in message.parts:
-        if part.type != "context_ref":
-            continue
-        resolved = part.metadata.get("context_reference", {})
-        delivery = resolved.get("delivery", {})
-        size_bytes = delivery.get("size_bytes", 0)
-        if isinstance(size_bytes, int) and size_bytes > 0:
-            tokens = min(size_bytes, _CTX_MAX_BYTES) // 4
-        else:
-            tokens = len(json.dumps(delivery.get("summary", {}), sort_keys=True)) // 4
-        rows.append(
-            {
-                "kind": "context_ref",
-                "source_id": part.ref_id,
-                "included": True,
-                "reason": "structured_context_reference",
-                "tokens_estimated": tokens,
-                "metadata": {
-                    "ref_kind": part.ref_kind,
-                    "label": part.label,
-                    "revision": part.revision,
-                    "workspace_id": resolved.get("workspace_id", ""),
-                    "delivery": resolved.get("delivery", {}),
-                    "provenance": resolved.get("provenance", {}),
-                },
-            }
-        )
-    return rows
-
-
-from clio_agent.gact.context_reference_search import (  # noqa: E402
-    _disambiguate_duplicate_labels as _disambiguate_duplicate_labels,
-)
-
 __all__ = [
     "CONTEXT_REFERENCE_CAPABILITY",
     "CONTEXT_REFERENCE_KINDS",
     "REFERENCE_SEARCH_KINDS",
+    "SUMMARY_REFERENCE_KINDS",
     "ContextReferenceError",
     "authorize_context_reference_parts",
     "authorize_context_reference_parts_sync",
-    "context_reference_deliveries",
-    "context_reference_frame_items",
-    "enrich_with_context_references",
-    "record_context_reference_deliveries",
-    "search_workspace_references",
+    "max_hashable_bytes",
+    "resource_part_from_reference",
+    "summary_excerpt_chars",
+    "summary_message_limit",
 ]

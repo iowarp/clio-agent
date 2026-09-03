@@ -326,6 +326,224 @@ def test_interaction_a2ui_response_requires_the_negotiated_protocol_version(tmp_
     assert negotiated.status_code == 200
 
 
+# --------------------------------------------------------------------------- #
+# Finding 1: reference resolution never runs on the event loop
+# --------------------------------------------------------------------------- #
+
+
+def _workspace_session(app: object, tmp_path, name: str = "ws") -> tuple[str, str]:
+    root = tmp_path / name
+    root.mkdir(parents=True, exist_ok=True)
+    workspace = app.state.workspaces.create(name=name, root_path=str(root))
+    session = app.state.sessions.create(workspace_id=workspace.id, title=name)
+    return workspace.id, session.id
+
+
+def test_post_messages_never_hashes_a_referenced_file_on_the_loop_thread(
+    tmp_path, monkeypatch
+) -> None:
+    """The digest is real work; it must happen in a worker, not on the loop."""
+
+    from clio_agent.gact import context_reference_file_io, context_references
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    workspace_id, sid = _workspace_session(app, tmp_path)
+    target = tmp_path / "ws" / "notes.txt"
+    target.write_text("hello reference", encoding="utf-8")
+
+    loop_thread: dict[str, int] = {}
+    hashing_threads: list[int] = []
+    real_sha = context_reference_file_io.sha256_file
+
+    def recording_sha(path):
+        hashing_threads.append(threading.get_ident())
+        return real_sha(path)
+
+    monkeypatch.setattr(context_references, "_sha256_file", recording_sha)
+
+    with TestClient(app) as client:
+
+        @app.get("/_af1/loop-thread")
+        async def _loop_thread() -> dict[str, int]:
+            loop_thread["ident"] = threading.get_ident()
+            return loop_thread
+
+        loop_ident = client.get("/_af1/loop-thread").json()["ident"]
+        listed = client.get(
+            f"/v1/workspaces/{workspace_id}/references",
+            params={"kinds": "workspace_file"},
+            headers=HEADERS,
+        ).json()["references"]
+        row = next(item for item in listed if item["id"] == "notes.txt")
+        assert row["part_type"] == "context_ref"
+        posted = client.post(
+            f"/v1/sessions/{sid}/messages",
+            headers=HEADERS,
+            json={
+                "parts": [
+                    {"type": "text", "text": "look at this"},
+                    {
+                        "type": "context_ref",
+                        "ref_kind": "workspace_file",
+                        "ref_id": "notes.txt",
+                        "revision": row["revision"],
+                    },
+                ]
+            },
+        )
+
+    assert posted.status_code in (200, 202, 503), posted.text
+    assert hashing_threads, "the reference was never resolved"
+    assert loop_ident not in hashing_threads
+
+
+def test_oversized_workspace_file_is_refused_with_a_typed_limit(tmp_path) -> None:
+    from clio_agent.gact.context_reference_domain import ContextReferenceError
+    from clio_agent.gact.context_references import authorize_context_reference_parts_sync
+    from clio_agent.gact.types import Part
+
+    set_config("gact.context_references.max_hashable_bytes", 8)
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    workspace_id, sid = _workspace_session(app, tmp_path, name="big")
+    (tmp_path / "big" / "large.txt").write_text("x" * 64, encoding="utf-8")
+    session = app.state.sessions.get(sid)
+    assert session.workspace_id == workspace_id
+
+    with pytest.raises(Exception) as refused:  # noqa: PT011 - HTTPException envelope
+        authorize_context_reference_parts_sync(
+            app,
+            session,
+            [Part(type="context_ref", ref_kind="workspace_file", ref_id="large.txt")],
+        )
+    detail = getattr(refused.value, "detail", {})
+    assert not isinstance(refused.value, ContextReferenceError)
+    assert detail["error"]["error"] == "context_ref_too_large"
+    assert detail["error"]["details"]["max_bytes"] == 8
+    assert detail["error"]["details"]["size_bytes"] == 64
+
+
+# --------------------------------------------------------------------------- #
+# Finding 5: a picked resource is attachable end to end
+# --------------------------------------------------------------------------- #
+
+
+def test_resource_reference_search_row_attaches_as_a_resource_ref_part(tmp_path) -> None:
+    from clio_agent.gact.context_references import authorize_context_reference_parts_sync
+    from clio_agent.gact.types import Part
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    workspace_id, sid = _workspace_session(app, tmp_path, name="res")
+    payload = b"# paper\n"
+    record, _resumed = app.state.resource_store.create_or_resume(
+        workspace_id=workspace_id,
+        name="paper.md",
+        declared_size=len(payload),
+        claimed_mime="text/markdown",
+    )
+    ready = app.state.resource_store.append(record.id, offset=0, data=payload)
+    assert ready.state == "ready"
+
+    with TestClient(app) as client:
+        listed = client.get(
+            f"/v1/workspaces/{workspace_id}/references",
+            params={"kinds": "resource"},
+            headers=HEADERS,
+        ).json()["references"]
+    row = next(item for item in listed if item["id"] == ready.id)
+    assert row["part_type"] == "resource_ref"
+
+    session = app.state.sessions.get(sid)
+    attached = authorize_context_reference_parts_sync(
+        app,
+        session,
+        [
+            Part(
+                type="context_ref",
+                ref_kind="resource",
+                ref_id=ready.id,
+                revision=row["revision"],
+            )
+        ],
+    )
+    assert [part.type for part in attached] == ["resource_ref"]
+    assert attached[0].resource_id == ready.id
+    assert attached[0].resource_revision == str(ready.revision)
+    assert attached[0].media_type == ready.detected_mime
+
+
+def test_capability_documents_the_part_type_mapping_and_the_agent_mechanism() -> None:
+    from clio_agent.gact.context_reference_domain import CONTEXT_REFERENCE_CAPABILITY
+
+    mapping = CONTEXT_REFERENCE_CAPABILITY["part_type_by_kind"]
+    assert mapping["resource"] == "resource_ref"
+    assert mapping["workspace_file"] == "context_ref"
+    assert set(mapping) == set(CONTEXT_REFERENCE_CAPABILITY["search_kinds"])
+    agents = CONTEXT_REFERENCE_CAPABILITY["alternate_mechanisms"]["agents"]
+    assert agents["mechanism"] == "message_request_field"
+    assert agents["field"] == "agent"
+    assert "agents" not in CONTEXT_REFERENCE_CAPABILITY["kinds"]
+
+
+# --------------------------------------------------------------------------- #
+# Finding 6: an admitted message stays retryable after its evidence moves
+# --------------------------------------------------------------------------- #
+
+
+def test_admitted_diff_reference_redelivers_its_snapshot_with_a_stale_marker(
+    tmp_path,
+) -> None:
+    from clio_agent.gact.context_reference_delivery import enrich_with_context_references
+    from clio_agent.gact.context_references import authorize_context_reference_parts_sync
+    from clio_agent.gact.types import Message, Part
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    _workspace_id, sid = _workspace_session(app, tmp_path, name="diffs")
+    app.state.pending_diffs = {
+        sid: [
+            {
+                "path": "src/app.py",
+                "part_id": "d1",
+                "message_id": "msg_1",
+                "status": "pending",
+                "unified_diff": "@@ -1 +1 @@\n-a\n+b\n",
+            }
+        ]
+    }
+    session = app.state.sessions.get(sid)
+    from clio_agent.gact.context_reference_evidence import evidence_reference_snapshots
+
+    row, _payload = evidence_reference_snapshots(app, session.workspace_id, ["diff"])[0]
+    admitted = authorize_context_reference_parts_sync(
+        app,
+        session,
+        [
+            Part(
+                type="context_ref",
+                ref_kind="diff",
+                ref_id=row["id"],
+                revision=row["revision"],
+            )
+        ],
+    )
+    message = Message(
+        id="msg_user",
+        turn_id="msg_user",
+        session_id=sid,
+        role="user",
+        created_at="",
+        updated_at="",
+        parts=admitted,
+    )
+    # The diff settles -- exactly what happens between the send and the retry.
+    app.state.pending_diffs[sid][0]["status"] = "applied"
+
+    enriched = enrich_with_context_references(app, sid, "retry me", message)
+
+    assert "as-of snapshot" in enriched
+    assert row["id"] in enriched
+    assert '"status": "pending"' in enriched
+
+
 def test_ask_user_ttl_default_and_clamp_are_config_resolved() -> None:
     from clio_agent.gact import ask_user_tool
 

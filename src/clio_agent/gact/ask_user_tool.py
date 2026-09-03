@@ -243,9 +243,7 @@ def restore_pending_ask_user_questions(app: Any) -> int:
         if str(pending_raw.get("resolved_status") or "") in terminal_statuses:
             continue
         question_id = str(
-            pending_raw.get("question_id")
-            or session_metadata.get("pending_user_question_id")
-            or ""
+            pending_raw.get("question_id") or session_metadata.get("pending_user_question_id") or ""
         )
         if not question_id or question_id in app.state.user_questions:
             continue
@@ -286,9 +284,7 @@ def restore_pending_ask_user_questions(app: Any) -> int:
                 id=question_id,
                 session_id=session.id,
                 owner_session_id=str(pending_raw.get("owner_session_id") or session.id),
-                attended_session_id=str(
-                    pending_raw.get("attended_session_id") or session.id
-                ),
+                attended_session_id=str(pending_raw.get("attended_session_id") or session.id),
                 prompt=prompt,
                 kind=kind,  # type: ignore[arg-type]
                 options=options,
@@ -343,6 +339,8 @@ def arm_ask_user_deadline(app: Any, question: Any) -> None:
     def expire() -> None:
         from clio_agent.gact.elicitation_bridge import (  # noqa: PLC0415
             claim_question_transition,
+        )
+        from clio_agent.gact.elicitation_forwarding import (  # noqa: PLC0415
             relay_forwarded_cancel,
         )
         from clio_agent.gact.events import Event  # noqa: PLC0415

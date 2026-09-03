@@ -6,10 +6,8 @@ from typing import Annotated, Any
 
 from fastapi import FastAPI, Query
 
-from clio_agent.gact.context_references import (
-    ContextReferenceError,
-    search_workspace_references,
-)
+from clio_agent.gact.context_reference_domain import ContextReferenceError
+from clio_agent.gact.context_reference_search import search_workspace_references
 
 
 def register_reference_routes(app: FastAPI) -> None:

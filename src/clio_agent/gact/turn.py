@@ -41,7 +41,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
-from clio_agent.gact.context_references import record_context_reference_deliveries
+from clio_agent.gact.context_reference_delivery import record_context_reference_deliveries
 from clio_agent.gact.delegation import (
     _coerce_expert_handoff_rows,
     _prediction_workflow_state,

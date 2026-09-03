@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
+import logging
 import os
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import unquote, urlsplit
 
+from clio_agent import conf
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.artifacts.wire import mime_for
+from clio_agent.gact.context_reference_evidence import evidence_reference_snapshots
+from clio_agent.gact.context_reference_result import reference_result as _reference_result
 from clio_agent.gact.routes.workspace_file_policy import (
     is_internal_workspace_file_directory,
     skip_workspace_file_directory,
@@ -21,37 +22,60 @@ from clio_agent.gact.routes.workspace_file_policy import (
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-_EMPTY_QUERY_LIMIT_PER_KIND = 20
-_SEARCH_LIMIT = 100
+logger = logging.getLogger(__name__)
 
 
-def _reference_result(
-    *,
-    kind: str,
-    ref_id: str,
-    label: str,
-    detail: str,
-    media_type: str,
-    revision: str,
-    navigation: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Return the exact stable result shape shared by every repository."""
+def empty_query_limit_per_kind() -> int:
+    """Rows returned per kind when the picker opens with no query typed.
 
-    return {
-        "kind": kind,
-        "id": ref_id,
-        "label": label,
-        "detail": detail,
-        "media_type": media_type,
-        "revision": revision,
-        "navigation": dict(navigation),
-    }
+    Config: ``gact.context_references.browse_limit_per_kind`` /
+    ``CLIO_CONTEXT_REFERENCE_BROWSE_LIMIT``.
+    """
+
+    return conf.resolve(
+        "gact.context_references.browse_limit_per_kind",
+        env="CLIO_CONTEXT_REFERENCE_BROWSE_LIMIT",
+        default=20,
+        cast=conf.as_int,
+    )
 
 
-def _disambiguate_duplicate_labels(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Preserve duplicate identities without leaking opaque IDs into visible copy."""
+def search_limit() -> int:
+    """Total rows one reference search may return for a typed query.
 
-    return [dict(row) for row in results]
+    Config: ``gact.context_references.search_limit`` /
+    ``CLIO_CONTEXT_REFERENCE_SEARCH_LIMIT``.
+    """
+
+    return conf.resolve(
+        "gact.context_references.search_limit",
+        env="CLIO_CONTEXT_REFERENCE_SEARCH_LIMIT",
+        default=100,
+        cast=conf.as_int,
+    )
+
+
+def _degradation(app: "FastAPI", workspace_id: str, reason: str, detail: str) -> None:
+    """Record one typed discovery degradation on the app's quarantine surface.
+
+    Mirrors the composer's resource-store quarantine reporting: a repository that
+    cannot be listed makes the picker show FEWER rows than exist, and a client
+    entitled to know why must not be told "there is nothing here".
+    """
+
+    logger.warning(
+        "reference discovery degraded reason=%s workspace=%s detail=%s",
+        reason,
+        workspace_id,
+        detail,
+    )
+    rows = getattr(app.state, "reference_search_degradations", None)
+    if rows is None:
+        rows = []
+        app.state.reference_search_degradations = rows
+    row = {"reason": reason, "workspace_id": workspace_id, "detail": detail}
+    if row not in rows:
+        rows.append(row)
 
 
 def _walk_workspace_files(
@@ -59,7 +83,7 @@ def _walk_workspace_files(
     workspace_id: str,
     *,
     needle: str = "",
-    limit: int = _SEARCH_LIMIT,
+    limit: int = 0,
 ) -> list[dict[str, Any]]:
     from clio_agent.gact.context_references import (  # noqa: PLC0415
         _file_media_type,
@@ -67,6 +91,7 @@ def _walk_workspace_files(
         _workspace_root,
     )
 
+    limit = limit or search_limit()
     root = _workspace_root(app, workspace_id)
     if not root.is_dir():
         return []
@@ -118,7 +143,16 @@ def _resource_results(app: "FastAPI", workspace_id: str) -> list[dict[str, Any]]
         return []
     try:
         records = store.list(workspace_id)
-    except (AttributeError, KeyError, TypeError, ValueError):
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        # A store that cannot be listed is a REAL capability statement: the picker
+        # will show no uploaded sources, and returning [] silently told the client
+        # none had ever been uploaded.
+        _degradation(
+            app,
+            workspace_id,
+            "resource_store_unreadable",
+            f"{type(exc).__name__}: {exc}",
+        )
         return []
     readable_names_by_hash = {
         str(getattr(record, "sha256", "") or "").casefold()
@@ -136,6 +170,15 @@ def _resource_results(app: "FastAPI", workspace_id: str) -> list[dict[str, Any]]
         if content_hash in readable_names_by_hash and _is_content_addressed_name(
             label, content_hash
         ):
+            # A duplicate upload whose filename is only its content hash is hidden
+            # behind the readable sibling naming the SAME bytes. That is a row the
+            # user cannot see, so it is reported rather than silently dropped.
+            _degradation(
+                app,
+                workspace_id,
+                "resource_content_addressed_name_hidden",
+                f"resource {ref_id} is a content-addressed duplicate of sha256:{content_hash}",
+            )
             continue
         revision = str(getattr(record, "revision", "") or "")
         media_type = str(
@@ -246,336 +289,6 @@ def _agent_run_results(app: "FastAPI", workspace_id: str) -> list[dict[str, Any]
     return results
 
 
-def _workspace_sessions(app: "FastAPI", workspace_id: str) -> list[Any]:
-    """Return the authoritative sessions whose evidence belongs to one workspace."""
-
-    return list(app.state.sessions.list(workspace_id=workspace_id))
-
-
-def _snapshot_revision(payload: Mapping[str, Any]) -> str:
-    encoded = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()
-    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
-
-
-def _bounded_payload(value: Any, *, depth: int = 0) -> Any:
-    """Keep reference previews useful without copying an unbounded evidence ledger."""
-
-    if depth >= 6:
-        return "[nested content omitted]"
-    if isinstance(value, Mapping):
-        return {
-            str(key): _bounded_payload(child, depth=depth + 1)
-            for key, child in list(value.items())[:50]
-        }
-    if isinstance(value, list):
-        return [_bounded_payload(child, depth=depth + 1) for child in value[:50]]
-    if isinstance(value, str):
-        return value if len(value) <= 4_000 else value[:3_999] + "…"
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    return str(value)[:4_000]
-
-
-def _snapshot_result(
-    *,
-    kind: str,
-    ref_id: str,
-    label: str,
-    detail: str,
-    media_type: str,
-    navigation: Mapping[str, Any],
-    payload: Mapping[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    bounded = _bounded_payload(payload)
-    assert isinstance(bounded, dict)
-    revision = _snapshot_revision(bounded)
-    return (
-        _reference_result(
-            kind=kind,
-            ref_id=ref_id,
-            label=label,
-            detail=detail,
-            media_type=media_type,
-            revision=revision,
-            navigation=navigation,
-        ),
-        bounded,
-    )
-
-
-def _plan_snapshots(
-    app: "FastAPI", workspace_id: str
-) -> list[tuple[dict[str, Any], dict[str, Any]]]:
-    snapshots: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for session in _workspace_sessions(app, workspace_id):
-        for message in app.state.messages.get(session.id, []) or []:
-            for index, part in enumerate(message.parts):
-                if part.type not in {"plan", "compaction"}:
-                    continue
-                part_id = part.id or str(index)
-                ref_id = f"{session.id}:{message.id}:{part_id}"
-                title = part.title or ("Compacted context" if part.type == "compaction" else "Plan")
-                payload = {
-                    "session_id": session.id,
-                    "message_id": message.id,
-                    "part_id": part_id,
-                    "title": title,
-                    "detail": part.summary or part.text,
-                    "type": part.type,
-                }
-                snapshots.append(
-                    _snapshot_result(
-                        kind="plan",
-                        ref_id=ref_id,
-                        label=title,
-                        detail=f"Plan from {session.title or session.id}",
-                        media_type="application/vnd.clio.plan+json",
-                        navigation={
-                            "workspace_id": workspace_id,
-                            "session_id": session.id,
-                            "message_id": message.id,
-                            "part_id": part_id,
-                        },
-                        payload=payload,
-                    )
-                )
-    return snapshots
-
-
-def _diff_snapshots(
-    app: "FastAPI", workspace_id: str
-) -> list[tuple[dict[str, Any], dict[str, Any]]]:
-    snapshots: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    rows_by_session = getattr(app.state, "pending_diffs", {})
-    for session in _workspace_sessions(app, workspace_id):
-        for index, row in enumerate(rows_by_session.get(session.id, []) or []):
-            if not isinstance(row, Mapping):
-                continue
-            path = str(row.get("path") or "Changed file")
-            part_id = str(row.get("part_id") or index)
-            message_id = str(row.get("message_id") or "")
-            ref_id = f"{session.id}:{message_id}:{part_id}"
-            payload = {
-                "session_id": session.id,
-                "message_id": message_id,
-                "part_id": part_id,
-                "path": path,
-                "status": str(row.get("status") or "pending"),
-                "unified_diff": str(row.get("unified_diff") or ""),
-            }
-            snapshots.append(
-                _snapshot_result(
-                    kind="diff",
-                    ref_id=ref_id,
-                    label=Path(path).name or path,
-                    detail=f"Changed file · {path} · {payload['status']}",
-                    media_type="text/x-diff",
-                    navigation={
-                        "workspace_id": workspace_id,
-                        "session_id": session.id,
-                        "message_id": message_id,
-                        "part_id": part_id,
-                        "path": path,
-                    },
-                    payload=payload,
-                )
-            )
-    return snapshots
-
-
-def _context_frame_snapshots(
-    app: "FastAPI", workspace_id: str
-) -> list[tuple[dict[str, Any], dict[str, Any]]]:
-    snapshots: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    rows_by_session = getattr(app.state, "context_frames", {})
-    for session in _workspace_sessions(app, workspace_id):
-        for row in rows_by_session.get(session.id, []) or []:
-            if not isinstance(row, Mapping) or not row.get("id"):
-                continue
-            frame_id = str(row["id"])
-            item_count = len(row.get("items") or []) if isinstance(row.get("items"), list) else 0
-            snapshots.append(
-                _snapshot_result(
-                    kind="context_frame",
-                    ref_id=frame_id,
-                    label=f"Context for {session.title or session.id}",
-                    detail=f"{row.get('status') or 'assembled'} · {item_count} items",
-                    media_type="application/vnd.clio.context-frame+json",
-                    navigation={
-                        "workspace_id": workspace_id,
-                        "session_id": session.id,
-                        "frame_id": frame_id,
-                        "route": "/v1/sessions/{session_id}/context/frames/{frame_id}",
-                    },
-                    payload=dict(row),
-                )
-            )
-    return snapshots
-
-
-def _walk_source_values(
-    value: Any, path: tuple[str, ...] = (), depth: int = 0
-) -> list[tuple[str, str]]:
-    if depth > 5:
-        return []
-    if isinstance(value, Mapping):
-        found: list[tuple[str, str]] = []
-        for key, child in list(value.items())[:100]:
-            key_text = str(key)
-            child_path = (*path, key_text)
-            if isinstance(child, str) and _is_referenceable_source(child_path, child):
-                found.append((".".join(child_path), child))
-            else:
-                found.extend(_walk_source_values(child, child_path, depth + 1))
-        return found
-    if isinstance(value, list):
-        found = []
-        for index, child in enumerate(value[:100]):
-            found.extend(_walk_source_values(child, (*path, str(index)), depth + 1))
-        return found
-    return []
-
-
-def _is_web_url(value: str) -> bool:
-    """Return whether a metadata value is an externally navigable web source."""
-
-    parsed = urlsplit(value.strip())
-    return parsed.scheme.casefold() in {"http", "https"} and bool(parsed.netloc)
-
-
-def _is_referenceable_source(path: tuple[str, ...], value: str) -> bool:
-    """Exclude delivery infrastructure URLs from user-facing evidence sources."""
-
-    field = path[-1].replace("-", "_").casefold() if path else ""
-    if field in {"endpoint", "processor", "processor_url", "service_endpoint", "service_url"}:
-        return False
-    return _is_web_url(value)
-
-
-def _url_source_label(value: str) -> str:
-    """Derive a compact human-readable label from a source URL."""
-
-    parsed = urlsplit(value.strip())
-    leaf = unquote(parsed.path.rstrip("/").rsplit("/", 1)[-1]).strip()
-    if leaf:
-        return f"{leaf} ({parsed.netloc})"
-    return parsed.netloc
-
-
-def _metadata_source_label(path: str, value: str) -> str:
-    """Prefer a meaningful metadata field name, falling back to the URL identity."""
-
-    leaf = path.rsplit(".", 1)[-1]
-    words = [word for word in leaf.replace("-", "_").split("_") if word]
-    if words and words[-1].casefold() == "url":
-        words.pop()
-    if words and [word.casefold() for word in words] not in (["source"], ["link"]):
-        return " ".join(word.capitalize() for word in words)
-    return _url_source_label(value)
-
-
-def _evidence_source_snapshots(
-    app: "FastAPI", workspace_id: str
-) -> list[tuple[dict[str, Any], dict[str, Any]]]:
-    snapshots: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    seen: set[tuple[str, str]] = set()
-    for session in _workspace_sessions(app, workspace_id):
-        for message in app.state.messages.get(session.id, []) or []:
-            for index, part in enumerate(message.parts):
-                candidates: list[tuple[str, str, str]] = []
-                if (
-                    part.type == "resource_link"
-                    and part.uri
-                    and not part.uri.startswith("artifact://")
-                ):
-                    candidates.append((part.id or str(index), part.name or part.uri, part.uri))
-                for path, value in _walk_source_values(part.metadata):
-                    candidates.append(
-                        (
-                            f"{part.id or index}:{path}",
-                            _metadata_source_label(path, value),
-                            value,
-                        )
-                    )
-                if part.content_blocks:
-                    for path, value in _walk_source_values(part.content_blocks):
-                        candidates.append(
-                            (
-                                f"{part.id or index}:content:{path}",
-                                _metadata_source_label(path, value),
-                                value,
-                            )
-                        )
-                for source_id, label, value in candidates:
-                    dedupe = (session.id, value)
-                    if dedupe in seen:
-                        continue
-                    seen.add(dedupe)
-                    digest = hashlib.sha256(
-                        f"{session.id}:{message.id}:{source_id}:{value}".encode()
-                    ).hexdigest()[:20]
-                    ref_id = f"source:{digest}"
-                    payload = {
-                        "session_id": session.id,
-                        "message_id": message.id,
-                        "source_id": source_id,
-                        "label": label,
-                        "value": value,
-                    }
-                    snapshots.append(
-                        _snapshot_result(
-                            kind="evidence_source",
-                            ref_id=ref_id,
-                            label=label,
-                            detail=f"From {session.title or session.id}",
-                            media_type="text/uri-list"
-                            if value.startswith(("http://", "https://"))
-                            else "text/plain",
-                            navigation={
-                                "workspace_id": workspace_id,
-                                "session_id": session.id,
-                                "message_id": message.id,
-                                "uri": value,
-                            },
-                            payload=payload,
-                        )
-                    )
-    return snapshots
-
-
-def evidence_reference_snapshots(
-    app: "FastAPI", workspace_id: str, kinds: Iterable[str]
-) -> list[tuple[dict[str, Any], dict[str, Any]]]:
-    """Return immutable Evidence-board records with their bounded delivery snapshots."""
-
-    selected = set(kinds)
-    snapshots: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    if "evidence_source" in selected:
-        snapshots.extend(_evidence_source_snapshots(app, workspace_id))
-    if "context_frame" in selected:
-        snapshots.extend(_context_frame_snapshots(app, workspace_id))
-    if "diff" in selected:
-        snapshots.extend(_diff_snapshots(app, workspace_id))
-    if "plan" in selected:
-        snapshots.extend(_plan_snapshots(app, workspace_id))
-    return snapshots
-
-
-def find_evidence_reference_snapshot(
-    app: "FastAPI", workspace_id: str, kind: str, ref_id: str
-) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    """Resolve one Evidence identity from the same inventory used by search."""
-
-    return next(
-        (
-            snapshot
-            for snapshot in evidence_reference_snapshots(app, workspace_id, [kind])
-            if snapshot[0]["id"] == ref_id
-        ),
-        None,
-    )
-
-
 async def search_workspace_references(
     app: "FastAPI",
     workspace_id: str,
@@ -613,32 +326,24 @@ async def search_workspace_references(
         )
 
     needle = query.strip().casefold()
-    results: list[dict[str, Any]] = []
-    if "workspace_file" in selected:
-        results.extend(
-            await asyncio.to_thread(
-                _walk_workspace_files,
-                app,
-                workspace_id,
-                needle=needle,
-                limit=_SEARCH_LIMIT if needle else _EMPTY_QUERY_LIMIT_PER_KIND,
-            )
-        )
-    if "resource" in selected:
-        results.extend(_resource_results(app, workspace_id))
-    if "artifact" in selected:
-        results.extend(await asyncio.to_thread(_artifact_results, app, workspace_id))
-    if "session" in selected:
-        results.extend(_session_results(app, workspace_id))
-    if "agent_run" in selected:
-        results.extend(_agent_run_results(app, workspace_id))
-    evidence_kinds = selected & {"evidence_source", "context_frame", "diff", "plan"}
-    if evidence_kinds:
-        results.extend(
-            row for row, _payload in evidence_reference_snapshots(app, workspace_id, evidence_kinds)
-        )
-
-    results = _disambiguate_duplicate_labels(results)
+    limit = search_limit()
+    browse_limit = empty_query_limit_per_kind()
+    # EVERY producer walks a repository: a filesystem tree, a durable resource
+    # index, the session/message ledgers, or -- most expensive of all -- the
+    # evidence snapshot builder, which folds every message part of every session
+    # in the workspace. Two of them were already off-loop and the rest were not,
+    # so a search on a busy workspace stalled the whole server. They now run in
+    # ONE worker thread (not one per kind: they share the same in-memory state and
+    # fanning them out would only multiply the GIL churn).
+    results: list[dict[str, Any]] = await asyncio.to_thread(
+        _collect_reference_results,
+        app,
+        workspace_id,
+        selected=selected,
+        needle=needle,
+        limit=limit,
+        browse_limit=browse_limit,
+    )
     if needle:
         results = [
             row
@@ -650,22 +355,59 @@ async def search_workspace_references(
         ]
     ordered = sorted(results, key=lambda row: (row["kind"], row["label"].casefold(), row["id"]))
     if needle:
-        return ordered[:_SEARCH_LIMIT]
+        return ordered[:limit]
 
     counts: dict[str, int] = {}
     bounded: list[dict[str, Any]] = []
     for row in ordered:
         kind = str(row["kind"])
         count = counts.get(kind, 0)
-        if count >= _EMPTY_QUERY_LIMIT_PER_KIND:
+        if count >= browse_limit:
             continue
         counts[kind] = count + 1
         bounded.append(row)
     return bounded
 
 
+def _collect_reference_results(
+    app: "FastAPI",
+    workspace_id: str,
+    *,
+    selected: set[str],
+    needle: str,
+    limit: int,
+    browse_limit: int,
+) -> list[dict[str, Any]]:
+    """Run every repository producer for one search (worker thread, never the loop)."""
+
+    results: list[dict[str, Any]] = []
+    if "workspace_file" in selected:
+        results.extend(
+            _walk_workspace_files(
+                app,
+                workspace_id,
+                needle=needle,
+                limit=limit if needle else browse_limit,
+            )
+        )
+    if "resource" in selected:
+        results.extend(_resource_results(app, workspace_id))
+    if "artifact" in selected:
+        results.extend(_artifact_results(app, workspace_id))
+    if "session" in selected:
+        results.extend(_session_results(app, workspace_id))
+    if "agent_run" in selected:
+        results.extend(_agent_run_results(app, workspace_id))
+    evidence_kinds = selected & {"evidence_source", "context_frame", "diff", "plan"}
+    if evidence_kinds:
+        results.extend(
+            row for row, _payload in evidence_reference_snapshots(app, workspace_id, evidence_kinds)
+        )
+    return results
+
+
 __all__ = [
-    "evidence_reference_snapshots",
-    "find_evidence_reference_snapshot",
+    "empty_query_limit_per_kind",
+    "search_limit",
     "search_workspace_references",
 ]

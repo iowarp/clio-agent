@@ -76,6 +76,13 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CODEX_CREDENTIAL_HOME_CAPACITY` | `providers.codex.credential_home_capacity` | int | `4` | `src/clio_agent/providers/codex_credential_home.py` |
 | `CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S` | `limits.codex_sdk_progress_timeout_s` | float | `120.0` | `src/clio_agent/providers/codex_stream.py` |
 | `CLIO_CODEX_TRANSPORT` | `lm.codex_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
+| `CLIO_CONTEXT_REFERENCE_BROWSE_LIMIT` | `gact.context_references.browse_limit_per_kind` | int | `20` | `src/clio_agent/gact/context_reference_search.py` |
+| `CLIO_CONTEXT_REFERENCE_MAX_HASHABLE_BYTES` | `gact.context_references.max_hashable_bytes` | int | `67108864` | `src/clio_agent/gact/context_references.py` |
+| `CLIO_CONTEXT_REFERENCE_SEARCH_LIMIT` | `gact.context_references.search_limit` | int | `100` | `src/clio_agent/gact/context_reference_search.py` |
+| `CLIO_CONTEXT_REFERENCE_SNAPSHOT_CHILDREN` | `gact.context_references.snapshot_children` | int | `50` | `src/clio_agent/gact/context_reference_evidence.py` |
+| `CLIO_CONTEXT_REFERENCE_SNAPSHOT_STRING_CHARS` | `gact.context_references.snapshot_string_chars` | int | `4000` | `src/clio_agent/gact/context_reference_evidence.py` |
+| `CLIO_CONTEXT_REFERENCE_SUMMARY_EXCERPT_CHARS` | `gact.context_references.summary_excerpt_chars` | int | `600` | `src/clio_agent/gact/context_references.py` |
+| `CLIO_CONTEXT_REFERENCE_SUMMARY_MESSAGES` | `gact.context_references.summary_messages` | int | `5` | `src/clio_agent/gact/context_references.py` |
 | `CLIO_CORE_PORT` | `arc.core_port` | str | _(unset)_ | `src/clio_agent/arc/clio_core_liveness.py` |
 | `CLIO_CTX_MAX_BYTES` | `limits.context_inline_bytes` | int | `32768` | `src/clio_agent/gact/runtime/constants.py` |
 | `CLIO_DATA_DIR` | `paths.data_dir` | str | `.clio/agent` | `src/clio_agent/runtime/status.py` |

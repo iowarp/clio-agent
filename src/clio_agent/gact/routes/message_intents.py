@@ -14,7 +14,7 @@ from clio_agent.gact.message_intents import (
     QueuedMessage,
     RevisionConflictError,
 )
-from clio_agent.gact.message_submission import accept_message
+from clio_agent.gact.message_submission import accept_message, prepare_references
 from clio_agent.gact.runtime.globals import _new_message_id
 from clio_agent.gact.types import (
     ErrorEnvelope,
@@ -308,6 +308,22 @@ def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
         sid: str, message_id: str, req: PromoteQueuedMessageRequest
     ) -> dict[str, Any]:
         require_session(sid)
+        queued = app.state.message_intents.get_queued(sid, message_id)
+        if queued is None:
+            raise HTTPException(status_code=404, detail="queued message not found")
+        # Promotion re-checks the row's references (they may have gone stale since
+        # it was queued) -- but OFF the loop, once, and the acceptance path is then
+        # told not to authorize them a second time.
+        promotion_request = PostMessageRequest(
+            parts=queued.parts,
+            model=queued.model,
+            metadata=queued.metadata,
+            client_message_id=queued.client_message_id,
+            idempotency_key=queued.idempotency_key or queued.id,
+            delivery=req.delivery,
+            behavior=queued.behavior,
+        )
+        prepared = await prepare_references(app, sid, promotion_request)
         try:
             promoted = app.state.message_intents.promote_queued(
                 sid,
@@ -317,15 +333,8 @@ def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
                     app,
                     deps,
                     sid,
-                    PostMessageRequest(
-                        parts=row.parts,
-                        model=row.model,
-                        metadata=row.metadata,
-                        client_message_id=row.client_message_id,
-                        idempotency_key=row.idempotency_key or row.id,
-                        delivery=req.delivery,
-                        behavior=row.behavior,
-                    ),
+                    promotion_request,
+                    prepared=prepared,
                 ),
             )
         except RevisionConflictError as exc:
