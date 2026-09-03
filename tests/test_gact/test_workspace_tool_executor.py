@@ -8,7 +8,7 @@ instance is created with ``__new__`` and only the per-workspace fields are set.
 from __future__ import annotations
 
 from clio_agent.agent import ClioAgent
-from clio_agent.tools.execution import tool_workspace_context
+from clio_agent.tools.execution import canonical_workspace_root, tool_workspace_context
 
 
 def _bare_agent() -> ClioAgent:
@@ -41,22 +41,33 @@ def test_active_workspace_builds_and_caches_per_root(monkeypatch) -> None:
     monkeypatch.setattr(agent, "_build_tool_gateway", fake_build)
     monkeypatch.setattr("clio_agent.agent.create_sync_tool_executor", fake_create)
 
+    # Roots are filed under ``canonical_workspace_root``, so a root reaches the
+    # gateway/registry in ONE spelling no matter how the workspace stored it.
+    alpha = canonical_workspace_root("/ws/alpha")
+    beta = canonical_workspace_root("/ws/beta")
+
     with tool_workspace_context("/ws/alpha"):
         first = agent._active_tool_executor()
         second = agent._active_tool_executor()  # same workspace -> cached
 
-    assert first == "executor:gateway:/ws/alpha"
+    assert first == f"executor:gateway:{alpha}"
     assert second is first
     # Built exactly once for this workspace, with cwd=root and no catalog reset.
-    assert built == [("/ws/alpha", False)]
-    assert set(agent._workspace_tool_executors) == {"/ws/alpha"}
+    assert built == [(alpha, False)]
+    assert set(agent._workspace_tool_executors) == {alpha}
+
+    # ...and a second spelling of the SAME root reuses that executor rather than
+    # spawning a second fleet over the same stdio MCPs.
+    with tool_workspace_context("/ws/alpha/"):
+        assert agent._active_tool_executor() is first
+    assert built == [(alpha, False)]
 
     # A different workspace spawns its own executor (its own stdio MCPs).
     with tool_workspace_context("/ws/beta"):
         other = agent._active_tool_executor()
-    assert other == "executor:gateway:/ws/beta"
-    assert built == [("/ws/alpha", False), ("/ws/beta", False)]
-    assert set(agent._workspace_tool_executors) == {"/ws/alpha", "/ws/beta"}
+    assert other == f"executor:gateway:{beta}"
+    assert built == [(alpha, False), (beta, False)]
+    assert set(agent._workspace_tool_executors) == {alpha, beta}
 
 
 def test_blank_workspace_root_falls_back_to_default(monkeypatch) -> None:

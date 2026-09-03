@@ -58,6 +58,7 @@ from clio_agent.tools.catalog import (
     tool_owner,
 )
 from clio_agent.tools.execution import (
+    canonical_workspace_root,
     create_sync_tool_executor,
     get_active_tool_blueprint_id,
     get_active_tool_workspace_root,
@@ -503,7 +504,11 @@ class ClioAgent(dspy.Module):
         only for genuinely-invalidating events (#1236 federation epoch).
         """
 
-        root = get_active_tool_workspace_root().strip()
+        # Canonicalized ONCE here, so everything keyed off ``root`` below — the
+        # executor cache, the leases, the reaper, the gateway cwd — files this
+        # workspace under the same key no matter how its ``root_path`` was
+        # spelled (``~``, trailing separator, forward slashes on Windows).
+        root = canonical_workspace_root(get_active_tool_workspace_root())
         if not root:
             return self.tool_executor
         blueprint_id = get_active_tool_blueprint_id().strip()
@@ -654,7 +659,7 @@ class ClioAgent(dspy.Module):
         inside a live turn must never count toward the reap TTL.
         """
 
-        root = (root or "").strip()
+        root = canonical_workspace_root(root)
         if not root:
             yield
             return
@@ -681,13 +686,14 @@ class ClioAgent(dspy.Module):
         primitive (shared registry lock; never closes a busy/leased executor — it defers to the
         reaper's idle pass) and returns its TYPED outcome
         (:data:`RESTART_RESTARTED_LIVE` / :data:`RESTART_DEFERRED_BUSY` / :data:`RESTART_NO_RESIDENT`).
-        The registry key is ``str(ws.root_path)`` — the same value the grant route derives — so
-        an exact-string lookup matches the turn-bound executor.
+        The registry key is :func:`~clio_agent.tools.execution.canonical_workspace_root` of the
+        workspace root — the SAME canonicalizer the turn-bound resolve uses — so the lookup
+        matches whichever way the grant route's ``ws.root_path`` happens to be spelled.
         """
 
         from clio_agent.tools.reaper import RESTART_NO_RESIDENT  # noqa: PLC0415
 
-        root = (workspace_root or "").strip()
+        root = canonical_workspace_root(workspace_root)
         if not root:
             return RESTART_NO_RESIDENT
         # Ensure the shared (lock, executors, leases) exist even on a partially

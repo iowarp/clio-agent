@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from clio_agent.errors import MCP_YAML_DECLARATION_UNREADABLE
 from clio_agent.gact.agents.resolution import (
     _runtime_active_agent_blueprint_id,
     _runtime_active_agent_blueprint_path,
 )
 from clio_agent.gact.blueprint_activation import blueprint_mcp_servers, blueprint_server_map
-from clio_agent.tools.mcp_config import MCPServerSpec, redact_mcp_spec
-from clio_agent.tools.mcp_inventory_snapshot import workspace_mcp_snapshot
+from clio_agent.tools.mcp_config import (
+    MCPServerSpec,
+    redact_mcp_spec,
+    unreadable_mcp_yaml_snapshot,
+)
+from clio_agent.tools.mcp_inventory_snapshot import WorkspaceMcpSnapshot, workspace_mcp_snapshot
 
 
 def declared_mcp_specs(
@@ -53,21 +58,32 @@ def declared_mcp_specs(
     return load_mcp_servers(cwd=cwd, pack_servers=pack_servers)
 
 
-def session_mcp_server_rows(
+@dataclass(frozen=True)
+class SessionMcpInventory:
+    """One session's declared MCP rows plus every typed reason they are partial."""
+
+    rows: list[dict[str, Any]] = field(default_factory=list)
+    degradations: list[dict[str, str]] = field(default_factory=list)
+
+
+def session_mcp_inventory(
     app: Any,
     *,
     cwd: Path | None,
     session_id: str,
-) -> list[dict[str, Any]]:
-    """Project one session's declared MCPs and resident connection state.
+) -> SessionMcpInventory:
+    """Project one session's declared MCPs, resident state, and why it is partial.
 
     Declaration discovery is file-only. The optional runtime snapshot reads an
     already-resident workspace fleet and must not create an executor, connect a
     client, or launch a server.
+
+    BLOCKING: reads ``mcp.yaml`` / blueprint files and takes the fleet's
+    ``threading.Lock``. Async callers run it on a worker (see ``routes.mcp``).
     """
 
     if not session_id:
-        return []
+        return SessionMcpInventory()
     blueprint_id = _runtime_active_agent_blueprint_id(app, session_id)
     session = app.state.sessions.get(session_id)
     metadata = getattr(session, "metadata", {}) or {}
@@ -77,20 +93,36 @@ def session_mcp_server_rows(
         else blueprint_id
     )
     specs = declared_mcp_specs(app, cwd=cwd, session_id=session_id)
-    snapshot: Mapping[str, Mapping[str, Any]] = {}
+    # A declaration file that failed to PARSE is not the same as one that is
+    # absent: without this the listing is simply shorter and says nothing.
+    degradations: list[dict[str, str]] = [
+        {
+            "reason": MCP_YAML_DECLARATION_UNREADABLE,
+            "detail": f"{row.get('path', '')}: {row.get('error', '')}".strip(": "),
+        }
+        for row in unreadable_mcp_yaml_snapshot()
+    ]
+    snapshot = WorkspaceMcpSnapshot()
     if cwd is not None:
         snapshot = workspace_mcp_snapshot(getattr(app.state, "agent", None), str(cwd))
-    return [
-        _session_mcp_server_row(
-            namespace,
-            spec,
-            runtime=snapshot.get(namespace, {}),
-            session_id=session_id,
-            blueprint_id=blueprint_id,
-            blueprint_name=blueprint_name,
-        )
-        for namespace, spec in sorted(specs.items())
-    ]
+    degraded = snapshot.degraded
+    if degraded is not None:
+        degradations.append(degraded)
+    return SessionMcpInventory(
+        rows=[
+            _session_mcp_server_row(
+                namespace,
+                spec,
+                runtime=snapshot.namespaces.get(namespace, {}),
+                runtime_unavailable=snapshot.reason,
+                session_id=session_id,
+                blueprint_id=blueprint_id,
+                blueprint_name=blueprint_name,
+            )
+            for namespace, spec in sorted(specs.items())
+        ],
+        degradations=degradations,
+    )
 
 
 def _session_mcp_server_row(
@@ -98,6 +130,7 @@ def _session_mcp_server_row(
     spec: MCPServerSpec,
     *,
     runtime: Mapping[str, Any],
+    runtime_unavailable: str,
     session_id: str,
     blueprint_id: str,
     blueprint_name: str,
@@ -119,6 +152,10 @@ def _session_mcp_server_row(
         "session_id": session_id,
         "spec": redact_mcp_spec(asdict(spec)),
     }
+    if runtime_unavailable:
+        # ``available`` alone conflates "declared, fleet never started" with
+        # "declared, fleet reaped" with "declared, reader is broken".
+        row["runtime_unavailable"] = runtime_unavailable
     if spec.validation_errors:
         row["error"] = "; ".join(spec.validation_errors)
     if pack_owned:

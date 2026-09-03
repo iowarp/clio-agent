@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import threading
 
+from clio_agent.tools.execution import canonical_workspace_root
 from clio_agent.tools.reaper import (
     RESTART_DEFERRED_BUSY,
     RESTART_NO_RESIDENT,
@@ -263,7 +264,12 @@ def test_agent_request_fleet_restart_evicts_then_rebuilds(monkeypatch) -> None:
         second = agent._active_tool_executor()  # rebuilds with the widened territory
 
     assert second is not first, "a restarted fleet must be rebuilt, not handed out closed"
-    assert built == ["/ws/r", "/ws/r"], "the rebuild re-invokes the gateway builder (new roots)"
+    # ``request_fleet_restart`` and the resolve share ONE key rule, which is the
+    # only reason an exact-string registry lookup finds the turn-bound fleet.
+    restart_root = canonical_workspace_root("/ws/r")
+    assert built == [restart_root, restart_root], (
+        "the rebuild re-invokes the gateway builder (new roots)"
+    )
 
 
 def test_agent_request_fleet_restart_without_reaper_is_typed_no_resident() -> None:

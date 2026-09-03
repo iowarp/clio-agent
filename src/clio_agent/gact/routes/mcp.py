@@ -68,7 +68,7 @@ from clio_agent.gact.routes.mcp_rows import (
     mcp_prompt_result_row,
 )
 from clio_agent.gact.routes.mcp_server_specs import stdio_server_spec
-from clio_agent.gact.routes.mcp_specs import declared_mcp_specs, session_mcp_server_rows
+from clio_agent.gact.routes.mcp_specs import declared_mcp_specs, session_mcp_inventory
 from clio_agent.gact.runtime.globals import _tool_session_context
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.execution import notify_tool_observer
@@ -139,12 +139,22 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/mcp/servers")
     async def list_mcp_servers(workspace_id: str = "", session_id: str = "") -> dict[str, Any]:
-        """Enumerate built-ins, installed servers, and selected-session declarations."""
+        """Enumerate built-ins, installed servers, and selected-session declarations.
+
+        ``degradations`` carries every typed reason the listing is partial (an
+        unreadable declaration file, a workspace fleet that is not resident), so a
+        shorter list is never served as if it were the whole truth.
+        """
 
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
         rows = _mcp_server_rows(cwd=cwd)
-        rows.extend(session_mcp_server_rows(app, cwd=cwd, session_id=session_id))
-        return {"servers": rows}
+        # Reads declaration files and takes the resident fleet's threading.Lock,
+        # which a live turn can hold: never on the event loop.
+        inventory = await asyncio.to_thread(
+            session_mcp_inventory, app, cwd=cwd, session_id=session_id
+        )
+        rows.extend(inventory.rows)
+        return {"servers": rows, "degradations": inventory.degradations}
 
     def _mcp_server_rows(cwd: Path | None = None) -> list[dict[str, Any]]:
         """Return bundled plus installed MCP server catalog rows."""
