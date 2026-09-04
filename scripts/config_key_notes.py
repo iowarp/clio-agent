@@ -998,6 +998,23 @@ KEY_NOTES: dict[str, str] = {
         "Seconds between background re-probes of MCP namespaces that failed discovery; lower to "
         "recover faster, raise to cut retry noise."
     ),
+    "tools.mcp.elicitation.agent_audience.denied_servers": (
+        "CSV of declared MCP server names whose agent-audience elicitations always fall back to "
+        "the human; the per-server opt-out for agent-driven elicitation (#1309)."
+    ),
+    "tools.mcp.elicitation.agent_audience.enabled": (
+        "Master switch for agent-driven elicitation: a form-mode elicitation carrying the "
+        "x-clio-agent/audience=agent hint may be answered by the session's agent (tool-less, "
+        "schema-validated); off routes every question to the human as before."
+    ),
+    "tools.mcp.elicitation.agent_audience.max_depth": (
+        "Recursion bound for agent-answer turns: a nested agent-audience elicitation beyond this "
+        "depth falls back typed to the human; raise only for deliberately layered server flows."
+    ),
+    "tools.mcp.elicitation.agent_audience.timeout_s": (
+        "Seconds an agent-answer turn may take before the question falls back typed to the human; "
+        "bounds the 'agent is answering' window a pending question can sit in."
+    ),
     "tools.mcp.elicitation.url_trusted_origins": (
         "CSV allow-list of origins a url-mode elicitation may point to; add one to enable url "
         "elicitation for that server."
