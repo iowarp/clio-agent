@@ -601,6 +601,7 @@ from clio_agent.gact.runtime.type_parsing import (  # noqa: E402,F401
     _parse_field_annotation,
     _sanitize_model_name,
 )
+from clio_agent.gact.user_question_ledger import restore_user_questions  # noqa: E402
 
 # gact/workflow_state/merge.py -- pure workflow_state merge/normalize helpers.
 from clio_agent.gact.workflow_state.merge import (  # noqa: E402,F401
@@ -2259,10 +2260,11 @@ def build_app(
     # resolution-derived-policy + validation/persistence data layer lives in
     # runtime/permission_policies.py (shared with the build_app startup load).
     register_permission_and_interaction_routes(app, deps)
-    # Crash recovery is APP ASSEMBLY, not route registration: rehydrating surfaced
-    # native questions from durable session metadata mutates live state, so it
-    # belongs here beside the other recovery steps rather than as a side effect of
-    # registering a route factory.
+    # Crash recovery is APP ASSEMBLY, not route registration: first restore the
+    # bounded authoritative question history, then recover legacy/native pending
+    # ask snapshots that predate that mirror. Both mutate live state, so they belong
+    # here beside the other recovery steps rather than inside a route factory.
+    restore_user_questions(app)
     restore_pending_ask_user_questions(app)
 
     # ---- DELETE /v1/sessions/{sid}/messages/{id} + /v1/messages/{id} -

@@ -18,10 +18,14 @@ from clio_agent.gact.agents.builders import _dynamic_agent_tools
 from clio_agent.gact.agents.reactv2 import retaining_reactv2_cls
 from clio_agent.gact.app import build_app
 from clio_agent.gact.ask_user_tool import arm_ask_user_deadline
-from clio_agent.gact.elicitation_bridge import invocation_with_request_correlation
+from clio_agent.gact.elicitation_bridge import (
+    claim_question_transition,
+    invocation_with_request_correlation,
+)
 from clio_agent.gact.loop_inbox import InboxEvent, LoopInbox
 from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
 from clio_agent.gact.types import AgentDef, UserQuestion, UserQuestionOption
+from clio_agent.gact.user_question_ledger import record_user_question
 from clio_agent.tools.mcp_handlers import MCPInvocationContext
 from clio_agent.tools.mcp_task_records import TaskKey, TaskRecord, resolve_store
 
@@ -699,6 +703,60 @@ def test_agent_routed_questions_project_without_human_actions_and_keep_resolved_
         )
         assert rejected.status_code == 409
         assert rejected.json()["error"]["error"] == "interaction_not_human_addressed"
+
+
+def test_resolved_agent_question_survives_process_restart(tmp_path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    first = build_app(sessions_path=sessions_path)
+    session = first.state.sessions.create(workspace_id="ws_default", title="restart")
+    now = datetime.now(timezone.utc).isoformat()
+    record_user_question(
+        first,
+        UserQuestion(
+            id="agent_restart",
+            session_id=session.id,
+            prompt="What nonce did the user provide?",
+            source="mcp_elicitation",
+            created_at=now,
+            updated_at=now,
+            metadata={
+                "elicitation": {
+                    "invocation_id": "call_restart",
+                    "tool_name": "v2ex_agent_guarded_input",
+                }
+            },
+            audience="agent",
+            agent_elicitation_routing="elicitation_routed_to_agent",
+        ),
+    )
+    answered = claim_question_transition(
+        first,
+        "agent_restart",
+        "answered",
+        answer_metadata={"nonce": "restart-visible"},
+        answered_by="agent",
+    )
+    assert answered is not None
+
+    restarted = build_app(sessions_path=sessions_path)
+    with TestClient(restarted) as client:
+        response = client.get(
+            f"/v1/sessions/{session.id}/interactions",
+            params={"include_recent_resolved": True},
+            headers=HEADERS,
+        )
+
+    assert response.status_code == 200
+    [row] = response.json()["interactions"]
+    assert row["id"] == "question:agent_restart"
+    assert row["status"] == "answered"
+    assert row["answered_by"] == "agent"
+    assert row["source"] == {
+        "protocol": "mcp",
+        "tool_name": "v2ex_agent_guarded_input",
+        "invocation_id": "call_restart",
+    }
+    assert row["payload"]["answer_metadata"] == {"nonce": "restart-visible"}
 
 
 def test_structured_form_422_keeps_prefill_and_question_pending(tmp_path) -> None:
