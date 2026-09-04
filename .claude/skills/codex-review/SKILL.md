@@ -44,8 +44,19 @@ plausible-but-wrong claims, and found Codex's claimed blocker fixes 13/15 genuin
    and headline features have shipped with no implementation behind them. Review the WAVE, order
    the merges by contract dependency (server before the client that grades its events
    `implemented`), and pin gitlinks only to merged-branch SHAs.
-
-## Codex failure signatures (what to hunt, in priority order)
+10. **Codex keeps working after handoff — fix on a review branch, fold on his final head.** In the
+    2026-09 campaign wave he pushed 20 commits AFTER "all intended code is pushed": his own parallel
+    implementations of the posted review findings, undisclosed cherry-picks of OUR unpushed fix
+    commits (he reads the local worktrees — prove provenance with `git patch-id --stable` + author
+    vs committer dates), a partial REVERT of a fix he had just adopted, and two new unreviewed
+    features riding along. The discipline that absorbs all of it: every fix lands on a local
+    `review/<wave>` branch (never his branch) until his final head is confirmed; then a
+    comparative delta review grades each of his post-review commits (OURS-SUPERSEDES /
+    PORT-FRAGMENT / THEIRS-BETTER, evidence required — ours won every contested overlap both
+    times, but his clean wins were real and got ported); the fold is one merge with a per-file
+    resolution table, and new unreviewed features get FIXED in-campaign per the owner's
+    capability rule, never dropped-with-an-issue. Push is a fast-forward of the fold, so his
+    history stays intact under it.
 
 1. **Pattern applied once, not carried to siblings.** The single most reliable defect: the fix
    lands exactly where the review pointed and misses the sibling paths (preserve-on-compact fixed;
