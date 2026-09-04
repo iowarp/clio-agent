@@ -348,6 +348,48 @@ def test_interactions_aggregate_children_and_route_question_and_permission(
         assert late.status_code == 409
 
 
+def test_resolved_interaction_hides_legacy_correlation_from_answer_fields(tmp_path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="legacy answer")
+    now = datetime.now(timezone.utc).isoformat()
+    question = UserQuestion(
+        id="q_legacy_answer",
+        session_id=session.id,
+        owner_session_id=session.id,
+        attended_session_id=session.id,
+        prompt="Pick a value",
+        status="answered",
+        source="mcp_elicitation",
+        answered_by="human",
+        created_at=now,
+        updated_at=now,
+        answer_metadata={
+            "interaction_id": "mcp_task_input:q_legacy_answer",
+            "owner_session_id": session.id,
+            "attended_session_id": session.id,
+            "task_id": "task_legacy",
+            "invocation_id": "call_legacy",
+            "value": "visible answer",
+        },
+        metadata={
+            "elicitation": {
+                "tool_name": "guarded_input",
+                "task_id": "task_legacy",
+                "invocation_id": "call_legacy",
+            }
+        },
+    )
+    app.state.user_questions[question.id] = question
+
+    with TestClient(app) as client:
+        rows = client.get(
+            f"/v1/sessions/{session.id}/interactions",
+            params={"include_recent_resolved": True},
+        ).json()["interactions"]
+
+    assert rows[0]["payload"]["answer_metadata"] == {"value": "visible answer"}
+
+
 def test_pending_native_question_survives_backend_restart(tmp_path) -> None:
     sessions_path = tmp_path / "sessions.json"
     first_app = build_app(sessions_path=sessions_path)

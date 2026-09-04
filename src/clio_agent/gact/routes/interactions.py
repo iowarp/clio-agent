@@ -181,6 +181,16 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
         and question.agent_elicitation_routing == "elicitation_routed_to_agent"
     )
     answer_metadata = dict(question.answer_metadata)
+    legacy_correlation = {
+        "owner_session_id": question.owner_session_id or question.session_id,
+        "attended_session_id": question.attended_session_id or question.session_id,
+        "task_id": task_id,
+        "invocation_id": correlation["invocation_id"],
+        "interaction_id": f"{kind}:{question.id}",
+    }
+    for key, authoritative_value in legacy_correlation.items():
+        if authoritative_value and answer_metadata.get(key) == authoritative_value:
+            answer_metadata.pop(key)
     if question.answer and "answer" not in answer_metadata:
         answer_metadata["answer"] = question.answer
     if question.selected_options and "selected_options" not in answer_metadata:
