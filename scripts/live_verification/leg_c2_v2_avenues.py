@@ -96,15 +96,29 @@ Avenues (see ``LEG_C2.md`` for the full per-avenue writeup + citations):
                          {sid}/mcp-apps/{app_id}`` actually serves the
                          resource -- needs a model in the loop (the turn
                          decides to call the tool), unlike avenue 8.
+12. agent-elicitation -- C1-S7 (#1309) landed: agent-driven elicitation.
+                         ``agent_guarded_input``'s question carries clio's
+                         ``x-clio-agent/audience: "agent"`` ``_meta`` hint and
+                         asks for a nonce ONLY the driving turn's own opening
+                         message ever established -- no human could answer it
+                         headlessly. REAL assertion: the question resolves to
+                         ``answered_by=="agent"`` /
+                         ``agent_elicitation_routing==
+                         "elicitation_routed_to_agent"`` with the EXACT
+                         planted nonce, and this script never calls the
+                         answer route -- needs a model in the loop (a real
+                         session's own agent produces the answer via the
+                         bounded child-turn spawn, `gact/agent_elicitation.py`).
 
 Mechanics mirror ``leg_c_synthetic_session.py``: its own server boot on a
 free port, allow-all policies FIRST, the ``v2ex-avenues`` testing-agent pack
 (``agents/v2ex-avenues/`` -- a SIBLING of ``agents/v2ex-testing/``, not an
 edit to it, exposing every exerciser tool leg C's narrower pack does not),
 zero-LM readiness gate before any turn, ``claude_code``/``sonnet`` turns ONLY
-for the FOUR avenues that genuinely need a model in the loop (1, 2, 5, and 11
-as of C1-S4) -- every other avenue is driven through a headless HTTP/SSE
-surface, per the house cost-aware-defaults + "prefer direct surfaces" rule.
+for the FIVE avenues that genuinely need a model in the loop (1, 2, 5, 11,
+and 12 as of C1-S7) -- every other avenue is driven through a headless
+HTTP/SSE surface, per the house cost-aware-defaults + "prefer direct
+surfaces" rule.
 
 Verdict JSON: ``out/live-verification/leg_c2_verdict.json``.
 
@@ -134,6 +148,7 @@ import _header_capture_server as hcap  # noqa: E402
 from _sse_collector import SSECollector  # noqa: E402
 
 from tests.test_tools.mcp_exerciser import (  # noqa: E402
+    AGENT_GUARDED_INPUT_TOOL_NAME,
     EXERCISER_NAMESPACE,
     EXERCISER_PATH,
     LIST_CHANGED_TOOL_NAME,
@@ -170,6 +185,7 @@ EXERCISER_EXPECTED_TOOLS = {
     "header_annotated_echo",
     "list_changed_target",
     "mutate_and_notify_list_changed",
+    AGENT_GUARDED_INPUT_TOOL_NAME,  # C1-S7, #1309: the agent-elicitation avenue's tool
 }
 
 #: Every namespaced tool the pack's `main` expert must resolve before any
@@ -284,6 +300,19 @@ AVENUE_PLAN: list[dict[str, Any]] = [
         "summary": (
             "C1-S3 landed: drives v2ex_ui_echo through a real turn and asserts the mcp_app "
             "Part + GET .../mcp-apps/{app_id} serving"
+        ),
+    },
+    {
+        "avenue": "agent-elicitation",
+        "needs_lm": True,
+        "expect": "pass",
+        "summary": (
+            "C1-S7 (#1309) landed: agent_guarded_input's question carries the "
+            "x-clio-agent/audience=agent _meta hint and asks for a nonce only THIS "
+            "turn's own opening message established; the question resolves with "
+            "answered_by=='agent' + agent_elicitation_routing=='elicitation_routed_to_agent' "
+            "and the EXACT planted nonce value, WITHOUT this script ever calling the "
+            "answer route -- no human answered it, only the agent could"
         ),
     },
 ]
@@ -684,7 +713,8 @@ async def _run_cache_probe() -> dict[str, Any]:
     hinted_server = build_exerciser_server(cache_ttl=60, cache_scope="private")
     store = _RecordingStore()
     async with Client(
-        hinted_server, cache=CacheConfig(store=store, partition="leg-c2", target_id="v2ex-cache-probe")
+        hinted_server,
+        cache=CacheConfig(store=store, partition="leg-c2", target_id="v2ex-cache-probe"),
     ) as client:
         first = await client.list_tools()
         second = await client.list_tools()
@@ -916,7 +946,9 @@ async def _run_adversarial_probe() -> dict[str, Any]:
                 }
 
             try:
-                await call_tool_with_header_retry(client, BAD_HEADER_MISMATCH_TOOL, {"payload": "x"})
+                await call_tool_with_header_retry(
+                    client, BAD_HEADER_MISMATCH_TOOL, {"payload": "x"}
+                )
                 evidence["bad_header_mismatch"] = {"crashed": False, "bounded": False}
             except MCPError as exc:
                 evidence["bad_header_mismatch"] = {
@@ -1105,6 +1137,98 @@ def avenue_apps_ui(
         "error": None
         if ok
         else "the ui_echo mcp_app Part or its mcp-apps resource route did not serve as expected",
+    }
+
+
+def avenue_agent_elicitation(
+    call: Any, wsid: str, sid: str, out_path: Path, *, turn_timeout_s: float
+) -> dict[str, Any]:
+    """C1-S7 (#1309): agent-driven elicitation, live end to end.
+
+    ``agent_guarded_input`` mints a form-mode MRTR question whose ``_meta``
+    carries clio's agent-audience hint (``x-clio-agent/audience: "agent"``)
+    and asks for a nonce ONLY this turn's own opening message ever
+    established -- no human answering headlessly (this script included)
+    could ever produce the right value. The turn's opening prompt plants the
+    nonce and calls the tool in the SAME message, so the answering child turn
+    (spawned by ``gact/agent_elicitation.py``, seeded with THIS session's own
+    transcript) has it in context by construction.
+
+    REAL assertion: this script NEVER calls the answer route -- the question
+    must resolve entirely on its own, driven by clio's background
+    agent-answer dispatch. Verifies the resolved row's typed attribution
+    (``answered_by == "agent"``, ``agent_elicitation_routing ==
+    "elicitation_routed_to_agent"``) AND that the submitted value is EXACTLY
+    the planted nonce -- proving the round-trip through the agent, not merely
+    that something eventually answered it.
+    """
+
+    nonce = f"leg-c2-nonce-{uuid.uuid4().hex[:12]}"
+    prompt = (
+        f"Remember this nonce for later in our conversation: {nonce}\n\n"
+        f"Now call the {EXERCISER_NAMESPACE}_{AGENT_GUARDED_INPUT_TOOL_NAME} tool "
+        "(it takes no arguments) and report exactly what it returns."
+    )
+    common.post_message(call, sid, prompt)
+    status = common.wait_turn(call, wsid, sid, max_elapsed=turn_timeout_s)
+    messages = common.session_messages(call, sid)
+    common.dump_json(out_path.parent / "leg_c2_agent_elicitation_messages.json", messages)
+
+    questions = call("GET", f"/v1/sessions/{sid}/questions").get("questions", [])
+    # F5 (owner gate review): key on the row's own TYPED audience/routing
+    # fields, never on prompt CONTENT (the campaign's own no-prose-keyed
+    # discipline -- superseding principle #1) -- audience=="agent" is unique
+    # to this avenue's question on a fresh session.
+    candidates = [q for q in questions if q.get("audience") == "agent"]
+    question = candidates[-1] if candidates else None
+
+    pass_means = (
+        "PASS proves: an agent-audience MRTR question (agent_guarded_input, "
+        "_meta x-clio-agent/audience=agent) resolved to status=='answered' with "
+        "answered_by=='agent' and agent_elicitation_routing=="
+        "'elicitation_routed_to_agent', carrying the EXACT nonce value this "
+        "turn's own opening message planted -- and this script never posted an "
+        "answer itself. It does NOT prove every fallback path (schema-invalid / "
+        "declined / policy-denied / recursion-bound) -- those are proven offline, "
+        "LM-free, in tests/test_gact/test_agent_elicitation.py."
+    )
+
+    if question is None:
+        return {
+            "avenue": "agent-elicitation",
+            "status": "fail",
+            "evidence": {
+                "turn_status": status,
+                "planted_nonce": nonce,
+                "messages_dump": "leg_c2_agent_elicitation_messages.json",
+            },
+            "pass_means": pass_means,
+            "error": "no agent-audience elicitation question was ever minted",
+        }
+
+    answer_metadata = question.get("answer_metadata") or {}
+    ok = (
+        question.get("status") == "answered"
+        and question.get("answered_by") == "agent"
+        and question.get("agent_elicitation_routing") == "elicitation_routed_to_agent"
+        and answer_metadata.get("nonce") == nonce
+    )
+    return {
+        "avenue": "agent-elicitation",
+        "status": "pass" if ok else "fail",
+        "evidence": {
+            "turn_status": status,
+            "planted_nonce": nonce,
+            "question": question,
+            "messages_dump": "leg_c2_agent_elicitation_messages.json",
+        },
+        "pass_means": pass_means,
+        "error": None
+        if ok
+        else (
+            "the agent-audience question did not resolve with the expected "
+            "agent attribution and round-tripped nonce value"
+        ),
     }
 
 
@@ -1561,7 +1685,13 @@ def main() -> int:
         avenues.append(avenue_mrtr_methods(call))
 
         if not readiness_ready:
-            for avenue_id in ("task-modes", "mrtr-url", "waits-cancel", "apps-ui"):
+            for avenue_id in (
+                "task-modes",
+                "mrtr-url",
+                "waits-cancel",
+                "apps-ui",
+                "agent-elicitation",
+            ):
                 avenues.append(
                     {
                         "avenue": avenue_id,
@@ -1571,7 +1701,13 @@ def main() -> int:
                     }
                 )
         elif args.plumbing_only:
-            for avenue_id in ("task-modes", "mrtr-url", "waits-cancel", "apps-ui"):
+            for avenue_id in (
+                "task-modes",
+                "mrtr-url",
+                "waits-cancel",
+                "apps-ui",
+                "agent-elicitation",
+            ):
                 avenues.append(
                     {
                         "avenue": avenue_id,
@@ -1603,6 +1739,11 @@ def main() -> int:
             )
             avenues.append(
                 avenue_apps_ui(call, wsid, sid, out_path, turn_timeout_s=args.turn_timeout_s)
+            )
+            avenues.append(
+                avenue_agent_elicitation(
+                    call, wsid, sid, out_path, turn_timeout_s=args.turn_timeout_s
+                )
             )
 
         verdict["avenues"] = avenues

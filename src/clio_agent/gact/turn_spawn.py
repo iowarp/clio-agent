@@ -141,6 +141,17 @@ class TaskSpec:
     # ``seed_context`` are unused on this path (no turn ever reads them). Default
     # ``True`` preserves the existing "mint AND start a turn" behavior verbatim.
     start_turn: bool = True
+    # #1309 C1-S7 F1: ``()`` forces the child's bound agent to ZERO tools
+    # (declared, auto-attached, AND skill -- see
+    # ``agents/resolution.py::_apply_session_tool_allowlist``); ``None`` (the
+    # default) leaves every other caller's behavior unchanged. Stamped into
+    # the child SESSION's metadata at MINT time (below), never patched in
+    # after ``invoke()`` returns -- so it is true before the child's first
+    # tool-resolving turn build, not merely "usually true first" by timing.
+    tool_allowlist: Optional[tuple[str, ...]] = None
+    # #1309 C1-S7 F3: the bounded agent-elicitation recursion depth, stamped
+    # onto the child's metadata at the SAME mint point for the same reason.
+    agent_elicitation_depth: Optional[int] = None
 
 
 class SpawnError(Exception):
@@ -368,6 +379,20 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         metadata_patch={
             **session_scope_metadata,
             "spawn_placement": spec.placement,
+            # #1309 C1-S7 F1/F3: stamped HERE (mint time, before this child can
+            # possibly build its first turn) rather than via a caller's follow-up
+            # ``sessions.update`` after ``invoke()`` returns -- the ordering
+            # invariant is then true by construction, not by timing.
+            **(
+                {"tool_allowlist": list(spec.tool_allowlist)}
+                if spec.tool_allowlist is not None
+                else {}
+            ),
+            **(
+                {"agent_elicitation_depth": spec.agent_elicitation_depth}
+                if spec.agent_elicitation_depth is not None
+                else {}
+            ),
             # Queryable audit trail for the mode-inheritance fix above: present (and
             # truthy) only when the child's mode was structurally inherited from a
             # restrictive parent, so the API/trace can distinguish "child is plan mode

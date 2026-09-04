@@ -57,6 +57,10 @@ boot for `--dry-run`).
   citations: `_resource_uri` ~104-108, `_resource_payload` ~174-193,
   `_append_live_assistant_part` 434-448, the `GET /v1/sessions/{sid}/
   mcp-apps/{app_id}` route 617-637).
+- `src/clio_agent/gact/agent_elicitation.py` — agent-driven elicitation
+  (C1-S7, #1309): the audience-hint signal, the routing/policy decision, the
+  bounded self-directed answer child turn, and the semantic-firewall schema
+  validation avenue 12 proves live.
 
 ## New files this leg adds
 
@@ -80,13 +84,13 @@ boot for `--dry-run`).
 uv run python scripts/live_verification/leg_c2_v2_avenues.py --dry-run
 
 # Boot the server, materialize+install+activate the pack, run every headless
-# avenue (3,4,6,7,8,9,10) AND the readiness gate; avenues 1, 2, 5, and 11 are
-# recorded status="blocked" (reason: "plumbing-only run"). Zero LM spend.
+# avenue (3,4,6,7,8,9,10) AND the readiness gate; avenues 1, 2, 5, 11, and 12
+# are recorded status="blocked" (reason: "plumbing-only run"). Zero LM spend.
 uv run python scripts/live_verification/leg_c2_v2_avenues.py --plumbing-only
 
 # Full run: everything above PLUS avenues 1 (task-modes), 2 (mrtr-url), 5
-# (waits-cancel), and 11 (apps-ui) through directed claude_code/sonnet turns
-# on one session.
+# (waits-cancel), 11 (apps-ui), and 12 (agent-elicitation) through directed
+# claude_code/sonnet turns on one session.
 uv run python scripts/live_verification/leg_c2_v2_avenues.py --provider claude_code --model sonnet
 ```
 
@@ -112,6 +116,7 @@ message dumps and the SSE audit log land beside it.
 | 9 | adversarial | No | **pass** (C1-S5, #1285, landed) | `mcp_adversarial_fixture.py` wraps a real fastmcp app in a pure ASGI middleware that short-circuits four requests with hand-built malformed JSON-RPC frames (bad `resultType`, `-32021` with no `requiredCapabilities`, always-`-32020`, empty-string pagination cursor). The avenue asserts clio's typed handling of each — including a VERIFIED fastmcp CLIENT bug: `Client.list_tools()`'s `if not result.next_cursor: break` treats an empty-string cursor as terminal even though E10 says only null/missing ends pagination; pinned as a finding, not a clio defect (clio never implements its own pagination). |
 | 10 | headers | No | **pass** (C1-S5, #1285, landed) | a NEW `_header_capture_server.py` is booted as a real subprocess and probed via `POST /v1/mcp/servers` + `POST /v1/mcp/servers/{sid}/call`. B2 (`mcp-method`/`mcp-name`/`mcp-protocol-version`) was already confirmed library-covered with zero clio_agent code involved. B3 (`mcp-param-*` mirroring) is now genuinely exercised: the capture server gained `probe_with_header` (an `x-mcp-header`-annotated `Trace-Id` param) and the exerciser gained `header_annotated_echo` + a deliberately INVALID `invalid_header_echo` (proving the SDK's own `_absorb_tool_listing` drops it) — the avenue asserts the mirrored `Mcp-Param-Trace-Id` header's VALUE, not just presence. |
 | 11 | apps-ui | Yes | **pass** (C1-S3, #1283, landed) | the exerciser now carries a real ui-serving arm: `ui_echo` (`_meta.ui.resourceUri` bound to `ui://v2ex/panel`, built with fastmcp's native `fastmcp.apps` support) + a matching `@server.resource` handler serving `text/html;profile=mcp-app`. The avenue drives `v2ex_ui_echo` through a real turn and asserts an `mcp_app` Part is minted on the persisted message stream (`_append_live_assistant_part`, `mcp_apps.py:434-448` — the SAME single-writer transcript ledger a real assistant reply uses, not the SSE-only transient path avenue 5 rides) AND `GET /v1/sessions/{sid}/mcp-apps/{app_id}` (`mcp_apps.py:617-637`) actually serves the resource. Needs a model in the loop (unlike avenue 8) — its readiness-gate plumbing (the tool resolves onto the `v2ex-avenues` pack) is live-verified in `--plumbing-only` mode; the LM-driven assertion itself awaits a live run under owner go-ahead, matching this package's existing posture. |
+| 12 | agent-elicitation | Yes | **pass** (C1-S7, #1309, landed) | the exerciser gained `agent_guarded_input` (`task=required`, mirrors `guarded_input`'s one-round MRTR shape) whose `InputRequiredResult` embeds an `ElicitRequest` carrying clio's declared `_meta` audience hint (`x-clio-agent/audience: "agent"`, `_one_agent_elicit`) and asks for a nonce the SERVER never states — only this turn's own opening message does. The avenue plants a fresh nonce in the turn's opening prompt, drives `v2ex_agent_guarded_input`, and — critically — never calls the answer route itself: the question must resolve entirely through `gact/agent_elicitation.py`'s background dispatch (a bounded, self-directed child turn of the SAME session, seeded with its own transcript excerpt, spawned through the existing `InProcessExpertInvoker`/`spawn_child_turn_threadsafe` machinery). Asserts the resolved `UserQuestion` row's `answered_by == "agent"`, `agent_elicitation_routing == "elicitation_routed_to_agent"`, and that the submitted `answer_metadata["nonce"]` is EXACTLY the planted value — the round-trip proof no human answering headlessly (this script included) could ever produce. Its readiness-gate plumbing (the tool resolves onto the `v2ex-avenues` pack) is live-verified in `--plumbing-only` mode; the LM-driven assertion itself awaits a live run under owner go-ahead, matching this package's existing posture. The semantic-firewall / policy / recursion-bound / fallback paths are proven separately (offline, LM-free) in `tests/test_gact/test_agent_elicitation.py`. |
 
 ## On avenue 1's forbidden-explicit design (why not a hard -32021/-32022 assertion)
 
@@ -173,3 +178,11 @@ extensions, adversarial, headers) are headless and already live-verified in
 `--plumbing-only` mode; four (task-modes, mrtr-url, waits-cancel, apps-ui)
 need a model in the loop for their LM-driven half, which awaits a live run
 under owner go-ahead per this package's existing posture.
+
+**C1-S7 (#1309) adds a twelfth avenue, agent-elicitation** (row 12 above):
+the same posture as the other four LM-driven avenues -- its readiness-gate
+plumbing (the tool resolving onto the `v2ex-avenues` pack) is live-verified
+in `--plumbing-only` mode (recorded `blocked`, reason "plumbing-only run");
+the LM-driven assertion itself awaits a live run under owner go-ahead. Five
+avenues now need a model in the loop (task-modes, mrtr-url, waits-cancel,
+apps-ui, agent-elicitation); the remaining seven stay headless.

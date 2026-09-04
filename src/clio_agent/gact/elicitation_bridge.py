@@ -32,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -70,6 +70,7 @@ __all__ = [
     "resolve_answered_question",
     "resolve_cancelled_question",
     "resolve_elicitation",
+    "stamp_question_routing_fields",
     "translate_form_schema",
     "validate_elicitation_answer",
 ]
@@ -182,6 +183,7 @@ def claim_question_transition(
     answer: str = "",
     selected_options: Sequence[str] | None = None,
     answer_metadata: Mapping[str, Any] | None = None,
+    answered_by: str = "",
 ) -> UserQuestion | None:
     """Atomically transition a PENDING question to ``new_status`` (first-wins).
 
@@ -189,6 +191,13 @@ def claim_question_transition(
     when THIS caller made the ``pending`` -> ``new_status`` transition; ``None`` when
     the question is absent or already non-pending (the loser). Answer fields apply
     inside the same lock, so a timeout cannot overwrite an accepted answer (or v.v.).
+
+    ``answered_by`` (#1309, C1-S7) is the agent-driven-elicitation attribution:
+    empty (the default) leaves :attr:`UserQuestion.answered_by` at its
+    byte-identical-with-today ``None`` wire absence; ``"agent"`` is stamped by
+    :mod:`clio_agent.gact.agent_elicitation` in the SAME atomic transition a
+    human answer would use, so the row is never observably "answered" before
+    its attribution is set.
     """
 
     with _QUESTIONS_LOCK:
@@ -203,12 +212,44 @@ def claim_question_transition(
             update["answer"] = answer
             update["selected_options"] = list(selected_options or [])
             update["answer_metadata"] = dict(answer_metadata or {})
+            if answered_by:
+                update["answered_by"] = answered_by
         updated = row.model_copy(update=update)
         questions[question_id] = updated
         return updated
 
 
-async def _await_answer(app: Any, question: UserQuestion, timeout: float) -> ElicitResolution:
+def stamp_question_routing_fields(app: Any, question_id: str, **fields: Any) -> UserQuestion | None:
+    """Best-effort stamp of DESCRIPTIVE (non-state) fields onto a still-PENDING question.
+
+    Used by :mod:`clio_agent.gact.agent_elicitation` to record the routing decision
+    (``agent_elicitation_routing`` / ``agent_elicitation_fallback_detail``) without
+    participating in the answer/cancel/timeout state race: reuses
+    :data:`_QUESTIONS_LOCK` so it never interleaves with :func:`claim_question_transition`,
+    and silently no-ops (never clobbers) when the row already left ``pending`` --
+    a concurrent human answer/cancel/timeout always wins the STATE, this only ever
+    adds attribution to a row that is still waiting.
+    """
+
+    with _QUESTIONS_LOCK:
+        questions = getattr(app.state, "user_questions", None)
+        if questions is None:
+            return None
+        row = questions.get(question_id)
+        if row is None or row.status != "pending":
+            return None
+        updated = row.model_copy(update=dict(fields))
+        questions[question_id] = updated
+        return updated
+
+
+async def _await_answer(
+    app: Any,
+    question: UserQuestion,
+    timeout: float,
+    *,
+    on_published: Callable[[UserQuestion], None] | None = None,
+) -> ElicitResolution:
     """Register the waiter, publish the question, then park until it is resolved.
 
     Async- AND race-safe: the waiter is registered BEFORE publish (no gap), and the
@@ -217,12 +258,21 @@ async def _await_answer(app: Any, question: UserQuestion, timeout: float) -> Eli
     :func:`claim_question_transition`: on timeout, claim ``expired`` — win -> typed
     cancel; lose (answer already claimed ``answered``) -> await the shielded future
     for the delivered result (finding 6).
+
+    ``on_published`` (#1309, C1-S7) fires AFTER the question is in the store and its
+    waiter is registered, BEFORE the park — the one safe point for
+    :mod:`clio_agent.gact.agent_elicitation` to publish its routing event and
+    schedule a bounded agent-answer background task: any earlier and the dispatch
+    could race a resolution attempt against a row that does not exist yet / a
+    waiter that is not registered yet.
     """
 
     loop = asyncio.get_running_loop()
     future: asyncio.Future[ElicitResolution] = loop.create_future()
     _register_waiter(app, question.id, (future, loop))
     _publish_question_created(app, question)
+    if on_published is not None:
+        on_published(question)
     try:
         return await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
     except (TimeoutError, asyncio.TimeoutError):
@@ -411,6 +461,7 @@ def _new_question(
     metadata: dict[str, Any],
     source: str = ELICITATION_QUESTION_SOURCE,
     answer_metadata: dict[str, Any] | None = None,
+    audience: str | None = None,
 ) -> UserQuestion:
     from clio_agent.gact.runtime.globals import _new_question_id  # noqa: PLC0415
 
@@ -429,6 +480,9 @@ def _new_question(
         # SEP-1034: a form's declared defaults pre-populate this PENDING
         # question's answer surface (see elicitation_schema.default_answer_metadata).
         answer_metadata=answer_metadata or {},
+        # #1309 C1-S7: the server's own declared audience hint (``None`` unless
+        # the caller resolved it to exactly "agent" — see agent_elicitation.audience_hint).
+        audience=audience,  # type: ignore[arg-type]
     )
 
 
@@ -659,7 +713,17 @@ async def handle_elicitation(
     attended = _attended_session(app, session_id)
     forwarded_from = session_id if attended != session_id else ""
 
+    # #1309 C1-S7: agent-driven elicitation. The server's own ``_meta`` audience hint
+    # (clio's convention, ``x-clio-agent/audience: "agent"``) is read ONCE here; any
+    # value other than exactly "agent" (absent, unrecognized, empty) behaves
+    # IDENTICALLY to no hint at all -- the regression lock this slice must hold.
+    from clio_agent.gact import agent_elicitation  # noqa: PLC0415
+
+    audience_raw = agent_elicitation.audience_hint(params)
+    audience = agent_elicitation.AGENT_AUDIENCE_VALUE if audience_raw == "agent" else None
+
     mode = str(getattr(params, "mode", "") or "")
+    translation = None
     if mode == "url":
         url = str(getattr(params, "url", "") or "")
         reject = check_url_trust(url, url_trusted_origins)
@@ -679,6 +743,7 @@ async def handle_elicitation(
                 invocation_id=invocation.invocation_id,
                 forwarded_from_session=forwarded_from,
             ),
+            audience=audience,
         )
     elif mode == "form":
         translation = translate_form_schema(getattr(params, "requested_schema", {}) or {})
@@ -699,12 +764,31 @@ async def handle_elicitation(
                 invocation_id=invocation.invocation_id,
                 forwarded_from_session=forwarded_from,
             ),
+            audience=audience,
         )
     else:
         _record_reason("elicitation_unknown_mode", mode=mode, tool=invocation.tool_name)
         return _build_elicit_result(ElicitResolution(action="decline"))
 
-    resolution = await _await_answer(app, question, timeout)
+    # Regression lock: with no audience hint, ``decide_routing`` returns a pure
+    # no-route/no-reason decision, ``routing_fields`` is empty, and
+    # ``on_question_published`` is a no-op -- the question is untouched from its
+    # pre-#1309 shape and nothing new is scheduled.
+    decision = agent_elicitation.decide_routing(
+        app,
+        mode=mode,
+        session_id=question.session_id,
+        namespace=str(invocation.namespace or ""),
+        audience=audience_raw,
+    )
+    field_patch = agent_elicitation.routing_fields(decision)
+    if field_patch:
+        question = question.model_copy(update=field_patch)
+
+    def _on_published(published: UserQuestion) -> None:
+        agent_elicitation.on_question_published(app, published, invocation, translation, decision)
+
+    resolution = await _await_answer(app, question, timeout, on_published=_on_published)
     return _build_elicit_result(resolution)
 
 

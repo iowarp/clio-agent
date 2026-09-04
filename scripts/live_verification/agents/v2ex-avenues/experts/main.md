@@ -31,6 +31,7 @@ tools:
   - v2ex_header_annotated_echo
   - v2ex_list_changed_target
   - v2ex_mutate_and_notify_list_changed
+  - v2ex_agent_guarded_input
 ---
 
 # V2EX Avenues Testing Agent

@@ -140,6 +140,11 @@ def _array_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dict
         # :func:`_valid_multi_enum`).
         "min_items": _bounded_int(spec.get("minItems")),
         "max_items": _bounded_int(spec.get("maxItems")),
+        # minLength/maxLength apply to a scalar STRING field, never an array
+        # field itself -- present-with-None here only for descriptor-shape
+        # parity with ``_scalar_field`` (see :func:`_field_validation_error`).
+        "min_length": None,
+        "max_length": None,
         "default": spec.get("default"),
         "title": str(spec.get("title") or name),
         "description": str(spec.get("description") or ""),
@@ -170,6 +175,14 @@ def _scalar_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dic
         "item_type": "",
         "min_items": None,
         "max_items": None,
+        # #1309 C1-S7 F4 (owner gate review addendum): a declared freeform
+        # ``{"type": "string"}`` field is the WIDEST shape ``requestedSchema``
+        # permits -- an agent-authored answer of unbounded length otherwise.
+        # Carrying the schema's own minLength/maxLength through is the same
+        # dropped-declared-constraint fix C1-S4 already made for array
+        # minItems/maxItems (see :func:`_valid_scalar`).
+        "min_length": _bounded_int(spec.get("minLength")),
+        "max_length": _bounded_int(spec.get("maxLength")),
         "default": spec.get("default"),
         "title": str(spec.get("title") or name),
         "description": str(spec.get("description") or ""),
@@ -440,7 +453,14 @@ def _coerce(value: Any, field_type: str) -> Any:
     return value
 
 
-def _valid_scalar(value: Any, field_type: str, enum: Sequence[Any] | None) -> bool:
+def _valid_scalar(
+    value: Any,
+    field_type: str,
+    enum: Sequence[Any] | None,
+    *,
+    min_length: int | None = None,
+    max_length: int | None = None,
+) -> bool:
     """Exact JSON-Schema scalar check on a POST-coercion value (finding 7).
 
     ``enum`` present (including an EMPTY enum, which admits nothing) enforces
@@ -448,6 +468,14 @@ def _valid_scalar(value: Any, field_type: str, enum: Sequence[Any] | None) -> bo
     type. Otherwise every supported primitive is checked exactly: a string must be
     ``str``; booleans are NOT numbers/integers; an integer must be integral; a number
     must be finite; both numeric types exclude ``bool``.
+
+    ``min_length``/``max_length`` (#1309 C1-S7 F4) bound a STRING field's own
+    declared ``minLength``/``maxLength`` -- the same dropped-declared-constraint
+    class C1-S4 fixed for array ``minItems``/``maxItems``, applied identically
+    whether the answer came from a human or the session's agent (the semantic
+    firewall in :mod:`clio_agent.gact.agent_elicitation` reuses this exact
+    function for an agent's answer). Only consulted when ``enum`` is absent --
+    an enum-constrained field's admissible set is exhaustively named already.
     """
 
     if enum is not None:
@@ -461,7 +489,13 @@ def _valid_scalar(value: Any, field_type: str, enum: Sequence[Any] | None) -> bo
             isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
         )
     if field_type == "string":
-        return isinstance(value, str)
+        if not isinstance(value, str):
+            return False
+        if min_length is not None and len(value) < min_length:
+            return False
+        if max_length is not None and len(value) > max_length:
+            return False
+        return True
     return True  # unconstrained (no declared type, no enum)
 
 
@@ -570,10 +604,17 @@ def _field_validation_error(spec: Mapping[str, Any], content: Mapping[str, Any])
             if max_items is not None and len(value) > max_items:
                 return f"field {name!r} must select at most {max_items} of {list(enum or [])}"
         return f"field {name!r} must be a list of values from {list(enum or [])}"
-    if _valid_scalar(value, field_type, enum):
+    min_length = spec.get("min_length")
+    max_length = spec.get("max_length")
+    if _valid_scalar(value, field_type, enum, min_length=min_length, max_length=max_length):
         return None
     if enum is not None:
         return f"field {name!r} must be one of {list(enum)}"
+    if field_type == "string" and isinstance(value, str):
+        if min_length is not None and len(value) < min_length:
+            return f"field {name!r} must be at least {min_length} character(s)"
+        if max_length is not None and len(value) > max_length:
+            return f"field {name!r} must be at most {max_length} character(s)"
     return f"field {name!r} must be a valid {field_type}"
 
 

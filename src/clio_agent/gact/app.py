@@ -1997,7 +1997,10 @@ def build_app(
             prompt_registry=prompt_registry,
         )
         if rows:
-            return rows
+            # #1309 C1-S7 F1: same tool-allowlist enforcement the runtime turn
+            # path applies (_resolve_runtime_dynamic_agent) -- never let this
+            # read route disagree with what actually executes.
+            return _resolution._apply_session_tool_allowlist(app, rows, session_id=session_id)
         active_pack_id = _runtime_active_session_expert_pack_id(app, session_id)
         active_pack_path = _runtime_active_session_expert_pack_path(app, session_id)
         explicit_session_rows = (
@@ -2011,7 +2014,7 @@ def build_app(
             + load_expert_packs(cwd=cwd, pack_id=active_pack_id)
             + explicit_session_rows
         )
-        return [
+        rows = [
             _apply_prompt_registry_to_agent(
                 app,
                 _agent_with_capability_refs(app, row),
@@ -2019,6 +2022,7 @@ def build_app(
             )
             for row in validate_expert_hierarchy(_merge_agent_def_rows(rows))
         ]
+        return _resolution._apply_session_tool_allowlist(app, rows, session_id=session_id)
 
     def _resolve_runtime_dynamic_agent_bound(
         agent_id: str,
