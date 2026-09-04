@@ -22,6 +22,24 @@ def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+def _message_presentation_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """Project only metadata needed to classify visible transcript records.
+
+    Native ``ask_user`` answers are delivered back to the runtime as user-role
+    resume envelopes.  The v3 client needs their question identity to avoid
+    presenting that transport record as a second user-authored chat message.
+    Answer content and all other runtime metadata stay in their authoritative
+    stores and off the public transcript projection.
+    """
+
+    if metadata.get("ask_user_resume") is not True:
+        return {}
+    question_id = metadata.get("ask_user_question_id")
+    if not isinstance(question_id, str) or not question_id:
+        return {}
+    return {"ask_user_resume": True, "ask_user_question_id": question_id}
+
+
 def _action_cards(part: Mapping[str, Any]) -> list[dict[str, Any]]:
     actions = part.get("actions")
     if not isinstance(actions, list):
@@ -304,6 +322,9 @@ def message_to_v3(message: Any) -> dict[str, Any]:
     if turn_id:
         row["run_id"] = turn_id
     metadata = _mapping(wire.get("metadata"))
+    presentation_metadata = _message_presentation_metadata(metadata)
+    if presentation_metadata:
+        row["metadata"] = presentation_metadata
     tokens = _mapping(wire.get("tokens"))
     row["usage"] = {
         "input": int(tokens.get("input") or 0),

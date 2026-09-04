@@ -395,6 +395,30 @@ def test_v3_message_deduplicates_repeated_artifact_references() -> None:
     ]
 
 
+def test_v3_message_projects_only_native_resume_classification_metadata() -> None:
+    projected = message_to_v3(
+        Message(
+            id="msg_resume",
+            session_id="sess_resume",
+            role="user",
+            created_at="2026-09-04T00:00:00+00:00",
+            updated_at="2026-09-04T00:00:01+00:00",
+            parts=[Part(id="answer", type="text", text="internal delivery envelope")],
+            metadata={
+                "ask_user_resume": True,
+                "ask_user_question_id": "ques_1",
+                "ask_user_answer": "private answer",
+                "runtime_secret": "never project",
+            },
+        )
+    )
+
+    assert projected["metadata"] == {
+        "ask_user_resume": True,
+        "ask_user_question_id": "ques_1",
+    }
+
+
 def test_v3_transcript_preserves_navigable_child_agent_semantics(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json")
     parent = app.state.sessions.create(workspace_id="ws_default", title="Flat NDP")
