@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from clio_agent import conf
 from clio_agent.gact.resource_custody import ResourceRecord, ResourceStore
+from clio_agent.gact.resource_processing_bounds import processing_event_bounds
 
 _SAFE_DERIVATIVE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _ALLOWED_NODE_COLLECTIONS = {"pages", "tables", "pictures", "texts"}
@@ -38,10 +39,6 @@ _PROCESSOR_MIN_UPLOAD_BYTES_PER_S = 1024 * 1024
 _PROCESSOR_WRITE_TIMEOUT_FLOOR_S = 60.0
 
 logger = logging.getLogger(__name__)
-
-_MAX_PROCESSING_EVENTS = 100
-_MAX_PROCESSING_EVENT_MESSAGE_CHARS = 1000
-_MAX_PROCESSING_EVENT_STAGE_CHARS = 80
 
 
 def _now_iso() -> str:
@@ -115,13 +112,12 @@ def bounded_processing_events(
 
     if not isinstance(value, list):
         return []
+    bounds = processing_event_bounds()
     normalized: list[ResourceProcessingEvent] = []
-    for fallback_sequence, raw in enumerate(value[-_MAX_PROCESSING_EVENTS:], start=1):
+    for fallback_sequence, raw in enumerate(value[-bounds.max_records :], start=1):
         if not isinstance(raw, dict):
             continue
-        message = " ".join(str(raw.get("message") or "").split())[
-            :_MAX_PROCESSING_EVENT_MESSAGE_CHARS
-        ]
+        message = " ".join(str(raw.get("message") or "").split())[: bounds.message_chars]
         if not message:
             continue
         raw_sequence = raw.get("sequence")
@@ -162,7 +158,7 @@ def bounded_processing_events(
                 level=level,
                 progress=progress,
                 progress_kind=progress_kind,
-                stage=str(raw.get("stage") or "")[:_MAX_PROCESSING_EVENT_STAGE_CHARS],
+                stage=str(raw.get("stage") or "")[: bounds.stage_chars],
                 message=message,
             )
         )

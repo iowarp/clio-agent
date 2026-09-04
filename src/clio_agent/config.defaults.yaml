@@ -194,6 +194,12 @@ lm.provider: "lm_studio"
 # connect beyond it waits, raise for more concurrent sessions.
 providers.claude_code.max_concurrent_processes: 1.0
 
+# CLIO_CLAUDE_CODE_PROBE_TIMEOUT_S  (float)  <- src/clio_agent/providers/model_discovery/claude_code.py
+# Seconds one Claude Code model-discovery probe call may run before it is
+# abandoned as inconclusive; raise on hosts where cold CLI/SDK startup is
+# slow.
+providers.claude_code.probe_timeout_s: 30.0
+
 # CLIO_CLAUDE_CODE_SESSION_REUSE  (bool)  <- src/clio_agent/providers/claude_code_sessions.py
 # Keeps a pooled/reused SDK connection per scope instead of a fresh client
 # per call; set false to restore pre-#891 fresh-connect behavior.
@@ -525,6 +531,12 @@ gact.ledger_retention.context_frames.max: 200
 # eviction; raise for more memory-tool audit history.
 gact.ledger_retention.memory_tool_audit.max: 2000
 
+# CLIO_LEDGER_NATIVE_DELIVERY_NOTES_MAX  (int)  <- src/clio_agent/gact/native_delivery_outcome.py
+# Unsettled native-attachment decline notes buffered before the oldest are
+# dropped; each is normally consumed by the turn that planned it, so raise
+# only if a deployment leaves many plans unsettled.
+gact.ledger_retention.native_delivery_notes.max: 256
+
 # CLIO_LEDGER_PENDING_DIFFS_HARD  (int)  <- src/clio_agent/gact/runtime/retention.py
 # Absolute ceiling on the pending-diffs ledger; past this even a still-
 # pending diff is force-evicted oldest-first.
@@ -554,6 +566,12 @@ gact.ledger_retention.shared_tokens.hard: 10000
 # Soft cap on the shared-token ledger where terminal entries evict first,
 # protecting still-pending shared tokens.
 gact.ledger_retention.shared_tokens.max: 5000
+
+# CLIO_LEDGER_STREAM_FALLBACK_NOTES_MAX  (int)  <- src/clio_agent/gact/stream_fallbacks.py
+# Typed non-delivery degradation notes kept per session (a dropped native
+# model input, for example); raise to keep a longer degradation trail on
+# very long sessions.
+gact.ledger_retention.stream_fallback_notes.max: 32
 
 # CLIO_LEDGER_TURN_ATTEMPTS_HARD  (int)  <- src/clio_agent/gact/runtime/retention.py
 # Absolute ceiling on the turn-attempts ledger; past this even a still-
@@ -892,6 +910,28 @@ resources.native_document_max_bytes: 33554432
 # ~5 MB per-image limit. Refused before the file is read and
 # base64-expanded.
 resources.native_image_max_bytes: 5242880
+
+# CLIO_RESOURCE_PROCESSING_EVENT_MAX_RECORDS  (int)  <- src/clio_agent/gact/resource_processing_bounds.py
+# Most recent converter activity events retained and served per resource;
+# raise to keep a longer conversion history, lower to shrink resource
+# payloads.
+resources.processing_event_max_records: 100
+
+# CLIO_RESOURCE_PROCESSING_EVENT_MESSAGE_CHARS  (int)  <- src/clio_agent/gact/resource_processing_bounds.py
+# Character ceiling on one converter event message before it is truncated;
+# raise when a processor reports long diagnostics you need in full.
+resources.processing_event_message_chars: 1000
+
+# CLIO_RESOURCE_PROCESSING_EVENT_STAGE_CHARS  (int)  <- src/clio_agent/gact/resource_processing_bounds.py
+# Character ceiling on one converter event's stage label; raise only for a
+# processor whose stage names are unusually long.
+resources.processing_event_stage_chars: 80
+
+# CLIO_RESOURCE_PROCESSING_POLL_INTERVAL_S  (float)  <- src/clio_agent/gact/resource_processing_bounds.py
+# Seconds between conversion-status refreshes inside one bounded wait; raise
+# when the processor's status endpoint is slow or rate-limited, lower for a
+# local processor.
+resources.processing_poll_interval_s: 0.5
 
 # CLIO_RESOURCE_PROCESSOR_CANCEL_TIMEOUT_S  (float)  <- src/clio_agent/gact/resource_processing.py
 # Seconds to wait for the document processor to acknowledge a cancellation;

@@ -440,6 +440,33 @@ async def test_images_on_an_agent_without_an_images_parameter_are_typed_not_sile
     assert _pop_stream_fallback(app, "sid").get("reason") != "native_model_inputs_dropped"
 
 
+def test_degradation_note_ledger_is_bounded_by_configuration() -> None:
+    """The per-session note ledger is an operator knob, and it keeps the NEWEST notes."""
+
+    from clio_agent.gact.stream_fallbacks import (
+        _max_notes_per_session,
+        record_stream_fallback_note,
+        stream_fallback_notes,
+    )
+
+    app = SimpleNamespace(state=SimpleNamespace())
+
+    set_config("gact.ledger_retention.stream_fallback_notes.max", 3)
+    assert _max_notes_per_session() == 3
+    for index in range(10):
+        record_stream_fallback_note(app, "sid", "native_model_inputs_dropped", f"drop {index}")
+
+    entries = stream_fallback_notes(app)["sid"]
+    assert [note["message"] for note in entries] == ["drop 7", "drop 8", "drop 9"]
+
+    # A nonsense bound degrades to a floor of one rather than a ledger that
+    # accepts a note and immediately discards it.
+    set_config("gact.ledger_retention.stream_fallback_notes.max", 0)
+    assert _max_notes_per_session() == 1
+    record_stream_fallback_note(app, "sid", "native_model_inputs_dropped", "drop last")
+    assert [note["message"] for note in stream_fallback_notes(app)["sid"]] == ["drop last"]
+
+
 async def test_native_inputs_reach_an_agent_that_declares_them(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

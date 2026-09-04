@@ -30,6 +30,7 @@ from clio_agent import conf
 from clio_agent.gact.resource_custody import ResourceRecord
 from clio_agent.gact.resource_lifecycle import refresh_processing
 from clio_agent.gact.resource_processing import resource_processing_task_id
+from clio_agent.gact.resource_processing_bounds import processing_poll_interval_s
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -233,7 +234,7 @@ async def wait_for_workspace_resource_processing(
                 "timed_out": True,
                 "processing": state.model_dump(),
             }
-        await asyncio.sleep(min(0.5, remaining))
+        await asyncio.sleep(min(processing_poll_interval_s(), remaining))
 
 
 def _search_path(path: Path, query: str) -> tuple[list[dict[str, Any]], bool]:

@@ -61,6 +61,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CAPTURE_REASONING` | `runtime.capture_reasoning` | bool | `true` | `src/clio_agent/gact/usage.py` |
 | `CLIO_CHILD_FORWARD_DEADLINE_S` | `agents.child_forward_deadline_s` | float | `DEFAULT_ELICITATION_TIMEOUT_S` _(computed)_ | `src/clio_agent/gact/child_forward.py` |
 | `CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES` | `providers.claude_code.max_concurrent_processes` | float | `1.0` | `src/clio_agent/providers/claude_code_stream_bounds.py` |
+| `CLIO_CLAUDE_CODE_PROBE_TIMEOUT_S` | `providers.claude_code.probe_timeout_s` | float | `30.0` | `src/clio_agent/providers/model_discovery/claude_code.py` |
 | `CLIO_CLAUDE_CODE_SESSION_REUSE` | `providers.claude_code.session_reuse` | bool | `true` | `src/clio_agent/providers/claude_code_sessions.py` |
 | `CLIO_CLAUDE_CODE_STATEFUL_CAPACITY` | `providers.claude_code.stateful_capacity` | float | `128.0` | `src/clio_agent/providers/claude_code_stateful.py` |
 | `CLIO_CLAUDE_CODE_STREAM_IDLE_TTL_S` | `providers.claude_code.stream_idle_ttl_s` | float | `15.0` | `src/clio_agent/providers/claude_code_stream_bounds.py` |
@@ -127,12 +128,14 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LEDGER_COMMAND_AUDIT_MAX` | `gact.ledger_retention.command_audit.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_CONTEXT_FRAMES_MAX` | `gact.ledger_retention.context_frames.max` | int | `200` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_MEMORY_TOOL_AUDIT_MAX` | `gact.ledger_retention.memory_tool_audit.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
+| `CLIO_LEDGER_NATIVE_DELIVERY_NOTES_MAX` | `gact.ledger_retention.native_delivery_notes.max` | int | `256` | `src/clio_agent/gact/native_delivery_outcome.py` |
 | `CLIO_LEDGER_PENDING_DIFFS_HARD` | `gact.ledger_retention.pending_diffs.hard` | int | `1000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_PENDING_DIFFS_MAX` | `gact.ledger_retention.pending_diffs.max` | int | `500` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_PERMISSIONS_HARD` | `gact.ledger_retention.permissions.hard` | int | `4000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_PERMISSIONS_MAX` | `gact.ledger_retention.permissions.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_SHARED_TOKENS_HARD` | `gact.ledger_retention.shared_tokens.hard` | int | `10000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_SHARED_TOKENS_MAX` | `gact.ledger_retention.shared_tokens.max` | int | `5000` | `src/clio_agent/gact/runtime/retention.py` |
+| `CLIO_LEDGER_STREAM_FALLBACK_NOTES_MAX` | `gact.ledger_retention.stream_fallback_notes.max` | int | `32` | `src/clio_agent/gact/stream_fallbacks.py` |
 | `CLIO_LEDGER_TURN_ATTEMPTS_HARD` | `gact.ledger_retention.turn_attempts.hard` | int | `4000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_TURN_ATTEMPTS_MAX` | `gact.ledger_retention.turn_attempts.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_USER_QUESTIONS_HARD` | `gact.ledger_retention.user_questions.hard` | int | `4000` | `src/clio_agent/gact/runtime/retention.py` |
@@ -232,6 +235,10 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_RESOURCE_NATIVE_ATTACHMENT_TOTAL_MAX_BYTES` | `resources.native_attachment_total_max_bytes` | int | `33554432` | `src/clio_agent/providers/native_attachment_bounds.py` |
 | `CLIO_RESOURCE_NATIVE_DOCUMENT_MAX_BYTES` | `resources.native_document_max_bytes` | int | `33554432` | `src/clio_agent/providers/native_attachment_bounds.py` |
 | `CLIO_RESOURCE_NATIVE_IMAGE_MAX_BYTES` | `resources.native_image_max_bytes` | int | `5242880` | `src/clio_agent/providers/native_attachment_bounds.py` |
+| `CLIO_RESOURCE_PROCESSING_EVENT_MAX_RECORDS` | `resources.processing_event_max_records` | int | `100` | `src/clio_agent/gact/resource_processing_bounds.py` |
+| `CLIO_RESOURCE_PROCESSING_EVENT_MESSAGE_CHARS` | `resources.processing_event_message_chars` | int | `1000` | `src/clio_agent/gact/resource_processing_bounds.py` |
+| `CLIO_RESOURCE_PROCESSING_EVENT_STAGE_CHARS` | `resources.processing_event_stage_chars` | int | `80` | `src/clio_agent/gact/resource_processing_bounds.py` |
+| `CLIO_RESOURCE_PROCESSING_POLL_INTERVAL_S` | `resources.processing_poll_interval_s` | float | `0.5` | `src/clio_agent/gact/resource_processing_bounds.py` |
 | `CLIO_RESOURCE_PROCESSOR_CANCEL_TIMEOUT_S` | `resources.processor_cancel_timeout_s` | float | `30.0` | `src/clio_agent/gact/resource_processing.py` |
 | `CLIO_RESOURCE_PROCESSOR_CONNECT_TIMEOUT_S` | `resources.processor_connect_timeout_s` | float | `5.0` | `src/clio_agent/gact/resource_processing.py` |
 | `CLIO_RESOURCE_PROCESSOR_POOL_TIMEOUT_S` | `resources.processor_pool_timeout_s` | float | `5.0` | `src/clio_agent/gact/resource_processing.py` |

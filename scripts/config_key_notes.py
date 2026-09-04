@@ -356,6 +356,15 @@ KEY_NOTES: dict[str, str] = {
         "Soft cap on the ask-user question ledger where terminal (answered/cancelled/expired) rows "
         "evict first, protecting questions somebody is still waiting on."
     ),
+    "gact.ledger_retention.native_delivery_notes.max": (
+        "Unsettled native-attachment decline notes buffered before the oldest are dropped; each "
+        "is normally consumed by the turn that planned it, so raise only if a deployment leaves "
+        "many plans unsettled."
+    ),
+    "gact.ledger_retention.stream_fallback_notes.max": (
+        "Typed non-delivery degradation notes kept per session (a dropped native model input, for "
+        "example); raise to keep a longer degradation trail on very long sessions."
+    ),
     "gact.ledger_retention.a2ui_messages.max": (
         "Retention bound on one A2UI surface's message log; the oldest non-createSurface message "
         "is evicted first past it."
@@ -764,6 +773,10 @@ KEY_NOTES: dict[str, str] = {
         "Keeps a pooled/reused SDK connection per scope instead of a fresh client per call; set "
         "false to restore pre-#891 fresh-connect behavior."
     ),
+    "providers.claude_code.probe_timeout_s": (
+        "Seconds one Claude Code model-discovery probe call may run before it is abandoned as "
+        "inconclusive; raise on hosts where cold CLI/SDK startup is slow."
+    ),
     "providers.claude_code.stateful_capacity": (
         "Max live Claude Code stateful-session entries before LRU eviction; raise on a host "
         "running many concurrent stateful sessions."
@@ -817,6 +830,22 @@ KEY_NOTES: dict[str, str] = {
     "resources.native_image_max_bytes": (
         "Source-byte ceiling on one natively delivered image; matches Anthropic's ~5 MB "
         "per-image limit. Refused before the file is read and base64-expanded."
+    ),
+    "resources.processing_event_max_records": (
+        "Most recent converter activity events retained and served per resource; raise to keep a "
+        "longer conversion history, lower to shrink resource payloads."
+    ),
+    "resources.processing_event_message_chars": (
+        "Character ceiling on one converter event message before it is truncated; raise when a "
+        "processor reports long diagnostics you need in full."
+    ),
+    "resources.processing_event_stage_chars": (
+        "Character ceiling on one converter event's stage label; raise only for a processor whose "
+        "stage names are unusually long."
+    ),
+    "resources.processing_poll_interval_s": (
+        "Seconds between conversion-status refreshes inside one bounded wait; raise when the "
+        "processor's status endpoint is slow or rate-limited, lower for a local processor."
     ),
     "resources.processor_cancel_timeout_s": (
         "Seconds to wait for the document processor to acknowledge a cancellation; raise only if "

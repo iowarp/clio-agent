@@ -18,6 +18,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from clio_agent import conf
+
 logger = logging.getLogger(__name__)
 
 #: Typed reasons a planned native attachment did not ride the request, in the
@@ -59,12 +61,32 @@ NATIVE_ATTACHMENT_SKIP_REASONS: dict[str, str] = {
 #: there is no promise to settle and nothing to buffer.
 _NOT_A_DECLINE: frozenset[str] = frozenset({"delivery_not_native"})
 
-#: Cap on unsettled notes. Settling pops only the keys its own turn planned, so a
-#: note for a part no turn ever settles (no workspace bound, a plan that never
-#: reached the ledger) would otherwise accumulate for the life of the process.
-#: Keys are popped in insertion order; the newest notes are the ones a settle is
-#: about to ask for.
-_MAX_PENDING_NOTES = 256
+
+def _max_pending_notes() -> int:
+    """Cap on unsettled notes.
+
+    Settling pops only the keys its own turn planned, so a note for a part no
+    turn ever settles (no workspace bound, a plan that never reached the ledger)
+    would otherwise accumulate for the life of the process. Keys are popped in
+    insertion order; the newest notes are the ones a settle is about to ask for.
+
+    Config: ``gact.ledger_retention.native_delivery_notes.max`` /
+    ``CLIO_LEDGER_NATIVE_DELIVERY_NOTES_MAX`` -- the same
+    ``gact.ledger_retention.*`` namespace as every other in-process ledger bound
+    (``runtime/retention.py``); this buffer is keyed by
+    ``(resource_id, revision)`` rather than being a flat list, so it resolves its
+    own bound instead of riding ``LEDGER_BOUNDS``.
+    """
+
+    return max(
+        1,
+        conf.resolve(
+            "gact.ledger_retention.native_delivery_notes.max",
+            env="CLIO_LEDGER_NATIVE_DELIVERY_NOTES_MAX",
+            default=256,
+            cast=conf.as_int,
+        ),
+    )
 
 
 def _pending(app: Any) -> dict[tuple[str, str], dict[str, Any]]:
@@ -107,7 +129,8 @@ def note_delivery_outcome(
         "detail": detail or NATIVE_ATTACHMENT_SKIP_REASONS[reason],
         "kind": kind,
     }
-    while len(buffer) > _MAX_PENDING_NOTES:
+    max_pending = _max_pending_notes()
+    while len(buffer) > max_pending:
         oldest = next(iter(buffer))
         dropped = buffer.pop(oldest)
         logger.warning(

@@ -10,6 +10,7 @@ import shutil
 import subprocess
 from typing import Any
 
+from clio_agent import conf
 from clio_agent.providers.model_discovery.modality_evidence import modality_evidence
 from clio_agent.providers.model_discovery.overlay import (
     CLAUDE_CODE_SOURCE,
@@ -38,7 +39,19 @@ CLAUDE_CODE_ALIAS_CANDIDATES: tuple[str, ...] = ("fable", "opus", "sonnet", "hai
 #: ``discover_claude_code`` also exits its loop on the FIRST inconclusive probe
 #: rather than always running all 5, so the common-case worst case is much
 #: tighter than ``5 * timeout``.
-CLAUDE_CODE_PROBE_TIMEOUT_S = 30.0
+#:
+#: Configuration, not a compiled-in constant: cold SDK startup is a property of
+#: the operator's machine and account, so an install that needs longer raises
+#: ``providers.claude_code.probe_timeout_s`` /
+#: ``CLIO_CLAUDE_CODE_PROBE_TIMEOUT_S`` rather than patching this file. Resolved
+#: at import (like ``gact/runtime/constants.py``'s ``_CTX_MAX_BYTES``) because it
+#: is also this module's public default argument.
+CLAUDE_CODE_PROBE_TIMEOUT_S: float = conf.resolve(
+    "providers.claude_code.probe_timeout_s",
+    env="CLIO_CLAUDE_CODE_PROBE_TIMEOUT_S",
+    default=30.0,
+    cast=conf.as_float,
+)
 
 #: The text-only probe: validates the ALIAS alone, and says nothing about
 #: modalities. Used as the M3 fallback when the multimodal turn cannot run.

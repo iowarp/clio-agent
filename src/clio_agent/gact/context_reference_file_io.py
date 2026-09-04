@@ -9,6 +9,12 @@ from pathlib import Path
 from clio_agent.gact.context_reference_domain import BoundedFileSnapshot
 from clio_agent.gact.runtime.constants import _CTX_MAX_BYTES
 
+#: Streaming granularity, deliberately NOT configuration. It bounds nothing a
+#: caller observes: the hash is over the whole file at any chunk size, and the
+#: prefix a caller receives is bounded by ``_CTX_MAX_BYTES``, which IS
+#: conf-resolved (``CLIO_CTX_MAX_BYTES``). Changing this changes only the peak
+#: read buffer, so it is a constant rather than a knob nobody could tune with
+#: intent.
 _FILE_CHUNK_BYTES = 1024 * 1024
 
 

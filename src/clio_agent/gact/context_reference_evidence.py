@@ -86,6 +86,10 @@ def _bounded_payload(
         max_chars = snapshot_payload_string_chars()
     if max_children is None:
         max_children = snapshot_payload_children()
+    # Runaway backstop, not a knob (same class as ``MAX_SPAWN_DEPTH``): it exists
+    # so a cyclic or pathologically nested payload terminates, and the two bounds
+    # an operator would actually tune -- width and string length -- are the
+    # conf-resolved ones above.
     if depth >= 6:
         return "[nested content omitted]"
     if isinstance(value, Mapping):
@@ -247,6 +251,15 @@ def _context_frame_snapshots(
 def _walk_source_values(
     value: Any, path: tuple[str, ...] = (), depth: int = 0
 ) -> list[tuple[str, str]]:
+    """Find referenceable source strings in one resource's metadata.
+
+    The depth and fan-out numbers below are runaway backstops on an INTERNAL
+    metadata mapping, not tunables: they make the walk terminate on a cyclic or
+    pathological structure. They are deliberately not the conf-resolved snapshot
+    bounds -- those shape what a client is SERVED, whereas these only bound a
+    scan whose output is a candidate list CLIO then filters.
+    """
+
     if depth > 5:
         return []
     if isinstance(value, Mapping):

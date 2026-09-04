@@ -949,3 +949,54 @@ def test_the_structured_node_ceiling_is_configurable(tmp_path: Path) -> None:
             read_workspace_resource_structure(app, workspace_id, resource_id, "texts", 0)
 
     assert excinfo.value.code == "structure_node_too_large"
+
+
+def test_converter_activity_window_bounds_are_configuration() -> None:
+    """A third-party converter's event volume is a deployment bound, not a constant."""
+
+    from clio_agent.gact.resource_processing import bounded_processing_events
+
+    raw = [
+        {"sequence": index, "message": f"stage message {index} " + "y" * 4096, "stage": "s" * 512}
+        for index in range(400)
+    ]
+
+    # Under the shipped defaults the window is the newest 100 events, each with a
+    # bounded message and stage label...
+    shipped = bounded_processing_events(raw)
+    assert len(shipped) == 100
+    assert shipped[0].sequence == 300
+    assert len(shipped[0].message) == 1000
+    assert len(shipped[0].stage) == 80
+
+    # ...and a deployment that wants a smaller served payload can shrink all three.
+    set_config("resources.processing_event_max_records", 5)
+    set_config("resources.processing_event_message_chars", 20)
+    set_config("resources.processing_event_stage_chars", 4)
+    tightened = bounded_processing_events(raw)
+    assert len(tightened) == 5
+    assert tightened[0].sequence == 395
+    assert len(tightened[0].message) == 20
+    assert len(tightened[0].stage) == 4
+
+    # A zero/negative bound degrades to a usable floor instead of serving nothing.
+    set_config("resources.processing_event_max_records", 0)
+    set_config("resources.processing_event_message_chars", -3)
+    set_config("resources.processing_event_stage_chars", 0)
+    floored = bounded_processing_events(raw)
+    assert len(floored) == 1
+    assert len(floored[0].message) == 1
+    assert len(floored[0].stage) == 1
+
+
+def test_conversion_poll_cadence_is_configuration() -> None:
+    """The wait's poll interval is cadence an operator owns; the budget stays the caller's."""
+
+    from clio_agent.gact.resource_processing_bounds import processing_poll_interval_s
+
+    assert processing_poll_interval_s() == 0.5
+    set_config("resources.processing_poll_interval_s", 2.5)
+    assert processing_poll_interval_s() == 2.5
+    # Never zero: a 0s cadence would spin the status endpoint inside the budget.
+    set_config("resources.processing_poll_interval_s", 0)
+    assert processing_poll_interval_s() == 0.01

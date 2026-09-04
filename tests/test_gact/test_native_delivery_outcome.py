@@ -246,10 +246,11 @@ def test_a_non_native_plan_is_not_buffered_as_a_decline(tmp_path: Path) -> None:
 def test_unsettled_notes_cannot_grow_without_bound(tmp_path: Path) -> None:
     """Settling pops only its own keys, so an unsettled note must not live forever."""
 
-    from clio_agent.gact.native_delivery_outcome import _MAX_PENDING_NOTES, _pending
+    from clio_agent.gact.native_delivery_outcome import _max_pending_notes, _pending
 
+    bound = _max_pending_notes()
     app = _app(tmp_path)
-    for index in range(_MAX_PENDING_NOTES + 25):
+    for index in range(bound + 25):
         note_delivery_outcome(
             app,
             resource_id=f"res_{index}",
@@ -259,7 +260,35 @@ def test_unsettled_notes_cannot_grow_without_bound(tmp_path: Path) -> None:
         )
 
     buffer = _pending(app)
-    assert len(buffer) == _MAX_PENDING_NOTES
+    assert len(buffer) == bound
     # The newest notes survive -- those are the ones a settle is about to ask for.
     assert ("res_24", "1") not in buffer
-    assert (f"res_{_MAX_PENDING_NOTES + 24}", "1") in buffer
+    assert (f"res_{bound + 24}", "1") in buffer
+
+
+def test_unsettled_note_bound_is_configuration(tmp_path: Path) -> None:
+    """The buffer cap is an operator knob, and the LIVE buffer honours it."""
+
+    from clio_agent.gact.native_delivery_outcome import _max_pending_notes, _pending
+
+    set_config("gact.ledger_retention.native_delivery_notes.max", 3)
+    assert _max_pending_notes() == 3
+
+    app = _app(tmp_path)
+    for index in range(10):
+        note_delivery_outcome(
+            app,
+            resource_id=f"res_{index}",
+            revision="1",
+            kind="image",
+            reason="resource_missing",
+        )
+
+    buffer = _pending(app)
+    assert len(buffer) == 3
+    assert set(buffer) == {("res_7", "1"), ("res_8", "1"), ("res_9", "1")}
+
+    # A nonsense value degrades to a usable floor rather than a zero-capacity
+    # buffer that silently drops every note it is handed.
+    set_config("gact.ledger_retention.native_delivery_notes.max", 0)
+    assert _max_pending_notes() == 1
