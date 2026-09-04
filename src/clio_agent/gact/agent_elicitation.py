@@ -104,13 +104,18 @@ behalf.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from clio_agent import conf
+from clio_agent.gact.agent_elicitation_reply import (
+    answer_field_text as _answer_field_text,
+)
+from clio_agent.gact.agent_elicitation_reply import (
+    parse_agent_reply as _parse_agent_reply,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from clio_agent.gact.elicitation_schema import FormTranslation
@@ -622,40 +627,20 @@ def _run_agent_answer_turn(
             f"agent-elicitation answer turn {handle.task_id} ended {result.status!r}: "
             f"{result.error_reason or 'no reason recorded'}"
         )
-    return str((result.result or {}).get("answer_excerpt", ""))
-
-
-def _parse_agent_reply(text: str) -> dict[str, Any] | None:
-    """Parse the agent's reply into ``{"answer": {...}}`` / ``{"decline": ...}``.
-
-    STRUCTURAL JSON parsing only -- never a keyword/phrase scrape of the
-    model's prose (superseding principle #1: clio never fabricates a decision
-    from a model's free text). The model was explicitly instructed to reply
-    with exactly one JSON object; this either parses that declared contract or
-    it does not. Tolerates one common, harmless model habit (a ```json fenced
-    block) but nothing fuzzier than that -- an unparseable/ambiguous reply is
-    :data:`None`, which the caller treats as a typed fallback, never a guess.
-    """
-
-    candidate = text.strip()
-    if candidate.startswith("```"):
-        lines = candidate.splitlines()
-        if lines:
-            lines = lines[1:]
-        if lines and lines[-1].strip().startswith("```"):
-            lines = lines[:-1]
-        candidate = "\n".join(lines).strip()
-    if not candidate:
-        return None
-    try:
-        parsed = json.loads(candidate)
-    except (ValueError, TypeError):
-        return None
-    if not isinstance(parsed, Mapping):
-        return None
-    if "answer" not in parsed and "decline" not in parsed:
-        return None
-    return dict(parsed)
+    payload = result.result or {}
+    answer_text = _answer_field_text(
+        app, result.child_session_id, str(payload.get("message_ref", ""))
+    )
+    if answer_text:
+        return answer_text
+    # STRUCTURAL fallback (never a silent regression): no ``answer``-field part
+    # was found on the child's final message (an unexpected module shape --
+    # e.g. a future answer-turn kind that never streams a text `answer` part
+    # at all). Fall back to the generic, bounded excerpt exactly as before
+    # this fix, so SOME text still reaches _parse_agent_reply's typed
+    # unparseable fallback rather than an empty string masquerading as "the
+    # model said nothing".
+    return str(payload.get("answer_excerpt", ""))
 
 
 def _fallback(app: Any, question: "UserQuestion", detail: str, *, extra: str = "") -> None:

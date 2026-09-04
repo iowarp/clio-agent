@@ -533,17 +533,14 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/agent_elicitation.py — this file gained call sites only, no
     # decision logic. Ratchets back if a future decomposition splits the
     # question-store lock machinery out of this file.
-    # NEW entry (C1-S7, #1309): crossed the flat 800 cap (750 -> 809) in the
-    # owner-gate-review fix round -- the DESIGN INVARIANT docstring grew the
-    # required F1 tool-lessness sentence + the F4 minLength/maxLength residual
-    # paragraph, and _spawn_agent_answer_turn was split out of
-    # _run_agent_answer_turn so F1's authority test can drive the real spawn
-    # step without a full answer-turn LM round trip. No new decision surface;
-    # the fix logic itself (session tool-allowlist enforcement) lives in the
-    # owner module gact/agents/resolution.py.
-    # +2 (809 -> 811): ``ruff format``'s own canonical line-wrapping of the
-    # touched functions above -- no additional logic.
-    "src/clio_agent/gact/agent_elicitation.py": 811,
+    # RATCHETED DOWN AND REMOVED (live-red fix, C1-S7, #1309, merged @73f2bacf):
+    # was 811. The live-red fix (agent_answer_unparseable: a CoT expert's
+    # genuinely-visible `reasoning` text was concatenating onto the declared
+    # JSON `answer` in the generic whole-message text join) split its reply-
+    # reading/parsing logic into the new owner module
+    # gact/agent_elicitation_reply.py (answer_field_text/parse_agent_reply),
+    # dropping this file to 796 lines -- back under DEFAULT_MAX_LINES, so its
+    # entry is removed rather than lowered (house precedent, see agent.py above).
     "src/clio_agent/gact/elicitation_bridge.py": 882,
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
