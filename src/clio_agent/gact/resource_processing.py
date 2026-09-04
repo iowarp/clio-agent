@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from clio_agent import conf
 from clio_agent.gact.resource_custody import ResourceRecord, ResourceStore
+from clio_agent.gact.resource_processing_bounds import processing_event_bounds
 
 _SAFE_DERIVATIVE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _ALLOWED_NODE_COLLECTIONS = {"pages", "tables", "pictures", "texts"}
@@ -90,6 +91,80 @@ class ResourceCustodyGone(RuntimeError):
     """Raised when processing state is written for a resource that was deleted."""
 
 
+class ResourceProcessingEvent(BaseModel):
+    """One bounded, durable event reported by a resource converter."""
+
+    sequence: int = Field(ge=0)
+    created_at: str
+    level: Literal["info", "warning", "error"] = "info"
+    progress: int = Field(default=0, ge=0, le=100)
+    progress_kind: Literal["unknown", "stage", "measured"] = "unknown"
+    stage: str = ""
+    message: str
+
+
+def bounded_processing_events(
+    value: Any,
+    *,
+    default_progress_kind: Literal["unknown", "stage", "measured"] = "unknown",
+) -> list[ResourceProcessingEvent]:
+    """Normalize an untrusted converter event list into a small public activity window."""
+
+    if not isinstance(value, list):
+        return []
+    bounds = processing_event_bounds()
+    normalized: list[ResourceProcessingEvent] = []
+    for fallback_sequence, raw in enumerate(value[-bounds.max_records :], start=1):
+        if not isinstance(raw, dict):
+            continue
+        message = " ".join(str(raw.get("message") or "").split())[: bounds.message_chars]
+        if not message:
+            continue
+        raw_sequence = raw.get("sequence")
+        sequence = (
+            int(raw_sequence)
+            if isinstance(raw_sequence, int | float) and int(raw_sequence) >= 0
+            else fallback_sequence
+        )
+        raw_created_at = raw.get("created_at")
+        if isinstance(raw_created_at, int | float):
+            created_at = datetime.fromtimestamp(float(raw_created_at), timezone.utc).isoformat()
+        elif isinstance(raw_created_at, str) and raw_created_at.strip():
+            created_at = raw_created_at.strip()[:64]
+        else:
+            created_at = _now_iso()
+        raw_progress = raw.get("progress")
+        progress = (
+            min(max(int(raw_progress), 0), 100) if isinstance(raw_progress, int | float) else 0
+        )
+        raw_progress_kind = raw.get("progress_kind")
+        progress_kind = (
+            raw_progress_kind
+            if raw_progress_kind in {"unknown", "stage", "measured"}
+            else default_progress_kind
+        )
+        raw_level = str(raw.get("level") or "info").lower()
+        level: Literal["info", "warning", "error"]
+        if raw_level == "warning":
+            level = "warning"
+        elif raw_level == "error":
+            level = "error"
+        else:
+            level = "info"
+        normalized.append(
+            ResourceProcessingEvent(
+                sequence=sequence,
+                created_at=created_at,
+                level=level,
+                progress=progress,
+                progress_kind=progress_kind,
+                stage=str(raw.get("stage") or "")[: bounds.stage_chars],
+                message=message,
+            )
+        )
+    return normalized
+
+
 class ResourceProcessingRecord(BaseModel):
     """Durable state for one resource revision's processing job."""
 
@@ -104,6 +179,13 @@ class ResourceProcessingRecord(BaseModel):
         "not_started"
     )
     progress: int = 0
+    # A converter may expose an actual measured fraction or only milestones.
+    # The document processor currently reports fixed phase markers, so clients
+    # must not present those values as measured completion percentages.
+    progress_kind: Literal["unknown", "stage", "measured"] = "unknown"
+    stage: str = ""
+    message: str = ""
+    events: list[ResourceProcessingEvent] = Field(default_factory=list)
     # Consecutive failed status polls. Reset on any answered poll; past
     # ``resources.status_poll_failure_threshold`` the record degrades to a typed
     # ``converter_status_unavailable`` failure instead of waiting forever.
@@ -113,6 +195,12 @@ class ResourceProcessingRecord(BaseModel):
     cancellation: dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=_now_iso)
     updated_at: str = Field(default_factory=_now_iso)
+
+
+def resource_processing_task_id(record: ResourceRecord) -> str:
+    """Return the stable local task identity for one conversion revision."""
+
+    return f"resource-processing:{record.id}:v{record.revision}"
 
 
 class ResourceProcessingStore:
@@ -211,6 +299,15 @@ class ResourceProcessingStore:
                     destination.write_text(content, encoding="utf-8")
                     entry["content_path"] = destination.name
                     entry["size"] = destination.stat().st_size
+                if not str(entry.get("name") or "").strip():
+                    source_stem = Path(record.name).stem or "document"
+                    suffix = {
+                        "html": ".html",
+                        "json": ".json",
+                        "markdown": ".md",
+                        "text": ".txt",
+                    }.get(str(entry.get("kind") or ""), "")
+                    entry["name"] = f"{source_stem}{suffix}"
                 persisted_entries.append(entry)
             saved_manifest = {
                 # Everything the processor said about the manifest as a WHOLE is
@@ -239,6 +336,8 @@ class ResourceProcessingStore:
                 update={
                     "state": "complete",
                     "progress": 100,
+                    "stage": "complete",
+                    "message": "Conversion complete",
                     "derivatives_available": True,
                     "updated_at": _now_iso(),
                 }
@@ -474,16 +573,49 @@ def _document_service_payload(payload: dict[str, Any]) -> dict[str, Any]:
     service, is what keeps the failure REASON reaching the trace instead of
     being replaced by a bare ``{"code": "failed"}`` placeholder.
 
-    Nothing else is rewritten. A completed result that does not carry a
-    derivative manifest is NOT patched up into one: it fails validation in
-    :meth:`ResourceProcessingStore.save_result` with a typed
-    ``processor_result_invalid``, which is the honest report.
+    The service's authoritative completed result exposes ``markdown`` beside
+    its canonical ``document``. CLIO stores named derivatives through a
+    manifest, so this adapter describes that exact markdown payload as the
+    ``markdown`` derivative. It does not infer content or repair arbitrary
+    converter results: missing markdown or canonical structure still fails
+    validation as ``processor_result_invalid``.
     """
 
     error = payload.get("error")
-    if isinstance(error, dict) and "failure" not in payload:
-        return {**payload, "failure": error}
-    return payload
+    adapted = (
+        {**payload, "failure": error}
+        if isinstance(error, dict) and "failure" not in payload
+        else payload
+    )
+    # clio-web-search uses fixed values to order conversion phases (Docling,
+    # export, GROBID). They are milestones, not measurements of work remaining.
+    adapted = {**adapted, "progress_kind": "stage"}
+    result = adapted.get("result")
+    if not isinstance(result, dict) or isinstance(result.get("derivatives"), dict):
+        return adapted
+    markdown = result.get("markdown")
+    document = result.get("document")
+    if not isinstance(markdown, str) or not isinstance(document, dict):
+        return adapted
+    if not isinstance(document.get("structure"), dict):
+        return adapted
+    return {
+        **adapted,
+        "result": {
+            **result,
+            "derivatives": {
+                "schema": "clio.resource-derivatives.v1",
+                "entries": [
+                    {
+                        "id": "markdown",
+                        "kind": "markdown",
+                        "media_type": "text/markdown",
+                        "content": markdown,
+                    }
+                ],
+            },
+        },
+    }
 
 
 class DocumentProcessorClient:
@@ -637,6 +769,7 @@ class DocumentProcessorClient:
 
 
 __all__ = [
+    "bounded_processing_events",
     "ConverterSubmission",
     "DocumentProcessorClient",
     "ResourceConverter",
@@ -644,5 +777,7 @@ __all__ = [
     "ResourceConverterUnavailable",
     "ResourceCustodyGone",
     "ResourceProcessingRecord",
+    "ResourceProcessingEvent",
+    "resource_processing_task_id",
     "ResourceProcessingStore",
 ]

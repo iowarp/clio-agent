@@ -27,7 +27,15 @@ import uuid
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
-from openai_codex import ApprovalMode, AsyncCodex, CodexConfig, CodexError, Sandbox
+from openai_codex import (
+    ApprovalMode,
+    AsyncCodex,
+    CodexConfig,
+    CodexError,
+    ImageInput,
+    Sandbox,
+    TextInput,
+)
 from openai_codex.types import ReasoningEffort, ReasoningSummary
 
 from clio_agent.providers._cli_provider import raise_model_rejected
@@ -374,6 +382,7 @@ class CodexSDKClient:
         self,
         *,
         prompt: str,
+        images: list[str] | None = None,
         model: str,
         cwd: str | None,
         effort: ReasoningEffort | None,
@@ -427,9 +436,12 @@ class CodexSDKClient:
                     ),
                     phase="thread start",
                 )
+                turn_input = (
+                    [TextInput(prompt), *(ImageInput(url) for url in images)] if images else prompt
+                )
                 turn = await _await_progress(
                     thread.turn(
-                        prompt,
+                        turn_input,
                         effort=effort,
                         summary=ReasoningSummary.model_validate("detailed"),
                     ),
@@ -528,6 +540,7 @@ def _note_provider_thinking(text: str, *, summary: bool) -> None:
 async def astream_sdk(
     *,
     prompt: str,
+    images: list[str] | None = None,
     model: str,
     cwd: str | None,
     effort: ReasoningEffort | None,
@@ -545,6 +558,7 @@ async def astream_sdk(
     try:
         async for event in _SDK_CLIENT.stream(
             prompt=prompt,
+            images=images,
             model=model,
             cwd=cwd,
             effort=effort,
@@ -644,6 +658,7 @@ async def astream_sdk(
 def run_sdk(
     *,
     prompt: str,
+    images: list[str] | None = None,
     model: str,
     cwd: str | None = None,
     effort: ReasoningEffort | None = None,
@@ -657,6 +672,7 @@ def run_sdk(
         final_usage: dict[str, int] = {}
         async for chunk in astream_sdk(
             prompt=prompt,
+            images=images,
             model=model,
             cwd=cwd,
             effort=effort,

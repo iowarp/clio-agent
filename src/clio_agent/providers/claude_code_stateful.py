@@ -159,6 +159,9 @@ class StatefulSend:
         call_id: The per-LM-call correlation id the transport reuses for
             ``emit_call_started`` so the ``provider.stateful`` audit row and the
             ``provider.call_started`` / ``raw_event`` TTFT markers join on ONE id.
+        message_batch: The exact full or delta message slice represented by
+            ``payload``. Native attachment extraction uses this slice so an
+            already-sent image/PDF is not duplicated on a later delta call.
     """
 
     payload: str
@@ -170,6 +173,7 @@ class StatefulSend:
     session_key: tuple[Any, ...] | None = None
     scope_token: str | None = None
     call_id: str = ""
+    message_batch: list[dict[str, Any]] | None = None
 
     def note_error(self) -> None:
         """Drop the poisoned session on a mid-flight send failure (no-op if not engaged)."""
@@ -225,6 +229,7 @@ def resolve_stateful_send(
             delta_chars=len(full_prompt),
             engaged=False,
             call_id=call_id,
+            message_batch=list(messages),
         )
 
     from clio_agent.providers.claude_code_options import thinking_key  # noqa: PLC0415
@@ -242,6 +247,7 @@ def resolve_stateful_send(
         session_key=session_key,
         scope_token=scope,
         call_id=call_id,
+        message_batch=list(plan.messages),
     )
     _audit_stateful(
         send, model=model, call_index=call_index, prefix_len=plan.prefix_len, total=len(messages)

@@ -17,6 +17,7 @@ import threading
 import uuid
 from typing import Any
 
+from clio_agent.providers.claude_code_multimodal import sdk_prompt
 from clio_agent.providers.claude_code_options import build_sdk_options, thinking_key
 
 logger = logging.getLogger(__name__)
@@ -70,7 +71,13 @@ class _SdkSession:
         await client.connect()
         return client
 
-    async def _aquery(self, prompt: str, *, model: str) -> tuple[str, dict[str, Any]]:
+    async def _aquery(
+        self,
+        prompt: str,
+        *,
+        native_blocks: list[dict[str, Any]] | None = None,
+        model: str,
+    ) -> tuple[str, dict[str, Any]]:
         from claude_agent_sdk import (  # noqa: PLC0415
             AssistantMessage,
             ResultMessage,
@@ -82,7 +89,8 @@ class _SdkSession:
             CLAUDE_CODE_REJECTION_STATUS,
         )
 
-        await self._client.query(prompt, session_id=uuid.uuid4().hex)
+        query_input: Any = sdk_prompt(prompt, native_blocks) if native_blocks else prompt
+        await self._client.query(query_input, session_id=uuid.uuid4().hex)
         parts: list[str] = []
         usage: dict[str, Any] = {}
         async for msg in self._client.receive_response():
@@ -125,6 +133,7 @@ class _SdkSession:
         self,
         *,
         prompt: str,
+        native_blocks: list[dict[str, Any]] | None = None,
         model: str,
         timeout: float | None,
         cwd: str | None,
@@ -152,7 +161,10 @@ class _SdkSession:
                 self._client = self._submit(self._aconnect(model, cwd, thinking), timeout=60.0)
                 self._model, self._cwd, self._thinking_key = model, cwd, tkey
             try:
-                text, usage = self._submit(self._aquery(prompt, model=model), timeout=timeout)
+                text, usage = self._submit(
+                    self._aquery(prompt, native_blocks=list(native_blocks or []), model=model),
+                    timeout=timeout,
+                )
             except TimeoutError as exc:
                 # A timed-out call leaves the connection mid-cycle; drop it so the
                 # next call reconnects cleanly.
@@ -204,6 +216,7 @@ class _SdkSessionPool:
         self,
         *,
         prompt: str,
+        native_blocks: list[dict[str, Any]] | None = None,
         model: str,
         timeout: float | None,
         cwd: str | None,
@@ -211,8 +224,20 @@ class _SdkSessionPool:
     ) -> tuple[str, dict[str, Any]]:
         """Complete one turn on the session keyed by ``(model, cwd, thinking)``."""
 
+        kwargs: dict[str, Any] = {
+            "prompt": prompt,
+            "model": model,
+            "timeout": timeout,
+            "cwd": cwd,
+            "thinking": thinking,
+        }
+        # Preserve the established pool/session call seam when this is a text
+        # turn.  Besides keeping third-party wrappers compatible, this makes
+        # "no attachment" observably identical to the pre-multimodal path.
+        if native_blocks:
+            kwargs["native_blocks"] = native_blocks
         return self._session_for(model, cwd, thinking_key(thinking)).complete(
-            prompt=prompt, model=model, timeout=timeout, cwd=cwd, thinking=thinking
+            **kwargs,
         )
 
     def close(self) -> None:
@@ -232,6 +257,7 @@ atexit.register(_SDK_SESSION_POOL.close)
 def _run_sdk(
     *,
     prompt: str,
+    native_blocks: list[dict[str, Any]] | None = None,
     model: str,
     timeout: float | None = 180.0,
     cwd: str | None = None,
@@ -244,6 +270,13 @@ def _run_sdk(
     concurrently without reconnect thrash. Returns ``(text, usage)`` in the same
     shape as the exec transport.
     """
-    return _SDK_SESSION_POOL.complete(
-        prompt=prompt, model=model, timeout=timeout, cwd=cwd, thinking=thinking
-    )
+    kwargs: dict[str, Any] = {
+        "prompt": prompt,
+        "model": model,
+        "timeout": timeout,
+        "cwd": cwd,
+        "thinking": thinking,
+    }
+    if native_blocks:
+        kwargs["native_blocks"] = list(native_blocks)
+    return _SDK_SESSION_POOL.complete(**kwargs)

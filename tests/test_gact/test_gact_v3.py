@@ -250,6 +250,7 @@ def test_v3_session_and_transcript_are_normalized(tmp_path: Path) -> None:
         },
     )
     app.state.messages[session.id] = [message]
+    app.state.sessions.update(session.id, message_count=1)
     client = TestClient(app)
 
     sessions = client.get(
@@ -261,6 +262,7 @@ def test_v3_session_and_transcript_are_normalized(tmp_path: Path) -> None:
     assert transcript["cursor"].isdigit()
     assert session_row["state"] == "completed"
     assert session_row["agent_id"] == "main"
+    assert session_row["message_count"] == 1
     projected = transcript["messages"][0]
     assert [block["type"] for block in projected["blocks"]] == ["reasoning", "text", "tool"]
     assert projected["blocks"][0] == {
@@ -712,5 +714,8 @@ def test_v3_normalizes_question_permission_and_child_agent_events() -> None:
         "title": "data_expert #2",
         "state": "running",
         "agent_id": "data_expert",
+        # Where this run sits in the spawn tree. With no live registry bound the
+        # chain is the task itself -- never fabricated ancestors.
+        "task_path": ["task_1"],
         "child_session_id": "sess_child",
     }

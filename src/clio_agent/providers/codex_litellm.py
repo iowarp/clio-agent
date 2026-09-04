@@ -52,6 +52,12 @@ from clio_agent.providers.codex_stream import (
     run_sdk,
     usage_chunk,
 )
+from clio_agent.providers.native_attachment_bounds import (
+    NativeAttachmentTooLargeError,
+    base64_byte_length,
+    check_block_bytes,
+    check_total_bytes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +108,83 @@ def _messages_to_codex_prompt(messages: list[dict[str, Any]]) -> str:
         unsupported_multimodal_exc=CodexUnsupportedMultimodalError,
         transport_label="Codex",
     )
+
+
+def _data_url_bytes(value: str) -> int:
+    """Decoded byte length of a base64 data URL, or ``0`` for a non-data URL.
+
+    Arithmetic only — an oversized image is refused without ever being decoded.
+    A remote URL is not CLIO's payload to size, so it contributes nothing here.
+    """
+
+    if not value.startswith("data:"):
+        return 0
+    _header, separator, payload = value.partition(",")
+    if not separator:
+        return 0
+    return base64_byte_length(payload)
+
+
+def _check_image_bytes(value: str) -> None:
+    """Refuse one oversized Codex image before it is expanded into a request.
+
+    Shares the bounds module with the Claude attach path so the two providers
+    cannot drift; the SDK would otherwise accept the value, expand it, and fail
+    the round-trip with a raw transport error instead of an explainable refusal.
+    """
+
+    try:
+        check_block_bytes("image", _data_url_bytes(value))
+    except NativeAttachmentTooLargeError as exc:
+        raise CodexUnsupportedMultimodalError(str(exc)) from exc
+
+
+def _check_total_image_bytes(values: list[str]) -> None:
+    """Refuse a request whose Codex images sum past the aggregate ceiling."""
+
+    try:
+        check_total_bytes(sum(_data_url_bytes(value) for value in values))
+    except NativeAttachmentTooLargeError as exc:
+        raise CodexUnsupportedMultimodalError(str(exc)) from exc
+
+
+def _messages_to_codex_input(messages: list[dict[str, Any]]) -> tuple[str, list[str]]:
+    """Return the hardened transcript plus native SDK image inputs.
+
+    The Codex SDK accepts data URLs as typed ``ImageInput`` values.  Keep those
+    values out of the serialized transcript and audit log while preserving all
+    text and role boundaries through the existing hardened serializer.
+    """
+
+    text_messages: list[dict[str, Any]] = []
+    image_urls: list[str] = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            text_messages.append(message)
+            continue
+        text_parts: list[Any] = []
+        for part in content:
+            if not isinstance(part, dict):
+                text_parts.append(part)
+                continue
+            part_type = str(part.get("type") or "").strip().lower()
+            if part_type not in {"image", "image_url", "input_image"} and "image_url" not in part:
+                text_parts.append(part)
+                continue
+            image_value = part.get("image_url") or part.get("url")
+            if isinstance(image_value, dict):
+                image_value = image_value.get("url")
+            if not isinstance(image_value, str) or not image_value.strip():
+                raise CodexUnsupportedMultimodalError(
+                    "Codex SDK image message parts require a non-empty URL"
+                )
+            resolved = image_value.strip()
+            _check_image_bytes(resolved)
+            image_urls.append(resolved)
+        text_messages.append({**message, "content": text_parts})
+    _check_total_image_bytes(image_urls)
+    return _messages_to_codex_prompt(text_messages), image_urls
 
 
 def _build_model_response(
@@ -193,8 +276,10 @@ class CodexLLM(CustomLLM):
         params = optional_params or {}
         clean_model = model.removeprefix("codex/").removeprefix("cdx-")
         self._resolve_transport(params)
+        prompt, images = _messages_to_codex_input(messages)
         text, usage = run_sdk(
-            prompt=_messages_to_codex_prompt(messages),
+            prompt=prompt,
+            images=images,
             model=clean_model,
             cwd=_resolve_codex_cwd(params),
             effort=_resolve_effort(params),
@@ -227,8 +312,10 @@ class CodexLLM(CustomLLM):
         self._resolve_transport(params)
         parts: list[str] = []
         usage: dict[str, int] = {}
+        prompt, images = _messages_to_codex_input(messages)
         async for chunk in astream_sdk(
-            prompt=_messages_to_codex_prompt(messages),
+            prompt=prompt,
+            images=images,
             model=clean_model,
             cwd=_resolve_codex_cwd(params),
             effort=_resolve_effort(params),
@@ -275,8 +362,10 @@ class CodexLLM(CustomLLM):
         params = optional_params or {}
         clean_model = model.removeprefix("codex/").removeprefix("cdx-")
         self._resolve_transport(params)
+        prompt, images = _messages_to_codex_input(messages)
         text, usage = run_sdk(
-            prompt=_messages_to_codex_prompt(messages),
+            prompt=prompt,
+            images=images,
             model=clean_model,
             cwd=_resolve_codex_cwd(params),
             effort=_resolve_effort(params),
@@ -321,8 +410,10 @@ class CodexLLM(CustomLLM):
         params = optional_params or {}
         clean_model = model.removeprefix("codex/").removeprefix("cdx-")
         self._resolve_transport(params)
+        prompt, images = _messages_to_codex_input(messages)
         async for chunk in astream_sdk(
-            prompt=_messages_to_codex_prompt(messages),
+            prompt=prompt,
+            images=images,
             model=clean_model,
             cwd=_resolve_codex_cwd(params),
             effort=_resolve_effort(params),

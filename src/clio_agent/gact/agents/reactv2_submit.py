@@ -2,12 +2,57 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import dspy
 from dspy.adapters.types.tool import ToolCalls
 
 REACT_FORCED_SUBMIT_REJECTED = "react_forced_submit_rejected"
+
+
+def adapter_tool_intent_from_exception(
+    exc: BaseException,
+    *,
+    allowed_tools: Iterable[str],
+) -> dict[str, Any] | None:
+    """Recover a typed tool intent emitted where DSPy expected final fields."""
+
+    from clio_agent.gact.app import _json_objects_from_text  # noqa: PLC0415
+
+    allowed = {str(name).strip() for name in allowed_tools if str(name).strip()}
+    message = str(exc)
+    if not allowed or "tool_name" not in message or "tool_args" not in message:
+        return None
+    for obj in _json_objects_from_text(message):
+        if not isinstance(obj, Mapping):
+            continue
+        tool_name = str(obj.get("tool_name") or obj.get("name") or "").strip()
+        if tool_name not in allowed:
+            continue
+        tool_args = obj.get("tool_args") or obj.get("args") or obj.get("arguments") or {}
+        return {
+            "tool_name": tool_name,
+            "tool_args": dict(tool_args) if isinstance(tool_args, Mapping) else {},
+        }
+    return None
+
+
+def call_recovered_dspy_tool(tool: Any, args: Mapping[str, Any]) -> Any:
+    """Call a DSPy tool recovered from malformed ReAct adapter output."""
+
+    if callable(tool):
+        return tool(**dict(args))
+    func = getattr(tool, "func", None)
+    if callable(func):
+        return func(**dict(args))
+    raise TypeError(f"tool is not callable: {getattr(tool, 'name', '<unknown>')}")
+
+
+def tool_names(tools: Iterable[Any]) -> list[str]:
+    """Return stable names from DSPy tool-like objects."""
+
+    return [name for tool in tools if (name := str(getattr(tool, "name", "") or "").strip())]
 
 
 def _forced_submit_error_info(break_reason: str) -> dict[str, Any] | None:
@@ -66,6 +111,35 @@ def record_submit_audit(
         duplicate_reason=reason,
         head=text[:120],
         full_text=text[:12000],
+    )
+    if reason != "react_submit_repair_attempted":
+        return
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415
+    from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
+        _emit_semantic_event,
+        _llm_provider_payload,
+    )
+
+    app = _ctx.active_app()
+    session_id = _ctx.active_session_id()
+    if app is None or not session_id:
+        return
+    trajectory = _ctx.active_trajectory() or {}
+    termination = str(trajectory.get("termination_reason") or "")
+    repair_reason = "no_tool_call" if termination == "empty_tool_calls" else "parse_repair"
+    provider = _llm_provider_payload(app, agent_id)
+    _emit_semantic_event(
+        app,
+        session_id,
+        "agent.submit_repair.attempted",
+        turn_id=_ctx.active_turn_id(),
+        trace_id=_ctx.active_trace_id(),
+        status="running",
+        summary="Agent output required a bounded submit re-ask.",
+        actor={"agent_id": agent_id},
+        provider=provider,
+        payload={"reason": repair_reason},
+        detail_level="off",
     )
 
 

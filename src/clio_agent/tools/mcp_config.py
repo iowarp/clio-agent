@@ -63,7 +63,6 @@ __all__ = [
     "load_mcp_servers",
     "transport_for",
     "transport_from_spec",
-    "redact_mcp_spec",
     "MCPTransportError",
     "unreadable_mcp_yaml_snapshot",
 ]
@@ -168,6 +167,10 @@ class MCPServerSpec:
     probe_timeout_retries: int | None = None
     source: str = ""
     validation_errors: tuple[str, ...] = ()
+    #: Pre-expansion text for the three fields ``expand_env`` rewrites
+    #: (``command``/``args``/``url``); ``tools.mcp_redaction`` serves it in their
+    #: place. Empty on a spec built without expansion.
+    declared: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @property
     def usable(self) -> bool:
@@ -253,22 +256,6 @@ def _oauth_config_from_value(value: Any) -> MCPAuthConfig | None:
     )
 
 
-def redact_mcp_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
-    """Return an error/log-safe MCP spec with all client credentials removed."""
-    redacted = dict(spec)
-    headers = redacted.get("headers")
-    if isinstance(headers, Mapping):
-        redacted["headers"] = {str(key): "<redacted>" for key in headers}
-    if redacted.get("auth") is not None:
-        redacted["auth"] = "<redacted>"
-    # env values are the common credential carrier for stdio servers
-    # (GITHUB_TOKEN, API keys); redact values, keep the variable names.
-    env = redacted.get("env")
-    if isinstance(env, Mapping):
-        redacted["env"] = {str(key): "<redacted>" for key in env}
-    return redacted
-
-
 def _spec_from_string(
     name: str, value: str, *, source: str, env: Mapping[str, str] | None
 ) -> MCPServerSpec:
@@ -281,8 +268,11 @@ def _spec_from_string(
             name=name, transport="stdio", source=source, validation_errors=(str(exc),)
         )
 
+    declared_parts = shlex.split(value.strip())  # pre-expansion, split the SAME way
     if text.startswith(_URL_PREFIXES):
-        return MCPServerSpec(name=name, transport="http", url=text, source=source)
+        return MCPServerSpec(
+            name=name, transport="http", url=text, source=source, declared={"url": value.strip()}
+        )
 
     parts = shlex.split(text)
     if not parts:
@@ -296,6 +286,10 @@ def _spec_from_string(
         command=parts[0],
         args=tuple(parts[1:]),
         source=source,
+        declared={
+            "command": declared_parts[0] if declared_parts else "",
+            "args": tuple(declared_parts[1:]),
+        },
     )
 
 
@@ -320,8 +314,10 @@ def _spec_from_mapping(
     url = ""
     headers: dict[str, str] = {}
     auth: MCPAuthConfig | None = None
+    declared_text: dict[str, Any] = {}  # pre-expansion text, for redaction
     try:
         if transport == "stdio":
+            declared_text["command"] = str(entry.get("command", "")).strip()
             command = expand_env(str(entry.get("command", "")), env=env).strip()
             if not command:
                 errors.append("stdio MCP server requires a 'command'")
@@ -331,6 +327,7 @@ def _spec_from_mapping(
             elif not isinstance(raw_args, Sequence):
                 errors.append("'args' must be a list or string")
                 raw_args = []
+            declared_text["args"] = tuple(str(value) for value in raw_args)
             args = _expand_seq(raw_args, env=env)
             raw_env = entry.get("env") or {}
             if not isinstance(raw_env, Mapping):
@@ -338,6 +335,7 @@ def _spec_from_mapping(
                 raw_env = {}
             env_map = _expand_map(raw_env, env=env)
         else:
+            declared_text["url"] = str(entry.get("url", "")).strip()
             url = expand_env(str(entry.get("url", "")), env=env).strip()
             if not url:
                 errors.append("http MCP server requires a 'url'")
@@ -370,6 +368,7 @@ def _spec_from_mapping(
         probe_timeout_retries=probe_timeout_retries,
         source=source,
         validation_errors=tuple(errors),
+        declared=declared_text,
     )
 
 

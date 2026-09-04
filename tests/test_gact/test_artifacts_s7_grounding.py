@@ -389,8 +389,16 @@ def test_unknown_session_grounds_nothing(tmp_path: Path) -> None:
 
 
 class _FakeTask:
-    def __init__(self, child_session_id: str) -> None:
+    """The two ``AgentTask`` fields the descendant walk reads.
+
+    ``task_id`` is not optional on the real record, and the walk uses it to tell
+    a DELEGATED child from a session-store fork -- so a stub without one would be
+    attributed as a fork and prove the wrong thing.
+    """
+
+    def __init__(self, child_session_id: str, task_id: str = "") -> None:
         self.child_session_id = child_session_id
+        self.task_id = task_id or f"task_{child_session_id}"
 
 
 class _FakeTaskRegistry:

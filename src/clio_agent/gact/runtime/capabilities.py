@@ -125,6 +125,23 @@ _STREAM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
         "recovery_actions": ["continue_without_live_streaming", "reconfigure"],
         "description": "The configured provider does not expose a live streaming contract.",
     },
+    "native_model_inputs_dropped": {
+        "category": "capability_gap",
+        # The turn still streamed live; what degraded is the INPUT, not the
+        # delivery channel -- so this reason is honest about both.
+        "synthetic_posthoc": False,
+        "live_streaming": True,
+        "recovery_actions": [
+            "select_an_agent_whose_forward_accepts_images",
+            "remove_the_attachment",
+            "retry",
+        ],
+        "description": (
+            "The turn carried native image/PDF model inputs but the executing agent's "
+            "forward accepts no such parameter, so they were not delivered to the model. "
+            "The text still streamed; the attachment did not ride the request."
+        ),
+    },
     "sync_execution_path": {
         "category": "non_streamed_execution",
         "synthetic_posthoc": True,

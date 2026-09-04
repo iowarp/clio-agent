@@ -18,10 +18,10 @@ ATTACHMENT_PREAMBLE = (
     "private custody paths in the response."
 )
 
-# The tool an agent uses to inspect a conversion that has not produced
+# The tool an agent uses to await a conversion that has not produced
 # derivatives yet. A constant, not per-record state: it is the same tool for
 # every resource, so carrying it on ResourceProcessingRecord only invited drift.
-PROCESSING_QUERY_TOOL = "workspace_resource_inspect"
+PROCESSING_QUERY_TOOL = "workspace_resource_wait"
 
 
 def _conversion_warnings(manifest: Mapping | None) -> str:
@@ -59,6 +59,16 @@ def _derivative_suffix(manifest: Mapping | None) -> str:
     ]
     suffix = f" Available derivatives: {', '.join(derivative_ids)}." if derivative_ids else ""
     return suffix + _conversion_warnings(manifest)
+
+
+def _is_native_delivery(part: object) -> bool:
+    """Return whether delivery planning attached the original to this model input."""
+
+    metadata = getattr(part, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return False
+    delivery = metadata.get("delivery")
+    return isinstance(delivery, Mapping) and delivery.get("representation") == "native"
 
 
 def describe_resource_parts(app: "FastAPI", sid: str, parts: list) -> list[str]:
@@ -100,6 +110,18 @@ def describe_resource_parts(app: "FastAPI", sid: str, parts: list) -> list[str]:
             f"revision={record.revision}) is available through the bounded workspace-resource "
             "tools. Custody paths are private and must not be passed to filesystem tools."
         )
+        if _is_native_delivery(part):
+            # State-meaning grounding only: say WHAT is true of this attachment.
+            # The block used to continue here with "use it now" / "Do not inspect
+            # or wait for conversion" -- a behavioural prohibition that also
+            # deleted every conversion/derivative sentence below, so a model
+            # holding the original could no longer learn that a structured
+            # conversion existed, was still running, or had failed. Telling the
+            # model what a state MEANS is grounding; forbidding it a tool is not.
+            header += (
+                " The original attachment is also included directly in this model input, so its "
+                "content is readable here without any tool call."
+            )
         manifest = app.state.resource_processing_store.manifest(record)
         if processing.derivatives_available and manifest is not None:
             suffix = _derivative_suffix(manifest)
@@ -125,13 +147,17 @@ def describe_resource_parts(app: "FastAPI", sid: str, parts: list) -> list[str]:
             )
             continue
         if processing.state in {"submitted", "processing"}:
-            task_id = processing.job_id or (f"resource-processing:{record.id}:v{record.revision}")
+            from clio_agent.gact.resource_processing import (  # noqa: PLC0415
+                resource_processing_task_id,
+            )
+
+            task_id = resource_processing_task_id(record)
             state_label = processing.state if processing.job_id else "queued"
             blocks.append(
                 header
                 + f" Structured conversion is still {state_label} as task "
-                + f"{task_id!r}; query resource {record.id!r} with "
-                + f"{PROCESSING_QUERY_TOOL} before reading non-text content."
+                + f"{task_id!r}; wait once with {PROCESSING_QUERY_TOOL} using that task id "
+                + "before reading non-text content. Do not repeatedly poll inspection."
             )
             continue
         if processing.state == "complete":

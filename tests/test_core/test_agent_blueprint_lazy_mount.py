@@ -511,13 +511,17 @@ class TestActiveToolExecutorBlueprintScoping:
             )(),
         )
         from clio_agent.tools.execution import tool_workspace_context
+        from clio_agent.tools.workspace_root import canonical_workspace_root
 
+        # The registry is keyed by canonical_workspace_root, not by however the
+        # caller spelled the path -- so a Windows str(tmp_path) (backslashes) is
+        # NOT the key the runtime filed the executor under.
         root = str(tmp_path)
         with tool_workspace_context(root), tool_blueprint_context("pack-a"):
             executor = agent._active_tool_executor()
         lock, executors, _leases = agent._workspace_state()
         with lock:
-            gateway_key = executors.get(root)
+            gateway_key = executors.get(canonical_workspace_root(root))
         assert gateway_key is executor
         assert getattr(executor, "_clio_mounted_blueprint_id", None) == "pack-a"
 
@@ -655,6 +659,7 @@ class TestActiveToolExecutorBlueprintScoping:
             )(),
         )
         from clio_agent.tools.execution import tool_workspace_context
+        from clio_agent.tools.workspace_root import canonical_workspace_root
 
         root = str(tmp_path)
         with tool_workspace_context(root), tool_blueprint_context("pack-a"):
@@ -665,7 +670,7 @@ class TestActiveToolExecutorBlueprintScoping:
 
         assert second is first, "a leased root must keep serving its resident fleet"
         assert getattr(first, "closed", False) is False
-        assert root in agent._workspace_reaper._pending_restarts, (
+        assert canonical_workspace_root(root) in agent._workspace_reaper._pending_restarts, (
             "the invalidation must be flagged for the reaper's idle pass, not dropped"
         )
 

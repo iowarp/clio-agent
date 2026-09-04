@@ -1,35 +1,15 @@
 """Session lifecycle + ask-user/retry routes for the GACT server (#714).
 
-This concern owns the largest GACT surface: the ``/v1/sessions`` lifecycle and the
-session-scoped ask-user / retry protocol.
+This concern owns the ``/v1/sessions`` lifecycle and scoped ask/retry protocol:
 
-* CRUD -- ``POST/GET/PATCH/DELETE /v1/sessions`` (+ ``GET /v1/sessions/{sid}``):
-  create against the workspace store, list with the archive partition, patch the
-  mutable mode/title fields, and permission-gated delete (which also drops the
-  session's messages, context-file ledger and hot ARC footprint).
-* Rollback -- ``POST /v1/sessions/{sid}/undo`` + ``.../rewind``: drop the trailing
-  ``count`` messages (undo) or everything past a target message (rewind), both
-  permission-gated and republished as ``message.deleted`` + ``session.{op}``.
-* Branch/transfer -- ``POST /v1/sessions/{sid}/fork`` (copy a session + its
-  messages into a fresh child), ``GET /v1/sessions/{sid}/export`` +
-  ``POST /v1/sessions/import`` (portable JSON round-trip).
-* Compaction -- ``POST /v1/sessions/{sid}/compact``: summarise the transcript
-  through the live agent into an evidence-preserving compact memory, archive the
-  originals, store the summary in ARC, and replace the visible ledger.
-* Cancel -- ``POST /v1/sessions/{sid}/cancel``: best-effort cooperative cancel of
-  an in-flight turn (flip the flag, signal the event, schedule a grace-period task
-  cancel) + a ``session.status_changed`` event.
-* Ask-user -- ``GET/POST /v1/sessions/{sid}/questions`` + ``.../answer`` +
-  ``.../cancel``: the orchestrator's user-question ledger; answering a
-  ``resume_on_answer`` question stages a background resume turn.
-* Retry -- ``GET /v1/sessions/{sid}/attempts`` +
-  ``POST /v1/sessions/{sid}/messages/{message_id}/retry``: record/execute a turn
-  retry, optionally kicking a background turn off the source user message.
-
-Fork, question-answer and retry routes use ``deps.start_background_user_turn``.
-This module loads only leaf packages and never :mod:`clio_agent.gact.app`; shared
-cross-concern helpers (ledger replace, ARC release, model-ref errors, evidence index,
-resume text) travel on :class:`GactDeps`; private rollback and retry helpers stay here.
+* CRUD creates, lists, patches, and permission-gates session deletion.
+* Undo/rewind drop trailing messages and publish their lifecycle events.
+* Fork/import/export provide branching and portable JSON transfer.
+* Compaction replaces the visible transcript with evidence-preserving memory.
+* Cancel cooperatively stops an in-flight turn and publishes its status.
+* Ask-user and retry own question resumption and recorded source-message attempts.
+Fork, question-answer, and retry share ``deps.start_background_user_turn``. Shared
+cross-concern helpers travel on :class:`GactDeps`; private helpers stay here.
 """
 
 from __future__ import annotations
@@ -45,17 +25,24 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact import context_reference_retry
 from clio_agent.gact.autonomous_loop import stop_session_loop
 from clio_agent.gact.events import Event
 from clio_agent.gact.goal import stop_session_goal
-from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
 from clio_agent.gact.messaging import raise_on_reserved_metadata
+from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.protocol_v3 import project_for_request, session_to_v3
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
 from clio_agent.gact.routes.compaction import build_compact_summary_message
 from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui, split_preserved_a2ui
 from clio_agent.gact.routes.session_cancellation import cancel_session_state
+from clio_agent.gact.routes.session_question_helpers import (
+    normalize_question_options,
+    pending_user_questions,
+    question_already_resolved,
+    question_not_found,
+)
 from clio_agent.gact.routes.session_rows import filter_session_rows, rows_to_wire
 from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.constants import _installed_clio_agent_version
@@ -67,6 +54,7 @@ from clio_agent.gact.runtime.globals import (
     _new_question_id,
 )
 from clio_agent.gact.runtime.retention import enforce_dict_bound
+from clio_agent.gact.session_descendants import purge_session_tasks
 from clio_agent.gact.types import (
     AnswerUserQuestionRequest,
     CreateSessionRequest,
@@ -81,9 +69,10 @@ from clio_agent.gact.types import (
     TurnAttempt,
     UpdateSessionRequest,
     UserQuestion,
-    UserQuestionOption,
     Workspace,
 )
+from clio_agent.gact.user_question_ledger import record_user_question
+from clio_agent.gact.user_question_resume import resume_answered_question
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -328,6 +317,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         deps.delete_session_messages(app, sid)
         deps.delete_session_context_files(app, sid)
         deps.release_session_arc(app, sid)
+        purge_session_tasks(app, sid)
         return Response(status_code=204)
 
     # ---- Rollback (undo / rewind) -----------------------------------
@@ -1014,40 +1004,6 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     # ---- Ask-user and retry protocol (#333) --------------------------
 
-    def _question_not_found(sid: str, question_id: str) -> HTTPException:
-        return HTTPException(
-            status_code=404,
-            detail=ErrorEnvelope(
-                error=ErrorInfo(
-                    error="not_found",
-                    message=f"user question not found: {question_id}",
-                    details={"session_id": sid, "question_id": question_id},
-                    recoverable=False,
-                )
-            ).model_dump(exclude_none=True),
-        )
-
-    def _question_already_resolved(sid: str, question_id: str) -> HTTPException:
-        # 409: question left ``pending`` before this write (concurrent answer/cancel/timeout).
-        return HTTPException(
-            status_code=409,
-            detail=ErrorEnvelope(
-                error=ErrorInfo(
-                    error="bad_request",
-                    message="user question is already resolved",
-                    details={"session_id": sid, "question_id": question_id},
-                    recoverable=False,
-                )
-            ).model_dump(exclude_none=True),
-        )
-
-    def _pending_user_questions(sid: str) -> list[UserQuestion]:
-        return [
-            q
-            for q in app.state.user_questions.values()
-            if q.session_id == sid and q.status == "pending"
-        ]
-
     def _set_session_status(
         sid: str,
         status: str,
@@ -1072,16 +1028,6 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 },
             )
         )
-
-    def _normalize_question_options(
-        req: CreateUserQuestionRequest,
-    ) -> list[UserQuestionOption]:
-        if req.kind == "confirmation" and not req.options:
-            return [
-                UserQuestionOption(label="Yes", value="yes", description=""),
-                UserQuestionOption(label="No", value="no", description=""),
-            ]
-        return list(req.options)
 
     def _message_text(message: Message) -> str:
         return "\n".join(
@@ -1141,9 +1087,12 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         row = UserQuestion(
             id=_new_question_id(),
             session_id=sid,
+            owner_session_id=sid,
+            attended_session_id=attended_session_id(app, sid),
             prompt=prompt,
             kind=req.kind,
-            options=_normalize_question_options(req),
+            options=normalize_question_options(req),
+            allow_freeform=req.allow_freeform,
             created_at=now_iso,
             updated_at=now_iso,
             expires_at=req.expires_at,
@@ -1152,7 +1101,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             attempt_id=req.attempt_id,
             metadata=req.metadata,
         )
-        app.state.user_questions[row.id] = row
+        record_user_question(app, row)
         _set_session_status(
             sid,
             "waiting_user",
@@ -1178,9 +1127,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             raise _session_not_found(sid)
         row = app.state.user_questions.get(question_id)
         if row is None or row.session_id != sid:
-            raise _question_not_found(sid, question_id)
+            raise question_not_found(sid, question_id)
         if row.status != "pending":
-            raise _question_already_resolved(sid, question_id)
+            raise question_already_resolved(sid, question_id)
         allowed_values = {o.value or o.label for o in row.options}
         selected = [s for s in req.selected_options if s]
         if allowed_values and selected and any(s not in allowed_values for s in selected):
@@ -1217,86 +1166,18 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             answer_metadata=req.metadata,
         )
         if updated is None:
-            raise _question_already_resolved(sid, question_id)
+            raise question_already_resolved(sid, question_id)
         # P1.4 #1066 (plan-exit) + P1.3 #1113 (elicitation) dispatch non-default resolution.
         if resolve_answered_question(app, deps, sid, updated):
             return updated
-        if not _pending_user_questions(sid):
-            sess = app.state.sessions.get(sid)
-            should_resume = bool(updated.metadata.get("resume_on_answer")) and sess is not None
-            resume_metadata = {
-                "ask_user_question_id": updated.id,
-                "ask_user_prompt": updated.prompt,
-                "ask_user_answer": updated.answer,
-                "ask_user_selected_options": updated.selected_options,
-                "ask_user_source_turn_id": updated.turn_id,
-                "ask_user_attempt_id": updated.attempt_id,
-                "ask_user_caller": updated.metadata.get("caller", {}),
-                "ask_user_resume": True,
-            }
-            # #1036 (was #948 S1): the busy gate covers the RESUME producer too.
-            # Staging the resume while a turn is in flight would orphan its slot, so
-            # fold it into the loop inbox as a user_message steer (never drop — that
-            # would be a silent-fallback bug): the running turn drains it into a
-            # ``### steer`` block, or the idle hook (drain_inbox_to_new_turn)
-            # re-drives it into ONE new turn. The ask_user_* metadata rides the event
-            # so the re-drive stages a proper resume turn. A typed event hits the API.
-            if should_resume and app.state.agent is not None and app.state.turn_runner.busy(sid):
-                enqueue_user_steer(
-                    app,
-                    sid,
-                    deps.ask_user_resume_text(updated),
-                    {**resume_metadata, "question_id": updated.id},
-                )
-                app.state.sessions.update(sid, metadata_patch={"pending_user_question_id": ""})
-                app.state.bus.publish(
-                    Event(
-                        type="user_question.resume_deferred",
-                        session_id=sid,
-                        payload={
-                            "question_id": updated.id,
-                            "session_id": sid,
-                            "reason": "session_busy",
-                        },
-                    )
-                )
-                logger.info(
-                    "user_question resume deferred reason=session_busy "
-                    "session_id=%s question_id=%s",
-                    sid,
-                    question_id,
-                )
-            elif should_resume and app.state.agent is not None:
-                app.state.sessions.update(
-                    sid,
-                    metadata_patch={"pending_user_question_id": ""},
-                )
-                resumed_msg = deps.start_background_user_turn(
-                    sid,
-                    sess,
-                    deps.ask_user_resume_text(updated),
-                    metadata=resume_metadata,
-                    prev_status=sess.status if sess is not None else "waiting_user",
-                )
-                app.state.bus.publish(
-                    Event(
-                        type="user_question.resumed",
-                        session_id=sid,
-                        payload={
-                            "question_id": updated.id,
-                            "session_id": sid,
-                            "queued_user_message_id": resumed_msg.id,
-                            "source_turn_id": updated.turn_id,
-                        },
-                    )
-                )
-            else:
-                _set_session_status(
-                    sid,
-                    "idle",
-                    prev_status=sess.status if sess is not None else "waiting_user",
-                    metadata_patch={"pending_user_question_id": ""},
-                )
+        resume_answered_question(
+            app,
+            deps,
+            sid,
+            updated,
+            has_pending=bool(pending_user_questions(app, sid)),
+            set_session_status=_set_session_status,
+        )
         app.state.bus.publish(
             Event(
                 type="user_question.answered",
@@ -1312,17 +1193,17 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             raise _session_not_found(sid)
         row = app.state.user_questions.get(question_id)
         if row is None or row.session_id != sid:
-            raise _question_not_found(sid, question_id)
+            raise question_not_found(sid, question_id)
         # #1113 finding 6: atomic pending->cancelled (first-wins); if a concurrent
         # answer/timeout already terminalized it, keep the existing row (idempotent).
-        from clio_agent.gact.elicitation_bridge import (  # noqa: PLC0415
-            claim_question_transition,
+        from clio_agent.gact.elicitation_bridge import claim_question_transition  # noqa: PLC0415
+        from clio_agent.gact.elicitation_forwarding import (  # noqa: PLC0415
             resolve_cancelled_question,
         )
 
         row = claim_question_transition(app, question_id, "cancelled") or row
         # P1.3 #1113: cancelled elicitation/forwarded-mirror resolves down, not to idle.
-        if not resolve_cancelled_question(app, row) and not _pending_user_questions(sid):
+        if not resolve_cancelled_question(app, row) and not pending_user_questions(app, sid):
             sess = app.state.sessions.get(sid)
             _set_session_status(
                 sid,
@@ -1338,6 +1219,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         )
         return row
+
+    app.state.answer_user_question = answer_user_question
+    app.state.cancel_user_question = cancel_user_question
 
     @app.get("/v1/sessions/{sid}/attempts")
     async def list_turn_attempts(sid: str) -> dict[str, Any]:
@@ -1429,7 +1313,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                         )
                     ).model_dump(exclude_none=True),
                 )
-            if source_user is None or not _message_text(source_user):
+            if not context_reference_retry.retryable_user_message(source_user):
                 execution_blocked_reason = "source_user_message_not_found"
             elif model_changed:
                 envelope = deps.unsupported_model_ref_error(
@@ -1462,6 +1346,11 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         # instead of staging; the client retries once the running turn finishes.
         if req.execute and not execution_blocked_reason and app.state.turn_runner.busy(sid):
             execution_blocked_reason = "session_busy"
+        retry_parts = None
+        if req.execute and not execution_blocked_reason and source_user is not None:
+            retry_parts = await context_reference_retry.authorize_retry_parts(
+                app, sess, source_user, req.notes
+            )
         now_iso = datetime.now(timezone.utc).isoformat()
         attempt = TurnAttempt(
             id=_new_attempt_id(),
@@ -1489,6 +1378,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         app.state.turn_attempts[attempt.id] = attempt
         if req.execute and not execution_blocked_reason and source_user is not None:
             retry_text = _retry_user_text(_message_text(source_user), req.notes)
+            assert retry_parts is not None
             retry_user_msg = deps.start_background_user_turn(
                 sid,
                 sess,
@@ -1501,6 +1391,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     **req.metadata,
                 },
                 prev_status=sess.status,
+                request_parts=retry_parts,
             )
             attempt = attempt.model_copy(
                 update={

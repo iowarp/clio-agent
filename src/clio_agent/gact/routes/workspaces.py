@@ -784,3 +784,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             content=data,
             media_type=guessed or "application/octet-stream",
         )
+
+    from clio_agent.gact.routes.references import register_reference_routes  # noqa: PLC0415
+
+    register_reference_routes(app)

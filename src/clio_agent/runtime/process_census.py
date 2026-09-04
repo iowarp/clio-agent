@@ -16,9 +16,10 @@ silent no-op — an orphan surfaces as a DEGRADED doctor row).
 The classifier :func:`classify_parentage` is a pure function over an injected process
 snapshot, so the orphan verdict is unit-testable without spawning anything. The live
 :func:`probe_process_parentage` builds that snapshot from psutil, scoped to descendants of
-the two roots plus any CLIO-kind process whose parent has died (a reparented orphan), so a
-*parallel* CLIO instance's healthy children — which descend from their own live root — are
-never mislabelled as this server's orphans.
+the two roots plus CLIO-kind processes whose parent has died *and* whose executable or
+working directory belongs to this runtime. Name matching alone is not ownership evidence:
+another CLIO installation may deliberately keep its shared daemon alive after its launcher
+exits.
 """
 
 from __future__ import annotations
@@ -75,6 +76,8 @@ class ProcessNode:
     name: str
     create_time: float
     kind: str
+    executable: str = ""
+    cwd: str = ""
     cmdline: tuple[str, ...] = ()
 
 
@@ -126,9 +129,21 @@ def classify_parentage(
     if daemon_root_pid is not None:
         roots.add(daemon_root_pid)
 
+    # A venv or package-manager launcher may remain as the live server's parent
+    # after its own shell has exited.  It is part of the bootstrap chain, not an
+    # orphaned child.  Reaping it can close a Windows Job Object and terminate
+    # the just-started server along with it, so exclude the server's ancestors
+    # from child classification.
+    server_ancestors: set[int] = set()
+    server_root = by_pid.get(server_root_pid)
+    cursor = server_root.ppid if server_root is not None else 0
+    while cursor in by_pid and cursor not in server_ancestors:
+        server_ancestors.add(cursor)
+        cursor = by_pid[cursor].ppid
+
     rows: list[ParentageRow] = []
     for node in by_pid.values():
-        if node.pid in roots or node.kind == "other":
+        if node.pid in roots or node.pid in server_ancestors or node.kind == "other":
             continue
         chain: list[int] = []
         verdict = ORPHANED_FROM_TREE
@@ -260,10 +275,12 @@ def _snapshot_process_nodes(
     """Build a live process snapshot scoped to CLIO's tree (best-effort, psutil-gated).
 
     Included: every descendant of the two roots, the roots themselves, and any CLIO-kind
-    process whose parent PID is not alive (a reparented orphan). Scoping to our own roots
-    keeps a *parallel* CLIO instance's healthy children — which descend from their own
-    live root and have a live parent — out of the snapshot, so they are never mislabelled
-    as this server's orphans. A psutil-less environment yields an empty list.
+    process whose parent PID is not alive (a reparented orphan) and whose executable or
+    working directory is rooted in this server/daemon runtime. The path ownership check is
+    required because a shared ``clio_run`` daemon intentionally survives its launcher;
+    scanning every process named ``clio_run``/``node``/``python`` on the machine otherwise
+    reports parallel installations as this server's orphans. A psutil-less environment
+    yields an empty list.
     """
     try:
         import psutil  # noqa: PLC0415
@@ -271,7 +288,7 @@ def _snapshot_process_nodes(
         return []
 
     raw: dict[int, ProcessNode] = {}
-    for proc in psutil.process_iter(["pid", "ppid", "name", "create_time"]):
+    for proc in psutil.process_iter(["pid", "ppid", "name", "create_time", "exe", "cwd"]):
         try:
             info = proc.info
             pid = int(info["pid"])
@@ -281,6 +298,8 @@ def _snapshot_process_nodes(
                 name=str(info.get("name") or ""),
                 create_time=float(info.get("create_time") or 0.0),
                 kind=_classify_child(str(info.get("name") or "")),
+                executable=str(info.get("exe") or ""),
+                cwd=str(info.get("cwd") or ""),
             )
         except (psutil.NoSuchProcess, psutil.AccessDenied, KeyError, TypeError, ValueError):
             continue
@@ -305,19 +324,53 @@ def _snapshot_process_nodes(
             keep.add(pid)
             stack.extend(children_of.get(pid, ()))
 
-    # Reparented orphans: a CLIO-kind process whose parent is no longer alive.
-    # #1303: name+dead-parent alone is NOT ownership evidence -- every detached job on
-    # the box has a dead parent. Attach the live cmdline here (lazy, only for these
-    # candidate rows -- never the whole machine-wide scan) so the REAP's evidence gate
-    # (`_has_clio_product_evidence`) can require an actual clio marker before a kill
-    # is ever considered. Rows already reachable from a root never pass through here;
-    # they were never orphan candidates in the first place.
+    owner_root_values: list[str] = []
+    for root_pid in (server_root_pid, daemon_root_pid):
+        if root_pid is None:
+            continue
+        root_node = raw.get(root_pid)
+        if root_node is not None and root_node.cwd:
+            owner_root_values.append(root_node.cwd)
+    owner_roots = tuple(owner_root_values)
+
+    # Reparented orphans: a CLIO-kind process whose parent is no longer alive and that
+    # can still be attributed to this runtime. Names alone are deliberately insufficient
+    # ownership evidence, and the two campaigns' guards stack rather than replace each
+    # other: `_belongs_to_runtime` requires PATH evidence (the row's executable or cwd
+    # sits under a live root's cwd) before the row is censused at all, and #1303 attaches
+    # the live cmdline here -- lazily, only for these candidate rows, never the whole
+    # machine-wide scan -- so the REAP's evidence gate (`_has_clio_product_evidence`)
+    # can additionally require an actual clio marker before a kill is ever considered.
+    # Rows already reachable from a root never pass through here; they were never orphan
+    # candidates in the first place.
     for node in list(raw.values()):
-        if node.kind != "other" and node.ppid not in alive and node.pid not in keep:
+        if (
+            node.kind != "other"
+            and node.ppid not in alive
+            and node.pid not in keep
+            and _belongs_to_runtime(node, owner_roots)
+        ):
             raw[node.pid] = replace(node, cmdline=_process_cmdline(node.pid))
             keep.add(node.pid)
 
     return [raw[pid] for pid in keep if pid in raw]
+
+
+def _belongs_to_runtime(node: ProcessNode, owner_roots: Sequence[str]) -> bool:
+    """Return whether a detached process still has path evidence of runtime ownership."""
+
+    for owner_root in owner_roots:
+        for candidate in (node.executable, node.cwd):
+            if not candidate:
+                continue
+            try:
+                normalized_root = os.path.normcase(os.path.abspath(owner_root))
+                normalized_candidate = os.path.normcase(os.path.abspath(candidate))
+                if os.path.commonpath((normalized_root, normalized_candidate)) == normalized_root:
+                    return True
+            except (OSError, ValueError):
+                continue
+    return False
 
 
 def probe_process_parentage(
@@ -374,6 +427,7 @@ def probe_process_parentage(
         "daemon_root_pid": daemon_root_pid,
         "count": len(rows),
         "orphan_count": len(orphans),
+        "orphan_scope": "runtime_owned_paths",
         "processes": detail_rows,
     }
     if orphans:

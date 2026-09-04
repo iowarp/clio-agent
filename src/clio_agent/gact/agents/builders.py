@@ -8,16 +8,10 @@ compile registered dynamic agents into concrete DSPy modules:
 * Agent-Blueprint experts (:func:`_build_blueprint_dspy_module`) using predict,
   chain-of-thought, or ReAct modules.
 
-Supporting machinery includes runtime signatures, LM and tool resolution, external
-MCP tools, blueprint telemetry, bounded schema repair, tool-intent recovery, and
-synchronous child-expert and bounded-fanout delegation.
-
-The retaining ReAct engine lives in :mod:`clio_agent.gact.agents.runtime`; resolution
-and prompt composition live in the sibling ``resolution`` and ``composition`` modules.
-Cross-concern helpers still owned by the ``gact.app`` turn handler or workflow-state
-subsystem are imported lazily inside the functions that need them, preserving the
-strangler seam without a module-load cycle. Permission-gate and tool-observer factories
-are reached through ``app.state`` and are never imported from ``gact.app``.
+Supporting machinery covers tool/LM resolution, telemetry, bounded schema repair,
+tool-intent recovery, and child delegation. The retaining ReAct engine, resolution,
+and prompt composition remain in sibling modules; cross-concern helpers load lazily
+to preserve the strangler seam without a module cycle.
 """
 
 from __future__ import annotations
@@ -49,6 +43,15 @@ from clio_agent.gact.agents.composition import (
     _runtime_active_workspace_context,
     _runtime_dynamic_agent_children_context,
 )
+from clio_agent.gact.agents.declared_native_tools import resolve_declared_native_tools
+from clio_agent.gact.agents.reactv2_events import is_turn_yield_prediction
+from clio_agent.gact.agents.reactv2_submit import (
+    adapter_tool_intent_from_exception as _adapter_tool_intent_from_exception,
+)
+from clio_agent.gact.agents.reactv2_submit import (
+    call_recovered_dspy_tool as _call_recovered_dspy_tool,
+)
+from clio_agent.gact.agents.reactv2_submit import tool_names as _tool_names
 from clio_agent.gact.agents.resolution import _active_workflow_state_schema
 from clio_agent.gact.agents.runtime import (
     _retaining_react_cls,
@@ -258,6 +261,7 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
             images: list[Any] | None = None,
+            files: list[Any] | None = None,
         ) -> Any:
             _ = (
                 session_mode,
@@ -282,6 +286,7 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
                     system_prompt=self.system_prompt,
                     question=question,
                     images=list(images or []),
+                    files=list(files or []),
                 )
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
@@ -630,46 +635,50 @@ def _dynamic_agent_tools(
 ) -> list[Any]:
     """Resolve the exact DSPy tools a tool-declaring dynamic agent may use."""
 
-    requested_tools = [str(t).strip() for t in agent_def.tools if str(t).strip()]
-    try:
-        tool_executor = _active_base_agent_tool_executor(base_agent)
-    except Exception as exc:  # noqa: BLE001 - preserve the typed agent boundary
-        from clio_agent.gact.mcp_readiness import mount_failure_reason  # noqa: PLC0415
+    requested_tools, available_tools, gateway_requested = resolve_declared_native_tools(
+        agent_def, sources
+    )
+    tool_executor = None
+    if gateway_requested:
+        try:
+            tool_executor = _active_base_agent_tool_executor(base_agent)
+        except Exception as exc:  # noqa: BLE001 - preserve the typed agent boundary
+            from clio_agent.gact.mcp_readiness import mount_failure_reason  # noqa: PLC0415
 
-        resolution_failures = {"workspace_fleet": mount_failure_reason(exc)}
-        logger.exception(
-            "custom_agent_tool_executor_unavailable agent=%s tools=%s",
-            agent_def.id,
-            requested_tools,
-        )
-        raise _UnsupportedSessionAgent(
-            agent_def.id,
-            reason="custom_agent_tool_executor_unavailable",
-            tools=requested_tools,
-            mount_failures=resolution_failures,
-        ) from exc
-    mount_failures: dict[str, str] = {}
-    if tool_executor is None or not hasattr(tool_executor, "to_dspy_tools"):
-        if requested_tools:
+            resolution_failures = {"workspace_fleet": mount_failure_reason(exc)}
+            logger.exception(
+                "custom_agent_tool_executor_unavailable agent=%s tools=%s",
+                agent_def.id,
+                gateway_requested,
+            )
             raise _UnsupportedSessionAgent(
                 agent_def.id,
                 reason="custom_agent_tool_executor_unavailable",
-                tools=requested_tools,
+                tools=gateway_requested,
+                mount_failures=resolution_failures,
+            ) from exc
+    mount_failures: dict[str, str] = {}
+    if tool_executor is None or not hasattr(tool_executor, "to_dspy_tools"):
+        if gateway_requested:
+            raise _UnsupportedSessionAgent(
+                agent_def.id,
+                reason="custom_agent_tool_executor_unavailable",
+                tools=gateway_requested,
             )
-        available_tools: dict[str, Any] = {}
     else:
-        available_tools, mount_failures = _resolve_declared_tools_with_on_demand_mount(
-            tool_executor, requested_tools
+        gateway_tools, mount_failures = _resolve_declared_tools_with_on_demand_mount(
+            tool_executor, gateway_requested
         )
         mounted = toolset_inventory.mounted_namespace_set(tool_executor)
-        for name in available_tools:
+        for name in gateway_tools:
             # prefix is real provenance only if mounted (finding [D]); else "gateway".
             prefix, sep, bare = name.partition("_")
             source = prefix if (sep and bare and prefix in mounted) else "gateway"
             toolset_inventory.register_tool_source(sources, name, source)
+        available_tools.update(gateway_tools)
     app = _ctx.active_app()
     if app is not None:
-        available_tools.update(_enabled_external_mcp_dspy_tools(app, requested_tools, sources))
+        available_tools.update(_enabled_external_mcp_dspy_tools(app, gateway_requested, sources))
     missing_tools = [name for name in requested_tools if name not in available_tools]
     resolved_tools = [name for name in requested_tools if name in available_tools]
     if missing_tools and not resolved_tools:  # nothing to degrade to -- brick TYPED (#1228 D3)
@@ -695,58 +704,6 @@ def _dynamic_agent_tools(
             app, agent_def.id, missing_tools, mount_failures=mount_failures
         )
     return [_recording_blueprint_tool(available_tools[name]) for name in resolved_tools]
-
-
-def _tool_names(tools: Iterable[Any]) -> list[str]:
-    """Return stable tool names from DSPy tool-like objects."""
-
-    names: list[str] = []
-    for tool in tools:
-        name = str(getattr(tool, "name", "") or "").strip()
-        if name:
-            names.append(name)
-    return names
-
-
-def _adapter_tool_intent_from_exception(
-    exc: BaseException,
-    *,
-    allowed_tools: Iterable[str],
-) -> dict[str, Any] | None:
-    """Recover a typed tool intent emitted where DSPy expected final fields."""
-
-    from clio_agent.gact.app import (  # noqa: PLC0415
-        _json_objects_from_text,
-    )
-
-    allowed = {str(name).strip() for name in allowed_tools if str(name).strip()}
-    if not allowed:
-        return None
-    message = str(exc)
-    if "tool_name" not in message or "tool_args" not in message:
-        return None
-    for obj in _json_objects_from_text(message):
-        if not isinstance(obj, Mapping):
-            continue
-        tool_name = str(obj.get("tool_name") or obj.get("name") or "").strip()
-        if tool_name not in allowed:
-            continue
-        tool_args = obj.get("tool_args") or obj.get("args") or obj.get("arguments") or {}
-        if not isinstance(tool_args, Mapping):
-            tool_args = {}
-        return {"tool_name": tool_name, "tool_args": dict(tool_args)}
-    return None
-
-
-def _call_recovered_dspy_tool(tool: Any, args: Mapping[str, Any]) -> Any:
-    """Call a DSPy tool recovered from malformed ReAct adapter output."""
-
-    if callable(tool):
-        return tool(**dict(args))
-    func = getattr(tool, "func", None)
-    if callable(func):
-        return func(**dict(args))
-    raise TypeError(f"tool is not callable: {getattr(tool, 'name', '<unknown>')}")
 
 
 def _extract_repair_attempts() -> int:
@@ -1061,6 +1018,7 @@ def _blueprint_runtime_signature(
     *,
     app: Any = None,
     include_images: bool = False,
+    include_files: bool = False,
 ) -> Any:
     """Build a DSPy Signature from a blueprint's ordered signature fields.
 
@@ -1133,6 +1091,8 @@ def _blueprint_runtime_signature(
         ]
     if include_images and not any(name == "images" for name, _, _ in inputs):
         inputs.append(("images", "User-provided images for this turn", list[dspy.Image]))
+    if include_files and not any(name == "files" for name, _, _ in inputs):
+        inputs.append(("files", "User-provided PDF documents for this turn", list[dspy.File]))
     outputs = _ordered_fields(raw_outputs, [("answer", "User-facing answer", str)])
     structured = (
         agent_def.structured_outputs if isinstance(agent_def.structured_outputs, Mapping) else {}
@@ -1295,7 +1255,11 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             self._cred_resolver = CredentialResolver()
             self.config = self._resolved_spec.materialize(self._cred_resolver)
             self._provider_config = self.config
-            self.signature = _blueprint_runtime_signature(agent_def, include_images=True)
+            self.signature = _blueprint_runtime_signature(
+                agent_def,
+                include_images=True,
+                include_files=True,
+            )
             self.tools: list[Any] = []
             skill_rt = _skill_runtime.skill_runtime_for_agent(
                 _ctx.active_app(), agent_def, session_id=_ctx.active_session_id()
@@ -1441,6 +1405,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
             images: list[Any] | None = None,
+            files: list[Any] | None = None,
         ) -> Any:
             _ = (
                 session_mode,
@@ -1490,6 +1455,8 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 kwargs["system_prompt"] = runtime_system_prompt
             if "images" in self.signature.input_fields:
                 kwargs["images"] = list(images or [])
+            if "files" in self.signature.input_fields:
+                kwargs["files"] = list(files or [])
             if trace.HF_ON:
                 trace.hot("FWD-A", "%s child-context+seed-done", getattr(self.agent_def, "id", "?"))
             blueprint_tool_rows: list[dict[str, Any]] = []
@@ -1738,6 +1705,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     )
                 )
             answer = str(getattr(result, "answer", "") or "").strip()
+            turn_yielded = is_turn_yield_prediction(result)
             tools_called: list[dict[str, Any]] = []
             if self.kind == "react":
                 tools_called = _extract_tools_called_from_trajectory(
@@ -1745,12 +1713,9 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 )
                 if blueprint_tool_rows:
                     tools_called = _merge_tool_call_rows(tools_called, blueprint_tool_rows)
-                if not answer:
+                if not answer and not turn_yielded:
                     answer = _tool_agent_empty_answer_fallback(getattr(result, "trajectory", None))
-            # The typed workflow_state output rides the Prediction's structured
-            # ``workflow_state`` field below -- it is NOT serialized into ``answer``
-            # text (that polluted the user-facing answer; consumers read the field).
-            if not answer:
+            if not answer and not turn_yielded:
                 # #948 S4: an empty answer is a typed failure (see the required
                 # ``answer`` field on the runtime signature). The settle/synthesis
                 # layer that once consumed an empty orchestrator answer is deleted;
@@ -1887,6 +1852,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             session_edit_mode: str = "diff",
             cancel_requested: Any | None = None,
             images: list[Any] | None = None,
+            files: list[Any] | None = None,
         ) -> Any:
             _ = (
                 session_mode,
@@ -1922,6 +1888,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                         system_prompt=self.system_prompt,
                         question=question,
                         images=list(images or []),
+                        files=list(files or []),
                     )
             except Exception as exc:
                 app = _ctx.active_app()
@@ -1955,9 +1922,10 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                     )
                 )
             answer = str(getattr(result, "answer", "") or "").strip()
-            if not answer:
+            turn_yielded = is_turn_yield_prediction(result)
+            if not answer and not turn_yielded:
                 answer = _tool_agent_empty_answer_fallback(getattr(result, "trajectory", None))
-            if not answer:
+            if not answer and not turn_yielded:
                 raise RuntimeError(f"user agent {self.agent_def.id!r} returned an empty answer")
             tools_called = _extract_tools_called_from_trajectory(
                 getattr(result, "trajectory", None)

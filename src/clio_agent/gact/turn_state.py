@@ -62,6 +62,7 @@ class TurnState:
     trace_id: str
     retry_attempt_id: str
     native_images: list[Any]
+    native_files: list[Any] = field(default_factory=list)
 
     # --- Turn-scoped infra (set once, early, in the linear body) ---
     transcript: "TurnTranscript" = field(init=False)
@@ -136,7 +137,7 @@ def new_turn_state(
     the retry-attempt id from the user message, mint the turn/trace ids, pin the
     turn identity contextvar (so ``active_app()``/``active_session_id()`` stay
     reliable on the executor rail for every forward path), and pre-extract native
-    images from the user parts.
+    images and PDFs from the user parts.
 
     ``sess``/``bus`` are resolved and None-guarded by the caller (the session may
     evaporate between POST and background start) and passed in already narrowed,
@@ -156,11 +157,27 @@ def new_turn_state(
     # rail for ALL turn paths, incl. the CLIO orchestrator forward (#735 3).
     _ctx.set_turn_identity(app=app, session_id=sid, turn_id=turn_id, trace_id=trace_id)
     from clio_agent.gact.app import _dspy_images_from_parts  # noqa: PLC0415
+    from clio_agent.gact.messaging import _dspy_files_from_parts  # noqa: PLC0415
+    from clio_agent.gact.native_delivery_outcome import (  # noqa: PLC0415
+        settle_native_deliveries,
+    )
 
+    workspace_id = str(getattr(sess, "workspace_id", "") or "")
     native_images = _dspy_images_from_parts(
         user_msg.parts,
         app=app,
-        workspace_id=str(getattr(sess, "workspace_id", "") or ""),
+        workspace_id=workspace_id,
+    )
+    native_files = _dspy_files_from_parts(
+        user_msg.parts,
+        app=app,
+        workspace_id=workspace_id,
+    )
+    # The attach pass is done, so the ledger can stop reporting the PLAN as the
+    # outcome: every native-planned row is stamped delivered, or not-delivered
+    # with the typed reason the attach step recorded.
+    settle_native_deliveries(
+        app, workspace_id=workspace_id, message_id=user_msg.id, parts=list(user_msg.parts)
     )
     return TurnState(
         app=app,
@@ -174,4 +191,5 @@ def new_turn_state(
         trace_id=trace_id,
         retry_attempt_id=retry_attempt_id,
         native_images=native_images,
+        native_files=native_files,
     )

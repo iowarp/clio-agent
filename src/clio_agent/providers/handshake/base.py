@@ -69,6 +69,14 @@ class HandshakeContext:
 class ProviderHandshake(abc.ABC):
     """Abstract per-provider handshake. Subclass and implement the phase methods."""
 
+    #: Whether this handshake's model rows can report INPUT MODALITIES at all.
+    #: ``False`` is the honest default: an OpenAI-compatible ``/models`` listing
+    #: returns ids and nothing else, so no amount of probing yields modality
+    #: evidence for that provider. Consumers use this to tell "the evidence
+    #: system says no" from "no evidence system exists here" -- the second is the
+    #: only case where a catalog-level default may legitimately stand in.
+    reports_input_modalities: bool = False
+
     #: per-phase HTTP timeouts (seconds); subclasses may override.
     timeout_connect: float = 4.0
     timeout_models: float = 8.0
@@ -198,6 +206,20 @@ class ProviderHandshake(abc.ABC):
         return replace(profile, **updates)
 
     # ------------------------------------------------------------------ helpers
+    def models_provenance(self, ctx: HandshakeContext) -> tuple[str, str]:
+        """Return ``(models_source, evidence_generated_at)`` for a completed run.
+
+        The base answer is ``("live", "")`` because every HTTP handshake really
+        does probe the provider's ``/models`` surface on the run that produced
+        the profiles. Subclasses that do NOT probe must say so: the zero-network
+        CLI handshakes override this, so a catalog read can no longer present
+        itself as a live probe. ``evidence_generated_at`` is empty when the
+        evidence IS this run (the caller then uses ``generated_at``).
+        """
+
+        del ctx
+        return "live", ""
+
     async def _open_client(self, ctx: HandshakeContext) -> Any:
         import httpx  # noqa: PLC0415
 
@@ -226,6 +248,11 @@ class ProviderHandshake(abc.ABC):
         started: float | None = None,
     ) -> HandshakeReport:
         latency = None if started is None else (time.monotonic() - started) * 1000.0
+        now = datetime.now(timezone.utc).isoformat()
+        if error and not models:
+            source, evidence_generated_at = "unavailable", ""
+        else:
+            source, evidence_generated_at = self.models_provenance(ctx)
         return HandshakeReport(
             provider_id=ctx.provider_id,
             provider_kind=ctx.provider_kind,
@@ -234,6 +261,7 @@ class ProviderHandshake(abc.ABC):
             latency_ms=latency,
             error=error,
             models=models,
-            models_source="live" if models else ("unavailable" if error else "live"),
-            generated_at=datetime.now(timezone.utc).isoformat(),
+            models_source=source,
+            generated_at=now,
+            evidence_generated_at=evidence_generated_at or now,
         )

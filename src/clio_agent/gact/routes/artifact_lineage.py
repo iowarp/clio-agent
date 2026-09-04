@@ -179,7 +179,7 @@ def register_artifact_lineage_routes(app: FastAPI) -> None:
                 "transforms": [t.to_payload() for t in transforms],
                 "count": len(transforms),
             }
-        from clio_agent.gact.agent_tasks import descendant_session_ids  # noqa: PLC0415
+        from clio_agent.gact.session_descendants import descendant_session_ids  # noqa: PLC0415
 
         child_ids = descendant_session_ids(app, sid)
         for child in child_ids:

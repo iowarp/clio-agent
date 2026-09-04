@@ -531,24 +531,71 @@ class _StubCodex:
         return SimpleNamespace(data=self._rows)
 
 
+#: Sentinel for "the wire row did NOT carry this field at all" — distinct from an
+#: explicit empty list. The SDK declares ``Model.input_modalities`` with a schema
+#: default of ``["text", "image"]``, so only a row built WITHOUT the key
+#: reproduces what an omitting provider actually sends.
+_OMITTED: Any = object()
+
+
 def _codex_model(
-    model_id: str, *, name: str = "", description: str = "", is_default: bool = False
+    model_id: str,
+    *,
+    name: str = "",
+    description: str = "",
+    is_default: bool = False,
+    input_modalities: Any = _OMITTED,
 ) -> Any:
-    return SimpleNamespace(
-        id=model_id,
-        display_name=name or model_id,
-        description=description,
-        is_default=is_default,
+    """Build a REAL ``openai_codex`` model row (not a permissive stand-in).
+
+    Discovery's modality evidence is decided by Pydantic's ``model_fields_set``,
+    which only a genuine SDK model carries; a ``SimpleNamespace`` stub cannot
+    reproduce the omitted-field case the SDK default hides.
+    """
+
+    from openai_codex.generated.v2_all import (
+        Model,
+        ReasoningEffort,
+        ReasoningEffortOption,
     )
+
+    fields: dict[str, Any] = {
+        "id": model_id,
+        "model": model_id,
+        "displayName": name or model_id,
+        "description": description,
+        "hidden": False,
+        "isDefault": is_default,
+        "defaultReasoningEffort": ReasoningEffort.medium,
+        "supportedReasoningEfforts": [
+            ReasoningEffortOption(description="medium", reasoningEffort=ReasoningEffort.medium)
+        ],
+    }
+    if input_modalities is not _OMITTED:
+        fields["inputModalities"] = input_modalities
+    return Model(**fields)
 
 
 def test_discover_codex_success_reports_default_and_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openai_codex.generated.v2_all import InputModality
+
     from clio_agent.providers.model_discovery import codex as md_codex
 
     stub = _StubCodex(
         rows=[
-            _codex_model("gpt-5.6-sol", name="GPT-5.6-Sol", description="d1", is_default=True),
-            _codex_model("gpt-5.6-terra", name="GPT-5.6-Terra", description="d2"),
+            _codex_model(
+                "gpt-5.6-sol",
+                name="GPT-5.6-Sol",
+                description="d1",
+                is_default=True,
+                input_modalities=[InputModality.text, InputModality.image],
+            ),
+            _codex_model(
+                "gpt-5.6-terra",
+                name="GPT-5.6-Terra",
+                description="d2",
+                input_modalities=[InputModality.text, InputModality.image],
+            ),
         ]
     )
     monkeypatch.setattr(md_codex, "AsyncCodex", lambda *_args, **_kwargs: stub)
@@ -559,7 +606,67 @@ def test_discover_codex_success_reports_default_and_source(monkeypatch: pytest.M
     assert {m["id"] for m in result.discovered} == {"gpt-5.6-sol", "gpt-5.6-terra"}
     assert result.default_model == "gpt-5.6-sol"
     assert result.source == "codex_sdk"
+    assert all(m["capabilities"] == ["text", "image"] for m in result.discovered)
+    assert all(m["capability_evidence"]["reason"] == "modality_reported" for m in result.discovered)
     assert stub.closed is True
+
+
+def test_discover_codex_omitted_input_modalities_records_no_image_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An omitted wire field must NOT inherit the SDK's ``["text","image"]`` default.
+
+    ``Model.input_modalities`` is declared with that schema default, so reading the
+    attribute manufactures an image capability nobody reported — and the typed
+    negative could never fire in production. Only ``model_fields_set`` is evidence.
+    """
+
+    from openai_codex.generated.v2_all import Model
+
+    from clio_agent.providers.model_discovery import codex as md_codex
+
+    row = _codex_model("gpt-5.6-sol", name="GPT-5.6-Sol", is_default=True)
+    # Guard the premise: the SDK really does hand back a fabricated image modality.
+    assert isinstance(row, Model)
+    assert "input_modalities" not in row.model_fields_set
+    assert [str(getattr(v, "value", v)) for v in row.input_modalities or []] == ["text", "image"]
+
+    monkeypatch.setattr(md_codex, "AsyncCodex", lambda *_args, **_kwargs: _StubCodex(rows=[row]))
+
+    result = model_discovery.discover_codex()
+
+    assert result.failed_reason is None
+    assert result.discovered[0]["capabilities"] == []
+    evidence = result.discovered[0]["capability_evidence"]
+    assert evidence["reason"] == "modality_unreported"
+    assert evidence["source"] == "codex_sdk_input_modalities"
+    assert evidence["unevidenced"] == ["image"]
+
+
+def test_discover_codex_explicit_text_only_row_is_not_widened(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider explicitly reporting text-only stays text-only, and says so."""
+
+    from openai_codex.generated.v2_all import InputModality
+
+    from clio_agent.providers.model_discovery import codex as md_codex
+
+    stub = _StubCodex(
+        rows=[
+            _codex_model(
+                "gpt-5.6-mini",
+                is_default=True,
+                input_modalities=[InputModality.text],
+            )
+        ]
+    )
+    monkeypatch.setattr(md_codex, "AsyncCodex", lambda *_args, **_kwargs: stub)
+
+    result = model_discovery.discover_codex()
+
+    assert result.discovered[0]["capabilities"] == ["text"]
+    assert result.discovered[0]["capability_evidence"]["reason"] == "modality_reported"
 
 
 def test_discover_codex_sdk_error_is_typed_reason(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -588,10 +695,94 @@ def test_discover_codex_zero_models_is_typed_reason(monkeypatch: pytest.MonkeyPa
 # --------------------------------------------------------------------------- #
 
 
+def _challenge_codes(probe_input: str) -> tuple[str, str]:
+    """Read the codes the probe actually rendered into its two attachments.
+
+    The fake CLI answers with THESE, so a passing probe proves the reply quoted
+    the attachment content back -- the whole point of the discriminating probe.
+    A test that hardcoded the answer would pass for a CLI that stripped both
+    attachments, which is exactly the failure the probe exists to catch.
+    """
+
+    import base64
+
+    content = json.loads(probe_input)["message"]["content"]
+    by_type = {part["type"]: part for part in content}
+    image_png = base64.b64decode(by_type["image"]["source"]["data"])
+    pdf_bytes = base64.b64decode(by_type["document"]["source"]["data"])
+    return _read_png_code(image_png), _read_pdf_code(pdf_bytes)
+
+
+def _read_pdf_code(pdf_bytes: bytes) -> str:
+    """Pull the four digits the probe PDF prints, straight from its content stream."""
+
+    import re
+
+    match = re.search(rb"\((\d{4})\)\s*Tj", pdf_bytes)
+    assert match is not None, "probe PDF carried no printed code"
+    return match.group(1).decode("ascii")
+
+
+def _read_png_code(png_bytes: bytes) -> str:
+    """Decode the probe PNG and read its digits back through the glyph table.
+
+    This is the machine-readable stand-in for a vision model actually LOOKING at
+    the image: it re-derives the code from the rendered pixels, so a broken
+    renderer fails the test instead of silently producing an unreadable image.
+    """
+
+    import struct
+    import zlib
+
+    from clio_agent.providers.model_discovery import probe_assets
+
+    width, height = struct.unpack(">II", png_bytes[16:24])
+    idat = b""
+    offset = 8
+    while offset < len(png_bytes):
+        length = struct.unpack(">I", png_bytes[offset : offset + 4])[0]
+        tag = png_bytes[offset + 4 : offset + 8]
+        if tag == b"IDAT":
+            idat += png_bytes[offset + 8 : offset + 8 + length]
+        offset += 12 + length
+    raw = zlib.decompress(idat)
+    stride = width * 3 + 1
+    rows = [raw[i * stride + 1 : (i + 1) * stride] for i in range(height)]
+
+    scale = probe_assets._SCALE
+    margin = probe_assets._MARGIN
+    glyph_w, glyph_h = probe_assets._GLYPH_WIDTH, probe_assets._GLYPH_HEIGHT
+    gap = probe_assets._GLYPH_GAP
+    cells_wide = (width - 2 * margin) // scale
+    digits = (cells_wide + gap) // (glyph_w + gap)
+
+    def _cell(row: int, column: int) -> str:
+        y = margin + row * scale + scale // 2
+        x = margin + column * scale + scale // 2
+        return "#" if rows[y][x * 3] == 0 else "."
+
+    inverse = {glyph: digit for digit, glyph in probe_assets._DIGIT_GLYPHS.items()}
+    code = ""
+    for index in range(digits):
+        base = index * (glyph_w + gap)
+        glyph = tuple(
+            "".join(_cell(row, base + column) for column in range(glyph_w))
+            for row in range(glyph_h)
+        )
+        code += inverse[glyph]
+    return code
+
+
 def _fake_claude_run(responses: dict[str | None, dict[str, Any]]) -> Any:
-    def _run(args: list[str], **_kw: Any) -> Any:
+    """A CLI that DID show the model the attachments: it answers their codes."""
+
+    def _run(args: list[str], **kwargs: Any) -> Any:
         alias = args[args.index("--model") + 1] if "--model" in args else None
-        payload = responses[alias]
+        payload = dict(responses[alias])
+        probe_input = kwargs.get("input") or ""
+        if '"type":"image"' in probe_input and "result" not in payload:
+            image_code, pdf_code = _challenge_codes(probe_input)
+            payload["result"] = f"IMAGE: {image_code}; PDF: {pdf_code}"
         return SimpleNamespace(stdout=json.dumps(payload), stderr="", returncode=0)
 
     return _run
@@ -618,6 +809,197 @@ def test_discover_claude_code_all_aliases_validate_default_follows_bare_probe(
     assert result.default_model == "fable"
     assert result.default_model_reason == ""
     assert result.rejected == []
+    # Evidenced, not asserted against a constant: the fake CLI answered with the
+    # codes the probe rendered, so these capabilities came from the reply.
+    assert all(
+        sorted(model["capabilities"]) == ["image", "pdf", "text"] for model in result.discovered
+    )
+    assert all(
+        model["capability_evidence"]["reason"] == "modality_reported" for model in result.discovered
+    )
+
+
+def _probe_cli(reply_for: Any, *, capture: dict[str, Any] | None = None) -> Any:
+    """A fake ``claude`` whose reply is computed from the probe input it received."""
+
+    def _run(args: list[str], **kwargs: Any) -> Any:
+        probe_input = kwargs.get("input") or ""
+        if capture is not None:
+            capture["args"] = args
+            capture["input"] = probe_input
+        result = {
+            "type": "result",
+            "is_error": False,
+            "modelUsage": {"claude-sonnet-5": {}},
+            "result": reply_for(probe_input),
+        }
+        return SimpleNamespace(
+            stdout="\n".join([json.dumps({"type": "system"}), json.dumps(result)]),
+            stderr="",
+            returncode=0,
+        )
+
+    return _run
+
+
+def test_probe_claude_evidences_both_modalities_from_the_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reply that quotes BOTH attachment codes evidences both modalities."""
+
+    seen: dict[str, Any] = {}
+
+    def _reply(probe_input: str) -> str:
+        image_code, pdf_code = _challenge_codes(probe_input)
+        return f"IMAGE: {image_code}; PDF: {pdf_code}"
+
+    monkeypatch.setattr(md_claude_code.subprocess, "run", _probe_cli(_reply, capture=seen))
+
+    probe = md_claude_code._probe_alias("claude", "sonnet", timeout=5.0)
+
+    assert probe["outcome"] == "accepted"
+    assert sorted(probe["capabilities"]) == ["image", "pdf", "text"]
+    assert probe["capability_evidence"]["reason"] == "modality_reported"
+    assert seen["args"][seen["args"].index("--input-format") + 1] == "stream-json"
+    content = json.loads(seen["input"])["message"]["content"]
+    assert [part["type"] for part in content] == ["image", "document", "text"]
+    assert content[0]["source"]["media_type"] == "image/png"
+    assert content[1]["source"]["media_type"] == "application/pdf"
+
+
+def test_probe_claude_refuses_to_credit_a_reply_that_never_saw_the_attachments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The old probe's exact failure: a CLI that strips attachments still answers.
+
+    ``ok`` was accepted as proof of image AND pdf input. It now evidences neither.
+    """
+
+    monkeypatch.setattr(md_claude_code.subprocess, "run", _probe_cli(lambda _input: "ok"))
+
+    probe = md_claude_code._probe_alias("claude", "sonnet", timeout=5.0)
+
+    assert probe["outcome"] == "accepted"
+    assert probe["capabilities"] == ["text"]
+    evidence = probe["capability_evidence"]
+    assert evidence["reason"] == "modality_probe_unevidenced"
+    assert evidence["unevidenced"] == ["image", "pdf"]
+
+
+def test_probe_claude_evidences_each_modality_independently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CLI that forwards the image but strips the PDF is recorded as exactly that."""
+
+    def _reply(probe_input: str) -> str:
+        image_code, _pdf_code = _challenge_codes(probe_input)
+        return f"IMAGE: {image_code}; PDF: NONE"
+
+    monkeypatch.setattr(md_claude_code.subprocess, "run", _probe_cli(_reply))
+
+    probe = md_claude_code._probe_alias("claude", "sonnet", timeout=5.0)
+
+    assert sorted(probe["capabilities"]) == ["image", "text"]
+    assert probe["capability_evidence"]["unevidenced"] == ["pdf"]
+
+
+def test_probe_claude_does_not_credit_a_guessed_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plausible-looking answer that is not THIS probe's code evidences nothing."""
+
+    monkeypatch.setattr(
+        md_claude_code.subprocess, "run", _probe_cli(lambda _input: "IMAGE: 0000; PDF: 0000")
+    )
+
+    probe = md_claude_code._probe_alias("claude", "haiku", timeout=5.0)
+
+    # A one-in-ten-thousand collision would make this flaky, so the codes are
+    # regenerated per probe and the two are always distinct -- one guess cannot
+    # satisfy both.
+    assert "pdf" not in probe["capabilities"] or "image" not in probe["capabilities"]
+
+
+def test_a_probe_that_cannot_carry_attachments_falls_back_to_text_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M3: a failed multimodal turn is a MODALITY fact, not a model rejection."""
+
+    calls: list[str] = []
+
+    def _run(args: list[str], **kwargs: Any) -> Any:
+        probe_input = kwargs.get("input") or ""
+        native = '"type":"image"' in probe_input
+        calls.append("native" if native else "text")
+        if native:
+            return SimpleNamespace(
+                stdout=json.dumps(
+                    {
+                        "type": "result",
+                        "is_error": True,
+                        "api_error_status": 400,
+                        "result": "stream-json input with attachments is unsupported",
+                    }
+                ),
+                stderr="",
+                returncode=0,
+            )
+        return SimpleNamespace(
+            stdout=json.dumps(
+                {
+                    "type": "result",
+                    "is_error": False,
+                    "modelUsage": {"claude-sonnet-5": {}},
+                    "result": "ok",
+                }
+            ),
+            stderr="",
+            returncode=0,
+        )
+
+    monkeypatch.setattr(md_claude_code.subprocess, "run", _run)
+
+    probe = md_claude_code._probe_alias("claude", "sonnet", timeout=5.0)
+
+    assert calls == ["native", "text"]
+    # The MODEL is still available -- discovery is not sunk and nothing is rejected.
+    assert probe["outcome"] == "accepted"
+    assert probe["resolved_model"] == "claude-sonnet-5"
+    assert probe["capabilities"] == ["text"]
+    evidence = probe["capability_evidence"]
+    assert evidence["reason"] == "modality_probe_unavailable"
+    assert evidence["unevidenced"] == ["image", "pdf"]
+    assert "unsupported" in evidence["detail"]
+
+
+def test_a_definitive_rejection_is_never_retried_as_text_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 404 says the account does not serve the model; no fallback changes that."""
+
+    calls: list[str] = []
+
+    def _run(args: list[str], **kwargs: Any) -> Any:
+        calls.append("probe")
+        return SimpleNamespace(
+            stdout=json.dumps(
+                {
+                    "type": "result",
+                    "is_error": True,
+                    "api_error_status": 404,
+                    "result": "There's an issue with the selected model (nope).",
+                }
+            ),
+            stderr="",
+            returncode=0,
+        )
+
+    monkeypatch.setattr(md_claude_code.subprocess, "run", _run)
+
+    probe = md_claude_code._probe_alias("claude", "nope", timeout=5.0)
+
+    assert probe["outcome"] == "rejected"
+    assert calls == ["probe"]
 
 
 def test_discover_claude_code_one_alias_rejected_others_still_validate(
@@ -806,8 +1188,11 @@ def test_discover_claude_code_bare_probe_timeout_aborts_provider_overlay_intact(
     assert result.discovered == []
     assert result.failed_reason is not None
     assert "bare CLI-default probe inconclusive" in result.failed_reason
-    # The loop never even started probing aliases -- only the bare call ran.
-    assert calls == [None]
+    # The loop never started probing ALIASES -- only the bare call, twice: the
+    # native turn and its M3 text-only retry, which timed out the same way. A
+    # probe that cannot answer at all still aborts; the retry only rescues the
+    # case where the model answers but cannot carry attachments.
+    assert calls == [None, None]
 
     wire = model_discovery.record_refresh(result)
     assert wire["removed"] == []
@@ -1228,7 +1613,145 @@ def test_discover_codex_live() -> None:
     "billed API call)",
 )
 def test_discover_claude_code_live_single_alias() -> None:
-    """Real ``claude -p`` probe -- bounded to ONE alias (a real billed call)."""
+    """Real native image/PDF probe -- bounded to one alias (a billed call)."""
     result = model_discovery.discover_claude_code(candidates=("haiku",), timeout=60.0)
     assert result.failed_reason is None, result.failed_reason
     assert [m["id"] for m in result.discovered] == ["haiku"]
+    # Whatever the live CLI evidenced, the row must SAY which reason produced it
+    # rather than carrying an unexplained constant.
+    evidence = result.discovered[0]["capability_evidence"]
+    assert evidence["reason"] in {
+        "modality_reported",
+        "modality_probe_unevidenced",
+        "modality_probe_unavailable",
+    }
+    assert "text" in result.discovered[0]["capabilities"]
+    if evidence["reason"] == "modality_reported":
+        assert sorted(result.discovered[0]["capabilities"]) == ["image", "pdf", "text"]
+
+
+# --------------------------------------------------------------------------- #
+# Overlay staleness: a cache is an accelerator, never truth (AF-IMG F4).
+# --------------------------------------------------------------------------- #
+
+
+def _write_overlay(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: dict[str, Any]) -> None:
+    overlay_file = tmp_path / "overlay.json"
+    overlay_file.write_text(json.dumps({"codex": entry}), encoding="utf-8")
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(overlay_file))
+
+
+def test_overlay_within_ttl_is_served_without_a_staleness_marker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from datetime import datetime, timezone
+
+    _write_overlay(
+        tmp_path,
+        monkeypatch,
+        {
+            "models": [{"id": "gpt-5.6-sol"}],
+            "source": "codex_sdk",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    wire = model_discovery.overlay_models_wire("codex", "codex")
+    assert wire is not None
+    assert "staleness" not in wire
+
+
+def test_overlay_older_than_ttl_is_still_served_but_marked_typed_stale(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The sticky cache: nothing ever re-examined an entry once written."""
+
+    from datetime import datetime, timedelta, timezone
+
+    old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    _write_overlay(
+        tmp_path,
+        monkeypatch,
+        {"models": [{"id": "gpt-5.6-sol"}], "source": "codex_sdk", "generated_at": old},
+    )
+
+    wire = model_discovery.overlay_models_wire("codex", "codex")
+
+    assert wire is not None
+    # Still SERVED -- the documented contract never clears a prior good list.
+    assert [m["id"] for m in wire["models"]] == ["gpt-5.6-sol"]
+    assert wire["staleness"]["reason"] == "overlay_age_exceeded_ttl"
+    assert wire["staleness"]["ttl_s"] == model_discovery.overlay_staleness_ttl_s()
+    assert wire["staleness"]["age_s"] > wire["staleness"]["ttl_s"]
+    assert wire["staleness"]["description"]
+
+
+def test_overlay_ttl_zero_disables_the_age_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from tests._config_layer import set_config
+
+    old = (datetime.now(timezone.utc) - timedelta(days=3650)).isoformat()
+    _write_overlay(
+        tmp_path,
+        monkeypatch,
+        {"models": [{"id": "gpt-5.6-sol"}], "source": "codex_sdk", "generated_at": old},
+    )
+    set_config("providers.model_catalog_ttl_s", 0)
+    wire = model_discovery.overlay_models_wire("codex", "codex")
+    assert wire is not None
+    assert "staleness" not in wire
+
+
+def test_overlay_with_unreadable_timestamp_is_unverified_not_assumed_fresh(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _write_overlay(
+        tmp_path,
+        monkeypatch,
+        {"models": [{"id": "gpt-5.6-sol"}], "source": "codex_sdk", "generated_at": "whenever"},
+    )
+    wire = model_discovery.overlay_models_wire("codex", "codex")
+    assert wire is not None
+    assert wire["staleness"]["reason"] == "overlay_generated_at_unreadable"
+
+
+def test_a_failed_refresh_keeps_the_prior_list_and_marks_it_typed_stale(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The retained list is PRIOR evidence -- it must never be served as fresh."""
+
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="codex",
+            discovered=[{"id": "gpt-5.6-sol", "name": "GPT-5.6-Sol", "description": ""}],
+            source=model_discovery.CODEX_SOURCE,
+            default_model="gpt-5.6-sol",
+        )
+    )
+
+    failed_row = model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="codex",
+            discovered=[],
+            source=model_discovery.CODEX_SOURCE,
+            failed_reason="Codex Python SDK model discovery failed: transport closed",
+        )
+    )
+
+    assert [m["id"] for m in failed_row["discovered"]] == ["gpt-5.6-sol"]
+    assert failed_row["staleness"]["reason"] == "overlay_refresh_failed"
+    assert "transport closed" in failed_row["staleness"]["failed_reason"]
+    # And every later READ of that entry keeps saying so.
+    wire = model_discovery.overlay_models_wire("codex", "codex")
+    assert wire is not None
+    assert wire["staleness"]["reason"] == "overlay_refresh_failed"
+
+
+def test_an_uncatalogued_staleness_reason_is_refused() -> None:
+    from clio_agent.providers.model_discovery import overlay as md_overlay
+
+    with pytest.raises(ValueError, match="Unknown overlay staleness reason"):
+        md_overlay._staleness_reason("silently_probably_fine")

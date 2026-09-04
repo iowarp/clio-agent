@@ -24,6 +24,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from clio_agent.gact.providers.config import _effective_lm_config
 from tests._config_layer import set_config
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
@@ -246,8 +247,8 @@ def test_capabilities_and_provider_catalog_report_image_part_support(client: Tes
     by_id = {row["id"]: row for row in providers}
     assert by_id["openai"]["metadata"]["supports_vision"] is True
     assert by_id["anthropic"]["metadata"]["supports_vision"] is True
-    assert by_id["codex"]["metadata"]["supports_vision"] is False
-    assert by_id["claude_code"]["metadata"]["supports_vision"] is False
+    assert by_id["codex"]["metadata"]["supports_vision"] is True
+    assert by_id["claude_code"]["metadata"]["supports_vision"] is True
 
 
 def test_post_message_rejects_image_parts_for_text_only_provider(
@@ -255,12 +256,15 @@ def test_post_message_rejects_image_parts_for_text_only_provider(
     fake_agent: FakeClioAgent,
 ) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent)
-    app.state.lm_config = {
-        "provider": "codex",
-        "model": "gpt-5.5",
-        "supports_vision": False,
-    }
+    # NO hand-set ``supports_vision``: no production writer ever set that key, so
+    # a test that supplied it proved nothing about the real gate. codex HAS a
+    # modality-evidence system (its discovery overlay), and nothing has evidenced
+    # this model, so the refusal must come from the evidence path itself.
+    app.state.lm_config = {"provider": "codex", "model": "gpt-5.5"}
     with TestClient(app) as c:
+        assert _effective_lm_config(app)["supports_vision_source"] == (
+            "modality_evidence_unavailable"
+        )
         sid = c.post("/v1/sessions", json={"title": "vision"}).json()["id"]
         resp = c.post(
             f"/v1/sessions/{sid}/messages",
@@ -293,12 +297,15 @@ def test_post_message_preserves_image_parts_for_vision_capable_provider(
     from .conftest import complete_turn
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent)
-    app.state.lm_config = {
-        "provider": "openai",
-        "model": "gpt-4o",
-        "supports_vision": True,
-    }
+    # Again no hand-set flag: openai's /models listing cannot report modalities at
+    # all, so the registry's documented catalog-level supports_vision default is
+    # the honest stand-in -- and that arm must actually be reachable, which the
+    # deleted name allowlist made impossible.
+    app.state.lm_config = {"provider": "openai", "model": "gpt-4o"}
     with TestClient(app) as c:
+        cfg = _effective_lm_config(app)
+        assert cfg["supports_vision"] is True
+        assert cfg["supports_vision_source"] == "catalog_default_no_modality_evidence_system"
         sid = c.post("/v1/sessions", json={"title": "vision"}).json()["id"]
         assistant = complete_turn(
             c,
@@ -339,11 +346,7 @@ def test_post_message_dispatches_image_parts_to_image_aware_agent(tmp_path: Path
 
     fake_agent = ImageAwareFakeClioAgent()
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent)
-    app.state.lm_config = {
-        "provider": "openai",
-        "model": "gpt-4o",
-        "supports_vision": True,
-    }
+    app.state.lm_config = {"provider": "openai", "model": "gpt-4o"}
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={"title": "vision"}).json()["id"]
         assistant = complete_turn(

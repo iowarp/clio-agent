@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -136,12 +136,49 @@ async def correlated_elicitation_handler(
             len(_OPEN),
         )
         return ElicitResult(action="decline")
+    invocation = invocation_with_request_correlation(record.invocation, request_context)
     return await handle_elicitation(
         record.app,
-        record.invocation,
+        invocation,
         message,
         params,
         url_trusted_origins=_resolve_trusted_origins(None),
+    )
+
+
+def invocation_with_request_correlation(
+    invocation: "MCPInvocationContext", request_context: Any
+) -> "MCPInvocationContext":
+    """Add authoritative SEP-2663 task/input identity from a callback request."""
+
+    request_id = str(getattr(request_context, "request_id", "") or "")
+    if not request_id.startswith("task-") or not invocation.session_id:
+        return invocation
+    try:
+        from clio_agent.tools.mcp_task_records import iter_task_records  # noqa: PLC0415
+
+        candidates = [
+            record
+            for record in iter_task_records()
+            if record.session_id == invocation.session_id
+            and request_id.startswith(f"task-{record.task_id}-")
+        ]
+    except Exception as exc:  # noqa: BLE001 - enrichment must not reject an elicitation
+        logger.warning(
+            "elicitation correlation degraded reason=task_record_lookup_failed "
+            "request_id=%s session=%s err=%r",
+            request_id,
+            invocation.session_id,
+            exc,
+        )
+        return invocation
+    if len(candidates) != 1:
+        return invocation
+    task_id = candidates[0].task_id
+    return replace(
+        invocation,
+        task_id=task_id,
+        input_key=request_id.removeprefix(f"task-{task_id}-") or None,
     )
 
 

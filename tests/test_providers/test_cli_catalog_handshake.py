@@ -70,6 +70,7 @@ def test_discover_models_present_overlay_served_with_context_marker(
                     "context_window": 272000,
                     "context_source": "models.dev",
                     "output_limit": 64000,
+                    "capabilities": ["text", "image"],
                 }
             ],
             source=CODEX_SOURCE,
@@ -81,6 +82,7 @@ def test_discover_models_present_overlay_served_with_context_marker(
     assert [r["id"] for r in rows] == ["gpt-5.6-sol"]
     assert rows[0]["context_window"] == 272000
     assert rows[0]["output_limit"] == 64000
+    assert rows[0]["capabilities"] == ["text", "image"]
     assert rows[0]["_overlay_context_checked"] is True
 
 
@@ -115,12 +117,14 @@ def test_discover_model_config_prefills_from_overlay_row() -> None:
         "context_window": 272000,
         "output_limit": 64000,
         "context_source": "models.dev",
+        "capabilities": ["text", "image"],
         "_overlay_context_checked": True,
     }
     profile = asyncio.run(handshake.discover_model_config(client=None, ctx=_ctx(), raw=raw))
     assert profile.id == "gpt-5.6-sol"
     assert profile.context_window == 272000
     assert profile.output_limit == 64000
+    assert profile.capabilities == ("text", "image")
     assert profile.context_source == "models.dev"
 
 
@@ -246,3 +250,78 @@ def test_full_handshake_never_hits_the_cascade_once_overlay_populated(
     assert [m.id for m in report.models] == ["gpt-5.6-sol"]
     assert report.models[0].context_window == 272000
     assert report.models[0].output_limit == 64000
+
+
+# --------------------------------------------------------------------------- #
+# Catalog provenance: a zero-network read must not claim a live probe, and
+# cached evidence must not date itself to the moment it was read (AF-IMG F3).
+# --------------------------------------------------------------------------- #
+
+
+def test_overlay_backed_handshake_reports_overlay_not_live(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The overlay is real evidence -- but it is not THIS run's evidence.
+
+    ``models_source`` was hardcoded to ``"live"`` whenever any model existed, so
+    this handshake (which makes zero network calls) claimed a live probe it never
+    performed, and stamped the read's wall clock over evidence that could be
+    arbitrarily old.
+    """
+
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    record_refresh(
+        ProviderDiscoveryResult(
+            provider="codex",
+            discovered=[{"id": "gpt-5.6-sol", "name": "GPT-5.6-Sol", "description": ""}],
+            source=CODEX_SOURCE,
+            default_model="gpt-5.6-sol",
+            generated_at="2026-01-02T03:04:05+00:00",
+        )
+    )
+    monkeypatch.setattr(
+        "clio_agent.providers.handshake.sources.resolve_context", lambda model_id, kind: (None, "")
+    )
+    monkeypatch.setattr(
+        "clio_agent.providers.handshake.sources.resolve_output_limit",
+        lambda model_id, kind: None,
+    )
+
+    report = asyncio.run(CliCatalogHandshake(provider=None).handshake(_ctx()))
+
+    assert report.models_source == "overlay"
+    assert report.evidence_generated_at == "2026-01-02T03:04:05+00:00"
+    assert report.models[0].evidence_generated_at == "2026-01-02T03:04:05+00:00"
+    # The read's own clock is still reported, separately and honestly.
+    assert report.generated_at != report.evidence_generated_at
+
+
+def test_static_catalog_handshake_reports_static_not_live(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """With no overlay the rows ARE the compiled-in candidates -- never evidence."""
+
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    monkeypatch.setattr(
+        "clio_agent.providers.handshake.sources.resolve_context", lambda model_id, kind: (None, "")
+    )
+    monkeypatch.setattr(
+        "clio_agent.providers.handshake.sources.resolve_output_limit",
+        lambda model_id, kind: None,
+    )
+
+    report = asyncio.run(CliCatalogHandshake(provider=None).handshake(_ctx()))
+
+    assert report.models  # the static registry candidates are still surfaced
+    assert report.models_source == "static"
+    # A static row carries no capability evidence, so no modality can be claimed.
+    assert all(profile.capabilities == () for profile in report.models)
+
+
+def test_http_handshake_still_reports_live() -> None:
+    """The fix must not flip a REAL probe to a weaker provenance."""
+
+    from clio_agent.providers.handshake.openai_compat import OpenAICompatHandshake
+
+    handshake = OpenAICompatHandshake(provider=None)
+    assert handshake.models_provenance(_ctx("openai", "openai")) == ("live", "")

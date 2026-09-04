@@ -71,6 +71,11 @@ class ModelProfile:
     capabilities: tuple[str, ...] = ()
     is_loaded: bool = False
     context_source: ContextSource = "live"
+    #: When this profile's CAPABILITY evidence was actually produced. A handshake
+    #: that reads persisted discovery evidence (the CLI-provider overlay) carries
+    #: the timestamp of the probe that produced it, not the wall clock of the
+    #: read; empty when the evidence is the handshake run itself.
+    evidence_generated_at: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -90,8 +95,21 @@ class HandshakeReport:
     latency_ms: float | None = None
     error: str | None = None
     models: tuple[ModelProfile, ...] = ()
-    models_source: str = "live"  # catalog-level provenance: live | static | unavailable
+    #: Catalog-level provenance, reported by the handshake that ran rather than
+    #: assumed: ``live`` (this run probed the provider), ``overlay`` (persisted
+    #: evidence from an earlier explicit discovery run), ``static`` (the
+    #: compiled-in registry catalog -- candidates, not evidence), or
+    #: ``unavailable``. It was previously hardcoded to ``live`` whenever ANY
+    #: model existed, which made the zero-network NoOp/CliCatalog handshakes
+    #: claim a live probe they never performed.
+    models_source: str = "live"
+    #: Wall clock of THIS handshake run.
     generated_at: str = ""
+    #: When the model evidence was actually produced. Equals ``generated_at``
+    #: for a real live probe; for overlay-sourced evidence it is the timestamp
+    #: the discovery run persisted, so a cached catalog cannot present itself as
+    #: freshly generated.
+    evidence_generated_at: str = ""
 
     @property
     def ok(self) -> bool:

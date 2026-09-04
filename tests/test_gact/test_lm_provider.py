@@ -719,6 +719,13 @@ def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) ->
         ).json()
         assert stale_session["model"]["provider_id"] == "anthropic"
 
+        # A catalog discovered against the PREVIOUS binding, to prove the bind
+        # clears it rather than the assertion merely observing an unset field.
+        app.state.provider_catalog = {
+            "catalog_id": "active",
+            "providers": [{"id": "anthropic", "health": "ready", "models": []}],
+        }
+
         # Configure via PUT.
         resp = c.put(
             "/v1/providers/lm",
@@ -746,6 +753,11 @@ def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) ->
         assert app.state.lm_config["context_length"] == 16384
         refreshed_session = c.get(f"/v1/sessions/{stale_session['id']}").json()
         assert refreshed_session["model"] == {"provider_id": "", "model_id": "", "variant": ""}
+        # The normalized provider catalog is a snapshot of ONE discovery pass and
+        # delivery planning reads modalities straight out of it. Leaving it in
+        # place after a bind routed the next attachment against the PREVIOUS
+        # provider's capability evidence, so the bind invalidates it.
+        assert app.state.provider_catalog is None
         # #800: /v1/health no longer mirrors the PUT'd LM config — the unified
         # doctor probes the real runtime (and folds a cached handshake into the
         # lm_provider row). That surface is covered in test_doctor_integrations.

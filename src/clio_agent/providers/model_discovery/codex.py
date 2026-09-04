@@ -5,11 +5,52 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from clio_agent.providers.model_discovery.modality_evidence import (
+    modality_evidence,
+    reported_modalities,
+)
 from clio_agent.providers.model_discovery.overlay import (
     CODEX_SOURCE,
     ProviderDiscoveryResult,
     attach_context_limits,
 )
+
+#: The modalities a Codex row can claim beyond text. Listed so an omitted
+#: ``input_modalities`` field records exactly which capabilities went
+#: unevidenced instead of leaving the negative anonymous.
+_CODEX_NON_TEXT_MODALITIES = ("image",)
+
+
+def _codex_capability_row(row: Any) -> dict[str, Any]:
+    """Return one discovered row's capabilities plus their typed evidence.
+
+    The pinned ``openai_codex`` SDK declares ``Model.input_modalities`` with a
+    schema default of ``["text", "image"]`` (verified in
+    ``openai_codex/generated/v2_all.py``), so reading the attribute directly
+    manufactures an image capability for any wire row that omitted the field —
+    and the typed negative could never fire in production. Capabilities are
+    therefore stamped ONLY from ``model_fields_set``; an omitted field records
+    no modality at all and a ``modality_unreported`` reason.
+    """
+
+    values = reported_modalities(row, "input_modalities")
+    if values is None:
+        return {
+            "capabilities": [],
+            "capability_evidence": modality_evidence(
+                source="codex_sdk_input_modalities",
+                reason="modality_unreported",
+                unevidenced=_CODEX_NON_TEXT_MODALITIES,
+            ),
+        }
+    return {
+        "capabilities": values,
+        "capability_evidence": modality_evidence(
+            source="codex_sdk_input_modalities",
+            reason="modality_reported",
+        ),
+    }
+
 
 # Deliberate injection seam for focused discovery tests.  The official SDK is
 # still imported only when discovery is requested; keeping the default as
@@ -76,6 +117,7 @@ def discover_codex(*, timeout: float = 20.0) -> ProviderDiscoveryResult:
             "id": str(row.id),
             "name": str(row.display_name or row.id),
             "description": str(row.description or ""),
+            **_codex_capability_row(row),
         }
         for row in rows
         if row.id
@@ -87,7 +129,10 @@ def discover_codex(*, timeout: float = 20.0) -> ProviderDiscoveryResult:
             source=CODEX_SOURCE,
             failed_reason="Codex Python SDK returned zero models",
         )
-    default_model = next((str(row.id) for row in rows if row.is_default), discovered[0]["id"])
+    default_model = next(
+        (str(row.id) for row in rows if row.is_default),
+        str(discovered[0]["id"]),
+    )
     return ProviderDiscoveryResult(
         provider="codex",
         discovered=attach_context_limits(discovered, "codex"),

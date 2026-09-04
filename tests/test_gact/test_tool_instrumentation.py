@@ -568,6 +568,10 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
             "workspace_resource_read": {"resource_id": "missing"},
             "workspace_resource_search": {"resource_id": "missing", "query": "proof"},
             "workspace_resource_structure": {"resource_id": "missing"},
+            # An invalid (non-positive) timeout raises ResourceQueryError before
+            # the wait loop ever touches the processing task record — fast,
+            # deterministic, and offline, like the rest of this table.
+            "workspace_resource_wait": {"task_id": "missing", "timeout_s": 0},
         }
         assert set(calls) == set(auto_tools), (
             "auto_tools.build_auto_react_tools grew/shrank — update this sabotage test's "

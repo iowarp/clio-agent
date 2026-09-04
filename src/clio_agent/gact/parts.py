@@ -79,12 +79,15 @@ class CapabilityFlags(DocumentCapabilityFields):
     x_clio_expert_packs: bool = False
     x_clio_agent_blueprints: bool = False
     x_clio_user_questions: bool = False
+    x_clio_interactions: bool = False
     x_clio_retry_attempts: bool = False
     x_clio_context_frames: bool = False
     x_clio_semantic_events: bool = False
+    x_clio_context_references: dict[str, Any] = Field(default_factory=dict)
     # #966 S2 / #968 — the /v1/artifacts read surface + user-pin channel, the
     # artifact.* SSE family, and resource_link parts carrying artifact:// wire ids.
     x_clio_artifacts: bool = False
+    x_clio_child_activity_projection: dict[str, Any] = Field(default_factory=dict)
     x_clio_semantic_trace_backend: str = ""
     x_clio_semantic_trace_detail: str = ""
     x_clio_hook_backend: str = ""
@@ -146,6 +149,15 @@ class Part(DocumentPartFields):
     resource_id: str = ""
     resource_revision: str = ""
     delivery_preference: str = ""
+
+    # context_ref -- a server-resolved reference to existing context in this
+    # session's workspace. ``id`` remains the message-part identity; ``ref_id``
+    # is the referenced repository identity. Labels are display-only and are
+    # replaced with the authoritative repository label during admission.
+    ref_kind: str = ""
+    ref_id: str = ""
+    label: str = ""
+    revision: str = ""
 
     # routing_decision (v0.2 §4.5)
     selected_agent: str = ""

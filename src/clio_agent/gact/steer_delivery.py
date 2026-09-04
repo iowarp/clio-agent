@@ -99,7 +99,7 @@ def compose_steer_block(app: "FastAPI", sid: str, event: "InboxEvent") -> str:
             "folded into a turn that is already running; they stay on the user's message and are "
             "delivered natively on the next turn that carries it."
         )
-    steer_text = (event.text or "").strip()
+    steer_text = (event.model_text or event.text or "").strip()
     if steer_text:
         sections.append(steer_text)
     if not sections:

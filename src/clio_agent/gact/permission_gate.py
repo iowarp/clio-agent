@@ -208,10 +208,8 @@ def _invoke_permission_gate(
 ) -> str:
     """Invoke a gate with context while retaining legacy two-argument hooks.
 
-    The built-in gate accepts the structured third argument. Existing custom
-    hooks are a documented two-argument seam; signature binding selects that
-    form before invocation, avoiding a catch-and-retry that could accidentally
-    run a gate twice when its own body raises ``TypeError``.
+    Signature binding preserves the documented two-argument custom-hook seam
+    without catch-and-retry accidentally invoking a failing gate twice.
     """
 
     try:
@@ -753,7 +751,9 @@ def _make_permission_gate(app: "FastAPI"):
             "created_at": datetime.now(timezone.utc).isoformat(),
             "status": "pending",
         }
-        # #1044: the ai-review reviewer runs ONLY when there is no explicit ``ask`` policy —
+        if _is_external_mcp_permission_context(context):
+            row["kind"] = _EXTERNAL_MCP_PERMISSION_CONTEXT_KIND
+        # #1044: the ai-review reviewer runs only when there is no explicit ``ask`` policy —
         # an explicit ``ask`` is a deliberate "always confirm THIS tool with a HUMAN" and beats
         # the mode (uniform with #1034: explicit policy > mode), so it must NOT be reviewer-
         # auto-decided. When the reviewer WILL run, stamp the typed reviewer-pending reason so

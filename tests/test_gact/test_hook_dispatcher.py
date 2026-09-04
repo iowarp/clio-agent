@@ -957,6 +957,11 @@ def test_subagent_start_and_stop_fire_exactly_once(tmp_path: Path, monkeypatch) 
         with TestClient(app) as client:
             parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
             before_start = disp.count(SUBAGENT_START)
+            # SubagentStop fires from a turn-task done-callback, so a child
+            # spawned by an EARLIER test can settle inside this window and land
+            # on the process-global dispatcher. Both halves therefore assert a
+            # DELTA; the absolute count made this test fail under load only.
+            before_stop = disp.count(SUBAGENT_STOP)
             task = spawn_child_turn_threadsafe(
                 app,
                 TaskSpec(
@@ -973,7 +978,7 @@ def test_subagent_start_and_stop_fire_exactly_once(tmp_path: Path, monkeypatch) 
                 if rec is not None and rec.is_terminal:
                     break
                 time.sleep(0.05)
-            assert disp.count(SUBAGENT_STOP) == 1
+            assert disp.count(SUBAGENT_STOP) - before_stop == 1
     finally:
         install_global_dispatcher(None)
 

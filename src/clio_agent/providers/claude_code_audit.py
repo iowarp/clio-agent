@@ -178,8 +178,76 @@ def emit_call_usage(
     stream_audit("provider.call_usage", **fields)
 
 
+def trace_json(value: Any) -> str:
+    """Serialize provider I/O for the hot-trace logger, never raising."""
+
+    import json  # noqa: PLC0415 - only needed on the traced path
+
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except TypeError:
+        return json.dumps(str(value), ensure_ascii=False)
+
+
+def emit_request_trace(
+    *,
+    call_index: int,
+    mode: str,
+    model: str,
+    transport: str,
+    api_base: str,
+    cwd: str | None,
+    timeout_s: float,
+    thinking: Any,
+    sdk_options: dict[str, Any],
+    messages: Any,
+    prompt: str,
+    native_inputs: list[dict[str, Any]],
+    optional_params: dict[str, Any],
+) -> None:
+    """Record ONE Claude Code request as a structured hot-trace row.
+
+    Shared by the blocking and streaming entry points, which previously carried
+    two near-identical copies of this record and drifted apart in exactly the
+    field that mattered.
+
+    ``messages`` must already be redacted by the caller
+    (:func:`~clio_agent.providers.claude_code_multimodal.redact_message_attachments`):
+    the request SHAPE -- how many parts, in what order, of what media type -- is
+    the whole diagnostic value of the row, and it is preserved while the
+    attachment payloads are replaced by a typed marker.
+    """
+
+    from clio_agent.runtime import trace  # noqa: PLC0415 - keeps this module import-light
+
+    trace.HF_ON and trace.hot(
+        "CLAUDE-CODE-IO",
+        "request call=%d json=%s",
+        call_index,
+        trace_json(
+            {
+                "call": call_index,
+                "mode": mode,
+                "thinking": thinking,
+                "model": model,
+                "transport": transport,
+                "api_base": api_base,
+                "cwd": cwd,
+                "timeout_s": timeout_s,
+                "sdk_options": sdk_options,
+                "messages": messages,
+                "prompt": prompt,
+                "native_inputs": native_inputs,
+                "optional_params": optional_params,
+            }
+        ),
+    )
+
+
 __all__ = [
+    "trace_json",
     "active_gact_ids",
+    "emit_request_trace",
     "emit_call_started",
     "emit_call_usage",
     "prompt_prefix_fingerprint",

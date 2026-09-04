@@ -39,9 +39,8 @@ def _delivery_ledger_max_records() -> int:
 
 
 # The representations the delivery PATH actually implements. ``native`` means
-# the resource's own bytes reach the model; today ``_dspy_images_from_parts`` is
-# the only implementation of that and it delivers images, so image is the only
-# media a native plan may name. ``retrieval`` and ``sandbox`` were removed: the
+# the resource's own bytes reach the model; image and PDF lanes are implemented.
+# ``retrieval`` and ``sandbox`` were removed: the
 # first was never produced by any branch, the second was produced but nothing
 # consumed it, so both were ledger entries describing work that never happened.
 DeliveryRepresentation = Literal[
@@ -55,9 +54,10 @@ DeliveryRepresentation = Literal[
 # is the queryable fact, the sentence is what a human reads.
 DELIVERY_REASONS: dict[str, str] = {
     "native_image_input": "live model handshake reports image input",
+    "native_pdf_input": "live model handshake reports PDF input",
     "native_lane_unimplemented": (
         "the live model handshake reports {modality} input, but CLIO implements native "
-        "delivery for images only; this resource is planned as {representation} instead"
+        "delivery for this modality; this resource is planned as {representation} instead"
     ),
     "bounded_text_tools": "text is exposed through bounded resource tools",
     "structured_document": (
@@ -70,7 +70,7 @@ DELIVERY_REASONS: dict[str, str] = {
     "no_representation": "no safe, verified content representation exists",
 }
 
-# Media the native lane can actually carry today.
+# Prefix media the native lane can actually carry today.
 NATIVE_MEDIA_PREFIXES = ("image/",)
 
 
@@ -90,7 +90,17 @@ class ResourceDeliveryRecord(BaseModel):
     evidence_generated_at: str = ""
     reason_code: str = ""
     reason: str
+    #: When the PLAN was recorded. The plan is a decision, not an outcome.
     delivered_at: str = Field(default_factory=_now_iso)
+    #: Whether the planned representation actually rode the request. ``None``
+    #: means the outcome has not been settled yet (the turn has not dispatched);
+    #: ``False`` carries ``delivery_reason_code``. Without this the ledger
+    #: reported a delivery whenever a plan existed, including for attachments the
+    #: attach step declined.
+    delivery_confirmed: bool | None = None
+    delivery_reason_code: str = ""
+    delivery_reason: str = ""
+    delivery_settled_at: str = ""
 
 
 class ResourceDeliveryStore:
@@ -167,6 +177,46 @@ class ResourceDeliveryStore:
             self._flush_locked()
             return record.model_copy(deep=True)
 
+    def record_outcome(
+        self,
+        *,
+        workspace_id: str,
+        message_id: str,
+        resource_id: str,
+        resource_revision: str,
+        delivered: bool,
+        reason_code: str = "",
+        reason: str = "",
+    ) -> ResourceDeliveryRecord | None:
+        """Settle one planned row with what the attach step actually did.
+
+        Returns the updated row, or ``None`` when no plan matches (nothing to
+        settle — the caller is describing a resource this message never planned).
+        The row's PLAN fields are never rewritten: an honest ledger keeps the
+        decision and the outcome side by side.
+        """
+
+        with self._lock:
+            for index, row in enumerate(self._rows):
+                if (
+                    row.workspace_id == workspace_id
+                    and row.message_id == message_id
+                    and row.resource_id == resource_id
+                    and str(row.resource_revision) == str(resource_revision)
+                ):
+                    settled = row.model_copy(
+                        update={
+                            "delivery_confirmed": delivered,
+                            "delivery_reason_code": reason_code,
+                            "delivery_reason": reason,
+                            "delivery_settled_at": _now_iso(),
+                        }
+                    )
+                    self._rows[index] = settled
+                    self._flush_locked()
+                    return settled.model_copy(deep=True)
+        return None
+
     def list(self, workspace_id: str) -> list[ResourceDeliveryRecord]:
         with self._lock:
             return [
@@ -214,6 +264,21 @@ def _modalities(values: Any) -> set[str]:
     return modalities
 
 
+#: Evidence-source labels a delivery plan may treat as real capability evidence.
+#: ``live_handshake`` is a probe this process ran; ``discovery_overlay`` is a
+#: persisted earlier discovery run (the Codex SDK catalog read / the claude_code
+#: alias probe) served through the passive handshake. Both were produced by
+#: asking the provider. Anything else -- notably ``unavailable`` -- is not
+#: evidence and can never justify handing the model an attachment's bytes.
+EVIDENCED_MODALITY_SOURCES: frozenset[str] = frozenset({"live_handshake", "discovery_overlay"})
+
+#: HandshakeReport.models_source -> the delivery-plan evidence label it earns.
+_EVIDENCE_LABEL_BY_SOURCE: dict[str, str] = {
+    "live": "live_handshake",
+    "overlay": "discovery_overlay",
+}
+
+
 def _catalog_modalities(app: Any, model: ModelRef) -> tuple[set[str], str, str]:
     catalog = getattr(app.state, "provider_catalog", None)
     if not isinstance(catalog, dict):
@@ -246,13 +311,17 @@ def _catalog_modalities(app: Any, model: ModelRef) -> tuple[set[str], str, str]:
     if profile is None or not isinstance(profile.get("evidence"), dict):
         return {"text"}, "unavailable", ""
     evidence = profile["evidence"]
-    if evidence.get("live") is not True:
-        return {"text"}, "unavailable", str(evidence.get("generated_at") or "")
-    return (
-        _modalities(profile.get("modalities")),
-        "live_handshake",
-        str(evidence.get("generated_at") or ""),
-    )
+    # ``evidenced`` covers both a live probe and a persisted discovery run; the
+    # older ``live`` key is honoured for a catalog payload written before the
+    # distinction existed, so an in-flight app's cached dict is not misread.
+    evidenced = evidence.get("evidenced")
+    if evidenced is None:
+        evidenced = evidence.get("live") is True
+    generated_at = str(evidence.get("generated_at") or "")
+    if evidenced is not True:
+        return {"text"}, "unavailable", generated_at
+    label = _EVIDENCE_LABEL_BY_SOURCE.get(str(evidence.get("source") or ""), "live_handshake")
+    return _modalities(profile.get("modalities")), label, generated_at
 
 
 def _live_modalities(app: Any, model: ModelRef) -> tuple[set[str], str, str]:
@@ -260,12 +329,20 @@ def _live_modalities(app: Any, model: ModelRef) -> tuple[set[str], str, str]:
     if (
         report is not None
         and report.ok
-        and report.models_source == "live"
+        and report.models_source in _EVIDENCE_LABEL_BY_SOURCE
         and model.provider_id in {report.provider_id, report.provider_kind, ""}
     ):
         profile = report.model(model.model_id)
         if profile is not None:
-            return _modalities(profile.capabilities), "live_handshake", report.generated_at
+            # The evidence's OWN timestamp, not the wall clock of the handshake
+            # run that read it -- a cached catalog must not date itself to now.
+            return (
+                _modalities(profile.capabilities),
+                _EVIDENCE_LABEL_BY_SOURCE[report.models_source],
+                profile.evidence_generated_at
+                or getattr(report, "evidence_generated_at", "")
+                or report.generated_at,
+            )
     return _catalog_modalities(app, model)
 
 
@@ -311,7 +388,7 @@ _OPAQUE_TYPES = frozenset(
 # Media whose modality the handshake reports but whose native delivery lane is
 # NOT implemented. Kept as explicit maps so the day a lane lands, the seam is
 # one entry, and until then the trace names exactly what was skipped.
-_UNIMPLEMENTED_NATIVE_EXACT: dict[str, str] = {"application/pdf": "pdf"}
+_UNIMPLEMENTED_NATIVE_EXACT: dict[str, str] = {}
 _UNIMPLEMENTED_NATIVE_PREFIXES: dict[str, str] = {"audio/": "audio", "video/": "video"}
 
 
@@ -337,7 +414,7 @@ def _representation_for(
     """Return the representation, its typed reason code, and the reason sentence.
 
     A plan may only say ``native`` for media the delivery path actually carries
-    (images). When a model reports a modality CLIO has no native lane for, the
+    (images and PDFs). When a model reports a modality CLIO has no native lane for, the
     plan falls through to the next HONEST representation for that media — the
     structured conversion for documents, metadata for opaque media — and records
     ``native_lane_unimplemented`` naming the skipped modality, so the ledger,
@@ -347,6 +424,8 @@ def _representation_for(
 
     if media_type.startswith(NATIVE_MEDIA_PREFIXES) and "image" in modalities:
         return "native", "native_image_input", DELIVERY_REASONS["native_image_input"]
+    if media_type == "application/pdf" and "pdf" in modalities:
+        return "native", "native_pdf_input", DELIVERY_REASONS["native_pdf_input"]
     skipped = _unimplemented_native_modality(media_type, modalities)
     if media_type.startswith("text/") or media_type in _TEXTUAL_TYPES:
         representation: DeliveryRepresentation = "bounded_tools"
@@ -398,6 +477,7 @@ def plan_resource_delivery(
 
 __all__ = [
     "DELIVERY_REASONS",
+    "EVIDENCED_MODALITY_SOURCES",
     "DeliveryRepresentation",
     "ResourceDeliveryRecord",
     "ResourceDeliveryStore",

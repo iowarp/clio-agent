@@ -367,7 +367,7 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
         if not include_children:
             records = registry.list_for_workspace(workspace_id)
         else:
-            from clio_agent.gact.agent_tasks import descendant_session_ids  # noqa: PLC0415
+            from clio_agent.gact.session_descendants import descendant_session_ids  # noqa: PLC0415
 
             child_ids = descendant_session_ids(app, sid)
             workspaces = [workspace_id]

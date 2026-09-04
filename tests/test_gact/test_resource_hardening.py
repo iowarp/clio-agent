@@ -417,7 +417,6 @@ def test_a_cancel_during_the_status_await_is_not_overwritten(tmp_path: Path) -> 
 @pytest.mark.parametrize(
     ("media_type", "modality", "expected"),
     [
-        ("application/pdf", "pdf", "structured_document"),
         ("audio/wav", "audio", "metadata_only"),
         ("video/mp4", "video", "metadata_only"),
     ],
@@ -425,7 +424,7 @@ def test_a_cancel_during_the_status_await_is_not_overwritten(tmp_path: Path) -> 
 def test_a_capable_model_does_not_get_an_unimplemented_native_plan(
     media_type: str, modality: str, expected: str
 ) -> None:
-    """Only images are delivered natively, so only images may be planned native."""
+    """Unsupported native modalities fall back to an honest representation."""
 
     app = SimpleNamespace(
         state=SimpleNamespace(
@@ -464,6 +463,48 @@ def test_a_capable_model_does_not_get_an_unimplemented_native_plan(
     assert planned.representation == expected
     assert planned.reason_code == "native_lane_unimplemented"
     assert modality in planned.reason
+
+
+def test_pdf_capability_selects_native_pdf_delivery() -> None:
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            provider_catalog={
+                "providers": [
+                    {
+                        "id": "claude_code",
+                        "health": "ready",
+                        "models": [
+                            {
+                                "model_id": "sonnet",
+                                "availability": "available",
+                                "modalities": ["text", "image", "pdf"],
+                                "evidence": {"live": True, "generated_at": "2026-09-03T00:00:00Z"},
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+    )
+    record = ResourceRecord(
+        id="res_pdf",
+        workspace_id="ws_1",
+        name="paper.pdf",
+        declared_size=10,
+        received_size=10,
+        detected_mime="application/pdf",
+        state="ready",
+    )
+
+    planned = plan_resource_delivery(
+        app,
+        resource=record,
+        message_id="m_pdf",
+        model=ModelRef(provider_id="claude_code", model_id="sonnet"),
+    )
+
+    assert planned.representation == "native"
+    assert planned.reason_code == "native_pdf_input"
 
 
 def test_the_representation_vocabulary_has_no_unproduced_values() -> None:
@@ -644,6 +685,7 @@ def test_a_corrupt_resource_index_is_quarantined_and_the_server_still_boots(
     with TestClient(app) as client:
         capabilities = client.get("/v1/capabilities").json()["capabilities"]["x_clio_resources"]
 
+        assert capabilities["enabled"] is True
         reasons = {row["kind"]: row for row in capabilities["degradations"]}
         assert set(reasons) == {"resource_custody_index", "resource_delivery_ledger"}
         for row in reasons.values():
@@ -907,3 +949,54 @@ def test_the_structured_node_ceiling_is_configurable(tmp_path: Path) -> None:
             read_workspace_resource_structure(app, workspace_id, resource_id, "texts", 0)
 
     assert excinfo.value.code == "structure_node_too_large"
+
+
+def test_converter_activity_window_bounds_are_configuration() -> None:
+    """A third-party converter's event volume is a deployment bound, not a constant."""
+
+    from clio_agent.gact.resource_processing import bounded_processing_events
+
+    raw = [
+        {"sequence": index, "message": f"stage message {index} " + "y" * 4096, "stage": "s" * 512}
+        for index in range(400)
+    ]
+
+    # Under the shipped defaults the window is the newest 100 events, each with a
+    # bounded message and stage label...
+    shipped = bounded_processing_events(raw)
+    assert len(shipped) == 100
+    assert shipped[0].sequence == 300
+    assert len(shipped[0].message) == 1000
+    assert len(shipped[0].stage) == 80
+
+    # ...and a deployment that wants a smaller served payload can shrink all three.
+    set_config("resources.processing_event_max_records", 5)
+    set_config("resources.processing_event_message_chars", 20)
+    set_config("resources.processing_event_stage_chars", 4)
+    tightened = bounded_processing_events(raw)
+    assert len(tightened) == 5
+    assert tightened[0].sequence == 395
+    assert len(tightened[0].message) == 20
+    assert len(tightened[0].stage) == 4
+
+    # A zero/negative bound degrades to a usable floor instead of serving nothing.
+    set_config("resources.processing_event_max_records", 0)
+    set_config("resources.processing_event_message_chars", -3)
+    set_config("resources.processing_event_stage_chars", 0)
+    floored = bounded_processing_events(raw)
+    assert len(floored) == 1
+    assert len(floored[0].message) == 1
+    assert len(floored[0].stage) == 1
+
+
+def test_conversion_poll_cadence_is_configuration() -> None:
+    """The wait's poll interval is cadence an operator owns; the budget stays the caller's."""
+
+    from clio_agent.gact.resource_processing_bounds import processing_poll_interval_s
+
+    assert processing_poll_interval_s() == 0.5
+    set_config("resources.processing_poll_interval_s", 2.5)
+    assert processing_poll_interval_s() == 2.5
+    # Never zero: a 0s cadence would spin the status endpoint inside the budget.
+    set_config("resources.processing_poll_interval_s", 0)
+    assert processing_poll_interval_s() == 0.01

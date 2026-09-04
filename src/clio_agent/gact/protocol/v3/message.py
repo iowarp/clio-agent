@@ -178,6 +178,20 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             **({"delivery": delivery} if delivery is not None else {}),
             **common,
         }
+    if part_type == "context_ref":
+        resolved = _mapping(metadata.get("context_reference"))
+        navigation = _mapping(resolved.get("navigation"))
+        return {
+            "id": part_id,
+            "type": "context_reference",
+            "ref_kind": str(part.get("ref_kind") or ""),
+            "ref_id": str(part.get("ref_id") or ""),
+            "label": str(part.get("label") or part.get("ref_id") or "Reference"),
+            "revision": str(part.get("revision") or ""),
+            "media_type": str(resolved.get("media_type") or "application/octet-stream"),
+            "navigation": dict(navigation),
+            **common,
+        }
     if part_type == "action_card":
         return {
             "id": part_id,

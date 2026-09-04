@@ -63,9 +63,29 @@ logger = logging.getLogger(__name__)
 #: yet — the normal cascade must still run for it).
 _OVERLAY_CHECKED_KEY = "_overlay_context_checked"
 
+#: ``ctx.extra`` key carrying the overlay entry's OWN ``generated_at`` — when the
+#: discovery run that produced this evidence actually happened, as distinct from
+#: the wall clock of the passive read that served it.
+_OVERLAY_GENERATED_AT_KEY = "overlay_generated_at"
+
+
+def _overlay_capabilities(row: dict[str, Any]) -> tuple[str, ...]:
+    """Return capability strings persisted by live CLI model discovery."""
+
+    values = row.get("capabilities")
+    if not isinstance(values, list):
+        return ()
+    return tuple(str(value).strip() for value in values if str(value).strip())
+
 
 class CliCatalogHandshake(NoOpHandshake):
     """:class:`NoOpHandshake` variant whose model list prefers the refresh overlay."""
+
+    #: The overlay carries the capabilities an explicit discovery run evidenced
+    #: (the Codex SDK's reported input modalities, the claude_code native probe),
+    #: so this provider kind HAS a modality-evidence system -- absence of a
+    #: modality here means "not evidenced yet", never "nobody could ask".
+    reports_input_modalities = True
 
     async def discover_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
         """Return the overlay's discovered models when present, else the static catalog.
@@ -92,6 +112,10 @@ class CliCatalogHandshake(NoOpHandshake):
             )
             wire = None
         if wire and wire.get("models"):
+            # Remember WHEN this evidence was produced. Without it the report
+            # stamps the read's wall clock, so a months-old cached catalog is
+            # served as if it had just been generated.
+            ctx.extra[_OVERLAY_GENERATED_AT_KEY] = str(wire.get("generated_at") or "")
             return [
                 {
                     "id": str(m.get("id") or ""),
@@ -100,12 +124,34 @@ class CliCatalogHandshake(NoOpHandshake):
                     "context_window": m.get("context_window"),
                     "output_limit": m.get("output_limit"),
                     "context_source": m.get("context_source"),
+                    "capabilities": list(_overlay_capabilities(m)),
+                    # The typed modality provenance discovery recorded for this
+                    # row (why a modality is present OR absent). Forwarded so
+                    # the capability negative stays queryable downstream instead
+                    # of arriving as an anonymous empty list.
+                    "capability_evidence": m.get("capability_evidence") or {},
                     _OVERLAY_CHECKED_KEY: True,
                 }
                 for m in wire["models"]
                 if isinstance(m, dict) and m.get("id")
             ]
         return await super().discover_models(client, ctx)
+
+    def models_provenance(self, ctx: HandshakeContext) -> tuple[str, str]:
+        """Report ``overlay`` + the discovery run's own timestamp, else ``static``.
+
+        The overlay is real evidence — a Codex SDK catalog read or a claude_code
+        alias probe actually ran — but it is not THIS run's evidence, and it can
+        be arbitrarily old. Both facts are reported rather than collapsed into
+        the ``live`` the base class used to stamp unconditionally. With no
+        overlay entry the rows are the static registry catalog, so
+        :class:`NoOpHandshake`'s answer stands.
+        """
+
+        generated_at = str(ctx.extra.get(_OVERLAY_GENERATED_AT_KEY) or "")
+        if _OVERLAY_GENERATED_AT_KEY not in ctx.extra:
+            return super().models_provenance(ctx)
+        return "overlay", generated_at
 
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
@@ -132,7 +178,9 @@ class CliCatalogHandshake(NoOpHandshake):
             output_limit=output_limit
             if isinstance(output_limit, int) and output_limit > 0
             else None,
+            capabilities=_overlay_capabilities(raw),
             context_source=str(raw.get("context_source") or "overlay"),
+            evidence_generated_at=str(ctx.extra.get(_OVERLAY_GENERATED_AT_KEY) or ""),
             raw=dict(raw),
         )
 

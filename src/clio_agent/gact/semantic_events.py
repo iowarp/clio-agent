@@ -187,6 +187,11 @@ SSE_TRACE_ONLY_EVENT_TYPES: frozenset[str] = frozenset(
         # status can lift it onto the wire via ``_SSE_ALWAYS_STATUSES``.
         "agent.toolset.recorded",
         "provider.thinking.redacted",  # no-silent-fallback CoT-redaction reason: trace-only
+        # A bounded submit re-ask is protocol repair the operator queries after the
+        # fact, never a UI row. Emitted with status "running" today, so nothing
+        # served it -- declared here so a future "failed" emit cannot ride the
+        # ``_SSE_ALWAYS_STATUSES`` override onto the wire.
+        "agent.submit_repair.attempted",
     }
 )
 

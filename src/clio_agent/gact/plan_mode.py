@@ -51,6 +51,7 @@ from clio_agent.gact.planning import (
     recorded_playbook,
     transition_playbook_to_execution,
 )
+from clio_agent.gact.user_question_ledger import record_user_question
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
@@ -497,9 +498,13 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
     recommended = str(pending.get("recommended_mode") or "")
     risk_notes = str(pending.get("risk_notes") or "")
     now_iso = datetime.now(timezone.utc).isoformat()
+    from clio_agent.gact.permission_delivery import attended_session_id  # noqa: PLC0415
+
     question = UserQuestion(
         id=_new_question_id(),
         session_id=state.sid,
+        owner_session_id=state.sid,
+        attended_session_id=attended_session_id(app, state.sid),
         prompt=_plan_exit_prompt(summary, plan_file, recommended, risk_notes),
         status="pending",
         kind="choice",
@@ -519,7 +524,7 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
             "source_user_message_id": state.user_msg.id,
         },
     )
-    app.state.user_questions[question.id] = question
+    record_user_question(app, question)
     updated = app.state.sessions.update(
         state.sid,
         status="waiting_user",

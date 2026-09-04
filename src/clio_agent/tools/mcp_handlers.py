@@ -124,6 +124,10 @@ class MCPInvocationContext:
     session_id: str | None = None
     namespace: str | None = None
     tool_name: str | None = None
+    # Present for SEP-2663 ``input_required`` callbacks. These are additive so
+    # older foreground-elicitation callers retain the same construction shape.
+    task_id: str | None = None
+    input_key: str | None = None
 
 
 @runtime_checkable

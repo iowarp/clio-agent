@@ -36,7 +36,9 @@ from fastapi.responses import JSONResponse
 
 from clio_agent.errors import MCP_TASK_RECORD_STORE_ABSENT
 from clio_agent.gact.composer_runtime import resource_capabilities
+from clio_agent.gact.context_references import CONTEXT_REFERENCE_CAPABILITY
 from clio_agent.gact.protocol_v3 import capabilities_to_v3, project_for_request
+from clio_agent.gact.provenance.child_projection import CHILD_ACTIVITY_PROJECTION_CAPABILITY
 from clio_agent.gact.relay_status import relay_capabilities
 from clio_agent.gact.runtime.capabilities import (
     _capability_gap_metadata,
@@ -501,10 +503,13 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 x_clio_expert_packs=True,
                 x_clio_agent_blueprints=True,
                 x_clio_user_questions=True,
+                x_clio_interactions=True,
                 x_clio_retry_attempts=True,
                 x_clio_context_frames=True,
                 x_clio_semantic_events=True,
+                x_clio_context_references=CONTEXT_REFERENCE_CAPABILITY,
                 x_clio_artifacts=True,  # #968 — /v1/artifacts + artifact.* + resource_link
+                x_clio_child_activity_projection=CHILD_ACTIVITY_PROJECTION_CAPABILITY,
                 x_clio_document_artifacts={
                     "protocol_version": "0.1.0",
                     "profiles": [

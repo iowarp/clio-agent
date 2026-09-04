@@ -118,6 +118,8 @@ def arm_forward_deadline(app: "FastAPI", forwarded_qid: str) -> None:
     def _expire() -> None:
         from clio_agent.gact.elicitation_bridge import (  # noqa: PLC0415
             claim_question_transition,
+        )
+        from clio_agent.gact.elicitation_forwarding import (  # noqa: PLC0415
             relay_forwarded_cancel,
         )
 

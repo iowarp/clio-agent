@@ -22,6 +22,21 @@ from clio_agent.gact.context_preferences_types import (
 from clio_agent.gact.context_preferences_types import (
     UpdateContextPreferencesRequest as UpdateContextPreferencesRequest,
 )
+from clio_agent.gact.interaction_types import (
+    AnswerUserQuestionRequest as AnswerUserQuestionRequest,
+)
+from clio_agent.gact.interaction_types import (
+    CreateUserQuestionRequest as CreateUserQuestionRequest,
+)
+from clio_agent.gact.interaction_types import PendingInteraction as PendingInteraction
+from clio_agent.gact.interaction_types import (
+    PendingInteractionSource as PendingInteractionSource,
+)
+from clio_agent.gact.interaction_types import (
+    RespondInteractionRequest as RespondInteractionRequest,
+)
+from clio_agent.gact.interaction_types import UserQuestion as UserQuestion
+from clio_agent.gact.interaction_types import UserQuestionOption as UserQuestionOption
 from clio_agent.gact.parts import CapabilityFlags, Part
 from clio_agent.gact.workspace_types import (
     CreateWorkspaceRequest as CreateWorkspaceRequest,
@@ -643,81 +658,6 @@ class ListToolsResponse(BaseModel):
     """GET /v1/catalog/tools body."""
 
     tools: list[Tool]
-
-
-# ---------------------------------------------------------------------------
-# CLIO ask-user and retry protocol (#333)
-# ---------------------------------------------------------------------------
-
-
-class UserQuestionOption(BaseModel):
-    label: str
-    value: str = ""
-    description: str = ""
-
-
-class UserQuestion(BaseModel):
-    id: str
-    session_id: str
-    prompt: str
-    status: Literal["pending", "answered", "cancelled", "expired"] = "pending"
-    # "multi_choice" (SEP-1330, C1-S4/#1284): a multi-select elicitation field
-    # (a flat array-of-enum) -- distinct from "choice" (a single scalar enum).
-    kind: Literal["freeform", "choice", "confirmation", "multi_choice"] = "freeform"
-    options: list[UserQuestionOption] = Field(default_factory=list)
-    created_at: str
-    updated_at: str
-    expires_at: str = ""
-    source: str = "orchestrator"
-    turn_id: str = ""
-    attempt_id: str = ""
-    answer: str = ""
-    selected_options: list[str] = Field(default_factory=list)
-    answer_metadata: dict[str, Any] = Field(default_factory=dict)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    # Agent-driven elicitation (#1309, C1-S7): additive wire fields, all absent
-    # (excluded by ``exclude_none``) unless the server marked this question
-    # ``x-clio-agent/audience: "agent"`` -- a question with no audience hint
-    # dumps byte-identical to the pre-#1309 shape.
-    #
-    # ``audience`` -- the SERVER's own declared hint, stamped at mint time
-    # regardless of the routing outcome (observability: "this WAS marked for
-    # the agent" even when it fell back to the human).
-    audience: Optional[Literal["human", "agent"]] = None
-    # ``agent_elicitation_routing`` / ``agent_elicitation_fallback_detail`` --
-    # the ROUTING decision for an audience="agent" question: either routed
-    # ("elicitation_routed_to_agent") or fell back to the human path
-    # ("agent_elicitation_fallback_to_human", with a typed ``..._detail`` key
-    # from ``clio_agent.gact.agent_elicitation.AGENT_ELICITATION_FALLBACK_DETAILS``
-    # naming WHY -- policy/url-mode/recursion/schema/timeout/etc; never silent).
-    agent_elicitation_routing: Optional[
-        Literal["elicitation_routed_to_agent", "agent_elicitation_fallback_to_human"]
-    ] = None
-    agent_elicitation_fallback_detail: Optional[str] = None
-    # ``answered_by`` -- attribution stamped on the ONE atomic "answered"
-    # transition (:func:`clio_agent.gact.elicitation_bridge.claim_question_transition`):
-    # who actually produced the accepted answer. Absent means "human" (today's
-    # implicit default, preserved byte-for-byte); "agent" only when the
-    # session's agent's answer won the atomic transition and passed the
-    # server's own ``requestedSchema`` validation (the semantic firewall).
-    answered_by: Optional[Literal["human", "agent"]] = None
-
-
-class CreateUserQuestionRequest(BaseModel):
-    prompt: str
-    kind: Literal["freeform", "choice", "confirmation"] = "freeform"
-    options: list[UserQuestionOption] = Field(default_factory=list)
-    source: str = "orchestrator"
-    turn_id: str = ""
-    attempt_id: str = ""
-    expires_at: str = ""
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class AnswerUserQuestionRequest(BaseModel):
-    answer: str = ""
-    selected_options: list[str] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class RetryTurnRequest(BaseModel):

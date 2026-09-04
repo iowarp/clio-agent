@@ -50,6 +50,17 @@ def _event_kind(event_type: str) -> str:
         return "tool"
     if event_type.startswith("artifact."):
         return "artifact"
+    # The families here are the ones actually emitted. ``question.`` was never one
+    # of them (the ask-user family is ``user_question.``; ``question.upserted`` is a
+    # v3 WIRE projection, not a semantic event), and ``interaction.`` / ``mcp.task.``
+    # / ``evidence.`` / ``context.reference.`` were never emitted at all -- four dead
+    # prefixes that made this look like it classified more than it did.
+    if event_type.startswith(("permission.", "user_question.")):
+        return "interaction"
+    if event_type.startswith(("a2ui.", "mcp_task.")):
+        return "interactive_work"
+    if event_type.startswith("resource."):
+        return "resource"
     return "event"
 
 
@@ -114,6 +125,21 @@ def normalize_semantic_events(
         raw_payload = event.get("payload")
         actor: dict[str, Any] = raw_actor if isinstance(raw_actor, dict) else {}
         payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
+        raw_subject = event.get("subject")
+        subject: dict[str, Any] = raw_subject if isinstance(raw_subject, dict) else {}
+        identity = {
+            key: str(payload.get(key) or subject.get(key) or "")
+            for key in (
+                "task_id",
+                "invocation_id",
+                "tool_name",
+                "surface_id",
+                "interaction_id",
+                "question_id",
+                "permission_id",
+                "resource_id",
+            )
+        }
         span_id = str(event.get("span_id") or event.get("event_id") or f"event-{position}")
         if span_id in seen_ids:
             span_id = f"{span_id}-{position}"
@@ -149,6 +175,10 @@ def normalize_semantic_events(
             "campaign_id": str(payload.get("campaign_id") or ""),
             "agent_id": str(actor.get("agent_id") or payload.get("expert_id") or ""),
             "source_agent_id": str(payload.get("source_agent_id") or ""),
+            "task_id": identity["task_id"],
+            "invocation_id": identity["invocation_id"],
+            "tool_name": identity["tool_name"],
+            "surface_id": identity["surface_id"],
             "label": str(event.get("summary") or event_type),
             "event_type": event_type,
             "status": status,
@@ -163,6 +193,7 @@ def normalize_semantic_events(
                 "workspace_id": str(event.get("workspace_id") or ""),
                 "schema_version": str(event.get("schema_version") or ""),
                 "provider": event.get("provider") or {},
+                **{key: value for key, value in identity.items() if value},
             },
             "source_event_ids": [str(event.get("event_id") or span_id)],
         }

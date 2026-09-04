@@ -287,6 +287,35 @@ class AgentTaskRegistry:
             tasks = [self._tasks[t] for t in ids if t in self._tasks]
         return sorted(tasks, key=lambda t: t.created_at, reverse=True)
 
+    def forget_session(self, session_id: str) -> list[str]:
+        """Drop every task naming ``session_id`` as its parent OR its child.
+
+        A deleted session used to leave its rows behind, so the lineage kept
+        naming a session the store no longer has and ``for_parent`` kept handing
+        out a task whose child is gone. Returns the removed task ids.
+        """
+
+        with self._lock:
+            removed = [
+                task_id
+                for task_id, task in self._tasks.items()
+                if session_id in (task.parent_session_id, task.child_session_id)
+            ]
+            for task_id in removed:
+                task = self._tasks.pop(task_id)
+                parent_index = self._by_parent.get(task.parent_session_id)
+                if parent_index is not None:
+                    parent_index.discard(task_id)
+                    if not parent_index:
+                        self._by_parent.pop(task.parent_session_id, None)
+                # A waiter blocked on this task must not hang on a session that
+                # no longer exists: release it rather than leaking the Event.
+                event = self._events.pop(task_id, None)
+                if event is not None:
+                    event.set()
+            self._by_parent.pop(session_id, None)
+            return removed
+
     def event(self, task_id: str) -> threading.Event:
         """The completion Event for ``task_id`` (created on demand). Set when the
         task reaches a terminal status — the primitive a waiting parent blocks on."""
@@ -485,67 +514,6 @@ def resolve_waited_task_rows(app: "FastAPI", task_ids: Iterable[str]) -> list[di
             }
         )
     return rows
-
-
-#: Default ceiling on descendant-session traversal (:func:`descendant_session_ids`).
-#: Spawn depth is already bounded (``spawn_depth_exceeded``), but the aggregation
-#: walk carries its own cap so a pathological / cyclic task graph can never loop
-#: unboundedly. ``1`` restricts to direct children only.
-_DEFAULT_DESCENDANT_DEPTH = 8
-
-
-def child_session_ids(app: "FastAPI", parent_session_id: str) -> list[str]:
-    """Return the direct child session ids a parent spawned (via the task registry).
-
-    Each :class:`AgentTask` carries the ``child_session_id`` of the real child
-    SESSION it projects (#948 S2 substrate). Empty when the registry is absent or
-    the session spawned nothing.
-    """
-    reg = getattr(app.state, "agent_task_registry", None)
-    if reg is None:
-        return []
-    out: list[str] = []
-    for task in reg.for_parent(parent_session_id):
-        child = str(getattr(task, "child_session_id", "") or "")
-        if child:
-            out.append(child)
-    return out
-
-
-def descendant_session_ids(
-    app: "FastAPI", root_session_id: str, *, max_depth: int = _DEFAULT_DESCENDANT_DEPTH
-) -> list[str]:
-    """Return the descendant child session ids of ``root_session_id`` (BFS, bounded).
-
-    Walks the agent-task registry's per-parent index breadth-first: direct children
-    at depth 1, their children at depth 2, and so on up to ``max_depth`` (``1`` =
-    children only). The root is NOT included; each descendant appears once (a
-    ``seen`` set makes a repeated / cyclic task graph terminate). Order is
-    breadth-first, siblings newest-created first (the registry's ``for_parent``
-    order). This is the substrate for parent-orchestrator provenance aggregation
-    (GAP B, S5 #971): a parent session whose children executed the tools can merge
-    their transform/artifact records with per-row session attribution.
-    """
-    reg = getattr(app.state, "agent_task_registry", None)
-    if reg is None or max_depth < 1:
-        return []
-    out: list[str] = []
-    seen: set[str] = {root_session_id}
-    frontier = [root_session_id]
-    depth = 0
-    while frontier and depth < max_depth:
-        next_frontier: list[str] = []
-        for parent in frontier:
-            for task in reg.for_parent(parent):
-                child = str(getattr(task, "child_session_id", "") or "")
-                if not child or child in seen:
-                    continue
-                seen.add(child)
-                out.append(child)
-                next_frontier.append(child)
-        frontier = next_frontier
-        depth += 1
-    return out
 
 
 def install_agent_task_registry(app: "FastAPI") -> AgentTaskRegistry:
@@ -794,9 +762,16 @@ def consume_notification(app: "FastAPI", task_id: str) -> Optional[AgentTask]:
 
 
 def publish_agent_task_event(app: "FastAPI", task: AgentTask, event_type: str) -> None:
-    """Publish an ``agent.task.*`` event to BOTH the parent and child session
-    channels (the bus is per-session), so a parent watching its SSE stream sees its
-    children's lifecycle and a child's own stream carries it too.
+    """Publish an ``agent.task.*`` event to the parent, the child, and the
+    human-ATTENDED root (the bus is per-session), so a parent watching its SSE
+    stream sees its children's lifecycle, a child's own stream carries it, and a
+    NESTED spawn is visible to the person actually watching.
+
+    The attended mirror is the same rule ``permission_delivery`` already applies:
+    a grandchild's lifecycle used to reach only its own parent and itself, so the
+    root session's stream showed nothing at all while work ran two levels down.
+    The mirrored copy retains the owning ``parent_session_id`` and adds delivery
+    metadata, keeping ownership distinct from the stream the human watches.
 
     These are OPERATIONAL events — like ``message.created`` / ``session.status_changed``
     they go straight to the bus, NOT through ``_emit_semantic_event``: the task's
@@ -806,9 +781,22 @@ def publish_agent_task_event(app: "FastAPI", task: AgentTask, event_type: str) -
     """
 
     from clio_agent.gact.events import Event  # noqa: PLC0415 - avoid import cycle
+    from clio_agent.gact.permission_delivery import attended_session_id  # noqa: PLC0415
 
     payload = asdict(task)
-    for sid in (task.parent_session_id, task.child_session_id):
-        if not sid:
-            continue
+    owners = [sid for sid in (task.parent_session_id, task.child_session_id) if sid]
+    attended = attended_session_id(app, task.parent_session_id) if task.parent_session_id else ""
+    for sid in owners:
         app.state.bus.publish(Event(type=event_type, session_id=sid, payload=payload))
+    if attended and attended not in owners:
+        app.state.bus.publish(
+            Event(
+                type=event_type,
+                session_id=attended,
+                payload={
+                    **payload,
+                    "forwarded_from_session_id": task.parent_session_id,
+                    "attended_session_id": attended,
+                },
+            )
+        )

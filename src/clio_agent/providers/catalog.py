@@ -330,6 +330,7 @@ PROVIDERS: tuple[Provider, ...] = (
         requires_api_key=False,
         auth_method="none",
         is_kind_default=True,
+        supports_vision=True,
         supports_live_catalog=False,
         parse_retry_capability="single_attempt",
         model_catalog=(
@@ -365,6 +366,7 @@ PROVIDERS: tuple[Provider, ...] = (
         requires_api_key=False,
         auth_method="none",
         is_kind_default=True,
+        supports_vision=True,
         supports_live_catalog=False,
         # "fable" is the CLI's own current default alias (verified live
         # 2026-08-14: a bare `claude -p` call with no --model resolves to

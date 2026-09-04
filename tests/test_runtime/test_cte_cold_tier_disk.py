@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from clio_agent.runtime.clio_core_health import probe_cte_cold_tier_disk
 from clio_agent.runtime.status import IntegrationState
 
@@ -39,8 +41,12 @@ def _seed_cte(dir_: Path, *, data_bytes: int) -> dict[str, str]:
     return {"CLIO_ARC_STORE": "cte", "CLIO_ARC_STORE_CONFIG": str(cfg)}
 
 
-def test_over_fraction_warns(tmp_path: Path) -> None:
+def test_over_fraction_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     env = _seed_cte(tmp_path, data_bytes=600_000)  # 60% >= default 50%
+    monkeypatch.setattr(
+        "clio_agent.runtime.clio_core_health._cte_cold_tier_dir_usage",
+        lambda _store: (600_000, 600_000),
+    )
     rows = probe_cte_cold_tier_disk(env=env)
     assert len(rows) == 1
     row = rows[0]
@@ -51,8 +57,12 @@ def test_over_fraction_warns(tmp_path: Path) -> None:
     assert row.required is False
 
 
-def test_under_fraction_ready(tmp_path: Path) -> None:
+def test_under_fraction_ready(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     env = _seed_cte(tmp_path, data_bytes=100_000)  # 10% < 50%
+    monkeypatch.setattr(
+        "clio_agent.runtime.clio_core_health._cte_cold_tier_dir_usage",
+        lambda _store: (100_000, 100_000),
+    )
     rows = probe_cte_cold_tier_disk(env=env)
     assert len(rows) == 1
     assert rows[0].state is IntegrationState.READY
@@ -77,13 +87,39 @@ def test_sparse_preallocation_uses_allocated_not_logical_bytes(tmp_path: Path) -
     assert "allocated" in row.summary
 
 
-def test_custom_fraction_env(tmp_path: Path, monkeypatch) -> None:
+def test_logical_capacity_is_not_reported_as_usage_when_allocation_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A preallocated capacity file must not become a false 100% usage warning."""
+
+    env = _seed_cte(tmp_path, data_bytes=1_000_000)
+    monkeypatch.setattr(
+        "clio_agent.runtime.clio_core_health._cte_cold_tier_dir_usage",
+        lambda _store: (None, 1_000_000),
+    )
+
+    rows = probe_cte_cold_tier_disk(env=env)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.state is IntegrationState.SKIPPED
+    assert row.details["used_bytes"] is None
+    assert row.details["used_fraction"] is None
+    assert row.details["allocation_measurement"] == "unavailable"
+    assert "reserved capacity, not current data usage" in row.summary
+
+
+def test_custom_fraction_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     env = _seed_cte(tmp_path, data_bytes=100_000)  # 10%
     monkeypatch.setenv("CLIO_ARC_CTE_DISK_WARN_FRACTION", "0.05")  # warn at 5%
     from clio_agent import conf
 
     conf.reload()
     env["CLIO_ARC_CTE_DISK_WARN_FRACTION"] = "0.05"
+    monkeypatch.setattr(
+        "clio_agent.runtime.clio_core_health._cte_cold_tier_dir_usage",
+        lambda _store: (100_000, 100_000),
+    )
     rows = probe_cte_cold_tier_disk(env=env)
     assert rows[0].state is IntegrationState.DEGRADED
 

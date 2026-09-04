@@ -285,8 +285,15 @@ def build_form_metadata(
     tool_name: str | None,
     invocation_id: str,
     forwarded_from_session: str,
+    task_id: str | None = None,
+    input_key: str | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Assemble the form-mode ``metadata.elicitation`` block for a new question."""
+    """Assemble the form-mode ``metadata.elicitation`` block for a new question.
+
+    ``task_id`` / ``input_key`` carry the MCP-task correlation for an
+    elicitation raised inside a task-shaped invocation, so the interactions
+    projection can route the response back to the parked task input.
+    """
 
     return {
         "elicitation": {
@@ -297,6 +304,8 @@ def build_form_metadata(
             "namespace": namespace,
             "tool_name": tool_name,
             "invocation_id": invocation_id,
+            "task_id": task_id,
+            "input_key": input_key,
             "forwarded_from_session": forwarded_from_session,
         }
     }
@@ -310,6 +319,8 @@ def build_url_metadata(
     tool_name: str | None,
     invocation_id: str,
     forwarded_from_session: str,
+    task_id: str | None = None,
+    input_key: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Assemble the url-mode ``metadata.elicitation`` block for a new question.
 
@@ -338,6 +349,8 @@ def build_url_metadata(
             "namespace": namespace,
             "tool_name": tool_name,
             "invocation_id": invocation_id,
+            "task_id": task_id,
+            "input_key": input_key,
             "forwarded_from_session": forwarded_from_session,
         }
     }

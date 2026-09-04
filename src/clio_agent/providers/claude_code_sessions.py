@@ -62,6 +62,7 @@ from clio_agent.providers.claude_code_cancel import (
     register_sdk_stream,
     unregister_sdk_stream,
 )
+from clio_agent.providers.claude_code_multimodal import sdk_prompt
 from clio_agent.providers.claude_code_options import build_sdk_options, thinking_key
 
 # Re-export the sibling blocking-path pool for the historical import seams (tests
@@ -503,7 +504,13 @@ class _StreamClientEntry:
             asyncio.run_coroutine_threadsafe(self._areset_client(), loop)
 
     async def stream(
-        self, *, payload: str, session_id: str, timeout: float | None, on_construct: Any
+        self,
+        *,
+        payload: str,
+        native_blocks: list[dict[str, Any]],
+        session_id: str,
+        timeout: float | None,
+        on_construct: Any,
     ) -> AsyncIterator[Any]:
         """Yield SDK messages for one ``query`` on the pooled client (cross-loop).
 
@@ -547,7 +554,10 @@ class _StreamClientEntry:
                 async with asyncio.timeout(timeout):
                     async with self._query_lock:
                         handle = register_sdk_stream(gact_sid, self._abort_active_query)
-                        await client.query(payload, session_id=session_id)
+                        query_input: Any = (
+                            sdk_prompt(payload, native_blocks) if native_blocks else payload
+                        )
+                        await client.query(query_input, session_id=session_id)
                         async for msg in client.receive_response():
                             chunks.put(("msg", msg))
                 clean = True
@@ -841,7 +851,12 @@ def _reset_sessions_for_tests() -> None:
 
 
 async def _per_call_message_source(
-    client: Any, *, prompt: str, session_id: str, timeout: float | None
+    client: Any,
+    *,
+    prompt: str,
+    native_blocks: list[dict[str, Any]],
+    session_id: str,
+    timeout: float | None,
 ) -> AsyncIterator[Any]:
     """Per-call (kill-switch off) SDK message source.
 
@@ -853,7 +868,8 @@ async def _per_call_message_source(
     await client.connect()
     try:
         async with asyncio.timeout(timeout):
-            await client.query(prompt, session_id=session_id)
+            query_input: Any = sdk_prompt(prompt, native_blocks) if native_blocks else prompt
+            await client.query(query_input, session_id=session_id)
             async for msg in client.receive_response():
                 yield msg
     finally:

@@ -68,11 +68,13 @@ from clio_agent.gact.routes.mcp_rows import (
     mcp_prompt_result_row,
 )
 from clio_agent.gact.routes.mcp_server_specs import stdio_server_spec
+from clio_agent.gact.routes.mcp_specs import declared_mcp_specs, session_mcp_inventory
 from clio_agent.gact.runtime.globals import _tool_session_context
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.execution import notify_tool_observer
-from clio_agent.tools.mcp_config import MCPTransportError, redact_mcp_spec, transport_from_spec
+from clio_agent.tools.mcp_config import MCPTransportError, transport_from_spec
 from clio_agent.tools.mcp_errors import typed_mcp_call_error
+from clio_agent.tools.mcp_redaction import redact_mcp_spec
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -137,16 +139,25 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
     """
 
     @app.get("/v1/mcp/servers")
-    async def list_mcp_servers(workspace_id: str = "") -> dict[str, Any]:
+    async def list_mcp_servers(workspace_id: str = "", session_id: str = "") -> dict[str, Any]:
         """SPEC §6.7 — enumerate MCP servers the backend has mounted.
 
-        Returns BOTH the bundled in-process built-ins (fs/shell) AND any
-        declared/third-party servers installed via POST /v1/mcp/servers.
-        Each row carries id/name/status/transport/tools_count/tools.
+        Returns the bundled in-process built-ins (fs/shell), any
+        declared/third-party servers installed via POST /v1/mcp/servers, AND the
+        selected session's own declarations. Each row carries
+        id/name/status/transport/tools_count/tools.
+
+        ``degradations`` names every reason the listing is partial, so a shorter
+        list is never served as the whole truth. The session inventory blocks
+        (files + the fleet lock a live turn holds), hence the worker.
         """
 
-        rows = _mcp_server_rows(cwd=_runtime_workspace_catalog_cwd(app, workspace_id=workspace_id))
-        return {"servers": rows}
+        cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
+        rows = _mcp_server_rows(cwd=cwd)
+        inventory = await asyncio.to_thread(
+            session_mcp_inventory, app, cwd=cwd, session_id=session_id
+        )
+        return {"servers": [*rows, *inventory.rows], "degradations": inventory.degradations}
 
     def _mcp_server_rows(cwd: Path | None = None) -> list[dict[str, Any]]:
         """Return bundled plus installed MCP server catalog rows."""
@@ -250,7 +261,6 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         flaky. The TUI calls this when it wants live tool-server status.
         """
         from clio_agent.gact.routes.mcp_rows import handshake_server_row  # noqa: PLC0415
-        from clio_agent.gact.routes.mcp_specs import declared_mcp_specs  # noqa: PLC0415
         from clio_agent.providers.handshake import handshake_mcp_servers  # noqa: PLC0415
 
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)

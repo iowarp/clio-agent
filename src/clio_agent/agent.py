@@ -76,6 +76,7 @@ from clio_agent.tools.mcp_config import load_mcp_servers
 from clio_agent.tools.mcp_discovery import NamespaceDiscoveryHealer, discover_declared_tools_bounded
 from clio_agent.tools.reaper import WorkspaceExecutorReaper
 from clio_agent.tools.remote_mcp import RemoteMcpFederation
+from clio_agent.tools.workspace_root import canonical_workspace_root
 
 _CANCELLATION_CHECKER: contextvars.ContextVar[Callable[[], bool] | None] = contextvars.ContextVar(
     "clio_cancellation_checker", default=None
@@ -508,7 +509,9 @@ class ClioAgent(dspy.Module):
         only for genuinely-invalidating events (#1236 federation epoch).
         """
 
-        root = get_active_tool_workspace_root().strip()
+        # Canonicalized ONCE, so the executor cache, the leases, the reaper and
+        # the gateway cwd below all file this workspace under the same key.
+        root = canonical_workspace_root(get_active_tool_workspace_root())
         if not root:
             return self.tool_executor
         blueprint_id = get_active_tool_blueprint_id().strip()
@@ -662,7 +665,7 @@ class ClioAgent(dspy.Module):
         inside a live turn must never count toward the reap TTL.
         """
 
-        root = (root or "").strip()
+        root = canonical_workspace_root(root)
         if not root:
             yield
             return
@@ -689,13 +692,14 @@ class ClioAgent(dspy.Module):
         primitive (shared registry lock; never closes a busy/leased executor — it defers to the
         reaper's idle pass) and returns its TYPED outcome
         (:data:`RESTART_RESTARTED_LIVE` / :data:`RESTART_DEFERRED_BUSY` / :data:`RESTART_NO_RESIDENT`).
-        The registry key is ``str(ws.root_path)`` — the same value the grant route derives — so
-        an exact-string lookup matches the turn-bound executor.
+        The registry key is ``canonical_workspace_root(workspace_root)`` — the SAME
+        canonicalizer the turn-bound resolve uses — so the lookup matches whichever way the
+        grant route's ``ws.root_path`` happens to be spelled.
         """
 
         from clio_agent.tools.reaper import RESTART_NO_RESIDENT  # noqa: PLC0415
 
-        root = (workspace_root or "").strip()
+        root = canonical_workspace_root(workspace_root)
         if not root:
             return RESTART_NO_RESIDENT
         # Ensure the shared (lock, executors, leases) exist even on a partially
@@ -724,16 +728,13 @@ class ClioAgent(dspy.Module):
         session_context: str,
         *,
         images: list[Any] | None = None,
+        files: list[Any] | None = None,
     ) -> str:
-        """Generate a single-shot conversational reply through DSPy/LiteLLM.
-
-        Plain LM synthesis over the chat signature — no tool loop. Reused by the
-        session-compaction summarizer (routes/sessions.py) to fold a transcript
-        into a compact summary.
-        """
+        """Generate a tool-free reply, also used by session compaction."""
         self._raise_if_cancelled("chat_before")
         chat_context = self._chat_session_context(session_context)
         image_inputs = list(images or [])
+        file_inputs = list(files or [])
         # P2.4: per-request BeforeModel/AfterModel wrapper (pure pass-through when no
         # model hook is configured, so this legacy chat/compaction path is unchanged).
         from clio_agent.lm.hooked_lm import wrap_lm_with_hooks  # noqa: PLC0415
@@ -743,6 +744,7 @@ class ClioAgent(dspy.Module):
                 result = self.chat_agent(
                     question=question,
                     images=image_inputs,
+                    files=file_inputs,
                     session_context=chat_context,
                 )
             answer = self._coerce_text(getattr(result, "answer", None)).strip()

@@ -13,14 +13,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
-from clio_agent.gact.messaging import _dspy_images_from_parts
+from clio_agent.gact.messaging import _dspy_files_from_parts, _dspy_images_from_parts
 from clio_agent.gact.parts import Part
 from clio_agent.gact.protocol.v3.message import part_to_v3_block
 from clio_agent.gact.resource_custody import ResourceLimitError, ResourceStore
+from clio_agent.gact.resource_enrichment import (
+    PROCESSING_QUERY_TOOL,
+    describe_resource_parts,
+)
 from clio_agent.gact.resource_processing import (
     ResourceConverterFactory,
     ResourceProcessingRecord,
     ResourceProcessingStore,
+    _document_service_payload,
+    resource_processing_task_id,
 )
 from clio_agent.gact.resource_tools import (
     inspect_workspace_resource,
@@ -28,10 +34,126 @@ from clio_agent.gact.resource_tools import (
     read_workspace_resource_structure,
     read_workspace_resource_text,
     search_workspace_resource,
+    wait_for_workspace_resource_processing,
 )
 from tests.test_gact.test_post_messages import FakeClioAgent
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
+
+def test_document_service_markdown_becomes_a_named_clio_derivative(tmp_path: Path) -> None:
+    """Adapt the real clio-web-search result shape without inventing content."""
+
+    payload = _document_service_payload(
+        {
+            "id": "docling_job",
+            "status": "complete",
+            "result": {
+                "markdown": "# HStream\n",
+                "document": {
+                    "structure": {"texts": [{"text": "HStream"}]},
+                    "capabilities": ["markdown", "document_structure"],
+                },
+            },
+        }
+    )
+    store = ResourceStore(root=tmp_path / "resources", max_resource_bytes=1024)
+    record, _replay = store.create_or_resume(
+        workspace_id="ws_1",
+        name="paper.pdf",
+        declared_size=len(b"%PDF-test"),
+        claimed_mime="application/pdf",
+    )
+    record = store.append(record.id, offset=0, data=b"%PDF-test")
+    processing = ResourceProcessingStore(store)
+
+    completed = processing.save_result(
+        record,
+        processing.state(record),
+        payload["result"],
+    )
+    manifest = processing.manifest(record)
+
+    assert completed.derivatives_available is True
+    assert manifest is not None
+    assert manifest["entries"][0]["name"] == "paper.md"
+    derivative_path, _entry = processing.derivative_path(record, "markdown")
+    assert derivative_path.read_text(encoding="utf-8") == "# HStream\n"
+
+
+def test_document_service_marks_progress_as_stage_based() -> None:
+    """Do not present fixed Docling milestones as measured completion."""
+
+    payload = _document_service_payload(
+        {
+            "id": "docling_job",
+            "status": "running",
+            "progress": 40,
+            "stage": "docling",
+            "message": "Docling is still processing (15s elapsed)",
+        }
+    )
+
+    assert payload["progress"] == 40
+    assert payload["progress_kind"] == "stage"
+    assert payload["stage"] == "docling"
+
+
+def test_resource_processing_exposes_bounded_converter_activity(tmp_path: Path) -> None:
+    """Carry real converter events without exposing an unbounded log response."""
+
+    class _EventfulDocumentProcessor(_CompleteDocumentProcessor):
+        async def submit(self, record: object, content_path: Path) -> dict[str, Any]:
+            del record, content_path
+            return {"id": "eventful_job", "status": "processing"}
+
+        async def status(self, job_id: str) -> dict[str, Any]:
+            assert job_id == "eventful_job"
+            return {
+                "id": job_id,
+                "status": "processing",
+                "progress": 40,
+                "progress_kind": "stage",
+                "stage": "docling",
+                "events": [
+                    {
+                        "sequence": sequence,
+                        "created_at": 1_788_300_000 + sequence,
+                        "level": "warning" if sequence == 104 else "info",
+                        "progress": 40,
+                        "stage": "docling",
+                        "message": f"converter event {sequence}" + ("x" * 2_000),
+                    }
+                    for sequence in range(1, 105)
+                ],
+            }
+
+    app = build_app(
+        sessions_path=tmp_path / "sessions.json",
+        agent=FakeClioAgent(answer="unused"),
+    )
+    app.state.resource_converter_factory = ResourceConverterFactory([_EventfulDocumentProcessor()])
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+        resource = _upload(
+            client,
+            workspace_id,
+            name="activity.md",
+            content=b"# Activity\n",
+            media_type="text/markdown",
+        )
+        payload = client.get(
+            f"/v1/workspaces/{workspace_id}/resources/{resource['id']}/derivatives"
+        ).json()
+
+    events = payload["processor"]["events"]
+    assert len(events) == 100
+    assert events[0]["sequence"] == 5
+    assert events[-1]["sequence"] == 104
+    assert events[-1]["level"] == "warning"
+    assert events[-1]["progress_kind"] == "stage"
+    assert events[-1]["created_at"].endswith("+00:00")
+    assert len(events[-1]["message"]) == 1_000
 
 
 class _CompleteDocumentProcessor:
@@ -647,18 +769,10 @@ def test_resource_list_advances_pending_converter_state(tmp_path: Path) -> None:
         assert listed[0]["processing"]["state"] == "complete"
 
 
-def test_a_result_without_a_derivative_manifest_is_refused_not_patched_up(
+def test_a_generic_result_without_a_derivative_manifest_is_refused_not_patched_up(
     tmp_path: Path,
 ) -> None:
-    """The manifest is a contract term, so a missing one fails typed.
-
-    The document service emits ``derivatives`` on every completed result
-    (verified against clio-web-search: ``build_derivative_manifest`` always
-    yields at least the markdown entry). The consumer-side shim that used to
-    synthesize a manifest from ``markdown`` was therefore unreachable for
-    anything the service produces today, and silently "fixing" a shape CLIO
-    does not understand is exactly the repair core must not do.
-    """
+    """The generic converter contract still requires an explicit manifest."""
 
     store = ResourceStore(root=tmp_path / "resources", max_resource_bytes=1024)
     record, _replay = store.create_or_resume(
@@ -923,6 +1037,58 @@ def test_non_native_image_resource_ref_never_becomes_model_image_input(tmp_path:
     assert _dspy_images_from_parts([part], app=app, workspace_id="ws_text_only") == []
 
 
+def test_native_pdf_resource_ref_becomes_model_file_input(tmp_path: Path) -> None:
+    """A native-planned PDF supplies its immutable original to DSPy."""
+
+    pdf = b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n"
+    store = ResourceStore(root=tmp_path / "resources", max_resource_bytes=1024)
+    record, _replay = store.create_or_resume(
+        workspace_id="ws_pdf",
+        name="paper.pdf",
+        declared_size=len(pdf),
+        claimed_mime="application/pdf",
+    )
+    record = store.append(record.id, offset=0, data=pdf)
+    part = Part(
+        type="resource_ref",
+        resource_id=record.id,
+        resource_revision=str(record.revision),
+        name=record.name,
+        media_type=record.detected_mime,
+        metadata={"delivery": {"representation": "native"}},
+    )
+    app = SimpleNamespace(state=SimpleNamespace(resource_store=store))
+
+    files = _dspy_files_from_parts([part], app=app, workspace_id="ws_pdf")
+
+    assert len(files) == 1
+    assert files[0].filename == "paper.pdf"
+    assert files[0].file_data.startswith("data:application/pdf;base64,")
+
+
+def test_non_native_pdf_resource_ref_never_becomes_model_file_input(tmp_path: Path) -> None:
+    pdf = b"%PDF-1.4\n%%EOF\n"
+    store = ResourceStore(root=tmp_path / "resources", max_resource_bytes=1024)
+    record, _replay = store.create_or_resume(
+        workspace_id="ws_pdf_tools",
+        name="paper.pdf",
+        declared_size=len(pdf),
+        claimed_mime="application/pdf",
+    )
+    record = store.append(record.id, offset=0, data=pdf)
+    part = Part(
+        type="resource_ref",
+        resource_id=record.id,
+        resource_revision=str(record.revision),
+        name=record.name,
+        media_type=record.detected_mime,
+        metadata={"delivery": {"representation": "structured_document"}},
+    )
+    app = SimpleNamespace(state=SimpleNamespace(resource_store=store))
+
+    assert _dspy_files_from_parts([part], app=app, workspace_id="ws_pdf_tools") == []
+
+
 def test_resource_reference_projects_as_attachment_block() -> None:
     block = part_to_v3_block(
         {
@@ -1084,8 +1250,199 @@ def test_resource_context_exposes_durable_local_conversion_task_before_remote_jo
         prompt, called_sid = agent.calls[0]
         assert called_sid == sid
         assert f"resource-processing:{record.id}:v{record.revision}" in prompt
-        assert f"query resource {record.id!r} with workspace_resource_inspect" in prompt
+        assert "wait once with workspace_resource_wait" in prompt
+        assert "Do not repeatedly poll inspection" in prompt
         assert "No structured converter was selected" not in prompt
+
+
+def test_native_resource_context_states_the_input_and_keeps_conversion_grounding(
+    tmp_path: Path,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeClioAgent(answer="unused"))
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+        resource = _upload(
+            client,
+            workspace_id,
+            name="paper.pdf",
+            content=b"%PDF-1.4\n",
+            media_type="application/pdf",
+        )
+        record = app.state.resource_store.get(workspace_id, str(resource["id"]))
+        assert record is not None
+        app.state.resource_processing_store.save_state(
+            record,
+            ResourceProcessingRecord(
+                workspace_id=workspace_id,
+                resource_id=record.id,
+                resource_revision=record.revision,
+                source_sha256=record.sha256,
+                processor="test-docling",
+                processor_url="http://processor.test",
+                state="processing",
+                job_id="remote-processing-job",
+            ),
+        )
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "native while converting", "workspace_id": workspace_id},
+        ).json()["id"]
+
+        blocks = describe_resource_parts(
+            app,
+            sid,
+            [
+                Part(
+                    type="resource_ref",
+                    resource_id=record.id,
+                    resource_revision=str(record.revision),
+                    name=record.name,
+                    metadata={"delivery": {"representation": "native"}},
+                )
+            ],
+        )
+
+        assert len(blocks) == 1
+        # The model is told what its INPUT contains -- state-meaning grounding.
+        assert "included directly in this model input" in blocks[0]
+        # ...and still learns the conversion state, which the prompt handcuff
+        # ("use it now", "Do not inspect or wait for conversion") deleted along
+        # with every derivative sentence. A model holding the original may still
+        # legitimately want the structured conversion; forbidding it a tool is
+        # not this block's job.
+        assert "Structured conversion is still" in blocks[0]
+        assert PROCESSING_QUERY_TOOL in blocks[0]
+        # No behavioural prohibition is injected.
+        assert "Do not inspect" not in blocks[0]
+        assert "use it now" not in blocks[0]
+
+
+def test_resource_conversion_wait_uses_one_stable_local_task_to_completion(
+    tmp_path: Path,
+) -> None:
+    class _DelayedDocumentProcessor(_CompleteDocumentProcessor):
+        async def submit(self, record: object, content_path: Path) -> dict[str, Any]:
+            del record
+            assert content_path.read_text(encoding="utf-8") == "# Structured\n"
+            return {"id": "remote_doc_job", "status": "processing"}
+
+        async def status(self, job_id: str) -> dict[str, Any]:
+            assert job_id == "remote_doc_job"
+            return {
+                "id": job_id,
+                "status": "complete",
+                "result": {
+                    "document": {"structure": {"texts": [{"text": "Structured"}]}},
+                    "derivatives": {
+                        "schema": "clio.resource-derivatives.v1",
+                        "entries": [
+                            {
+                                "id": "markdown",
+                                "name": "structured.md",
+                                "kind": "markdown",
+                                "media_type": "text/markdown",
+                                "content": "# Structured\n",
+                            }
+                        ],
+                    },
+                },
+            }
+
+    app = build_app(
+        sessions_path=tmp_path / "sessions.json",
+        agent=FakeClioAgent(answer="unused"),
+    )
+    app.state.resource_converter_factory = ResourceConverterFactory([_DelayedDocumentProcessor()])
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+        created = client.post(
+            f"/v1/workspaces/{workspace_id}/resources",
+            json={
+                "name": "structured.md",
+                "size": len(b"# Structured\n"),
+                "media_type": "text/markdown",
+            },
+        ).json()
+        appended = client.patch(
+            created["upload_url"],
+            headers={"Upload-Offset": "0"},
+            content=b"# Structured\n",
+        )
+        assert appended.status_code == 204
+        record = app.state.resource_store.get(workspace_id, str(created["id"]))
+        assert record is not None
+        task_id = resource_processing_task_id(record)
+        submitted = app.state.resource_processing_store.state(record)
+        assert submitted.job_id == "remote_doc_job"
+        assert task_id != submitted.job_id
+
+        waited = asyncio.run(
+            wait_for_workspace_resource_processing(app, workspace_id, task_id, 1.0)
+        )
+
+        assert waited["task_id"] == task_id
+        assert waited["terminal"] is True
+        assert waited["timed_out"] is False
+        assert waited["processing"]["state"] == "complete"
+        assert waited["processing"]["job_id"] == "remote_doc_job"
+
+
+def test_resource_conversion_wait_times_out_without_cancelling_work(tmp_path: Path) -> None:
+    class _LongDocumentProcessor(_CompleteDocumentProcessor):
+        async def submit(self, record: object, content_path: Path) -> dict[str, Any]:
+            del record, content_path
+            return {"id": "remote_long_job", "status": "processing"}
+
+        async def status(self, job_id: str) -> dict[str, Any]:
+            return {
+                "id": job_id,
+                "status": "processing",
+                "progress": 42,
+                "progress_kind": "stage",
+                "stage": "docling",
+                "message": "Docling is processing the document",
+            }
+
+    app = build_app(
+        sessions_path=tmp_path / "sessions.json",
+        agent=FakeClioAgent(answer="unused"),
+    )
+    app.state.resource_converter_factory = ResourceConverterFactory([_LongDocumentProcessor()])
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+        created = client.post(
+            f"/v1/workspaces/{workspace_id}/resources",
+            json={
+                "name": "structured.md",
+                "size": len(b"# Structured\n"),
+                "media_type": "text/markdown",
+            },
+        ).json()
+        assert (
+            client.patch(
+                created["upload_url"],
+                headers={"Upload-Offset": "0"},
+                content=b"# Structured\n",
+            ).status_code
+            == 204
+        )
+        record = app.state.resource_store.get(workspace_id, str(created["id"]))
+        assert record is not None
+
+        waited = asyncio.run(
+            wait_for_workspace_resource_processing(
+                app, workspace_id, resource_processing_task_id(record), 0.01
+            )
+        )
+
+        assert waited["terminal"] is False
+        assert waited["timed_out"] is True
+        assert waited["processing"]["state"] == "processing"
+        assert waited["processing"]["progress"] == 42
+        assert waited["processing"]["progress_kind"] == "stage"
+        assert waited["processing"]["stage"] == "docling"
+        assert waited["processing"]["message"] == "Docling is processing the document"
+        assert app.state.resource_processing_store.state(record).state == "processing"
 
 
 def test_resource_processing_can_be_cancelled_before_remote_job_assignment(

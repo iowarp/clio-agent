@@ -292,6 +292,14 @@ KEY_NOTES: dict[str, str] = {
         "Optional bearer token required on non-loopback GACT API requests; set to protect a server "
         "exposed beyond localhost."
     ),
+    "gact.ask_user.max_ttl_s": (
+        "Hard ceiling in seconds on an `ask_user` response window; a longer window requested by "
+        "the model is clamped to this. Lower it to bound how long a question can hold a session."
+    ),
+    "gact.ask_user.ttl_s": (
+        "Default `ask_user` response window in seconds, used when the model does not request an "
+        "explicit one; raise it for slow human reviewers."
+    ),
     "gact.blueprint_registry.url": (
         "Git URL of the default agent-blueprint marketplace registry; override to point at a "
         "private/mirrored marketplace."
@@ -300,6 +308,34 @@ KEY_NOTES: dict[str, str] = {
         "Seconds a temporary `git clone --depth 1` of a remote blueprint source may run before "
         "timing out; raise for a large repo or slow link."
     ),
+    "gact.context_references.browse_limit_per_kind": (
+        "Rows returned per reference kind when the picker opens with no query typed; raise to "
+        "browse more of a large workspace at a glance."
+    ),
+    "gact.context_references.max_hashable_bytes": (
+        "Byte ceiling on a workspace file that may be attached as a context reference; admission "
+        "digests the whole file, so a larger one is refused with a typed context_ref_too_large."
+    ),
+    "gact.context_references.search_limit": (
+        "Total rows one reference search returns for a typed query; raise for very large "
+        "workspaces at the cost of a slower picker."
+    ),
+    "gact.context_references.snapshot_children": (
+        "Mapping/list children kept per level of a bounded evidence snapshot (diff, plan, context "
+        "frame); raise to preview more of a large record."
+    ),
+    "gact.context_references.snapshot_string_chars": (
+        "Character ceiling for one string inside a bounded evidence snapshot; raise to preview "
+        "longer diffs and plans."
+    ),
+    "gact.context_references.summary_excerpt_chars": (
+        "Character ceiling for one excerpt inside a bounded session or agent-run reference "
+        "summary; raise for more context per referenced run."
+    ),
+    "gact.context_references.summary_messages": (
+        "How many recent messages a referenced session's bounded summary carries; raise to give "
+        "the model more of the referenced conversation."
+    ),
     "gact.cancellation_grace_s": (
         "Seconds a cooperative session cancel is given before the turn task is hard-cancelled; "
         "raise to let a mid-tool-call turn unwind cleanly."
@@ -307,6 +343,27 @@ KEY_NOTES: dict[str, str] = {
     "gact.cors.origins": (
         "Comma-separated browser origins allowed to call the GACT API cross-origin; set when "
         "serving a web UI from a different origin."
+    ),
+    "gact.interactions.projection_limit": (
+        "Maximum rows one pending-interaction projection returns, newest first; the projection is "
+        "a full scan of four ledgers, so raise it only when a deep spawn tree genuinely needs more."
+    ),
+    "gact.ledger_retention.user_questions.hard": (
+        "Absolute ceiling on the in-memory ask-user question ledger; past this even a still-pending "
+        "question is force-evicted oldest-first."
+    ),
+    "gact.ledger_retention.user_questions.max": (
+        "Soft cap on the ask-user question ledger where terminal (answered/cancelled/expired) rows "
+        "evict first, protecting questions somebody is still waiting on."
+    ),
+    "gact.ledger_retention.native_delivery_notes.max": (
+        "Unsettled native-attachment decline notes buffered before the oldest are dropped; each "
+        "is normally consumed by the turn that planned it, so raise only if a deployment leaves "
+        "many plans unsettled."
+    ),
+    "gact.ledger_retention.stream_fallback_notes.max": (
+        "Typed non-delivery degradation notes kept per session (a dropped native model input, for "
+        "example); raise to keep a longer degradation trail on very long sessions."
     ),
     "gact.ledger_retention.a2ui_messages.max": (
         "Retention bound on one A2UI surface's message log; the oldest non-createSurface message "
@@ -722,6 +779,10 @@ KEY_NOTES: dict[str, str] = {
         "Keeps a pooled/reused SDK connection per scope instead of a fresh client per call; set "
         "false to restore pre-#891 fresh-connect behavior."
     ),
+    "providers.claude_code.probe_timeout_s": (
+        "Seconds one Claude Code model-discovery probe call may run before it is abandoned as "
+        "inconclusive; raise on hosts where cold CLI/SDK startup is slow."
+    ),
     "providers.claude_code.stateful_capacity": (
         "Max live Claude Code stateful-session entries before LRU eviction; raise on a host "
         "running many concurrent stateful sessions."
@@ -733,6 +794,16 @@ KEY_NOTES: dict[str, str] = {
     "providers.codex.credential_home_capacity": (
         "Max simultaneous private CODEX_HOME credential-dir copies the Codex SDK transport keeps "
         "alive; raise for many concurrent Codex sessions."
+    ),
+    "providers.native_image_url_allowlist": (
+        "Comma-separated hosts whose http(s) image URLs may be handed to a provider to fetch; "
+        "empty (the default) accepts only inline data: URIs, so no attachment leaves CLIO "
+        "unbounded and unattributed."
+    ),
+    "providers.model_catalog_ttl_s": (
+        "Seconds a discovered provider model catalog is served as fresh before every read marks "
+        "it typed-stale (it is still served, never cleared); 0 disables the age check. Lower on "
+        "accounts whose served models rotate often."
     ),
     "resources.delivery_ledger_max_records": (
         "Rows of resource-delivery provenance kept in resource_deliveries.json before the oldest "
@@ -753,6 +824,34 @@ KEY_NOTES: dict[str, str] = {
     "resources.max_bytes": (
         "Byte ceiling on a single uploaded workspace resource; raise for large scientific inputs, "
         "lower to bound per-workspace disk use."
+    ),
+    "resources.native_attachment_total_max_bytes": (
+        "Aggregate source-byte ceiling across every native image/PDF on ONE model request; "
+        "matches Anthropic's ~32 MB per-request limit. Refused before base64 expansion."
+    ),
+    "resources.native_document_max_bytes": (
+        "Source-byte ceiling on one natively delivered PDF; matches Anthropic's ~32 MB per-PDF "
+        "limit. Lower to bound per-request memory on constrained hosts."
+    ),
+    "resources.native_image_max_bytes": (
+        "Source-byte ceiling on one natively delivered image; matches Anthropic's ~5 MB "
+        "per-image limit. Refused before the file is read and base64-expanded."
+    ),
+    "resources.processing_event_max_records": (
+        "Most recent converter activity events retained and served per resource; raise to keep a "
+        "longer conversion history, lower to shrink resource payloads."
+    ),
+    "resources.processing_event_message_chars": (
+        "Character ceiling on one converter event message before it is truncated; raise when a "
+        "processor reports long diagnostics you need in full."
+    ),
+    "resources.processing_event_stage_chars": (
+        "Character ceiling on one converter event's stage label; raise only for a processor whose "
+        "stage names are unusually long."
+    ),
+    "resources.processing_poll_interval_s": (
+        "Seconds between conversion-status refreshes inside one bounded wait; raise when the "
+        "processor's status endpoint is slow or rate-limited, lower for a local processor."
     ),
     "resources.processor_cancel_timeout_s": (
         "Seconds to wait for the document processor to acknowledge a cancellation; raise only if "

@@ -126,7 +126,7 @@ def test_transport_read_from_config_only_ignores_env(monkeypatch) -> None:
     """
     monkeypatch.setenv("CLIO_CLAUDE_CODE_TRANSPORT", "exec")
 
-    def fake_sdk(*, prompt, model, timeout, cwd, thinking=None):
+    def fake_sdk(*, prompt, native_blocks, model, timeout, cwd, thinking=None):
         return "sdk path", {"input_tokens": 1, "output_tokens": 1}
 
     monkeypatch.setattr(claude_code_litellm, "_run_sdk", fake_sdk)

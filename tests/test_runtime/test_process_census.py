@@ -46,6 +46,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -62,6 +63,8 @@ def _node(
     name: str,
     *,
     ctime: float = 0.0,
+    executable: str = "",
+    cwd: str = "",
     cmdline: tuple[str, ...] = (),
 ) -> pc.ProcessNode:
     return pc.ProcessNode(
@@ -70,8 +73,35 @@ def _node(
         name=name,
         create_time=ctime,
         kind=pc._classify_child(name),
+        executable=executable,
+        cwd=cwd,
         cmdline=cmdline,
     )
+
+
+def test_detached_process_requires_runtime_path_ownership(tmp_path: Path) -> None:
+    """A parallel installation's surviving daemon is not this server's orphan."""
+
+    owner_path = tmp_path / "contained" / "worktrees" / "clio-agent"
+    owner_root = str(owner_path)
+    owned = _node(
+        700,
+        650,
+        "clio_run.exe",
+        executable=str(owner_path / ".venv/Lib/site-packages/iowarp_core/bin/clio_run"),
+        cwd=owner_root,
+    )
+    parallel_root = tmp_path / "other-stack"
+    parallel = _node(
+        701,
+        651,
+        "clio_run.exe",
+        executable=str(parallel_root / ".venv/Lib/site-packages/iowarp_core/bin/clio_run"),
+        cwd=str(parallel_root),
+    )
+
+    assert pc._belongs_to_runtime(owned, (owner_root,)) is True
+    assert pc._belongs_to_runtime(parallel, (owner_root,)) is False
 
 
 def test_children_classified_to_their_root() -> None:
@@ -165,16 +195,36 @@ def test_snapshot_attaches_live_cmdline_only_to_orphan_candidates(
     """
     psutil = pytest.importorskip("psutil")
 
-    server_info = {"pid": _SERVER, "ppid": 1, "name": "python.exe", "create_time": 0.0}
+    # MERGE (PR #1298 x #1310): the census now applies TWO stacked orphan guards --
+    # `_belongs_to_runtime` (path evidence: the row's exe/cwd sits under a live root's
+    # cwd) admits the row at all, and only then is the live cmdline captured for the
+    # reap's own product-evidence gate. So this synthetic table must carry the exe/cwd
+    # the path guard reads; the assertions below are unchanged.
+    owner_root = "/srv/clio"
+    server_info = {
+        "pid": _SERVER,
+        "ppid": 1,
+        "name": "python.exe",
+        "create_time": 0.0,
+        "cwd": owner_root,
+    }
     rooted_child_info = {
         "pid": 300,
         "ppid": _SERVER,
         "name": "clio-kit.exe",
         "create_time": 0.0,
+        "cwd": owner_root,
     }
     # Orphan candidate: a clio-kind process (name-classifies to mcp_launcher) whose
     # parent pid (650) is absent from the table -> "dead" -> reparented-orphan pass.
-    orphan_candidate_info = {"pid": 700, "ppid": 650, "name": "uv.exe", "create_time": 0.0}
+    orphan_candidate_info = {
+        "pid": 700,
+        "ppid": 650,
+        "name": "uv.exe",
+        "create_time": 0.0,
+        "exe": owner_root + "/.venv/bin/uv",
+        "cwd": owner_root,
+    }
 
     class _FakeProc:
         def __init__(self, info: dict) -> None:
@@ -403,6 +453,45 @@ def test_reap_excludes_daemon_root_by_construction(monkeypatch: pytest.MonkeyPat
     assert _DAEMON not in killed
     assert killed == [700]
     assert all(r.pid != _DAEMON for r in reaped)
+
+
+def test_reap_excludes_live_server_launcher_ancestor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bootstrap launcher above the server root is not an orphaned child.
+
+    Windows venv launchers can outlive their shell while owning the Job Object
+    that contains the real interpreter. Killing that launcher during server
+    startup also kills the server, so the current server's ancestor chain must
+    never enter the reap candidate set.
+
+    Post-#1303 merge: pid 700 carries real clio cmdline evidence and a pinned live
+    create_time so it clears the evidence + PID-reuse gates. Those gates are other
+    tests' subject; what THIS test isolates is that the launcher ancestor (pid 90)
+    never becomes a candidate even when a genuine orphan beside it is reaped.
+    """
+    _pin_live_create_time_matches_snapshot(monkeypatch)
+    launcher_pid = 90
+    nodes = [
+        _node(launcher_pid, 1, "python.exe"),
+        _node(_SERVER, launcher_pid, "python.exe"),
+        _node(
+            700,
+            650,
+            "clio-kit.exe",  # genuine dead-parent orphan
+            cmdline=("clio-kit.exe", "serve"),
+        ),
+    ]
+    killed: list[int] = []
+    reaped = pc.reap_orphaned_processes(
+        nodes=nodes,
+        server_root_pid=_SERVER,
+        daemon_root_pid=None,
+        kill=killed.append,
+        parent_alive=lambda _pid: False,
+    )
+    assert killed == [700]
+    assert [row.pid for row in reaped] == [700]
 
 
 def test_reap_never_kills_any_clio_core_daemon_kind_row(

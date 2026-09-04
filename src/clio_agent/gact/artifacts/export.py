@@ -551,7 +551,7 @@ def build_session_bundle(
     workspaces = [workspace_id]
     session_ids = [sid]
     if include_children:
-        from clio_agent.gact.agent_tasks import descendant_session_ids  # noqa: PLC0415
+        from clio_agent.gact.session_descendants import descendant_session_ids  # noqa: PLC0415
 
         for child in descendant_session_ids(app, sid):
             session_ids.append(child)

@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from clio_agent.tools.reaper import WorkspaceExecutorReaper
+from clio_agent.tools.workspace_root import canonical_workspace_root
 
 
 class FakeExecutor:
@@ -181,7 +182,8 @@ def test_agent_getter_rebuilds_reaped_executor(monkeypatch) -> None:
         first.closed = True  # the reaper closed it
         second = agent._active_tool_executor()
     assert second is not first, "a closed (reaped) executor must be rebuilt"
-    assert built == ["/ws/reap", "/ws/reap"]
+    reap_root = canonical_workspace_root("/ws/reap")
+    assert built == [reap_root, reap_root]
 
 
 def test_reaper_protocol_on_real_sync_executor() -> None:
@@ -331,7 +333,9 @@ def test_active_tool_executor_notifies_the_real_reaper_on_resolve(monkeypatch) -
 
     agent = _bare_agent()
     resident = FakeExecutor(idle_s=10_000)
-    agent._workspace_tool_executors["/ws/hot"] = resident
+    # Seeded under the registry's OWN key rule; a raw string would prove the
+    # resolve agrees with this fixture rather than with the fleet.
+    agent._workspace_tool_executors[canonical_workspace_root("/ws/hot")] = resident
 
     lock, executors, leases = agent._workspace_state()
     reaper = _reaper(executors, leases=leases, ttl=5.0)
@@ -358,7 +362,7 @@ def test_active_tool_executor_without_a_reaper_attribute_does_not_raise() -> Non
 
     agent = _bare_agent()
     resident = object()
-    agent._workspace_tool_executors["/ws/bare"] = resident
+    agent._workspace_tool_executors[canonical_workspace_root("/ws/bare")] = resident
     assert not hasattr(agent, "_workspace_reaper")
 
     with tool_workspace_context("/ws/bare"):
@@ -394,7 +398,9 @@ def test_turn_lease_wiring_pins_root_during_context(monkeypatch, tmp_path) -> No
             observed.update(agent._workspace_state()[2])
     finally:
         _ctx.reset(token)
-    assert observed == {str(tmp_path): 1}, "lease not held during the turn context"
+    assert observed == {canonical_workspace_root(tmp_path): 1}, (
+        "lease not held during the turn context"
+    )
     _lock, _executors, leases = agent._workspace_state()
     assert leases == {}, "lease not released after the turn"
 
@@ -413,7 +419,7 @@ def test_forward_turn_pins_workspace_across_sequential_delegations(
         _bare_agent,  # type: ignore[attr-defined]
     )
 
-    root = str(tmp_path)
+    root = canonical_workspace_root(tmp_path)
     executor = FakeExecutor(idle_s=10_000)
     agent = _bare_agent()
     _lock, executors, leases = agent._workspace_state()

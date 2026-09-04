@@ -17,11 +17,11 @@ from clio_agent.tools.mcp_config import (
     MCPAuthConfig,
     MCPServerSpec,
     MCPTransportError,
-    redact_mcp_spec,
     transport_for,
     transport_from_spec,
 )
 from clio_agent.tools.mcp_handlers import MCPClientCapabilities
+from clio_agent.tools.mcp_redaction import redact_mcp_spec
 from clio_agent.tools.mcp_runtime import make_mcp_client
 
 
@@ -258,6 +258,84 @@ def test_credentials_are_absent_from_failure_trace_and_logs(
     # keys): the canonical helper must redact them too — names kept, values gone.
     env_spec = {"transport": "stdio", "command": "x", "env": {"GITHUB_TOKEN": "ghp_secret"}}
     assert redact_mcp_spec(env_spec)["env"] == {"GITHUB_TOKEN": "<redacted>"}
+
+
+def test_redaction_masks_credentials_env_expansion_wrote_into_argv_and_url() -> None:
+    """``${VAR}`` expands INTO argv/command/url long before anything redacts them.
+
+    ``headers``/``auth``/``env`` are masked by name, but a declaration like
+    ``ndp-server --token ${NDP_TOKEN}`` reaches ``MCPServerSpec.args`` already
+    holding the token, and ``redact_mcp_spec`` passed argv/url straight through --
+    so the credential shipped on ``GET /v1/mcp/servers`` and into every typed
+    error detail that carries a spec. The redacted view must serve the
+    DECLARATION (names kept, values gone), exactly like ``env``.
+    """
+
+    from dataclasses import asdict
+
+    from clio_agent.tools.mcp_config import spec_from_declaration
+
+    token = "tok_super_secret_9f31"
+    env = {"NDP_TOKEN": token, "NDP_HOST": "ndp.example", "NDP_BIN": "ndp-server"}
+
+    stdio = spec_from_declaration(
+        "ndp",
+        "${NDP_BIN} --token ${NDP_TOKEN} --mode plain",
+        source="workspace",
+        env=env,
+    )
+    mapped = spec_from_declaration(
+        "geo",
+        {"command": "geo-server", "args": ["--key", "${NDP_TOKEN}", "--verbose"]},
+        source="workspace",
+        env=env,
+    )
+    http = spec_from_declaration(
+        "web",
+        {"type": "http", "url": "https://${NDP_HOST}/mcp?key=${NDP_TOKEN}"},
+        source="workspace",
+        env=env,
+    )
+
+    # The RUNTIME spec must still hold the real values — redaction is a view.
+    assert stdio.command == "ndp-server"
+    assert stdio.args == ("--token", token, "--mode", "plain")
+    assert http.url == f"https://ndp.example/mcp?key={token}"
+
+    for spec in (stdio, mapped, http):
+        redacted = redact_mcp_spec(asdict(spec))
+        assert token not in repr(redacted), f"{spec.name} leaked its expanded credential"
+        # The pre-expansion declaration is what survives, so the row stays
+        # readable and names the variable an operator has to fix.
+        assert "declared" not in redacted, "the raw declaration must not ship as a second field"
+
+    assert redact_mcp_spec(asdict(stdio))["args"] == ["--token", "${NDP_TOKEN}", "--mode", "plain"]
+    assert redact_mcp_spec(asdict(mapped))["args"] == ["--key", "${NDP_TOKEN}", "--verbose"]
+    assert redact_mcp_spec(asdict(http))["url"] == "https://${NDP_HOST}/mcp?key=${NDP_TOKEN}"
+    # An expansion-free declaration is untouched: no false masking.
+    plain = spec_from_declaration("fs", "fs-server --root /data", source="workspace", env=env)
+    assert redact_mcp_spec(asdict(plain))["args"] == ["--root", "/data"]
+
+
+def test_redaction_masks_argv_when_an_expansion_changes_its_shape() -> None:
+    """A value carrying whitespace re-splits argv, so positions no longer align.
+
+    Element-wise substitution would then hand back the wrong token; the only safe
+    answer for a misaligned argv is to mask the whole vector rather than guess.
+    """
+
+    from dataclasses import asdict
+
+    from clio_agent.tools.mcp_config import spec_from_declaration
+
+    secret = "two words"
+    spec = spec_from_declaration(
+        "ndp", "ndp-server --token ${NDP_TOKEN}", source="workspace", env={"NDP_TOKEN": secret}
+    )
+    assert spec.args == ("--token", "two", "words"), "the expansion re-split argv"
+    redacted = redact_mcp_spec(asdict(spec))
+    assert secret not in repr(redacted)
+    assert redacted["args"] == ["<redacted>", "<redacted>", "<redacted>"]
 
 
 def test_factory_auth_wiring_has_one_source_owner() -> None:

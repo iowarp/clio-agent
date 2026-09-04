@@ -57,7 +57,7 @@ from clio_agent import conf
 from clio_agent.gact import composer_runtime
 from clio_agent.gact.auth import configure_bearer_auth
 from clio_agent.gact.cors import gact_cors_origins as _gact_cors_origins
-from clio_agent.gact.error_middleware import install_error_envelope
+from clio_agent.gact.error_middleware import error_code_for_status, install_error_envelope
 from clio_agent.gact.protocol.negotiation import install_protocol_negotiation
 from clio_agent.gact.runtime.rework_state import initialize_a2ui_store, initialize_session_defaults
 from clio_agent.gact.semantic_events import (
@@ -378,6 +378,7 @@ from clio_agent.gact.agents.runtime import (  # noqa: E402,F401
     _retaining_react_cls,
     _summarize_segments_llm,
 )
+from clio_agent.gact.ask_user_tool import restore_pending_ask_user_questions  # noqa: E402
 
 # gact/delegation.py -- delegation + workflow-state derivation cluster.
 from clio_agent.gact.delegation import (  # noqa: E402,F401
@@ -477,6 +478,9 @@ from clio_agent.gact.routes.diffs import (  # noqa: E402
 from clio_agent.gact.routes.expert_packs import (  # noqa: E402
     register_expert_packs_routes,
 )
+from clio_agent.gact.routes.interactions import (  # noqa: E402
+    register_permission_and_interaction_routes,
+)
 from clio_agent.gact.routes.mcp import (  # noqa: E402
     register_mcp_routes,
 )
@@ -488,9 +492,6 @@ from clio_agent.gact.routes.messages import (  # noqa: E402
 )
 from clio_agent.gact.routes.misc import (  # noqa: E402
     register_misc_routes,
-)
-from clio_agent.gact.routes.permissions import (  # noqa: E402
-    register_permissions_routes,
 )
 from clio_agent.gact.routes.prompts import (  # noqa: E402
     register_prompts_routes,
@@ -683,6 +684,7 @@ _turn_start_background_user_turn = _start_background_user_turn
 # --- re-export shim (#714): skills/commands/catalog loading moved to catalog.py ---
 from typing import Protocol
 
+from clio_agent.gact import agent_initialization
 from clio_agent.gact.agent_blueprints import (
     discover_agent_blueprints,
     load_agent_blueprint_path,
@@ -744,6 +746,7 @@ from clio_agent.gact.streaming import (  # noqa: E402,F401
     _extract_tools_called,
     _format_react_trajectory,
     _pop_stream_fallback,
+    _pop_stream_fallback_notes,
     _record_stream_fallback,
     _run_dynamic_agent_compat,
     _signature_prompt,
@@ -1029,9 +1032,7 @@ async def _construct_agent_async(app: "FastAPI") -> None:
         # sanctioned env-credential read, design §6), so a GACT booted purely from
         # ``CLIO_LM_*`` still authenticates.
         agent = ClioAgent(verbose=False, arc=arc, provider_config=cfg, **relay_kwargs)
-        from clio_agent.gact.agent_initialization import update_provider_profile  # noqa: PLC0415
-
-        update_provider_profile(app, agent)
+        agent_initialization.update_provider_profile(app, agent)
         return agent
 
     try:
@@ -1053,7 +1054,7 @@ async def _construct_agent_async(app: "FastAPI") -> None:
 
     if not await registry_boot.boot_fold_artifact_registry_offloop(app, loop):
         return  # wedged store — agent stays unready with a typed agent_init_error
-    app.state.agent = agent
+    agent_initialization.mark_agent_ready(app, agent)
 
     # #972: enforce the CAS store byte budget across every workspace at boot (off-loop,
     # #1001 cadence — the registry is now folded, so the reachability scan is ready).
@@ -2257,7 +2258,12 @@ def build_app(
     # policy CRUD (list/replace) are owned by routes/permissions.py; the
     # resolution-derived-policy + validation/persistence data layer lives in
     # runtime/permission_policies.py (shared with the build_app startup load).
-    register_permissions_routes(app, deps)
+    register_permission_and_interaction_routes(app, deps)
+    # Crash recovery is APP ASSEMBLY, not route registration: rehydrating surfaced
+    # native questions from durable session metadata mutates live state, so it
+    # belongs here beside the other recovery steps rather than as a side effect of
+    # registering a route factory.
+    restore_pending_ask_user_questions(app)
 
     # ---- DELETE /v1/sessions/{sid}/messages/{id} + /v1/messages/{id} -
     # Both message-delete routes (session-scoped + the global, optionally
@@ -2265,17 +2271,6 @@ def build_app(
     # routes/messages.py and registered below via register_messages_routes(
     # app, deps); the destructive-action guard + ledger replace travel on
     # ``deps`` and both publish message.deleted for SSE subscribers.
-
-    def _error_code_for_status(status_code: int) -> str:
-        if status_code == 404:
-            return "not_found"
-        if status_code == 405:
-            return "unsupported"
-        if status_code in {400, 422}:
-            return "validation_error"
-        if status_code in {401, 403}:
-            return "permission_error"
-        return "internal_error" if status_code >= 500 else "request_error"
 
     @app.exception_handler(HTTPException)
     @app.exception_handler(StarletteHTTPException)
@@ -2287,7 +2282,7 @@ def build_app(
             return JSONResponse(status_code=exc.status_code, content=exc.detail)
         envelope = ErrorEnvelope(
             error=ErrorInfo(
-                error=_error_code_for_status(exc.status_code),
+                error=error_code_for_status(exc.status_code),
                 message=str(exc.detail) if exc.detail else "",
                 recoverable=exc.status_code < 500,
             )

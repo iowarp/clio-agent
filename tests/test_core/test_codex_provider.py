@@ -22,6 +22,7 @@ from clio_agent.providers.claude_code_cancel import (
 from clio_agent.providers.codex_litellm import (
     CodexLLM,
     CodexUnsupportedMultimodalError,
+    _messages_to_codex_input,
     _messages_to_codex_prompt,
 )
 from tests._config_layer import set_config
@@ -55,6 +56,28 @@ def test_multimodal_input_fails_instead_of_being_dropped() -> None:
                 }
             ]
         )
+
+
+def test_codex_sdk_extracts_native_image_inputs_without_logging_bytes() -> None:
+    prompt, images = _messages_to_codex_input(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "inspect this"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,abc"},
+                    },
+                ],
+            }
+        ]
+    )
+
+    rows = [json.loads(line) for line in prompt.splitlines() if line.startswith("{")]
+    assert rows == [{"role": "user", "content": "inspect this"}]
+    assert images == ["data:image/png;base64,abc"]
+    assert "base64" not in prompt
 
 
 def test_only_sdk_transport_is_accepted() -> None:
@@ -384,7 +407,7 @@ def test_sdk_usage_preserves_reasoning_as_output_subset() -> None:
     assert usage["total_tokens"] == 17
 
 
-def test_completion_calls_sdk_not_app_server(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_completion_calls_sdk_with_native_images(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
     def fake_run_sdk(**kwargs: Any) -> tuple[str, dict[str, int]]:
@@ -394,7 +417,18 @@ def test_completion_calls_sdk_not_app_server(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(codex_litellm, "run_sdk", fake_run_sdk)
     response = CodexLLM().completion(
         model="gpt-5.6-luna",
-        messages=[{"role": "user", "content": "hi"}],
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "inspect"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,abc"},
+                    },
+                ],
+            }
+        ],
         api_base="",
         custom_prompt_dict={},
         model_response=None,
@@ -406,6 +440,8 @@ def test_completion_calls_sdk_not_app_server(monkeypatch: pytest.MonkeyPatch) ->
     )
     assert response.choices[0].message.content == "ok"
     assert captured["model"] == "gpt-5.6-luna"
+    assert captured["images"] == ["data:image/png;base64,abc"]
+    assert "base64" not in captured["prompt"]
 
 
 def test_model_response_preserves_reasoning_token_count() -> None:

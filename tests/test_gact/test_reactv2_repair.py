@@ -21,6 +21,7 @@ Sabotage tripwires (restored after each in the report):
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import dspy
@@ -209,6 +210,77 @@ def test_repair_succeeds_when_reask_provides_outputs(monkeypatch) -> None:
     assert pred.workflow_state == {"s": 1}
     assert reactv2.REACT_SUBMIT_REPAIR_ATTEMPTED in _reasons(records)
     assert reactv2.REACT_SUBMIT_REPAIR_EXHAUSTED not in _reasons(records)
+
+
+@pytest.mark.parametrize(
+    ("termination_reason", "expected_reason"),
+    [("empty_tool_calls", "no_tool_call"), ("max_iters", "parse_repair")],
+)
+def test_submit_repair_attempt_emits_session_model_and_reason(
+    monkeypatch, termination_reason: str, expected_reason: str
+) -> None:
+    from clio_agent.gact.agents import reactv2_submit
+
+    app = SimpleNamespace(state=SimpleNamespace())
+    events: list[dict[str, Any]] = []
+    monkeypatch.setattr(ctx, "active_app", lambda: app)
+    monkeypatch.setattr(ctx, "active_session_id", lambda: "sess_factorio")
+    monkeypatch.setattr(ctx, "active_turn_id", lambda: "turn_7")
+    monkeypatch.setattr(ctx, "active_trace_id", lambda: "trace_7")
+    monkeypatch.setattr(
+        ctx,
+        "active_trajectory",
+        lambda: {"termination_reason": termination_reason},
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.runtime.globals._llm_provider_payload",
+        lambda active_app, agent_id: {
+            "provider_id": "codex",
+            "model_id": "gpt-5.6-luna",
+            "agent_id": agent_id,
+        },
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.runtime.globals._emit_semantic_event",
+        lambda active_app, session_id, event_type, **fields: events.append(
+            {
+                "app": active_app,
+                "session_id": session_id,
+                "event_type": event_type,
+                **fields,
+            }
+        ),
+    )
+    records = _capture_reasons(monkeypatch)
+
+    reactv2_submit.record_submit_audit(
+        reactv2.REACT_SUBMIT_REPAIR_ATTEMPTED,
+        agent_id="main",
+        field="submit",
+        text="Call submit.",
+        suppressed=False,
+    )
+
+    assert reactv2.REACT_SUBMIT_REPAIR_ATTEMPTED in _reasons(records)
+    assert events == [
+        {
+            "app": app,
+            "session_id": "sess_factorio",
+            "event_type": "agent.submit_repair.attempted",
+            "turn_id": "turn_7",
+            "trace_id": "trace_7",
+            "status": "running",
+            "summary": "Agent output required a bounded submit re-ask.",
+            "actor": {"agent_id": "main"},
+            "provider": {
+                "provider_id": "codex",
+                "model_id": "gpt-5.6-luna",
+                "agent_id": "main",
+            },
+            "payload": {"reason": expected_reason},
+            "detail_level": "off",
+        }
+    ]
 
 
 def test_repair_hint_names_missing_fields_and_reaches_the_wire(monkeypatch) -> None:

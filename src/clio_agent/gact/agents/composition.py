@@ -251,16 +251,14 @@ def _runtime_dynamic_agent_children_context(
     *,
     session_id: str = "",
 ) -> str:
-    """Render the orchestrator-identity briefing for an expert that has children.
+    """Render the child-capability briefing for an expert that has children.
 
-    General across blueprints: any expert with declared children IS, by construction,
-    an orchestrator -- it routes work to children (who hold the tools and produce the
-    grounded evidence) and assembles their results. This briefing tells the model that
-    it is an orchestrator, what each child produces, and how to route work to them by
-    CALLING the spawn-runtime tools (``spawn_agent_task`` / ``wait_agent_tasks`` /
-    ``spawn_agents_parallel``). This is *grounding* -- telling the model what it is and
-    how routing works -- not a behavioral handcuff, and it is what makes a model
-    delegate instead of answering (and fabricating) from its own prior knowledge.
+    The default policy preserves the established evidence-orchestrator contract for
+    existing blueprints. ``delegation_policy: adaptive`` instead treats children as
+    optional specialist capabilities: the expert's own prompt or an on-demand skill
+    decides whether consultation adds value. This keeps runtime capability discovery
+    separate from task policy and avoids turning every ordinary exchange into
+    orchestration work.
     """
 
     from clio_agent.gact.agents import resolution as _resolution  # noqa: PLC0415
@@ -276,6 +274,35 @@ def _runtime_dynamic_agent_children_context(
         # app-less rebuild resolves the live turn's app, else a structured empty; it
         # NEVER inherits a sibling app's cached briefing.
         return per_app_dict("orchestrator_briefing", app=app).get(_aid, "")
+    delegation_policy = str(agent_def.metadata.get("delegation_policy") or "").strip().lower()
+    if delegation_policy in {"adaptive", "optional", "skill-driven"}:
+        lines = [
+            "## Available specialist consultations",
+            "",
+            "You can answer directly from your declared role and capabilities. The child "
+            "experts below are optional consultations, not a workflow you must run. Use "
+            "one only when its distinct expertise or tool-grounded evidence would "
+            "materially improve the scientist-facing result. Follow a declared "
+            "coordination skill when the work genuinely needs decomposition, parallelism, "
+            "or child lifecycle management.",
+            "",
+            "Do not claim a tool observation, measured value, file result, or external "
+            "source unless it was supplied by the user or returned by the capability that "
+            "owns it.",
+            "",
+            "Available child experts:",
+        ]
+        for row in sorted(rows, key=lambda item: (item.tier, item.id)):
+            detail = (row.description or row.title or "").strip()
+            cap_bits: list[str] = []
+            if row.tools:
+                cap_bits.append("tools: " + ", ".join(row.tools))
+            cap_text = f" [{'; '.join(cap_bits)}]" if cap_bits else ""
+            lines.append(f"- `{row.id}`: {detail}{cap_text}")
+        briefing = "\n".join(lines)
+        if _aid:
+            per_app_dict("orchestrator_briefing", app=app)[_aid] = briefing
+        return briefing
     lines = [
         "## You are an ORCHESTRATOR — route work to your children; do not do it yourself",
         "",
@@ -292,10 +319,10 @@ def _runtime_dynamic_agent_children_context(
     ]
     for row in sorted(rows, key=lambda item: (item.tier, item.id)):
         detail = (row.description or row.title or "").strip()
-        cap_bits: list[str] = []
+        legacy_cap_bits: list[str] = []
         if row.tools:
-            cap_bits.append("tools: " + ", ".join(row.tools))
-        cap_text = f" [{'; '.join(cap_bits)}]" if cap_bits else ""
+            legacy_cap_bits.append("tools: " + ", ".join(row.tools))
+        cap_text = f" [{'; '.join(legacy_cap_bits)}]" if legacy_cap_bits else ""
         lines.append(f"- `{row.id}`: {detail}{cap_text}")
     lines.append("")
     lines.append(

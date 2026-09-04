@@ -50,14 +50,22 @@ from clio_agent.gact.agent_invocation import (
 from clio_agent.gact.agent_invocation import (
     _run_dynamic_agent_compat as _run_dynamic_agent_compat,
 )
+from clio_agent.gact.agent_invocation import select_accepted_kwargs
 from clio_agent.gact.events import Event
 from clio_agent.gact.evidence import _bounded_tool_call_result
+from clio_agent.gact.native_model_inputs import (
+    native_input_kwargs,
+    record_dropped_model_inputs,
+)
 from clio_agent.gact.providers.config import _provider_runtime_kind
 from clio_agent.gact.stream_fallbacks import (
     peek_stream_fallback as _peek_stream_fallback,  # noqa: F401
 )
 from clio_agent.gact.stream_fallbacks import (
     pop_stream_fallback as _pop_stream_fallback,  # noqa: F401
+)
+from clio_agent.gact.stream_fallbacks import (
+    pop_stream_fallback_notes as _pop_stream_fallback_notes,  # noqa: F401
 )
 from clio_agent.gact.stream_fallbacks import (
     record_stream_fallback as _record_stream_fallback,
@@ -75,35 +83,6 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
 
-def _select_accepted_kwargs(func: Any, candidate: dict[str, Any]) -> dict[str, Any] | None:
-    """Return the subset of ``candidate`` keyword args that ``func`` accepts.
-
-    Signature inspection replaces the old TypeError-message sniffing: we decide
-    which optional kwargs a callee understands *before* invoking it, so the call
-    happens exactly once and any ``TypeError`` raised from inside the callee
-    propagates as-is rather than being mistaken for a signature mismatch.
-
-    Returns ``None`` when ``func`` cannot be introspected (some C-level /
-    builtin callables raise ``ValueError``/``TypeError`` from
-    :func:`inspect.signature`); the caller then makes a single best-effort
-    attempt with the full candidate set instead of guessing.
-    """
-
-    try:
-        sig = inspect.signature(func)
-    except (ValueError, TypeError):
-        return None
-    params = sig.parameters.values()
-    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params):
-        return dict(candidate)
-    accepted = {
-        p.name
-        for p in params
-        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-    }
-    return {name: value for name, value in candidate.items() if name in accepted}
-
-
 async def _try_streamed_forward_compat(
     app: "FastAPI",
     enriched_text: str,
@@ -113,6 +92,7 @@ async def _try_streamed_forward_compat(
     session_mode: str = "edit",
     session_edit_mode: str = "diff",
     images: list[Any] | None = None,
+    files: list[Any] | None = None,
     agent_override: Any | None = None,
     cancel_requested: Any | None = None,
 ) -> Optional[Any]:
@@ -127,14 +107,18 @@ async def _try_streamed_forward_compat(
         "session_mode": session_mode,
         "session_edit_mode": session_edit_mode,
         "images": images or [],
+        "files": files or [],
         "cancel_requested": cancel_requested,
     }
     if agent_override is not None:
         candidate["agent_override"] = agent_override
 
-    selected = _select_accepted_kwargs(_try_streamed_forward, candidate)
+    selected, dropped = select_accepted_kwargs(_try_streamed_forward, candidate)
     if selected is None:
         return await _try_streamed_forward(app, enriched_text, sid, emit_chunk, **candidate)
+    record_dropped_model_inputs(
+        app, sid, dropped, candidate, callee="the installed _try_streamed_forward"
+    )
     return await _try_streamed_forward(app, enriched_text, sid, emit_chunk, **selected)
 
 
@@ -471,6 +455,8 @@ async def _try_streamed_forward(
     session_mode: str = "edit",
     session_edit_mode: str = "diff",
     agent_override: Any | None = None,
+    images: list[Any] | None = None,
+    files: list[Any] | None = None,
     cancel_requested: Any | None = None,
 ) -> Optional[Any]:
     """Run the agent's forward via dspy.streamify, pumping every
@@ -594,6 +580,19 @@ async def _try_streamed_forward(
         if field_name:
             previous_stream_field = field_name
 
+    # Native model inputs are threaded ONLY into a forward that declares them.
+    # Injecting ``images=[]``/``files=[]`` unconditionally broke every module
+    # whose forward predates those parameters -- on IMAGELESS turns too, because
+    # all three rungs of the compat ladder below carried the same stream_input,
+    # so the final bare rung raised the identical TypeError and the turn failed
+    # as a streaming error rather than degrading. The predicate is the same one
+    # the turn path uses to decide native dispatch (``_agent_accepts_images``),
+    # so gate and dispatch cannot disagree.
+    stream_input: dict[str, Any] = {
+        "question": enriched_text,
+        "session_id": sid,
+        **native_input_kwargs(app, sid, agent, images=images, files=files),
+    }
     try:
         # StreamListener emits ``StreamResponse`` instances that
         # carry the cleaned chunk in ``.chunk``. Keep the legacy
@@ -604,8 +603,7 @@ async def _try_streamed_forward(
         # older / fake agents fall back via TypeError catch).
         try:
             stream_iter = streamed(
-                question=enriched_text,
-                session_id=sid,
+                **stream_input,
                 session_mode=session_mode,
                 session_edit_mode=session_edit_mode,
                 cancel_requested=cancel_requested,
@@ -613,13 +611,12 @@ async def _try_streamed_forward(
         except TypeError:
             try:
                 stream_iter = streamed(
-                    question=enriched_text,
-                    session_id=sid,
+                    **stream_input,
                     session_mode=session_mode,
                     session_edit_mode=session_edit_mode,
                 )
             except TypeError:
-                stream_iter = streamed(question=enriched_text, session_id=sid)
+                stream_iter = streamed(**stream_input)
         async for piece in stream_iter:
             provider_event_index += 1
             if isinstance(piece, StreamResponse):

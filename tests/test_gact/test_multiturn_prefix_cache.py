@@ -241,6 +241,33 @@ def test_orchestrator_briefing_child_order_is_deterministic(
     assert sorted_order.index("`analysis`") < sorted_order.index("`geospatial`")
 
 
+def test_adaptive_delegation_exposes_children_without_forcing_orchestration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Adaptive roots own simple work and consult children only when useful."""
+
+    _patch_runtime(monkeypatch)
+    app = SimpleNamespace(state=SimpleNamespace(arc=None))
+    adaptive = PARENT.model_copy(
+        update={"metadata": {**PARENT.metadata, "delegation_policy": "adaptive"}}
+    )
+
+    briefing = _runtime_dynamic_agent_children_context(
+        app,
+        adaptive,
+        session_id="sess-multiturn",
+    )
+
+    assert "Available specialist consultations" in briefing
+    assert "optional consultations, not a workflow you must run" in briefing
+    assert "answer directly" in briefing
+    assert "`analysis`" in briefing
+    assert "`geospatial`" in briefing
+    assert "Your ONLY job is to delegate" not in briefing
+    assert "If you have spawned no children yet" not in briefing
+    assert "spawn EVERY independent child" not in briefing
+
+
 # ---- (i) ARC-vs-native multi-turn equivalence ------------------------------- #
 
 
