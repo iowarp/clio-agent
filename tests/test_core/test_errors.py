@@ -9,6 +9,8 @@ from clio_agent.errors import (
     ClioError,
     ConfigError,
     ExpertError,
+    MCPMissingRequiredClientCapabilityError,
+    MCPUnsupportedProtocolVersionError,
     ProviderError,
     RoutingError,
     ToolError,
@@ -134,3 +136,117 @@ class TestFormatErrorResponse:
         resp = format_error_response(err)
         assert resp["error"] == "provider_error"
         assert resp["details"]["provider"] == "ollama"
+
+
+class TestMCPProtocolRefusalActionableHints:
+    """#1282 D2/F13: the -32021/-32022 message carries its own re-dial hint,
+    built defensively (a malformed message or protocol_data must never crash
+    exception construction itself -- F13)."""
+
+    def test_missing_capability_message_names_the_required_extensions(self):
+        err = MCPMissingRequiredClientCapabilityError(
+            "server refused the call",
+            {"requiredCapabilities": {"extensions": {"io.modelcontextprotocol/tasks": {}}}},
+        )
+        assert " Re-dial declaring the client extension(s): io.modelcontextprotocol/tasks." in str(
+            err
+        )
+
+    def test_missing_capability_names_multiple_extensions_sorted(self):
+        err = MCPMissingRequiredClientCapabilityError(
+            "server refused the call",
+            {
+                "requiredCapabilities": {
+                    "extensions": {"b.ext": {}, "a.ext": {}},
+                }
+            },
+        )
+        assert "a.ext, b.ext" in str(err)
+
+    def test_unsupported_version_message_names_supported_versions(self):
+        err = MCPUnsupportedProtocolVersionError(
+            "server refused the version", {"supportedVersions": ["2025-11-25", "2026-07-28"]}
+        )
+        assert (
+            " Re-dial negotiating one of the server's supported protocol version(s): "
+            "2025-11-25, 2026-07-28." in str(err)
+        )
+
+    def test_no_hint_appended_when_protocol_data_is_absent(self):
+        err = MCPMissingRequiredClientCapabilityError("server refused the call")
+        assert str(err) == "server refused the call"
+
+    def test_malformed_protocol_data_shapes_never_crash_construction(self):
+        """#1282 F13: none of these malformed shapes may raise out of __init__ --
+        each just yields no hint (the base message unchanged)."""
+        for bad_protocol_data in (
+            None,
+            "not a dict",
+            {"requiredCapabilities": "not a dict"},
+            {"requiredCapabilities": {"extensions": "not a dict"}},
+            {"requiredCapabilities": {"extensions": {}}},
+            {"supportedVersions": "not a list"},
+            {"supportedVersions": []},
+        ):
+            err = MCPMissingRequiredClientCapabilityError("refused", bad_protocol_data)
+            assert str(err) == "refused"
+            err2 = MCPUnsupportedProtocolVersionError("refused", bad_protocol_data)
+            assert str(err2) == "refused"
+
+    def test_non_str_message_is_coerced_never_raises(self):
+        """#1282 F13: a non-str message (should never happen, but exception
+        construction must be bulletproof) is coerced, not a crash."""
+        err = MCPMissingRequiredClientCapabilityError(
+            None,  # type: ignore[arg-type]
+            {"requiredCapabilities": {"extensions": {"x.ext": {}}}},
+        )
+        assert str(err) == "None Re-dial declaring the client extension(s): x.ext."
+
+    def test_hint_builder_exception_is_caught_and_logged_not_raised(self, monkeypatch):
+        """#1282 F13: if hint-building itself raises for some unforeseen reason,
+        construction still succeeds with the base message -- never propagates."""
+        import clio_agent.errors as errors_mod
+
+        def _boom(protocol_data):
+            raise RuntimeError("simulated hint-builder crash")
+
+        monkeypatch.setattr(errors_mod, "_required_extensions_hint", _boom)
+        err = MCPMissingRequiredClientCapabilityError("refused", {"anything": True})
+        assert str(err) == "refused"
+
+
+class TestMCPCallTimeoutBackstopErrorMRO:
+    """#1282 F4: MCPCallTimeoutBackstopError is BOTH a ClioError/ToolError
+    (to_dict() reaches the wire) AND a TimeoutError (existing
+    isinstance(exc, TimeoutError) classification survives) -- verified both
+    directions, not just constructed."""
+
+    def test_isinstance_holds_for_both_bases(self):
+        from clio_agent.tools.mcp_wait_ladder import MCPCallTimeoutBackstopError
+
+        err = MCPCallTimeoutBackstopError(
+            "timed out", reason="mcp_call_timeout_backstop", details={"tool": "x"}
+        )
+        assert isinstance(err, TimeoutError)
+        assert isinstance(err, ToolError)
+        assert isinstance(err, ClioError)
+
+    def test_to_dict_reaches_the_wire(self):
+        from clio_agent.tools.mcp_wait_ladder import MCPCallTimeoutBackstopError
+
+        err = MCPCallTimeoutBackstopError(
+            "timed out", reason="mcp_call_timeout_backstop", details={"tool": "x"}
+        )
+        assert err.to_dict() == {
+            "error": "tool_error",
+            "message": "timed out",
+            "details": {"tool": "x"},
+        }
+
+    def test_str_still_works(self):
+        from clio_agent.tools.mcp_wait_ladder import MCPCallTimeoutBackstopError
+
+        err = MCPCallTimeoutBackstopError(
+            "timed out", reason="mcp_call_timeout_backstop", details={}
+        )
+        assert str(err) == "timed out"

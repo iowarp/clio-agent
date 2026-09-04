@@ -1,4 +1,18 @@
-"""Focused production-boundary tests for the MCP Apps host."""
+"""Focused production-boundary tests for the MCP Apps host.
+
+Every test in this module invokes ``app.state.pending_mcp_app_observer`` BY
+HAND -- it pins the admission/serving seam (registry bounds, capability
+routing, cleanup ownership) in isolation from tool-call plumbing. It does
+NOT exercise ``tools/execution.py::_call_tool_inner``'s AUTO-firing wiring
+(the ``current_tool_runtime()`` hook resolution that calls the observer on a
+real completed tool call without anyone calling it directly) -- see
+``tests/test_tools/test_mcp_v2_conformance.py``'s
+``test_ui_bearing_call_auto_fires_the_production_observer_hook`` (proves the
+auto-firing wiring itself is sound) and
+``test_stale_listing_cache_entry_silently_defeats_the_ui_meta_wiring`` (#1308's
+actual root-cause reproduction: a stale ``tools.listing_cache`` entry feeding
+the auto-firing path a meta-less tool definition).
+"""
 
 from __future__ import annotations
 
@@ -23,6 +37,7 @@ from clio_agent.gact.mcp_apps import (
     call_tool_result_to_observer,
     call_tool_result_to_wire,
     cleanup_session_mcp_apps,
+    recorded_mcp_app_observer_skips,
 )
 from clio_agent.gact.runtime.globals import (
     _gact_app_context,
@@ -166,6 +181,132 @@ def test_observer_emits_only_opaque_typed_part(tmp_path: Path) -> None:
         {"session_id": "viewer-1"},
     )
     assert registry.records_for_session(sid) == []
+
+
+def test_observer_skip_no_resource_uri_is_typed_not_silent(tmp_path: Path) -> None:
+    """#1308: a tool with no declared resourceUri is a typed, logged skip --
+    never a silent ``return``. Reproduces the FIRST of the observer's three
+    early-return gates (the one #1308's live symptom actually hit -- a
+    discovered tool definition carrying no ``_meta.ui.resourceUri``)."""
+
+    executor = _Executor()
+    agent = SimpleNamespace(_active_tool_executor=lambda: executor)
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
+
+    with TestClient(app, base_url="http://127.0.0.1:8100") as client:
+        sid = client.post("/v1/sessions", json={"title": "SKIP1"}).json()["id"]
+        tool = executor.definitions["other_escape"]  # meta carries no resourceUri
+        with _gact_app_context(app), _tool_session_context(sid):
+            app.state.pending_mcp_app_observer(
+                "vigil_other_escape_skip_probe",
+                {},
+                tool,
+                _open_result(),
+                "vigil",
+            )
+
+        assert app.state.mcp_app_registry.records_for_session(sid) == []
+        skips = [
+            r
+            for r in recorded_mcp_app_observer_skips()
+            if r.get("tool") == "vigil_other_escape_skip_probe"
+        ]
+        assert skips, "no typed skip reason was recorded -- the drop was silent"
+        assert skips[-1]["reason"] == "mcp_app_skipped_no_resource_uri"
+
+
+def test_observer_skip_error_result_is_typed_not_silent(tmp_path: Path) -> None:
+    """#1308: an isError result is a typed, logged skip -- never silent."""
+
+    executor = _Executor()
+    agent = SimpleNamespace(_active_tool_executor=lambda: executor)
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
+
+    with TestClient(app, base_url="http://127.0.0.1:8100") as client:
+        sid = client.post("/v1/sessions", json={"title": "SKIP2"}).json()["id"]
+        tool = executor.definitions["vigil_open"]  # a genuine resourceUri
+        error_result = {"content": [{"type": "text", "text": "boom"}], "isError": True}
+        with _gact_app_context(app), _tool_session_context(sid):
+            app.state.pending_mcp_app_observer(
+                "vigil_open_skip_probe",
+                {},
+                tool,
+                error_result,
+                "vigil",
+            )
+
+        assert app.state.mcp_app_registry.records_for_session(sid) == []
+        skips = [
+            r for r in recorded_mcp_app_observer_skips() if r.get("tool") == "vigil_open_skip_probe"
+        ]
+        assert skips, "no typed skip reason was recorded -- the drop was silent"
+        assert skips[-1]["reason"] == "mcp_app_skipped_error_result"
+
+
+def test_observer_skip_no_session_is_typed_not_silent(tmp_path: Path) -> None:
+    """#1308: no resolvable session is a typed, logged skip -- never silent."""
+
+    executor = _Executor()
+    agent = SimpleNamespace(_active_tool_executor=lambda: executor)
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
+    tool = executor.definitions["vigil_open"]
+
+    # No session is ever created -- app.state.sessions.list() is empty, and no
+    # _tool_session_context is bound, so _resolve_tool_session(app) yields "".
+    with _gact_app_context(app):
+        app.state.pending_mcp_app_observer(
+            "vigil_open_skip_probe_nosession",
+            {},
+            tool,
+            _open_result(),
+            "vigil",
+        )
+
+    skips = [
+        r
+        for r in recorded_mcp_app_observer_skips()
+        if r.get("tool") == "vigil_open_skip_probe_nosession"
+    ]
+    assert skips, "no typed skip reason was recorded -- the drop was silent"
+    assert skips[-1]["reason"] == "mcp_app_skipped_no_session"
+
+
+def test_burst_of_ordinary_skips_never_evicts_a_recorded_no_session_row(tmp_path: Path) -> None:
+    """Opus review, #1308 F1: a burst of ordinary ``no_resource_uri`` skips --
+    the majority-case reason fired by every plain, non-App tool call -- must
+    NEVER evict a rare ``no_session`` row from the queryable ring.
+
+    Before the fix, both reasons shared ONE 256-slot ring; a burst larger
+    than that cap would silently push the diagnostic row out from under a
+    caller trying to query exactly the symptom #1308 needed diagnosed. The
+    fix splits the ring by reason (``mcp_app_observer_reasons.py``'s module
+    docstring) so the high-volume reason can never touch the rare one's slots.
+    """
+
+    executor = _Executor()
+    agent = SimpleNamespace(_active_tool_executor=lambda: executor)
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
+    vigil_tool = executor.definitions["vigil_open"]
+    ordinary_tool = executor.definitions["other_escape"]  # no resourceUri
+    marker = "vigil_open_skip_probe_burst_survivor"
+
+    # 1) Record the RARE row first (no session ever created/bound).
+    with _gact_app_context(app):
+        app.state.pending_mcp_app_observer(marker, {}, vigil_tool, _open_result(), "vigil")
+
+    # 2) Flood with FAR more ordinary skips than the ring's 256-slot cap.
+    with TestClient(app, base_url="http://127.0.0.1:8100") as client:
+        sid = client.post("/v1/sessions", json={"title": "BURST"}).json()["id"]
+        with _gact_app_context(app), _tool_session_context(sid):
+            for i in range(400):
+                app.state.pending_mcp_app_observer(
+                    f"vigil_ordinary_burst_{i}", {}, ordinary_tool, _open_result(), "vigil"
+                )
+
+    # 3) The rare row must still be queryable -- untouched by the flood.
+    survivors = [r for r in recorded_mcp_app_observer_skips() if r.get("tool") == marker]
+    assert survivors, "a burst of ordinary skips evicted the rare no_session row"
+    assert survivors[-1]["reason"] == "mcp_app_skipped_no_session"
 
 
 def test_registry_rejects_overflow_without_evicting_cleanup_ownership(

@@ -51,7 +51,9 @@ class _FakeClient:
     async def __aexit__(self, *exc: Any) -> bool:
         return False
 
-    async def call_tool(self, tool_name: str, tool_args: Any) -> _FakeResult:
+    async def call_tool(
+        self, tool_name: str, tool_args: Any, *, progress_handler: Any = None
+    ) -> _FakeResult:
         return _FakeResult("hello-from-tool")
 
 
@@ -79,9 +81,7 @@ def test_builders_external_tool_call_routes_through_factory(
         calls.append(target)
         return _FakeClient(target)
 
-    monkeypatch.setattr(
-        "clio_agent.tools.mcp_config.transport_from_spec", lambda spec: "TSPORT"
-    )
+    monkeypatch.setattr("clio_agent.tools.mcp_config.transport_from_spec", lambda spec: "TSPORT")
     # #1113: builders now builds via make_elicitation_client, which still routes
     # through the ONE make_mcp_client factory (plus the wired elicitation handler).
     monkeypatch.setattr("clio_agent.tools.mcp_runtime.make_mcp_client", spy)
@@ -119,9 +119,7 @@ def test_route_missing_dependency_is_503_before_tool_start(
     def missing_dependency(*_a: Any, **_k: Any) -> Any:
         raise ImportError("No module named 'fastmcp'")
 
-    monkeypatch.setattr(
-        "clio_agent.gact.routes.mcp.transport_from_spec", lambda spec: object()
-    )
+    monkeypatch.setattr("clio_agent.gact.routes.mcp.transport_from_spec", lambda spec: object())
     monkeypatch.setattr("clio_agent.tools.mcp_runtime.make_mcp_client", missing_dependency)
 
     app = build_app(sessions_path=tmp_path / "s.json")

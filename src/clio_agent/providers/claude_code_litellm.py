@@ -46,6 +46,7 @@ from clio_agent.providers.claude_code_options import build_sdk_options
 from clio_agent.providers.claude_code_sessions import (
     _SDK_SESSION_POOL,
     _STREAM_CLIENT_POOL,
+    _active_gact_session_id,
     _per_call_message_source,
     _run_sdk,
     _SdkSession,
@@ -208,8 +209,14 @@ async def _astream_sdk(
     payload = send.payload if send is not None else prompt
     session_id = send.session_id if send is not None else uuid.uuid4().hex
     if session_reuse_enabled():
+        # gact_session_id (#1305): lets release_session_resources find + free
+        # this scope deterministically at agent-task completion.
         entry = _STREAM_CLIENT_POOL.entry_for(
-            model=model, cwd=cwd, thinking=thinking, scope=stream_scope_for(send)
+            model=model,
+            cwd=cwd,
+            thinking=thinking,
+            scope=stream_scope_for(send),
+            gact_session_id=_active_gact_session_id(),
         )
         source = entry.stream(
             payload=payload,

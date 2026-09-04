@@ -1041,8 +1041,18 @@ def test_clio_builtin_servers_serve_no_tasks() -> None:
 
 
 def test_make_mcp_client_declares_tasks_on_execution_clients() -> None:
-    """``make_mcp_client`` is the site that turns the declaration on."""
+    """``make_mcp_client`` is the site that turns the declaration on.
 
+    #1283 (C1-S3): ``make_mcp_client`` now folds the FULL generic extension
+    registry (``tools/mcp_extension_registry.py``), not tasks alone -- so
+    ``extensions`` also carries the MCP Apps ``ui`` ad. This test stays
+    scoped to what it always proved (the tasks entry's identity/backend
+    binding is unchanged); it finds that entry by type instead of assuming
+    it is the only one, and pins the registry's OTHER active entry alongside
+    it so a future entry addition/removal here is deliberate, not silent.
+    """
+
+    from clio_agent.tools.mcp_extension_registry import UI_EXTENSION_ID
     from clio_agent.tools.mcp_runtime import make_mcp_client
 
     captured: dict[str, Any] = {}
@@ -1065,20 +1075,35 @@ def test_make_mcp_client_declares_tasks_on_execution_clients() -> None:
     make_mcp_client(transport, client_cls=FakeClient)
     extensions = captured.get("extensions") or []
 
-    assert len(extensions) == 1
-    assert isinstance(extensions[0], ClioTasksClientExtension)
-    assert extensions[0].backend.server_id == backend_identity(transport).server_id
+    tasks_extensions = [ext for ext in extensions if isinstance(ext, ClioTasksClientExtension)]
+    assert len(tasks_extensions) == 1
+    assert tasks_extensions[0].backend.server_id == backend_identity(transport).server_id
+    assert {ext.identifier for ext in extensions} == {
+        "io.modelcontextprotocol/tasks",
+        UI_EXTENSION_ID,
+    }
 
 
 def test_make_mcp_client_omits_the_declaration_for_a_proxy_client_class() -> None:
-    """The one honest suppression is the client class's own ``_auto_internal_extensions``.
+    """The one honest TASKS suppression is the client class's own
+    ``_auto_internal_extensions``.
 
     There is deliberately no per-call opt-out: importing ``fastmcp_tasks`` registers
     an internal factory process-wide, so a client that declared nothing would still
     fold the substrate's own extension — an "off" switch would swap CLIO's hardened
     resolver for the un-hardened one instead of turning the advertisement off.
+
+    #1283 (C1-S3): ``extensions`` is no longer absent entirely on a proxy-like
+    client class -- the registry's OTHER entry (the MCP Apps ``ui`` ad) is
+    declared UNCONDITIONALLY (see ``mcp_extension_registry.py``'s module
+    docstring for why: unlike tasks, a proxy backend leg has no functional
+    reason to withhold it). This test's actual contract -- tasks specifically
+    is suppressed for this client class -- is unchanged; only the mechanical
+    "no extensions key at all" assumption is updated to "tasks absent, ui
+    present".
     """
 
+    from clio_agent.tools.mcp_extension_registry import UI_EXTENSION_ID
     from clio_agent.tools.mcp_runtime import make_mcp_client
 
     captured: dict[str, Any] = {}
@@ -1093,7 +1118,9 @@ def test_make_mcp_client_omits_the_declaration_for_a_proxy_client_class() -> Non
 
     make_mcp_client(object(), client_cls=ProxyLikeClient)
 
-    assert "extensions" not in captured
+    extensions = captured.get("extensions") or []
+    assert not any(isinstance(ext, ClioTasksClientExtension) for ext in extensions)
+    assert {ext.identifier for ext in extensions} == {UI_EXTENSION_ID}
 
 
 def test_no_tool_dispatching_client_is_built_outside_the_factory() -> None:

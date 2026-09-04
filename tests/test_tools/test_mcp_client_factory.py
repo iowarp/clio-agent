@@ -43,7 +43,9 @@ class _FakeClient:
     async def list_tools(self) -> list[Any]:
         return []
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any], *, progress_handler: Any = None
+    ) -> Any:
         return SimpleNamespace(data="ok", content=[])
 
     async def read_resource(self, uri: str) -> Any:
@@ -333,7 +335,9 @@ def test_proxy_for_spec_routes_backend_through_factory(
     calls: list[Any] = []
     stub = FastMCP("stub")
 
-    def spy(target: Any, *, handlers: Any = None, capabilities: Any = None, client_cls: Any = None) -> Any:  # noqa: A002
+    def spy(
+        target: Any, *, handlers: Any = None, capabilities: Any = None, client_cls: Any = None
+    ) -> Any:  # noqa: A002
         calls.append((target, handlers, capabilities, client_cls))
         return Client(stub)  # a real client (has .new()) so the proxy accepts it
 

@@ -145,6 +145,17 @@ class TaskSpec:
     # ``seed_context`` are unused on this path (no turn ever reads them). Default
     # ``True`` preserves the existing "mint AND start a turn" behavior verbatim.
     start_turn: bool = True
+    # #1309 C1-S7 F1: ``()`` forces the child's bound agent to ZERO tools
+    # (declared, auto-attached, AND skill -- see
+    # ``agents/resolution.py::_apply_session_tool_allowlist``); ``None`` (the
+    # default) leaves every other caller's behavior unchanged. Stamped into
+    # the child SESSION's metadata at MINT time (below), never patched in
+    # after ``invoke()`` returns -- so it is true before the child's first
+    # tool-resolving turn build, not merely "usually true first" by timing.
+    tool_allowlist: Optional[tuple[str, ...]] = None
+    # #1309 C1-S7 F3: the bounded agent-elicitation recursion depth, stamped
+    # onto the child's metadata at the SAME mint point for the same reason.
+    agent_elicitation_depth: Optional[int] = None
 
 
 class SpawnError(Exception):
@@ -372,6 +383,20 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         metadata_patch={
             **session_scope_metadata,
             "spawn_placement": spec.placement,
+            # #1309 C1-S7 F1/F3: stamped HERE (mint time, before this child can
+            # possibly build its first turn) rather than via a caller's follow-up
+            # ``sessions.update`` after ``invoke()`` returns -- the ordering
+            # invariant is then true by construction, not by timing.
+            **(
+                {"tool_allowlist": list(spec.tool_allowlist)}
+                if spec.tool_allowlist is not None
+                else {}
+            ),
+            **(
+                {"agent_elicitation_depth": spec.agent_elicitation_depth}
+                if spec.agent_elicitation_depth is not None
+                else {}
+            ),
             # Queryable audit trail for the mode-inheritance fix above: present (and
             # truthy) only when the child's mode was structurally inherited from a
             # restrictive parent, so the API/trace can distinguish "child is plan mode
@@ -468,6 +493,12 @@ def _cancel_one_child_task(app: "FastAPI", reg: Any, task: "AgentTask") -> Optio
         return None
     persist_agent_task(app, updated)
     publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[STATUS_CANCELLED])
+    # #1305 review round F3: this path previously bypassed SubagentStop AND
+    # the #1305 provider-connection release entirely (only the completion
+    # fold funneled through finish_agent_task_transition) -- a cancelled
+    # child's connection was left ENTIRELY to the idle-TTL sweep. Admission
+    # stays with the caller (cancel_children_of batches it once per cascade).
+    finalize_child_task_terminal(app, updated, child_sid)
     return updated
 
 
@@ -616,6 +647,28 @@ def _fire_subagent_stop(app: "FastAPI", updated: AgentTask, child_sid: str) -> N
             "error_reason": getattr(updated, "error_reason", "") or "",
         },
     )
+
+
+def finalize_child_task_terminal(app: "FastAPI", task: AgentTask, child_sid: str) -> None:
+    """Shared terminal-effects helper (#1305 review round F3).
+
+    Fires ``SubagentStop`` and releases the child's provider connection(s)
+    deterministically (:mod:`clio_agent.providers.session_lifecycle`). EVERY
+    terminal path funnels through this ONE helper -- the completion fold
+    (``task_fold.finish_agent_task_transition``), the cancel cascade
+    (:func:`_cancel_one_child_task`), and both ``child_forward.py`` HITL-edge
+    terminals (``fail_child_task`` / ``_complete_forwarded_task``) -- so a
+    subagent's connection releases regardless of HOW its task ended, never
+    left to the idle-TTL sweep alone. Callers own ``_admit_next_queued``
+    separately: timing differs (the cancel cascade batches admission once
+    per whole cascade, not once per cancelled task).
+    """
+    from clio_agent.providers.session_lifecycle import (  # noqa: PLC0415
+        release_session_resources,
+    )
+
+    _fire_subagent_stop(app, task, child_sid)
+    release_session_resources(child_sid)
 
 
 def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> None:

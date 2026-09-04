@@ -287,7 +287,9 @@ class _FakeClient:
             )
         ]
 
-    async def call_tool(self, name: str, args: dict[str, Any]) -> Any:
+    async def call_tool(
+        self, name: str, args: dict[str, Any], *, progress_handler: Any = None
+    ) -> Any:
         self.started_call = True
         return SimpleNamespace(data={"name": name, "args": args})
 

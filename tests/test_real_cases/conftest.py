@@ -240,9 +240,19 @@ def gact_server(request: pytest.FixtureRequest) -> Generator[GactServer, None, N
     #   - XDG_CONFIG_HOME: points the server at a throwaway tmp config root, so it
     #     can't see the user's installed blueprint -> assignment 404s "agent
     #     blueprint not found" (TRAP 1/5).
+    #   - CLIO_USER_DIR: the same throwaway root via the override platformdirs
+    #     honors on EVERY OS (tests/conftest.py sets BOTH; on Windows XDG alone is
+    #     a no-op, so stripping only XDG still 404s the blueprint — same trap).
     #   - CLIO_LM_MODEL: a unit-test default model; the bind PUT sets the real one.
+    # The CLIO_RUNTIME_STATE_DIR / CLIO_ARC_STORE_CONFIG / CLIO_SERVER_CONF /
+    # CLIO_CORE_PORT / USER quintet from tests/_cte_isolation stays INHERITED on
+    # purpose: it points this server at the pytest session's private real clio-core
+    # daemon (eagerly booted at session start) with the matching shm namespace —
+    # stripping part of it would attach a mismatched namespace against the host
+    # daemon.
     for _k in (
         "XDG_CONFIG_HOME",
+        "CLIO_USER_DIR",
         "CLIO_LM_MODEL",
     ):
         env.pop(_k, None)
@@ -283,6 +293,33 @@ def gact_server(request: pytest.FixtureRequest) -> Generator[GactServer, None, N
             f"{SERVER_HEALTH_TIMEOUT_S:g}s (see {server_log})"
         )
 
+    # TRAP: headless runs must pre-allow permissions BEFORE the first turn, or a
+    # gated tool insta-denies mid-run (verified live: PermissionError: tool call
+    # 'ndp_stage_resource' denied by permission gate, fired inside a grandchild
+    # session where no human was ever present to click "allow"). PUT /v1/policies
+    # is server-global (src/clio_agent/gact/routes/permissions.py:218) — one PUT
+    # here covers every session this fixture's server will host. Sanctioned
+    # pattern proven live in scripts/live_verification/_common.py:277-278.
+    with httpx.Client(timeout=30.0) as http:
+        policy_resp = http.put(
+            f"{GACT_URL}/v1/policies",
+            json={
+                "policies": [{"scope": "workspace", "action": "allow", "tool_name_pattern": "*"}]
+            },
+        )
+    if not (200 <= policy_resp.status_code < 300):
+        _reap_process_group(process)
+        log_fh.close()
+        _kill_port(GACT_PORT)
+        if prev_url is None:
+            os.environ.pop("CLIO_GACT_URL", None)
+        else:
+            os.environ["CLIO_GACT_URL"] = prev_url
+        pytest.fail(
+            f"pre-allow policy PUT /v1/policies failed: "
+            f"{policy_resp.status_code} {policy_resp.text}"
+        )
+
     try:
         yield GactServer(
             url=GACT_URL,
@@ -321,7 +358,37 @@ def agent(request: pytest.FixtureRequest, gact_server: GactServer) -> Any:
     config = request.config
     sut = resolve_active_sut(config)
     request.node.stash[CELL_KEY] = (provider, model)
-    if not sut.available(provider, model):
+    # FLAKY-SKIP fix (owner's wait doctrine: no single-probe verdicts —
+    # expanding retries, surfaced, never a silent skip). Verified live: a cell
+    # that boots right after a heavy previous-cell teardown (process reaping +
+    # CTE shutdown still running server-side) can time out its FIRST
+    # /v1/providers probe and get scored "skipped" ~20s after server boot even
+    # though the provider IS configured (sandiego_3/5, both immediately
+    # following a passing cell). Retry ``available()`` at 0s / +5s / +15s
+    # before trusting a False; a genuinely unconfigured provider still fails
+    # all three attempts (instantly), so upstream skip semantics are
+    # unchanged for the real "not configured here" case — only the
+    # transient-timeout false negative is fixed.
+    retry_delays = (0.0, 5.0, 15.0)
+    attempts = len(retry_delays)
+    is_available = False
+    for attempt, delay in enumerate(retry_delays, start=1):
+        if delay:
+            time.sleep(delay)
+        is_available = sut.available(provider, model)
+        if is_available:
+            break
+        remaining = retry_delays[attempt] if attempt < attempts else None
+        if remaining is not None:
+            print(
+                f"available() attempt {attempt}/{attempts} failed for "
+                f"{provider}/{model}; retrying in {remaining:g}s"
+            )
+        else:
+            print(
+                f"available() attempt {attempt}/{attempts} failed for {provider}/{model}; giving up"
+            )
+    if not is_available:
         pytest.skip(f"{provider}/{model} not available here")
     overrides = _parse_overrides(config)
     return sut.bind(provider, model, overrides=overrides)

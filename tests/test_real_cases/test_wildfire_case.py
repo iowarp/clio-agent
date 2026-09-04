@@ -75,7 +75,10 @@ def grounded_impact_decision(run):
     if impact.get("present"):
         return bool(impact.get("selected_fire") or (ws.get("fire") or {}).get("selected"))
     # genuine null: monitors were really evaluated and none fell under smoke
-    return int(overlap.get("monitors_total", 0) or 0) > 0 and int(overlap.get("monitors_under_smoke", 0) or 0) == 0
+    return (
+        int(overlap.get("monitors_total", 0) or 0) > 0
+        and int(overlap.get("monitors_under_smoke", 0) or 0) == 0
+    )
 
 
 @matcher
@@ -86,7 +89,8 @@ def fused_three_layers(run):
         if call.name == "geo_render_feature_map" and isinstance(call.output, dict):
             layers = call.output.get("layers") or []
             with_features = [
-                layer for layer in layers
+                layer
+                for layer in layers
                 if isinstance(layer, dict) and int(layer.get("features", 0) or 0) > 0
             ]
             if len(with_features) >= 3:
@@ -97,26 +101,31 @@ def fused_three_layers(run):
 @pytest.mark.real_case
 @pytest.mark.live
 def test_wildfire_downwind_impact(agent, tmp_path):
-    run = agent.run({
-        "task": PROMPT,
-        "blueprint_id": "wildfire-smoke-impact-review",
-        "case_dir": CASE_DIR,
-        "run_label": _RUN_LABEL,
-        # Isolated, auto-cleaned workspace root (see clio_sut.invoke): the map
-        # PNG is written here, not into the repo.
-        "workdir": str(tmp_path),
-        # No absolute per-run wall clock — progress watchdog governs (see the
-        # EarthScope case for the rationale). timeout_s=0 turns the hard cap off.
-        "timeout_s": 0,
-    })
+    run = agent.run(
+        {
+            "task": PROMPT,
+            "blueprint_id": "wildfire-smoke-impact-review",
+            "case_dir": CASE_DIR,
+            "run_label": _RUN_LABEL,
+            # Isolated, auto-cleaned workspace root (see clio_sut.invoke): the map
+            # PNG is written here, not into the repo.
+            "workdir": str(tmp_path),
+            # No absolute per-run wall clock — progress watchdog governs (see the
+            # EarthScope case for the rationale). timeout_s=0 turns the hard cap off.
+            "timeout_s": 0,
+        }
+    )
 
     # Runtime/harness invariants.
     assert run.error is None, run.error
     assert run.extra["blueprint_activated"], run.extra.get("active_agent_blueprint_id")
     assert run.called("geo_query_arcgis_features"), run.tool_names
 
-    # Route: acquisition -> impact analysis -> visualization -> synthesis.
-    for expert in ("data", "analysis", "visualization", "synthesis"):
+    # Route: acquisition (data) -> impact analysis (analysis) -> visualization,
+    # with the main itself authoring the final brief (no separate "synthesis"
+    # child exists in this pack -- wildfire-smoke-impact-review/experts/main.md:
+    # "there is no separate final-responder child").
+    for expert in ("data", "analysis", "visualization"):
         assert run.routed_to(expert), run.steps
 
     ws = run.extra.get("workflow_state") or {}

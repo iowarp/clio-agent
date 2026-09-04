@@ -275,6 +275,11 @@ class ClioAgent(dspy.Module):
         self._tool_definitions_lock = threading.Lock()
         self._mcp_namespace_healer: NamespaceDiscoveryHealer | None = None
         self._tool_gateway = self._build_tool_gateway(set_catalog=True)
+        # #1281 F5 (adversarial review): create_sync_tool_executor's inner
+        # AsyncMCPToolExecutor construction derives the direct-client factory
+        # registry straight off `self._tool_gateway` -- no separate stamp
+        # call needed here (folding this into construction is what closes
+        # gact/relay_wiring.py's rebuild, which never called such a stamp).
         self.tool_executor = create_sync_tool_executor(
             self._tool_gateway,
             preloaded_tools=self._tool_definitions,
@@ -624,6 +629,9 @@ class ClioAgent(dspy.Module):
                     server_id=f"gateway:{root}",
                 )
                 # Stamps (ids/epoch/specs) live with the merge owner module.
+                # #1281 F5: direct-client factories are NOT re-stamped here --
+                # create_sync_tool_executor's construction above already
+                # derived them straight off this SAME `gateway`.
                 stamp_fresh_fleet(
                     executor,
                     blueprint_id=blueprint_id,

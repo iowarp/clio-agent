@@ -1051,8 +1051,11 @@ async def test_transport_construction_registers_and_close_unregisters_the_consol
     observer factory under its OWN ``backend_identity()`` server_id, so a task
     that resolves through the TRANSPARENT #1115 extension path (never through
     this client's own submit()/poll()/wait(), which already fold the console
-    tail by hand) also gets one. Closing unregisters -- nothing answers for that
-    server_id once the client that registered it is gone."""
+    tail by hand) also gets one. Closing unregisters the SCOPED console
+    observer -- #1282 D3: ``resolve_task_observer`` never bare-``None``s
+    though, it falls back to the generic wait-surfacing default, so the
+    post-close assertion is "the specific console hook is gone", not "nothing
+    answers"."""
 
     relay = _client(relay_backend)
     async with relay:
@@ -1062,7 +1065,10 @@ async def test_transport_construction_registers_and_close_unregisters_the_consol
         assert hook is not None, "an open RelayTransportClient must register a console observer"
 
     after_close = resolve_task_observer(probe_key)
-    assert after_close is None, "closing must unregister -- no orphaned factory answers later"
+    assert after_close is not None, "the generic #1282 D3 default must still answer"
+    assert after_close is not hook, (
+        "closing must unregister the SCOPED console observer -- it must never answer again"
+    )
     # Cleanup safety net in case the assertion above ever fires mid-refactor: never
     # leak a registration into another test's process-wide registry.
     unregister_task_observer_factory(identity.server_id)

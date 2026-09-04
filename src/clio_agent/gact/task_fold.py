@@ -94,7 +94,7 @@ def finish_agent_task_transition(app: "FastAPI", outcome: AgentTaskFoldOutcome) 
     from clio_agent.gact.loop_inbox import enqueue_completion_wake  # noqa: PLC0415
     from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
         _admit_next_queued,
-        _fire_subagent_stop,
+        finalize_child_task_terminal,
     )
 
     # Clean-wire (owner, 2026-08-05): the child's final assistant message carries
@@ -108,7 +108,24 @@ def finish_agent_task_transition(app: "FastAPI", outcome: AgentTaskFoldOutcome) 
     # independent of whether/when the parent gets another turn. Idempotent and
     # never-raising, the same discipline as stamp_delegation_return above.
     reconcile_stored_handoff_part(app, outcome.task)
-    _fire_subagent_stop(app, outcome.task, outcome.task.child_session_id)
+    # #1305: fires SubagentStop + releases the child's provider connection(s)
+    # deterministically (see turn_spawn.finalize_child_task_terminal). This is
+    # ONE of FOUR terminal paths that call it -- NOT the sole choke point (a
+    # prior version of this comment claimed that; #1305 review round F3
+    # proved 3 others -- turn_spawn._cancel_one_child_task and
+    # child_forward.fail_child_task / _complete_forwarded_task -- also
+    # terminalize a child task and now route through the SAME shared helper).
+    # This one is race-guarded exactly-once by ``outcome.applied`` +
+    # ``outcome.task.is_terminal`` above; _cancel_one_child_task carries an
+    # equivalent guard (a swallowed transition exception returns early,
+    # never reaching the helper). fail_child_task / _complete_forwarded_task
+    # do NOT -- round 3 finding, stated honestly rather than silently
+    # papered over: both swallow a losing reg.transition() and fall back to
+    # the current row regardless, so either can double-fire SubagentStop (and
+    # a harmless redundant release call) on an already-terminal race. Real
+    # exactly-once hardening for those two is a tracked follow-up, not built
+    # here.
+    finalize_child_task_terminal(app, outcome.task, outcome.task.child_session_id)
     enqueue_completion_wake(app, outcome.task)
     _admit_next_queued(app)
 

@@ -61,7 +61,7 @@ compose:
     storage:
       - path: "{file_tier}"
         bdev_type: "file"
-        capacity_limit: "512MB"
+        capacity_limit: "{file_tier_capacity}"
         score: 1.0
     dpe:
       dpe_type: "max_bw"
@@ -149,12 +149,22 @@ def isolate_cte_env(root: Path, environ: dict[str, str]) -> CteIsolation:
 
     port = reserve_port_block()
     config_path = root / "cte.yaml"
+    # File-tier capacity is overridable per run: the 512MB default suits the
+    # offline/battery legs, but a content-heavy live case can FILL the final
+    # layer mid-run — clio-core then fails every write with the typed PutBlob
+    # rc=13 pressure class (see arc/clio_core_config.py) and turns fail loudly
+    # at finalize (TranscriptIngestError). Proven live 2026-09-03: the
+    # deep-researcher case's web-content transcripts filled 512MB ~17 min in.
+    # Sizing is per-invocation (a live launcher exporting the env), NOT a
+    # global default bump: preallocation must stay small for the battery.
+    file_tier_capacity = environ.get("CLIO_TEST_CTE_FILE_TIER_CAPACITY", "512MB")
     config_path.write_text(
         _PRIVATE_CONFIG_TEMPLATE.format(
             port=port,
             conf_dir=conf_dir.as_posix(),
             file_tier=(store_dir / "storage.bin").as_posix(),
             metadata_log=(store_dir / "metadata.log").as_posix(),
+            file_tier_capacity=file_tier_capacity,
         ),
         encoding="utf-8",
     )

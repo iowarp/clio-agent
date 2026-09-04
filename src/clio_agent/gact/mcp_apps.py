@@ -23,6 +23,12 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
+from clio_agent.gact.mcp_app_observer_reasons import (
+    record_observer_skip as _record_observer_skip,
+)
+from clio_agent.gact.mcp_app_observer_reasons import (
+    recorded_mcp_app_observer_skips as recorded_mcp_app_observer_skips,
+)
 from clio_agent.gact.mcp_app_sandbox import (
     _SANDBOX_DOCUMENT as _SANDBOX_DOCUMENT,
 )
@@ -52,6 +58,10 @@ from clio_agent.gact.runtime.globals import (
 )
 from clio_agent.gact.turn_runner import session_busy_error_payload
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Part
+from clio_agent.tools.mcp_extension_registry import (
+    MCP_APP_MIME_TYPE as MCP_APP_MIME_TYPE,
+)
+from clio_agent.tools.mcp_extension_registry import MCP_APPS_PROTOCOL_REVISION
 from clio_agent.tools.mcp_results import (
     call_tool_result_to_observer as _call_tool_result_to_observer,
 )
@@ -61,7 +71,6 @@ if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
 
 
-MCP_APP_MIME_TYPE = "text/html;profile=mcp-app"
 _REGISTRY_LIMIT = 64
 _REGISTRY_TTL_S = 60 * 60
 _MAX_PRIVATE_RESULT_BYTES = 1024 * 1024
@@ -403,12 +412,27 @@ def _make_mcp_app_observer(app: FastAPI):
     ) -> None:
         uri = _resource_uri(tool)
         if not uri:
+            _record_observer_skip(
+                "mcp_app_skipped_no_resource_uri",
+                tool=name,
+                source_namespace=source_namespace or "",
+            )
             return
         result_wire = call_tool_result_to_wire(raw_result)
         if result_wire.get("isError") is True:
+            _record_observer_skip(
+                "mcp_app_skipped_error_result",
+                tool=name,
+                source_namespace=source_namespace or "",
+            )
             return
         sid, _session = _resolve_tool_session(app)
         if not sid:
+            _record_observer_skip(
+                "mcp_app_skipped_no_session",
+                tool=name,
+                source_namespace=source_namespace or "",
+            )
             return
         try:
             record = _registry(app).register(
@@ -443,7 +467,7 @@ def _make_mcp_app_observer(app: FastAPI):
                 source_server=record.source_namespace or "",
                 data_ref=record.data_ref,
                 mime_type=MCP_APP_MIME_TYPE,
-                metadata={"stream_source": "live", "protocol": "2026-01-26"},
+                metadata={"stream_source": "live", "protocol": MCP_APPS_PROTOCOL_REVISION},
             ),
         )
 
@@ -623,7 +647,7 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         sandbox_path = f"/v1/sessions/{sid}/mcp-apps/{app_id}/sandbox?data_ref={data_ref}"
         return {
-            "protocol_version": "2026-01-26",
+            "protocol_version": MCP_APPS_PROTOCOL_REVISION,
             "resource": {
                 "uri": record.resource_uri,
                 "mime_type": MCP_APP_MIME_TYPE,
@@ -773,5 +797,6 @@ __all__ = [
     "cleanup_session_mcp_apps",
     "install_mcp_app_runtime",
     "read_resource_result_to_wire",
+    "recorded_mcp_app_observer_skips",
     "register_mcp_app_routes",
 ]

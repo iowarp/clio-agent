@@ -1073,13 +1073,19 @@ def test_v3_message_page_carries_the_paging_cursor(tmp_path: Path) -> None:
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "paging"}).json()["id"]
         for index in range(2):
-            assert (
-                client.post(
-                    f"/v1/sessions/{sid}/messages",
-                    json={"parts": [{"type": "text", "text": f"turn {index}"}]},
-                ).status_code
-                == 200
+            # 202 is a DESIGNED response, not a failure: accept_message queues a
+            # message that arrives while the previous turn's terminal transition
+            # has not quiesced (the within-session busy gate), and the loop-inbox
+            # admits it on idle. Under full-suite load the second POST genuinely
+            # races that window (#1311 — fired on CI 3.12 while 3.13 passed the
+            # same code). This test pins the PAGING CURSOR, not turn synchronicity,
+            # so it waits for idle between turns instead of assuming it.
+            accepted = client.post(
+                f"/v1/sessions/{sid}/messages",
+                json={"parts": [{"type": "text", "text": f"turn {index}"}]},
             )
+            assert accepted.status_code in (200, 202), accepted.text
+            _wait_idle(app, sid)
         page = client.get(
             f"/v1/sessions/{sid}/messages?limit=1",
             headers={"x-gact-version": "0.3"},

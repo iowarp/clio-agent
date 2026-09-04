@@ -372,7 +372,11 @@ async def _call_enabled_external_mcp_tool(
     notify_tool_observer(tool_observer, observer_name, dict(tool_args), "started")
     try:
         async with client_ctx as client:
-            result = await client.call_tool(tool_name, dict(tool_args))
+            from clio_agent.tools.mcp_header_mismatch import (  # noqa: PLC0415
+                call_tool_with_header_retry,
+            )
+
+            result = await call_tool_with_header_retry(client, tool_name, dict(tool_args))
     except Exception as raw_exc:  # noqa: BLE001
         # #1114: typed translation first — the model never sees a raw SDK class/message.
         surfaced = typed_mcp_call_error(raw_exc, tool=tool_name) or raw_exc

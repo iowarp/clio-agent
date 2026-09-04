@@ -137,9 +137,18 @@ class ClioAgent(SUT):
         ``--matrix`` cleanly instead of erroring at bind time.
 
         Usability = the provider's ``is_authenticated`` from the registry, plus a
-        live Globus-token check for argonne (whose token isn't reflected there)."""
+        live Globus-token check for argonne (whose token isn't reflected there).
+
+        Timeout is 15s, not a snappier default: a cell booting right after a
+        heavy previous-cell teardown (process reaping + CTE shutdown still
+        running server-side) can make this FIRST probe genuinely slow without
+        the server being unavailable — the caller (the ``agent`` fixture in
+        conftest.py) is the one that turns a single False into a verdict via
+        expanding retries, so this method itself still returns fast on a truly
+        unreachable server; it just no longer mistakes "slow" for "down" on the
+        first probe."""
         try:
-            with httpx.Client(base_url=self._base_url, timeout=5.0) as http:
+            with httpx.Client(base_url=self._base_url, timeout=15.0) as http:
                 # A 503 here just means no LM is wired yet (bind fixes that);
                 # only a transport failure means the server is unreachable.
                 http.get("/v1/health")
@@ -473,11 +482,27 @@ class ClioAgent(SUT):
                     )
                 seen_ids.update(str(m.get("id")) for m in snapshot)
             messages = http.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
-            children = [
-                r
-                for r in http.get("/v1/sessions").json()["sessions"]
-                if r.get("parent_session_id") == session_id
+            # Scope to the run's workspace: the bare listing defaults to
+            # "ws_default" (routes/sessions.py list_sessions), which silently
+            # hid every spawned child session of a per-cell workspace run.
+            all_sessions = http.get("/v1/sessions", params={"workspace_id": workspace_id}).json()[
+                "sessions"
             ]
+            children = [r for r in all_sessions if r.get("parent_session_id") == session_id]
+            # Full descendant tree (children of children, ...): child experts run
+            # as REAL child sessions that spawn their own declared children in
+            # turn, so tool activity a matcher needs (e.g. geo_*/ndp_*/plot_*) can
+            # fire two or more levels down, not only in a direct child. One
+            # /v1/sessions listing was already fetched above; walk it once here.
+            descendants = self._descendant_sessions(all_sessions, session_id)
+            descendant_payloads: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+            for row in descendants:
+                desc_id = str(row.get("id") or "")
+                if not desc_id:
+                    continue
+                resp = http.get(f"/v1/sessions/{desc_id}/messages")
+                desc_messages = resp.json().get("messages", []) if resp.status_code == 200 else []
+                descendant_payloads.append((row, desc_messages))
             active = http.get(f"/v1/sessions/{session_id}/agent-blueprint").json()
             run_artifacts = self._existing_paths(self._registry_artifacts(http, session_id))
 
@@ -492,13 +517,25 @@ class ClioAgent(SUT):
             trace_path,
             artifacts=run_artifacts,
         )
+        self._fold_descendants(run, descendant_payloads)
+        # All descendants (not just direct children), tree order — child_session_ids
+        # above stays direct-only (unchanged contract); this is the full tree the
+        # fold above walked.
+        run.extra["descendant_session_ids"] = [
+            str(row.get("id") or "") for row, _ in descendant_payloads
+        ]
         # Per-turn sub-runs (multi-turn case): each carries that turn's own
         # tool_calls / steps / artifacts so a test can assert turn-by-turn
         # (e.g. turn 1 discovers but does not plot; later turns reuse state).
         if turn_runs:
             run.extra["turn_runs"] = [tr.to_dict() for tr in turn_runs]
         if trace_path:
-            self._dump_trace(trace_path, run, messages, children, active)
+            # Dump the FULL descendant tree (not just direct children) so a
+            # trace-driven review can see the whole spawn tree post-hoc — same
+            # child_session record schema _dump_trace already writes.
+            self._dump_trace(
+                trace_path, run, messages, [row for row, _ in descendant_payloads], active
+            )
         return run
 
     def _resolve_trace_path(self, spec: dict[str, Any]) -> Path | None:
@@ -623,18 +660,31 @@ class ClioAgent(SUT):
                 out.append(str(part.get("text") or ""))
         return "\n".join(t for t in out if t)
 
-    def _to_run(
-        self,
-        assistant: dict,
+    @staticmethod
+    def _extract_messages(
         messages: list[dict],
-        children: list[dict],
-        active: dict,
-        session_id: str,
-        blueprint_id: str,
-        trace_path: Path | None = None,
-        *,
-        artifacts: list[str] | None = None,
-    ) -> Run:
+    ) -> tuple[list[ToolCall], list[list[str]], float, list[dict]]:
+        """Extract tool calls, routing steps, cost, and structured outputs from
+        ONE session's assistant messages (oldest-first traversal).
+
+        Shared by ``_to_run`` (the root/main session) and ``invoke``'s descendant
+        fold: every session in the tree — root, child, or grandchild — carries
+        assistant messages in the same shape, so the same extraction applies
+        uniformly to each.
+
+        Routing (steps) has TWO sources, in call order per message:
+
+        * The CURRENT routing surface (react-main spawn architecture, #948 +
+          composer wave): the assistant CALLS ``spawn_agent_task`` /
+          ``spawn_agents_parallel`` to route work. Verified live: metadata has NO
+          ``expert_handoffs`` key; routing decisions ARE the spawn tool calls. Each
+          ``spawn_agent_task`` call becomes its own one-agent step; each
+          ``spawn_agents_parallel`` call becomes ONE step listing every agent it
+          fanned out to (they ran together, not in sequence).
+        * ``expert_handoffs`` metadata — the legacy delegation surface. Kept for
+          back-compat (an older runtime/replay trace might still carry it), even
+          though the live server no longer emits it.
+        """
         import json as _json
 
         tool_calls: list[ToolCall] = []
@@ -649,19 +699,43 @@ class ClioAgent(SUT):
             for tool in meta.get("tools_called") or []:
                 if not isinstance(tool, dict):
                     continue
+                name = str(tool.get("name") or "")
+                args = tool.get("args") if isinstance(tool.get("args"), dict) else {}
                 result = tool.get("result")
                 if isinstance(result, str):
                     try:
                         result = _json.loads(result)
                     except _json.JSONDecodeError:
-                        pass
-                tool_calls.append(
-                    ToolCall(
-                        name=str(tool.get("name") or ""),
-                        args=tool.get("args") if isinstance(tool.get("args"), dict) else {},
-                        output=result,
-                    )
-                )
+                        # Structured tool results can be recorded as a Python
+                        # constructor-repr ("Root(ok=True, radius_km=50.0, ...)")
+                        # rather than JSON. Reuse the owner adapter (format-only
+                        # coercion, no semantic change); it raises on anything
+                        # that is not such a repr, in which case the raw string
+                        # stands.
+                        from clio_agent.lm.adapters import (  # noqa: PLC0415
+                            _coerce_constructor_repr_to_jsonable,
+                        )
+
+                        try:
+                            result = _coerce_constructor_repr_to_jsonable(result)
+                        except Exception:  # noqa: BLE001 - raise==not-a-repr contract
+                            pass
+                tool_calls.append(ToolCall(name=name, args=args, output=result))
+                if name == "spawn_agent_task":
+                    agent_id = args.get("agent")
+                    if isinstance(agent_id, str) and agent_id.strip():
+                        steps.append([agent_id])
+                elif name == "spawn_agents_parallel":
+                    spawns = args.get("spawns")
+                    batch = [
+                        str(spec.get("agent"))
+                        for spec in (spawns if isinstance(spawns, list) else [])
+                        if isinstance(spec, dict)
+                        and isinstance(spec.get("agent"), str)
+                        and spec.get("agent").strip()
+                    ]
+                    if batch:
+                        steps.append(batch)
             handoffs = [
                 str(h.get("agent_id") or h.get("to") or h.get("delegate_to") or "")
                 for h in (meta.get("expert_handoffs") or [])
@@ -673,6 +747,77 @@ class ClioAgent(SUT):
             runtime = meta.get("agent_runtime") or {}
             if isinstance(runtime.get("structured_outputs"), dict):
                 structured.append(runtime["structured_outputs"])
+        return tool_calls, steps, cost, structured
+
+    @staticmethod
+    def _descendant_sessions(
+        all_sessions: list[dict[str, Any]], root_id: str
+    ) -> list[dict[str, Any]]:
+        """Every descendant of ``root_id`` (children, grandchildren, ...), in
+        depth-first tree order, from the ONE ``/v1/sessions`` listing the caller
+        already fetched.
+
+        Child experts run as REAL child sessions (#948), and children spawn their
+        own DECLARED children in turn (verified live: ``geo_geocode`` ran in a
+        child session, ``ndp_search_datasets`` in a GRANDCHILD) — so a run's tool
+        activity is scattered across the whole descendant tree, not just the
+        direct children. The ``visited`` guard makes this robust to a
+        malformed/cyclic ``parent_session_id`` edge (should never happen, but a
+        normalization bug must never hang the harness in a traversal loop).
+        """
+        by_parent: dict[str, list[dict[str, Any]]] = {}
+        for row in all_sessions:
+            parent = str(row.get("parent_session_id") or "")
+            if parent:
+                by_parent.setdefault(parent, []).append(row)
+        ordered: list[dict[str, Any]] = []
+        visited: set[str] = {root_id}
+
+        def _walk(parent_id: str) -> None:
+            for row in by_parent.get(parent_id, []):
+                rid = str(row.get("id") or "")
+                if not rid or rid in visited:
+                    continue
+                visited.add(rid)
+                ordered.append(row)
+                _walk(rid)
+
+        _walk(root_id)
+        return ordered
+
+    def _fold_descendants(
+        self,
+        run: Run,
+        descendant_payloads: list[tuple[dict[str, Any], list[dict[str, Any]]]],
+    ) -> None:
+        """Fold every descendant session's tool calls / routing steps / cost INTO
+        ``run`` in place — main's own tool_calls/steps stay first, descendants are
+        appended in tree order. ``run`` is a frozen dataclass, but its ``tool_calls``
+        / ``steps`` lists and ``usage`` dict are mutable containers: mutating their
+        CONTENTS (extend/update) is legal, only reassigning the attribute itself
+        would raise."""
+        for _row, desc_messages in descendant_payloads:
+            desc_tool_calls, desc_steps, desc_cost, _structured = self._extract_messages(
+                desc_messages
+            )
+            run.tool_calls.extend(desc_tool_calls)
+            run.steps.extend(desc_steps)
+            run.usage["cost_usd"] = float(run.usage.get("cost_usd", 0.0)) + desc_cost
+        run.usage["steps"] = sum(len(turn) for turn in run.steps)
+
+    def _to_run(
+        self,
+        assistant: dict,
+        messages: list[dict],
+        children: list[dict],
+        active: dict,
+        session_id: str,
+        blueprint_id: str,
+        trace_path: Path | None = None,
+        *,
+        artifacts: list[str] | None = None,
+    ) -> Run:
+        tool_calls, steps, cost, structured = self._extract_messages(messages)
         active_id = str(active.get("active_agent_blueprint_id") or "")
         error_info = assistant.get("error_info")
         workflow_state = self._extract_workflow_state(messages)
@@ -688,6 +833,12 @@ class ClioAgent(SUT):
                 "active_agent_blueprint_id": active_id,
                 "blueprint_activated": active_id == blueprint_id,
                 "child_session_ids": [str(c.get("id")) for c in children],
+                # Full child rows (workspace-scoped listing — bare GET /v1/sessions
+                # defaults to ws_default and HIDES per-cell-workspace children, the
+                # trap fixed in invoke): case modules must consume THIS instead of
+                # re-listing (the deep-researcher case's own bare re-fetch saw zero
+                # children on a run that spawned six — proven live 2026-09-03).
+                "child_sessions": [dict(c) for c in children],
                 "stop_reason": str(assistant.get("stop_reason") or ""),
                 "provider": self._provider,
                 "model": self._model,

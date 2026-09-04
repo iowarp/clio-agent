@@ -192,7 +192,7 @@ lm.provider: "lm_studio"
 # CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
 # Process-wide cap on concurrently-connected claude CLI subprocesses; a
 # connect beyond it waits, raise for more concurrent sessions.
-providers.claude_code.max_concurrent_processes: 1.0
+providers.claude_code.max_concurrent_processes: 4.0
 
 # CLIO_CLAUDE_CODE_PROBE_TIMEOUT_S  (float)  <- src/clio_agent/providers/model_discovery/claude_code.py
 # Seconds one Claude Code model-discovery probe call may run before it is
@@ -238,6 +238,14 @@ providers.model_catalog_ttl_s: 86400.0
 # ==========================================================================
 # Per-call byte/character/time bounds and bounded-retry budgets across the
 # tool and LM paths.
+
+# CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS  (int)  <- src/clio_agent/gact/agents/agent_task_output_digest.py
+# Character bound above which a completed spawned child's full output is
+# digested (excerpt + a durable session/message reference) instead of
+# inlined verbatim into the parent's wait_agent_tasks result; raise to
+# inline larger child answers, lower to bound coordinator context growth
+# sooner.
+limits.agent_task_output_digest_chars: 8000
 
 # CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S  (float)  <- src/clio_agent/providers/codex_stream.py
 # Max silence (seconds) for one Codex SDK exchange/event, resetting on every
@@ -1054,6 +1062,31 @@ tools.mcp.discovery_concurrency: 8
 # discovery; lower to recover faster, raise to cut retry noise.
 tools.mcp.discovery_heal_interval_s: 20.0
 
+# CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DENIED_SERVERS  (list)  <- src/clio_agent/gact/agent_elicitation.py
+# CSV of declared MCP server names whose agent-audience elicitations always
+# fall back to the human; the per-server opt-out for agent-driven
+# elicitation (#1309).
+# tools.mcp.elicitation.agent_audience.denied_servers:  # computed at runtime: default
+
+# CLIO_MCP_ELICITATION_AGENT_AUDIENCE_ENABLED  (bool)  <- src/clio_agent/gact/agent_elicitation.py
+# Master switch for agent-driven elicitation: a form-mode elicitation
+# carrying the x-clio-agent/audience=agent hint may be answered by the
+# session's agent (tool-less, schema-validated); off routes every question
+# to the human as before.
+tools.mcp.elicitation.agent_audience.enabled: true
+
+# CLIO_MCP_ELICITATION_AGENT_AUDIENCE_MAX_DEPTH  (int)  <- src/clio_agent/gact/agent_elicitation.py
+# Recursion bound for agent-answer turns: a nested agent-audience
+# elicitation beyond this depth falls back typed to the human; raise only
+# for deliberately layered server flows.
+tools.mcp.elicitation.agent_audience.max_depth: 1
+
+# CLIO_MCP_ELICITATION_AGENT_AUDIENCE_TIMEOUT_S  (float)  <- src/clio_agent/gact/agent_elicitation.py
+# Seconds an agent-answer turn may take before the question falls back typed
+# to the human; bounds the 'agent is answering' window a pending question
+# can sit in.
+tools.mcp.elicitation.agent_audience.timeout_s: 90.0
+
 # CLIO_MCP_ELICITATION_URL_TRUSTED_ORIGINS  (list)  <- src/clio_agent/gact/elicitation_bridge.py
 # CSV allow-list of origins a url-mode elicitation may point to; add one to
 # enable url elicitation for that server.
@@ -1083,6 +1116,12 @@ tools.mcp.mount_retry_delays_s: ["0.5", "1.5"]
 # Retries of the era-negotiation probe after a client-side timeout before
 # giving up; raise for a slow-starting server.
 tools.mcp.probe_timeout_retries: 3
+
+# CLIO_MCP_RESPONSE_CACHE_ENABLED  (bool)  <- src/clio_agent/tools/mcp_runtime.py
+# Opts execution-path MCP clients into SEP-2549 server-hinted response
+# caching; off by default (enabling it wraps the message handler, visible to
+# a caller that type-checks it).
+tools.mcp.response_cache_enabled: false
 
 # CLIO_MCP_SETUP_TIMEOUT_S  (float)  <- src/clio_agent/gact/mcp_readiness.py
 # Seconds allowed for an MCP tool executor's startup handshake; raise for
