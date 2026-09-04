@@ -16,7 +16,9 @@ Three surfaces layer over that one truth:
   index + one ``threading.Event`` per task (the S6 wait primitive), rebuilt at boot
   by folding ``session_type == "agent_task"`` sessions.
 * **Live feed** — ``agent.task.*`` events published to BOTH the parent and child
-  session channels (see :func:`publish_agent_task_event`).
+  session channels for delegated work (see :func:`publish_agent_task_event`).
+  Internal runtime turns remain observable on their own child channel without
+  masquerading as user-facing delegation in the attended transcript.
 
 The record vocabulary deliberately mirrors clio-relay's durable job records (status
 lifecycle, timelines, artifact ref) so federation (#671) later swaps the executor
@@ -182,6 +184,11 @@ class AgentTask:
     # authoritative child-session record so local and relay runs project identically.
     handle_id: str = ""
     run_label: str = ""
+    # Runtime helper turns may need the isolation and lifecycle guarantees of a
+    # real child session without being delegated work the scientist should see.
+    # Persist this decision on the authoritative task record so reload and SSE
+    # use the same presentation semantics. It is not inferred from ``run_label``.
+    project_to_parent: bool = True
     live_state: str = ""
     host: str = "local"
     placement: str = "local"
@@ -606,6 +613,7 @@ def seed_agent_task(
     placement: str = "local",
     host: str = "",
     run_label: str = "",
+    project_to_parent: bool = True,
     spawn_group_id: str = "",
     group_size: int = 0,
 ) -> AgentTask:
@@ -649,6 +657,7 @@ def seed_agent_task(
         group_size=group_size,
         handle_id=tid,
         run_label=run_label or f"{agent_ref.get('expert_id', 'agent')} #{run_index + 1}",
+        project_to_parent=project_to_parent,
         live_state=status,
         host=host or (placement.split(":", 1)[1] if placement.startswith("relay:") else "local"),
         placement=placement,
@@ -784,8 +793,14 @@ def publish_agent_task_event(app: "FastAPI", task: AgentTask, event_type: str) -
     from clio_agent.gact.permission_delivery import attended_session_id  # noqa: PLC0415
 
     payload = asdict(task)
-    owners = [sid for sid in (task.parent_session_id, task.child_session_id) if sid]
-    attended = attended_session_id(app, task.parent_session_id) if task.parent_session_id else ""
+    owners = [task.child_session_id] if task.child_session_id else []
+    if task.project_to_parent and task.parent_session_id:
+        owners.insert(0, task.parent_session_id)
+    attended = (
+        attended_session_id(app, task.parent_session_id)
+        if task.project_to_parent and task.parent_session_id
+        else ""
+    )
     for sid in owners:
         app.state.bus.publish(Event(type=event_type, session_id=sid, payload=payload))
     if attended and attended not in owners:

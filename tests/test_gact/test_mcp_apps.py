@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -174,6 +175,7 @@ def test_observer_emits_only_opaque_typed_part(tmp_path: Path) -> None:
         assert part["app_instance_id"] == record.app_instance_id
         assert part["data_ref"] == record.data_ref
         assert part["source_server"] == "vigil"
+        assert part["tool_name"] == "vigil_open"
         assert "never-in-transcript" not in rendered
         assert record.tool_result["_meta"]["io.iowarp.vigil"]["admission"] == {
             "capability": "never-in-transcript"
@@ -491,13 +493,16 @@ def test_capability_routes_stay_bound_and_session_delete_cleans_up(tmp_path: Pat
 
 
 class _SlowAgent:
-    """Keep one real turn active long enough to exercise the canonical steer queue."""
+    """Keep one real turn active until the canonical steer queue is inspected."""
+
+    def __init__(self, release: threading.Event) -> None:
+        self._release = release
 
     def forward(self, question: str, session_id: str) -> Any:
         """Return after the app message has been accepted as a pending steer."""
 
         del question, session_id
-        time.sleep(0.8)
+        self._release.wait(timeout=5)
         return SimpleNamespace(answer="done", selected_expert="", routing_rationale="")
 
 
@@ -569,7 +574,8 @@ def test_app_message_records_context_provenance_without_exposing_private_data(
 def test_busy_app_message_uses_existing_pending_steer_queue_without_private_data(
     tmp_path: Path,
 ) -> None:
-    app = build_app(sessions_path=tmp_path / "sessions.json", agent=_SlowAgent())
+    release = threading.Event()
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=_SlowAgent(release))
 
     with TestClient(app, base_url="http://127.0.0.1:8100") as client:
         sid = client.post("/v1/sessions", json={"title": "MCP App queue"}).json()["id"]
@@ -610,8 +616,21 @@ def test_busy_app_message_uses_existing_pending_steer_queue_without_private_data
         assert queued.json()["delivery"] == "steer"
 
         pending = client.get(f"/v1/sessions/{sid}/pending-steers").json()["pending_steers"]
-        assert [row["message_id"] for row in pending] == [queued.json()["message_id"]]
+        queued_message_id = queued.json()["message_id"]
+        pending_ids = [row["message_id"] for row in pending]
         messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        # The active loop may consume the inbox event between the 202 response and
+        # this read. Either the intent is still pending or the exact message is
+        # already present; it must never disappear between those two states.
+        assert queued_message_id in pending_ids or any(
+            message["id"] == queued_message_id for message in messages
+        )
+        release.set()
+        deadline = time.monotonic() + 2
+        while app.state.turn_runner.busy(sid) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        assert [message["id"] for message in messages].count(queued_message_id) == 1
         serialized = json.dumps(messages, sort_keys=True)
         assert "Apply the selected camera angle" in serialized
         assert record.data_ref not in serialized

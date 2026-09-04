@@ -105,7 +105,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -578,6 +578,10 @@ def _spawn_agent_answer_turn(
             skip_declared_check=True,
             seed_context=seed_context,
             run_label="agent-elicitation answer",
+            # This is an implementation turn used to answer the paused tool's
+            # question from model context, not delegated user-facing work. The
+            # authoritative interaction remains attached to the invocation.
+            project_to_parent=False,
             # F1/F3 (owner gate review): both stamped onto the child's OWN
             # metadata at MINT time by spawn_child_turn itself -- true before
             # the child's first turn build, never patched in afterward.
@@ -595,6 +599,7 @@ def _run_agent_answer_turn(
     prompt: str,
     depth: int,
     timeout_s: float,
+    on_spawn: Callable[[Any], None] | None = None,
 ) -> str:
     """Spawn + wait for the bounded answer child turn; return its raw reply
     text (the bounded ``answer_excerpt``).
@@ -617,6 +622,8 @@ def _run_agent_answer_turn(
     handle = _spawn_agent_answer_turn(
         app, answer_session_id=answer_session_id, prompt=prompt, depth=depth
     )
+    if on_spawn is not None:
+        on_spawn(handle)
     invoker = InProcessExpertInvoker(app)
     result = invoker.wait(handle, timeout_s=timeout_s)
     if not result.is_terminal:
@@ -714,6 +721,34 @@ async def _dispatch_agent_answer(
     answer_session_id = str(getattr(invocation, "session_id", "") or "") or question.session_id
     prompt = _build_answer_prompt(question, translation)
     timeout_s = _timeout_s()
+
+    def record_answer_turn(handle: Any) -> None:
+        """Attach the isolated helper identity to the causal question projection."""
+
+        from clio_agent.gact.elicitation_bridge import (  # noqa: PLC0415
+            stamp_question_routing_fields,
+        )
+        from clio_agent.gact.events import Event  # noqa: PLC0415
+
+        current = getattr(app.state, "user_questions", {}).get(question.id)
+        if current is None:
+            return
+        metadata = dict(current.metadata)
+        metadata["agent_answer_task"] = {
+            "task_id": str(getattr(handle, "task_id", "") or ""),
+            "child_session_id": str(getattr(handle, "child_session_id", "") or ""),
+        }
+        updated = stamp_question_routing_fields(app, question.id, metadata=metadata)
+        bus = getattr(app.state, "bus", None)
+        if updated is not None and bus is not None:
+            bus.publish(
+                Event(
+                    type="user_question.updated",
+                    session_id=updated.session_id,
+                    payload=updated.model_dump(exclude_none=True),
+                )
+            )
+
     try:
         reply_text = await asyncio.wait_for(
             asyncio.to_thread(
@@ -723,6 +758,7 @@ async def _dispatch_agent_answer(
                 prompt=prompt,
                 depth=decision.depth,
                 timeout_s=timeout_s,
+                on_spawn=record_answer_turn,
             ),
             timeout=timeout_s + _OUTER_TIMEOUT_MARGIN_S,
         )

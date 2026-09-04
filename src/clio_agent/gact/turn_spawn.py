@@ -137,6 +137,9 @@ class TaskSpec:
     # named surveillance task in the tray, not an ensemble run). Empty keeps the
     # existing default-label behavior verbatim.
     run_label: str = ""
+    # Internal runtime helpers use a real child turn for isolation but must not
+    # appear as delegated work in the attended parent transcript or task feed.
+    project_to_parent: bool = True
     # Spotter-ai standing-watcher follow-on: when False, mint the child session +
     # AgentTask record WITHOUT starting a first turn -- the record transitions
     # straight to RUNNING (never QUEUED-at-cap, never ``_launch``ed) so it stands
@@ -364,6 +367,7 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         group_size=spec.group_size,
         handle_id="task_" + child.id.split("_")[-1],
         run_label=spec.run_label or f"{spec.child_expert_id} #{run_index + 1}",
+        project_to_parent=spec.project_to_parent,
         live_state=STATUS_QUEUED,
         host=(spec.placement.split(":", 1)[1] if spec.placement.startswith("relay:") else "local"),
         placement=spec.placement,

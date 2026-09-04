@@ -134,6 +134,8 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
     downgraded = is_mcp and not task_id
     elicitation = question.metadata.get("elicitation")
     elicitation = dict(elicitation) if isinstance(elicitation, Mapping) else {}
+    agent_answer_task = question.metadata.get("agent_answer_task")
+    agent_answer_task = dict(agent_answer_task) if isinstance(agent_answer_task, Mapping) else None
     requires_human_response = question.status == "pending" and not (
         question.audience == "agent"
         and question.agent_elicitation_routing == "elicitation_routed_to_agent"
@@ -167,6 +169,7 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
                 "options": [option.model_dump() for option in question.options],
                 "allow_freeform": question.allow_freeform,
                 "answer_metadata": dict(question.answer_metadata),
+                "agent_answer_task": agent_answer_task,
                 "expires_at": question.expires_at,
                 "input_key": correlation["input_key"],
                 "mode": elicitation.get("mode"),

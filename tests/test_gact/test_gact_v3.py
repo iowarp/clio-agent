@@ -341,6 +341,7 @@ def test_v3_projects_mcp_app_as_a_typed_opaque_block() -> None:
             "app_instance_id": "app_123",
             "resource_uri": "ui://vigil/viewer",
             "source_server": "vigil",
+            "tool_name": "vigil_open_viewer",
             "data_ref": "opaque-capability",
             "mime_type": "text/html;profile=mcp-app",
             "height": 420,
@@ -353,6 +354,7 @@ def test_v3_projects_mcp_app_as_a_typed_opaque_block() -> None:
         "app_instance_id": "app_123",
         "resource_uri": "ui://vigil/viewer",
         "source_server": "vigil",
+        "tool_name": "vigil_open_viewer",
         "data_ref": "opaque-capability",
         "mime_type": "text/html;profile=mcp-app",
         "height": 420,
@@ -498,6 +500,35 @@ def test_v3_projects_authoritative_child_relation_without_handoff_part(tmp_path:
             "result": "Seattle resolved to an authoritative region.",
         }
     ]
+
+
+def test_v3_omits_internal_runtime_child_from_parent_transcript(tmp_path: Path) -> None:
+    """A runtime helper is a real child turn, but not user-facing delegation."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    parent = app.state.sessions.create(workspace_id="ws_default", title="Parent")
+    internal = seed_agent_task(
+        app,
+        parent_session_id=parent.id,
+        parent_turn_id="run_tool",
+        agent_ref={"expert_id": "main"},
+        task_id="task_agent_answer",
+        status="running",
+        run_label="agent-elicitation answer",
+        project_to_parent=False,
+    )
+
+    transcript = (
+        TestClient(app).get(f"/v1/sessions/{parent.id}/messages", headers=V3_HEADERS).json()
+    )
+
+    assert transcript["subagents"] == []
+    assert transcript["messages"] == []
+    child_events = app.state.bus._history[internal.child_session_id]
+    assert any(event.type == "agent.task.started" for event in child_events)
+    assert not any(
+        event.type.startswith("agent.task.") for event in app.state.bus._history[parent.id]
+    )
 
 
 def test_v3_omits_missing_parent_run_from_authoritative_child_relation(tmp_path: Path) -> None:

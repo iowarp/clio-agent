@@ -211,6 +211,7 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "app_instance_id": str(part.get("app_instance_id") or part_id),
             "resource_uri": str(part.get("resource_uri") or ""),
             "source_server": str(part.get("source_server") or ""),
+            "tool_name": str(part.get("tool_name") or ""),
             "data_ref": str(part.get("data_ref") or ""),
             "mime_type": str(part.get("mime_type") or "text/html;profile=mcp-app"),
             **(

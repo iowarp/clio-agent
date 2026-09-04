@@ -605,7 +605,11 @@ def test_agent_routed_questions_project_without_human_actions_and_keep_resolved_
                     "fields": fields,
                     "additional_properties": False,
                     "invocation_id": "call_pending",
-                }
+                },
+                "agent_answer_task": {
+                    "task_id": "task_answer",
+                    "child_session_id": "sess_answer",
+                },
             },
             audience="agent",
             agent_elicitation_routing="elicitation_routed_to_agent",
@@ -651,6 +655,10 @@ def test_agent_routed_questions_project_without_human_actions_and_keep_resolved_
         assert answering["routing_state"] == "elicitation_routed_to_agent"
         assert answering["payload"]["fields"] == fields
         assert answering["payload"]["answer_metadata"] == {"count": 3}
+        assert answering["payload"]["agent_answer_task"] == {
+            "task_id": "task_answer",
+            "child_session_id": "sess_answer",
+        }
 
         fallback = rows["question:human_fallback"]
         assert fallback["requires_human_response"] is True

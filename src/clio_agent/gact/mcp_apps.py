@@ -473,6 +473,7 @@ def _make_mcp_app_observer(app: FastAPI):
                 app_instance_id=record.app_instance_id,
                 resource_uri=record.resource_uri,
                 source_server=record.source_namespace or "",
+                tool_name=record.tool_name,
                 data_ref=record.data_ref,
                 mime_type=MCP_APP_MIME_TYPE,
                 metadata={"stream_source": "live", "protocol": MCP_APPS_PROTOCOL_REVISION},
