@@ -119,7 +119,11 @@ def test_decide_routing_url_mode_never_routes_even_with_audience_agent() -> None
     """url-mode consent must always come from the human (never an LM's answer)."""
 
     app = _fake_app({"sid1": SimpleNamespace(metadata={})})
-    decision = ae.decide_routing(app, mode="url", session_id="sid1", namespace="", audience="agent")
+    # A KNOWN namespace, so this pins the url-mode check specifically -- the
+    # empty/unknown-namespace case is its own fail-closed test (F2).
+    decision = ae.decide_routing(
+        app, mode="url", session_id="sid1", namespace="v2ex", audience="agent"
+    )
     assert decision.route is False
     assert decision.reason == ae.FALLBACK_REASON
     assert decision.detail == "url_mode_requires_human_consent"
@@ -156,7 +160,7 @@ def test_decide_routing_recursion_depth_exceeded_falls_back_typed() -> None:
 
     app = _fake_app({"sid1": SimpleNamespace(metadata={"agent_elicitation_depth": 1})})
     decision = ae.decide_routing(
-        app, mode="form", session_id="sid1", namespace="", audience="agent"
+        app, mode="form", session_id="sid1", namespace="v2ex", audience="agent"
     )
     assert decision.route is False
     assert decision.detail == "recursion_depth_exceeded"
@@ -166,7 +170,7 @@ def test_decide_routing_max_depth_is_configurable(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(ae, "_max_depth", lambda: 3)
     app = _fake_app({"sid1": SimpleNamespace(metadata={"agent_elicitation_depth": 1})})
     decision = ae.decide_routing(
-        app, mode="form", session_id="sid1", namespace="", audience="agent"
+        app, mode="form", session_id="sid1", namespace="v2ex", audience="agent"
     )
     assert decision.route is True
     assert decision.depth == 2
@@ -406,6 +410,226 @@ def test_human_still_answers_normally_after_a_fallback(
     body = resp.json()
     assert body["status"] == "answered"
     assert body.get("answered_by") in (None, "human")
+
+
+# --------------------------------------------------------------------------- #
+# F1 (owner gate review, BLOCKING) — the answer child gets ZERO tools         #
+# --------------------------------------------------------------------------- #
+
+
+def test_agent_answer_child_resolves_to_an_empty_toolset(client: TestClient) -> None:
+    """THE AUTHORITY TEST (owner gate review F1): the answer child turn must
+    have NO tool surface at all -- not the declared fleet, not the
+    auto-attached tools (create_artifact/plan_exit/write_todos/...).
+
+    Drives the REAL spawn path (:func:`agent_elicitation._spawn_agent_answer_turn`,
+    which itself calls the real ``InProcessExpertInvoker``/``spawn_child_turn_
+    threadsafe`` machinery) against a BARE session running the built-in ``main``
+    agent -- no active blueprint, the worst case: ``main`` declares the full
+    ``TOOL_CATALOG`` (``gact/catalog.py::_builtin_main_agent``) and a bare
+    session has no per-session overlay to lean on. Then reads back the CHILD's
+    resolved toolset through the SAME read route a live client would
+    (``GET /v1/agents?session_id=...``), which shares the ONE resolution seam
+    (``agents/resolution.py``) the real turn-build path uses -- never a unit
+    stub of the resolver.
+    """
+
+    from clio_agent.gact.agents import resolution as _resolution
+
+    app = client.app  # type: ignore[attr-defined]
+    sid = _create_session(client)
+    # Sanity precondition: the PARENT session's own agent is NOT already
+    # tool-less (else this test would vacuously pass no matter what F1 did).
+    parent_tools = _resolution._resolve_runtime_dynamic_agent(app, "main", session_id=sid)
+    assert parent_tools is not None and parent_tools.tools, (
+        "fixture assumption broken: the parent session's own agent must have "
+        "a non-empty tool surface for this test to mean anything"
+    )
+
+    # spawn_child_turn's _launch stages the child's background turn via
+    # ``app.state.turn_runner.spawn``, which needs a BOUND running loop
+    # (normally anchored by the app's own lifespan startup, which a bare
+    # ``TestClient(app)`` fixture -- used without ``with`` -- never runs).
+    # Bind it to this call's own loop, matching what a real request handler
+    # already has, so the REAL spawn path runs exactly as it does in
+    # production, not a stubbed one.
+    async def _spawn() -> Any:
+        app.state.turn_runner.bind_loop(asyncio.get_running_loop())
+        return ae._spawn_agent_answer_turn(
+            app, answer_session_id=sid, prompt="What nonce did the user state earlier?", depth=1
+        )
+
+    handle = asyncio.run(_spawn())
+    try:
+        rows = client.get("/v1/agents", params={"session_id": handle.child_session_id}).json()[
+            "agents"
+        ]
+        child_row = next((r for r in rows if r.get("id") == "main"), None)
+        assert child_row is not None, f"the answer child's bound agent row was not found: {rows}"
+        assert child_row.get("tools") == [], (
+            "the answer child resolved a NON-EMPTY toolset -- F1 requires zero "
+            f"tools (declared + auto-attached + skill); got {child_row.get('tools')!r}"
+        )
+    finally:
+        # The spawned child's background turn has no LM bound in this test
+        # app; cancel it so it does not linger past the test.
+        from clio_agent.gact.agents.invoker import InProcessExpertInvoker
+
+        InProcessExpertInvoker(app).cancel(handle)
+
+
+def test_apply_session_tool_allowlist_is_a_noop_without_the_stamped_metadata() -> None:
+    """A session with no ``tool_allowlist`` metadata (every session but an
+    agent-elicitation answer child) is untouched -- the regression lock for
+    the F1 mechanism itself."""
+
+    from clio_agent.gact.agents import resolution as _resolution
+    from clio_agent.gact.types import AgentDef
+
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            sessions=_FakeSessions(
+                {"sid1": SimpleNamespace(metadata={}, agent=SimpleNamespace(id="main"))}
+            )
+        )
+    )
+    row = AgentDef(
+        id="main", title="Main", module={"kind": "react"}, tools=["fs_read", "shell_exec"]
+    )
+    out = _resolution._apply_session_tool_allowlist(app, [row], session_id="sid1")
+    assert out[0].tools == ["fs_read", "shell_exec"]
+    assert out[0].module == {"kind": "react"}
+
+
+# --------------------------------------------------------------------------- #
+# F2 (owner gate review, should-fix) — an unknown server namespace fails      #
+# CLOSED, never open                                                          #
+# --------------------------------------------------------------------------- #
+
+
+def test_decide_routing_unknown_namespace_fails_closed() -> None:
+    app = _fake_app({"sid1": SimpleNamespace(metadata={})})
+    decision = ae.decide_routing(
+        app, mode="form", session_id="sid1", namespace="", audience="agent"
+    )
+    assert decision.route is False
+    assert decision.reason == ae.FALLBACK_REASON
+    assert decision.detail == "unknown_server"
+
+
+def test_decide_routing_known_namespace_still_routes_when_not_denied() -> None:
+    app = _fake_app({"sid1": SimpleNamespace(metadata={})})
+    decision = ae.decide_routing(
+        app, mode="form", session_id="sid1", namespace="v2ex", audience="agent"
+    )
+    assert decision.route is True
+
+
+# --------------------------------------------------------------------------- #
+# F4 (owner gate review addendum) — declared minLength/maxLength enforced,   #
+# identically for a human and an agent answer                                #
+# --------------------------------------------------------------------------- #
+
+
+def test_over_long_agent_answer_fails_the_schema_firewall_and_falls_back(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = client.app  # type: ignore[attr-defined]
+    sid = _create_session(client)
+    from clio_agent.gact.elicitation_schema import ELICITATION_QUESTION_SOURCE
+
+    now = "2026-09-03T00:00:00+00:00"
+    question = UserQuestion(
+        id="q_maxlen",
+        session_id=sid,
+        prompt="What is the code word?",
+        status="pending",
+        kind="freeform",
+        created_at=now,
+        updated_at=now,
+        source=ELICITATION_QUESTION_SOURCE,
+        audience="agent",
+        metadata={
+            "elicitation": {
+                "mode": "form",
+                "fields": [
+                    {
+                        "name": "code_word",
+                        "type": "string",
+                        "enum": None,
+                        "multi": False,
+                        "required": True,
+                        "title": "code_word",
+                        "description": "",
+                        "default": None,
+                        "min_length": None,
+                        "max_length": 8,
+                    }
+                ],
+                "additional_properties": True,
+            }
+        },
+    )
+    app.state.user_questions[question.id] = question
+    monkeypatch.setattr(
+        ae,
+        "_run_agent_answer_turn",
+        lambda *a, **k: '{"answer": {"code_word": "way-too-long-a-value"}}',
+    )
+    invocation = MCPInvocationContext(
+        invocation_id="inv", session_id=sid, namespace="v2ex", tool_name="agent_guarded_input"
+    )
+    decision = ae.AgentElicitationDecision(route=True, reason=ae.ROUTED_REASON, depth=1)
+    asyncio.run(ae._dispatch_agent_answer(app, question, invocation, None, decision))
+
+    still_pending = app.state.user_questions[question.id]
+    assert still_pending.status == "pending"
+    assert still_pending.agent_elicitation_fallback_detail == "agent_answer_schema_invalid"
+
+
+def test_over_long_human_answer_is_rejected_with_a_typed_message(client: TestClient) -> None:
+    app = client.app  # type: ignore[attr-defined]
+    sid = _create_session(client)
+    from clio_agent.gact.elicitation_schema import ELICITATION_QUESTION_SOURCE
+
+    now = "2026-09-03T00:00:00+00:00"
+    question = UserQuestion(
+        id="q_maxlen_human",
+        session_id=sid,
+        prompt="What is the code word?",
+        status="pending",
+        kind="freeform",
+        created_at=now,
+        updated_at=now,
+        source=ELICITATION_QUESTION_SOURCE,
+        metadata={
+            "elicitation": {
+                "mode": "form",
+                "fields": [
+                    {
+                        "name": "code_word",
+                        "type": "string",
+                        "enum": None,
+                        "multi": False,
+                        "required": True,
+                        "title": "code_word",
+                        "description": "",
+                        "default": None,
+                        "min_length": None,
+                        "max_length": 8,
+                    }
+                ],
+                "additional_properties": True,
+            }
+        },
+    )
+    app.state.user_questions[question.id] = question
+    resp = client.post(
+        f"/v1/sessions/{sid}/questions/{question.id}/answer",
+        json={"metadata": {"code_word": "way-too-long-a-value"}},
+    )
+    assert resp.status_code == 422
+    assert "character" in resp.json()["error"]["message"]
 
 
 # --------------------------------------------------------------------------- #

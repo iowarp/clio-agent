@@ -313,6 +313,31 @@ RATCHET_BASELINE: dict[str, int] = {
     # tuple-unpack + one added kwarg on two call sites (emit_spawn_started's
     # wrapper + _do_spawn's own call) landed here.
     "src/clio_agent/gact/agents/spawn_runtime.py": 1018,
+    # NEW entry (C1-S7, #1309 gate-review F1): crossed the flat 800 cap
+    # (791 -> 842) for the new _apply_session_tool_allowlist owner function --
+    # the ONE place that forces an agent-elicitation answer child's bound
+    # AgentDef to zero tools (declared, auto-attached, AND skill, via a
+    # module.kind flip to chain_of_thought, since a react module's
+    # auto-attached tools are not gated by AgentDef.tools at all) whenever its
+    # session carries an empty tool_allowlist -- wired into both branches of
+    # _resolve_runtime_dynamic_agent (the ONE seam the runtime turn path AND
+    # GET /v1/agents share, per this module's own docstring), so the read
+    # route and the executing agent can never disagree. Genuinely new
+    # decision logic (not a call-site wrap), hence living here rather than in
+    # a caller.
+    "src/clio_agent/gact/agents/resolution.py": 842,
+    # NEW entry (C1-S7, #1309 gate-review F1/F3): crossed the flat 800 cap
+    # (795 -> 820) for two new optional TaskSpec fields (tool_allowlist /
+    # agent_elicitation_depth) and the metadata_patch lines that stamp them
+    # onto a spawned child's OWN session record at MINT time (before the
+    # child can possibly build its first turn -- never patched in
+    # after invoke() returns, closing a timing-dependent-correctness gap the
+    # review round found). Every other TaskSpec caller is unaffected (both
+    # fields default None). The fields' CONSUMERS (agent_elicitation.py,
+    # agents/resolution.py) own all the actual decision logic; only the
+    # typed carriers + the mint-time stamp land here, the same shape every
+    # other TaskSpec field already uses in this file.
+    "src/clio_agent/gact/turn_spawn.py": 820,
     # (invoker.py's entry retired 2026-08: RelayExpertInvoker moved to its own
     # owner module agents/relay_expert_invoker.py, dropping invoker.py under the
     # 800 default cap — the #1221/#1222 contract-alignment growth that broke the
@@ -382,7 +407,14 @@ RATCHET_BASELINE: dict[str, int] = {
     # owner module agents/runners.py; the composer lanes added only an import
     # plus two one-line calls (initialize_composer_state/register_composer_routes)
     # and three forwarded args on the _start_background_user_turn wrapper.
-    "src/clio_agent/gact/app.py": 2494,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
+    # C1-S7 (#1309) gate-review F1: +4 (2494 -> 2498) for two call-site wraps
+    # in _agent_rows -- both its blueprint-active and fallback return points
+    # now route through the new owner function agents/resolution.py::
+    # _apply_session_tool_allowlist (a session's GET /v1/agents view must
+    # never disagree with what the runtime turn path actually executes). All
+    # decision logic lives in the owner module; only the two wrapping calls
+    # landed here.
+    "src/clio_agent/gact/app.py": 2498,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -501,6 +533,17 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/agent_elicitation.py — this file gained call sites only, no
     # decision logic. Ratchets back if a future decomposition splits the
     # question-store lock machinery out of this file.
+    # NEW entry (C1-S7, #1309): crossed the flat 800 cap (750 -> 809) in the
+    # owner-gate-review fix round -- the DESIGN INVARIANT docstring grew the
+    # required F1 tool-lessness sentence + the F4 minLength/maxLength residual
+    # paragraph, and _spawn_agent_answer_turn was split out of
+    # _run_agent_answer_turn so F1's authority test can drive the real spawn
+    # step without a full answer-turn LM round trip. No new decision surface;
+    # the fix logic itself (session tool-allowlist enforcement) lives in the
+    # owner module gact/agents/resolution.py.
+    # +2 (809 -> 811): ``ruff format``'s own canonical line-wrapping of the
+    # touched functions above -- no additional logic.
+    "src/clio_agent/gact/agent_elicitation.py": 811,
     "src/clio_agent/gact/elicitation_bridge.py": 882,
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to

@@ -55,22 +55,44 @@ through the EXISTING invocation machinery
 :func:`clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe` -- no new
 turn-state machine), seeded with a bounded excerpt of the answering session's
 own transcript so it genuinely runs "through the normal loop" on the user's
-provider, not a bare side-model call. Its answer feeds the EXISTING atomic
-answer primitives (:func:`clio_agent.gact.elicitation_bridge.claim_question_transition`
+provider, not a bare side-model call. **The answer turn is deliberately
+TOOL-LESS** (:func:`clio_agent.gact.agents.resolution._apply_session_tool_allowlist`
+forces zero tools -- declared, auto-attached, and skill -- via
+``TaskSpec.tool_allowlist=()`` stamped at spawn mint time): the server's own
+``message`` rides into the answer prompt VERBATIM, so a prompt-injected
+elicitation can only ever produce a schema-validated value, never drive a
+tool call -- the injection surface collapses entirely into the firewall
+below. Its answer feeds the EXISTING atomic answer primitives
+(:func:`clio_agent.gact.elicitation_bridge.claim_question_transition`
 + :func:`clio_agent.gact.elicitation_bridge.resolve_elicitation`) -- the SAME
 ones the shared answer route drives -- so the MRTR retry resumes the server
 unchanged and every answer is transcript-visible with typed attribution
 (``UserQuestion.answered_by == "agent"``).
 
+THE RESIDUAL CHANNEL, NAMED HONESTLY: a server-declared ``{"type": "string"}``
+field (no ``enum``) is still an agent-authored free-text value -- the widest
+shape ``requestedSchema`` permits. ``validate_elicitation_answer``
+(:mod:`clio_agent.gact.elicitation_schema`) now enforces the schema's own
+declared ``minLength``/``maxLength`` on such a field, identically for a human
+and an agent answer, so an over-long value is rejected typed rather than
+silently accepted -- but an in-bounds string is still arbitrary agent-composed
+text. This is why the tool-less answer turn above and the bounded context
+excerpt are LOAD-BEARING, not incidental: they are what keeps that residual
+channel confined to "a value shaped like the server's own declared schema,"
+never a side channel for anything else.
+
 RECURSION/CONVERGENCE SAFETY. A bounded ``agent_elicitation_depth`` rides the
-answering child session's metadata; a nested agent-audience question raised
-from WITHIN an agent-answer turn's own tool call is routed only while depth
-stays under :func:`_max_depth` (default 1 -- exactly one level of
-self-answering), else it falls back to the human, typed
-(``recursion_depth_exceeded``). Every other failure mode -- decline, an
-unparseable/schema-invalid reply, a spawn refusal, a timeout, an unexpected
-error -- ALSO falls back to the human, typed, and NEVER drops or loops the
-question: the human remains the terminal fallback, exactly as today.
+answering child session's metadata (stamped at the SAME mint point as the
+tool allowlist, never patched in after the fact). With the answer turn now
+tool-less, a NESTED agent-audience question genuinely cannot arise from
+within it today -- but the depth guard stays as defense in depth (never
+assume a future change to the answer turn's shape can't reintroduce a tool),
+routing only while depth stays under :func:`_max_depth` (default 1), else
+falling back to the human, typed (``recursion_depth_exceeded``). Every other
+failure mode -- decline, an unparseable/schema-invalid reply, a spawn
+refusal, a timeout, an unexpected error -- ALSO falls back to the human,
+typed, and NEVER drops or loops the question: the human remains the terminal
+fallback, exactly as today.
 
 url-mode elicitation is explicitly OUT OF SCOPE for agent routing regardless
 of the audience hint (``url_mode_requires_human_consent``): opening a URL is a
@@ -139,6 +161,7 @@ AGENT_ELICITATION_REASONS: dict[str, str] = {
 #: happened, never a silent/unexplained downgrade.
 AGENT_ELICITATION_FALLBACK_DETAILS: dict[str, str] = {
     "policy_disabled": "agent-audience routing is disabled by config",
+    "unknown_server": "no server namespace was identified; fails closed, never open",
     "policy_denied_server": "this server is on the agent-audience deny list",
     "url_mode_requires_human_consent": "url-mode consent must come from a human, never the agent",
     "recursion_depth_exceeded": "the bounded agent-answer recursion depth was reached",
@@ -285,7 +308,14 @@ def decide_routing(
         return AgentElicitationDecision(
             route=False, reason=FALLBACK_REASON, detail="policy_disabled"
         )
-    if namespace and namespace in _denied_servers():
+    # F2 (owner gate review): fail CLOSED, never open, on an empty/unknown
+    # namespace -- a server identity clio cannot name is a server clio cannot
+    # apply the deny-list policy to, so it never routes.
+    if not namespace:
+        return AgentElicitationDecision(
+            route=False, reason=FALLBACK_REASON, detail="unknown_server"
+        )
+    if namespace in _denied_servers():
         return AgentElicitationDecision(
             route=False, reason=FALLBACK_REASON, detail="policy_denied_server"
         )
@@ -481,46 +511,48 @@ def _build_answer_prompt(question: "UserQuestion", translation: "FormTranslation
     )
 
 
-def _run_agent_answer_turn(
+def _spawn_agent_answer_turn(
     app: Any,
     *,
     answer_session_id: str,
     prompt: str,
     depth: int,
-    timeout_s: float,
-) -> str:
-    """Spawn a bounded, self-directed child turn to answer ONE question; return its
-    raw reply text (the bounded ``answer_excerpt``).
+) -> Any:
+    """Spawn (never waits for) the bounded, self-directed, TOOL-LESS answer child.
 
-    Runs entirely on a worker thread (every call here blocks) -- callers
-    dispatch it via ``asyncio.to_thread``, exactly like
-    ``gact.runtime.ai_review``'s one-shot reviewer runs its own bounded LM
-    call off the event loop.
-
-    Reuses the SAME invocation machinery every declared child spawn uses
+    Split out from :func:`_run_agent_answer_turn` so the spawn step -- the
+    part F1's authority test drives for real -- is independently callable
+    without paying for a full answer-turn LM round trip. Reuses the SAME
+    invocation machinery every declared child spawn uses
     (:class:`clio_agent.gact.agents.invoker.InProcessExpertInvoker` over
     :func:`clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe`) -- no new
     turn-state machine. ``skip_declared_check=True`` marks this a
     SELF-directed spawn (the answering expert is the session's own, exactly
     like ``spawn_subagent_with_skill``'s self-directed skill-subagent), never
-    a routing decision to a different declared capability.
+    a routing decision to a different declared capability. ``tool_allowlist=()``
+    forces the child to ZERO tools (see
+    :func:`clio_agent.gact.agents.resolution._apply_session_tool_allowlist`) --
+    stamped onto the child's OWN metadata at MINT time by ``spawn_child_turn``
+    itself, so it is true before the child's first turn build, never patched
+    in after the fact.
+
+    Returns:
+        The :class:`~clio_agent.gact.agents.invoker.TaskHandle` for the caller
+        to ``wait``/``cancel``.
 
     Raises:
         SpawnError: the bounded spawn was refused (global depth cap, cancelled
             parent, or no live expert bound to the answering session).
-        TimeoutError: the answer turn did not reach a terminal state in time
-            (the in-flight child is cancelled before this raises).
-        RuntimeError: the answer turn reached a non-``completed`` terminal
-            status (failed/cancelled).
     """
 
     from clio_agent.gact.agents.invoker import InProcessExpertInvoker  # noqa: PLC0415
     from clio_agent.gact.agents.spawn_runtime import _current_session_depth  # noqa: PLC0415
+    from clio_agent.gact.runtime.globals import _session_agent_id  # noqa: PLC0415
     from clio_agent.gact.spawn_context import bind_task_spec_to_parent  # noqa: PLC0415
     from clio_agent.gact.turn_spawn import SpawnError, TaskSpec  # noqa: PLC0415
 
     session = app.state.sessions.get(answer_session_id)
-    expert_id = str(getattr(getattr(session, "agent", None), "id", "") or "")
+    expert_id = _session_agent_id(session) if session is not None else ""
     if session is None or not expert_id:
         raise SpawnError(
             "no live session/expert bound to answer from",
@@ -541,16 +573,46 @@ def _run_agent_answer_turn(
             skip_declared_check=True,
             seed_context=seed_context,
             run_label="agent-elicitation answer",
+            # F1/F3 (owner gate review): both stamped onto the child's OWN
+            # metadata at MINT time by spawn_child_turn itself -- true before
+            # the child's first turn build, never patched in afterward.
+            tool_allowlist=(),
+            agent_elicitation_depth=depth,
         ),
     )
-    invoker = InProcessExpertInvoker(app)
-    handle = invoker.invoke(spec)  # SpawnError propagates to the caller, typed
-    # Stamp the recursion-bound counter on the CHILD before it can possibly run
-    # a tool call of its own (invoke() blocks until the child session/turn is
-    # minted, so this happens strictly before any nested elicitation could fire).
-    app.state.sessions.update(
-        handle.child_session_id, metadata_patch={"agent_elicitation_depth": depth}
+    return InProcessExpertInvoker(app).invoke(spec)  # SpawnError propagates, typed
+
+
+def _run_agent_answer_turn(
+    app: Any,
+    *,
+    answer_session_id: str,
+    prompt: str,
+    depth: int,
+    timeout_s: float,
+) -> str:
+    """Spawn + wait for the bounded answer child turn; return its raw reply
+    text (the bounded ``answer_excerpt``).
+
+    Runs entirely on a worker thread (every call here blocks) -- callers
+    dispatch it via ``asyncio.to_thread``, exactly like
+    ``gact.runtime.ai_review``'s one-shot reviewer runs its own bounded LM
+    call off the event loop.
+
+    Raises:
+        SpawnError: see :func:`_spawn_agent_answer_turn`.
+        TimeoutError: the answer turn did not reach a terminal state in time
+            (the in-flight child is cancelled before this raises).
+        RuntimeError: the answer turn reached a non-``completed`` terminal
+            status (failed/cancelled).
+    """
+
+    from clio_agent.gact.agents.invoker import InProcessExpertInvoker  # noqa: PLC0415
+
+    handle = _spawn_agent_answer_turn(
+        app, answer_session_id=answer_session_id, prompt=prompt, depth=depth
     )
+    invoker = InProcessExpertInvoker(app)
     result = invoker.wait(handle, timeout_s=timeout_s)
     if not result.is_terminal:
         invoker.cancel(handle)

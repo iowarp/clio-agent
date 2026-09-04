@@ -1175,7 +1175,11 @@ def avenue_agent_elicitation(
     common.dump_json(out_path.parent / "leg_c2_agent_elicitation_messages.json", messages)
 
     questions = call("GET", f"/v1/sessions/{sid}/questions").get("questions", [])
-    candidates = [q for q in questions if "nonce" in str(q.get("prompt") or "").lower()]
+    # F5 (owner gate review): key on the row's own TYPED audience/routing
+    # fields, never on prompt CONTENT (the campaign's own no-prose-keyed
+    # discipline -- superseding principle #1) -- audience=="agent" is unique
+    # to this avenue's question on a fresh session.
+    candidates = [q for q in questions if q.get("audience") == "agent"]
     question = candidates[-1] if candidates else None
 
     pass_means = (
