@@ -138,8 +138,15 @@ def enter_client() -> Iterator[Callable[[Any], TestClient]]:
         yield _enter
 
 
-def _wait_for_turn_settlement(app: Any, sid: str, timeout: float = 5.0) -> None:
-    """Wait on the owned turn task without polling or changing turn semantics."""
+def _wait_for_turn_settlement(app: Any, sid: str, timeout: float = 30.0) -> None:
+    """Wait on the owned turn task without polling or changing turn semantics.
+
+    30s for the same reason ``conftest.complete_turn`` uses it: every turn now
+    builds and runs a real blueprint module, and a tighter bound was calibrated
+    against the deleted legacy fake dispatch -- it flakes on slow 2-core CI
+    runners under coverage. The wait returns the instant the task settles, so
+    the bound only ever fires on a genuine hang.
+    """
 
     task = app.state.in_flight_turns.get(sid)
     if task is None:
