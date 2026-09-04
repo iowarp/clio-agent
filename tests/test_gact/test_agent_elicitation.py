@@ -15,13 +15,16 @@ question-store / dispatch-flow tests, matching the house pattern in
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import dspy
 import pytest
+from dspy.utils.dummies import DummyLM
 from fastapi.testclient import TestClient
 from fastmcp import Context, FastMCP
 
@@ -31,7 +34,8 @@ from clio_agent.gact.elicitation_bridge import (
     claim_question_transition,
     make_elicitation_client,
 )
-from clio_agent.gact.types import UserQuestion
+from clio_agent.gact.parts import Part
+from clio_agent.gact.types import Message, UserQuestion
 from clio_agent.tools.mcp_handlers import MCPInvocationContext
 
 # --------------------------------------------------------------------------- #
@@ -215,6 +219,137 @@ def test_parse_agent_reply_rejects_anything_not_the_declared_contract(text: str)
     fallback, never a guessed answer."""
 
     assert ae._parse_agent_reply(text) is None
+
+
+# --------------------------------------------------------------------------- #
+# _parse_agent_reply — STRUCTURAL balanced-block extraction (the live-red     #
+# fix's defense-in-depth hardening, #1309). Bracket-depth counting only,      #
+# never a keyword/regex scrape of the model's prose -- a candidate located    #
+# this way still round-trips through the SAME strict json.loads + answer/    #
+# decline Mapping contract as a bare-JSON reply.                             #
+# --------------------------------------------------------------------------- #
+
+
+def test_parse_agent_reply_extracts_json_prefaced_by_reasoning_prose() -> None:
+    """The exact live #1309 C1-S7 shape (leg_c2_verdict.json's agent-elicitation
+    avenue): a CoT expert's genuinely-visible ``reasoning`` text lands directly
+    ahead of the declared JSON ``answer`` with no separator. STRUCTURAL
+    balanced-brace extraction recovers the JSON without interpreting the
+    prose."""
+
+    text = (
+        "I need to remember this nonce and call the tool with no arguments, "
+        'then report exactly what it returns.{"answer": {"nonce": "xyz-42"}}'
+    )
+    assert ae._parse_agent_reply(text) == {"answer": {"nonce": "xyz-42"}}
+
+
+def test_parse_agent_reply_extracts_json_followed_by_trailing_prose() -> None:
+    text = '{"answer": {"nonce": "xyz-42"}} Let me know if that is not correct.'
+    assert ae._parse_agent_reply(text) == {"answer": {"nonce": "xyz-42"}}
+
+
+def test_parse_agent_reply_ignores_braces_inside_json_string_values() -> None:
+    """A ``}``/``{`` inside a quoted string value must never perturb the
+    balanced-depth count (the structural, never-regex guarantee)."""
+
+    text = 'prose before {"answer": {"nonce": "a{b}c"}} prose after'
+    assert ae._parse_agent_reply(text) == {"answer": {"nonce": "a{b}c"}}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I cannot answer that, sorry.",
+        "the nonce is xyz, no braces here",
+        "unbalanced start {{{ still no closing",
+    ],
+)
+def test_parse_agent_reply_prose_without_a_valid_block_stays_unparseable(text: str) -> None:
+    """Prose that never contains a genuinely balanced top-level ``{...}``
+    block is STILL a typed fallback -- the extraction only locates a
+    structurally valid candidate, it never fabricates one."""
+
+    assert ae._parse_agent_reply(text) is None
+
+
+# --------------------------------------------------------------------------- #
+# _answer_field_text — reads ONLY the answer child's own ``answer``-field     #
+# part, untruncated (#1309 fix items 1+2: root cause + truncation disposition)#
+# --------------------------------------------------------------------------- #
+
+
+def _text_part(field: str, text: str) -> Part:
+    return Part(type="text", text=text, agent_id="main", metadata={"signature_field_name": field})
+
+
+def _answer_message(msg_id: str, sid: str, parts: list[Part]) -> Message:
+    now = "2026-09-03T00:00:00+00:00"
+    return Message(
+        id=msg_id,
+        session_id=sid,
+        turn_id="turn1",
+        role="assistant",
+        created_at=now,
+        updated_at=now,
+        parts=parts,
+    )
+
+
+def test_answer_field_text_ignores_reasoning_and_reads_only_the_answer_part() -> None:
+    """The exact root-cause reproduction: a CoT expert's genuinely-visible
+    ``reasoning`` part lands in the SAME message as the ``answer`` part (#878
+    -- reasoning is never suppressed for chain_of_thought). Reading only the
+    ``answer``-tagged part(s) never picks up the reasoning prose, unlike the
+    generic ``_message_text``/``_flatten_message_text`` whole-message join."""
+
+    answer_json = '{"answer": {"nonce": "xyz-42"}}'
+    msg = _answer_message(
+        "msg_a",
+        "sid1",
+        [
+            _text_part("reasoning", "I need to remember this nonce and report it."),
+            _text_part("answer", answer_json),
+        ],
+    )
+    app = SimpleNamespace(state=SimpleNamespace(messages={"sid1": [msg]}))
+    assert ae._answer_field_text(app, "sid1", "msg_a") == answer_json
+
+
+def test_answer_field_text_is_untruncated_behind_a_long_reasoning_block() -> None:
+    """The truncation-interaction disposition: this reads the ``answer``-field
+    part DIRECTLY, so a long preceding ``reasoning`` block can never truncate a
+    legitimately long JSON answer -- unlike ``turn_spawn.py``'s generic
+    ``answer_excerpt`` (a 2000-char cap over the WHOLE joined message text)."""
+
+    from clio_agent.gact.turn_spawn import _ANSWER_EXCERPT_MAX
+
+    long_reasoning = "reasoning prose " * 300  # far exceeds _ANSWER_EXCERPT_MAX (2000 chars)
+    assert len(long_reasoning) > _ANSWER_EXCERPT_MAX
+    long_code_word = "x" * 2200  # a valid answer alone longer than the generic cap
+    answer_json = json.dumps({"answer": {"code_word": long_code_word}})
+    msg = _answer_message(
+        "msg_b",
+        "sid1",
+        [_text_part("reasoning", long_reasoning), _text_part("answer", answer_json)],
+    )
+    app = SimpleNamespace(state=SimpleNamespace(messages={"sid1": [msg]}))
+
+    result = ae._answer_field_text(app, "sid1", "msg_b")
+
+    assert result == answer_json
+    parsed = ae._parse_agent_reply(result)
+    assert parsed == {"answer": {"code_word": long_code_word}}
+
+
+def test_answer_field_text_unknown_message_ref_is_empty() -> None:
+    app = SimpleNamespace(state=SimpleNamespace(messages={"sid1": []}))
+    assert ae._answer_field_text(app, "sid1", "msg_missing") == ""
+
+
+def test_answer_field_text_empty_ref_is_empty() -> None:
+    app = SimpleNamespace(state=SimpleNamespace(messages={}))
+    assert ae._answer_field_text(app, "sid1", "") == ""
 
 
 # --------------------------------------------------------------------------- #
@@ -410,6 +545,179 @@ def test_human_still_answers_normally_after_a_fallback(
     body = resp.json()
     assert body["status"] == "answered"
     assert body.get("answered_by") in (None, "human")
+
+
+# --------------------------------------------------------------------------- #
+# THE MISSING CONTRACT TEST (live-red fix, C1-S7, #1309, merged @73f2bacf).   #
+# Drives ONE REAL answer child turn -- the actual blueprint chain_of_thought  #
+# module (module.kind flips there via ad351a59's F1 tool-allowlist mint)     #
+# through the REAL spawn/turn machinery -- with a MOCKED dspy LM (house      #
+# rule: LM tests mock dspy responses) that ALSO drives the real live-        #
+# streaming tap for the reasoning/answer fields, so the real transcript      #
+# pipeline mints the SAME shape of message the live #1309 C1-S7 avenue saw   #
+# (out/live-verification/leg_c2_verdict.json: agent_elicitation_routing ==   #
+# "elicitation_routed_to_agent" -> fallback, detail "agent_answer_           #
+# unparseable"). Prior tests only ever fed _parse_agent_reply a hand-written #
+# string; this is the reviewer's prescribed missing condition.               #
+# --------------------------------------------------------------------------- #
+
+
+class _RealisticCoTAnswerLM(DummyLM):
+    """A DummyLM that ALSO drives the real ``note_lm_answer_delta`` live-stream
+    tap for its ``reasoning``/``answer`` fields before returning its formatted
+    response, reproducing exactly how a real live-streamed provider call
+    (claude_code_sdk in the live #1309 avenue) feeds the turn's transcript:
+    per-field text deltas through the SAME production tap
+    ``test_react_extract_suppression.py`` drives directly.
+
+    For a ``chain_of_thought`` module (what the F1 tool-allowlist mint flips
+    the answer turn to), ``reasoning`` is NEVER suppressed (#878's pinned
+    truth table -- it is that expert kind's entire visible conversation), so
+    it lands as its own VISIBLE ``text`` part alongside the ``answer`` field's
+    own VISIBLE ``text`` part -- two SEPARATE parts, each tagged with its own
+    ``signature_field_name``. A reader that joins every ``text`` part of the
+    message without regard to which field produced it (the pre-fix
+    ``_message_text``/``_flatten_message_text`` behavior) concatenates the
+    reasoning prose immediately ahead of the declared JSON answer -- exactly
+    the live failure.
+    """
+
+    def __init__(self, reasoning: str, answer: str) -> None:
+        # A few repeats: harmless if a bounded schema-repair retry ever fires
+        # (it shouldn't for a well-formed reply), never a hard StopIteration.
+        super().__init__([{"reasoning": reasoning, "answer": answer}] * 3)
+        self._reasoning = reasoning
+        self._answer = answer
+
+    def forward(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> Any:
+        from clio_agent.runtime.lm_activity import note_lm_answer_delta
+
+        note_lm_answer_delta(self._reasoning, field="reasoning")
+        note_lm_answer_delta(self._answer, field="answer")
+        return super().forward(prompt=prompt, messages=messages, **kwargs)
+
+
+def _stub_resolved_lm_spec() -> Any:
+    """A minimal ``ResolvedLMSpec`` stand-in: ``.materialize(cred)`` returns a
+    plain config object, sidestepping real handshake/credential resolution
+    (network) entirely -- the same stub shape proven in
+    ``test_module_variants_s5.py::_resolved_spec_stub``."""
+
+    return SimpleNamespace(
+        materialize=lambda cred=None: SimpleNamespace(
+            provider="argonne", model="gpt-oss-120b", temperature=0.0
+        )
+    )
+
+
+def _write_minimal_answer_blueprint(root: Path) -> Path:
+    """A minimal, valid Agent Blueprint (root expert id ``main``, declaring
+    ``structured_outputs.workflow_state: false`` to keep the runtime signature
+    to just ``answer`` -- a DummyLM forward is then trivial, matching
+    ``test_module_variants_s5.py``'s ``_build_variant_module`` convention).
+
+    Session-scoped path activation (never the bare/no-blueprint ``main``)
+    is DELIBERATE here: a bare session's real turn build takes the
+    ``run_builtin_main`` shortcut in ``turn_forward.py``, which constructs a
+    fresh ``_builtin_main_agent()`` directly and never reaches
+    ``_resolve_runtime_dynamic_agent``/``_apply_session_tool_allowlist`` at
+    all -- an unrelated, pre-existing gap this test must route around (out of
+    scope for #1309) rather than trip over. An ACTIVATED blueprint (like the
+    live #1309 avenue's own ``v2ex-avenues``) always goes through the real
+    resolve-and-flip seam.
+    """
+
+    (root / "experts").mkdir(parents=True)
+    root.joinpath("AGENT.md").write_text(
+        """---
+id: elicit-answer-bp
+version: 0.1.0
+title: Elicit Answer Test Agent
+root_expert: main
+---
+Minimal test blueprint for the agent-elicitation answer-turn contract test.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "main.md").write_text(
+        """---
+id: main
+title: Main
+tier: 1
+module:
+  kind: predict
+structured_outputs:
+  workflow_state: false
+---
+Minimal main expert.
+""",
+        encoding="utf-8",
+    )
+    return root / "AGENT.md"
+
+
+def test_real_answer_turn_reply_parses_through_the_real_message_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED before the fix, GREEN after: a REAL answer child turn's reply must
+    parse via :func:`clio_agent.gact.agent_elicitation._parse_agent_reply`.
+
+    Mocks only the dspy LM (house rule) -- the real spawn machinery
+    (:func:`agent_elicitation._spawn_agent_answer_turn` ->
+    ``InProcessExpertInvoker``/``spawn_child_turn_threadsafe``), the real
+    blueprint ``chain_of_thought`` module build, the real ``ChatAdapter``
+    parse, and the real transcript/message-part pipeline all run for real.
+    """
+
+    reasoning_prose = (
+        "I need to remember this nonce and call the tool with no arguments, "
+        "then report exactly what it returns."
+    )
+    nonce = "leg-c2-nonce-f391a49e00d8"
+    answer_json = f'{{"answer": {{"nonce": "{nonce}"}}}}'
+
+    monkeypatch.setattr(
+        "clio_agent.config.create_lm",
+        lambda config: _RealisticCoTAnswerLM(reasoning_prose, answer_json),
+    )
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: dspy.ChatAdapter())
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
+        lambda base_agent, agent_def: _stub_resolved_lm_spec(),
+    )
+
+    agent_md = _write_minimal_answer_blueprint(tmp_path / "elicit-answer-bp")
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace_root),
+                "storage_root": str(workspace_root / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions", json={"workspace_id": wid, "title": "agent-elicit-real"}
+        ).json()["id"]
+        activated = client.post(f"/v1/sessions/{sid}/agent-blueprint", json={"path": str(agent_md)})
+        assert activated.status_code == 200, activated.text
+
+        reply_text = ae._run_agent_answer_turn(
+            app,
+            answer_session_id=sid,
+            prompt="What nonce did the user state earlier in this conversation?",
+            depth=1,
+            timeout_s=20.0,
+        )
+
+    parsed = ae._parse_agent_reply(reply_text)
+    assert parsed == {"answer": {"nonce": nonce}}, (
+        f"the real answer turn's reply text failed to parse: {reply_text!r}"
+    )
 
 
 # --------------------------------------------------------------------------- #
