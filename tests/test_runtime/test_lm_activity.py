@@ -13,6 +13,8 @@ Two units:
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from clio_agent import config as cfg
@@ -272,6 +274,85 @@ def test_streamed_call_drains_chunks_and_returns_result(monkeypatch):
     out = lm._clio_streamed_call(messages=[{"role": "user", "content": "hi"}])
     assert out == ["ASSEMBLED-RESULT"]
     assert len(activity) == 4  # one note_lm_activity per streamed chunk
+
+
+def test_streamed_call_surfaces_provider_reasoning_before_contract_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import dspy
+
+    lm = cfg._io_logging_lm_cls()(model="hosted_vllm/Qwen/Qwen3-8B")
+    lm._clio_provider_id = "vllm"
+    observed: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(lm_activity, "note_lm_activity", lambda: None)
+    monkeypatch.setattr(
+        lm_activity,
+        "note_lm_provider_thinking_delta",
+        lambda text, *, provider="": observed.append((f"thinking:{provider}", text)),
+    )
+    monkeypatch.setattr(
+        lm_activity,
+        "note_lm_answer_delta",
+        lambda text, *, field="answer": observed.append((field, text)),
+    )
+    monkeypatch.setattr(lm_activity, "note_lm_token_event", lambda *_args, **_kwargs: None)
+
+    async def fake_acall(
+        self: Any,
+        prompt: Any = None,
+        messages: Any = None,
+        **kwargs: Any,
+    ) -> list[str]:
+        del prompt, messages, kwargs
+        send = dspy.settings.send_stream
+        await send.send({"choices": [{"delta": {"reasoning": "provider thought"}}]})
+        await send.send(
+            {"choices": [{"delta": {"content": "[[ ## next_thought ## ]]\nuse a tool"}}]}
+        )
+        return ["ASSEMBLED-RESULT"]
+
+    monkeypatch.setattr(type(lm), "acall", fake_acall, raising=False)
+
+    assert lm._clio_streamed_call(messages=[{"role": "user", "content": "hi"}]) == [
+        "ASSEMBLED-RESULT"
+    ]
+    assert observed[0] == ("thinking:vllm", "provider thought")
+    assert ("next_thought", "use a tool") in observed
+
+
+@pytest.mark.parametrize("provider_id", ["codex", "claude_code"])
+def test_generic_stream_bridge_leaves_sdk_provider_reasoning_unchanged(
+    monkeypatch: pytest.MonkeyPatch, provider_id: str
+) -> None:
+    import dspy
+
+    lm = cfg._io_logging_lm_cls()(model=f"{provider_id}/model")
+    lm._clio_provider_id = provider_id
+    provider_thinking: list[str] = []
+    monkeypatch.setattr(lm_activity, "note_lm_activity", lambda: None)
+    monkeypatch.setattr(
+        lm_activity,
+        "note_lm_provider_thinking_delta",
+        lambda text, *, provider="": provider_thinking.append(f"{provider}:{text}"),
+    )
+    monkeypatch.setattr(lm_activity, "note_lm_token_event", lambda *_args, **_kwargs: None)
+
+    async def fake_acall(
+        self: Any,
+        prompt: Any = None,
+        messages: Any = None,
+        **kwargs: Any,
+    ) -> list[str]:
+        del prompt, messages, kwargs
+        await dspy.settings.send_stream.send(
+            {"choices": [{"delta": {"reasoning_content": "owned by SDK path"}}]}
+        )
+        return ["ASSEMBLED-RESULT"]
+
+    monkeypatch.setattr(type(lm), "acall", fake_acall, raising=False)
+    lm._clio_streamed_call(messages=[{"role": "user", "content": "hi"}])
+    assert provider_thinking == []
 
 
 def test_streamed_call_propagates_lm_error(monkeypatch):
@@ -588,6 +669,28 @@ def test_process_completion_substitutes_complete_sane_reasoning(monkeypatch):
     resp = SimpleNamespace(choices=[SimpleNamespace(finish_reason="stop")])
     out = lm._process_completion(resp, {})
     assert out[0]["text"] == '{"next_expert":"synthesis"}'  # complete + sane -> used
+
+
+def test_process_completion_uses_actual_reasoning_for_unclassified_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A vLLM/OpenRouter model need not be pre-classified to recover its output."""
+    from types import SimpleNamespace
+
+    import dspy.clients.base_lm as base_lm
+
+    def fake_super(
+        self: Any, response: Any, merged_kwargs: dict[str, Any]
+    ) -> list[dict[str, str]]:
+        return [{"text": "", "reasoning_content": "[[ ## answer ## ]]\nready"}]
+
+    monkeypatch.setattr(base_lm.BaseLM, "_process_completion", fake_super)
+    lm = cfg._io_logging_lm_cls()(model="hosted_vllm/custom-model")
+    lm._clio_provider_id = "vllm"
+    lm._clio_reasoning_fallback = True
+    resp = SimpleNamespace(choices=[SimpleNamespace(finish_reason="stop")])
+
+    assert lm._process_completion(resp, {})[0]["text"] == "[[ ## answer ## ]]\nready"
 
 
 def test_process_completion_no_fallback_without_reasoning(monkeypatch):

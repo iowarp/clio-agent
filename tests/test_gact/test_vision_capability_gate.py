@@ -104,6 +104,10 @@ def test_a_provider_with_no_evidence_system_uses_the_documented_catalog_default(
         True,
         "catalog_default_no_modality_evidence_system",
     )
+    assert _vision_capability(app, "vllm", "Qwen/Qwen2.5-VL-7B-Instruct") == (
+        True,
+        "catalog_default_no_modality_evidence_system",
+    )
     # ...and a catalog-level flag of False is honoured just as literally.
     assert _vision_capability(app, "lm_studio", "qwen")[0] is False
 

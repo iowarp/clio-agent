@@ -244,7 +244,8 @@ VISION_CAPABILITY_REASONS: dict[str, str] = {
     "catalog_default_no_modality_evidence_system": (
         "this provider kind exposes no per-model modality evidence at all (an "
         "OpenAI-compatible /models listing returns ids and nothing else), so the "
-        "registry's documented catalog-level supports_vision flag stands in for it"
+        "registry's documented transport-level supports_vision flag permits image "
+        "delivery and leaves model compatibility to the upstream endpoint"
     ),
     "modality_evidence_unavailable": (
         "this provider kind CAN evidence input modalities but none has been recorded for "
@@ -264,7 +265,7 @@ def _vision_capability(app: "FastAPI", provider_id: str, model_id: str) -> tuple
     (:func:`~clio_agent.gact.resource_delivery.live_model_modalities`), so the
     route gate and the delivery planner cannot disagree about what a model can
     receive. The static registry ``supports_vision`` flag is a documented
-    catalog-level DEFAULT, used only where no modality-evidence system exists for
+    transport-level DEFAULT, used only where no modality-evidence system exists for
     that provider kind — never as a substitute for evidence that could have been
     collected. There is deliberately no provider-name allowlist: the previous
     gate ended in a literal ``{"openai", "anthropic"}`` set, which no static flag

@@ -129,3 +129,26 @@ def test_provider_options_reject_unknown_keys() -> None:
             api_key="test",
             provider_options={"shell": "no"},
         )
+
+
+@pytest.mark.parametrize(
+    "provider_id",
+    [
+        "openai",
+        "azure_openai",
+        "anthropic",
+        "gemini",
+        "vertex_ai",
+        "bedrock",
+        "openrouter",
+        "nvidia_nim",
+        "vllm",
+        "argonne_sophia",
+        "argonne_metis",
+        "llama_cpp",
+    ],
+)
+def test_litellm_transport_routes_accept_image_parts(provider_id: str) -> None:
+    provider = get_provider(provider_id)
+    assert provider is not None
+    assert provider.supports_vision is True
