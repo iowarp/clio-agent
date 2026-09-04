@@ -503,7 +503,7 @@ def build_exerciser_server(
     const reportSize = () => requestAnimationFrame(() => send({
       jsonrpc:'2.0',
       method:'ui/notifications/size-changed',
-      params:{height:Math.ceil(document.documentElement.scrollHeight)}
+      params:{height:Math.ceil(document.querySelector('main').getBoundingClientRect().bottom)}
     }));
     window.addEventListener('message', (event) => {
       const message = event.data;
