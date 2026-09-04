@@ -28,6 +28,15 @@ from clio_agent.gact.mcp_app_observer_reasons import (
 from clio_agent.gact.mcp_app_observer_reasons import (
     recorded_mcp_app_observer_skips as recorded_mcp_app_observer_skips,
 )
+from clio_agent.gact.mcp_app_sandbox import (
+    _SANDBOX_DOCUMENT,
+    _alternate_loopback_origin,
+    _csp_header,
+    _host_origin,
+    _request_origin,
+    _safe_sources,
+    _sandbox_url,
+)
 from clio_agent.gact.runtime.globals import (
     _gact_app_context,
     _resolve_tool_session,
@@ -642,4 +651,11 @@ __all__ = [
     "read_resource_result_to_wire",
     "recorded_mcp_app_observer_skips",
     "register_mcp_app_routes",
+    "_SANDBOX_DOCUMENT",
+    "_alternate_loopback_origin",
+    "_csp_header",
+    "_host_origin",
+    "_request_origin",
+    "_safe_sources",
+    "_sandbox_url",
 ]

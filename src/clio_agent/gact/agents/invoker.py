@@ -194,8 +194,8 @@ class TaskResult:
     and a RESERVED ``artifact_ref`` (the #670 artifacts campaign fills it with a
     spill ref; carried from day one so a federation record matches).
 
-    It OMITS all eight :class:`AgentTask` fields that are not part of the executor
-    boundary, in three classes:
+    It OMITS all nine :class:`AgentTask` fields that are not part of the executor
+    boundary, in four classes:
 
     * parent-side observe-later + wire-dedup bookkeeping — ``notify_pending`` /
       ``consumed_at`` / ``delegation_reported`` — choreography that stays local under
@@ -204,7 +204,9 @@ class TaskResult:
       authored — ``parent_turn_id`` / ``child_turn_id`` / ``fanout_bound`` — which the
       executor need not echo back in its result; and
     * parent-side run-list display state — ``detached`` / ``dismissed`` — which is
-      never executor-owned.
+      never executor-owned; and
+    * parent-projection policy — ``project_to_parent`` — which belongs to the local
+      orchestration boundary and must not cross the executor wire.
     """
 
     task_id: str
