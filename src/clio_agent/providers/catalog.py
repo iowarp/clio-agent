@@ -42,6 +42,17 @@ AuthMethod = Literal["none", "api_key", "oauth"]
 
 
 @dataclass(frozen=True)
+class ProviderConfigurationField:
+    """One non-secret provider option rendered by provider clients."""
+
+    id: str
+    label: str
+    description: str = ""
+    placeholder: str = ""
+    required: bool = False
+
+
+@dataclass(frozen=True)
 class ModelEntry:
     """One row in a provider's static model catalog.
 
@@ -74,6 +85,10 @@ class Provider:
     #: ``openai``); the entry flagged ``is_kind_default`` supplies the
     #: dict row in :func:`as_provider_defaults_dict`.
     provider_kind: ProviderKind
+    #: Exact LiteLLM routing prefix.  This is deliberately independent of
+    #: ``provider_kind`` so legacy configurations keep their broad runtime kind
+    #: while catalog selections such as OpenRouter retain their real identity.
+    litellm_prefix: str
 
     # ----- wire defaults ----------------------------------------------
     api_base: str
@@ -98,6 +113,9 @@ class Provider:
     #: *is* the literal model id.
     strip_openai_prefix: bool = True
     parse_retry_capability: Literal["bounded", "single_attempt"] = "bounded"
+    configuration_fields: tuple[ProviderConfigurationField, ...] = ()
+    supports_runtime_sizing: bool = False
+    managed_service_id: str = ""
 
     # ----- registry bookkeeping ---------------------------------------
     #: When True, this provider's wire fields populate the
@@ -180,6 +198,7 @@ PROVIDERS: tuple[Provider, ...] = (
             "/v1/models."
         ),
         provider_kind="lm_studio",
+        litellm_prefix="openai",
         api_base="http://127.0.0.1:1234/v1",
         # Empty means "discover the loaded model from LM Studio".
         # Hardcoding a local model id here makes the setup stale as
@@ -188,6 +207,7 @@ PROVIDERS: tuple[Provider, ...] = (
         api_key_default="lm-studio",
         requires_api_key=False,
         auth_method="none",
+        supports_runtime_sizing=True,
         is_kind_default=True,
         model_catalog=(
             ModelEntry(
@@ -202,11 +222,13 @@ PROVIDERS: tuple[Provider, ...] = (
         label="Ollama (localhost)",
         description="Locally-hosted models via Ollama.",
         provider_kind="ollama",
+        litellm_prefix="ollama_chat",
         api_base="http://127.0.0.1:11434/v1",
         suggested_model="granite3.1-dense:8b",
         api_key_default="ollama",
         requires_api_key=False,
         auth_method="none",
+        supports_runtime_sizing=True,
         is_kind_default=True,
         model_catalog=(
             ModelEntry(
@@ -222,6 +244,23 @@ PROVIDERS: tuple[Provider, ...] = (
             ),
         ),
     ),
+    Provider(
+        id="llama_cpp",
+        label="llama.cpp server",
+        description="A local or remote llama.cpp OpenAI-compatible server.",
+        provider_kind="openai",
+        litellm_prefix="openai",
+        api_base="http://127.0.0.1:8088/v1",
+        suggested_model="local-model",
+        api_key_default="llama-cpp",
+        requires_api_key=False,
+        auth_method="none",
+        supports_runtime_sizing=True,
+        managed_service_id="llama_cpp",
+        model_catalog=(
+            ModelEntry("local-model", "Loaded GGUF model", "The model served by llama.cpp."),
+        ),
+    ),
     # ----- cloud / proxy ---------------------------------------------
     Provider(
         id="openai",
@@ -232,6 +271,7 @@ PROVIDERS: tuple[Provider, ...] = (
             "swap in gpt-4o or gpt-4-turbo for heavier work."
         ),
         provider_kind="openai",
+        litellm_prefix="openai",
         api_base="https://api.openai.com/v1",
         suggested_model="gpt-4o-mini",
         api_key_env="OPENAI_API_KEY",
@@ -260,6 +300,7 @@ PROVIDERS: tuple[Provider, ...] = (
         label="Anthropic API",
         description="Direct Anthropic API. Requires an ANTHROPIC_API_KEY.",
         provider_kind="anthropic",
+        litellm_prefix="anthropic",
         api_base="https://api.anthropic.com/v1",
         suggested_model="claude-sonnet-4-20250514",
         api_key_env="ANTHROPIC_API_KEY",
@@ -284,6 +325,111 @@ PROVIDERS: tuple[Provider, ...] = (
         ),
     ),
     Provider(
+        id="azure_openai",
+        label="Azure OpenAI",
+        description="Azure-hosted OpenAI models through LiteLLM.",
+        provider_kind="openai",
+        litellm_prefix="azure",
+        api_base="https://YOUR-RESOURCE.openai.azure.com/",
+        suggested_model="",
+        api_key_env="AZURE_API_KEY",
+        supports_live_catalog=False,
+        configuration_fields=(
+            ProviderConfigurationField(
+                "api_version",
+                "API version",
+                "Azure OpenAI API version.",
+                "2024-10-21",
+                True,
+            ),
+        ),
+    ),
+    Provider(
+        id="gemini",
+        label="Google Gemini",
+        description="Gemini AI Studio models through LiteLLM.",
+        provider_kind="openai",
+        litellm_prefix="gemini",
+        api_base="https://generativelanguage.googleapis.com/v1beta",
+        suggested_model="gemini-2.5-flash",
+        api_key_env="GOOGLE_API_KEY",
+        supports_live_catalog=False,
+        supports_vision=True,
+        model_catalog=(
+            ModelEntry("gemini-2.5-flash", "Gemini 2.5 Flash", "Fast Gemini baseline."),
+        ),
+    ),
+    Provider(
+        id="vertex_ai",
+        label="Google Vertex AI",
+        description="Vertex AI models using Application Default Credentials.",
+        provider_kind="openai",
+        litellm_prefix="vertex_ai",
+        api_base="https://aiplatform.googleapis.com",
+        suggested_model="gemini-2.5-flash",
+        requires_api_key=False,
+        auth_method="none",
+        supports_live_catalog=False,
+        supports_vision=True,
+        configuration_fields=(
+            ProviderConfigurationField(
+                "vertex_project",
+                "Google Cloud project",
+                "Project containing the model.",
+                required=True,
+            ),
+            ProviderConfigurationField(
+                "vertex_location", "Google Cloud location", "Vertex region.", "us-central1", True
+            ),
+        ),
+        model_catalog=(
+            ModelEntry("gemini-2.5-flash", "Gemini 2.5 Flash", "Vertex-hosted Gemini model."),
+        ),
+    ),
+    Provider(
+        id="bedrock",
+        label="AWS Bedrock",
+        description="Bedrock models using the host AWS credential chain.",
+        provider_kind="openai",
+        litellm_prefix="bedrock",
+        api_base="https://bedrock-runtime.us-east-1.amazonaws.com",
+        suggested_model="anthropic.claude-3-5-sonnet-20240620-v1:0",
+        requires_api_key=False,
+        auth_method="none",
+        supports_live_catalog=False,
+        configuration_fields=(
+            ProviderConfigurationField(
+                "aws_region_name", "AWS region", "Region containing the model.", "us-east-1", True
+            ),
+            ProviderConfigurationField(
+                "aws_profile_name", "AWS profile", "Optional shared AWS profile name."
+            ),
+        ),
+        model_catalog=(
+            ModelEntry(
+                "anthropic.claude-3-5-sonnet-20240620-v1:0",
+                "Claude 3.5 Sonnet",
+                "Bedrock model identifier.",
+            ),
+        ),
+    ),
+    Provider(
+        id="nvidia_nim",
+        label="NVIDIA NIM",
+        description="NVIDIA-hosted or self-hosted NIM endpoints through LiteLLM.",
+        provider_kind="openai",
+        litellm_prefix="nvidia_nim",
+        api_base="https://integrate.api.nvidia.com/v1",
+        suggested_model="meta/llama-3.1-70b-instruct",
+        api_key_env="NVIDIA_NIM_API_KEY",
+        supports_live_catalog=False,
+        model_catalog=(
+            ModelEntry(
+                "meta/llama-3.1-70b-instruct", "Llama 3.1 70B Instruct", "NVIDIA NIM model."
+            ),
+        ),
+    ),
+    Provider(
         id="openrouter",
         label="OpenRouter",
         description=(
@@ -292,6 +438,7 @@ PROVIDERS: tuple[Provider, ...] = (
             "heavily rate-limited."
         ),
         provider_kind="openai",
+        litellm_prefix="openrouter",
         api_base="https://openrouter.ai/api/v1",
         suggested_model="openai/gpt-oss-120b:free",
         api_key_env="OPENROUTER_API_KEY",
@@ -323,6 +470,7 @@ PROVIDERS: tuple[Provider, ...] = (
             "this machine; the SDK owns its pinned runtime."
         ),
         provider_kind="codex",
+        litellm_prefix="codex",
         # Codex does not use an HTTP base. This is an identity marker only;
         # the official Python SDK owns its pinned runtime.
         api_base="codex://sdk",
@@ -361,6 +509,7 @@ PROVIDERS: tuple[Provider, ...] = (
             "streaming lifecycle."
         ),
         provider_kind="claude_code",
+        litellm_prefix="claude_code",
         api_base="claude-code://sdk",
         suggested_model="sonnet",
         requires_api_key=False,
@@ -430,6 +579,7 @@ PROVIDERS: tuple[Provider, ...] = (
             "authenticate` once per machine; tokens auto-refresh."
         ),
         provider_kind="argonne",
+        litellm_prefix="hosted_vllm",
         api_base="https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
         suggested_model="openai/gpt-oss-120b",
         requires_api_key=False,
@@ -450,6 +600,7 @@ PROVIDERS: tuple[Provider, ...] = (
             "Sophia/Polaris."
         ),
         provider_kind="argonne",
+        litellm_prefix="hosted_vllm",
         # Metis hangs framework="api" off /api/v1, not /vllm/v1 the way
         # Sophia does. Same Globus auth, same /jobs schema for live
         # model discovery, different chat-completions path.
@@ -462,7 +613,7 @@ PROVIDERS: tuple[Provider, ...] = (
         model_catalog=_ARGONNE_MODELS,
     ),
     Provider(
-        id="argonne_local_vllm",
+        id="vllm",
         label="vLLM (localhost)",
         description=(
             "Any local OpenAI-compatible vLLM server. No Globus needed; "
@@ -472,10 +623,13 @@ PROVIDERS: tuple[Provider, ...] = (
         # Local vLLM is OpenAI-compatible (not Argonne's gateway-quirky
         # path), so the wire kind is plain openai.
         provider_kind="openai",
+        litellm_prefix="hosted_vllm",
         api_base="http://127.0.0.1:8000/v1",
         suggested_model="meta-llama/Llama-3.1-8B-Instruct",
         requires_api_key=False,
         auth_method="none",
+        supports_runtime_sizing=True,
+        managed_service_id="vllm",
         model_catalog=_ARGONNE_MODELS,
     ),
 )
@@ -486,10 +640,38 @@ PROVIDERS: tuple[Provider, ...] = (
 
 def get_provider(provider_id: str) -> Provider | None:
     """Return the :class:`Provider` matching ``provider_id``, or None."""
+    provider_id = {"argonne_local_vllm": "vllm"}.get(provider_id, provider_id)
     for p in PROVIDERS:
         if p.id == provider_id:
             return p
     return None
+
+
+def normalize_provider_options(provider_id: str, options: dict[str, Any]) -> dict[str, str]:
+    """Validate and normalize the non-secret LiteLLM options for a provider."""
+
+    provider = get_provider(provider_id)
+    if provider is None:
+        if options:
+            raise ValueError(f"unknown provider id: {provider_id}")
+        return {}
+    fields = {field.id: field for field in provider.configuration_fields}
+    unknown = sorted(set(options) - set(fields))
+    if unknown:
+        raise ValueError(f"unsupported options for {provider.id}: {', '.join(unknown)}")
+    normalized: dict[str, str] = {}
+    for key, raw_value in options.items():
+        value = str(raw_value).strip()
+        if len(value) > 512 or "\x00" in value or "\n" in value or "\r" in value:
+            raise ValueError(f"invalid value for provider option: {key}")
+        if value:
+            normalized[key] = value
+    missing = [
+        field.id for field in fields.values() if field.required and not normalized.get(field.id)
+    ]
+    if missing:
+        raise ValueError(f"missing required options for {provider.id}: {', '.join(missing)}")
+    return normalized
 
 
 def iter_providers() -> tuple[Provider, ...]:
@@ -503,6 +685,24 @@ def kind_default(kind: str) -> Provider | None:
         if p.provider_kind == kind and p.is_kind_default:
             return p
     return None
+
+
+def provider_defaults(provider: Provider) -> dict[str, Any]:
+    """Return the legacy runtime defaults represented by one catalog row."""
+
+    entry: dict[str, Any] = {
+        "api_base": provider.api_base,
+        "model": provider.suggested_model,
+        "api_key": provider.api_key_default,
+        "supports_vision": provider.supports_vision,
+    }
+    if provider.max_tokens_default != 32000:
+        entry["max_tokens"] = provider.max_tokens_default
+    if not provider.strip_openai_prefix:
+        entry["strip_openai_prefix"] = False
+    if provider.parse_retry_capability != "bounded":
+        entry["parse_retry_capability"] = provider.parse_retry_capability
+    return entry
 
 
 # -- derived legacy views ---------------------------------------------
@@ -521,19 +721,7 @@ def as_provider_defaults_dict() -> dict[str, dict[str, Any]]:
             continue
         if p.provider_kind in out:
             continue  # first wins; defensive against duplicate flags
-        entry: dict[str, Any] = {
-            "api_base": p.api_base,
-            "model": p.suggested_model,
-            "api_key": p.api_key_default,
-            "supports_vision": p.supports_vision,
-        }
-        if p.max_tokens_default != 32000:
-            entry["max_tokens"] = p.max_tokens_default
-        if not p.strip_openai_prefix:
-            entry["strip_openai_prefix"] = False
-        if p.parse_retry_capability != "bounded":
-            entry["parse_retry_capability"] = p.parse_retry_capability
-        out[p.provider_kind] = entry
+        out[p.provider_kind] = provider_defaults(p)
     return out
 
 
@@ -545,9 +733,11 @@ def as_cloud_api_key_env() -> dict[str, str]:
     fill ``api_key`` from the process environment when the wire field
     is blank.
     """
-    return {
-        p.provider_kind: p.api_key_env for p in PROVIDERS if p.is_kind_default and p.api_key_env
-    }
+    out = {p.id: p.api_key_env for p in PROVIDERS if p.api_key_env}
+    out.update(
+        {p.provider_kind: p.api_key_env for p in PROVIDERS if p.is_kind_default and p.api_key_env}
+    )
+    return out
 
 
 def as_lm_presets() -> list[Any]:
@@ -557,13 +747,18 @@ def as_lm_presets() -> list[Any]:
     doesn't pull in fastapi/uvicorn. Callers in ``gact/app.py`` are
     inside ``build_app()`` where fastapi is already loaded.
     """
-    from clio_agent.gact.types import LMProviderPreset  # noqa: PLC0415
+    from clio_agent.gact.types import (  # noqa: PLC0415
+        LMProviderConfigurationField,
+        LMProviderPreset,
+    )
 
     return [
         LMProviderPreset(
             id=p.id,
+            provider_id=p.id,
             label=p.label,
             provider=p.provider_kind,
+            litellm_prefix=p.litellm_prefix,
             api_base=p.api_base,
             suggested_model=p.suggested_model,
             requires_api_key=p.requires_api_key,
@@ -573,6 +768,18 @@ def as_lm_presets() -> list[Any]:
             description=p.description,
             supports_live_catalog=p.supports_live_catalog,
             supports_vision=p.supports_vision,
+            configuration_fields=[
+                LMProviderConfigurationField(
+                    id=field.id,
+                    label=field.label,
+                    description=field.description,
+                    placeholder=field.placeholder,
+                    required=field.required,
+                )
+                for field in p.configuration_fields
+            ],
+            supports_runtime_sizing=p.supports_runtime_sizing,
+            managed_service_id=p.managed_service_id,
         )
         for p in PROVIDERS
     ]
@@ -594,4 +801,5 @@ def as_provider_models_dict() -> dict[str, list[dict[str, str]]]:
     for p in PROVIDERS:
         if p.is_kind_default and p.provider_kind not in out:
             out[p.provider_kind] = out[p.id]
+    out["argonne_local_vllm"] = out["vllm"]
     return out

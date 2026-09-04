@@ -591,8 +591,10 @@ class LMProviderPreset(_WireModel):
     """One row in the provider picker (subset of the server's shape)."""
 
     id: str = ""
+    provider_id: str = ""
     label: str = ""
     provider: str = ""
+    litellm_prefix: str = ""
     api_base: str = ""
     suggested_model: str = ""
     requires_api_key: bool = True
@@ -601,6 +603,9 @@ class LMProviderPreset(_WireModel):
     description: str = ""
     status: str = "unknown"
     status_message: str = ""
+    configuration_fields: list[dict[str, Any]] = Field(default_factory=list)
+    supports_runtime_sizing: bool = False
+    managed_service_id: str = ""
 
 
 class LMProvider(_WireModel):
@@ -613,6 +618,7 @@ class LMProvider(_WireModel):
     """
 
     configured: bool = False
+    provider_id: str = ""
     provider: str = ""
     api_base: str = ""
     model: str = ""
@@ -629,4 +635,5 @@ class LMProvider(_WireModel):
     status_message: str = ""
     error: str = ""
     operation_id: str = ""
+    provider_options: dict[str, str] = Field(default_factory=dict)
     presets: list[LMProviderPreset] = Field(default_factory=list)

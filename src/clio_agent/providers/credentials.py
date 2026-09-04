@@ -142,6 +142,10 @@ def resolve(provider: str, credential_ref: str = "") -> str:
         The resolved API key / bearer token, or ``""`` when none is available.
     """
     account = _account_of(credential_ref)
+    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+
+    preset = get_provider(provider)
+    runtime_kind = preset.provider_kind if preset is not None else provider
 
     # Argonne mints/looks up ONE node-local Globus token — it is account-agnostic
     # (``resolve_argonne_token`` / ``_resolve_argonne_api_key`` take no account).
@@ -150,7 +154,7 @@ def resolve(provider: str, credential_ref: str = "") -> str:
     # authenticate the expert as the wrong account (finding #5). Gate on the
     # default account and surface "" for a named ref instead — the LM call then
     # raises an actionable auth error (no silent default identity, design §3.2).
-    if provider == "argonne":
+    if runtime_kind == "argonne":
         if account:
             return ""
         from clio_agent import config as _config  # noqa: PLC0415
@@ -163,7 +167,7 @@ def resolve(provider: str, credential_ref: str = "") -> str:
         return os.environ.get(_named_account_env_var(provider, account), "")
 
     # Default cloud ref: the well-known per-provider env var, read-only.
-    env_var = _CLOUD_API_KEY_ENV.get(provider)
+    env_var = _CLOUD_API_KEY_ENV.get(provider) or _CLOUD_API_KEY_ENV.get(runtime_kind)
     if env_var:
         return os.environ.get(env_var, "")
     return ""

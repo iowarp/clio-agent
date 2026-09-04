@@ -230,7 +230,9 @@ class ResolvedLMSpec:
             lifetime.
         """
         resolver = cred_resolver if cred_resolver is not None else CredentialResolver()
-        key = resolver.resolve(self.spec.provider, self.spec.credential_ref)
+        key = resolver.resolve(
+            self.spec.provider_id or self.spec.provider, self.spec.credential_ref
+        )
         config = copy.copy(self.config_skeleton)
         if self._default_ref:
             config.api_key = self.default_credential or key or self.placeholder_key
@@ -254,8 +256,10 @@ def _build_key_less_skeleton(spec: "LMSpec") -> tuple["LMProviderConfig", str]:
     provider = spec.provider
     kwargs: dict[str, Any] = {
         "provider": provider,
+        "provider_id": spec.provider_id or provider,
         "api_base": spec.api_base,
         "model": spec.model,
+        "provider_options": dict(spec.provider_options),
         "api_key": _CRED_DEFERRED_SENTINEL,
         "temperature": spec.temperature if spec.temperature is not None else 0.0,
         "max_tokens": spec.max_tokens or 0,
@@ -304,7 +308,7 @@ def _fold_handshake(
     try:
         report = run_handshake_sync(
             HandshakeContext(
-                provider_id=spec.provider,
+                provider_id=spec.provider_id or spec.provider,
                 provider_kind=spec.provider,
                 api_base=config.api_base,
                 api_key="",

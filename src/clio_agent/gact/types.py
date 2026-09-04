@@ -745,6 +745,7 @@ class LMProviderInfo(BaseModel):
     """
 
     configured: bool
+    provider_id: str = ""
     provider: str = ""
     api_base: str = ""
     model: str = ""
@@ -770,7 +771,18 @@ class LMProviderInfo(BaseModel):
     status_message: str = ""
     error: str = ""
     operation_id: str = ""
+    provider_options: dict[str, str] = Field(default_factory=dict)
     presets: list["LMProviderPreset"] = Field(default_factory=list)
+
+
+class LMProviderConfigurationField(BaseModel):
+    """One non-secret option a provider requires in the settings form."""
+
+    id: str
+    label: str
+    description: str = ""
+    placeholder: str = ""
+    required: bool = False
 
 
 class LMProviderPreset(BaseModel):
@@ -779,8 +791,10 @@ class LMProviderPreset(BaseModel):
     presets (LM Studio, Ollama, local vLLM) don't need one."""
 
     id: str
+    provider_id: str = ""
     label: str
     provider: str
+    litellm_prefix: str = ""
     api_base: str
     suggested_model: str
     requires_api_key: bool = True
@@ -799,6 +813,9 @@ class LMProviderPreset(BaseModel):
     status_message: str = ""
     supports_live_catalog: bool = True
     supports_vision: bool = False
+    configuration_fields: list[LMProviderConfigurationField] = Field(default_factory=list)
+    supports_runtime_sizing: bool = False
+    managed_service_id: str = ""
 
 
 class LMProviderRequest(BaseModel):
@@ -816,9 +833,11 @@ class LMProviderRequest(BaseModel):
     """
 
     provider: str
+    provider_id: str = ""
     api_base: str
     model: str
     api_key: str = "x"
+    provider_options: dict[str, str] = Field(default_factory=dict)
     temperature: float = 0.0
     max_tokens: int = 0
     # Sampling surface forwarded to dspy.LM/LiteLLM (None = omit -> the model's own

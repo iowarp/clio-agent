@@ -93,9 +93,9 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     model_name = _resolve_model_name(config)
 
     extras = _provider_lm_kwargs(config)
+    connection = {"api_base": config.api_base} if config.api_base else {}
     lm = _construct_lm(
         model=model_name,
-        api_base=config.api_base,
         api_key=config.api_key,
         temperature=config.temperature,
         max_tokens=config.max_tokens,
@@ -106,6 +106,7 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         # identical prompts should still bill — accounting matters
         # more than the small spend saved on duplicate questions.
         cache=False,
+        **connection,
         **extras,
     )
     # Per-model gate for the content<-reasoning_content extraction in
@@ -153,24 +154,23 @@ def _resolve_model_name(config: LMProviderConfig) -> str:
     preserve the actual Sophia model id on the wire. Metis does not need
     that double prefix.
     """
-    if config.provider in ("openai", "anthropic"):
-        return f"{config.provider}/{config.model}"
     if config.provider == "codex":
         bare = config.model.removeprefix("codex/").removeprefix("cdx-")
         return f"codex/cdx-{bare}"
     if config.provider == "claude_code":
         bare = config.model.removeprefix("claude_code/").removeprefix("cc-")
         return f"claude_code/cc-{bare}"
-    bare = config.model
-    if _is_argonne_sophia(config) and bare.startswith("openai/"):
-        return f"openai/{bare}"
-    if bare.startswith("openai/"):
-        bare = bare[len("openai/") :]
-    return f"openai/{bare}"
+    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+
+    preset = get_provider(getattr(config, "provider_id", "") or config.provider)
+    prefix = preset.litellm_prefix if preset is not None else config.provider
+    bare = config.model.removeprefix(f"{prefix}/")
+    return f"{prefix}/{bare}"
 
 
 def _is_argonne_sophia(config: LMProviderConfig) -> bool:
-    """Return whether the Argonne config targets Sophia's vLLM gateway."""
+    """Retain the historical helper for callers that inspect ALCF endpoints."""
+
     parsed = urlparse(config.api_base)
     return config.provider == "argonne" and "/resource_server/sophia/" in parsed.path
 
@@ -223,14 +223,15 @@ def create_planner_lm(config: LMProviderConfig) -> dspy.LM:
     _resolve_lm_studio_model_if_needed(config)
     model_name = _resolve_model_name(config)
 
+    connection = {"api_base": config.api_base} if config.api_base else {}
     return _construct_lm(
         model=model_name,
-        api_base=config.api_base,
         api_key=config.api_key,
         temperature=config.planner_temperature,
         max_tokens=config.planner_max_tokens,
         model_type="chat",
         cache=False,  # see create_lm — same rationale
+        **connection,
         **_provider_lm_kwargs(config),
     )
 
@@ -273,6 +274,7 @@ def _thinking_disabled() -> bool:
 def _provider_lm_kwargs(config: LMProviderConfig) -> dict[str, Any]:
     """Return provider-specific LiteLLM kwargs for dspy.LM construction."""
     extras = _thinking_kwargs(config)
+    extras.update(config.provider_options)
     # Qwen-family reasoning models (e.g. qwopus) run their reasoning_content away
     # on the pipeline's structured routing/tool-decision calls — consuming the whole
     # token budget without reaching the decision (uncapped → >900s → wedge; capped →
