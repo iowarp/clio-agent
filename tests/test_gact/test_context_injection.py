@@ -8,6 +8,7 @@ the prompt, and that mode=edit + paths-outside-root are filtered.
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -40,7 +41,19 @@ class _RecordingAgent:
 
 
 @pytest.fixture()
-def setup(tmp_path: Path):
+def setup(tmp_path: Path) -> Iterator[tuple[object, TestClient, _RecordingAgent, Path]]:
+    """App + an ENTERED TestClient (one app-lifetime portal) + the fake agent.
+
+    The client is entered for the whole test on purpose. A TestClient that is
+    never entered gives EACH request its own anyio portal; ``POST /messages``
+    returns an ack while the turn is still running, so the turn task — created
+    on that transient portal's loop — is cancelled the instant the portal tears
+    down. ``complete_turn`` then settles on a truthfully ``cancelled`` assistant
+    message whose agent was never invoked, and ``agent.calls[-1]`` raises
+    IndexError. Under coverage the turn is slow enough for the portal to win,
+    which is how this module went red on CI.
+    """
+
     agent = _RecordingAgent()
     # Pin the workspace root to tmp_path so context files live
     # under the policy boundary.
@@ -48,7 +61,8 @@ def setup(tmp_path: Path):
     # Update ws_default's root_path so its files pass the
     # workspace check inside _enrich_with_context_files.
     app.state.workspaces.update("ws_default", root_path=str(tmp_path))
-    return app, TestClient(app), agent, tmp_path
+    with TestClient(app) as client:
+        yield app, client, agent, tmp_path
 
 
 def test_no_files_attached_passes_text_unchanged(setup) -> None:
