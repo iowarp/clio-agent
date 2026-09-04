@@ -99,6 +99,10 @@ from clio_agent.providers.catalog import (
 from clio_agent.providers.catalog import (
     as_provider_defaults_dict as _registry_provider_defaults,
 )
+from clio_agent.providers.catalog import get_provider as _catalog_provider
+from clio_agent.providers.catalog import kind_default as _catalog_kind_default
+from clio_agent.providers.catalog import normalize_provider_options as _normalize_provider_options
+from clio_agent.providers.catalog import provider_defaults as _catalog_provider_defaults
 
 PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = _registry_provider_defaults()
 
@@ -205,9 +209,11 @@ class LMProviderConfig:
         "codex",
         "claude_code",
     ] = "lm_studio"
+    provider_id: str = ""
     api_base: str = ""
     model: str = ""
     api_key: str = ""
+    provider_options: dict[str, str] = field(default_factory=dict)
     # Default to greedy/deterministic decoding for the agentic LM path.
     # CLIO drives the LM almost exclusively for STRUCTURED output —
     # ReAct tool calls, typed routing decisions, JSON workflow_state,
@@ -283,10 +289,22 @@ class LMProviderConfig:
 
     def __post_init__(self) -> None:
         """Fill empty fields + capability flags from provider defaults."""
+        identity = self.provider_id or str(self.provider)
+        preset = _catalog_provider(identity) or _catalog_kind_default(identity)
+        if preset is not None:
+            self.provider_id = preset.id
+            self.provider = cast(Any, preset.provider_kind)
+            defaults = _catalog_provider_defaults(preset)
+            if self.provider_options:
+                self.provider_options = _normalize_provider_options(
+                    preset.id, self.provider_options
+                )
+        else:
+            self.provider_id = identity
+            defaults = PROVIDER_DEFAULTS.get(self.provider, PROVIDER_DEFAULTS["lm_studio"])
         if self.router_temperature is not None:
             self.planner_temperature = self.router_temperature
         self.router_temperature = self.planner_temperature
-        defaults = PROVIDER_DEFAULTS.get(self.provider, PROVIDER_DEFAULTS["lm_studio"])
         from clio_agent.providers.thinking import shipped_default_level  # noqa: PLC0415
 
         self.thinking_level = shipped_default_level(
@@ -304,7 +322,9 @@ class LMProviderConfig:
             # ``or defaults["api_key"]`` preserves the local-provider
             # placeholder (e.g. "lm-studio") — a provider default, not a
             # credential — so behaviour stays byte-identical.
-            self.api_key = _credentials.resolve(self.provider, "") or defaults["api_key"]
+            self.api_key = (
+                _credentials.resolve(self.provider_id or self.provider, "") or defaults["api_key"]
+            )
         # max_tokens=0 is the sentinel "pick a sensible default for
         # this provider" — Argonne/ALCF model availability and context
         # windows vary by running gateway job, and some paths reject
@@ -550,6 +570,7 @@ def load_config_from_env() -> LMProviderConfig:
 
     kwargs: dict = {
         "provider": provider,
+        "provider_id": provider,
         "environment": environment,
     }
     if api_base:
@@ -585,11 +606,12 @@ def load_config_from_env() -> LMProviderConfig:
 
     config = LMProviderConfig(**kwargs)
 
-    # Validate cloud providers have API keys
-    if config.provider in ("openai", "anthropic") and not config.api_key:
-        env_var = _CLOUD_API_KEY_ENV[config.provider]
+    # Validate catalog providers that explicitly require an API key.
+    selected_provider = _catalog_provider(config.provider_id)
+    if selected_provider is not None and selected_provider.requires_api_key and not config.api_key:
+        env_var = selected_provider.api_key_env or "CLIO_LM_API_KEY"
         raise ValueError(
-            f"Cloud provider '{config.provider}' requires an API key. "
+            f"Cloud provider '{config.provider_id}' requires an API key. "
             f"Set CLIO_LM_API_KEY or {env_var} environment variable."
         )
 

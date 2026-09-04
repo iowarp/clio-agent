@@ -488,11 +488,11 @@ class TestCreateLM:
             lm = create_lm(config)
         assert lm.model == "openai/qwopus3.5-9b-v3"
 
-    def test_ollama_uses_openai_prefix(self):
-        """Ollama models should get openai/ prefix."""
+    def test_ollama_uses_native_litellm_prefix(self):
+        """Ollama chat models use LiteLLM's explicit Ollama chat route."""
         config = LMProviderConfig(provider="ollama")
         lm = create_lm(config)
-        assert "openai/" in lm.model
+        assert lm.model.startswith("ollama_chat/")
 
     def test_argonne_sophia_preserves_openai_prefixed_model_ids(self):
         """Sophia GPT-OSS ids include openai/ as part of the served model id."""
@@ -505,7 +505,7 @@ class TestCreateLM:
 
         lm = create_lm(config)
 
-        assert lm.model == "openai/openai/gpt-oss-120b"
+        assert lm.model == "hosted_vllm/openai/gpt-oss-120b"
 
     def test_argonne_metis_keeps_single_openai_provider_prefix(self):
         """Metis GPT-OSS ids do not need Sophia's double-prefix workaround."""
@@ -518,7 +518,7 @@ class TestCreateLM:
 
         lm = create_lm(config)
 
-        assert lm.model == "openai/gpt-oss-120b"
+        assert lm.model == "hosted_vllm/openai/gpt-oss-120b"
 
     def test_argonne_sophia_huggingface_ids_keep_single_provider_prefix(self):
         """Sophia non-openai model ids still use the normal LiteLLM provider prefix."""
@@ -531,7 +531,7 @@ class TestCreateLM:
 
         lm = create_lm(config)
 
-        assert lm.model == "openai/meta-llama/Llama-4-Scout-17B-16E-Instruct"
+        assert lm.model == "hosted_vllm/meta-llama/Llama-4-Scout-17B-16E-Instruct"
 
     def test_openai_uses_native_prefix(self):
         """OpenAI models should get openai/ prefix (native)."""

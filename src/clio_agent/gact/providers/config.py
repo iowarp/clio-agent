@@ -63,7 +63,9 @@ def _with_vision_capability(app: "FastAPI", cfg: dict[str, Any]) -> dict[str, An
     """
 
     supports_vision, vision_source = _vision_capability(
-        app, str(cfg.get("provider") or ""), str(cfg.get("model") or "")
+        app,
+        str(cfg.get("provider_id") or cfg.get("provider") or ""),
+        str(cfg.get("model") or ""),
     )
     cfg["supports_vision"] = supports_vision
     cfg["supports_vision_source"] = vision_source
@@ -92,9 +94,11 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
         return _with_vision_capability(app, cfg)
 
     for key in (
+        "provider_id",
         "provider",
         "api_base",
         "model",
+        "provider_options",
         "temperature",
         "max_tokens",
         "context_length",
@@ -186,7 +190,7 @@ def _active_lm_model_ref(app: "FastAPI") -> dict[str, str]:
     """Return the active global LM as a GACT ModelRef-shaped dict."""
 
     cfg = _effective_lm_config(app)
-    provider = str(cfg.get("provider") or "")
+    provider = str(cfg.get("provider_id") or cfg.get("provider") or "")
     model = str(cfg.get("model") or "")
     return {"provider_id": provider, "model_id": model, "variant": ""}
 
@@ -248,8 +252,7 @@ VISION_CAPABILITY_REASONS: dict[str, str] = {
         "than assumed. Run an explicit model refresh to evidence it"
     ),
     "no_active_model": (
-        "no provider/model is bound, so there is nothing whose capability could be "
-        "evidenced"
+        "no provider/model is bound, so there is nothing whose capability could be evidenced"
     ),
 }
 
