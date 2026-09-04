@@ -56,7 +56,7 @@ def _lock(path: Path, *, wait: bool = False) -> BinaryIO | None:
         handle.flush()
     handle.seek(0)
     try:
-        if os.name == "nt":
+        if sys.platform == "win32":
             import msvcrt
 
             msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK if wait else msvcrt.LK_NBLCK, 1)
