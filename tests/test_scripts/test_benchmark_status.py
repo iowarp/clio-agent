@@ -23,7 +23,7 @@ def test_benchmark_directory_is_clean_contract_only() -> None:
     assert not any(name.endswith("_EVIDENCE.jsonl") for name in top_level_files)
 
 
-def test_benchmark_has_exactly_thirteen_case_contracts() -> None:
+def test_benchmark_has_exactly_fourteen_case_contracts() -> None:
     case_dirs = sorted(
         path
         for path in BENCHMARK.iterdir()
@@ -44,6 +44,7 @@ def test_benchmark_has_exactly_thirteen_case_contracts() -> None:
         "case11-custom-mcp-scientific-workflow",
         "case12-workspace-marketplace-swap",
         "case13-hpc-cluster-operator",
+        "case14-deep-researcher-web",
     ]
     for case_dir in case_dirs:
         readme = case_dir / "README.md"

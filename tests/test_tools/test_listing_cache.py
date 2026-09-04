@@ -76,6 +76,36 @@ def test_launcher_change_invalidates(tmp_path) -> None:
     assert listing_cache._load() == {}
 
 
+def test_script_arg_change_invalidates(tmp_path) -> None:
+    """#1308: for a ``python <script>``-shaped launcher, the SCRIPT
+    (an arg, not ``command``) defines the served tools -- editing it must
+    invalidate a cached entry exactly like editing the launcher binary does.
+    Before #1308's fix, ``_launcher_fingerprint`` never looked at ``args`` at
+    all, so this entry would have survived the edit untouched."""
+
+    cmd = _launcher(tmp_path)
+    script = tmp_path / "server.py"
+    script.write_text("# v1")
+    listing_cache.store_listing("ns", cmd, (str(script),), [TOOL])
+    assert listing_cache.load_listing("ns", cmd, (str(script),)) is not None, (
+        "sanity: an unedited script must still be a cache HIT"
+    )
+    # Edit the SCRIPT only -- the launcher binary itself never changes.
+    script.write_text("# v2, a materially different server")
+    assert listing_cache.load_listing("ns", cmd, (str(script),)) is None
+    assert listing_cache._load() == {}
+
+
+def test_non_file_args_never_spuriously_invalidate(tmp_path) -> None:
+    """A flag/opaque token argument (no local file behind it) must never be
+    fingerprinted -- only local-file args identify a mutable server def."""
+
+    cmd = _launcher(tmp_path)
+    args = ("--flag", "--port=9999", "opaque-token")
+    listing_cache.store_listing("ns", cmd, args, [TOOL])
+    assert listing_cache.load_listing("ns", cmd, args) is not None
+
+
 def test_env_separates_entries(tmp_path) -> None:
     """Same argv, different declared env → distinct entries; env is hashed,
     never stored verbatim (it may carry secrets)."""
@@ -83,9 +113,9 @@ def test_env_separates_entries(tmp_path) -> None:
     cmd = _launcher(tmp_path)
     listing_cache.store_listing("ns", cmd, ("serve",), [TOOL], env={"API_KEY": "sekrit"})
     assert listing_cache.load_listing("ns", cmd, ("serve",)) is None, "env-less lookup must miss"
-    assert (
-        listing_cache.load_listing("ns", cmd, ("serve",), env={"API_KEY": "other"}) is None
-    ), "different env must miss"
+    assert listing_cache.load_listing("ns", cmd, ("serve",), env={"API_KEY": "other"}) is None, (
+        "different env must miss"
+    )
     hit = listing_cache.load_listing("ns", cmd, ("serve",), env={"API_KEY": "sekrit"})
     assert hit is not None
     raw = listing_cache._cache_path().read_text(encoding="utf-8")

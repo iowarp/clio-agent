@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 from clio_agent.providers.handshake.model import ConnectivityState
 
 if TYPE_CHECKING:
-    from clio_agent.tools.mcp_connection_era import MCPConnectionEra
+    from clio_agent.tools.mcp_connection_era import MCPConnectionEra, MCPServerExtensions
 
 #: default per-server probe budget; spawning a stdio MCP (e.g. uvx) can be slow.
 DEFAULT_MCP_TIMEOUT_S = 20.0
@@ -56,6 +56,12 @@ class MCPServerReport:
     #: #1201: the LATEST era observed for this server across every execution
     #: path (not just this probe's own connect) -- None when never observed.
     execution_era: "MCPConnectionEra | None" = None
+    #: #1283 (C1-S3): the LATEST server-declared extension SET observed for
+    #: this server across every execution path, mirroring ``execution_era`` --
+    #: None when never observed. The direct assertion target the extensions
+    #: live-verification avenue needed (LEG_C2.md avenue 8's own finding: the
+    #: handshake row never surfaced ``ServerCapabilities.extensions`` at all).
+    declared_extensions: "MCPServerExtensions | None" = None
 
     @property
     def ok(self) -> bool:
@@ -132,9 +138,16 @@ async def _probe_one(spec: Any, *, timeout_s: float) -> MCPServerReport:
     # (and independent of) this probe's own connect below -- attached to every
     # branch so a real downgrade from live traffic is visible even when this
     # probe cannot reach the server at all right now.
-    from clio_agent.tools.mcp_connection_era import latest_mcp_connection_era  # noqa: PLC0415
+    from clio_agent.tools.mcp_connection_era import (  # noqa: PLC0415
+        latest_mcp_connection_era,
+        latest_server_extensions,
+    )
 
     execution_era = latest_mcp_connection_era(spec.name)
+    # #1283 (C1-S3): same "prior, independent of this probe's own connect"
+    # posture as execution_era above -- so a failed probe still surfaces the
+    # last known declared-extension set instead of reporting None.
+    declared_extensions = latest_server_extensions(spec.name)
     try:
         from clio_agent.tools.mcp_config import transport_for  # noqa: PLC0415
         from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
@@ -166,6 +179,7 @@ async def _probe_one(spec: Any, *, timeout_s: float) -> MCPServerReport:
             server_version=discovered["server_version"],
             instructions=discovered["instructions"],
             execution_era=latest_mcp_connection_era(spec.name),
+            declared_extensions=latest_server_extensions(spec.name),
         )
     except (TimeoutError, asyncio.TimeoutError):
         return MCPServerReport(
@@ -175,6 +189,7 @@ async def _probe_one(spec: Any, *, timeout_s: float) -> MCPServerReport:
             error=f"did not respond within {timeout_s:g}s",
             latency_ms=(time.monotonic() - started) * 1000.0,
             execution_era=execution_era,
+            declared_extensions=declared_extensions,
         )
     except Exception as exc:  # noqa: BLE001 - surfaced in MCPServerReport.error
         return MCPServerReport(
@@ -184,6 +199,7 @@ async def _probe_one(spec: Any, *, timeout_s: float) -> MCPServerReport:
             error=str(exc)[:300],
             latency_ms=(time.monotonic() - started) * 1000.0,
             execution_era=execution_era,
+            declared_extensions=declared_extensions,
         )
 
 

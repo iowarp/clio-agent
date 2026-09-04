@@ -46,8 +46,10 @@ class _ResultClient:
     async def list_tools(self) -> list[Any]:
         return [SimpleNamespace(name="probe", input_schema={"properties": {}})]
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
-        del name, arguments
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any], *, progress_handler: Any = None
+    ) -> Any:
+        del name, arguments, progress_handler
         if self.error is not None:
             raise self.error
         return self.result

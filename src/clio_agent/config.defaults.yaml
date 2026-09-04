@@ -192,7 +192,7 @@ lm.provider: "lm_studio"
 # CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
 # Process-wide cap on concurrently-connected claude CLI subprocesses; a
 # connect beyond it waits, raise for more concurrent sessions.
-providers.claude_code.max_concurrent_processes: 1.0
+providers.claude_code.max_concurrent_processes: 4.0
 
 # CLIO_CLAUDE_CODE_SESSION_REUSE  (bool)  <- src/clio_agent/providers/claude_code_sessions.py
 # Keeps a pooled/reused SDK connection per scope instead of a fresh client
@@ -219,6 +219,14 @@ providers.codex.credential_home_capacity: 4
 # ==========================================================================
 # Per-call byte/character/time bounds and bounded-retry budgets across the
 # tool and LM paths.
+
+# CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS  (int)  <- src/clio_agent/gact/agents/agent_task_output_digest.py
+# Character bound above which a completed spawned child's full output is
+# digested (excerpt + a durable session/message reference) instead of
+# inlined verbatim into the parent's wait_agent_tasks result; raise to
+# inline larger child answers, lower to bound coordinator context growth
+# sooner.
+limits.agent_task_output_digest_chars: 8000
 
 # CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S  (float)  <- src/clio_agent/providers/codex_stream.py
 # Max silence (seconds) for one Codex SDK exchange/event, resetting on every
@@ -949,6 +957,12 @@ tools.mcp.mount_retry_delays_s: ["0.5", "1.5"]
 # Retries of the era-negotiation probe after a client-side timeout before
 # giving up; raise for a slow-starting server.
 tools.mcp.probe_timeout_retries: 3
+
+# CLIO_MCP_RESPONSE_CACHE_ENABLED  (bool)  <- src/clio_agent/tools/mcp_runtime.py
+# Opts execution-path MCP clients into SEP-2549 server-hinted response
+# caching; off by default (enabling it wraps the message handler, visible to
+# a caller that type-checks it).
+tools.mcp.response_cache_enabled: false
 
 # CLIO_MCP_SETUP_TIMEOUT_S  (float)  <- src/clio_agent/gact/mcp_readiness.py
 # Seconds allowed for an MCP tool executor's startup handshake; raise for

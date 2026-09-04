@@ -135,7 +135,9 @@
         "session_approval_profile",
         "placement",
         "run_label",
-        "start_turn"
+        "start_turn",
+        "tool_allowlist",
+        "agent_elicitation_depth"
       ],
       "required_fields": [
         "child_expert_id",
@@ -162,7 +164,9 @@
         "session_approval_profile",
         "placement",
         "run_label",
-        "start_turn"
+        "start_turn",
+        "tool_allowlist",
+        "agent_elicitation_depth"
       ]
     }
   },

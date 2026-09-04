@@ -771,6 +771,51 @@ def _runtime_active_agent_blueprint_root_id(app: "FastAPI", session_id: str = ""
     return sorted(enabled, key=lambda row: (row.tier, row.id))[0].id
 
 
+def _apply_session_tool_allowlist(
+    app: "FastAPI", rows: list["AgentDef"], *, session_id: str = ""
+) -> list["AgentDef"]:
+    """Force a session's bound agent to ZERO tools per an empty ``tool_allowlist``.
+
+    #1309 C1-S7 F1: the agent-driven-elicitation answer child turn must have NO
+    tool surface at all -- declared, auto-attached (``create_artifact``/
+    ``plan_exit``/``write_todos``/... -- ``agents/auto_tools.py::
+    build_auto_react_tools`` attaches these UNCONDITIONALLY to every ``react``
+    module, not gated by ``AgentDef.tools``), or skill -- so a malicious
+    server's elicitation ``message`` (embedded verbatim in the answer prompt)
+    cannot drive a tool-capable turn. Emptying ``AgentDef.tools`` alone cannot
+    reach the auto-attached set; forcing ``module.kind`` to ``chain_of_thought``
+    does, because ``BlueprintExpertModule`` only populates ``self.tools`` at
+    all inside its ``kind == "react"`` branches (see ``agents/builders.py``).
+
+    Reads ``session.metadata["tool_allowlist"]`` (stamped at spawn MINT time,
+    see ``turn_spawn.py::spawn_child_turn`` -- never patched in afterward, so
+    this is true before the session's first turn build, not by timing). Only
+    the explicit EMPTY list/tuple is handled -- a present-but-non-empty
+    allowlist and an absent one are both untouched no-ops (no caller needs
+    partial restriction yet). Applies to every row whose id matches the
+    session's OWN bound agent (the only one that can ever actually execute).
+    """
+
+    if not session_id:
+        return rows
+    sess = app.state.sessions.get(session_id)
+    metadata = getattr(sess, "metadata", None) if sess is not None else None
+    if not isinstance(metadata, Mapping):
+        return rows
+    allowlist = metadata.get("tool_allowlist")
+    if not isinstance(allowlist, (list, tuple)) or allowlist:
+        return rows
+    from clio_agent.gact.runtime.globals import _session_agent_id  # noqa: PLC0415
+
+    bound_id = _session_agent_id(sess)
+    return [
+        row.model_copy(update={"tools": [], "module": {"kind": "chain_of_thought"}})
+        if row.id == bound_id
+        else row
+        for row in rows
+    ]
+
+
 def _resolve_runtime_dynamic_agent(
     app: "FastAPI",
     agent_id: str,
@@ -779,6 +824,7 @@ def _resolve_runtime_dynamic_agent(
     workspace_id: str = "",
     prompt_registry: "PromptRegistry | None" = None,
 ) -> "AgentDef | None":
+    resolved: "AgentDef | None" = None
     if session_id:
         for row in _runtime_active_agent_blueprint_rows(
             app,
@@ -787,5 +833,10 @@ def _resolve_runtime_dynamic_agent(
             prompt_registry=prompt_registry,
         ):
             if row.id == agent_id and row.enabled:
-                return row
-    return _resolve_dynamic_agent(app, agent_id, prompt_registry=prompt_registry)
+                resolved = row
+                break
+    if resolved is None:
+        resolved = _resolve_dynamic_agent(app, agent_id, prompt_registry=prompt_registry)
+    if resolved is None:
+        return None
+    return _apply_session_tool_allowlist(app, [resolved], session_id=session_id)[0]

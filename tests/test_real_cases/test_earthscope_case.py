@@ -23,6 +23,7 @@ trace-review job; what review finds gets frozen as new matchers here.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -93,14 +94,37 @@ def staged_station_on_region(run):
     """Structured on-region check: the station whose CSV was staged/plotted must
     appear in the filter result within the requested radius. This is what would
     catch an off-region staging (the r50 failure), and it reads structured tool
-    output, not synthesis prose."""
+    output, not synthesis prose.
+
+    A large in-radius result (e.g. 27 stations, seattle_alt) can blow the
+    model-tool-result size cap: ``geo_filter_points_by_radius``'s recorded
+    output is then a typed truncation envelope (``_clio.status=="truncated"``)
+    carrying only ``head``/``tail`` preserved-text excerpts instead of the full
+    ``points`` list. That case is verified from the preserved text via regex
+    instead of the dict lookup below (nearest-first ordering means the staged
+    station's own row is almost always in ``head``); the full-dict path is
+    unchanged."""
     fr = _tool_result(run, "geo_filter_points_by_radius")
     if not fr:
         return False
+    sid = _staged_station_id(run)
+    if not sid:
+        return False
+    clio_meta = fr.get("_clio")
+    if isinstance(clio_meta, dict) and str(clio_meta.get("status") or "") == "truncated":
+        text = str(fr.get("head") or "") + str(fr.get("tail") or "")
+        radius_match = re.search(r"radius_km=([0-9.]+)", text)
+        distance_match = re.search(
+            r"'distance_km': ([0-9.]+), 'id': '" + re.escape(sid) + r"'", text
+        )
+        if not radius_match or not distance_match:
+            # Honest fail: the sid's row fell in the truncated middle (neither
+            # head nor tail preserved it), so it cannot be verified on-region.
+            return False
+        return float(distance_match.group(1)) <= float(radius_match.group(1))
     radius = float(fr.get("radius_km") or 0)
     distances = {str(p.get("id")): p.get("distance_km") for p in fr.get("points", [])}
-    sid = _staged_station_id(run)
-    if not sid or sid not in distances or distances[sid] is None:
+    if sid not in distances or distances[sid] is None:
         return False
     return float(distances[sid]) <= radius
 
@@ -158,9 +182,13 @@ def test_earthscope_gnss_region(agent, gact_server, cell, tmp_path):
         )
         return
 
-    # Route: geography/acquisition -> analysis -> visualization -> synthesis.
+    # Route: geospatial -> data -> analysis -> visualization, with the main
+    # itself authoring the final answer (no separate "synthesis" child exists in
+    # this pack -- earthscope-gnss-region/experts/main.md: "there is no separate
+    # final-responder child"). A positive cell must reach visualization: the
+    # PNG matchers below require its output.
     assert run.routed_to("data"), run.steps
-    assert run.routed_to("synthesis"), run.steps
+    assert run.routed_to("visualization"), run.steps
 
     # Data pathway: the full real pipeline ran (not just "some tool fired").
     assert ran_acquisition_to_plot_pipeline(run), run.tool_names

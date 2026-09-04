@@ -393,14 +393,74 @@ def test_total_refine_failure_is_typed_too() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 4d. a deterministic MCP protocol refusal is NEVER retried (#1282 F7)         #
+# --------------------------------------------------------------------------- #
+
+
+def _make_refusing_inner() -> tuple[dspy.Module, list[int]]:
+    """A real inner dspy.Module whose forward raises a TYPED, deterministic MCP
+    protocol refusal on every call. Call count lives in a LIST captured by the
+    ``forward`` closure -- NEVER on ``self`` -- because ``dspy.BestOfN``/
+    ``Refine`` run each try against ``self.module.deepcopy()``; an instance
+    attribute would be cloned per try (undercounting to a permanent 0), while
+    a closure-captured list survives untouched (``copy.deepcopy`` treats a
+    function/its closure cells as atomic, never recursing into them), so every
+    deepcopy's call still increments the ONE shared counter. Carries a real
+    ``dspy.Predict`` submodule (unused, never reached) so ``get_lm()``/
+    ``deepcopy()`` behave exactly like ``_BoomInner`` above."""
+    from clio_agent.errors import MCPMissingRequiredClientCapabilityError
+
+    calls: list[int] = []
+
+    class _RefusingInner(dspy.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.predict = dspy.Predict("question -> answer")
+
+        def forward(self, **_kwargs: Any) -> Any:
+            calls.append(1)
+            raise MCPMissingRequiredClientCapabilityError(
+                "task_echo requires the tasks extension",
+                {"requiredCapabilities": {"extensions": {"io.modelcontextprotocol/tasks": {}}}},
+            )
+
+    return _RefusingInner(), calls
+
+
+@pytest.mark.parametrize(
+    "variant_kwargs", [{"n": 3, "threshold": 1.0}, {"variant": "refine", "n": 3}]
+)
+def test_deterministic_refusal_is_never_retried(variant_kwargs: dict[str, Any]) -> None:
+    """#1282 F7: a deterministic MCP protocol refusal escalates AS ITSELF (never
+    wrapped in ``VariantTotalFailure``, which would lose the typed reason/
+    protocol_data D1/D2 carry), and the inner module runs exactly ONCE across
+    ``N`` declared tries -- BestOfN/Refine's own ``except Exception`` retry
+    loop cannot tell a refusal from an ordinary failure, so CLIO's own
+    per-try wrapper (module_variants._RunKeyedModule) short-circuits every
+    try after the first instead of re-invoking a call that can never
+    succeed."""
+    from clio_agent.errors import MCPMissingRequiredClientCapabilityError
+
+    inner, calls = _make_refusing_inner()
+    wrapped = mv.wrap_module_variant(inner, _agent(_module(**variant_kwargs)))
+    with dspy.context(lm=DummyLM([{"answer": "x"}])):
+        with pytest.raises(MCPMissingRequiredClientCapabilityError) as excinfo:
+            wrapped(question="q")
+    assert len(calls) == 1, "the inner module must run exactly once, never retried"
+    assert "io.modelcontextprotocol/tasks" in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------- #
 # 4c. builder integration lock — the wrap call at builders.py is exercised (#953 [10])
 # --------------------------------------------------------------------------- #
 
 
 def _resolved_spec_stub() -> Any:
-    return types.SimpleNamespace(materialize=lambda cred=None: types.SimpleNamespace(
-        provider="argonne", model="gpt-oss-120b", temperature=0.0
-    ))
+    return types.SimpleNamespace(
+        materialize=lambda cred=None: types.SimpleNamespace(
+            provider="argonne", model="gpt-oss-120b", temperature=0.0
+        )
+    )
 
 
 def _build_variant_module(
@@ -412,7 +472,9 @@ def _build_variant_module(
 ) -> Any:
     """Build a REAL BlueprintExpertModule through the production builder (the ONLY
     integration path that runs the ``self.program = _wrap_module_variant(...)`` seam)."""
-    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: lm or DummyLM([{"answer": "x"}]))
+    monkeypatch.setattr(
+        "clio_agent.config.create_lm", lambda config: lm or DummyLM([{"answer": "x"}])
+    )
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: dspy.ChatAdapter())
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
@@ -432,7 +494,9 @@ def _build_variant_module(
 
 
 @pytest.mark.parametrize("kind", ["predict", "chain_of_thought", "react"])
-def test_builder_wires_variant_over_declared_kind(monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
+def test_builder_wires_variant_over_declared_kind(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
     """The BUILT program is the real dspy engine wrapping the declared inner kind. Sabotage:
     delete ``self.program = _wrap_module_variant(...)`` at builders.py → module.program is the
     bare inner (not BestOfN) → red."""
@@ -499,7 +563,13 @@ def test_builder_variant_forward_returns_winner_and_stamps_metadata(
     )
     module = _build_variant_module(
         monkeypatch,
-        _module(kind="predict", variant="best_of_n", n=2, threshold=1.0, reward=_reward_decl(inputs=["question"])),
+        _module(
+            kind="predict",
+            variant="best_of_n",
+            n=2,
+            threshold=1.0,
+            reward=_reward_decl(inputs=["question"]),
+        ),
         lm=lm,
     )
     pred = module(question="pick the best", session_id="s1")
@@ -634,8 +704,12 @@ class _ArcWritingInner(dspy.Module):
         arc_memory = ctx.active_app().state.arc
         scope = ctx.run_keyed_scope(ctx.active_react_scope())
         arc_memory.append_segment(
-            ctx.active_react_session(), scope, "thought", {"text": f"TRY{run}-THOUGHT"},
-            step=0, token_count=1,
+            ctx.active_react_session(),
+            scope,
+            "thought",
+            {"text": f"TRY{run}-THOUGHT"},
+            step=0,
+            token_count=1,
         )
         return self.predict(**kwargs)
 
@@ -650,7 +724,8 @@ def test_variant_forward_run_keys_arc_partitions_through_real_bestofn(arc: ARCMe
     loop + real _RunKeyedModule + real reactv2 fold + real ARCMemory."""
     _ARC_OBS.clear()
     wrapped = mv.wrap_module_variant(
-        _ArcWritingInner(), _agent(_module(n=2, threshold=1.0, reward=_reward_decl(inputs=["question"])))
+        _ArcWritingInner(),
+        _agent(_module(n=2, threshold=1.0, reward=_reward_decl(inputs=["question"]))),
     )
     gen = _variant_scope_ctx(arc)
     next(gen)
@@ -685,7 +760,8 @@ def test_sabotage_neutralizing_set_react_run_leaks_prior_try_in_real_forward(
     orig_set = ctx.set_react_run
     monkeypatch.setattr(ctx, "set_react_run", lambda _idx: orig_set(0))
     wrapped = mv.wrap_module_variant(
-        _ArcWritingInner(), _agent(_module(n=2, threshold=1.0, reward=_reward_decl(inputs=["question"])))
+        _ArcWritingInner(),
+        _agent(_module(n=2, threshold=1.0, reward=_reward_decl(inputs=["question"]))),
     )
     gen = _variant_scope_ctx(arc)
     next(gen)

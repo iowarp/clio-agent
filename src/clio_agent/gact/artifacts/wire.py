@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from clio_agent.gact.artifacts.records import ArtifactKind, ArtifactVersion
 from clio_agent.gact.types import Part
 from clio_agent.runtime.humanize import format_bytes
+from clio_agent.tools.mcp_extension_registry import MCP_APP_MIME_TYPE as UI_PAYLOAD_MIME
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -69,9 +70,6 @@ def proposed_diff_payload(
 #: (which names the originating MCP server). Not an MCP server — a clio-internal
 #: source served by the ``/v1/artifacts`` routes.
 ARTIFACT_SERVER_ID = "clio-artifacts"
-
-#: The mime an ``ui_payload`` artifact advertises (mcpui/a2ui HTML profile).
-UI_PAYLOAD_MIME = "text/html;profile=mcp-app"
 
 #: Suffix → mime for the common designated-output kinds. Deliberately small — a
 #: best-effort content-type hint for the client, never load-bearing (the bytes

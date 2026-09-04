@@ -416,6 +416,12 @@ KEY_NOTES: dict[str, str] = {
         "Override path for the trusted hook-fingerprint store; set to relocate where hook trust "
         "decisions persist."
     ),
+    "limits.agent_task_output_digest_chars": (
+        "Character bound above which a completed spawned child's full output is digested "
+        "(excerpt + a durable session/message reference) instead of inlined verbatim into the "
+        "parent's wait_agent_tasks result; raise to inline larger child answers, lower to bound "
+        "coordinator context growth sooner."
+    ),
     "limits.codex_sdk_progress_timeout_s": (
         "Max silence (seconds) for one Codex SDK exchange/event, resetting on every progress event "
         "rather than a fixed clock; raise for long turns."
@@ -1015,6 +1021,10 @@ KEY_NOTES: dict[str, str] = {
     "tools.mcp.probe_timeout_retries": (
         "Retries of the era-negotiation probe after a client-side timeout before giving up; raise "
         "for a slow-starting server."
+    ),
+    "tools.mcp.response_cache_enabled": (
+        "Opts execution-path MCP clients into SEP-2549 server-hinted response caching; off by "
+        "default (enabling it wraps the message handler, visible to a caller that type-checks it)."
     ),
     "tools.mcp.setup_timeout_s": (
         "Seconds allowed for an MCP tool executor's startup handshake; raise for servers with slow "

@@ -21,9 +21,24 @@ if TYPE_CHECKING:
 
 
 def _started_handoff_part(
-    agent_def: AgentDef, child_id: str, task_text: str, depth: int, spawned: Any
+    agent_def: AgentDef,
+    child_id: str,
+    task_text: str,
+    depth: int,
+    spawned: Any,
+    *,
+    input_task_ids: list[str] | None = None,
 ) -> Part:
-    """Build the running child handoff appended at its causal launch position."""
+    """Build the running child handoff appended at its causal launch position.
+
+    ``input_task_ids`` (#1306 final review round, finding N4), when non-empty,
+    is stamped as the bounded id LIST ONLY -- never invented as an empty
+    sentinel (mirrors ``spawn_group_id``/``group_size``'s own "absent, not
+    empty" convention on this same Part) -- so a spawn that forwarded evidence
+    shows that fact on the delegation edge without the parent's transcript
+    ever carrying the forwarded text itself (that text lives only in the
+    CHILD's own task briefing, ``task_text`` here, already the bare task).
+    """
     started_row = {
         "agent_id": child_id,
         "parent_id": agent_def.id,
@@ -33,6 +48,8 @@ def _started_handoff_part(
         "depth": depth,
         "run_index": spawned.run_index,
     }
+    if input_task_ids:
+        started_row["input_task_ids"] = list(input_task_ids)
     started_row.update(spawn_group_fields(spawned))
     handle_fields = run_handle_fields(spawned, child_id)
     return Part(
@@ -64,6 +81,7 @@ def emit_spawn_started(
     *,
     emit_semantic_event: Callable[..., Any] = _emit_semantic_event,
     append_live_part: Callable[..., Any] = _append_live_assistant_part,
+    input_task_ids: list[str] | None = None,
 ) -> None:
     """Publish one canonical started handoff for any real child-task spawn."""
     emit_semantic_event(
@@ -86,5 +104,7 @@ def emit_spawn_started(
     append_live_part(
         app,
         session_id,
-        _started_handoff_part(agent_def, child_id, task_text, depth, spawned),
+        _started_handoff_part(
+            agent_def, child_id, task_text, depth, spawned, input_task_ids=input_task_ids
+        ),
     )

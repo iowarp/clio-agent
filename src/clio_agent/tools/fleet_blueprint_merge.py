@@ -35,7 +35,7 @@ from __future__ import annotations
 from typing import Any
 
 from clio_agent.runtime import trace
-from clio_agent.tools.gateway import namespace_proxies, namespace_specs
+from clio_agent.tools.gateway import namespace_direct_factories, namespace_proxies, namespace_specs
 
 
 def merge_blueprint_namespaces(
@@ -63,6 +63,7 @@ def merge_blueprint_namespaces(
 
     new_specs = dict(namespace_specs(gateway))
     new_proxies = namespace_proxies(gateway)
+    new_direct_factories = namespace_direct_factories(gateway)
 
     existing_specs = getattr(executor, "_clio_namespace_specs", None)
     if existing_specs is None:
@@ -73,6 +74,22 @@ def merge_blueprint_namespaces(
     if inner is not None and inner_specs is None:
         inner_specs = existing_specs
         _stamp(inner, "_clio_namespace_specs", inner_specs)
+    # #1281 (C1-S1): the direct-client factory registry merges the SAME way
+    # specs do -- a namespace joining a resident fleet via a second blueprint
+    # must be routable direct the moment its capability is discovered True.
+    # #1281 F14 (adversarial review): stamped ONLY on the INNER async
+    # executor. Unlike _clio_namespace_specs (read off the sync wrapper by
+    # builders.py), _clio_namespace_direct_factories is read exclusively by
+    # AsyncMCPToolExecutor's own methods (_connect_namespace,
+    # mcp_namespace_executor._namespace_client) where ``self`` IS the async
+    # executor -- a wrapper-side stamp is never read by anything and would
+    # be dead state.
+    inner_factories = (
+        getattr(inner, "_clio_namespace_direct_factories", None) if inner is not None else None
+    )
+    if inner is not None and inner_factories is None:
+        inner_factories = {}
+        _stamp(inner, "_clio_namespace_direct_factories", inner_factories)
 
     merged: list[str] = []
     already: list[str] = []
@@ -98,6 +115,9 @@ def merge_blueprint_namespaces(
         existing_specs[namespace] = spec
         if inner_specs is not None and inner_specs is not existing_specs:
             inner_specs[namespace] = spec
+        factory = new_direct_factories.get(namespace)
+        if factory is not None and inner_factories is not None:
+            inner_factories[namespace] = factory
         proxy = new_proxies.get(namespace)
         if inner is not None and proxy is not None:
             # Lazy per-namespace proxy: joins the routing table without
@@ -147,6 +167,17 @@ def stamp_fresh_fleet(
     on BOTH the sync wrapper (``builders.py`` reads it there) and its inner
     async executor (``mcp_executor.py``'s dispatch-time gate reads it there).
     Best-effort on test doubles that refuse attribute assignment.
+
+    #1281 F5 (adversarial review): the direct-client factory registry is
+    deliberately NOT stamped here -- ``AsyncMCPToolExecutor.__init__`` now
+    derives it straight off the SAME gateway ``create_sync_tool_executor``
+    was just called with (the caller's construction, immediately before this
+    stamp), so a second explicit stamp here would only re-assert what
+    construction already got right, and — worse — could silently mask a
+    FUTURE construction-site regression by papering over it here instead of
+    surfacing it. A namespace joining a resident fleet via a LATER, additive
+    blueprint merge (no fresh construction involved) still needs its own
+    merge logic -- see :func:`merge_blueprint_namespaces`.
     """
 
     _stamp(executor, "_clio_mounted_blueprint_id", blueprint_id)

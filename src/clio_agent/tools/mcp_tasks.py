@@ -2,7 +2,8 @@
 
 WHAT THE SUBSTRATE ALREADY DOES. There is no ``mcp/client/experimental/tasks.py``
 in the installed mcp 2.0 SDK; the tasks client lives in the pinned
-**``fastmcp_tasks`` 4.0.0b1** package. It supplies: the per-request extension
+**``fastmcp_tasks`` 4.0.0b5** package (#1285 C1-S5 item 5 bumped from b1). It
+supplies: the per-request extension
 declaration (``TasksClientExtension``, folded into a client's capability ad by
 ``Client._build_extension_kwargs``), the ``ResultClaim`` for ``resultType:
 "task"`` (:class:`fastmcp_tasks.client_models.ClientCreateTaskResult`), the
@@ -71,7 +72,7 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import mcp_types
 from fastmcp.utilities.tasks import TASKS_EXTENSION_ID
@@ -459,7 +460,15 @@ async def _poll_until_terminal(
     while True:
         budget = remaining()
         if budget is not None and budget <= 0:
-            raise TimeoutError(f"task {key.task_id} did not finish within {timeout_seconds}s")
+            # #1282 F3b: typed + surfaced, never a bare TimeoutError -- see
+            # tools/mcp_wait_ladder.py's module docstring for why this stays a
+            # typed BACKSTOP (not made unbounded) despite having no producer
+            # in clio's own call sites today.
+            from clio_agent.tools.mcp_wait_ladder import (  # noqa: PLC0415
+                typed_task_drive_timeout_error,
+            )
+
+            raise typed_task_drive_timeout_error(key.task_id, cast(float, timeout_seconds))
 
         current = await send_task_get(session, key.task_id, budget)
         _record_status(store, ledger, key, current)

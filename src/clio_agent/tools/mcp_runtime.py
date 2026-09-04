@@ -6,9 +6,11 @@ contracts is future wire-work, not part of this slice.
 
 This module also owns :func:`make_mcp_client` (#1106) — the ONE construction
 site for **execution-path** FastMCP clients. It carries the :class:`MCPClientHandlers`
-slot (typed CLIO hooks; see :mod:`clio_agent.tools.mcp_handlers`) where P1
-attaches elicitation/progress/message/cancellation handlers (no-op-absent
-today). Execution paths route through it: the ``AsyncMCPToolExecutor`` default
+slot (typed CLIO hooks; see :mod:`clio_agent.tools.mcp_handlers`) that attaches
+elicitation/progress/message handlers (no-op-absent when unset; cancellation is
+a call-lifecycle operation, not a construction-time hook — see
+:class:`MCPClientHandlers`'s docstring). Execution paths route through it: the
+``AsyncMCPToolExecutor`` default
 ``client_factory``, the gateway proxy backend (``tools/gateway._proxy_for_spec``),
 the dynamic-agent external tool call (``gact/agents/builders``), the per-call
 dispatch in ``gact/routes/mcp.py``, and the ``providers/handshake/mcp.py`` probe.
@@ -40,7 +42,6 @@ from clio_agent.tools.mcp_handlers import (
 
 if TYPE_CHECKING:
     from mcp.client.auth.oauth2 import OAuthClientProvider
-    from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
     from clio_agent.tools.mcp_config import MCPAuthConfig
     from clio_agent.tools.mcp_handlers import (
@@ -62,38 +63,18 @@ _MISSING = object()
 _VALID_MODES: frozenset[str] = frozenset(("mcp_results", "mcp_apps", "gact_runtime"))
 
 
-class _MemoryOAuthTokenStorage:
-    """Process-local implementation of the MCP SDK ``TokenStorage`` protocol."""
-
-    def __init__(self) -> None:
-        self._tokens: OAuthToken | None = None
-        self._client_info: OAuthClientInformationFull | None = None
-
-    async def get_tokens(self) -> OAuthToken | None:
-        """Return the current OAuth token bundle."""
-        return self._tokens
-
-    async def set_tokens(self, tokens: OAuthToken) -> None:
-        """Replace the current OAuth token bundle."""
-        self._tokens = tokens
-
-    async def get_client_info(self) -> OAuthClientInformationFull | None:
-        """Return dynamically registered OAuth client information."""
-        return self._client_info
-
-    async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
-        """Replace dynamically registered OAuth client information."""
-        self._client_info = client_info
-
-
 def _oauth_provider_from_config(
     server_url: str, config: MCPAuthConfig | None
 ) -> OAuthClientProvider | None:
     """Build the installed MCP SDK OAuth provider at the client factory boundary.
 
     Invalid metadata is surfaced as a typed, credential-free transport error.
-    The default storage is intentionally process-local; callers that need durable
-    refresh tokens provide an SDK ``TokenStorage`` implementation in the auth block.
+    The default storage is durable (#1285 C1-S5: closes the "re-auth every
+    restart" gap -- ``tools/mcp_oauth_storage.py::DurableFileTokenStorage``,
+    keyed by ``server_url``, persists to the user's config dir); callers that
+    need a different backend (a secrets manager, an in-memory test double)
+    provide an SDK ``TokenStorage`` implementation in the auth block, which
+    always wins over the default.
     """
     if config is None:
         return None
@@ -103,6 +84,7 @@ def _oauth_provider_from_config(
     from pydantic import ValidationError  # noqa: PLC0415
 
     from clio_agent.tools.mcp_config import MCPTransportError  # noqa: PLC0415
+    from clio_agent.tools.mcp_oauth_storage import DurableFileTokenStorage  # noqa: PLC0415
 
     try:
         metadata = (
@@ -113,13 +95,44 @@ def _oauth_provider_from_config(
         return OAuthClientProvider(
             server_url=server_url,
             client_metadata=metadata,
-            storage=config.storage or _MemoryOAuthTokenStorage(),
+            storage=config.storage or DurableFileTokenStorage(server_url),
             redirect_handler=config.redirect_handler,
             callback_handler=config.callback_handler,
             client_metadata_url=config.client_metadata_url,
         )
     except (TypeError, ValueError, ValidationError):
         raise MCPTransportError("invalid MCP OAuth configuration") from None
+
+
+def response_cache_enabled() -> bool:
+    """Whether execution-path clients opt into SEP-2549 response caching (#1285 C1-S5 item 3).
+
+    Config key ``tools.mcp.response_cache_enabled`` / env
+    ``CLIO_MCP_RESPONSE_CACHE_ENABLED``; defaults ``False``. The mechanism is
+    fully implemented and tested (``tests/test_tools/test_mcp_response_cache.py``)
+    but ships opt-IN, not opt-out: fastmcp's own default posture is opt-in
+    (``cache=None`` disables it), and enabling it wraps ``message_handler``
+    in ``mcp.client.caching._evicting_message_handler`` -- a caller
+    introspecting the message-handler chain by type (e.g. an
+    ``isinstance(handler, MessageMultiplexer)`` check) sees the wrapper, not
+    the original, so this stays a deliberate operator opt-in until that
+    interaction is reconciled, rather than a silent behavior change across
+    every execution-path client. The cache is a pure read-side accelerator
+    (a disabled cache degrades to always-live listing/reading, the pre-#1285
+    behavior), so this is a plain feature flag, not a typed-degrade decision
+    point.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return bool(
+        conf.resolve(
+            "tools.mcp.response_cache_enabled",
+            env="CLIO_MCP_RESPONSE_CACHE_ENABLED",
+            default=False,
+            cast=conf.as_bool,
+        )
+    )
 
 
 def _dump_mcp_results_model(value: Any, *, exclude_none: bool) -> Any:
@@ -211,30 +224,35 @@ def wire_value(
 
 @dataclass(frozen=True)
 class MCPClientHandlers:
-    """Typed CLIO hook bundle — a CONSTRUCTION-TIME SLOT, not a live wiring.
+    """Typed CLIO hook bundle wired at client construction.
 
-    Every hook is absent today (``None`` => that handler is not installed,
+    Every hook defaults to absent (``None`` => that handler is not installed,
     identical to a bare client). The hooks are typed
     :mod:`clio_agent.tools.mcp_handlers` Protocols, not raw callbacks: each
-    receives an :class:`MCPInvocationContext` first argument that P1 will
-    populate. ``make_mcp_client`` wraps a populated hook in a signature adapter
-    and hands it to the matching ``fastmcp.Client`` keyword; ``message`` becomes
-    a :class:`MessageMultiplexer` that forwards to the CLIO hook. FastMCP 4
-    handles task notifications through client extensions. Cancellation is an
-    outbound call-lifecycle operation, not a ``Client`` callback keyword: #1116
-    cancels the active ``call_tool`` task so MCP's dispatcher emits the protocol
-    request id it allocated. The ``cancellation`` hook remains reserved for a
-    future server-originated cancellation policy.
+    receives an :class:`MCPInvocationContext` first argument. ``make_mcp_client``
+    wraps a populated hook in a signature adapter and hands it to the matching
+    ``fastmcp.Client`` keyword; ``message`` becomes a :class:`MessageMultiplexer`
+    that forwards to the CLIO hook. FastMCP 4 handles task notifications
+    through client extensions.
 
-    IMPORTANT: no hook may actually be *wired* until correlation-by-protocol-
-    identity lands (clio-agent#1111/#1113). See the ``mcp_handlers`` module
-    docstring for the two deferred review findings the P1 implementer must honor.
+    There is deliberately no ``cancellation`` slot here (#1285 C1-S5, closing
+    the factory cancellation gap this dataclass used to carry as a dead,
+    never-wired field -- fastmcp's ``Client`` constructor has no cancellation
+    callback keyword to hand it to, and nothing in this codebase ever
+    populated it). Cancellation is not a ``Client``-construction-time
+    callback at all: it is an outbound call-lifecycle operation (#1116)
+    cancelling the active ``call_tool`` task, which the SDK dispatcher
+    observes as a caller-cancelled write and emits the courtesy
+    ``notifications/cancelled`` for the request id it already allocated --
+    see ``mcp/shared/jsonrpc_dispatcher.py``'s ``anyio.get_cancelled_exc_class()``
+    handling. That mechanism needs no client-construction hook and is proven
+    live by the C1-S2 waits-cancel avenue
+    (``scripts/live_verification/leg_c2_v2_avenues.py::avenue_waits_cancel``).
     """
 
     elicitation: "ElicitationHook | None" = None
     progress: "ProgressHook | None" = None
     message: "MessageHook | None" = None
-    cancellation: "MessageHook | None" = None
 
 
 def input_required_max_rounds() -> int:
@@ -432,16 +450,20 @@ def make_mcp_client(
             front leg is comparatively low-value -- see that module's
             docstring for why a PROXIED backend's real era is only ever
             observable at the seam that dials it, not at the front).
-    Tasks (#1115): every client built here declares the SEP-2663 tasks extension, so
-    a task-serving backend may run a call as a background task and CLIO drives it to
-    the real result. There is deliberately no per-call opt-out knob: a client that
-    declared nothing would still fold ``fastmcp-tasks``' own internal extension once
-    that package is imported, so an "off" switch would not turn the advertisement off
-    — it would only swap CLIO's hardened resolver for the un-hardened one. The single
+    Extensions (#1115, #1283): every client built here declares the FULL generic MCP
+    extension registry (:func:`clio_agent.tools.mcp_extension_registry.
+    extensions_declaration`) — tasks (SEP-2663, so a task-serving backend may run a
+    call as a background task and CLIO drives it to the real result) and the MCP
+    Apps ``ui`` capability ad (letter (d)), not a hardcoded tasks special case. There
+    is deliberately no per-call opt-out knob for tasks: a client that declared
+    nothing would still fold ``fastmcp-tasks``' own internal extension once that
+    package is imported, so an "off" switch would not turn the advertisement off — it
+    would only swap CLIO's hardened resolver for the un-hardened one. The single
     honest suppression is the one FastMCP itself declares: a ``client_cls`` pinning
-    ``_auto_internal_extensions = False`` (``ProxyClient``) folds no extension at all,
-    and that path is recorded with the typed reason
-    ``mcp_tasks_declaration_suppressed``.
+    ``_auto_internal_extensions = False`` (``ProxyClient``) folds no TASKS extension
+    in, and that path is recorded with the typed reason
+    ``mcp_tasks_declaration_suppressed`` — the ``ui`` ad is declared regardless (see
+    the registry module's docstring for why).
 
     Returns:
         A constructed (not yet entered) FastMCP client for ``target``.
@@ -490,26 +512,66 @@ def make_mcp_client(
     )
     if connect_mode and connect_mode != "auto":
         kwargs["mode"] = connect_mode
+
+    # #1285 (C1-S5, item 3): SEP-2549 response caching, opt-in per fastmcp's own
+    # `cache=` keyword. `True` uses the SDK default (a fresh, per-client
+    # InMemoryResponseCacheStore -- no cross-client/cross-session leakage since
+    # every make_mcp_client() call builds its own client instance) and honors
+    # every server-set ttlMs/cacheScope hint at modern protocol versions only
+    # (inert on legacy connections -- ClientResponseCache._resolve gates on the
+    # negotiated era). The caching MUST-NOTs (SEP-2549) are structural, not
+    # something this factory has to enforce: only list/read methods are ever
+    # cacheable (tools/call -- and therefore any MRTR retry result -- is never
+    # in the cacheable-method set), and fastmcp wraps the message handler with
+    # its own eviction hook so a listChanged/resourceUpdated notification
+    # invalidates the affected entries automatically (see fastmcp.client.
+    # client._evicting_message_handler) -- independent of, and in addition to,
+    # tools/mcp_listen.py's push-invalidation of the SEPARATE boot listing
+    # cache this same notification also drives.
+    if response_cache_enabled():
+        kwargs["cache"] = True
+
     if handlers is not None:
         if handlers.elicitation is not None:
             kwargs["elicitation_handler"] = ElicitationDispatcher(handlers.elicitation)
         if handlers.progress is not None:
             kwargs["progress_handler"] = ProgressDispatcher(handlers.progress)
-        if handlers.message is not None:
-            kwargs["message_handler"] = MessageMultiplexer(handlers.message)
-        # `cancellation` has no fastmcp Client keyword today; P1 owns its wiring.
 
-    # #1115: declare the SEP-2663 tasks extension. CLIO's subclass carries the
+    # #1285 review round (MUST 1): fold push-invalidation into EVERY client
+    # built with a known server_id -- make_mcp_client is the ONE production
+    # construction site (see the module docstring), so this is the choke
+    # point that closes the gap watch_list_changed/list_changed_message_handler
+    # left open (zero production callers before this: only tests + the
+    # live-verification leg drove them). A caller-supplied message hook is
+    # composed in, never overwritten (tools/mcp_listen.py::combined_message_handler).
+    message_handler: Callable[[Any], Any] | None = (
+        MessageMultiplexer(handlers.message) if handlers is not None and handlers.message else None
+    )
+    if server_id:
+        from clio_agent.tools.mcp_listen import combined_message_handler  # noqa: PLC0415
+
+        message_handler = combined_message_handler(server_id, message_handler)
+    if message_handler is not None:
+        kwargs["message_handler"] = message_handler
+
+    # #1283 (C1-S3): every client built here folds in the FULL generic MCP
+    # extension registry, not a single hardcoded tasks special case. Entry #1
+    # is still the SEP-2663 tasks extension (CLIO's subclass carries the
     # substrate's identifier, so folding it in REPLACES fastmcp-tasks' internal
-    # extension with the hardened one (input-key dedup, `Mcp-Name` on task RPCs,
-    # durable task-id persistence). Suppressed — with a typed reason — for client
-    # classes that forbid internal extensions (proxy backends; #1119). The extension
-    # takes no elicitation callback here on purpose: it reads the SDK-shaped one off
-    # the live ClientSession, since fastmcp rewraps the 4-argument handler installed
-    # above (see `session_elicitation_callback`).
-    from clio_agent.tools.mcp_task_extension import tasks_declaration  # noqa: PLC0415
+    # extension with the hardened one -- input-key dedup, `Mcp-Name` on task
+    # RPCs, durable task-id persistence -- suppressed with a typed reason for
+    # client classes that forbid internal extensions, proxy backends, #1119;
+    # unchanged from the pre-registry direct call). Entry #2 is the MCP Apps
+    # `io.modelcontextprotocol/ui` capability ad (letter (d)), declared
+    # unconditionally -- see `mcp_extension_registry.py`'s module docstring for
+    # why ui, unlike tasks, is never suppressed on a proxy-like client class.
+    # The tasks extension takes no elicitation callback here on purpose: it
+    # reads the SDK-shaped one off the live ClientSession, since fastmcp
+    # rewraps the 4-argument handler installed above (see
+    # `session_elicitation_callback`).
+    from clio_agent.tools.mcp_extension_registry import extensions_declaration  # noqa: PLC0415
 
-    declaration = tasks_declaration(client_cls, target)
+    declaration = extensions_declaration(client_cls, target)
     if declaration.extensions:
         kwargs["extensions"] = list(declaration.extensions)
 

@@ -76,6 +76,15 @@ class _VariantRunLedger:
     # records it here so a TOTAL failure (every try raised) can carry the real root cause
     # into the typed turn-ladder error regardless of N (#953 total-failure normalization).
     errors: list[tuple[int, str]] = field(default_factory=list)
+    # #1282 F7: the FIRST typed MCP protocol refusal any try raised, if any.
+    # ``dspy.BestOfN``/``Refine`` cannot distinguish a deterministic refusal
+    # (retrying can never succeed, D1's own contract) from an ordinary
+    # transient failure -- every exception type looks the same to their
+    # ``except Exception`` retry loop. Recording it here lets EVERY
+    # subsequent try short-circuit (raise it immediately, never re-run the
+    # inner module) and lets the outer wrapper re-raise it typed instead of
+    # wrapping it in the generic :class:`VariantTotalFailure` envelope.
+    terminal_refusal: Exception | None = None
 
 
 _LEDGER: contextvars.ContextVar[_VariantRunLedger | None] = contextvars.ContextVar(
@@ -170,6 +179,16 @@ class _RunKeyedModule(dspy.Module):
 
     def forward(self, **kwargs: Any) -> Any:
         ledger = _LEDGER.get()
+        if ledger is not None and ledger.terminal_refusal is not None:
+            # #1282 F7: a PRIOR try in this SAME variant call already hit a
+            # deterministic MCP protocol refusal -- re-running the inner
+            # module would only reproduce the identical, non-retryable
+            # failure at the cost of another real LM + tool round. Every
+            # try after the first one now short-circuits: the engine's own
+            # ``for idx in range(N)`` loop still runs to completion (its
+            # selection loop stays untouched, matching the class docstring),
+            # but each remaining iteration is a free, instant re-raise.
+            raise ledger.terminal_refusal
         run_index = ledger.next_index if ledger is not None else 0
         if ledger is not None:
             ledger.current_index = run_index
@@ -190,6 +209,10 @@ class _RunKeyedModule(dspy.Module):
             # engine's own selection loop is unchanged.
             if ledger is not None:
                 ledger.errors.append((run_index, f"{type(exc).__name__}: {exc}"))
+                from clio_agent.errors import MCPProtocolError  # noqa: PLC0415
+
+                if ledger.terminal_refusal is None and isinstance(exc, MCPProtocolError):
+                    ledger.terminal_refusal = exc
             raise
         finally:
             _ctx.reset(token)
@@ -215,6 +238,15 @@ class _RunScopedVariantMixin:
             try:
                 pred = super().forward(**kwargs)  # type: ignore[misc]
             except Exception as engine_exc:  # noqa: BLE001
+                if ledger.terminal_refusal is not None:
+                    # #1282 F7: a deterministic MCP protocol refusal must reach
+                    # the caller AS ITSELF -- never wrapped in the generic
+                    # VariantTotalFailure envelope, which would (a) lose the
+                    # typed reason/protocol_data D1/D2 carry and (b) stop the
+                    # SAME refusal from being recognized/escalated one layer up
+                    # by reactv2.py's own chokepoint if a variant is ever
+                    # nested inside another tool-calling loop.
+                    raise ledger.terminal_refusal from engine_exc
                 # dspy raises the last try's exception on TOTAL failure only for n>=3
                 # (fail_count off-by-one). Normalize to the typed total-failure so the
                 # outcome is identical for every N and the root cause reaches the trace.
@@ -224,6 +256,9 @@ class _RunScopedVariantMixin:
         finally:
             _LEDGER.reset(token)
         if pred is None:
+            if ledger.terminal_refusal is not None:
+                # #1282 F7: same rule on the n<=2 (best_pred=None) path.
+                raise ledger.terminal_refusal
             # n<=2 total failure: dspy returns best_pred=None (every try raised, none
             # selected). ALWAYS a typed turn-ladder failure — never swallowed to None.
             raise _total_variant_failure(self._clio_agent_id, self._clio_variant, ledger, None)

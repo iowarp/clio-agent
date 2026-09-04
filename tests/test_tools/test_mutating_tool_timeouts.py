@@ -40,7 +40,10 @@ class _Client:
     async def list_tools(self) -> list[Any]:
         return []
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any], *, progress_handler: Any = None
+    ) -> Any:
+        del progress_handler
         self.calls += 1
         if self.delay_seconds:
             await asyncio.sleep(self.delay_seconds)

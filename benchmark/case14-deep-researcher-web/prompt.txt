@@ -1,0 +1,10 @@
+I keep running into the HDF5 file format when people talk about storing large
+scientific datasets, and I want a proper primer before our team commits to
+using it. Please research HDF5 (Hierarchical Data Format, version 5): what
+problem it was built to solve, who develops and maintains it today, how data
+is organized inside an HDF5 file (its core model of groups, datasets, and
+attributes), and which major scientific or engineering fields rely on it for
+large-scale data storage. Pull in the maintaining organization's own
+documentation plus at least one independent source that discusses real-world
+adoption, and give me a written report with sources so I can share it with my
+team.

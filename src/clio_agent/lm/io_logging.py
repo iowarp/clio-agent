@@ -94,6 +94,11 @@ _TRANSIENT_PROVIDER_MARKERS = (
     # call re-issues on a fresh pooled connection (#891). Keep in sync with
     # providers.claude_code_sessions.TRANSIENT_TRANSPORT_MARKER.
     "claude agent sdk transport failed mid-stream",
+    # claude_code SDK: the pooled entry was torn down (#1305 deterministic
+    # per-subagent release, F6b) while this call was still holding it from an
+    # earlier entry_for() -- a fresh entry_for() on retry reconnects cleanly.
+    # Keep in sync with providers.claude_code_lifecycle.DEAD_ENTRY_MARKER.
+    "claude agent sdk entry released during a queued connect",
 )
 
 

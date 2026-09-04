@@ -62,7 +62,7 @@ class FakeClient:
             )
         ]
 
-    async def call_tool(self, name: str, args: dict[str, Any]):
+    async def call_tool(self, name: str, args: dict[str, Any], *, progress_handler: Any = None):
         import asyncio
 
         self.started_call = True
@@ -103,7 +103,7 @@ class FailingClient(FakeClient):
             ),
         ]
 
-    async def call_tool(self, name: str, args: dict[str, Any]):
+    async def call_tool(self, name: str, args: dict[str, Any], *, progress_handler: Any = None):
         self.calls += 1
         if self.errors:
             error = self.errors.pop(0)
@@ -133,7 +133,7 @@ class PlotLikeClient(FakeClient):
 class StructuredErrorClient(FakeClient):
     """Fake client that returns a structured tool error payload."""
 
-    async def call_tool(self, name: str, args: dict[str, Any]):
+    async def call_tool(self, name: str, args: dict[str, Any], *, progress_handler: Any = None):
         self.started_call = True
         return SimpleNamespace(
             data={
@@ -151,7 +151,7 @@ class StructuredErrorClient(FakeClient):
 class OversizedStructuredErrorClient(FakeClient):
     """Return an error whose raw truth falls outside the bounded model preview."""
 
-    async def call_tool(self, name: str, args: dict[str, Any]):
+    async def call_tool(self, name: str, args: dict[str, Any], *, progress_handler: Any = None):
         self.started_call = True
         return SimpleNamespace(
             data={
@@ -307,7 +307,9 @@ def test_root_data_result_is_publicly_projected_without_private_metadata() -> No
                 )
             ]
 
-        async def call_tool(self, name: str, arguments: dict[str, Any]):
+        async def call_tool(
+            self, name: str, arguments: dict[str, Any], *, progress_handler: Any = None
+        ):
             return private_result
 
     telemetry: list[Any] = []

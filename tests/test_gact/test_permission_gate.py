@@ -257,7 +257,9 @@ def test_declared_mcp_mutation_blocks_before_transport_until_ui_resolution(
         async def list_tools(self) -> list[Any]:
             return []
 
-        async def call_tool(self, name: str, args: dict[str, Any]) -> Any:
+        async def call_tool(
+            self, name: str, args: dict[str, Any], *, progress_handler: Any = None
+        ) -> Any:
             DeclaredClient.called = True
             return SimpleNamespace(data={"name": name, "args": args})
 
@@ -373,7 +375,9 @@ def test_dynamic_external_mcp_read_only_hint_invokes_client(
         async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
             return None
 
-        async def call_tool(self, name: str, args: dict[str, Any]) -> Any:
+        async def call_tool(
+            self, name: str, args: dict[str, Any], *, progress_handler: Any = None
+        ) -> Any:
             FakeClient.called = True
             return SimpleNamespace(
                 content=[SimpleNamespace(type="text", text=f"{name}:ok")],
@@ -1049,7 +1053,9 @@ def test_external_mcp_call_policy_allow_executes_without_prompt(
         async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
             return None
 
-        async def call_tool(self, name: str, args: dict[str, Any]) -> Any:
+        async def call_tool(
+            self, name: str, args: dict[str, Any], *, progress_handler: Any = None
+        ) -> Any:
             FakeClient.called = True
             return SimpleNamespace(
                 content=[SimpleNamespace(type="text", text=f"{name}:{args['cmd']}")],
@@ -1118,7 +1124,9 @@ def test_external_mcp_call_uses_explicit_session_for_policy_and_telemetry(
         async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
             return None
 
-        async def call_tool(self, name: str, args: dict[str, Any]) -> Any:
+        async def call_tool(
+            self, name: str, args: dict[str, Any], *, progress_handler: Any = None
+        ) -> Any:
             return SimpleNamespace(
                 content=[SimpleNamespace(type="text", text=f"{name}:{args['cmd']}")],
                 isError=False,

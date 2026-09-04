@@ -21,16 +21,20 @@ from clio_agent.gact.app import build_app
 from clio_agent.gact.events import EventBus
 from clio_agent.gact.mcp_task_events import (
     MCP_TASK_CONSOLE_EVENT,
+    MCP_TASK_WAIT_EVENT,
     publish_mcp_task_console_delta,
     publish_mcp_task_event,
+    publish_mcp_task_wait,
 )
 from clio_agent.tools.mcp_task_records import (
     TaskKey,
     TaskRecord,
     set_task_change_listener,
     set_task_console_listener,
+    set_task_wait_listener,
     task_change_listener,
     task_console_listener,
+    task_wait_listener,
 )
 
 
@@ -63,6 +67,7 @@ def _isolate_process_hooks() -> Any:
     yield
     set_task_change_listener(None)
     set_task_console_listener(None)
+    set_task_wait_listener(None)
 
 
 # --------------------------------------------------------------------------- #
@@ -191,19 +196,132 @@ def test_publish_mcp_task_console_delta_for_an_unattributed_key_publishes_nothin
 
 
 # --------------------------------------------------------------------------- #
+# publish_mcp_task_wait (#1282, C1-S2 D3): the generic wait-surfacing event   #
+# every task-capable backend now gets, not just relay's console tail.         #
+# --------------------------------------------------------------------------- #
+
+
+async def test_publish_mcp_task_wait_carries_what_it_waits_on() -> None:
+    """The six #1274 wait constraints' rule 5, on the wire: attempt N, the
+    observed status, and the server-advertised next-poll interval.
+
+    #1282 F1: the event is TRANSIENT (connection-timeline plumbing, like
+    ``server.heartbeat``), so it never reaches the replay-history query
+    (``session_events_since``) -- asserted here via a LIVE subscriber
+    instead, the same pattern ``test_eventbus_replay_watchdog.py`` uses for
+    heartbeats.
+    """
+
+    import asyncio
+
+    app = _FakeApp()
+    received: list[Any] = []
+
+    async def reader() -> None:
+        async for ev in app.state.bus.subscribe("sess-1"):
+            received.append(ev)
+            break
+
+    task = asyncio.create_task(reader())
+    await asyncio.sleep(0)
+    publish_mcp_task_wait(
+        app,  # type: ignore[arg-type]
+        _key(),
+        status="working",
+        attempt=3,
+        next_poll_ms=250,
+    )
+    await asyncio.wait_for(task, timeout=2.0)
+
+    event = received[0]
+    assert event.type == MCP_TASK_WAIT_EVENT
+    assert event.transient is True
+    assert event.payload == {
+        "key": _key().to_wire(),
+        "status": "working",
+        "attempt": 3,
+        "next_poll_ms": 250,
+    }
+    # And, precisely because it is transient, it must NOT be in the replay log.
+    assert app.state.bus.session_events_since("sess-1") == []
+
+
+def test_publish_mcp_task_wait_for_an_unattributed_key_publishes_nothing() -> None:
+    app = _FakeApp()
+
+    publish_mcp_task_wait(
+        app,  # type: ignore[arg-type]
+        _key(session_id=None),
+        status="working",
+        attempt=1,
+        next_poll_ms=None,
+    )
+
+    assert app.state.bus.session_events_since("") == []
+
+    assert app.state.bus.session_events_since("") == []
+
+
+# --------------------------------------------------------------------------- #
 # install_mcp_task_event_publisher: wires BOTH hooks, end to end through a    #
 # real build_app -- the actual production boot path (gact/app.py calls this   #
 # exact function).                                                            #
 # --------------------------------------------------------------------------- #
 
 
-def test_install_wires_both_the_change_listener_and_the_console_listener(
+def test_install_wires_the_change_console_and_wait_listeners(
     tmp_path: Path,
 ) -> None:
     app = _build(tmp_path)
     with TestClient(app):
         assert task_change_listener() is not None
         assert task_console_listener() is not None
+        assert task_wait_listener() is not None
+
+
+async def test_wait_listener_installed_by_a_real_boot_publishes_a_lean_event(
+    tmp_path: Path,
+) -> None:
+    """Drives the installed hook exactly the way
+    ``tools/mcp_wait_ladder.py``'s default observer calls it (positional: key,
+    status, attempt, next_poll_ms) against a REAL app/bus from ``build_app``.
+
+    #1282 F1: the event is TRANSIENT, so a live subscriber (not
+    ``session_events_since``'s replay-history query) is what proves delivery
+    -- mirrors ``test_publish_mcp_task_wait_carries_what_it_waits_on`` above.
+    """
+
+    import asyncio
+
+    app = _build(tmp_path)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        key = TaskKey(server_id="v2ex", session_id=sid, task_id="task-echo-1")
+
+        listener = task_wait_listener()
+        assert listener is not None
+
+        received: list[Any] = []
+
+        async def reader() -> None:
+            async for ev in app.state.bus.subscribe(sid):
+                if ev.type == MCP_TASK_WAIT_EVENT:
+                    received.append(ev)
+                    break
+
+        task = asyncio.create_task(reader())
+        await asyncio.sleep(0)
+        listener(key, "working", 2, 500)
+        await asyncio.wait_for(task, timeout=2.0)
+
+        # And, precisely because it is transient, it must NOT be in the replay log.
+        replayed = app.state.bus.session_events_since(sid, cursor=1)
+        assert not any(e.type == MCP_TASK_WAIT_EVENT for e in replayed)
+
+    assert len(received) == 1
+    assert received[0].payload["status"] == "working"
+    assert received[0].payload["attempt"] == 2
+    assert received[0].payload["next_poll_ms"] == 500
 
 
 def test_console_listener_installed_by_a_real_boot_publishes_a_lean_event(
