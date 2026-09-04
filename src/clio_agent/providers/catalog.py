@@ -103,6 +103,10 @@ class Provider:
     #: OAuth flows.
     api_key_env: str | None = None
     supports_live_catalog: bool = True
+    # Whether this provider transport can carry multimodal image parts. This is
+    # not a promise that every selectable model is vision-capable: where the
+    # endpoint reports per-model modalities that evidence still wins, otherwise
+    # the upstream server/model returns the authoritative unsupported-input error.
     supports_vision: bool = False
 
     # ----- capability flags -------------------------------------------
@@ -255,6 +259,7 @@ PROVIDERS: tuple[Provider, ...] = (
         api_key_default="llama-cpp",
         requires_api_key=False,
         auth_method="none",
+        supports_vision=True,
         supports_runtime_sizing=True,
         managed_service_id="llama_cpp",
         model_catalog=(
@@ -334,6 +339,7 @@ PROVIDERS: tuple[Provider, ...] = (
         suggested_model="",
         api_key_env="AZURE_API_KEY",
         supports_live_catalog=False,
+        supports_vision=True,
         configuration_fields=(
             ProviderConfigurationField(
                 "api_version",
@@ -397,6 +403,7 @@ PROVIDERS: tuple[Provider, ...] = (
         requires_api_key=False,
         auth_method="none",
         supports_live_catalog=False,
+        supports_vision=True,
         configuration_fields=(
             ProviderConfigurationField(
                 "aws_region_name", "AWS region", "Region containing the model.", "us-east-1", True
@@ -423,6 +430,7 @@ PROVIDERS: tuple[Provider, ...] = (
         suggested_model="meta/llama-3.1-70b-instruct",
         api_key_env="NVIDIA_NIM_API_KEY",
         supports_live_catalog=False,
+        supports_vision=True,
         model_catalog=(
             ModelEntry(
                 "meta/llama-3.1-70b-instruct", "Llama 3.1 70B Instruct", "NVIDIA NIM model."
@@ -442,6 +450,7 @@ PROVIDERS: tuple[Provider, ...] = (
         api_base="https://openrouter.ai/api/v1",
         suggested_model="openai/gpt-oss-120b:free",
         api_key_env="OPENROUTER_API_KEY",
+        supports_vision=True,
         model_catalog=(
             ModelEntry(
                 "openai/gpt-oss-120b:free",
@@ -587,6 +596,7 @@ PROVIDERS: tuple[Provider, ...] = (
         max_tokens_default=4096,
         strip_openai_prefix=False,
         is_kind_default=True,
+        supports_vision=True,
         model_catalog=_ARGONNE_MODELS,
     ),
     Provider(
@@ -608,6 +618,7 @@ PROVIDERS: tuple[Provider, ...] = (
         suggested_model="gpt-oss-120b",
         requires_api_key=False,
         auth_method="oauth",
+        supports_vision=True,
         max_tokens_default=4096,
         strip_openai_prefix=False,
         model_catalog=_ARGONNE_MODELS,
@@ -628,6 +639,7 @@ PROVIDERS: tuple[Provider, ...] = (
         suggested_model="meta-llama/Llama-3.1-8B-Instruct",
         requires_api_key=False,
         auth_method="none",
+        supports_vision=True,
         supports_runtime_sizing=True,
         managed_service_id="vllm",
         model_catalog=_ARGONNE_MODELS,

@@ -169,5 +169,9 @@ def test_extract_delta_handles_objects_dicts_and_junk():
 
     assert extract_delta(_Chunk([_C(_D(content="hi"))])) == ("hi", "")
     assert extract_delta({"choices": [{"delta": {"reasoning_content": "rc"}}]}) == ("", "rc")
+    assert extract_delta({"choices": [{"delta": {"reasoning": "vllm"}}]}) == (
+        "",
+        "vllm",
+    )
     assert extract_delta(object()) == ("", "")
     assert extract_delta({"choices": []}) == ("", "")

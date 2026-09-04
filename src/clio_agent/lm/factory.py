@@ -109,10 +109,17 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         **connection,
         **extras,
     )
-    # Per-model gate for the content<-reasoning_content extraction in
-    # IOLoggingLM._process_completion (reasoning models only; today qwopus/qwen).
+    # Keep the catalog identity on the LM so the generic stream tap can label
+    # provider-native reasoning without inferring identity from a LiteLLM prefix.
+    # Codex and Claude Code own their established SDK stream semantics and are
+    # explicitly excluded from the generic provider bridge.
+    provider_id = config.provider_id or str(config.provider)
     try:
-        lm._clio_reasoning_fallback = _reasoning_model_capability(config)  # type: ignore[attr-defined]
+        lm._clio_provider_id = provider_id  # type: ignore[attr-defined]
+        lm._clio_reasoning_fallback = provider_id not in {  # type: ignore[attr-defined]
+            "codex",
+            "claude_code",
+        }
     except Exception:  # noqa: BLE001,S110 - never let tagging break LM construction
         pass
     return lm

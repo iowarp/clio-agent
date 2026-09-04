@@ -9,8 +9,9 @@ wire:
   (``session_mode``/``session_edit_mode``/``images``/``cancel_requested``) while
   falling back to legacy signatures for test fakes and older builds;
 * the DSPy ``streamify`` pump (:func:`_try_streamed_forward`) that emits every
-  text chunk through ``emit_chunk`` as it arrives, with reasoning-channel
-  heartbeats and a structured fallback ledger
+  text chunk through ``emit_chunk`` as it arrives, with provider reasoning
+  bridged to a collapsed thinking part, reasoning-channel heartbeats, and a
+  structured fallback ledger
   (:class:`_StreamingOutputError`, :func:`_stream_fallback_payload`,
   :func:`_stream_fallback_reasons`, :func:`_record_stream_fallback`,
   :func:`_pop_stream_fallback`);
@@ -565,6 +566,16 @@ async def _try_streamed_forward(
     emitted_any = False
     previous_stream_field = ""
     provider_event_index = 0
+    provider_config = getattr(agent, "_provider_config", None)
+    provider_id = str(
+        getattr(provider_config, "provider_id", "")
+        or getattr(provider_config, "provider", "")
+        or "provider"
+    )
+    bridge_provider_thinking = _provider_runtime_kind(provider_id) not in {
+        "codex",
+        "claude_code",
+    }
     # Seed the heartbeat clock so the first reasoning chunk publishes immediately.
     last_reasoning_heartbeat = time.monotonic() - _REASONING_HEARTBEAT_S
 
@@ -695,6 +706,16 @@ async def _try_streamed_forward(
             # "thinking", and -- crucially -- advances bus.last_publish_monotonic.
             reasoning_chunk = _chunk_reasoning_text(piece)
             if reasoning_chunk:
+                if bridge_provider_thinking:
+                    # DSPy listeners inspect delta.content only. Raw chunks from
+                    # unlistened/async predictors still reach this pump, so bridge
+                    # their provider-native reasoning through the same collapsed
+                    # thinking lane used by the synchronous IOLoggingLM tap.
+                    from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
+                        note_lm_provider_thinking_delta,
+                    )
+
+                    note_lm_provider_thinking_delta(reasoning_chunk, provider=provider_id)
                 now = time.monotonic()
                 if now - last_reasoning_heartbeat >= _REASONING_HEARTBEAT_S:
                     last_reasoning_heartbeat = now
