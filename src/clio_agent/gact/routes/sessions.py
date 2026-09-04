@@ -1432,6 +1432,5 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         thread — the status event marks this best-effort. Returns 204 whether or not a turn
         was running (the TUI fires this speculatively on Esc/Ctrl+C).
         """
-
         cancel_session_state(app, deps, sid)
         return Response(status_code=204)
