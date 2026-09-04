@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import tempfile
+import os
 from pathlib import Path
 
 import pytest
@@ -35,7 +35,8 @@ def test_live_session_private_cte_tier_does_not_preallocate_gigabytes(
     if isolation is None:
         return
 
-    assert isolation.root.parent.resolve() == Path(tempfile.gettempdir()).resolve()
+    runtime = Path(os.environ["CLIO_TEST_RUNTIME_DIR"]).resolve()
+    assert isolation.root.resolve().is_relative_to(runtime / "cte")
     assert isolation.file_tier_path.is_file()
     assert isolation.file_tier_path.stat().st_size <= 512 * 1024**2
 
