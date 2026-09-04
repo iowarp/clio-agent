@@ -2260,10 +2260,8 @@ def build_app(
     # resolution-derived-policy + validation/persistence data layer lives in
     # runtime/permission_policies.py (shared with the build_app startup load).
     register_permission_and_interaction_routes(app, deps)
-    # Crash recovery is APP ASSEMBLY, not route registration: first restore the
-    # bounded authoritative question history, then recover legacy/native pending
-    # ask snapshots that predate that mirror. Both mutate live state, so they belong
-    # here beside the other recovery steps rather than inside a route factory.
+    # Restore durable question history before legacy/native pending snapshots;
+    # Recovery mutates live state, so it belongs in app assembly.
     restore_user_questions(app)
     restore_pending_ask_user_questions(app)
 
