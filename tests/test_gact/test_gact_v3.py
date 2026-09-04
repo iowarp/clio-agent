@@ -333,6 +333,32 @@ def test_v3_text_defaults_to_the_server_owned_answer_channel() -> None:
     assert block["channel"] == "answer"
 
 
+def test_v3_projects_mcp_app_as_a_typed_opaque_block() -> None:
+    block = part_to_v3_block(
+        {
+            "id": "part_app",
+            "type": "mcp_app",
+            "app_instance_id": "app_123",
+            "resource_uri": "ui://vigil/viewer",
+            "source_server": "vigil",
+            "data_ref": "opaque-capability",
+            "mime_type": "text/html;profile=mcp-app",
+            "height": 420,
+        }
+    )
+
+    assert block == {
+        "id": "part_app",
+        "type": "mcp_app",
+        "app_instance_id": "app_123",
+        "resource_uri": "ui://vigil/viewer",
+        "source_server": "vigil",
+        "data_ref": "opaque-capability",
+        "mime_type": "text/html;profile=mcp-app",
+        "height": 420,
+    }
+
+
 def test_v3_message_deduplicates_repeated_artifact_references() -> None:
     projected = message_to_v3(
         Message(

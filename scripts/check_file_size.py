@@ -574,7 +574,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # CATALOG + recording/query logic itself lives in the NEW owner module
     # gact/mcp_app_observer_reasons.py (no-accretion) -- only the minimal
     # per-gate call + a re-export land here.
-    "src/clio_agent/gact/mcp_apps.py": 802,
     # #895: +6 for threading the provider-generic thinking_level onto the LM bind
     # (LMProviderConfig arg + app.state.lm_config + the GET's thinking_level /
     # thinking_effective fields). The mapping logic itself lives in the owner

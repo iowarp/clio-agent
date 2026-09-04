@@ -204,6 +204,22 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "actions": _action_cards(part),
             **common,
         }
+    if part_type == "mcp_app":
+        return {
+            "id": part_id,
+            "type": "mcp_app",
+            "app_instance_id": str(part.get("app_instance_id") or part_id),
+            "resource_uri": str(part.get("resource_uri") or ""),
+            "source_server": str(part.get("source_server") or ""),
+            "data_ref": str(part.get("data_ref") or ""),
+            "mime_type": str(part.get("mime_type") or "text/html;profile=mcp-app"),
+            **(
+                {"height": int(part["height"])}
+                if isinstance(part.get("height"), int) and int(part["height"]) > 0
+                else {}
+            ),
+            **common,
+        }
     if part_type == "a2ui":
         return {
             "id": part_id,

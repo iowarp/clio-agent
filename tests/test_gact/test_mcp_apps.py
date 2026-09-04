@@ -17,7 +17,9 @@ the auto-firing path a meta-less tool definition).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -27,6 +29,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import mcp_apps as mcp_apps_module
+from clio_agent.gact import turn as turn_module
 from clio_agent.gact.app import build_app
 from clio_agent.gact.mcp_apps import (
     MCP_APP_MIME_TYPE,
@@ -377,6 +380,28 @@ def test_app_tool_resolution_requires_exact_origin_namespace() -> None:
         _resolve_app_tool(_Executor(), record, "vigil_update")
 
 
+def test_registry_allows_exactly_one_cleanup_claim_and_restores_a_failure() -> None:
+    registry = MCPAppRegistry()
+    record = registry.register(
+        session_id="session",
+        source_namespace="vigil",
+        tool_name="vigil_open",
+        resource_uri="ui://vigil/view",
+        tool_input={},
+        tool_result=_open_result(),
+    )
+
+    claimed = registry.claim_close("session", record.app_instance_id, record.data_ref)
+    assert claimed is record
+    with pytest.raises(KeyError):
+        registry.claim_close("session", record.app_instance_id, record.data_ref)
+
+    registry.restore_close(record)
+    assert registry.claim_close("session", record.app_instance_id, record.data_ref) is record
+    registry.finish_close(record.app_instance_id)
+    assert registry.remove(record.app_instance_id) is None
+
+
 def test_capability_routes_stay_bound_and_session_delete_cleans_up(tmp_path: Path) -> None:
     """All App operations stay on one source server and owned cleanup is explicit."""
 
@@ -463,3 +488,131 @@ def test_capability_routes_stay_bound_and_session_delete_cleans_up(tmp_path: Pat
             {"session_id": "viewer-1"},
         )
         assert registry.records_for_session(sid) == []
+
+
+class _SlowAgent:
+    """Keep one real turn active long enough to exercise the canonical steer queue."""
+
+    def forward(self, question: str, session_id: str) -> Any:
+        """Return after the app message has been accepted as a pending steer."""
+
+        del question, session_id
+        time.sleep(0.8)
+        return SimpleNamespace(answer="done", selected_expert="", routing_rationale="")
+
+
+def test_app_message_records_context_provenance_without_exposing_private_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model_prompts: list[str] = []
+
+    async def capture_turn(
+        app: Any, sid: str, user_text: str, user_message: Any, turn_agent_id: str
+    ) -> None:
+        del app, sid, user_message, turn_agent_id
+        model_prompts.append(user_text)
+
+    monkeypatch.setattr(turn_module, "_run_turn_in_background", capture_turn)
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+
+    with TestClient(app, base_url="http://127.0.0.1:8100") as client:
+        sid = client.post("/v1/sessions", json={"title": "MCP App context"}).json()["id"]
+        app_result = _open_result()
+        del app_result["_meta"]["io.iowarp.vigil"]["cleanup"]
+        record = app.state.mcp_app_registry.register(
+            session_id=sid,
+            source_namespace="vigil",
+            tool_name="vigil_open",
+            resource_uri="ui://vigil/view",
+            tool_input={},
+            tool_result=app_result,
+        )
+        capability = {"data_ref": record.data_ref}
+        prefix = f"/v1/sessions/{sid}/mcp-apps/{record.app_instance_id}"
+        private_context = {"content": [{"type": "text", "text": "private-model-context"}]}
+
+        assert (
+            client.put(
+                f"{prefix}/model-context", params=capability, json=private_context
+            ).status_code
+            == 200
+        )
+        sent = client.post(
+            f"{prefix}/messages",
+            params=capability,
+            json={
+                "role": "user",
+                "request_id": "ui-message-context",
+                "content": [{"type": "text", "text": "Apply it"}],
+            },
+        )
+        assert sent.status_code == 200
+        deadline = time.monotonic() + 2
+        while not model_prompts and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert "private-model-context" in model_prompts[0]
+
+        messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        serialized = json.dumps(messages, sort_keys=True)
+        assert "Apply it" in serialized
+        assert "private-model-context" not in serialized
+        assert record.data_ref not in serialized
+        user_message = next(message for message in messages if message["role"] == "user")
+        encoded_context = json.dumps(private_context, sort_keys=True, default=str).encode("utf-8")
+        assert user_message["metadata"]["mcp_app"]["model_context"] == {
+            "present": True,
+            "sha256": hashlib.sha256(encoded_context).hexdigest(),
+            "bytes": len(encoded_context),
+        }
+
+
+def test_busy_app_message_uses_existing_pending_steer_queue_without_private_data(
+    tmp_path: Path,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=_SlowAgent())
+
+    with TestClient(app, base_url="http://127.0.0.1:8100") as client:
+        sid = client.post("/v1/sessions", json={"title": "MCP App queue"}).json()["id"]
+        app_result = _open_result()
+        del app_result["_meta"]["io.iowarp.vigil"]["cleanup"]
+        record = app.state.mcp_app_registry.register(
+            session_id=sid,
+            source_namespace="vigil",
+            tool_name="vigil_open",
+            resource_uri="ui://vigil/view",
+            tool_input={},
+            tool_result=app_result,
+        )
+        capability = {"data_ref": record.data_ref}
+        prefix = f"/v1/sessions/{sid}/mcp-apps/{record.app_instance_id}"
+
+        first = client.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "keep working"}]},
+        )
+        assert first.status_code == 200
+        deadline = time.monotonic() + 2
+        while not app.state.turn_runner.busy(sid) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert app.state.turn_runner.busy(sid)
+
+        queued = client.post(
+            f"{prefix}/messages",
+            params=capability,
+            json={
+                "role": "user",
+                "request_id": "ui-message-1",
+                "content": [{"type": "text", "text": "Apply the selected camera angle"}],
+            },
+        )
+        assert queued.status_code == 202, queued.text
+        assert queued.json()["state"] == "pending_steer"
+        assert queued.json()["delivery"] == "steer"
+
+        pending = client.get(f"/v1/sessions/{sid}/pending-steers").json()["pending_steers"]
+        assert [row["message_id"] for row in pending] == [queued.json()["message_id"]]
+        messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        serialized = json.dumps(messages, sort_keys=True)
+        assert "Apply the selected camera angle" in serialized
+        assert record.data_ref not in serialized
+        assert "never-in-transcript" not in serialized

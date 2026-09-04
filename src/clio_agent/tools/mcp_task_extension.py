@@ -14,6 +14,7 @@ so :func:`clio_agent.tools.mcp_runtime.make_mcp_client` imports
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -41,6 +42,7 @@ from clio_agent.tools.mcp_task_records import (
     task_record_store,
 )
 from clio_agent.tools.mcp_tasks import (
+    cancel_task,
     drive_task_to_terminal,
     send_task_cancel,
     session_elicitation_callback,
@@ -234,14 +236,33 @@ class ClioTasksClientExtension(TasksClientExtension):
         # passes its hook by hand; this was the missing half. Generic on purpose:
         # this module knows nothing about relay or any other backend, only that
         # tools/task_observers.py may have one registered for this server_id.
-        final = await drive_task_to_terminal(
-            ctx.session,
-            key,
-            session_elicitation_callback(ctx.session),
-            timeout_seconds=ctx.read_timeout_seconds,
-            store=store,
-            on_poll=resolve_task_observer(key),
-        )
+        try:
+            final = await drive_task_to_terminal(
+                ctx.session,
+                key,
+                session_elicitation_callback(ctx.session),
+                timeout_seconds=ctx.read_timeout_seconds,
+                store=store,
+                on_poll=resolve_task_observer(key),
+            )
+        except asyncio.CancelledError:
+            # Cancelling the foreground turn must also cancel the durable MCP
+            # task it created.  Otherwise the turn settles as interrupted while
+            # the retained task row remains ``working`` forever, leaving every
+            # client to report phantom background activity.  The claim context
+            # still owns the live ClientSession here, so this is the last safe
+            # point to send the protocol-level tasks/cancel request.
+            try:
+                await asyncio.shield(cancel_task(ctx.session, key, store=store))
+            except Exception as exc:  # noqa: BLE001 - cancellation remains primary
+                logger.warning(
+                    "best-effort tasks/cancel after foreground cancellation failed "
+                    "task=%s server=%s: %s",
+                    key.task_id,
+                    key.server_id,
+                    exc,
+                )
+            raise
         if final.status == "completed":
             return _inlined_call_tool_result(final.result)
         message = (
@@ -271,7 +292,7 @@ class ClioTasksClientExtension(TasksClientExtension):
             key,
             create_result,
             identity=self._clio_identity,
-            tool_name=self._clio_tool_name,
+            tool_name=str(getattr(ctx, "tool_name", "") or self._clio_tool_name),
             store=store,
         )
 

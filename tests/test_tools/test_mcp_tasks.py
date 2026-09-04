@@ -173,9 +173,15 @@ class ScriptedSession:
 class _Ctx:
     """Minimal ``ClaimContext`` stand-in."""
 
-    def __init__(self, session: Any, read_timeout_seconds: float | None = None) -> None:
+    def __init__(
+        self,
+        session: Any,
+        read_timeout_seconds: float | None = None,
+        tool_name: str = "",
+    ) -> None:
         self.session = session
         self.read_timeout_seconds = read_timeout_seconds
+        self.tool_name = tool_name
 
 
 def _fresh_store() -> InMemoryTaskRecordStore:
@@ -356,7 +362,9 @@ async def test_create_task_result_is_driven_to_the_real_result() -> None:
             ]
         )
         extension = ClioTasksClientExtension(BackendIdentity(SERVER_A, {"transport": "test"}))
-        result = await extension._resolve_task(_create_result("task-9"), _Ctx(session))
+        result = await extension._resolve_task(
+            _create_result("task-9"), _Ctx(session, tool_name="v2ex_task_echo")
+        )
 
         assert result.content[0].text == "42"
         assert result.is_error in (False, None)
@@ -367,7 +375,63 @@ async def test_create_task_result_is_driven_to_the_real_result() -> None:
         records = store.list()
         assert len(records) == 1
         assert records[0].task_id == "task-9"
+        assert records[0].tool == "v2ex_task_echo"
         assert records[0].status == "completed"
+    finally:
+        set_task_record_store(None)
+
+
+async def test_cancelling_claim_cancels_and_settles_its_durable_task() -> None:
+    """A stopped foreground turn cannot leave a phantom working MCP task."""
+
+    class BlockingSession(ScriptedSession):
+        """Hold the task poll open until the enclosing claim is cancelled."""
+
+        def __init__(self) -> None:
+            super().__init__([])
+            self.poll_started = asyncio.Event()
+
+        async def send_request(
+            self,
+            request: Any,
+            result_type: Any,
+            request_read_timeout_seconds: float | None = None,
+        ) -> Any:
+            """Block task polling, but acknowledge protocol task cancellation."""
+
+            self.requests.append(request)
+            if request.method == "tasks/get":
+                self.poll_started.set()
+                await asyncio.Event().wait()
+                raise AssertionError("cancelled task polling unexpectedly resumed")
+            if request.method == "tasks/cancel":
+                return result_type()
+            raise AssertionError(f"unexpected task RPC {request.method!r}")
+
+    store = _fresh_store()
+    session = BlockingSession()
+    set_task_record_store(store)
+    try:
+        extension = ClioTasksClientExtension(BackendIdentity(SERVER_A, {"transport": "test"}))
+        claim = asyncio.create_task(
+            extension._resolve_task(
+                _create_result("task-cancelled-with-turn"),
+                _Ctx(session, tool_name="v2ex_staller"),
+            )
+        )
+        await session.poll_started.wait()
+        claim.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await claim
+
+        assert session.methods() == ["tasks/get", "tasks/cancel"]
+        records = store.list()
+        assert len(records) == 1
+        record = records[0]
+        assert record.task_id == "task-cancelled-with-turn"
+        assert record.status == "cancelled"
+        assert record.effective_status == "cancelled"
     finally:
         set_task_record_store(None)
 

@@ -567,3 +567,155 @@ def test_child_a2ui_interaction_routes_to_owning_surface(tmp_path) -> None:
 def test_capabilities_advertise_normalized_interactions(tmp_path) -> None:
     with TestClient(build_app(sessions_path=tmp_path / "sessions.json")) as client:
         assert client.get("/v1/capabilities").json()["capabilities"]["x_clio_interactions"] is True
+
+
+def test_agent_routed_questions_project_without_human_actions_and_keep_resolved_history(
+    tmp_path,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="routing")
+    now = datetime.now(timezone.utc).isoformat()
+    fields = [
+        {
+            "name": "count",
+            "type": "integer",
+            "title": "Sample count",
+            "description": "How many samples should be retained?",
+            "required": True,
+            "default": 3,
+            "min_length": None,
+            "max_length": None,
+            "min_items": None,
+            "max_items": None,
+            "multi": False,
+        }
+    ]
+    app.state.user_questions = {
+        "agent_pending": UserQuestion(
+            id="agent_pending",
+            session_id=session.id,
+            prompt="Choose the sample count",
+            source="mcp_elicitation",
+            created_at=now,
+            updated_at=now,
+            answer_metadata={"count": 3},
+            metadata={
+                "elicitation": {
+                    "mode": "form",
+                    "fields": fields,
+                    "additional_properties": False,
+                    "invocation_id": "call_pending",
+                }
+            },
+            audience="agent",
+            agent_elicitation_routing="elicitation_routed_to_agent",
+        ),
+        "human_fallback": UserQuestion(
+            id="human_fallback",
+            session_id=session.id,
+            prompt="Choose the sample count",
+            source="mcp_elicitation",
+            created_at=now,
+            updated_at=now,
+            metadata={"elicitation": {"mode": "form", "fields": fields}},
+            audience="agent",
+            agent_elicitation_routing="agent_elicitation_fallback_to_human",
+            agent_elicitation_fallback_detail="agent_answer_timeout",
+        ),
+        "agent_answered": UserQuestion(
+            id="agent_answered",
+            session_id=session.id,
+            prompt="Choose the output format",
+            status="answered",
+            source="mcp_elicitation",
+            created_at=now,
+            updated_at=now,
+            audience="agent",
+            agent_elicitation_routing="elicitation_routed_to_agent",
+            answered_by="agent",
+        ),
+    }
+
+    with TestClient(app) as client:
+        response = client.get(
+            f"/v1/sessions/{session.id}/interactions",
+            params={"include_recent_resolved": True, "resolved_limit": 10},
+            headers=HEADERS,
+        )
+        assert response.status_code == 200
+        rows = {row["id"]: row for row in response.json()["interactions"]}
+
+        answering = rows["question:agent_pending"]
+        assert answering["requires_human_response"] is False
+        assert answering["actions"] == []
+        assert answering["routing_state"] == "elicitation_routed_to_agent"
+        assert answering["payload"]["fields"] == fields
+        assert answering["payload"]["answer_metadata"] == {"count": 3}
+
+        fallback = rows["question:human_fallback"]
+        assert fallback["requires_human_response"] is True
+        assert fallback["actions"] == ["answer", "cancel"]
+        assert fallback["fallback_detail"] == "agent_answer_timeout"
+
+        answered = rows["question:agent_answered"]
+        assert answered["status"] == "answered"
+        assert answered["answered_by"] == "agent"
+        assert answered["requires_human_response"] is False
+
+        rejected = client.post(
+            f"/v1/sessions/{session.id}/interactions/question:agent_pending/respond",
+            json={"action": "answer", "metadata": {"count": 4}},
+            headers=HEADERS,
+        )
+        assert rejected.status_code == 409
+        assert rejected.json()["error"]["error"] == "interaction_not_human_addressed"
+
+
+def test_structured_form_422_keeps_prefill_and_question_pending(tmp_path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="form")
+    now = datetime.now(timezone.utc).isoformat()
+    question = UserQuestion(
+        id="form_required",
+        session_id=session.id,
+        prompt="Configure the guarded input",
+        source="mcp_elicitation",
+        created_at=now,
+        updated_at=now,
+        answer_metadata={"count": 3},
+        metadata={
+            "elicitation": {
+                "mode": "form",
+                "fields": [
+                    {
+                        "name": "count",
+                        "type": "integer",
+                        "title": "Sample count",
+                        "required": True,
+                        "default": 3,
+                    },
+                    {
+                        "name": "label",
+                        "type": "string",
+                        "title": "Label",
+                        "required": True,
+                        "min_length": 2,
+                        "max_length": 8,
+                    },
+                ],
+                "additional_properties": False,
+            }
+        },
+    )
+    app.state.user_questions[question.id] = question
+
+    with TestClient(app) as client:
+        invalid = client.post(
+            f"/v1/sessions/{session.id}/interactions/question:{question.id}/respond",
+            json={"action": "answer", "metadata": {"count": 3, "label": "x"}},
+            headers=HEADERS,
+        )
+        assert invalid.status_code == 422
+        retained = app.state.user_questions[question.id]
+        assert retained.status == "pending"
+        assert retained.answer_metadata == {"count": 3}
