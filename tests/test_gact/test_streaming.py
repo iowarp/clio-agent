@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import importlib
 import json
 import threading
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -108,8 +111,42 @@ def app_client(tmp_path: Path):
         yield app, client, answer
 
 
-def _wait_for_turn_settlement(app: Any, sid: str, timeout: float = 5.0) -> None:
-    """Wait on the owned turn task without polling or changing turn semantics."""
+@pytest.fixture()
+def enter_client() -> Iterator[Callable[[Any], TestClient]]:
+    """Build TestClients that are ENTERED for the whole test, never transient.
+
+    A ``TestClient`` that is constructed but never entered gives EVERY request
+    its own anyio portal. ``POST /messages`` returns an ack while the turn is
+    still running, so the turn task — created on that transient portal's loop —
+    is cancelled when the portal tears down the instant the POST response
+    lands. The turn then settles truthfully as ``cancelled`` and every
+    assertion about its real outcome (``error``, streamed parts, the recorded
+    agent call) fails. Under coverage the turn is slow enough that the portal
+    wins essentially always, which is how this family went red on CI.
+
+    Entering the client keeps ONE app-lifetime portal (and runs the lifespan,
+    so ``turn_runner.bind_loop`` anchors turns to the app loop), letting a turn
+    that correctly outlives ``POST /messages`` survive to settle. Pair it with
+    :func:`_wait_for_turn_settlement` (or ``complete_turn``) before asserting.
+    """
+
+    with contextlib.ExitStack() as stack:
+
+        def _enter(app: Any) -> TestClient:
+            return stack.enter_context(TestClient(app))
+
+        yield _enter
+
+
+def _wait_for_turn_settlement(app: Any, sid: str, timeout: float = 30.0) -> None:
+    """Wait on the owned turn task without polling or changing turn semantics.
+
+    30s for the same reason ``conftest.complete_turn`` uses it: every turn now
+    builds and runs a real blueprint module, and a tighter bound was calibrated
+    against the deleted legacy fake dispatch -- it flakes on slow 2-core CI
+    runners under coverage. The wait returns the instant the task settles, so
+    the bound only ever fires on a genuine hang.
+    """
 
     task = app.state.in_flight_turns.get(sid)
     if task is None:
@@ -225,7 +262,7 @@ def test_stream_fallback_reasons_are_audited_and_reject_unknowns(tmp_path: Path)
 
 
 def test_sync_execution_default_fallback_is_structured(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
     async def returns_none_without_reason(*args: Any, **kwargs: Any) -> None:
         del args, kwargs
@@ -233,13 +270,14 @@ def test_sync_execution_default_fallback_is_structured(
 
     monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", returns_none_without_reason)
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("sync answer"))
-    client = TestClient(app)
+    client = enter_client(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
 
     client.post(
         f"/v1/sessions/{sid}/messages",
         json={"parts": [{"type": "text", "text": "stream me"}]},
     )
+    _wait_for_turn_settlement(app, sid)
 
     history = app.state.bus._history.get(sid, [])
     deltas = [e for e in history if e.type == "message.part.delta"]
@@ -769,7 +807,7 @@ async def test_stream_without_final_prediction_after_delta_raises(
 
 
 def test_mid_stream_failure_surfaces_error_without_sync_rerun(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
     async def fail_after_chunk(*args: Any, **kwargs: Any) -> Any:
         del args, kwargs
@@ -784,13 +822,14 @@ def test_mid_stream_failure_surfaces_error_without_sync_rerun(
     monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
     agent = _DspyAgent("sync fallback should not run")
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    client = TestClient(app)
+    client = enter_client(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
 
     client.post(
         f"/v1/sessions/{sid}/messages",
         json={"parts": [{"type": "text", "text": "stream me"}]},
     )
+    _wait_for_turn_settlement(app, sid)
 
     messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
     assistant = [m for m in messages if m["role"] == "assistant"][-1]
@@ -813,7 +852,7 @@ def test_mid_stream_failure_surfaces_error_without_sync_rerun(
 
 
 def test_pre_stream_failure_surfaces_error_without_sync_rerun(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
     async def fail_before_chunk(*args: Any, **kwargs: Any) -> Any:
         del args, kwargs
@@ -828,13 +867,14 @@ def test_pre_stream_failure_surfaces_error_without_sync_rerun(
     monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
     agent = _DspyAgent("sync fallback should not run")
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    client = TestClient(app)
+    client = enter_client(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
 
     client.post(
         f"/v1/sessions/{sid}/messages",
         json={"parts": [{"type": "text", "text": "stream me"}]},
     )
+    _wait_for_turn_settlement(app, sid)
 
     messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
     assistant = [m for m in messages if m["role"] == "assistant"][-1]
@@ -858,6 +898,55 @@ def test_pre_stream_failure_surfaces_error_without_sync_rerun(
     assert (
         "RuntimeError" in completed_messages[-1].payload["metadata"]["stream_fallback"]["message"]
     )
+
+
+def test_a_turn_that_outlives_the_post_still_settles_with_its_real_outcome(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
+) -> None:
+    """Lifecycle pin for the whole streamed-failure family above.
+
+    Those tests only ever settled correctly because the turn happened to finish
+    inside ``POST /messages``. This one makes the turn GENUINELY outlive the POST
+    (a real await before the stream fails) so the outcome no longer depends on
+    machine speed or coverage instrumentation: an entered client keeps one
+    app-lifetime portal, the turn survives, and it settles on its real
+    ``provider_error`` outcome.
+
+    SABOTAGE: build the client as a bare ``TestClient(app)`` instead of via
+    ``enter_client`` -> each request gets a transient portal whose teardown
+    cancels the still-running turn -> stop_reason comes back ``cancelled`` and
+    ``error_info`` is the cancellation envelope -> this goes red.
+    """
+
+    async def fail_after_awaiting(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        # Outlive the POST response by a margin no scheduler jitter closes.
+        await asyncio.sleep(0.3)
+        raise RuntimeError("planner/provider failed before output")
+        yield "unreachable"
+
+    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return fail_after_awaiting
+
+    streamify_module = importlib.import_module("dspy.streaming.streamify")
+    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
+    agent = _DspyAgent("sync fallback should not run")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    client = enter_client(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={"parts": [{"type": "text", "text": "stream me"}]},
+    )
+    _wait_for_turn_settlement(app, sid)
+
+    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    assistant = [m for m in messages if m["role"] == "assistant"][-1]
+    assert assistant["stop_reason"] == "error"
+    assert assistant["error_info"]["error"] == "provider_error"
+    assert agent.calls == []  # and still no silent sync rerun
 
 
 def test_non_text_parts_skip_deltas(tmp_path: Path) -> None:
@@ -895,7 +984,7 @@ def test_non_text_parts_skip_deltas(tmp_path: Path) -> None:
 
 
 def test_live_streamed_deltas_are_marked_live(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
     async def fake_streamed_forward(
         app: Any,
@@ -914,12 +1003,13 @@ def test_live_streamed_deltas_are_marked_live(
     set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
     set_config("trace.path", str(tmp_path / "semantic_traces"))
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
-    client = TestClient(app)
+    client = enter_client(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
     client.post(
         f"/v1/sessions/{sid}/messages",
         json={"parts": [{"type": "text", "text": "stream me"}]},
     )
+    _wait_for_turn_settlement(app, sid)
 
     history = app.state.bus._history.get(sid, [])
     added = [e for e in history if e.type == "message.part.added"]
@@ -963,7 +1053,7 @@ def test_live_streamed_deltas_are_marked_live(
 
 
 def test_live_streamed_contract_fields_emit_message_part_deltas(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
     async def fake_streamed_forward(
         app: Any,
@@ -981,13 +1071,14 @@ def test_live_streamed_contract_fields_emit_message_part_deltas(
 
     monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
-    client = TestClient(app)
+    client = enter_client(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
 
     client.post(
         f"/v1/sessions/{sid}/messages",
         json={"parts": [{"type": "text", "text": "stream me"}]},
     )
+    _wait_for_turn_settlement(app, sid)
 
     history = app.state.bus._history.get(sid, [])
     transcript_events = [e for e in history if e.type.startswith("turn.")]
@@ -1012,7 +1103,7 @@ def test_live_streamed_contract_fields_emit_message_part_deltas(
 
 
 def test_provider_aux_streams_as_thinking_part(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
     async def fake_streamed_forward(
         app: Any,
@@ -1028,13 +1119,14 @@ def test_provider_aux_streams_as_thinking_part(
 
     monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
-    client = TestClient(app)
+    client = enter_client(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
 
     client.post(
         f"/v1/sessions/{sid}/messages",
         json={"parts": [{"type": "text", "text": "stream me"}]},
     )
+    _wait_for_turn_settlement(app, sid)
 
     history = app.state.bus._history.get(sid, [])
 
@@ -1109,7 +1201,7 @@ def test_message_events_carry_turn_id_and_stream_source_batch(app_client) -> Non
 
 
 def test_live_streamed_events_carry_turn_id(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
     """#711 on the live path: lazily-created streamed assistant message + its deltas/
     completed events all correlate to the originating user turn."""
@@ -1129,12 +1221,13 @@ def test_live_streamed_events_carry_turn_id(
 
     monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
-    client = TestClient(app)
+    client = enter_client(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
     client.post(
         f"/v1/sessions/{sid}/messages",
         json={"parts": [{"type": "text", "text": "stream me"}]},
     )
+    _wait_for_turn_settlement(app, sid)
 
     history = app.state.bus._history.get(sid, [])
     turn_id = _turn_id_of(history)
@@ -1153,7 +1246,7 @@ def test_live_streamed_events_carry_turn_id(
 
 
 def test_streamify_final_prediction_without_chunks_has_specific_fallback(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
     async def prediction_only_stream(*args: Any, **kwargs: Any) -> Any:
         del args, kwargs
@@ -1166,13 +1259,14 @@ def test_streamify_final_prediction_without_chunks_has_specific_fallback(
     streamify_module = importlib.import_module("dspy.streaming.streamify")
     monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
     app = build_app(sessions_path=tmp_path / "s.json", agent=_DspyAgent("fallback"))
-    client = TestClient(app)
+    client = enter_client(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
 
     client.post(
         f"/v1/sessions/{sid}/messages",
         json={"parts": [{"type": "text", "text": "stream me"}]},
     )
+    _wait_for_turn_settlement(app, sid)
 
     history = app.state.bus._history.get(sid, [])
     deltas = [e for e in history if e.type == "message.part.delta"]
@@ -1199,7 +1293,7 @@ def test_streamify_final_prediction_without_chunks_has_specific_fallback(
 
 
 def test_streamed_visible_answer_survives_to_wire_verbatim(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
     """#881: a visible thinking/text part carries the model's prose to the wire
     BYTE-FOR-BYTE. A sentence that NAMES a typed workflow_state field — exactly the
@@ -1234,12 +1328,13 @@ def test_streamed_visible_answer_survives_to_wire_verbatim(
 
     monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
-    client = TestClient(app)
+    client = enter_client(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
     client.post(
         f"/v1/sessions/{sid}/messages",
         json={"parts": [{"type": "text", "text": "go"}]},
     )
+    _wait_for_turn_settlement(app, sid)
 
     messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
     assistant = [m for m in messages if m["role"] == "assistant"][-1]
@@ -1255,7 +1350,7 @@ def test_streamed_visible_answer_survives_to_wire_verbatim(
 
 
 def test_streamed_field_buffer_cleared_at_turn_end_and_turn_scoped(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
     """iowarp/clio-agent#757: ``app.state.live_streamed_field_text`` must be
     cleared at turn end, and the finalize thinking-part suppression must match
@@ -1299,16 +1394,18 @@ def test_streamed_field_buffer_cleared_at_turn_end_and_turn_scoped(
 
     monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
-    client = TestClient(app)
+    client = enter_client(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
 
     complete_turn(client, sid, "turn one")
+    _wait_for_turn_settlement(app, sid)
     store = getattr(app.state, "live_streamed_field_text", {}) or {}
     assert store.get(sid) in (None, {}), (
         f"live_streamed_field_text must be cleared at turn end, got: {store.get(sid)!r}"
     )
 
     assistant2 = complete_turn(client, sid, "turn two")
+    _wait_for_turn_settlement(app, sid)
     thinking_texts = [p["text"] for p in assistant2["parts"] if p["type"] == "thinking"]
     assert thinking_texts == [repeated], (
         "turn 2's thinking part must NOT be suppressed by turn 1's streamed text"
