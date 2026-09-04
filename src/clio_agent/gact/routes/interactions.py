@@ -118,6 +118,39 @@ def _question_correlation(app: FastAPI, question: UserQuestion) -> dict[str, str
     }
 
 
+def _agent_answer_task_projection(app: FastAPI, value: object) -> dict[str, Any] | None:
+    """Enrich a question's stored answer-turn identity with live task lifecycle.
+
+    ``UserQuestion.metadata`` retains only the stable task/session correlation.
+    The existing ``AgentTaskRegistry`` remains authoritative for lifecycle, so
+    this read-side projection never copies answer text or creates another task
+    record. Missing registry state is preserved honestly as identity-only data.
+    """
+
+    if not isinstance(value, Mapping):
+        return None
+    projected = {
+        key: str(value.get(key) or "") for key in ("task_id", "child_session_id") if value.get(key)
+    }
+    task_id = projected.get("task_id", "")
+    registry = getattr(app.state, "agent_task_registry", None)
+    task = registry.get(task_id) if task_id and registry is not None else None
+    if task is None:
+        return projected or None
+    projected.update(
+        {
+            "status": task.status,
+            "live_state": task.live_state,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+            "run_label": task.run_label,
+        }
+    )
+    if task.error_reason:
+        projected["error_reason"] = task.error_reason
+    return {key: value for key, value in projected.items() if value not in ("", None)}
+
+
 def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingInteraction:
     correlation = _question_correlation(app, question)
     is_mcp = question.source == "mcp_elicitation" or bool(
@@ -134,8 +167,9 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
     downgraded = is_mcp and not task_id
     elicitation = question.metadata.get("elicitation")
     elicitation = dict(elicitation) if isinstance(elicitation, Mapping) else {}
-    agent_answer_task = question.metadata.get("agent_answer_task")
-    agent_answer_task = dict(agent_answer_task) if isinstance(agent_answer_task, Mapping) else None
+    agent_answer_task = _agent_answer_task_projection(
+        app, question.metadata.get("agent_answer_task")
+    )
     requires_human_response = question.status == "pending" and not (
         question.audience == "agent"
         and question.agent_elicitation_routing == "elicitation_routed_to_agent"
@@ -194,6 +228,39 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
         },
         actions=["answer", "cancel"] if requires_human_response else [],
     )
+
+
+def _stamp_request_sequence(rows: list[PendingInteraction]) -> list[PendingInteraction]:
+    """Number MCP requests inside their durable invocation/task branch.
+
+    This is deliberately called a *request* sequence rather than a protocol
+    round: one MCP task input round may request multiple keys. The stable
+    invocation id is preferred; detached asynchronous task inputs fall back to
+    their task id, so they retain the same causal branch after the initiating
+    tool call has left the transcript.
+    """
+
+    groups: dict[str, list[PendingInteraction]] = {}
+    for row in rows:
+        key = row.source.invocation_id or row.task_id
+        if row.source.protocol != "mcp" or not key:
+            continue
+        groups.setdefault(key, []).append(row)
+    positions: dict[str, tuple[int, int]] = {}
+    for grouped in groups.values():
+        ordered = sorted(grouped, key=lambda row: (row.created_at, row.id))
+        total = len(ordered)
+        positions.update({row.id: (index, total) for index, row in enumerate(ordered, start=1)})
+    stamped: list[PendingInteraction] = []
+    for row in rows:
+        position = positions.get(row.id)
+        if position is None:
+            stamped.append(row)
+            continue
+        payload = dict(row.payload)
+        payload["request_index"], payload["request_count"] = position
+        stamped.append(row.model_copy(update={"payload": payload}))
+    return stamped
 
 
 def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInteraction:
@@ -453,11 +520,13 @@ def project_pending_interactions(
         for question in questions
         if isinstance(question.metadata, Mapping)
     }
-    question_rows = [
-        _question_interaction(app, question)
-        for question in questions
-        if question.id not in forwarded_children
-    ]
+    question_rows = _stamp_request_sequence(
+        [
+            _question_interaction(app, question)
+            for question in questions
+            if question.id not in forwarded_children
+        ]
+    )
     correlated_tasks = {row.task_id for row in question_rows if row.task_id}
     rows: list[PendingInteraction] = list(question_rows)
     rows.extend(

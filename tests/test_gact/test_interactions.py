@@ -632,13 +632,26 @@ def test_agent_routed_questions_project_without_human_actions_and_keep_resolved_
             prompt="Choose the output format",
             status="answered",
             source="mcp_elicitation",
-            created_at=now,
-            updated_at=now,
+            created_at=(datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat(),
+            updated_at=(datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat(),
+            metadata={"elicitation": {"invocation_id": "call_pending"}},
             audience="agent",
             agent_elicitation_routing="elicitation_routed_to_agent",
             answered_by="agent",
         ),
     }
+    app.state.agent_task_registry.register(
+        AgentTask(
+            task_id="task_answer",
+            parent_session_id=session.id,
+            child_session_id="sess_answer",
+            run_label="agent-elicitation answer",
+            project_to_parent=False,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+        )
+    )
 
     with TestClient(app) as client:
         response = client.get(
@@ -658,7 +671,14 @@ def test_agent_routed_questions_project_without_human_actions_and_keep_resolved_
         assert answering["payload"]["agent_answer_task"] == {
             "task_id": "task_answer",
             "child_session_id": "sess_answer",
+            "status": "completed",
+            "live_state": "completed",
+            "created_at": now,
+            "updated_at": now,
+            "run_label": "agent-elicitation answer",
         }
+        assert answering["payload"]["request_index"] == 1
+        assert answering["payload"]["request_count"] == 2
 
         fallback = rows["question:human_fallback"]
         assert fallback["requires_human_response"] is True
@@ -669,6 +689,8 @@ def test_agent_routed_questions_project_without_human_actions_and_keep_resolved_
         assert answered["status"] == "answered"
         assert answered["answered_by"] == "agent"
         assert answered["requires_human_response"] is False
+        assert answered["payload"]["request_index"] == 2
+        assert answered["payload"]["request_count"] == 2
 
         rejected = client.post(
             f"/v1/sessions/{session.id}/interactions/question:agent_pending/respond",
