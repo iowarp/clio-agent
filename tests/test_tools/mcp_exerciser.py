@@ -500,11 +500,17 @@ def build_exerciser_server(
   (() => {
     const target = window.parent;
     const send = (message) => target.postMessage(message, '*');
+    const reportSize = () => requestAnimationFrame(() => send({
+      jsonrpc:'2.0',
+      method:'ui/notifications/size-changed',
+      params:{height:Math.ceil(document.documentElement.scrollHeight)}
+    }));
     window.addEventListener('message', (event) => {
       const message = event.data;
       if (!message || message.jsonrpc !== '2.0') return;
       if (message.id === 'v2ex-init' && message.result) {
         send({jsonrpc:'2.0',method:'ui/notifications/initialized',params:{}});
+        reportSize();
         return;
       }
       if (message.method === 'ui/notifications/tool-input') {
@@ -512,11 +518,13 @@ def build_exerciser_server(
         document.querySelector('#payload').textContent =
           typeof payload === 'string' ? `Result for ${payload}` : 'Result ready';
         document.querySelector('#continue').disabled = false;
+        reportSize();
         return;
       }
       if (message.id === 'v2ex-message') {
         document.querySelector('#delivery').textContent =
           message.error ? message.error.message : 'Sent to the agent';
+        reportSize();
       }
     });
     document.querySelector('#continue').addEventListener('click', () => {
