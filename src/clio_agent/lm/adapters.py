@@ -579,6 +579,75 @@ def _signature_strict_response_format(signature: Any) -> dict[str, Any]:
     }
 
 
+class _GuidedContextWindowError(ValueError):
+    """The formatted guided-output prompt leaves no room for a completion."""
+
+
+def _guided_prompt_tokens(adapter: Any, signature: Any, demos: Any, inputs: Any) -> int:
+    """Conservatively estimate tokens in the exact messages the adapter formats.
+
+    Self-hosted models do not expose their tokenizer through the OpenAI contract.
+    Guided mode is opt-in and correctness-sensitive, so use three characters per
+    token (including serialized message framing) rather than the runtime's looser
+    four-character accounting estimate.
+    """
+
+    import json  # noqa: PLC0415
+
+    rendered = adapter.format(signature, demos, inputs)
+    payload = json.dumps(rendered, ensure_ascii=False, default=str)
+    return max(1, (len(payload) + 2) // 3)
+
+
+def _bound_guided_output_kwargs(
+    adapter: Any,
+    lm: Any,
+    lm_kwargs: dict[str, Any],
+    signature: Any,
+    demos: Any,
+    inputs: Any,
+) -> dict[str, Any]:
+    """Cap guided output to the discovered context remaining after formatting."""
+
+    try:
+        context_window = int(getattr(adapter, "_clio_context_window", 0) or 0)
+    except (TypeError, ValueError):
+        context_window = 0
+    if context_window <= 0:
+        return lm_kwargs
+
+    prompt_tokens = _guided_prompt_tokens(adapter, signature, demos, inputs)
+    reserve = max(64, context_window // 100)
+    available = context_window - prompt_tokens - reserve
+    if available < 1:
+        raise _GuidedContextWindowError(
+            "guided-output prompt exceeds the discovered context window "
+            f"(estimated_prompt_tokens={prompt_tokens} context_window={context_window} "
+            f"reserve_tokens={reserve})"
+        )
+
+    defaults = getattr(lm, "kwargs", None)
+    default_kwargs = defaults if isinstance(defaults, dict) else {}
+    raw_requested = lm_kwargs.get("max_tokens", default_kwargs.get("max_tokens"))
+    try:
+        requested = int(raw_requested) if raw_requested is not None else available
+    except (TypeError, ValueError):
+        requested = available
+    bounded = min(max(1, requested), available)
+    if bounded >= requested and "max_tokens" in lm_kwargs:
+        return lm_kwargs
+
+    logger.info(
+        "guided output max_tokens bounded by discovered context "
+        "requested=%d bounded=%d estimated_prompt_tokens=%d context_window=%d",
+        requested,
+        bounded,
+        prompt_tokens,
+        context_window,
+    )
+    return {**lm_kwargs, "max_tokens": bounded}
+
+
 _STRICT_GUIDED_ADAPTER_CLS: Any = None
 
 
@@ -598,9 +667,22 @@ def _strict_guided_json_adapter_cls() -> Any:
     if _STRICT_GUIDED_ADAPTER_CLS is not None:
         return _STRICT_GUIDED_ADAPTER_CLS
     dspy = _dspy()
+    from dspy.utils.exceptions import LMError  # noqa: PLC0415
 
     class StrictGuidedJSONAdapter(dspy.JSONAdapter):  # type: ignore[name-defined]
+        def _call_preprocess(self, lm, lm_kwargs, signature, inputs):  # type: ignore[no-untyped-def]
+            processed = super()._call_preprocess(lm, lm_kwargs, signature, inputs)
+            # DSPy's JSONAdapter defaults native function calling ON. When the
+            # selected LM does not support it, DSPy leaves a caller-supplied
+            # tool_choice in place but adds no tools, which strict vLLM rejects.
+            # Enforce the OpenAI request invariant at the final adapter boundary.
+            if lm_kwargs.get("tool_choice") is not None and not lm_kwargs.get("tools"):
+                lm_kwargs.pop("tool_choice", None)
+                lm_kwargs.pop("parallel_tool_calls", None)
+            return processed
+
         def __call__(self, lm, lm_kwargs, signature, demos, inputs):  # type: ignore[no-untyped-def]
+            lm_kwargs = _bound_guided_output_kwargs(self, lm, lm_kwargs, signature, demos, inputs)
             if "response_format" in getattr(lm, "supported_params", []):
                 try:
                     kwargs = {
@@ -608,6 +690,8 @@ def _strict_guided_json_adapter_cls() -> Any:
                         "response_format": _signature_strict_response_format(signature),
                     }
                     return dspy.ChatAdapter.__call__(self, lm, kwargs, signature, demos, inputs)
+                except (LMError, _GuidedContextWindowError):
+                    raise
                 except Exception as exc:  # noqa: BLE001 - fall back to stock JSONAdapter
                     logger.warning(
                         "strict guided-JSON call failed; degrading to stock JSONAdapter "
@@ -618,6 +702,7 @@ def _strict_guided_json_adapter_cls() -> Any:
             return dspy.JSONAdapter.__call__(self, lm, lm_kwargs, signature, demos, inputs)
 
         async def acall(self, lm, lm_kwargs, signature, demos, inputs):  # type: ignore[no-untyped-def]
+            lm_kwargs = _bound_guided_output_kwargs(self, lm, lm_kwargs, signature, demos, inputs)
             if "response_format" in getattr(lm, "supported_params", []):
                 try:
                     kwargs = {
@@ -625,6 +710,8 @@ def _strict_guided_json_adapter_cls() -> Any:
                         "response_format": _signature_strict_response_format(signature),
                     }
                     return await dspy.ChatAdapter.acall(self, lm, kwargs, signature, demos, inputs)
+                except (LMError, _GuidedContextWindowError):
+                    raise
                 except Exception as exc:  # noqa: BLE001 - fall back to stock JSONAdapter
                     logger.warning(
                         "strict guided-JSON call failed; degrading to stock JSONAdapter "
@@ -664,7 +751,15 @@ def create_chat_adapter(config: LMProviderConfig) -> Any:
     from clio_agent.config import is_local_openai_compatible_backend  # noqa: PLC0415
 
     if _guided_output_enabled():
-        return _strict_guided_json_adapter_cls()()
+        adapter = _strict_guided_json_adapter_cls()()
+        provider_id = str(getattr(config, "provider_id", "") or getattr(config, "provider", ""))
+        if provider_id not in {"codex", "claude_code"}:
+            adapter._clio_context_window = int(  # type: ignore[attr-defined]
+                getattr(config, "chosen_context", None)
+                or getattr(config, "context_window", None)
+                or 0
+            )
+        return adapter
     use_json_fallback = not is_local_openai_compatible_backend(config)
 
     if conf.resolve(
