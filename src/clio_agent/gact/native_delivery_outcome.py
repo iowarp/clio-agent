@@ -50,10 +50,21 @@ NATIVE_ATTACHMENT_SKIP_REASONS: dict[str, str] = {
         "the resource is larger than the configured per-attachment byte ceiling; refused "
         "before it was read and base64-expanded"
     ),
-    "image_part_undecodable": (
-        "an inline image part could not be decoded into a model input"
-    ),
+    "image_part_undecodable": ("an inline image part could not be decoded into a model input"),
 }
+
+
+#: Reasons that describe the plan working as designed rather than a decline. A
+#: non-native plan means the resource was never eligible for the native lane, so
+#: there is no promise to settle and nothing to buffer.
+_NOT_A_DECLINE: frozenset[str] = frozenset({"delivery_not_native"})
+
+#: Cap on unsettled notes. Settling pops only the keys its own turn planned, so a
+#: note for a part no turn ever settles (no workspace bound, a plan that never
+#: reached the ledger) would otherwise accumulate for the life of the process.
+#: Keys are popped in insertion order; the newest notes are the ones a settle is
+#: about to ask for.
+_MAX_PENDING_NOTES = 256
 
 
 def _pending(app: Any) -> dict[tuple[str, str], dict[str, Any]]:
@@ -86,13 +97,26 @@ def note_delivery_outcome(
 
     if reason not in NATIVE_ATTACHMENT_SKIP_REASONS:
         raise ValueError(f"Unknown native attachment skip reason: {reason}")
+    if reason in _NOT_A_DECLINE:
+        return
     if app is None or getattr(app, "state", None) is None or not resource_id:
         return
-    _pending(app)[(str(resource_id), str(revision))] = {
+    buffer = _pending(app)
+    buffer[(str(resource_id), str(revision))] = {
         "reason": reason,
         "detail": detail or NATIVE_ATTACHMENT_SKIP_REASONS[reason],
         "kind": kind,
     }
+    while len(buffer) > _MAX_PENDING_NOTES:
+        oldest = next(iter(buffer))
+        dropped = buffer.pop(oldest)
+        logger.warning(
+            "dropped an unsettled native-attachment note reason=native_note_buffer_full "
+            "resource_id=%s revision=%s note=%s",
+            oldest[0],
+            oldest[1],
+            dropped.get("reason", ""),
+        )
     logger.warning(
         "planned native attachment not delivered reason=%s resource_id=%s revision=%s name=%s",
         reason,

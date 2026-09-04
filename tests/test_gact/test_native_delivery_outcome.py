@@ -226,3 +226,40 @@ def test_an_uncatalogued_skip_reason_is_refused(tmp_path: Path) -> None:
         note_delivery_outcome(
             app, resource_id="res", revision="1", kind="image", reason="probably_fine"
         )
+
+
+def test_a_non_native_plan_is_not_buffered_as_a_decline(tmp_path: Path) -> None:
+    """A plan that never chose native made no promise, so there is nothing to settle."""
+
+    app = _app(tmp_path)
+    record = _upload(
+        app, workspace_id="ws", name="notes.txt", content=b"plain text", mime="text/plain"
+    )
+    part = _part(record).model_copy(
+        update={"metadata": {"delivery": {"representation": "bounded_tools"}}}
+    )
+
+    assert _dspy_images_from_parts([part], app=app, workspace_id="ws") == []
+    assert getattr(app.state, "native_delivery_outcomes", {}) == {}
+
+
+def test_unsettled_notes_cannot_grow_without_bound(tmp_path: Path) -> None:
+    """Settling pops only its own keys, so an unsettled note must not live forever."""
+
+    from clio_agent.gact.native_delivery_outcome import _MAX_PENDING_NOTES, _pending
+
+    app = _app(tmp_path)
+    for index in range(_MAX_PENDING_NOTES + 25):
+        note_delivery_outcome(
+            app,
+            resource_id=f"res_{index}",
+            revision="1",
+            kind="image",
+            reason="resource_missing",
+        )
+
+    buffer = _pending(app)
+    assert len(buffer) == _MAX_PENDING_NOTES
+    # The newest notes survive -- those are the ones a settle is about to ask for.
+    assert ("res_24", "1") not in buffer
+    assert (f"res_{_MAX_PENDING_NOTES + 24}", "1") in buffer
