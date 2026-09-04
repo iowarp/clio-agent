@@ -351,13 +351,31 @@ def _complete_turn_with_metadata(
     text: str,
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
+    """POST a user message carrying ``metadata`` and wait for its turn to settle.
+
+    ``client`` MUST be an ENTERED ``TestClient`` (``with TestClient(app) as
+    client:``). A client that is only constructed gives every request its own
+    transient anyio portal; the turn task the POST fires is scheduled on that
+    portal's loop (turn_runner's app-lifetime loop is only bound during the
+    ASGI lifespan, which an unentered client never runs) and is cancelled the
+    instant the portal tears down when the POST response lands -- before the
+    recording agent is ever reached. The turn then settles truthfully as
+    ``cancelled`` and callers indexing into the agent's recorded calls raise
+    IndexError (#1312's settlement-race class).
+
+    30s (not the 5s this used to carry): post-S4b every turn builds and runs a
+    real blueprint module, and a tighter bound flakes on slow 2-core CI runners
+    under coverage. The wait returns the instant the task settles, so the
+    bound only ever fires on a genuine hang.
+    """
+
     ack = client.post(
         f"/v1/sessions/{sid}/messages",
         json={"parts": [{"type": "text", "text": text}], "metadata": metadata},
     )
     assert ack.status_code == 200, ack.text
     user_id = ack.json()["message_id"]
-    deadline = time.monotonic() + 5.0
+    deadline = time.monotonic() + 30.0
     while time.monotonic() < deadline:
         messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
         for idx, message in enumerate(messages):
@@ -564,74 +582,80 @@ def test_memory_search_unknown_session_404s(client_with_arc: TestClient) -> None
 
 
 def test_turn_can_opt_into_cross_session_memory_context(tmp_path: Path) -> None:
+    """#1312-class settlement race: this drives a REAL turn (the recording
+    ``FakeAgent`` must be reached), so the client MUST be entered -- see
+    ``_complete_turn_with_metadata``'s docstring for why a bare
+    ``TestClient(app)`` here settles the turn ``cancelled`` before the agent
+    is ever called, turning ``agent.questions[0]`` into an IndexError.
+    """
+
     agent = FakeAgent()
-    client = TestClient(
-        build_app(
-            sessions_path=tmp_path / "s.json",
-            arc=FakeARC(hits=1, misses=0),
-            agent=agent,
+    app = build_app(
+        sessions_path=tmp_path / "s.json",
+        arc=FakeARC(hits=1, misses=0),
+        agent=agent,
+    )
+    with TestClient(app) as client:
+        ws_science = client.post(
+            "/v1/workspaces",
+            json={"name": "Science", "root_path": ""},
+        ).json()["id"]
+        sid_prior = client.post(
+            "/v1/sessions",
+            json={"title": "Monday NDP work", "workspace_id": ws_science},
+        ).json()["id"]
+        sid_current = client.post(
+            "/v1/sessions",
+            json={"title": "Wednesday planning", "workspace_id": ws_science},
+        ).json()["id"]
+        _add_text_message(
+            client,
+            sid_prior,
+            message_id="msg_prior",
+            role="assistant",
+            text="NDP catalog result: dataset alpha has pressure and temperature.",
+            created_at="2026-05-25T12:00:00+00:00",
         )
-    )
-    ws_science = client.post(
-        "/v1/workspaces",
-        json={"name": "Science", "root_path": ""},
-    ).json()["id"]
-    sid_prior = client.post(
-        "/v1/sessions",
-        json={"title": "Monday NDP work", "workspace_id": ws_science},
-    ).json()["id"]
-    sid_current = client.post(
-        "/v1/sessions",
-        json={"title": "Wednesday planning", "workspace_id": ws_science},
-    ).json()["id"]
-    _add_text_message(
-        client,
-        sid_prior,
-        message_id="msg_prior",
-        role="assistant",
-        text="NDP catalog result: dataset alpha has pressure and temperature.",
-        created_at="2026-05-25T12:00:00+00:00",
-    )
 
-    assistant = _complete_turn_with_metadata(
-        client,
-        sid_current,
-        "Based on recent work, draft next steps.",
-        {
-            "memory_search": {
-                "enabled": True,
-                "query": "pressure dataset",
-                "include_cross_session": True,
-                "workspace_id": ws_science,
-                "limit": 5,
-                "reason": "answer user request about recent work",
-            }
-        },
-    )
+        assistant = _complete_turn_with_metadata(
+            client,
+            sid_current,
+            "Based on recent work, draft next steps.",
+            {
+                "memory_search": {
+                    "enabled": True,
+                    "query": "pressure dataset",
+                    "include_cross_session": True,
+                    "workspace_id": ws_science,
+                    "limit": 5,
+                    "reason": "answer user request about recent work",
+                }
+            },
+        )
 
-    assert "## Explicit Memory Search Results" in agent.questions[0]
-    assert "Monday NDP work" in agent.questions[0]
-    assert "dataset alpha has pressure and temperature" in agent.questions[0]
-    assert "Based on recent work, draft next steps." in agent.questions[0]
-    assert assistant["metadata"]["memory_search"]["include_cross_session"] is True
-    assert set(assistant["metadata"]["memory_search"]["searched_sessions"]) == {
-        sid_prior,
-        sid_current,
-    }
-    assert assistant["metadata"]["memory_search"]["hits"][0]["session_id"] == sid_prior
-    assert assistant["metadata"]["memory_search"]["hits"][0]["cross_session"] is True
-    events = client.app.state.bus._history.get(sid_current, [])
-    assert "memory.search.completed" in [event.type for event in events]
-    semantic = [
-        event.payload
-        for event in events
-        if event.type == "semantic.event"
-        and event.payload["event_type"] == "memory.search.completed"
-    ]
-    assert semantic
-    assert semantic[-1]["payload"]["include_cross_session"] is True
-    assert semantic[-1]["payload"]["hit_count"] == 1
-    assert semantic[-1]["payload"]["hits"][0]["cross_session"] is True
+        assert "## Explicit Memory Search Results" in agent.questions[0]
+        assert "Monday NDP work" in agent.questions[0]
+        assert "dataset alpha has pressure and temperature" in agent.questions[0]
+        assert "Based on recent work, draft next steps." in agent.questions[0]
+        assert assistant["metadata"]["memory_search"]["include_cross_session"] is True
+        assert set(assistant["metadata"]["memory_search"]["searched_sessions"]) == {
+            sid_prior,
+            sid_current,
+        }
+        assert assistant["metadata"]["memory_search"]["hits"][0]["session_id"] == sid_prior
+        assert assistant["metadata"]["memory_search"]["hits"][0]["cross_session"] is True
+        events = client.app.state.bus._history.get(sid_current, [])
+        assert "memory.search.completed" in [event.type for event in events]
+        semantic = [
+            event.payload
+            for event in events
+            if event.type == "semantic.event"
+            and event.payload["event_type"] == "memory.search.completed"
+        ]
+        assert semantic
+        assert semantic[-1]["payload"]["include_cross_session"] is True
+        assert semantic[-1]["payload"]["hit_count"] == 1
+        assert semantic[-1]["payload"]["hits"][0]["cross_session"] is True
 
 
 def test_memory_tool_search_same_workspace_requires_and_records_user_intent(

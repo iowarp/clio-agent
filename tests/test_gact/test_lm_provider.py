@@ -56,7 +56,21 @@ class _RebindLMStub:
         self._dspy_adapter = SimpleNamespace(provider=getattr(cfg, "provider", ""))
 
 
-def _wait_lm_provider_ready(c: TestClient, timeout_s: float = 5.0) -> dict[str, Any]:
+def _wait_lm_provider_ready(c: TestClient, timeout_s: float = 30.0) -> dict[str, Any]:
+    """Poll ``GET /v1/providers/lm`` until the async lm_studio/argonne bind
+    (``asyncio.create_task(_run_lm_provider_apply(...))`` in
+    ``routes/providers.py``) leaves its ``configuring`` state.
+
+    30s (not the 5s this used to carry): this is the same settlement-race
+    class PR #1312 fixed for turn tasks -- a real background asyncio task
+    racing a slow, coverage-instrumented CI runner, not a hang. The bind is
+    already hermetic here (``_patch_ambient_bind_network`` stubs the two real
+    network calls it would otherwise reach), so the remaining cost is pure
+    interpreter/coverage overhead on a 2-core runner; the wait returns the
+    instant the state flips, so widening the bound only ever matters on a
+    genuine hang.
+    """
+
     deadline = time.monotonic() + timeout_s
     body: dict[str, Any] = {}
     while time.monotonic() < deadline:
@@ -251,9 +265,12 @@ def _patch_ambient_bind_network(monkeypatch) -> None:
 
     Combined, these two REAL dependencies (never touched by #1211 -- verified
     byte-identical against the branch's merge-base) can legitimately exceed
-    ``_wait_lm_provider_ready``'s 5s deadline under real ambient conditions
-    that have nothing to do with the code under test; stubbing them here is
-    the root fix (hermetic isolation), not a timeout bump.
+    ``_wait_lm_provider_ready``'s deadline under real ambient conditions that
+    have nothing to do with the code under test; stubbing them here is the
+    root fix (hermetic isolation), not a timeout bump. (Separately,
+    ``_wait_lm_provider_ready``'s bound itself is widened to 30s for slow
+    coverage-instrumented CI runners -- a different, #1312-class concern from
+    this hermeticity fix.)
     """
 
     async def _unreachable_handshake(*args, **kwargs):  # noqa: ANN001, ANN002, ANN003
