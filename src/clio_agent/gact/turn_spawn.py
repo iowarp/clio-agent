@@ -1,9 +1,7 @@
 """Spawn a child expert in a real child session projected as an AgentTask.
 
-``spawn_child_turn(app, TaskSpec) -> AgentTask`` mints a child session with
-``parent_session_id`` lineage and ``session_type=="agent_task"``, stages the
-same background turn as a user POST, and records its terminal lifecycle. Child
-forwards use a dedicated executor so a waiting parent cannot starve them.
+``spawn_child_turn`` mints lineage, stages a user-equivalent background turn,
+and records lifecycle. A dedicated executor prevents parent starvation.
 """
 
 from __future__ import annotations
@@ -137,10 +135,8 @@ class TaskSpec:
     # named surveillance task in the tray, not an ensemble run). Empty keeps the
     # existing default-label behavior verbatim.
     run_label: str = ""
-    # Internal runtime helpers use a real child turn for isolation but must not
-    # appear as delegated work in the attended parent transcript or task feed.
-    project_to_parent: bool = True
-    # Spotter-ai standing-watcher follow-on: when False, mint the child session +
+    project_to_parent: bool = True  # Internal helpers need no parent projection.
+    # Spotter standing-watcher: when False, mint the child session +
     # AgentTask record WITHOUT starting a first turn -- the record transitions
     # straight to RUNNING (never QUEUED-at-cap, never ``_launch``ed) so it stands
     # as a live, non-terminal row a later independent wake can drive turns on

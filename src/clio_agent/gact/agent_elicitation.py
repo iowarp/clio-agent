@@ -1,19 +1,12 @@
 """Agent-driven elicitation (#1309, C1-S7): the session's agent can answer a
 typed MCP elicitation question, not only the human.
 
-OWNER REQUIREMENT (verbatim intent): "I need my mcps being able to request
-things from the agent." An MCP server, mid-flow, returns ``input_required``
-(the v2 MRTR shape carried through :mod:`clio_agent.gact.elicitation_bridge`)
-and the thing that can answer is the SESSION'S AGENT -- running on the user's
-chosen provider, holding the session's own conversation context -- with the
-human remaining the terminal fallback.
+An MCP server can return v2 ``input_required`` mid-flow and address it to the
+session's contextual agent. The human remains the terminal fallback.
 
-DESIGN INVARIANT -- THE SEMANTIC FIREWALL (owner ruling, 2026-09-03): this is
-**NOT sampling** and must never become an inference channel. The MCP server
-gets no model access, no free-form completions, and no prompt control -- it
-gets exactly what elicitation has always given it: a typed, schema-validated
-answer to its OWN declared question, with the session's agent as a permitted
-answerer alongside the human. The ``requestedSchema`` validation
+THE SEMANTIC FIREWALL: this is **NOT sampling** and must never become an
+inference channel. The MCP server gets no model access or prompt control, only
+a typed, schema-validated answer to its own question. The ``requestedSchema`` validation
 (:func:`clio_agent.gact.elicitation_schema.validate_elicitation_answer`) is
 applied to an agent's answer EXACTLY as it is to a human's -- an agent answer
 that fails it never reaches the server; it falls back to the human path,
@@ -110,6 +103,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from clio_agent import conf
+from clio_agent.gact.agent_elicitation_activity import stamp_agent_answer_turn
 from clio_agent.gact.agent_elicitation_reply import (
     answer_field_text as _answer_field_text,
 )
@@ -722,33 +716,6 @@ async def _dispatch_agent_answer(
     prompt = _build_answer_prompt(question, translation)
     timeout_s = _timeout_s()
 
-    def record_answer_turn(handle: Any) -> None:
-        """Attach the isolated helper identity to the causal question projection."""
-
-        from clio_agent.gact.elicitation_bridge import (  # noqa: PLC0415
-            stamp_question_routing_fields,
-        )
-        from clio_agent.gact.events import Event  # noqa: PLC0415
-
-        current = getattr(app.state, "user_questions", {}).get(question.id)
-        if current is None:
-            return
-        metadata = dict(current.metadata)
-        metadata["agent_answer_task"] = {
-            "task_id": str(getattr(handle, "task_id", "") or ""),
-            "child_session_id": str(getattr(handle, "child_session_id", "") or ""),
-        }
-        updated = stamp_question_routing_fields(app, question.id, metadata=metadata)
-        bus = getattr(app.state, "bus", None)
-        if updated is not None and bus is not None:
-            bus.publish(
-                Event(
-                    type="user_question.updated",
-                    session_id=updated.session_id,
-                    payload=updated.model_dump(exclude_none=True),
-                )
-            )
-
     try:
         reply_text = await asyncio.wait_for(
             asyncio.to_thread(
@@ -758,7 +725,7 @@ async def _dispatch_agent_answer(
                 prompt=prompt,
                 depth=decision.depth,
                 timeout_s=timeout_s,
-                on_spawn=record_answer_turn,
+                on_spawn=lambda handle: stamp_agent_answer_turn(app, question.id, handle),
             ),
             timeout=timeout_s + _OUTER_TIMEOUT_MARGIN_S,
         )

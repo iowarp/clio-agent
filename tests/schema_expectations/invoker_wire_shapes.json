@@ -135,6 +135,7 @@
         "session_approval_profile",
         "placement",
         "run_label",
+        "project_to_parent",
         "start_turn",
         "tool_allowlist",
         "agent_elicitation_depth"
@@ -164,6 +165,7 @@
         "session_approval_profile",
         "placement",
         "run_label",
+        "project_to_parent",
         "start_turn",
         "tool_allowlist",
         "agent_elicitation_depth"

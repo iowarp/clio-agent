@@ -770,16 +770,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # existing wire taxonomy) while details carries the full typed payload --
     # no behavior lines added, only the honesty fix's explanation.
     "src/clio_agent/gact/turn.py": 891,
-    # NEW entry (#1282, C1-S2 F5): crossed the flat 800 cap (798 -> 807) for
-    # two new typed reason strings (mcp_capability_refused/
-    # mcp_protocol_refused) added to ERROR_REASONS so turn.py's ClioError
-    # branch's stamped detail reason projects onto a spawned child's
-    # AgentTask record (turn_spawn_failures.child_task_error_reason already
-    # reads it back unchanged) instead of falling back to "agent_error".
-    # +7 (#1282, re-verify round N3): the two backstop reasons
-    # (mcp_call_timeout_backstop / mcp_task_drive_timeout_backstop) joined
-    # ERROR_REASONS -- same diagnosability class as F5's two refusal reasons.
-    "src/clio_agent/gact/agent_tasks.py": 802,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the
