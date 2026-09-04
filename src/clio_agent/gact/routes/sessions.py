@@ -1164,6 +1164,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             answer=req.answer,
             selected_options=selected,
             answer_metadata=req.metadata,
+            answered_by="human",
         )
         if updated is None:
             raise question_already_resolved(sid, question_id)

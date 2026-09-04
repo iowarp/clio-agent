@@ -99,7 +99,13 @@ def _question_correlation(app: FastAPI, question: UserQuestion) -> dict[str, str
     child_elicitation = child_meta.get("elicitation")
     child_elicitation = child_elicitation if isinstance(child_elicitation, Mapping) else {}
     return {
-        "tool_name": str(elicitation.get("tool_name") or child_elicitation.get("tool_name") or ""),
+        "tool_name": str(
+            metadata.get("tool_name")
+            or elicitation.get("tool_name")
+            or child_meta.get("tool_name")
+            or child_elicitation.get("tool_name")
+            or ""
+        ),
         "invocation_id": str(
             metadata.get("invocation_id")
             or elicitation.get("invocation_id")
@@ -174,6 +180,11 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
         question.audience == "agent"
         and question.agent_elicitation_routing == "elicitation_routed_to_agent"
     )
+    answer_metadata = dict(question.answer_metadata)
+    if question.answer and "answer" not in answer_metadata:
+        answer_metadata["answer"] = question.answer
+    if question.selected_options and "selected_options" not in answer_metadata:
+        answer_metadata["selected_options"] = list(question.selected_options)
     return PendingInteraction(
         id=f"{kind}:{question.id}",
         kind=kind,
@@ -202,7 +213,7 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
                 "question_kind": question.kind,
                 "options": [option.model_dump() for option in question.options],
                 "allow_freeform": question.allow_freeform,
-                "answer_metadata": dict(question.answer_metadata),
+                "answer_metadata": answer_metadata,
                 "agent_answer_task": agent_answer_task,
                 "expires_at": question.expires_at,
                 "input_key": correlation["input_key"],
@@ -677,14 +688,11 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
                     AnswerUserQuestionRequest(
                         answer=request.answer,
                         selected_options=request.selected_options,
-                        metadata={
-                            **request.metadata,
-                            "interaction_id": interaction_id,
-                            "owner_session_id": interaction.owner_session_id,
-                            "attended_session_id": interaction.attended_session_id,
-                            "task_id": interaction.task_id,
-                            "invocation_id": interaction.source.invocation_id,
-                        },
+                        # User-submitted form fields remain an exact field map.
+                        # Ownership and correlation stay on the authoritative
+                        # question/interaction instead of overwriting equally
+                        # named schema fields inside answer metadata.
+                        metadata=dict(request.metadata),
                     ),
                 )
             else:

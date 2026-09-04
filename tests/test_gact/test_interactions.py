@@ -135,6 +135,7 @@ def test_ask_user_runtime_tool_injects_owner_task_and_attended_correlation(
     monkeypatch.setattr(gact_context, "active_app", lambda: app)
     monkeypatch.setattr(gact_context, "active_session_id", lambda: child)
     monkeypatch.setattr(gact_context, "active_turn_id", lambda: "turn_child")
+    monkeypatch.setattr("clio_agent.gact.ask_user_tool.observer_call_id", lambda: "call_native_ask")
 
     result = tool(
         question="Which dataset should I use?",
@@ -148,7 +149,8 @@ def test_ask_user_runtime_tool_injects_owner_task_and_attended_correlation(
     assert pending["owner_session_id"] == child
     assert pending["attended_session_id"] == root
     assert pending["task_id"] == "task_child"
-    assert pending["invocation_id"] == "turn_child:child:ask_user"
+    assert pending["tool_name"] == "ask_user"
+    assert pending["invocation_id"] == "call_native_ask"
     assert pending["allow_freeform"] is True
 
 
@@ -288,6 +290,13 @@ def test_interactions_aggregate_children_and_route_question_and_permission(
         )
         assert answered.status_code == 200
         assert calls == [(root, "q_native")]
+        resolved = client.get(
+            f"/v1/sessions/{root}/interactions",
+            params={"include_recent_resolved": True},
+        ).json()["interactions"]
+        resolved_native = next(row for row in resolved if row["id"] == "question:q_native")
+        assert resolved_native["answered_by"] == "human"
+        assert resolved_native["payload"]["answer_metadata"] == {"selected_options": ["yes"]}
         duplicate = client.post(
             f"/v1/sessions/{root}/interactions/question:q_native/respond",
             json={"action": "answer", "selected_options": ["yes"]},

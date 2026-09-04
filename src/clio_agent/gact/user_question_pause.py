@@ -72,6 +72,7 @@ def maybe_pause_for_user(
             **dict(ask_user_action.get("metadata") or {}),
             "reason": ask_user_action.get("reason", ""),
             "caller": ask_user_action.get("caller", {}),
+            "tool_name": ask_user_action.get("tool_name", ""),
             "task_id": ask_user_action.get("task_id", ""),
             "invocation_id": ask_user_action.get("invocation_id", ""),
             "resume_on_answer": True,

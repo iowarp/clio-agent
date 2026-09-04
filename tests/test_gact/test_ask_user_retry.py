@@ -198,6 +198,7 @@ def test_create_and_answer_user_question_updates_session_state(client: TestClien
     assert answered.status_code == 200, answered.text
     body = answered.json()
     assert body["status"] == "answered"
+    assert body["answered_by"] == "human"
     assert body["answer"] == "Use the large run."
     assert body["selected_options"] == ["large"]
     assert body["answer_metadata"]["answered_from"] == "tui"
