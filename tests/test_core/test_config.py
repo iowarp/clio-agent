@@ -12,8 +12,10 @@ PROVIDER_DEFAULTS dict derived from clio_agent.providers.catalog.
 import pytest
 
 from clio_agent.config import (
+    LMProviderConfig,
     _recover_malformed_structured_value,
     _unwrap_self_named_envelope,
+    create_chat_adapter,
     select_models_for_agents,
 )
 
@@ -149,3 +151,100 @@ def test_lenient_chat_adapter_restores_escaped_section_boundary() -> None:
         "next_thought": "Create the plot.",
         "tool_calls": '[{"name":"plot_plot_timeseries"}]',
     }
+
+
+def _guided_vllm_config(monkeypatch: pytest.MonkeyPatch) -> LMProviderConfig:
+    """Return a guided-output vLLM config with the live-reported 8K window."""
+
+    monkeypatch.setenv("CLIO_LM_GUIDED_OUTPUT", "1")
+    config = LMProviderConfig(
+        provider_id="vllm",
+        model="ibm-granite/granite-4.2-30b",
+        max_tokens=2048,
+    )
+    config.context_window = 8192
+    config.chosen_context = 8192
+    return config
+
+
+def test_guided_vllm_drops_tool_choice_when_native_tools_are_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never send vLLM ``tool_choice`` unless the request also carries tools."""
+
+    import dspy
+    from dspy.adapters.types.tool import ToolCalls
+
+    class ToolSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        tools: list[dspy.Tool] = dspy.InputField()
+        tool_calls: ToolCalls = dspy.OutputField()
+
+    adapter = create_chat_adapter(_guided_vllm_config(monkeypatch))
+    calls: list[dict[str, object]] = []
+
+    class TextOnlyVllm:
+        model = "hosted_vllm/ibm-granite/granite-4.2-30b"
+        supported_params = ["response_format"]
+        supports_response_schema = True
+        supports_function_calling = False
+        kwargs = {"max_tokens": 128}
+
+        def __call__(self, *, messages: list[dict[str, object]], **kwargs: object) -> list[str]:
+            calls.append({"messages": messages, **kwargs})
+            return ['{"tool_calls":[]}']
+
+    result = adapter(
+        TextOnlyVllm(),
+        {"tool_choice": {"type": "function", "function": {"name": "submit"}}},
+        ToolSignature,
+        [],
+        {"question": "finish", "tools": []},
+    )
+
+    assert result[0]["tool_calls"].tool_calls == []
+    assert calls
+    assert "tools" not in calls[0]
+    assert "tool_choice" not in calls[0]
+
+
+@pytest.mark.parametrize("supports_response_format", [True, False])
+def test_guided_vllm_caps_output_to_the_remaining_context_window(
+    monkeypatch: pytest.MonkeyPatch,
+    supports_response_format: bool,
+) -> None:
+    """The formatted prompt plus output budget must fit the discovered window."""
+
+    import dspy
+
+    class AnswerSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    class CapturingLM:
+        model = "hosted_vllm/ibm-granite/granite-4.2-30b"
+        supported_params = ["response_format"] if supports_response_format else []
+        supports_response_schema = True
+        supports_function_calling = False
+        kwargs = {"max_tokens": 2048}
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def __call__(self, *, messages: list[dict[str, object]], **kwargs: object) -> list[str]:
+            self.calls.append({"messages": messages, **kwargs})
+            return ['{"answer":"ready"}']
+
+    adapter = create_chat_adapter(_guided_vllm_config(monkeypatch))
+    lm = CapturingLM()
+    result = adapter(
+        lm,
+        {"max_tokens": 2048},
+        AnswerSignature,
+        [],
+        {"question": "context " * 2300},
+    )
+
+    assert result == [{"answer": "ready"}]
+    assert lm.calls
+    assert int(lm.calls[0]["max_tokens"]) < 2048

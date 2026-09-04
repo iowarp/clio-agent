@@ -1582,6 +1582,37 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                         _emit_blueprint_llm_failure(self.agent_def, self.kind, exc)
                         _eid = getattr(self.agent_def, "id", "?")
                         _esum = str(exc).replace("\n", " ")[:160]
+                        # Some local instruct models return a complete prose answer
+                        # while omitting ChatAdapter's ``[[ ## answer ## ]]`` marker.
+                        # Reuse the established chat recovery only for an answer-only,
+                        # tool-free blueprint contract: typed workflow outputs and ReAct
+                        # tool intent must still satisfy their full schemas.
+                        _answer_only = set(self.signature.output_fields) == {"answer"}
+                        _provider_id = str(
+                            getattr(_fwd_config, "provider_id", "")
+                            or getattr(_fwd_config, "provider", "")
+                        )
+                        _answer_parser = getattr(
+                            base_agent,
+                            "_parse_answer_from_adapter_error",
+                            None,
+                        )
+                        _recovered_answer = (
+                            _answer_parser(exc)
+                            if _answer_only
+                            and self.kind in {"predict", "chain_of_thought"}
+                            and _provider_id not in {"codex", "claude_code"}
+                            and callable(_answer_parser)
+                            else None
+                        )
+                        if _recovered_answer:
+                            trace.event(
+                                "LENIENT-ADAPTER RECOVERY",
+                                "%s :: recovered unmarked answer-only blueprint output",
+                                _eid,
+                            )
+                            result = dspy.Prediction(answer=_recovered_answer)
+                            break
                         # Bounded SCHEMA-REPAIR: a typed-output validation/parse miss (a
                         # required field dropped/null/unparseable by a model that HAS the
                         # evidence) is re-askable. Each retry is an independent sample at a

@@ -1222,6 +1222,62 @@ def test_blueprint_module_empty_answer_raises_typed_failure(
         module(question="deliver", session_id="session-123")
 
 
+@pytest.mark.parametrize(
+    ("provider_id", "expect_recovery"),
+    [("vllm", True), ("codex", False), ("claude_code", False)],
+)
+def test_blueprint_predict_recovers_unmarked_adapter_answer_only_for_generic_providers(
+    monkeypatch: pytest.MonkeyPatch,
+    provider_id: str,
+    expect_recovery: bool,
+) -> None:
+    """Keep complete generic-provider prose without changing Codex or Claude."""
+
+    class FakeProgram:
+        def __call__(self, **kwargs: Any) -> Any:
+            del kwargs
+            raise RuntimeError(
+                "AdapterParseError: LM Response: 17 multiplied by 23 is 391.\n"
+                "Expected to find output fields: ['answer']"
+            )
+
+    class FakePredict:
+        def __init__(self, signature: Any) -> None:
+            self.signature = signature
+
+        def __call__(self, **kwargs: Any) -> Any:
+            return FakeProgram()(**kwargs)
+
+    monkeypatch.setattr(dspy, "Predict", FakePredict)
+    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
+    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
+        lambda base_agent, agent_def: _fake_resolved_spec(provider_id, "granite-4.2-30b"),
+    )
+    monkeypatch.setattr("clio_agent.gact.agents.builders._extract_repair_attempts", lambda: 0)
+    base_agent = SimpleNamespace(
+        _parse_answer_from_adapter_error=ClioAgent._parse_answer_from_adapter_error
+    )
+    module = _build_blueprint_dspy_module(
+        base_agent,
+        AgentDef(
+            id="main",
+            source="expert_pack",
+            title="Main",
+            module={"kind": "predict"},
+            structured_outputs={"workflow_state": False},
+        ),
+    )
+
+    if expect_recovery:
+        result = module(question="multiply", session_id="session-123")
+        assert result.answer == "17 multiplied by 23 is 391."
+    else:
+        with pytest.raises(RuntimeError, match="AdapterParseError"):
+            module(question="multiply", session_id="session-123")
+
+
 def test_blueprint_module_empty_answer_with_handoffs_still_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
