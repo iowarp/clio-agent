@@ -246,7 +246,14 @@ async def test_queued_connect_does_not_burn_the_per_call_sdk_timeout(
     # queued below -- pre-#1305 this alone raised TimeoutError while entry_b
     # was genuinely still waiting for a slot, never having reached the SDK.
     task_b = asyncio.create_task(
-        _drain(entry_b, payload="p", session_id="sid-b", timeout=0.05, on_construct=lambda: None)
+        _drain(
+            entry_b,
+            payload="p",
+            native_blocks=[],
+            session_id="sid-b",
+            timeout=0.05,
+            on_construct=lambda: None,
+        )
     )
     try:
         await asyncio.sleep(0.4)  # >> the 0.05s "call timeout"
@@ -295,7 +302,13 @@ async def test_abandoning_a_queued_stream_never_consumes_a_slot_or_spawns_a_cli(
     await entry_a._ensure_client(lambda: None)  # holds the only slot
     assert state["connected"] == 1
 
-    gen = entry_b.stream(payload="p", session_id="sid-b", timeout=None, on_construct=lambda: None)
+    gen = entry_b.stream(
+        payload="p",
+        native_blocks=[],
+        session_id="sid-b",
+        timeout=None,
+        on_construct=lambda: None,
+    )
     anext_task = asyncio.create_task(gen.__anext__())
     await asyncio.sleep(0.1)  # let entry_b genuinely start queueing
     assert not anext_task.done()
@@ -371,7 +384,7 @@ async def test_disconnect_runs_to_completion_despite_concurrent_consumer_unwind(
 
     with pytest.raises(RuntimeError, match="boom"):
         async for _msg in entry.stream(
-            payload="p", session_id="s", timeout=None, on_construct=lambda: None
+            payload="p", native_blocks=[], session_id="s", timeout=None, on_construct=lambda: None
         ):
             pass  # drain fast -- the consumer raises the instant "exc" arrives
 

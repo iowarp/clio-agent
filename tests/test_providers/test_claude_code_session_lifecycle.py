@@ -510,7 +510,7 @@ async def test_pump_queues_stream_end_before_the_abnormal_end_reset(
     with pytest.raises(RuntimeError, match="boom"):
         out: list[Any] = []
         async for msg in entry.stream(
-            payload="p", session_id="s", timeout=None, on_construct=lambda: None
+            payload="p", native_blocks=[], session_id="s", timeout=None, on_construct=lambda: None
         ):
             out.append(msg)
 
