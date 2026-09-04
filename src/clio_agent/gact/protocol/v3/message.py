@@ -28,16 +28,31 @@ def _message_presentation_metadata(metadata: Mapping[str, Any]) -> dict[str, Any
     Native ``ask_user`` answers are delivered back to the runtime as user-role
     resume envelopes.  The v3 client needs their question identity to avoid
     presenting that transport record as a second user-authored chat message.
+    MCP App ``ui/message`` calls are also user-role transport records, but they
+    remain visible as their own causal activity rather than masquerading as an
+    ordinary composer message. Only the already-public app identity and its
+    delivery state cross this boundary; model context, capability data, and
+    server-owned routing metadata remain private.
+
     Answer content and all other runtime metadata stay in their authoritative
     stores and off the public transcript projection.
     """
 
-    if metadata.get("ask_user_resume") is not True:
-        return {}
-    question_id = metadata.get("ask_user_question_id")
-    if not isinstance(question_id, str) or not question_id:
-        return {}
-    return {"ask_user_resume": True, "ask_user_question_id": question_id}
+    projected: dict[str, Any] = {}
+    if metadata.get("ask_user_resume") is True:
+        question_id = metadata.get("ask_user_question_id")
+        if isinstance(question_id, str) and question_id:
+            projected.update({"ask_user_resume": True, "ask_user_question_id": question_id})
+
+    mcp_app = metadata.get("mcp_app")
+    if isinstance(mcp_app, Mapping):
+        app_instance_id = mcp_app.get("app_instance_id")
+        if isinstance(app_instance_id, str) and app_instance_id:
+            projected["mcp_app_response"] = {
+                "app_instance_id": app_instance_id,
+                "state": "pending" if metadata.get("pending_steer") is True else "delivered",
+            }
+    return projected
 
 
 def _action_cards(part: Mapping[str, Any]) -> list[dict[str, Any]]:

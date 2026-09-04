@@ -419,6 +419,41 @@ def test_v3_message_projects_only_native_resume_classification_metadata() -> Non
     }
 
 
+def test_v3_message_projects_only_public_mcp_app_response_identity() -> None:
+    projected = message_to_v3(
+        Message(
+            id="msg_app_response",
+            session_id="sess_app",
+            role="user",
+            created_at="2026-09-04T00:00:00+00:00",
+            updated_at="2026-09-04T00:00:01+00:00",
+            parts=[Part(id="part_response", type="text", text="Continue with this result")],
+            metadata={
+                "mcp_app": {
+                    "app_instance_id": "app_123",
+                    "source_server": "v2ex",
+                    "resource_uri": "ui://v2ex/panel",
+                    "model_context": {
+                        "present": True,
+                        "sha256": "private-digest",
+                        "bytes": 912,
+                    },
+                },
+                "delivery": "steer",
+                "pending_steer": True,
+                "client_message_id": "private-client-identity",
+            },
+        )
+    )
+
+    assert projected["metadata"] == {
+        "mcp_app_response": {"app_instance_id": "app_123", "state": "pending"}
+    }
+    serialized = str(projected)
+    assert "private-digest" not in serialized
+    assert "private-client-identity" not in serialized
+
+
 def test_v3_transcript_preserves_navigable_child_agent_semantics(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json")
     parent = app.state.sessions.create(workspace_id="ws_default", title="Flat NDP")
