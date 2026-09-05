@@ -1195,7 +1195,9 @@ def test_blueprint_module_passes_through_empty_answer(
     # nor reclassifies a model-produced empty string.
     class FakeProgram:
         def __call__(self, **kwargs: Any) -> Any:
-            return SimpleNamespace(answer="", expert_handoffs="")
+            return SimpleNamespace(
+                answer="", expert_handoffs="", termination_reason="direct_response"
+            )
 
     class FakePredict:
         def __init__(self, signature: Any) -> None:
@@ -1220,6 +1222,7 @@ def test_blueprint_module_passes_through_empty_answer(
     result = module(question="deliver", session_id="session-123")
 
     assert result.answer == ""
+    assert result.termination_reason == "direct_response"
 
 
 def test_blueprint_module_passes_through_empty_answer_with_handoffs(
