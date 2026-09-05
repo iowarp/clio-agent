@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections import deque
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.agents.spawn_placement import run_handle_fields
@@ -58,6 +59,12 @@ def background_exit_part(task: "AgentTask") -> Part:
     child_id = task.agent_ref.get("expert_id", "")
     parent_id = task.agent_ref.get("requesting_expert_id", "") or "main"
     fields = run_handle_fields(task, child_id)
+    raw_artifact_ref = task.artifact_ref
+    artifact_id = (
+        str(raw_artifact_ref.get("artifact_id") or "")
+        if isinstance(raw_artifact_ref, Mapping)
+        else str(raw_artifact_ref or "")
+    )
     return Part(
         id=f"live_background_exit_{uuid.uuid4().hex[:12]}",
         type="background_exit",
@@ -72,9 +79,9 @@ def background_exit_part(task: "AgentTask") -> Part:
         task_id=task.task_id,
         job_id=task.task_id,
         exit_status=exit_status,
-        artifact_ref=task.artifact_ref,
+        artifact_ref=artifact_id,
         status=task.status,
-        metadata={"stream_source": "live"},
+        metadata={"stream_source": "live", "artifact_ref": raw_artifact_ref},
     )
 
 

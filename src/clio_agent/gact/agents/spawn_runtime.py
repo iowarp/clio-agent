@@ -13,10 +13,8 @@ consumed by a settle loop, it CALLS these tools:
 * ``check_agent_tasks()`` — the parent's spawned tasks + status (consumes a
   finished child: collect-and-close).
 * ``observe_agent_tasks(task_ids, cursor=...)`` — the OBSERVE posture (#1000):
-  read a child's event stream incrementally without consuming it (owner module
-  ``observe_runtime``).
+  read a child's event stream incrementally without consuming it.
 * ``spawn_agents_parallel(spawns)`` — fan out several children at once.
-
 Each tool re-emits the wire-facing delegation/fanout events and appends the
 ``expert_handoff`` Parts the deleted sync-delegate path appended. Child sessions
 and AgentTask records are the real substrate—there is no inline child forward or
@@ -44,6 +42,7 @@ from clio_agent.gact.agents.blueprint_commission import (
 from clio_agent.gact.agents.spawn_completion import (
     completion_payload as _completion_payload,
 )
+from clio_agent.gact.agents.spawn_completion import resolve_verbatim_output
 from clio_agent.gact.agents.spawn_completion import (
     return_handoff_part as _return_handoff_part,
 )
@@ -63,7 +62,7 @@ from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
     _emit_semantic_event,
 )
-from clio_agent.gact.spawn_context import current_session_depth
+from clio_agent.gact.spawn_context import current_session_depth as _current_session_depth
 from clio_agent.gact.tool_observer import _append_live_assistant_part, _handoff_part_metadata
 from clio_agent.gact.types import Part
 
@@ -71,6 +70,7 @@ if TYPE_CHECKING:
     from clio_agent.gact.agents.types import AgentDef
 
 logger = logging.getLogger(__name__)
+_resolve_verbatim_output = resolve_verbatim_output
 
 
 def emit_spawn_started(
@@ -418,7 +418,7 @@ def build_spawn_runtime_tools(
         # Computed depth: a child spawns at (its own depth) + 1, so nesting
         # increments through the real tool path and the runaway backstop is
         # reachable (a root session spawns at depth 1) (#948 S4 adversarial review).
-        depth = current_session_depth(app, session_id) + 1
+        depth = _current_session_depth(app, session_id) + 1
         try:
             child_id, target_scope, target_display_name, target_blueprint_id = (
                 resolve_commission_target(app, session_id, agent, blueprint_id)
