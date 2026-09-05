@@ -99,14 +99,18 @@ def test_plan_exit_rejects_bad_recommended_mode(tmp_path: Path) -> None:
         _call_plan_exit(app, sess.id, summary="ok", recommendedMode="whatever")
 
 
-def test_plan_exit_success_records_pending_request(tmp_path: Path) -> None:
+def test_plan_exit_success_records_pending_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     app = _make_app(tmp_path)
     sess = _plan_session(app, tmp_path)
+    monkeypatch.setattr("clio_agent.gact.plan_mode.observer_call_id", lambda: "call_plan_exit")
     out = _call_plan_exit(app, sess.id, summary="ship it", recommendedMode="auto", riskNotes="none")
     assert "handed back to the user" in out
     pending = app.state.sessions.get(sess.id).metadata.get("pending_plan_exit")
     assert pending["summary"] == "ship it"
     assert pending["recommended_mode"] == "auto"
+    assert pending["invocation_id"] == "call_plan_exit"
     assert pending["surfaced"] is False
 
 
@@ -140,6 +144,7 @@ def test_maybe_pause_mints_approval_question_and_yields(
 ) -> None:
     app = _make_app(tmp_path)
     sess = _plan_session(app, tmp_path)
+    monkeypatch.setattr("clio_agent.gact.plan_mode.observer_call_id", lambda: "call_plan_exit")
     _call_plan_exit(app, sess.id, summary="ship it", recommendedMode="auto")
 
     monkeypatch.setattr("clio_agent.gact.turn_stream.settle_turn_transcript", lambda state: None)
@@ -181,6 +186,7 @@ def test_maybe_pause_mints_approval_question_and_yields(
     [interaction] = projection.rows
     assert interaction.title == "Review execution plan"
     assert interaction.source.tool_name == "plan_exit"
+    assert interaction.source.invocation_id == "call_plan_exit"
     assert interaction.payload["plan_exit"] == {
         "summary": "ship it",
         "recommended_mode": "auto",

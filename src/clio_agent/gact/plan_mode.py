@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact.artifacts.observer_bridge import observer_call_id
 from clio_agent.gact.plan_review import ensure_owned_plan_directory, plan_review_content
 from clio_agent.gact.planning import (
     PLAN_MODE_REMINDER_MARKER,
@@ -261,12 +262,7 @@ def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_t
 
 
 class PlanExitError(RuntimeError):
-    """A ``plan_exit`` precondition failed (not in plan mode, or no plan file exists).
-
-    Raised by the ``plan_exit`` tool BEFORE any session mutation, so a rejected call leaves the
-    session in plan mode unchanged (no silent fallback — the model sees a typed reason it can act
-    on). ReAct surfaces the message as a tool observation the model reads and retries against.
-    """
+    """A ``plan_exit`` precondition failed before any session mutation."""
 
 
 #: Pending model-requested plan exit, stored on the existing session record.
@@ -331,6 +327,7 @@ def _record_plan_exit_request(
                 "recommended_mode": rec,
                 "risk_notes": str(risk_notes or "").strip(),
                 "plan_file": plan_file,
+                "invocation_id": observer_call_id(),
                 "surfaced": False,
             }
         },
@@ -424,7 +421,7 @@ def _plan_exit_options() -> list[Any]:
             description="Leave plan mode but do NOT execute; await further direction.",
         ),
         UserQuestionOption(
-            label="Reject — keep planning",
+            label="Request changes — keep planning",
             value="reject",
             description="Stay in plan mode; return feedback so the plan can be revised.",
         ),
@@ -520,6 +517,7 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
             "summary": summary,
             "risk_notes": risk_notes,
             "plan_file": plan_file,
+            "invocation_id": str(pending.get("invocation_id") or ""),
             **plan_review_content(plan_file),
             "source_user_message_id": state.user_msg.id,
         },
