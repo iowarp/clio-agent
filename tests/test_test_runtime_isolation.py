@@ -1,4 +1,4 @@
-"""Regression tests for repository-contained pytest runtime state."""
+"""Regression tests for workspace-volume-contained pytest runtime state."""
 
 from __future__ import annotations
 
@@ -13,14 +13,15 @@ from tests._test_runtime_isolation import (
 )
 
 
-def test_default_runtime_stays_under_checkout(tmp_path: Path) -> None:
+def test_default_runtime_stays_beside_checkout(tmp_path: Path) -> None:
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     environment: dict[str, str] = {}
 
     runtime = create_test_runtime(checkout, environment, pid=123, nonce="unit")
 
-    assert runtime.parent == checkout / ".pytest-runtime"
+    assert runtime.parent == tmp_path / ".checkout.pytest-runtime"
+    assert not runtime.parent.is_relative_to(checkout)
     assert runtime.root == runtime.parent / "run-123-unit"
     assert runtime.temp_dir.is_relative_to(runtime.root)
     assert runtime.pytest_dir.is_relative_to(runtime.root)
@@ -90,7 +91,9 @@ def test_live_suite_runtime_is_not_system_temp() -> None:
     runtime = Path(os.environ["CLIO_TEST_RUNTIME_DIR"]).resolve()
     checkout = Path(__file__).resolve().parents[1]
 
-    assert runtime.is_relative_to(checkout / ".pytest-runtime")
+    expected_parent = checkout.parent / f".{checkout.name}.pytest-runtime"
+    assert runtime.is_relative_to(expected_parent)
+    assert not runtime.is_relative_to(checkout)
     assert Path(os.environ["TEMP"]).resolve().is_relative_to(runtime)
     assert Path(os.environ["TMP"]).resolve().is_relative_to(runtime)
     assert Path(os.environ["TMPDIR"]).resolve().is_relative_to(runtime)

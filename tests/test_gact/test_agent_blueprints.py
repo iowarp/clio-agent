@@ -2046,7 +2046,9 @@ Coordinate genomics work.
     # are the taught surface under live test — reverting the paragraph reddens this.
     assert "IMMEDIATELY" in context  # spawn_agent_task returns immediately (non-blocking)
     assert "independent child right away" in context  # spawn all independent children first
-    assert "SHORT budget" in context  # bounded wait, decide on a partial
+    assert "one committed wait" in context  # one hold-open wait, not repeated polling
+    assert "requested children are terminal" in context
+    assert "do not repeatedly poll" in context
     assert "NEXT turn" in context  # observe-later: results inject into the next turn
     assert "check_agent_tasks" in context  # non-blocking collection while working
     # The old serial teaching must be gone (it made sync spawn→wait the default).
