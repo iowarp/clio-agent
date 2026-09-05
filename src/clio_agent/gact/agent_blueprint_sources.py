@@ -160,12 +160,11 @@ def _is_prunable_dead_fixture(source: str) -> bool:
     if not path.is_absolute() or path.exists():
         return False
     lowered = source.lower().replace("\\", "/")
-    temp_roots = [tempfile.gettempdir().lower().replace("\\", "/")]
-    runtime_root = os.environ.get("CLIO_TEST_RUNTIME_DIR", "").strip()
-    if runtime_root:
-        temp_roots.append(
-            str(Path(runtime_root).expanduser().resolve() / "pytest").lower().replace("\\", "/")
-        )
+    temp_dir = Path(tempfile.gettempdir()).expanduser().resolve()
+    temp_roots = [str(temp_dir).lower().replace("\\", "/")]
+    runtime_root = temp_dir.parent
+    if runtime_root.joinpath(".clio-test-run.json").is_file():
+        temp_roots.append(str(runtime_root / "pytest").lower().replace("\\", "/"))
     return "pytest-of" in lowered or any(lowered.startswith(root) for root in temp_roots)
 
 
