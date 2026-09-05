@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent import __version__ as clio_agent_version
@@ -419,6 +420,49 @@ def test_v3_message_projects_only_native_resume_classification_metadata() -> Non
         "ask_user_resume": True,
         "ask_user_question_id": "ques_1",
     }
+
+
+@pytest.mark.parametrize("execution_mode", ["plan", "deep_research"])
+def test_v3_message_projects_special_prompt_execution_mode(execution_mode: str) -> None:
+    projected = message_to_v3(
+        Message(
+            id=f"msg_{execution_mode}",
+            session_id="sess_mode",
+            role="user",
+            created_at="2026-09-05T00:00:00+00:00",
+            updated_at="2026-09-05T00:00:01+00:00",
+            parts=[Part(id="prompt", type="text", text="A user prompt")],
+            metadata={
+                "behavior": {
+                    "execution_mode": execution_mode,
+                    "reasoning_effort": "medium",
+                    "confirmation_policy": "ask",
+                },
+                "client_message_id": "private-client-identity",
+            },
+        )
+    )
+
+    assert projected["metadata"] == {"behavior": {"execution_mode": execution_mode}}
+    assert "private-client-identity" not in str(projected)
+    assert "reasoning_effort" not in str(projected)
+    assert "confirmation_policy" not in str(projected)
+
+
+def test_v3_message_omits_execute_prompt_mode_from_presentation_metadata() -> None:
+    projected = message_to_v3(
+        Message(
+            id="msg_execute",
+            session_id="sess_mode",
+            role="user",
+            created_at="2026-09-05T00:00:00+00:00",
+            updated_at="2026-09-05T00:00:01+00:00",
+            parts=[Part(id="prompt", type="text", text="A user prompt")],
+            metadata={"behavior": {"execution_mode": "execute"}},
+        )
+    )
+
+    assert "metadata" not in projected
 
 
 def test_v3_message_projects_only_public_mcp_app_response_identity() -> None:

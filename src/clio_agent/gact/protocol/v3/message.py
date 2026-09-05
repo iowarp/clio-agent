@@ -25,6 +25,8 @@ def _list(value: Any) -> list[Any]:
 def _message_presentation_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
     """Project only metadata needed to classify visible transcript records.
 
+    Composer prompts expose only the special execution mode needed to label
+    Plan and Deep Research turns; ordinary Execute prompts need no marker.
     Native ``ask_user`` answers and approved plans are delivered back to the
     runtime as user-role resume envelopes. The v3 client needs their public
     classification to avoid presenting transport records as human prompts.
@@ -39,6 +41,11 @@ def _message_presentation_metadata(metadata: Mapping[str, Any]) -> dict[str, Any
     """
 
     projected: dict[str, Any] = {}
+    behavior = metadata.get("behavior")
+    if isinstance(behavior, Mapping):
+        execution_mode = behavior.get("execution_mode")
+        if execution_mode in {"plan", "deep_research"}:
+            projected["behavior"] = {"execution_mode": execution_mode}
     if metadata.get("plan_exit_resume") is True:
         projected["plan_exit_resume"] = True
     if metadata.get("ask_user_resume") is True:
