@@ -147,6 +147,17 @@ def _compute_plan_file_path(app: "FastAPI", sid: str, session: Any) -> Path:
     return path
 
 
+def _ensure_owned_plan_directory(plan_file: str) -> None:
+    """Create CLIO's plan directory without trusting arbitrary recorded paths."""
+
+    from clio_agent.gact.runtime.grant_resolver import plans_dir  # noqa: PLC0415
+
+    owned_directory = plans_dir().resolve(strict=False)
+    candidate = Path(plan_file).resolve(strict=False)
+    if candidate.parent == owned_directory:
+        owned_directory.mkdir(parents=True, exist_ok=True)
+
+
 def recorded_plan_file(session: Any) -> str | None:
     """Return the plan-file path recorded on ``session.metadata`` (``None`` when unset)."""
 
@@ -193,6 +204,11 @@ def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_t
     if plan_file is None:
         plan_file = str(_compute_plan_file_path(app, sid, session))
         metadata_patch[_PLAN_FILE_METADATA_KEY] = plan_file
+    # CLIO owns the plan path and its parent directory; the model owns only the
+    # Markdown content. Without this, a clean checkout cannot make its first
+    # permitted plan write because the edit tool intentionally does not create
+    # missing parent directories.
+    _ensure_owned_plan_directory(plan_file)
     exists = Path(plan_file).exists()
 
     # P1.6a #1068: a recorded plan VARIANT (plan_workflow / plan_small) shapes the reminder — a
