@@ -143,6 +143,15 @@ def _clear_readonly_and_retry(
     operation(path)
 
 
+def _removal_path(path: Path) -> str:
+    """Return a Windows extended-length path so deep plugin caches can be removed."""
+
+    resolved = str(path.resolve())
+    if os.name == "nt" and not resolved.startswith("\\\\?\\"):
+        return f"\\\\?\\{resolved}"
+    return resolved
+
+
 def cleanup_test_runtime(
     root: Path,
     parent: Path,
@@ -175,7 +184,7 @@ def cleanup_test_runtime(
             current = root.lstat()
             if (current.st_dev, current.st_ino) != identity:
                 raise RuntimeError(f"test runtime identity changed before cleanup: {root}")
-            shutil.rmtree(root, onexc=_clear_readonly_and_retry)
+            shutil.rmtree(_removal_path(root), onexc=_clear_readonly_and_retry)
             if root.exists() or root.is_symlink():
                 raise OSError(f"test runtime remained after cleanup: {root}")
             try:

@@ -52,6 +52,22 @@ def test_runtime_cleanup_removes_readonly_fixture_files(tmp_path: Path) -> None:
     assert not runtime.root.exists()
 
 
+def test_runtime_cleanup_removes_deep_plugin_cache_paths(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    runtime = create_test_runtime(checkout, {}, pid=457, nonce="deep-cache")
+    deep_file = runtime.temp_dir.joinpath(*(["plugin-cache"] * 24), "payload.pyc")
+    resolved = str(deep_file.resolve())
+    creation_path = Path(f"\\\\?\\{resolved}") if os.name == "nt" else deep_file
+    creation_path.parent.mkdir(parents=True)
+    creation_path.write_bytes(b"fixture")
+    assert len(resolved) > 260
+
+    cleanup_test_runtime(runtime.root, runtime.parent, retry_delay_seconds=0)
+
+    assert not runtime.root.exists()
+
+
 def test_only_dead_owned_runs_are_stale(tmp_path: Path) -> None:
     checkout = tmp_path / "checkout"
     checkout.mkdir()
