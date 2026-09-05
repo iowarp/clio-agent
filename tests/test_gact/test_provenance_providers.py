@@ -439,6 +439,30 @@ def test_normalization_pairs_cross_family_lifecycles_and_ignores_running_samples
     assert result["spans"][2]["end_time"] is None
 
 
+def test_normalization_keeps_bounded_research_tool_coordinates_and_failure() -> None:
+    event = _event("react.step.completed", status="completed").to_dict()
+    event["payload"] = {
+        "tool_name": "web_fetch",
+        "tool_args": {
+            "target": "https://docs.example.test/research.pdf",
+            "to_file": True,
+            "authorization": "must-not-appear",
+        },
+        "observation": "Execution error in web_fetch: upstream refused the request",
+    }
+
+    result = normalize_semantic_events([event], provider="native", session_id="sess_root")
+
+    span = result["spans"][0]
+    assert span["status"] == "failed"
+    assert span["attributes"]["tool_input"] == {
+        "target": "https://docs.example.test/research.pdf",
+        "to_file": True,
+    }
+    assert "authorization" not in str(span["attributes"])
+    assert "upstream refused" not in str(span["attributes"])
+
+
 def test_execution_endpoint_is_provider_independent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

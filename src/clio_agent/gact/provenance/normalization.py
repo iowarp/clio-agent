@@ -14,6 +14,15 @@ _SPAN_FAMILIES = {
     "llm.request.started": "llm.request",
     "llm.response.completed": "llm.request",
 }
+_TOOL_INPUT_FIELDS: dict[str, tuple[str, ...]] = {
+    "web_search": ("query", "count"),
+    "web_fetch": ("target", "to_file"),
+    "workspace_resource_inspect": ("resource_id",),
+    "workspace_resource_read": ("resource_id", "start", "end"),
+    "workspace_resource_search": ("resource_id", "query"),
+    "workspace_resource_structure": ("resource_id",),
+}
+_TOOL_INPUT_TEXT_LIMIT = 2_000
 
 
 def _timestamp(value: Any) -> float | None:
@@ -125,6 +134,10 @@ def normalize_semantic_events(
         raw_payload = event.get("payload")
         actor: dict[str, Any] = raw_actor if isinstance(raw_actor, dict) else {}
         payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
+        if event_type == "react.step.completed" and str(
+            payload.get("observation") or ""
+        ).lstrip().startswith("Execution error in "):
+            status = "failed"
         raw_subject = event.get("subject")
         subject: dict[str, Any] = raw_subject if isinstance(raw_subject, dict) else {}
         identity = {
@@ -194,6 +207,7 @@ def normalize_semantic_events(
                 "schema_version": str(event.get("schema_version") or ""),
                 "provider": event.get("provider") or {},
                 **{key: value for key, value in identity.items() if value},
+                **_tool_input_attributes(identity["tool_name"], payload),
             },
             "source_event_ids": [str(event.get("event_id") or span_id)],
         }
@@ -240,6 +254,22 @@ def normalize_semantic_events(
         "nodes": nodes,
         "edges": edges,
     }
+
+
+def _tool_input_attributes(tool_name: str, payload: dict[str, Any]) -> dict[str, object]:
+    """Keep bounded, non-secret tool coordinates useful for execution lineage."""
+    allowed = _TOOL_INPUT_FIELDS.get(tool_name)
+    raw_args = payload.get("tool_args")
+    if allowed is None or not isinstance(raw_args, dict):
+        return {}
+    visible: dict[str, object] = {}
+    for key in allowed:
+        value = raw_args.get(key)
+        if isinstance(value, str):
+            visible[key] = value[:_TOOL_INPUT_TEXT_LIMIT]
+        elif isinstance(value, (bool, int, float)):
+            visible[key] = value
+    return {"tool_input": visible} if visible else {}
 
 
 def _artifact_refs(event: dict[str, Any]) -> list[dict[str, str]]:

@@ -15,9 +15,10 @@ source is a clean empty registry, not a degrade).
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, cast
 
 from clio_agent.arc.clio_core_liveness import ClioCoreRuntimeLostError
 from clio_agent.gact.artifacts.registry import _FOLD_EVENT_TYPES, ArtifactRegistry
@@ -194,8 +195,10 @@ def _fold_from_arc(app: "FastAPI", registry: ArtifactRegistry) -> _SourceFold:
     session_ids_fn = getattr(observer, "_event_session_ids", None)
     per_session = getattr(observer, "iter_session_event_segments", None)
     if callable(session_ids_fn) and callable(per_session):
+        read_session_ids = cast(Callable[[], Iterable[str]], session_ids_fn)
+        read_session_segments = cast(Callable[[str], Iterable[object]], per_session)
         try:
-            session_ids = list(session_ids_fn())
+            session_ids = list(read_session_ids())
         except ClioCoreRuntimeLostError as exc:
             raise _raise_stall(arc, exc) from exc
         except Exception as exc:  # noqa: BLE001 — enumeration itself unreadable
@@ -209,7 +212,7 @@ def _fold_from_arc(app: "FastAPI", registry: ArtifactRegistry) -> _SourceFold:
         skipped = 0
         for session_id in session_ids:
             try:
-                for segment in per_session(session_id):
+                for segment in read_session_segments(session_id):
                     _fold_content(getattr(segment, "content", None))
             except ClioCoreRuntimeLostError as exc:
                 raise _raise_stall(arc, exc) from exc
@@ -257,13 +260,14 @@ def _fold_from_jsonl(app: "FastAPI", registry: ArtifactRegistry) -> _SourceFold:
     the file is never read whole, so a multi-GB non-artifact trace costs ~one decode
     per artifact line. ``reachable=False`` only when the trace directory is absent.
     """
-    root = _trace_dir(app)
-    if root is None or not root.exists():
+    roots = tuple(root for root in _trace_dirs(app) if root.exists())
+    if not roots:
         return _SourceFold(reachable=False, folded_any=False)
     import json  # noqa: PLC0415
 
     folded_any = False
-    for path in sorted(root.glob("*.semantic.jsonl")):
+    paths = sorted({path for root in roots for path in root.glob("*.semantic.jsonl")})
+    for path in paths:
         try:
             with path.open(encoding="utf-8") as handle:
                 for raw in handle:
@@ -358,17 +362,20 @@ async def boot_fold_artifact_registry_offloop(
     return True
 
 
-def _trace_dir(app: "FastAPI") -> Optional[Path]:
-    """Resolve the durable-trace directory the file backend writes into."""
+def _trace_dirs(app: "FastAPI") -> tuple[Path, ...]:
+    """Resolve every durable-trace directory advertised by the trace backend."""
     backend = getattr(app.state, "semantic_trace_backend", None)
-    path = getattr(backend, "path", None)
-    if isinstance(path, Path):
-        return path if path.is_dir() or not path.suffix else path.parent
-    raw = str(path) if path else ""
-    if not raw:
-        return None
-    candidate = Path(raw)
-    return candidate if candidate.suffix == "" else candidate.parent
+    advertised = getattr(backend, "replay_paths", None)
+    raw_paths = advertised if advertised is not None else (getattr(backend, "path", None),)
+    roots: list[Path] = []
+    for raw_path in raw_paths:
+        if not raw_path:
+            continue
+        candidate = raw_path if isinstance(raw_path, Path) else Path(str(raw_path))
+        root = candidate if candidate.is_dir() or not candidate.suffix else candidate.parent
+        if root not in roots:
+            roots.append(root)
+    return tuple(roots)
 
 
 __all__ = [

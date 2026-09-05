@@ -6,6 +6,7 @@ import logging
 import queue
 import threading
 from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from clio_agent.gact.provenance.protocol import (
@@ -200,6 +201,22 @@ class ProvenanceDispatcher:
     def provider_names(self) -> tuple[str, ...]:
         """Configured provider names in deterministic order."""
         return tuple(self._workers)
+
+    @property
+    def replay_paths(self) -> tuple[Path, ...]:
+        """Durable journal roots exposed by replay-capable providers.
+
+        Registry rebuilders must not reach through the dispatcher's private
+        workers.  Providers publish their own replay roots and this adapter
+        preserves them when provenance fan-out is enabled.
+        """
+        paths: list[Path] = []
+        for worker in self._workers.values():
+            for raw_path in getattr(worker.provider, "replay_paths", ()):
+                path = raw_path if isinstance(raw_path, Path) else Path(str(raw_path))
+                if path not in paths:
+                    paths.append(path)
+        return tuple(paths)
 
     @property
     def durable(self) -> bool:
