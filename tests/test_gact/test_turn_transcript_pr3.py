@@ -124,7 +124,7 @@ def test_streamed_direct_response_is_not_repeated_as_a_batch_answer(
     text_parts = [part for part in assistant["parts"] if part["type"] == "text"]
     assert len(text_parts) == 1
     assert text_parts[0]["text"] == "Ready."
-    assert text_parts[0]["metadata"]["signature_field_name"] == "next_thought"
+    assert text_parts[0]["metadata"]["signature_field_name"] == "answer"
 
 
 def test_batch_answer_lands_as_exactly_one_burst(tmp_path: Path) -> None:

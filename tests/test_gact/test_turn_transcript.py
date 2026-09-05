@@ -400,6 +400,30 @@ def test_field_stream_neither_streamed_nor_fallback_returns_none() -> None:
     assert publisher.events == []
 
 
+def test_promote_open_text_field_moves_one_part_without_copying_text() -> None:
+    transcript, publisher = make_transcript()
+    transcript.append_text_delta("main", "next_thought", "READY ONCE")
+
+    assert transcript.promote_open_text_field(
+        ["main"], source_field="next_thought", target_field="answer"
+    )
+
+    parts = transcript.snapshot()
+    assert len(parts) == 1
+    assert parts[0].text == "READY ONCE"
+    assert parts[0].metadata["signature_field_name"] == "answer"
+    assert not transcript.has_closed_text("main", "next_thought")
+    assert transcript.has_closed_text("main", "answer")
+    updated = publisher.of_type("message.part.updated")
+    assert len(updated) == 1
+    assert updated[0][1]["part_id"] == parts[0].id
+    assert updated[0][1]["metadata_patch"] == {"signature_field_name": "answer"}
+
+    answer = transcript.turn_answer_stream("main")
+    assert answer.finish(fallback_text="READY ONCE") == "READY ONCE"
+    assert len(transcript.snapshot()) == 1
+
+
 def test_field_stream_survives_runtime_boundary_split() -> None:
     """A tool part between deltas closes the field's part; finish must not
     resurrect the batch copy — the handle DID stream."""

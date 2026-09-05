@@ -171,6 +171,24 @@ def finalize_turn(
             recoverable=True,
         )
 
+    # The expert that produced this turn's thinking/answer/diff parts: the routed
+    # expert when one was selected, else the active orchestrator.
+    responder_agent_id = state.selected_agent or state.invocation_agent_id or "main"
+    answer_agent_ids = {
+        responder_agent_id,
+        state.active_agent_id or state.invocation_agent_id or "main",
+    } - {""}
+    # A tool-free ReAct result makes its current ``next_thought`` the terminal
+    # response. Promote that same streamed part to the answer channel now that
+    # the provider's empty tool-call list is authoritative. This is a producer-
+    # identity transition: no text comparison, cleanup, inference, or retry.
+    if str(getattr(pred, "termination_reason", "") or "") == "direct_response":
+        state.transcript.promote_open_text_field(
+            answer_agent_ids,
+            source_field="next_thought",
+            target_field="answer",
+        )
+
     # ---- #767 PR3: finalize is a READER of the TurnTranscript ledger. ----
     # Live parts already streamed as they happened; finalize only appends ITS OWN parts (route
     # banner, wrap-up thinking, the canonical answer channel, file diffs) through the same producer
@@ -206,13 +224,6 @@ def finalize_turn(
             ]
             break
 
-    # The expert that produced this turn's thinking/answer/diff parts: the routed
-    # expert when one was selected, else the active orchestrator.
-    responder_agent_id = state.selected_agent or state.invocation_agent_id or "main"
-    answer_agent_ids = {
-        responder_agent_id,
-        state.active_agent_id or state.invocation_agent_id or "main",
-    } - {""}
     # Take the canonical-answer channel FIRST: its exactly-once identity seeds
     # from the pre-append ledger (the still-open streamed answer part included).
     # It covers the responder PLUS the stream tap's attribution fallback label
@@ -301,18 +312,12 @@ def finalize_turn(
         and not stream_fallback
     ):
         stream_fallback = _stream_fallback_payload("sync_execution_path")
-    direct_response_streamed = str(
-        getattr(pred, "termination_reason", "") or ""
-    ) == "direct_response" and any(
-        state.transcript.has_closed_text(agent_id, "next_thought") for agent_id in answer_agent_ids
+    answer_channel.finish(
+        fallback_text=str(state.answer_text or ""),
+        fallback_metadata=(
+            {"stream_fallback": stream_fallback} if stream_fallback and batch_turn_text else {}
+        ),
     )
-    if not direct_response_streamed:
-        answer_channel.finish(
-            fallback_text=str(state.answer_text or ""),
-            fallback_metadata=(
-                {"stream_fallback": stream_fallback} if stream_fallback and batch_turn_text else {}
-            ),
-        )
     for row in state.proposed_diffs:
         path = _row_value(row, "path", "") or ""
         udiff = _row_value(row, "unified_diff", "") or ""
