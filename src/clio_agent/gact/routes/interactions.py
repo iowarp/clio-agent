@@ -14,6 +14,7 @@ from clio_agent.gact.mcp_task_store import app_task_store
 from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
 from clio_agent.gact.routes.async_processes import mcp_task_display_title
+from clio_agent.gact.routes.plan_interactions import is_plan_exit_question, plan_exit_payload
 from clio_agent.gact.session_descendants import descendant_session_ids
 from clio_agent.gact.types import (
     AnswerUserQuestionRequest,
@@ -159,9 +160,7 @@ def _agent_answer_task_projection(app: FastAPI, value: object) -> dict[str, Any]
 
 def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingInteraction:
     correlation = _question_correlation(app, question)
-    is_plan_exit = bool(
-        question.source == "plan_exit" or question.metadata.get("plan_exit_approval")
-    )
+    is_plan_exit = is_plan_exit_question(question)
     is_mcp = question.source == "mcp_elicitation" or bool(
         isinstance(question.metadata, Mapping) and question.metadata.get("elicitation")
     )
@@ -239,25 +238,7 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
                 "additional_properties": elicitation.get("additional_properties"),
                 "url": elicitation.get("url"),
                 "container": elicitation.get("container"),
-                "plan_exit": (
-                    {
-                        key: question.metadata.get(key)
-                        for key in (
-                            "summary",
-                            "recommended_mode",
-                            "risk_notes",
-                            "plan_file",
-                            "plan_content",
-                            "plan_content_status",
-                            "plan_content_error",
-                            "plan_content_chars",
-                            "plan_content_included_chars",
-                        )
-                        if question.metadata.get(key) not in ("", None)
-                    }
-                    if is_plan_exit
-                    else None
-                ),
+                "plan_exit": plan_exit_payload(question) if is_plan_exit else None,
                 "punycode_warning": elicitation.get("punycode_warning"),
                 "punycode_host": elicitation.get("punycode_host"),
                 "punycode_host_raw": elicitation.get("punycode_host_raw"),

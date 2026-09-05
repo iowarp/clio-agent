@@ -324,7 +324,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # in the owner module agents/agent_task_input_refs.py; only this file's own
     # tuple-unpack + one added kwarg on two call sites (emit_spawn_started's
     # wrapper + _do_spawn's own call) landed here.
-    "src/clio_agent/gact/agents/spawn_runtime.py": 1018,
+    "src/clio_agent/gact/agents/spawn_runtime.py": 950,
     # NEW entry (C1-S7, #1309 gate-review F1): crossed the flat 800 cap
     # (791 -> 842) for the new _apply_session_tool_allowlist owner function --
     # the ONE place that forces an agent-elicitation answer child's bound
@@ -351,7 +351,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # other TaskSpec field already uses in this file.
     # MERGE (PR #1298 x #1310): 820 -> 824. Both campaigns' additive spawn-path
     # lines coexist.
-    "src/clio_agent/gact/turn_spawn.py": 824,
+    "src/clio_agent/gact/turn_spawn.py": 823,
     # (invoker.py's entry retired 2026-08: RelayExpertInvoker moved to its own
     # owner module agents/relay_expert_invoker.py, dropping invoker.py under the
     # 800 default cap — the #1221/#1222 contract-alignment growth that broke the
@@ -641,7 +641,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # "enrichment" bring-up phase, so the call site in turn.py stays a single
     # (actually net-negative-line) call instead of needing its own timing calls.
     # No logic moves; the two real functions are unchanged.
-    "src/clio_agent/gact/enrichment.py": 809,
     # #933: +8 for the turn-scoped workspace-fleet lease in _tool_session_context.
     # #933 review hardening: typed workspace_lease_unavailable degrade when a
     # rooted turn has no leasable agent (+9).

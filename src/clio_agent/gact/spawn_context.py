@@ -12,6 +12,17 @@ if TYPE_CHECKING:
 
     from clio_agent.gact.turn_spawn import TaskSpec
 
+
+def current_session_depth(app: "FastAPI", session_id: str) -> int:
+    """Return zero for a root session, otherwise its projected AgentTask depth."""
+
+    from clio_agent.gact.agent_tasks import AgentTask  # noqa: PLC0415
+
+    session = app.state.sessions.get(session_id)
+    task = AgentTask.from_session(session) if session is not None else None
+    return task.depth if task is not None else 0
+
+
 _SESSION_SCOPE_PREFIXES = ("active_agent_blueprint_", "active_expert_pack_")
 _SESSION_SCOPE_KEYS = ("expert_pack_id",)
 _SESSION_MODES = frozenset({"plan", "edit", "architect"})

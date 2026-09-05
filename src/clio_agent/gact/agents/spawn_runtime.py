@@ -17,13 +17,10 @@ consumed by a settle loop, it CALLS these tools:
   ``observe_runtime``).
 * ``spawn_agents_parallel(spawns)`` — fan out several children at once.
 
-Each tool re-emits the wire-facing ``blueprint.delegation.*`` / ``blueprint.fanout.*``
-events AND appends the ``expert_handoff`` Parts the deleted sync-delegate path
-appended (wire parity, #948 S4 findings [6]/[7]): events feed the activity label /
-trace / active-agent indicator, while the transcript renderer keys the delegation
-header/nesting/return row off ``type=='expert_handoff'`` Parts exclusively. The
-child sessions + AgentTask records are the real substrate — no inline in-thread
-child forward, no settle-loop routing vocabulary.
+Each tool re-emits the wire-facing delegation/fanout events and appends the
+``expert_handoff`` Parts the deleted sync-delegate path appended. Child sessions
+and AgentTask records are the real substrate—there is no inline child forward or
+settle-loop routing vocabulary.
 """
 
 from __future__ import annotations
@@ -32,15 +29,31 @@ import json
 import logging
 import uuid
 from collections.abc import Mapping
-from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.agents.blueprint_commission import (
+    SPAWN_AGENT_ARGUMENT,
+    SPAWN_BLUEPRINT_ARGUMENT,
+    collect_commission_artifact,
+    completion_context_fields,
+    emit_commission_artifact_returned,
+    emit_commission_started,
+    resolve_commission_target,
+)
+from clio_agent.gact.agents.spawn_completion import (
+    completion_payload as _completion_payload,
+)
+from clio_agent.gact.agents.spawn_completion import (
+    return_handoff_part as _return_handoff_part,
+)
+from clio_agent.gact.agents.spawn_completion import (
+    task_duration_ms as _task_duration_ms,
+)
 from clio_agent.gact.agents.spawn_events import _started_handoff_part as _started_handoff_part
 from clio_agent.gact.agents.spawn_events import emit_spawn_started as _emit_spawn_started
 from clio_agent.gact.agents.spawn_group import (
     failed_spawn_metadata_row,
-    spawn_group_fields,
     wait_structured_row,
     wait_summary,
 )
@@ -50,6 +63,7 @@ from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
     _emit_semantic_event,
 )
+from clio_agent.gact.spawn_context import current_session_depth
 from clio_agent.gact.tool_observer import _append_live_assistant_part, _handoff_part_metadata
 from clio_agent.gact.types import Part
 
@@ -123,55 +137,6 @@ def _blueprint_block(parent: "AgentDef", child_id: str) -> dict[str, str]:
     }
 
 
-def _current_session_depth(app: Any, session_id: str) -> int:
-    """The agent-task depth of the CURRENT session (0 for a root / non-child session).
-
-    A child session carries the ``session_type=='agent_task'`` projection; its depth
-    lives on the AgentTask record. The next spawn is this depth + 1, so nested spawns
-    increment (a root spawns at depth 1) and the runaway backstop
-    (``MAX_SPAWN_DEPTH``) is reachable through the real tool path — not only via a
-    hand-built TaskSpec (#948 S4 adversarial review)."""
-
-    from clio_agent.gact.agent_tasks import AgentTask  # noqa: PLC0415
-
-    sess = app.state.sessions.get(session_id)
-    if sess is None:
-        return 0
-    task = AgentTask.from_session(sess)
-    return task.depth if task is not None else 0
-
-
-def _resolve_verbatim_output(app: Any, task: Any) -> tuple[str, dict[str, str]]:
-    """Resolve the child's FULL final message text — the #880 verbatim contract:
-    the delegation ``output`` IS the child's answer, byte-for-byte, ALWAYS. The
-    AgentTask record keeps only a BOUNDED excerpt (registry memory stays bounded),
-    so the full text is re-read at wait-time via the result's ``message_ref``.
-
-    Returns ``(output, markers)``: ``markers`` empty on success, else a typed
-    fallback to the bounded excerpt (``output_source='excerpt_fallback'`` +
-    ``output_fallback_reason='child_message_gone'``) when the message is gone.
-    """
-
-    from clio_agent.gact.turn_spawn import _message_text  # noqa: PLC0415
-
-    result = task.result or {}
-    excerpt = result.get("answer_excerpt", "")
-    message_ref = result.get("message_ref", "")
-    child_sid = getattr(task, "child_session_id", "")
-    if not message_ref or not child_sid:
-        # No message to resolve (a failed/empty child carries no ref): the excerpt IS
-        # the authoritative (empty) output — no degradation occurred, no marker.
-        return excerpt, {}
-    messages = app.state.messages.get(child_sid, []) or []
-    for msg in messages:
-        if getattr(msg, "id", "") == message_ref:
-            return _message_text(msg), {}
-    return excerpt, {
-        "output_source": "excerpt_fallback",
-        "output_fallback_reason": "child_message_gone",
-    }
-
-
 def _persist_delegation_reported(app: Any, task: Any) -> None:
     """Persist the once-per-task report flag to the child-session metadata so a
     boot-rebuilt registry does not re-emit the terminal event. Best-effort: a gone
@@ -219,46 +184,6 @@ def _merge_wait_workflow_states(
     return merge_run_workflow_states(runs)
 
 
-def _completion_payload(
-    app: Any,
-    task: Any,
-    *,
-    include_artifact_context: bool = False,
-) -> dict[str, Any]:
-    """The delegate.completed payload shape (wire parity with the old tool).
-
-    ``output`` is the child's FULL answer byte-for-byte (#880), re-read from the
-    child session at wait-time; a typed marker is added if it must fall back to the
-    bounded excerpt (see :func:`_resolve_verbatim_output`)."""
-
-    result = task.result or {}
-    output, markers = _resolve_verbatim_output(app, task)
-    payload = {
-        "agent_id": task.agent_ref.get("expert_id", ""),
-        "parent_id": task.agent_ref.get("requesting_expert_id", ""),
-        "task_id": task.task_id,
-        # Ensemble run identity (#948 S5): which run of a repeated child this is (0,1,2…
-        # in spawn order). On the payload so a same-child ensemble's return rows / merge
-        # conflict rows are attributable to a specific run.
-        "run_index": task.run_index,
-        "status": task.status,
-        "stage": "delegate.completed" if task.status == "completed" else f"delegate.{task.status}",
-        "output": output,
-        "workflow_state": result.get("workflow_state", {}),
-        "message_ref": result.get("message_ref", ""),
-        "error_reason": task.error_reason,
-        "artifact_ref": task.artifact_ref,
-    }
-    if include_artifact_context and task.artifact_ref:
-        from clio_agent.gact.agent_task_artifacts import artifact_context_for_task  # noqa: PLC0415
-
-        artifact_context = artifact_context_for_task(app, task)
-        if artifact_context:
-            payload["artifact_context"] = artifact_context
-    payload.update(markers)
-    return payload
-
-
 def _failed_spawn_handoff_part(
     agent_def: "AgentDef", child_id: str, spawn_group_id: str, group_size: int, exc: Exception
 ) -> Part:
@@ -279,65 +204,6 @@ def _failed_spawn_handoff_part(
         text=f"{agent_def.id} -> {child_id}",
         metadata={**_handoff_part_metadata(row), "stream_source": "live"},
     )
-
-
-def _return_handoff_part(agent_def: "AgentDef", task: Any, payload: dict[str, Any]) -> Part:
-    """The terminal RETURN expert_handoff Part appended to the PARENT transcript when a
-    spawned child reaches a terminal state (#948 S4 finding [7]). Success AND failure
-    conclude on the SAME terminal lane — ``stage='delegate.completed'`` with the
-    outcome riding ``status`` (#882) — so a failed child is visible, not buried in
-    raw tool JSON. ``metadata.output`` is the child's FULL answer byte-for-byte
-    (#880, resolved in ``payload``)."""
-
-    child_id = task.agent_ref.get("expert_id", "")
-    return_row = {
-        "agent_id": child_id,
-        "parent_id": agent_def.id,
-        "status": task.status,
-        "stage": "delegate.completed",
-        "output": payload.get("output", ""),
-        "workflow_state": payload.get("workflow_state", {}),
-        "error": task.error_reason or "",
-        "run_index": task.run_index,
-        "artifact_ref": task.artifact_ref,
-    }
-    return_row.update(spawn_group_fields(task))
-    # Surface the verbatim-output degradation markers (never silent) onto the Part too.
-    for marker in ("output_source", "output_fallback_reason"):
-        if marker in payload:
-            return_row[marker] = payload[marker]
-    handle_fields = run_handle_fields(task, child_id)
-    return Part(
-        id=f"live_handoff_{uuid.uuid4().hex[:12]}",
-        type="expert_handoff",
-        agent_id=agent_def.id,
-        parent_agent=agent_def.id,
-        child_agent=child_id,
-        stage="delegate.completed",
-        handle_id=handle_fields["handle_id"],
-        run_label=handle_fields["run_label"],
-        live_state=handle_fields["live_state"],
-        host=handle_fields["host"],
-        placement=handle_fields["placement"],
-        status=task.status,
-        duration_ms=_task_duration_ms(task),
-        text=f"{agent_def.id} <- {child_id}",
-        metadata={**_handoff_part_metadata(return_row), "stream_source": "live"},
-    )
-
-
-def _task_duration_ms(task: Any) -> float:
-    """The child's wall-clock duration from its task record timestamps
-    (``created_at`` at spawn, ``updated_at`` at terminal transition). Unparseable
-    timestamps leave the Part unstamped (0.0) — never fail on decoration."""
-
-    try:
-        created = datetime.fromisoformat(str(task.created_at))
-        updated = datetime.fromisoformat(str(task.updated_at))
-    except (TypeError, ValueError):
-        return 0.0
-    delta_ms = (updated - created).total_seconds() * 1000
-    return delta_ms if delta_ms > 0 else 0.0
 
 
 def _emit_delegation_terminal(app: Any, session_id: str, agent_def: "AgentDef", task: Any) -> None:
@@ -380,25 +246,16 @@ def _emit_delegation_terminal(app: Any, session_id: str, agent_def: "AgentDef", 
         payload=dict(payload),
     )
     _append_live_assistant_part(app, session_id, _return_handoff_part(agent_def, task, payload))
-    target_blueprint_id = str(task.agent_ref.get("blueprint_id") or "")
-    if target_blueprint_id and task.artifact_ref:
-        _emit_semantic_event(
-            app,
-            session_id,
-            "blueprint.commission.artifact_returned",
-            turn_id=_active_semantic_turn_id(),
-            trace_id=_active_semantic_trace_id(),
-            status=task.status,
-            summary=f"{target_blueprint_id} returned a registered artifact.",
-            actor={"agent_id": child_id, "role": "commissioned_blueprint"},
-            subject={"agent_id": agent_def.id, "role": "commissioning_parent"},
-            blueprint={
-                "agent_blueprint_id": target_blueprint_id,
-                "parent_expert": agent_def.id,
-                "child_expert": child_id,
-            },
-            payload={"task_id": task.task_id, "artifact_ref": task.artifact_ref},
-        )
+    emit_commission_artifact_returned(
+        app,
+        session_id,
+        agent_def.id,
+        child_id,
+        task,
+        _emit_semantic_event,
+        _active_semantic_turn_id(),
+        _active_semantic_trace_id(),
+    )
     _emit_semantic_event(
         app,
         session_id,
@@ -512,9 +369,6 @@ def build_spawn_runtime_tools(
         else set()
     )
     has_declared_children = bool(declared_child_ids)
-    # Real AgentDef rows always declare ``parent_id``. Treat a missing attribute
-    # on legacy/test stand-ins as unknown rather than silently granting the new
-    # root-only commissioning surface.
     can_commission_blueprints = getattr(agent_def, "parent_id", None) == ""
     if _app is None or (
         not has_declared_children
@@ -564,30 +418,11 @@ def build_spawn_runtime_tools(
         # Computed depth: a child spawns at (its own depth) + 1, so nesting
         # increments through the real tool path and the runaway backstop is
         # reachable (a root session spawns at depth 1) (#948 S4 adversarial review).
-        depth = _current_session_depth(app, session_id) + 1
+        depth = current_session_depth(app, session_id) + 1
         try:
-            target_blueprint_id = str(blueprint_id or "").strip()
-            child_id = agent
-            target_scope: dict[str, Any] | None = None
-            target_display_name = ""
-            if target_blueprint_id:
-                from clio_agent.gact.spawn_context import (  # noqa: PLC0415
-                    resolve_installed_blueprint_target,
-                )
-
-                parent_session = app.state.sessions.get(session_id)
-                workspace_id = str(getattr(parent_session, "workspace_id", "") or "")
-                child_id, target_scope, target_display_name = resolve_installed_blueprint_target(
-                    app,
-                    target_blueprint_id,
-                    workspace_id=workspace_id,
-                )
-                if agent and agent != child_id:
-                    raise SpawnError(
-                        f"blueprint {target_blueprint_id!r} has root {child_id!r}, "
-                        f"not requested expert {agent!r}",
-                        reason="blueprint_root_mismatch",
-                    )
+            child_id, target_scope, target_display_name, target_blueprint_id = (
+                resolve_commission_target(app, session_id, agent, blueprint_id)
+            )
             briefing, evidence_task_ids = resolve_input_task_evidence(
                 app, session_id, task, input_task_ids
             )
@@ -641,29 +476,18 @@ def build_spawn_runtime_tools(
             spawned,
             input_task_ids=evidence_task_ids,
         )
-        if target_blueprint_id:
-            _emit_semantic_event(
-                app,
-                session_id,
-                "blueprint.commission.started",
-                turn_id=_active_semantic_turn_id(),
-                trace_id=_active_semantic_trace_id(),
-                status=spawned.status,
-                summary=f"{agent_def.id} commissioned {target_display_name or target_blueprint_id}",
-                actor={"agent_id": agent_def.id, "role": "commissioning_parent"},
-                subject={"agent_id": child_id, "role": "commissioned_blueprint"},
-                blueprint={
-                    "agent_blueprint_id": target_blueprint_id,
-                    "parent_expert": agent_def.id,
-                    "child_expert": child_id,
-                },
-                payload={
-                    "task_id": spawned.task_id,
-                    "target_blueprint_id": target_blueprint_id,
-                    "target_blueprint_name": target_display_name,
-                    "child_session_id": getattr(spawned, "child_session_id", ""),
-                },
-            )
+        emit_commission_started(
+            app,
+            session_id,
+            agent_def.id,
+            child_id,
+            target_blueprint_id,
+            target_display_name,
+            spawned,
+            _emit_semantic_event,
+            _active_semantic_turn_id(),
+            _active_semantic_trace_id(),
+        )
         return json.dumps(
             {
                 "task_id": spawned.task_id,
@@ -754,11 +578,8 @@ def build_spawn_runtime_tools(
                 results.append({"task_id": tid, "error": exc.reason})
                 structured_rows.append(wait_structured_row(tid, exc.reason, 0.0, ""))
                 continue
-            payload = _completion_payload(
-                app,
-                task_result,
-                include_artifact_context=True,
-            )
+            payload = _completion_payload(app, task_result)
+            payload.update(completion_context_fields(app, task_result))
             # #1306: digested_model_row (owner module) digests an oversize output
             # for THIS model-facing row only -- _emit_delegation_terminal below
             # reaches task_result directly and keeps the #880 verbatim payload
@@ -789,11 +610,7 @@ def build_spawn_runtime_tools(
                 # declared-workflow runner (both reach a terminal task via the same
                 # invoker boundary).
                 _emit_delegation_terminal(app, session_id, agent_def, task_result)
-                from clio_agent.gact.agent_task_artifacts import (  # noqa: PLC0415
-                    emit_commission_parent_use,
-                )
-
-                emit_commission_parent_use(app, session_id, task_result)
+                collect_commission_artifact(app, session_id, task_result)
         # Deterministic ensemble merge (#948 S5): when this wait collected several
         # runs whose typed workflow_state sections COLLIDE, merge them in REQUEST
         # ORDER (run_index, never completion order) and surface every collision as a
@@ -895,12 +712,7 @@ def build_spawn_runtime_tools(
                     "child_session_id": t.child_session_id,
                     "artifact_ref": t.artifact_ref,
                 }
-                if t.artifact_ref:
-                    from clio_agent.gact.agent_task_artifacts import (  # noqa: PLC0415
-                        artifact_context_for_task,
-                    )
-
-                    row["result"]["artifact_context"] = artifact_context_for_task(app, t)
+                row["result"].update(completion_context_fields(app, t))
                 # A poll that surfaces the finished result consumes its observe-later
                 # notification (exactly-once via the notify_pending gate) AND closes
                 # the delegation on the wire — the SAME terminal choreography wait
@@ -910,11 +722,7 @@ def build_spawn_runtime_tools(
                 # child left a started with no terminal (a dangling delegation).
                 consume_notification(app, t.task_id)
                 _emit_delegation_terminal(app, session_id, agent_def, t)
-                from clio_agent.gact.agent_task_artifacts import (  # noqa: PLC0415
-                    emit_commission_parent_use,
-                )
-
-                emit_commission_parent_use(app, session_id, t)
+                collect_commission_artifact(app, session_id, t)
             rows.append(row)
         # Declared structured payload (P5 wire semantics, wait_agent_tasks's
         # treatment): message FIRST, rows after. The tally/format logic lives
@@ -1021,13 +829,7 @@ def build_spawn_runtime_tools(
             title="Spawn Agent",
             representation="handoff",
             args={
-                "agent": {
-                    "type": "string",
-                    "description": (
-                        "Declared child expert id to spawn. Omit when blueprint_id targets "
-                        "an installed blueprint."
-                    ),
-                },
+                "agent": SPAWN_AGENT_ARGUMENT,
                 "task": {"type": "string", "description": "The specific task for that child."},
                 "placement": {
                     "type": "string",
@@ -1047,14 +849,7 @@ def build_spawn_runtime_tools(
                         "no child created)."
                     ),
                 },
-                "blueprint_id": {
-                    "type": "string",
-                    "description": (
-                        "Optional installed blueprint id to commission. When set, agent must be "
-                        "that blueprint's root expert (or an empty string); the child activates "
-                        "the target blueprint and returns its registered artifact."
-                    ),
-                },
+                "blueprint_id": SPAWN_BLUEPRINT_ARGUMENT,
             },
         ),
         native_tool(

@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact.plan_review import ensure_owned_plan_directory, plan_review_content
 from clio_agent.gact.planning import (
     PLAN_MODE_REMINDER_MARKER,
     PLAN_VARIANT_METADATA_KEY,
@@ -147,17 +148,6 @@ def _compute_plan_file_path(app: "FastAPI", sid: str, session: Any) -> Path:
     return path
 
 
-def _ensure_owned_plan_directory(plan_file: str) -> None:
-    """Create CLIO's plan directory without trusting arbitrary recorded paths."""
-
-    from clio_agent.gact.runtime.grant_resolver import plans_dir  # noqa: PLC0415
-
-    owned_directory = plans_dir().resolve(strict=False)
-    candidate = Path(plan_file).resolve(strict=False)
-    if candidate.parent == owned_directory:
-        owned_directory.mkdir(parents=True, exist_ok=True)
-
-
 def recorded_plan_file(session: Any) -> str | None:
     """Return the plan-file path recorded on ``session.metadata`` (``None`` when unset)."""
 
@@ -208,7 +198,7 @@ def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_t
     # Markdown content. Without this, a clean checkout cannot make its first
     # permitted plan write because the edit tool intentionally does not create
     # missing parent directories.
-    _ensure_owned_plan_directory(plan_file)
+    ensure_owned_plan_directory(plan_file)
     exists = Path(plan_file).exists()
 
     # P1.6a #1068: a recorded plan VARIANT (plan_workflow / plan_small) shapes the reminder — a
@@ -259,10 +249,7 @@ def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_t
     )
 
 
-# =========================================================================== #
-# P1.4 #1066 — plan_exit tool + N-way approval + constraint-lift + durable defer
-# =========================================================================== #
-#
+# P1.4 #1066 — plan_exit tool + N-way approval + constraint-lift + durable defer.
 # ``plan_exit`` is a TURN-ENDING YIELD, structurally identical to the ask-user pause
 # (``turn_finalize.maybe_pause_for_user``): the model records the request via the tool, the
 # post-forward seam (:func:`maybe_pause_for_plan_exit`) mints an approval ``UserQuestion`` and
@@ -282,54 +269,18 @@ class PlanExitError(RuntimeError):
     """
 
 
-#: ``session.metadata`` key: a ``plan_exit`` the model requested this turn, awaiting the post-forward
-#: seam to surface it as an approval question (no fifth store — rides the session record, #948 pattern).
+#: Pending model-requested plan exit, stored on the existing session record.
 _PLAN_EXIT_PENDING_KEY = "pending_plan_exit"
 
-#: ``question.metadata`` flag marking a ``UserQuestion`` as a plan-exit N-way approval (P1.4 #1066).
-#: The ask-user answer route branches on it to run :func:`resolve_plan_exit_answer` instead of the
-#: generic ask-user resume.
+#: Marks a ``UserQuestion`` as a Plan-exit N-way approval.
 PLAN_EXIT_APPROVAL_META = "plan_exit_approval"
 
-#: The exit postures the model MAY hint via ``recommendedMode`` (the approver still has final say).
 _PLAN_EXIT_RECOMMENDED_MODES = frozenset({"auto", "interactive", "exit_only"})
 
 #: The approval decisions the approver selects. ``clear_context`` is a co-selectable MODIFIER, not a
 #: decision — it may accompany any approve/reject.
 _PLAN_EXIT_DECISIONS: tuple[str, ...] = ("auto", "interactive", "exit_only", "reject")
 _PLAN_EXIT_CLEAR_CONTEXT = "clear_context"
-
-
-def _plan_review_content(plan_file: str) -> dict[str, Any]:
-    """Read the saved plan into the durable approval record with an explicit bound."""
-
-    from clio_agent import conf  # noqa: PLC0415
-
-    limit = max(
-        1,
-        conf.resolve(
-            "limits.plan_review_chars",
-            env="CLIO_PLAN_REVIEW_CHARS",
-            default=256_000,
-            cast=conf.as_int,
-        ),
-    )
-    try:
-        content = Path(plan_file).read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        return {
-            "plan_content": "",
-            "plan_content_status": "unavailable",
-            "plan_content_error": type(exc).__name__,
-        }
-    if len(content) > limit:
-        return {
-            "plan_content": content[:limit],
-            "plan_content_status": "truncated",
-            "plan_content_chars": len(content),
-            "plan_content_included_chars": limit,
-        }
-    return {"plan_content": content, "plan_content_status": "complete"}
 
 
 def _record_plan_exit_request(
@@ -569,7 +520,7 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
             "summary": summary,
             "risk_notes": risk_notes,
             "plan_file": plan_file,
-            **_plan_review_content(plan_file),
+            **plan_review_content(plan_file),
             "source_user_message_id": state.user_msg.id,
         },
     )

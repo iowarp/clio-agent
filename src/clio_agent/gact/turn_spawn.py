@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
+from clio_agent.gact.agent_task_artifacts import returned_artifact_ref
 from clio_agent.gact.agent_tasks import (
     AGENT_TASK_EVENTS,
     STATUS_CANCELLED,
@@ -40,6 +41,7 @@ from clio_agent.gact.turn_spawn_failures import (
     child_task_failure_result,
 )
 from clio_agent.gact.turn_spawn_result import child_workflow_state as _child_workflow_state
+from clio_agent.gact.turn_spawn_result import message_text as _message_text
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -155,10 +157,7 @@ class TaskSpec:
     # #1309 C1-S7 F3: the bounded agent-elicitation recursion depth, stamped
     # onto the child's metadata at the SAME mint point for the same reason.
     agent_elicitation_depth: Optional[int] = None
-    # Optional cross-blueprint commission. Kept at the end for positional wire
-    # compatibility with every pre-commission TaskSpec field. When set,
-    # ``child_expert_id`` must be that installed blueprint's enabled root and
-    # the child activates the target instead of inheriting the parent blueprint.
+    # Kept last for positional compatibility; selects an installed blueprint root.
     target_blueprint_id: str = ""
 
 
@@ -217,18 +216,6 @@ def _running_in_batch(snapshot: Any, batch_key: tuple[str, str, int]) -> int:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _message_text(msg: Any) -> str:
-    parts = getattr(msg, "parts", None) or []
-    out = []
-    for p in parts:
-        text = getattr(p, "text", None)
-        if text is None and isinstance(p, dict):
-            text = p.get("text")
-        if getattr(p, "type", None) == "text" or (isinstance(p, dict) and p.get("type") == "text"):
-            out.append(str(text or ""))
-    return "".join(out).strip()
 
 
 def _next_run_index(app: "FastAPI", spec: TaskSpec) -> int:
@@ -763,10 +750,6 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
                 "answer_excerpt": _message_text(final)[:_ANSWER_EXCERPT_MAX],
                 "workflow_state": _child_workflow_state(app, child_sid, final),
             }
-            from clio_agent.gact.agent_task_artifacts import (  # noqa: PLC0415
-                returned_artifact_ref,
-            )
-
             artifact_ref = returned_artifact_ref(app, final)
             outcome = fold_agent_task_transition(
                 app,

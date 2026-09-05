@@ -8,6 +8,18 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
 
+def message_text(message: Any) -> str:
+    """Join text parts from a model message in their emitted order."""
+
+    out: list[str] = []
+    for part in getattr(message, "parts", None) or []:
+        text = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
+        part_type = part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
+        if part_type == "text":
+            out.append(str(text or ""))
+    return "".join(out).strip()
+
+
 def child_workflow_state(app: "FastAPI", child_sid: str, final: Any) -> dict[str, Any]:
     """Return the workflow state carried by a child result, or an empty mapping."""
 

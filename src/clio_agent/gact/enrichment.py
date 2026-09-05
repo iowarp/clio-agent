@@ -35,13 +35,14 @@ module top. ``app`` is passed explicitly so handlers do not close over app local
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact import context_reference_delivery
+from clio_agent.gact.agent_task_artifacts import emit_commission_parent_use
+from clio_agent.gact.agent_task_notifications import compose_task_notification
 from clio_agent.gact.events import Event
 from clio_agent.gact.permission_gate import (
     _policy_action_for_tool,
@@ -630,56 +631,12 @@ PENDING_TASK_NOTIFICATION_MARKER = (
 # size-capped; a typed note reports how many more remain pending (they surface on
 # the following turn — never dropped).
 _MAX_NOTIFY_BLOCKS = 8
-_NOTIFY_EXCERPT_MAX = 600
 
 
-def _sanitize_excerpt(text: str) -> str:
-    """Neutralize a child-authored excerpt before it is embedded in the fenced
-    notification block (#948 S6 adversarial-review [5]).
+def _notify_block(task: Any, *, app: "FastAPI | None" = None) -> str:
+    """Compose one uniform task block through its focused rendering owner."""
 
-    The excerpt is the child agent's OWN final message text — untrusted content
-    that may reflect a poisoned document / web page / tool output. Embedded raw
-    inside triple-backtick fences under the block's marker, a child could close the
-    fence and forge extra ``### task …`` rows or the notification marker into the
-    parent's turn input (a fake-notification / cross-agent injection surface). This
-    replaces the two STRUCTURAL tokens the child must not control — any run of three
-    or more backticks (the fence delimiter) and the block marker — so child text can
-    never break out of the fence or forge the marker. Content is otherwise preserved
-    verbatim; the length bound is applied by the caller."""
-
-    text = re.sub(r"`{3,}", "``", text)
-    return text.replace(PENDING_TASK_NOTIFICATION_MARKER, "[marker removed]")
-
-
-def _notify_block(app: "FastAPI", task: Any) -> str:
-    """Compose ONE agent-task notification block — a uniform structured field
-    template (#948 S6 model-decides lock).
-
-    Renders the SAME fields for every terminal task, success or failure alike:
-    task id, child expert, status, typed error_reason, a size-bounded result
-    excerpt, and the child session id. There is deliberately NO branch on the
-    result's CONTENT (only the fixed excerpt length bound + structural-token
-    sanitization) — a failed child's result is presented identically to a completed
-    one, and the MODEL decides."""
-
-    result = task.result or {}
-    excerpt = _sanitize_excerpt(str(result.get("answer_excerpt", ""))[:_NOTIFY_EXCERPT_MAX])
-    artifact_block = ""
-    if task.artifact_ref:
-        from clio_agent.gact.agent_task_artifacts import (  # noqa: PLC0415
-            artifact_context_for_task,
-            artifact_context_text,
-        )
-
-        artifact_block = "\n" + artifact_context_text(artifact_context_for_task(app, task)).replace(
-            PENDING_TASK_NOTIFICATION_MARKER, "[marker removed]"
-        )
-    return (
-        f"### task {task.task_id} — {task.agent_ref.get('expert_id', '')} [{task.status}]\n"
-        f"- child_session_id: {task.child_session_id}\n"
-        f"- error_reason: {task.error_reason}\n"
-        f"- result_excerpt:\n```\n{excerpt}\n```{artifact_block}"
-    )
+    return compose_task_notification(task, app=app, marker=PENDING_TASK_NOTIFICATION_MARKER)
 
 
 def inject_pending_agent_task_notifications(
@@ -710,7 +667,7 @@ def inject_pending_agent_task_notifications(
     if not pending:
         return enriched_text, []
     selected = pending[:_MAX_NOTIFY_BLOCKS]
-    blocks = [_notify_block(app, task) for task in selected]
+    blocks = [_notify_block(task, app=app) for task in selected]
     remaining = len(pending) - len(selected)
     truncation = (
         f"\n\n_({remaining} more finished task(s) pending — they will surface next turn.)_"
@@ -787,10 +744,6 @@ def consume_pending_agent_task_notifications(app: "FastAPI", sid: str, task_ids:
         )
         _emit_delegation_terminal(app, sid, parent_def, claimed or task)
         if claimed is not None:
-            from clio_agent.gact.agent_task_artifacts import (  # noqa: PLC0415
-                emit_commission_parent_use,
-            )
-
             emit_commission_parent_use(app, sid, claimed)
 
 
