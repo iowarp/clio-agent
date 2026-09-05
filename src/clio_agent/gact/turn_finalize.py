@@ -97,6 +97,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _row_value(row: Any, key: str, default: Any = None) -> Any:
+    """Read a proposal field from either its mapping or object representation."""
+
+    if isinstance(row, Mapping):
+        return row.get(key, default)
+    return getattr(row, key, default)
+
+
 def finalize_turn(
     state: "TurnState",
     pred: Any,
@@ -150,6 +158,7 @@ def finalize_turn(
         and not state.proposed_diffs
         and not state.nanoagents
     ):
+        termination_reason = str(getattr(pred, "termination_reason", "") or "")
         state.error_info = ErrorInfo(
             error="empty_response",
             message="Agent completed without user-visible output.",
@@ -157,6 +166,7 @@ def finalize_turn(
                 "session_id": state.sid,
                 "routing_mode": getattr(state.sess, "routing_mode", "auto"),
                 "selected_agent": state.selected_agent,
+                "termination_reason": termination_reason,
             },
             recoverable=True,
         )
@@ -199,6 +209,10 @@ def finalize_turn(
     # The expert that produced this turn's thinking/answer/diff parts: the routed
     # expert when one was selected, else the active orchestrator.
     responder_agent_id = state.selected_agent or state.invocation_agent_id or "main"
+    answer_agent_ids = {
+        responder_agent_id,
+        state.active_agent_id or state.invocation_agent_id or "main",
+    } - {""}
     # Take the canonical-answer channel FIRST: its exactly-once identity seeds
     # from the pre-append ledger (the still-open streamed answer part included).
     # It covers the responder PLUS the stream tap's attribution fallback label
@@ -287,26 +301,25 @@ def finalize_turn(
         and not stream_fallback
     ):
         stream_fallback = _stream_fallback_payload("sync_execution_path")
-    answer_channel.finish(
-        fallback_text=str(state.answer_text or ""),
-        fallback_metadata=(
-            {"stream_fallback": stream_fallback} if stream_fallback and batch_turn_text else {}
-        ),
+    direct_response_streamed = str(
+        getattr(pred, "termination_reason", "") or ""
+    ) == "direct_response" and any(
+        state.transcript.has_closed_text(agent_id, "next_thought") for agent_id in answer_agent_ids
     )
+    if not direct_response_streamed:
+        answer_channel.finish(
+            fallback_text=str(state.answer_text or ""),
+            fallback_metadata=(
+                {"stream_fallback": stream_fallback} if stream_fallback and batch_turn_text else {}
+            ),
+        )
     for row in state.proposed_diffs:
-        if isinstance(row, dict):
-            getf = row.get
-        else:
-
-            def getf(k, default=None, _r=row):
-                return getattr(_r, k, default)
-
-        path = getf("path", "") or ""
-        udiff = getf("unified_diff", "") or ""
-        new_content = getf("new_content", "") or ""
-        edit_mode = getf("edit_mode", "") or ""
-        lines_added = int(getf("lines_added", 0) or 0)
-        lines_removed = int(getf("lines_removed", 0) or 0)
+        path = _row_value(row, "path", "") or ""
+        udiff = _row_value(row, "unified_diff", "") or ""
+        new_content = _row_value(row, "new_content", "") or ""
+        edit_mode = _row_value(row, "edit_mode", "") or ""
+        lines_added = int(_row_value(row, "lines_added", 0) or 0)
+        lines_removed = int(_row_value(row, "lines_removed", 0) or 0)
         if not path:
             continue
         # In "whole" mode the unified_diff may be empty by design;

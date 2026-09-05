@@ -6,13 +6,13 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent import conf
-from clio_agent.gact.runtime.grant_resolver import plans_dir
+from clio_agent.gact.runtime import grant_resolver
 
 
 def ensure_owned_plan_directory(plan_file: str) -> None:
     """Create CLIO's plan directory without trusting arbitrary recorded paths."""
 
-    owned_directory = plans_dir().resolve(strict=False)
+    owned_directory = grant_resolver.plans_dir().resolve(strict=False)
     if Path(plan_file).resolve(strict=False).parent == owned_directory:
         owned_directory.mkdir(parents=True, exist_ok=True)
 

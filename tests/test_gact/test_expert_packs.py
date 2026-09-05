@@ -872,13 +872,10 @@ Check CSV schemas and quality.
     assert assistant["metadata"]["stream_fallback"]["reason"] == "dynamic_prompt_stream_unavailable"
 
 
-def test_prompt_agent_empty_answer_raises_typed_failure(
+def test_prompt_agent_passes_through_empty_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # #948 S4: the settle/handoff-repair layer that once consumed an empty prompt-
-    # agent answer is deleted. An empty answer is a typed failure -- forward raises
-    # so the turn records ``agent_error`` (turn.py) instead of a silent empty
-    # deliverable, even when the agent declares children.
+    # The wrapper does not classify or repair model-produced prose.
     import dspy
 
     from clio_agent.gact import context as ctx
@@ -911,8 +908,8 @@ def test_prompt_agent_empty_answer_raises_typed_failure(
     session_token = ctx.set_session_id("sess_test")
     try:
         module = _build_prompt_user_agent_module(object(), agent_def)
-        with pytest.raises(RuntimeError, match="returned an empty answer"):
-            module.forward(question="review mzML", session_id="sess_test")
+        result = module.forward(question="review mzML", session_id="sess_test")
+        assert result.answer == ""
     finally:
         ctx.reset(session_token)
         ctx.reset(app_token)

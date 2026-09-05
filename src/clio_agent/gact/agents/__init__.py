@@ -13,7 +13,7 @@ the ``clio_agent.gact.app`` monolith:
 * :mod:`clio_agent.gact.agents.builders` -- the factories that compile a registered
   dynamic agent / Agent-Blueprint expert into the concrete DSPy module that runs
   it (prompt-only, tool-declaring, and every blueprint ``module.kind``), plus the
-  LM-config / tool-resolution / SCHEMA-REPAIR / child-delegation machinery.
+  LM-config / tool-resolution / child-delegation machinery.
 
 Modules here import the shared runtime base (:mod:`clio_agent.gact.runtime`) and
 gact *leaves* (``gact.catalog``, ``gact.agent_blueprints``, ``gact.expert_packs``,

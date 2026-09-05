@@ -99,6 +99,34 @@ def test_streamed_answer_is_never_swapped_and_the_batch_copy_never_lands(
         assert len(added_text) == 1
 
 
+def test_streamed_direct_response_is_not_repeated_as_a_batch_answer(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Tool-free ReAct prose is already the answer and persists exactly once."""
+
+    async def fake_streamed_forward(
+        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
+    ) -> Any:
+        await emit_chunk("Ready.", None, "next_thought")
+        return _Pred(
+            answer="Ready.",
+            selected_expert="code_expert",
+            termination_reason="direct_response",
+        )
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    app = _build(tmp_path, "direct", _PlainAgent("unused"))
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "direct"}).json()["id"]
+        _complete_turn(client, sid, "Reply ready. Do not call tools.")
+        assistant = _assistant_message(client, sid)
+
+    text_parts = [part for part in assistant["parts"] if part["type"] == "text"]
+    assert len(text_parts) == 1
+    assert text_parts[0]["text"] == "Ready."
+    assert text_parts[0]["metadata"]["signature_field_name"] == "next_thought"
+
+
 def test_batch_answer_lands_as_exactly_one_burst(tmp_path: Path) -> None:
     """Nothing streamed: the canonical answer lands as ONE added+completed
     batch burst (no synthetic deltas), authored to the responder, carrying the

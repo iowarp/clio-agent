@@ -1188,12 +1188,11 @@ def test_blueprint_runner_uses_dspy_module_call_path(monkeypatch: pytest.MonkeyP
     ]
 
 
-def test_blueprint_module_empty_answer_raises_typed_failure(
+def test_blueprint_module_passes_through_empty_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # #948 S4: the settle/synthesis layer that once tolerated an empty root answer
-    # is deleted. An empty answer is now a typed failure -- the module raises so the
-    # turn records ``agent_error`` (turn.py) instead of a silent empty deliverable.
+    # Content semantics belong to the model. The runtime wrapper neither repairs
+    # nor reclassifies a model-produced empty string.
     class FakeProgram:
         def __call__(self, **kwargs: Any) -> Any:
             return SimpleNamespace(answer="", expert_handoffs="")
@@ -1218,16 +1217,15 @@ def test_blueprint_module_empty_answer_raises_typed_failure(
         AgentDef(id="main", source="expert_pack", title="Main", module={"kind": "predict"}),
     )
 
-    with pytest.raises(RuntimeError, match="returned an empty answer"):
-        module(question="deliver", session_id="session-123")
+    result = module(question="deliver", session_id="session-123")
+
+    assert result.answer == ""
 
 
-def test_blueprint_module_empty_answer_with_handoffs_still_raises(
+def test_blueprint_module_passes_through_empty_answer_with_handoffs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The retired "handoff-only root output" shape (empty answer + handoff rows) no
-    # longer excuses an empty deliverable: routing is via the spawn-runtime tools,
-    # so an empty answer raises regardless of any residual expert_handoffs value.
+    # Handoff metadata does not change or repair the model's response.
     class FakeProgram:
         def __call__(self, **kwargs: Any) -> Any:
             return SimpleNamespace(
@@ -1255,8 +1253,11 @@ def test_blueprint_module_empty_answer_with_handoffs_still_raises(
         AgentDef(id="main", source="expert_pack", title="Main", module={"kind": "predict"}),
     )
 
-    with pytest.raises(RuntimeError, match="returned an empty answer"):
-        module(question="delegate", session_id="session-123")
+    result = module(question="delegate", session_id="session-123")
+
+    assert result.answer == ""
+    assert len(result.expert_handoffs) == 1
+    assert result.expert_handoffs[0]["agent_id"] == "reference"
 
 
 def test_extract_tools_called_from_indexed_react_trajectory() -> None:
