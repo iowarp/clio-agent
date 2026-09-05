@@ -18,6 +18,8 @@
 #   CLIO_INSTALLER_REF pin launcher scripts   (default: v<installed clio-agent>)
 #   CLIO_REF           clio-agent branch      (default: release mode)
 #   GACT_REF           gact-tui branch        (default: release mode)
+#   CLIO_KIT_PACKAGE   local candidate wheel/base spec (default: empty;
+#                                              released 2.10.6 remains legacy)
 #   CLIO_GIT_PROTOCOL  https | ssh            (default: https; only used
 #                                              in source-build mode)
 
@@ -61,6 +63,7 @@ $GactVersion = if ($env:GACT_VERSION)      { $env:GACT_VERSION }     else { 'lat
 $ClioInstallerRef = $env:CLIO_INSTALLER_REF
 $ClioRef     = $env:CLIO_REF
 $GactRef     = $env:GACT_REF
+$ClioKitPackage = $env:CLIO_KIT_PACKAGE
 $Protocol    = if ($env:CLIO_GIT_PROTOCOL) { $env:CLIO_GIT_PROTOCOL } else { 'https' }
 
 switch ($Protocol) {
@@ -135,22 +138,33 @@ if (Test-Path $VenvPython) {
     }
 }
 
-# ---------- provision clio-kit MCP tool launcher ----------------------
+# ---------- provision clio-kit MCP runtime ----------------------------
 # Marketplace packs launch their MCP servers via the installed `clio-kit
-# mcp-server <name>` launcher. Provision it as a uv tool so the launcher is on
-# PATH before first spawn. Installed-tool launchers (not `uvx clio-kit@...`)
+# mcp-server <name>` launcher. The released default retains legacy behavior; an
+# explicit candidate selects the compatible science dependency union once.
+# Installed-tool launchers (not per-server `uvx` calls)
 # avoid the concurrent cold-cache ephemeral-env race and `uv cache prune`
 # deleting envs under running servers (astral-sh/uv#11694). `uv tool install`
 # is idempotent (re-run is a no-op / version pin). Needs uv; without it the
 # packs' tools simply stay unprovisioned until uv is installed.
 if (Have uv) {
-    Say "Provisioning clio-kit MCP tool launcher (uv tool install clio-kit==2.10.6)"
-    & uv tool install clio-kit==2.10.6
+    if (-not $ClioKitPackage) {
+        $ClioKitSpec = 'clio-kit==2.10.6'
+        Say "Provisioning released clio-kit launcher ($ClioKitSpec; legacy runtime semantics)"
+    } elseif ($ClioKitPackage.Contains('==')) {
+        $ClioKitParts = $ClioKitPackage.Split('==', 2)
+        $ClioKitSpec = "$($ClioKitParts[0])[science]==$($ClioKitParts[1])"
+        Say "Provisioning candidate shared clio-kit science runtime ($ClioKitSpec)"
+    } else {
+        $ClioKitSpec = "$ClioKitPackage[science]"
+        Say "Provisioning candidate shared clio-kit science runtime ($ClioKitSpec)"
+    }
+    & uv tool install $ClioKitSpec
     if ($LASTEXITCODE -ne 0) {
-        Warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until 'uv tool install clio-kit==2.10.6' succeeds and the dir from 'uv tool dir --bin' is on PATH"
+        Warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until 'uv tool install `"$ClioKitSpec`"' succeeds and the dir from 'uv tool dir --bin' is on PATH"
     }
 } else {
-    Warn "uv not found - skipping clio-kit MCP launcher provisioning; install uv, then run: uv tool install clio-kit==2.10.6"
+    Warn "uv not found - skipping clio-kit MCP runtime provisioning; install uv and rerun this installer"
 }
 
 # ---------- install gact ----------------------------------------------

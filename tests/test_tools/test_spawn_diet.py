@@ -12,6 +12,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -112,6 +113,57 @@ def test_resolve_valid_plan(tmp_path) -> None:
     assert plan["env"]["CLIO_KIT_LOCKED_SERVER_SCHEMA"] == "clio-kit.locked-server.v4"
 
 
+def test_shared_runtime_upgrade_discards_old_plan_with_unchanged_shim(tmp_path: Path) -> None:
+    """A valid legacy plan must not bypass the new shared launcher on upgrade."""
+    shim, entry = _fake_env(tmp_path)
+    launcher = _launcher(tmp_path)
+    _store_plan(launcher, [str(shim), str(entry)])
+    cache = spawn_diet._cache_path()
+    payload = json.loads(cache.read_text(encoding="utf-8"))
+    payload["schema"] = "clio-agent.mcp-spawn-diet.v1"
+    cache.write_text(json.dumps(payload), encoding="utf-8")
+    assert spawn_diet.resolve("pandas", launcher, ("mcp-server", "pandas")) is None
+
+
+def test_upgrade_after_agent_update_invalidates_same_version_toolkit(tmp_path: Path) -> None:
+    """Source changes invalidate v2 plans even with unchanged shim and timestamps."""
+    shim, entry = _fake_env(tmp_path)
+    prefix = tmp_path / "tool"
+    scripts = prefix / "Scripts"
+    scripts.mkdir(parents=True)
+    interpreter = scripts / "python.exe"
+    interpreter.write_text("stub")
+    launcher = scripts / "clio-kit.exe"
+    with zipfile.ZipFile(launcher, "w") as archive:
+        archive.writestr("__main__.py", f"#!{interpreter}\nfrom clio_kit import cli\n")
+    module = prefix / "Lib" / "site-packages" / "clio_kit" / "__init__.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("legacy")
+    before = module.stat()
+    _store_plan(str(launcher), [str(shim), str(entry)])
+    assert spawn_diet.resolve("pandas", str(launcher), ("mcp-server", "pandas")) is not None
+    module.write_text("shared")
+    os.utime(module, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert spawn_diet.resolve("pandas", str(launcher), ("mcp-server", "pandas")) is None
+
+
+def test_user_install_identity_checks_script_prefix(tmp_path: Path) -> None:
+    """pip --user modules live beside the script prefix, outside base Python."""
+    scripts = tmp_path / "user" / "bin"
+    scripts.mkdir(parents=True)
+    interpreter = tmp_path / "system" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text("stub")
+    launcher = scripts / "clio-kit"
+    launcher.write_text(f"#!{interpreter}\nfrom clio_kit import cli\n")
+    module = tmp_path / "user" / "lib" / "python3.12" / "site-packages" / "clio_kit" / "__init__.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("legacy")
+    before = spawn_diet._launcher_fingerprint(str(launcher))
+    module.write_text("shared")
+    assert spawn_diet._launcher_fingerprint(str(launcher)) != before
+
+
 def test_resolve_rejects_changed_launcher(tmp_path) -> None:
     shim, entry = _fake_env(tmp_path)
     launcher = _launcher(tmp_path)
@@ -166,9 +218,7 @@ def test_resolve_rejects_unprefixed_env_keys(tmp_path) -> None:
 
     shim, entry = _fake_env(tmp_path)
     launcher = _launcher(tmp_path)
-    _store_plan(
-        launcher, [str(shim), str(entry)], env={"CLIO_KIT_ARTIFACTS": "C:/evil"}
-    )
+    _store_plan(launcher, [str(shim), str(entry)], env={"CLIO_KIT_ARTIFACTS": "C:/evil"})
     assert spawn_diet.resolve("pandas", launcher, ("mcp-server", "pandas")) is None
 
 
@@ -251,9 +301,7 @@ def test_underscore_mount_is_refused_typed(tmp_path, monkeypatch) -> None:
     launcher.write_text("launcher")
     _store_plan(str(launcher), [str(shim), str(entry)])
     assert (
-        spawn_diet.diet_transport_args(
-            "my_pandas", str(launcher), ("mcp-server", "pandas"), {}
-        )
+        spawn_diet.diet_transport_args("my_pandas", str(launcher), ("mcp-server", "pandas"), {})
         is None
     )
 
@@ -314,9 +362,7 @@ def _fake_chain(tmp_path: Path, env_dir: str, sha: str):
         "CLIO_KIT_LOCKED_SERVER_PROJECT_SHA256": sha,
         "CLIO_KIT_LOCKED_SERVER_SCHEMA": "clio-kit.locked-server.v4",
     }
-    proc = subprocess.Popen(
-        [sys.executable, str(launcher), "mcp-server", "pandas"], env=env
-    )
+    proc = subprocess.Popen([sys.executable, str(launcher), "mcp-server", "pandas"], env=env)
     return proc, launcher, entry, shim
 
 
@@ -354,9 +400,9 @@ def test_learn_scan_captures_live_chain(tmp_path) -> None:
     assert plan["env"]["CLIO_KIT_LOCKED_SERVER_PROJECT_SHA256"] == sha
     # The load-bearing filter claim: the leaf inherited the FULL os.environ,
     # so anything unprefixed in the plan means the filter is broken.
-    assert plan["env"] and all(
-        k.startswith("CLIO_KIT_LOCKED_SERVER_") for k in plan["env"]
-    ), f"unprefixed env leaked into the plan: {sorted(plan['env'])}"
+    assert plan["env"] and all(k.startswith("CLIO_KIT_LOCKED_SERVER_") for k in plan["env"]), (
+        f"unprefixed env leaked into the plan: {sorted(plan['env'])}"
+    )
     assert isinstance(plan["learned_at"], float)
 
 
@@ -403,7 +449,11 @@ def test_learn_scan_never_matches_a_variant_invocation(tmp_path) -> None:
     entry.write_text(LEAF)
     launcher = tmp_path / "clio-kit"
     launcher.write_text(FAKE_CLIO_KIT)
-    env = {**os.environ, "FAKE_LEAF_ENTRY": str(entry), "CLIO_KIT_LOCKED_SERVER_PROJECT_SHA256": sha}
+    env = {
+        **os.environ,
+        "FAKE_LEAF_ENTRY": str(entry),
+        "CLIO_KIT_LOCKED_SERVER_PROJECT_SHA256": sha,
+    }
     proc = subprocess.Popen(
         [sys.executable, str(launcher), "mcp-server", "pandas", "--branch", "dev"], env=env
     )
@@ -447,9 +497,7 @@ def test_transport_for_ineligible_spec_untouched(tmp_path, monkeypatch) -> None:
     launcher = tmp_path / "othertool.exe"
     launcher.write_text("launcher")
     monkeypatch.setattr("shutil.which", lambda cmd: str(launcher))
-    spec = MCPServerSpec(
-        name="other", transport="stdio", command="othertool", args=("serve",)
-    )
+    spec = MCPServerSpec(name="other", transport="stdio", command="othertool", args=("serve",))
     transport = transport_for(spec, cwd=str(tmp_path))
     assert transport.command == str(launcher)
     assert transport.args == ["serve"]

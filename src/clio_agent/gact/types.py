@@ -753,7 +753,7 @@ class LMProviderInfo(BaseModel):
     # the agentic LM path is structured/tool-calling, so greedy decoding
     # is the sane default. Overridable from the TUI.
     temperature: float = 0.0
-    max_tokens: int = 32000
+    max_tokens: int = 0
     context_length: int = 0
     # Handshake-discovered, queryable. ``chosen_context`` is the active context
     # limit clio operates against (the "context budget" other subsystems query);
@@ -829,7 +829,7 @@ class LMProviderRequest(BaseModel):
     the user can tune behaviour from the TUI without touching env
     vars. Defaults match LMProviderConfig's defaults
     (temperature=0.0 — deterministic, structured/tool-calling agentic
-    output; max_tokens=32000).
+    output; max_tokens=0 omits the client output cap).
     """
 
     provider: str

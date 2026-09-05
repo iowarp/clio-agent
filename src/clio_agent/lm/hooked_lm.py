@@ -77,6 +77,12 @@ RouteResolver = Callable[[str], "dspy.BaseLM | None"]
 _ROUTE_RESOLVER: RouteResolver | None = None
 
 
+def effective_lm_for_call(wrapper: Any, default: Any = None) -> Any:
+    """Return this wrapper invocation's real target, never another call's target."""
+
+    return getattr(wrapper, "_last_effective_lm", None) or default
+
+
 def install_model_route_resolver(resolver: RouteResolver | None) -> None:
     """Install (or clear) the process-global model-route resolver (P2.4 routing)."""
 
@@ -144,6 +150,7 @@ class _HookedLMBehaviour:
         # A per-instance resolver overrides the process-global one (tests + any
         # future per-turn routing table); ``None`` falls back to the global.
         self._route_resolver = route_resolver
+        self._last_effective_lm: Any = None
 
     # ----------------------------------------------------------------- #
     # Identity / capability delegation (dspy reads these off the lm).     #
@@ -182,9 +189,7 @@ class _HookedLMBehaviour:
         provider).
         """
 
-        return hooked_lm_cls()(
-            self._inner.copy(**kwargs), route_resolver=self._route_resolver
-        )
+        return hooked_lm_cls()(self._inner.copy(**kwargs), route_resolver=self._route_resolver)
 
     def forward(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> Any:
         """Delegate ``forward`` to the inner LM (defensive; hot path is ``__call__``)."""
@@ -200,6 +205,11 @@ class _HookedLMBehaviour:
     # The per-request hook dance.                                        #
     # ----------------------------------------------------------------- #
     def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[Any]:
+        # Per-wrapper invocation state. Each blueprint forward builds its own
+        # wrapper, so concurrent sessions cannot overwrite one another. Clear it
+        # before hooks: synthetic, denied, or failed routing must never reuse a
+        # prior real target.
+        self._last_effective_lm = None
         request = self._build_request(prompt, messages, kwargs)
         sid, turn_id, cwd = _resolve_call_context()
         before = dispatch_before_model(request, session_id=sid, turn_id=turn_id, cwd=cwd)
@@ -209,11 +219,13 @@ class _HookedLMBehaviour:
             synthetic = True
         else:
             target, call_messages, call_kwargs = self._resolve_call(before, messages, kwargs)
+            self._last_effective_lm = target
             outputs = target(prompt=prompt, messages=call_messages, **call_kwargs)
             synthetic = False
         return self._apply_after(request, outputs, synthetic, sid, turn_id, cwd)
 
     async def acall(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[Any]:
+        self._last_effective_lm = None
         request = self._build_request(prompt, messages, kwargs)
         sid, turn_id, cwd = _resolve_call_context()
         before = dispatch_before_model(request, session_id=sid, turn_id=turn_id, cwd=cwd)
@@ -223,6 +235,7 @@ class _HookedLMBehaviour:
             synthetic = True
         else:
             target, call_messages, call_kwargs = self._resolve_call(before, messages, kwargs)
+            self._last_effective_lm = target
             outputs = await target.acall(prompt=prompt, messages=call_messages, **call_kwargs)
             synthetic = False
         return self._apply_after(request, outputs, synthetic, sid, turn_id, cwd)
@@ -230,9 +243,7 @@ class _HookedLMBehaviour:
     # ----------------------------------------------------------------- #
     # Helpers (kept tiny so __call__/acall read as the contract).       #
     # ----------------------------------------------------------------- #
-    def _build_request(
-        self, prompt: Any, messages: Any, kwargs: Mapping[str, Any]
-    ) -> ModelRequest:
+    def _build_request(self, prompt: Any, messages: Any, kwargs: Mapping[str, Any]) -> ModelRequest:
         """Assemble the public :class:`ModelRequest` a hook inspects (creds stripped)."""
 
         if messages is not None:
@@ -289,9 +300,7 @@ class _HookedLMBehaviour:
             if routed is not None:
                 target = routed
             else:
-                record_hook_reason(
-                    "hook_route_unresolved", model_override=before.model_override
-                )
+                record_hook_reason("hook_route_unresolved", model_override=before.model_override)
         call_messages = messages
         call_kwargs = dict(kwargs)
         if before.has_request_patch and before.request_patch is not None:

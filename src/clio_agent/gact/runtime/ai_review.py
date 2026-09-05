@@ -104,24 +104,50 @@ def _bounded_args_summary(args: Mapping[str, Any]) -> str:
     return text
 
 
-def _resolve_reviewer_lm() -> Any:
-    """Resolve the LM the reviewer runs on, or ``None`` when none is configured.
+def _resolve_reviewer_lm(app: "FastAPI") -> tuple[Any, Any]:
+    """Resolve the reviewer LM and matching adapter from its effective caller.
 
-    Uses the process-bound default LM (:func:`active_lm`) — the same model the main
-    agent runs on — which is readable from the bridge thread the gate blocks on. When
-    no LM is configured the reviewer cannot run and the caller escalates (fail-safe).
-    An optional ``permissions.ai_review_model`` config key is reserved for a
-    reviewer-specific model; today it is advisory only (a distinct bound LM is a
-    follow-up), so resolution falls back to the bound default.
+    A bound expert/main identity wins. Outside a DSPy context the app's accepted
+    main identity is explicit fallback (the current repository has no independent
+    per-session provider-profile map). ``permissions.ai_review_model`` changes only
+    the model on that caller identity. Missing identity escalates fail-safe.
     """
 
     from clio_agent.gact.runtime.ambient_lm import active_lm  # noqa: PLC0415
 
-    lm, _ambient = active_lm()
-    return lm
+    caller, ambient = active_lm()
+    owner = getattr(app.state, "agent", None)
+    adapter = getattr(dspy.settings, "adapter", None)
+    if ambient:
+        caller = getattr(owner, "_main_lm", None)
+        adapter = getattr(owner, "_dspy_adapter", None)
+    if caller is None:
+        return None, None
+    model = conf.resolve(
+        "permissions.ai_review_model",
+        env="CLIO_AI_REVIEW_MODEL",
+        default="",
+        cast=conf.as_str,
+    ).strip()
+    if not model:
+        return caller, adapter
+    from clio_agent.lm.secondary import (  # noqa: PLC0415
+        SecondarySettings,
+        resolve_secondary_lm,
+    )
+
+    route = resolve_secondary_lm(
+        "summarizer",
+        caller_lm=caller,
+        caller_adapter=adapter,
+        settings=SecondarySettings(model=model),
+    )
+    return route.lm, route.adapter
 
 
-def _run_reviewer(lm: Any, inputs: dict[str, str], timeout_s: float) -> tuple[str, str]:
+def _run_reviewer(
+    lm: Any, inputs: dict[str, str], timeout_s: float, adapter: Any = None
+) -> tuple[str, str]:
     """Run the one-shot reviewer under a bounded timeout on a worker thread.
 
     Returns ``(verdict, escalation_key)``: for a clean ``allow``/``deny`` the key is
@@ -136,7 +162,7 @@ def _run_reviewer(lm: Any, inputs: dict[str, str], timeout_s: float) -> tuple[st
     # Capture the caller-thread's effective DSPy adapter so the worker thread (fresh
     # thread-locals) inherits it — otherwise the reviewer Predict may use the wrong
     # adapter and always fail (→ escalate), defeating the auto-decision.
-    parent_adapter = getattr(dspy.settings, "adapter", None)
+    parent_adapter = adapter or getattr(dspy.settings, "adapter", None)
 
     def _call() -> str:
         predict = dspy.Predict(_AiReviewSignature)
@@ -191,7 +217,7 @@ def ai_review_verdict(
     # exception here escalates to the human, never propagates (which would fail-CLOSED to a
     # deny at the gate) and never auto-allows.
     try:
-        lm = _resolve_reviewer_lm()
+        lm, adapter = _resolve_reviewer_lm(app)
         if lm is None:
             logger.warning("ai-review has no LM configured -> escalate to human (fail-safe)")
             return "escalate", REASON_AI_REVIEW_NO_LM
@@ -214,7 +240,7 @@ def ai_review_verdict(
     except Exception:  # noqa: BLE001 - reviewer setup failure fails safe to human escalation
         logger.warning("ai-review setup failed -> escalate to human (fail-safe)", exc_info=True)
         return "escalate", REASON_AI_REVIEW_ERROR
-    verdict, escalate_key = _run_reviewer(lm, inputs, timeout_s)
+    verdict, escalate_key = _run_reviewer(lm, inputs, timeout_s, adapter=adapter)
     if verdict == "allow":
         return "allow", REASON_AI_REVIEW_ALLOW
     if verdict == "deny":

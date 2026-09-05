@@ -14,6 +14,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_A2UI_MAX_STRING_CHARS` | `a2ui.max_string_chars` | int | `16384` | `src/clio_agent/gact/a2ui.py` |
 | `CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP` | `agents.disable_default_registry_bootstrap` | bool | `false` | `src/clio_agent/gact/agent_blueprint_refresh.py` |
 | `CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS` | `limits.agent_task_output_digest_chars` | int | `8000` | `src/clio_agent/gact/agents/agent_task_output_digest.py` |
+| `CLIO_AI_REVIEW_MODEL` | `permissions.ai_review_model` | str | _(unset)_ | `src/clio_agent/gact/runtime/ai_review.py` |
 | `CLIO_AI_REVIEW_TIMEOUT_S` | `permissions.ai_review_timeout_s` | str | `45.0` | `src/clio_agent/gact/runtime/ai_review.py` |
 | `CLIO_ALLOWED_ROOTS` | `tools.file_policy.allowed_roots` | str | `_default_allowed_roots()` _(computed)_ | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_ALLOW_SYMLINKS` | `tools.file_policy.allow_symlinks` | bool | `false` | `src/clio_agent/tools/file_policy.py` |
@@ -231,6 +232,12 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_RELAY_REMOTE_AGENT_WORKDIR` | `relay.remote_agent.workdir` | str | _(unset)_ | `src/clio_agent/gact/relay_wiring.py` |
 | `CLIO_RELAY_SESSION_GENERATION_ID` | `relay.owner_session_generation_id` | str | _(unset)_ | `src/clio_agent/tools/relay_factory.py` |
 | `CLIO_RELAY_TOOL_SURFACES_TTL_SECONDS` | `relay.tool_surfaces_ttl_seconds` | int | `300` | `src/clio_agent/gact/relay_wiring.py` |
+| `CLIO_REPAIRER_API_BASE` | `repairer.api_base` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
+| `CLIO_REPAIRER_CREDENTIAL_REF` | `repairer.credential_ref` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
+| `CLIO_REPAIRER_MAX_TOKENS` | `repairer.max_tokens` | int | _(unset)_ | `src/clio_agent/lm/secondary.py` |
+| `CLIO_REPAIRER_MODEL` | `repairer.model` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
+| `CLIO_REPAIRER_PROVIDER` | `repairer.provider` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
+| `CLIO_REPAIRER_TRANSPORT` | `repairer.transport` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
 | `CLIO_RESIDENT_LEDGERS_MAX` | `gact.resident_ledgers.max_sessions` | int | `512` | `src/clio_agent/gact/resident_ledgers.py` |
 | `CLIO_RESIDENT_LEDGERS_MAX_BYTES` | `gact.resident_ledgers.max_bytes` | int | `536870912` | `src/clio_agent/gact/resident_ledgers.py` |
 | `CLIO_RESIDENT_LEDGERS_TTL_S` | `gact.resident_ledgers.idle_ttl_s` | float | `1800.0` | `src/clio_agent/gact/resident_ledgers.py` |
@@ -284,6 +291,12 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SSE_WIRE_TAP` | `debug.sse_wire_tap` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
 | `CLIO_STREAM_AUDIT_LOG` | `debug.stream_audit_log` | str | _(unset)_ | `src/clio_agent/runtime/stream_audit.py` |
 | `CLIO_SUBMIT_REPAIR_ATTEMPTS` | `limits.submit_repair_attempts` | float | `3.0` | `src/clio_agent/gact/agents/reactv2.py` |
+| `CLIO_SUMMARIZER_API_BASE` | `summarizer.api_base` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
+| `CLIO_SUMMARIZER_CREDENTIAL_REF` | `summarizer.credential_ref` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
+| `CLIO_SUMMARIZER_MAX_TOKENS` | `summarizer.max_tokens` | int | _(unset)_ | `src/clio_agent/lm/secondary.py` |
+| `CLIO_SUMMARIZER_MODEL` | `summarizer.model` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
+| `CLIO_SUMMARIZER_PROVIDER` | `summarizer.provider` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
+| `CLIO_SUMMARIZER_TRANSPORT` | `summarizer.transport` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
 | `CLIO_TOOL_RESULT_CHARS` | `limits.tool_result_chars` | int | `12000` | `src/clio_agent/gact/evidence.py` |
 | `CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS` | `limits.transient_provider_retry_delays` | list | _(unset)_ | `src/clio_agent/agent.py` |
 | `CLIO_WEB_DIR` | `paths.web_dir` | str | _(unset)_ | `src/clio_agent/gact/app.py` |

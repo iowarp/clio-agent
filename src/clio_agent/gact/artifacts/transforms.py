@@ -72,6 +72,7 @@ logger = logging.getLogger(__name__)
 ARTIFACT_TRANSFORM_RECORDED_EVENT = "artifact.transform.recorded"
 #: Trace-only event a wiring failure emits so the swallow is DETECTABLE (finding [11]).
 ARTIFACT_TRANSFORM_FAILED_EVENT = "artifact.transform.failed"
+ARTIFACT_PROVENANCE_INCOMPLETE_EVENT = "artifact.provenance.incomplete"
 
 #: Re-exported so ``tests`` + callers can reach the detector via ``transforms``.
 _detect_used_edges = detect_used_edges
@@ -435,6 +436,7 @@ def record_transform(
         allowed_workspace_ids=allowed_workspace_ids,
         call_id=call_id,
         tool_name=tool_name,
+        allow_external_inputs=ok,
     )
     authority_scan = detect_authority_edges(
         app, tool_name=tool_name, result=result, workspace_id=workspace_id
@@ -571,7 +573,7 @@ def observe_tool_transform(
     ok: bool,
     result: Any = None,
     call_started_at: Optional[float] = None,
-) -> None:
+) -> Optional[TransformRecord]:
     """Observer seam entry: mint generated outputs + record the transform (S5).
 
     Fully self-contained + guarded so the gact tool observer calls it in one line.
@@ -628,7 +630,7 @@ def observe_tool_transform(
             resolve_serving_child_id,
         )
 
-        record_transform(
+        record = record_transform(
             app,
             sid,
             tool_name=tool_name,
@@ -663,6 +665,7 @@ def observe_tool_transform(
             trace_id=trace_id,
             started_at=started,
         )
+        return record
     except Exception as exc:  # noqa: BLE001 — a live provenance record must never break a turn
         # Finding [11]: the wiring's ONLY production path must not SWALLOW its own
         # failure silently — record a TYPED failure (queryable ledger + trace event)
@@ -674,7 +677,9 @@ def observe_tool_transform(
             call_id=call_id,
             reason=type(exc).__name__,
             detail=str(exc),
+            tool_ok=ok,
         )
+        return None
 
 
 def _record_transform_failure(
@@ -685,6 +690,7 @@ def _record_transform_failure(
     call_id: str,
     reason: str,
     detail: str,
+    tool_ok: bool = False,
 ) -> None:
     """Record a TYPED ``transform_record_failed`` (finding [11]) — never a bare swallow.
 
@@ -737,6 +743,19 @@ def _record_transform_failure(
             subject={"call_id": call_id},
             payload=entry,
         )
+        if tool_ok:
+            _emit_semantic_event(
+                app,
+                sid,
+                ARTIFACT_PROVENANCE_INCOMPLETE_EVENT,
+                turn_id=_ctx.active_turn_id(),
+                trace_id=_ctx.active_trace_id(),
+                status="completed",
+                summary=f"Provenance for successful tool call {tool_name} is incomplete.",
+                actor={"tool": tool_name, "mechanism": "harness"},
+                subject={"call_id": call_id},
+                payload={**entry, "tool_success_retained": True, "provenance_complete": False},
+            )
     except Exception:  # noqa: BLE001 — a failure emit must never break the turn either
         logger.debug("transform failure event emit skipped reason=emit_unavailable", exc_info=True)
 
@@ -748,6 +767,7 @@ def transform_record_failures(app: "FastAPI") -> list[dict[str, Any]]:
 
 
 __all__ = [
+    "ARTIFACT_PROVENANCE_INCOMPLETE_EVENT",
     "ARTIFACT_TRANSFORM_FAILED_EVENT",
     "ARTIFACT_TRANSFORM_RECORDED_EVENT",
     "AgentRole",

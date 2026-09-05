@@ -108,6 +108,9 @@ SSE_UI_EVENT_TYPES: frozenset[str] = frozenset(
         "artifact.created",
         "artifact.version.added",
         "artifact.alias.moved",
+        # A successful tool whose provenance observer failed remains successful,
+        # but the missing capture must be visible and durable (#1320).
+        "artifact.provenance.incomplete",
         # Document artifacts: protocol-specific UI atoms, never inferred.
         "document.review.created",
         "document.review.dispatched",

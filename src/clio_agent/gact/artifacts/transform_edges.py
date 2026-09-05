@@ -99,6 +99,139 @@ _MAX_CANDIDATE_STRLEN = 4096
 #: :mod:`clio_agent.gact.artifacts.declared_used_edges`.
 _DECLARED_CHANNEL_ARG_NAMES: frozenset[str] = frozenset({"used"})
 
+# External paths are weaker evidence than contained, hashed workspace inputs: the
+# observer may retain only arguments whose tool contract says the call consumes
+# file bytes.  Keep this table narrow and explicit.  A generic ``path`` heuristic
+# cannot distinguish a reader from a directory listing, stat, destination, or an
+# API whose result merely echoes its request (#1320).
+_EXTERNAL_FILE_INPUT_ARGS: dict[str, frozenset[str]] = {
+    "fs_read_file": frozenset({"filepath"}),
+    "fs_propose_edit": frozenset({"filepath"}),
+    # CLIO Kit pandas contracts.
+    "pandas_load_data": frozenset({"file_path"}),
+    "pandas_statistical_summary": frozenset({"file_path"}),
+    "pandas_correlation_analysis": frozenset({"file_path"}),
+    "pandas_hypothesis_testing": frozenset({"file_path"}),
+    "pandas_handle_missing_data": frozenset({"file_path"}),
+    "pandas_clean_data": frozenset({"file_path"}),
+    "pandas_groupby_operations": frozenset({"file_path"}),
+    "pandas_merge_datasets": frozenset({"left_file", "right_file"}),
+    "pandas_pivot_table": frozenset({"file_path"}),
+    "pandas_time_series_operations": frozenset({"file_path"}),
+    "pandas_validate_data": frozenset({"file_path"}),
+    "pandas_filter_data": frozenset({"file_path"}),
+    "pandas_optimize_memory": frozenset({"file_path"}),
+    "pandas_profile_data": frozenset({"file_path"}),
+    "pandas_profile_csv": frozenset({"data_path"}),
+    # CLIO Kit geo contracts. Network/catalog-only calls intentionally do not
+    # appear here; NDP local consumption begins only after a staged path is
+    # passed to one of these readers.
+    "geo_render_feature_map": frozenset({"data_path"}),
+    "geo_points_in_polygons": frozenset({"points_path", "polygons_path"}),
+    "geo_bounding_box": frozenset({"data_path"}),
+    "geo_filter_points_by_radius": frozenset({"data_path"}),
+    # CLIO Kit plot contracts.
+    "plot_line_plot": frozenset({"file_path"}),
+    "plot_bar_plot": frozenset({"file_path"}),
+    "plot_scatter_plot": frozenset({"file_path"}),
+    "plot_histogram_plot": frozenset({"file_path"}),
+    "plot_heatmap_plot": frozenset({"file_path"}),
+    "plot_data_info": frozenset({"file_path"}),
+}
+
+_NON_CONSUMING_PATH_TOOLS: frozenset[str] = frozenset(
+    {
+        "fs_apply_edit_write",
+        "fs_list_directory",
+        "ndp_list_organizations",
+        "ndp_search_datasets",
+        "ndp_get_dataset_details",
+        "ndp_stage_resource",
+    }
+)
+
+_NON_WRITING_FILE_CONSUMERS: frozenset[str] = frozenset(
+    {
+        "fs_read_file",
+        "fs_propose_edit",
+        "pandas_load_data",
+        "pandas_statistical_summary",
+        "pandas_correlation_analysis",
+        "pandas_hypothesis_testing",
+        "pandas_groupby_operations",
+        "pandas_pivot_table",
+        "pandas_time_series_operations",
+        "pandas_validate_data",
+        "pandas_optimize_memory",
+        "pandas_profile_data",
+        "pandas_profile_csv",
+        "geo_bounding_box",
+        "geo_filter_points_by_radius",
+        "plot_data_info",
+    }
+)
+
+_PATH_SCHEMA_ARG_NAMES: frozenset[str] = frozenset(
+    {
+        "path",
+        "filepath",
+        "file_path",
+        "data_path",
+        "input_path",
+        "source_path",
+        "left_file",
+        "right_file",
+        "points_path",
+        "polygons_path",
+    }
+)
+
+
+def external_file_input_args(tool_name: str) -> frozenset[str]:
+    """Return schema arguments known to be consumed as files by ``tool_name``.
+
+    The exact gateway-visible name is used. Unknown tools deliberately
+    return no arguments, leaving their external-input provenance incomplete
+    rather than manufacturing a use edge from a path-shaped string.
+    """
+    return _EXTERNAL_FILE_INPUT_ARGS.get(tool_name, frozenset())
+
+
+def _external_file_arg_was_consumed(tool_name: str, candidate: Path) -> bool:
+    """Resolve conditional file consumption without reading or hashing bytes."""
+    if tool_name != "fs_propose_edit":
+        return True
+    try:
+        return candidate.is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def declared_consumed_file_paths(tool_name: str, args: Mapping[str, Any]) -> set[str]:
+    """Return normalized paths declared as consumed by the exact tool contract."""
+    paths: set[str] = set()
+    for arg_name in external_file_input_args(tool_name):
+        value = args.get(arg_name)
+        values = value if isinstance(value, (list, tuple)) else (value,)
+        for raw in values:
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            candidate = Path(raw)
+            if not candidate.is_absolute() or not _external_file_arg_was_consumed(
+                tool_name, candidate
+            ):
+                continue
+            try:
+                paths.add(str(candidate.expanduser().resolve(strict=False)))
+            except (OSError, ValueError):
+                continue
+    return paths
+
+
+def is_non_writing_file_consumer(tool_name: str) -> bool:
+    """Return whether the exact consumer contract does not write file outputs."""
+    return tool_name in _NON_WRITING_FILE_CONSUMERS
+
 
 def _candidate_arg_strings(args: Any) -> list[tuple[str, str]]:
     """Walk call args for candidate path strings as ``(arg_name, value)`` pairs.
@@ -225,6 +358,7 @@ def detect_used_edges(
     allowed_workspace_ids: Optional[set[str]] = None,
     call_id: str = "",
     tool_name: str = "",
+    allow_external_inputs: bool = False,
 ) -> EdgeScan:
     """Detect ``used`` edges from call args (item 3 — precision over recall).
 
@@ -240,6 +374,8 @@ def detect_used_edges(
     version FIRST and point the edge at it (the ``note`` carries the ACTUAL
     reconcile class — finding [3]); over threshold → ``stat-pinned`` labeled. An
     existing contained file NOT in the registry → an ``external:<path>`` edge.
+    With ``allow_external_inputs``, a successful call's external input-path args
+    also retain a schema-arg reference, without filesystem reads or byte identity.
 
     ``allowed_workspace_ids`` (P3.1 #1038 — cross-job lineage bind) is the CROSS-JOB
     contributing set the CALLER computed (every workspace sharing this job's
@@ -284,6 +420,43 @@ def detect_used_edges(
             # An over-long / malformed value is never a workspace path (defensive).
             continue
         if not contained:
+            # Successful calls may consume user-supplied files beyond the output
+            # workspace (#1320). Record their declared locator without opening,
+            # hashing or minting it: schema-arg evidence is not byte custody.
+            if (
+                allow_external_inputs
+                and arg_name in external_file_input_args(tool_name)
+                and _external_file_arg_was_consumed(tool_name, candidate)
+            ):
+                resolved = str(candidate.expanduser().resolve(strict=False))
+                if resolved not in seen:
+                    seen.add(resolved)
+                    edges.append(
+                        ProvEdge(
+                            role=EdgeRole.USED,
+                            evidence=EdgeEvidence.SCHEMA_ARG,
+                            external_ref=f"external:{resolved}",
+                            path=resolved,
+                            name=Path(resolved).name,
+                            arg=arg_name,
+                            note="external_input_not_hashed",
+                        )
+                    )
+            elif (
+                allow_external_inputs
+                and tool_name not in _NON_CONSUMING_PATH_TOOLS
+                and arg_name not in external_file_input_args(tool_name)
+                and arg_name in _PATH_SCHEMA_ARG_NAMES
+                and _looks_like_path(raw)
+            ):
+                notes.append(
+                    {
+                        "reason": "external_input_contract_unknown",
+                        "tool": tool_name,
+                        "arg": arg_name,
+                        "value": raw,
+                    }
+                )
             continue
         try:
             is_file = candidate.is_file()
@@ -292,7 +465,7 @@ def detect_used_edges(
         if not is_file:
             # A path-looking arg that never resolved to a workspace file is a
             # DETECTABLE miss (finding [4]); a bare query string is not.
-            if _looks_like_path(raw):
+            if arg_name in _PATH_SCHEMA_ARG_NAMES and _looks_like_path(raw):
                 notes.append({"reason": "unresolved_path_arg", "arg": arg_name, "value": raw})
             continue
         resolved = str(candidate.expanduser().resolve(strict=False))

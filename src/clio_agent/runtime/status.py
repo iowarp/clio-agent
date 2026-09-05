@@ -1153,7 +1153,7 @@ class RuntimeProbe:
             model=model,
             api_key=api_key,
             temperature=self._float_env("CLIO_LM_TEMPERATURE", 0.0),
-            max_tokens=self._int_env("CLIO_LM_MAX_TOKENS", 32000),
+            max_tokens=self._int_env("CLIO_LM_MAX_TOKENS", 0),
             environment=self.env.get("CLIO_ENVIRONMENT", "dev"),
         )
         source_parts = [

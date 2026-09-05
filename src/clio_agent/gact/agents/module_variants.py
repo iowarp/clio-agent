@@ -369,6 +369,10 @@ def compile_reward_fn(spec: VariantSpec, *, agent_id: str) -> Callable[[dict, Pr
             judged = dspy.Predict(signature)(**judge_inputs)
             score = _clamp_score(getattr(judged, "score", None))
         except Exception as exc:  # noqa: BLE001 - typed 0.0 degrade, never a crash
+            from clio_agent.lm.io_logging import LMOutputTruncatedError  # noqa: PLC0415
+
+            if isinstance(exc, LMOutputTruncatedError):
+                raise
             logger.warning(
                 "variant.reward.parse_failed agent=%s run_index=%d error=%s",
                 agent_id,

@@ -179,7 +179,7 @@ def test_cross_provider_real_key_and_folded_caps(monkeypatch: pytest.MonkeyPatch
     )
     _patch_handshake(monkeypatch, report)
 
-    # max_tokens=None → the handshake is allowed to size a context-aware cap.
+    # max_tokens=None inherits an uncapped client request.
     spec = LMSpec(provider="openai", model="gpt-4o", max_tokens=None)
     resolved = resolve_endpoint_and_handshake(spec)
     cfg = resolved.materialize(CredentialResolver())
@@ -188,8 +188,8 @@ def test_cross_provider_real_key_and_folded_caps(monkeypatch: pytest.MonkeyPatch
     assert cfg.provider == "openai"
     assert cfg.api_key == "sk-live-key"  # resolved fresh, cross-provider
     assert cfg.context_window == 128000
-    # context-aware max_tokens = min(output_limit, context_window)
-    assert cfg.max_tokens == 16384
+    # Capacity discovery must not insert an output cap (#1323).
+    assert cfg.max_tokens == 0
 
 
 def test_named_ref_missing_no_silent_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -243,7 +243,7 @@ def test_handshake_unreachable_records_reason_and_static_caps(
     # Static caps preserved: no discovered window, provider-default max_tokens.
     cfg = resolved.materialize(CredentialResolver())
     assert cfg.context_window is None
-    assert cfg.max_tokens == int(PROVIDER_DEFAULTS["argonne"]["max_tokens"])  # 4096 static cap
+    assert cfg.max_tokens == 0
 
 
 def test_handshake_error_records_reason(monkeypatch: pytest.MonkeyPatch) -> None:

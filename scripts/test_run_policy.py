@@ -188,6 +188,9 @@ class TestRun:
             "clio-runtime": ("CLIO_RUNTIME_STATE_DIR",),
             "clio-kit": ("CLIO_KIT_CACHE_DIR",),
             "matplotlib": ("MPLCONFIGDIR",),
+            # FastMCP's version check writes below settings.home. Keep that cache
+            # under the same lease as pytest, uv, and other child state.
+            "fastmcp": ("FASTMCP_HOME",),
         }
         values = {
             ROOT_ENV: str(self.root),

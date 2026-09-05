@@ -1,4 +1,9 @@
-"""MCP spawn diet: learned direct venv-interpreter spawn for clio-kit servers (#930 S4/#934).
+"""Legacy MCP spawn diet: learned direct venv-interpreter spawn (#930 S4/#934).
+
+Shared CLIO Kit runtimes execute the server directly and have no legacy child
+environment to learn. Cached legacy plans bind to the installed toolkit code
+and metadata as well as the executable, so unchanged console shims cannot hide
+the transition to shared execution (#1319).
 
 The declared launcher ``clio-kit mcp-server <name>`` spawns a 7-process chain on
 Windows (trampoline -> bootstrap python -> clio-kit CLI -> resident ``uv run``
@@ -57,8 +62,11 @@ from typing import Any
 
 from clio_agent import conf, paths
 from clio_agent.runtime import trace
+from clio_agent.tools.spawn_diet_identity import launcher_identity
 
-_SCHEMA = "clio-agent.mcp-spawn-diet.v1"
+# Invalidate learned per-server launch chains when adopting shared CLIO Kit
+# runtimes. Windows console shims can retain their size/mtime across an upgrade.
+_SCHEMA = "clio-agent.mcp-spawn-diet.v2"
 _CACHE_BASENAME = "mcp_spawn_diet.json"
 
 # The recognized launcher and subcommand — the diet applies ONLY to the exact
@@ -125,10 +133,8 @@ def _cache_path() -> Path:
 
 
 def _launcher_fingerprint(resolved_command: str) -> str:
-    """Cheap invalidation key for the launcher binary (upgrade => relearn)."""
-
-    st = os.stat(resolved_command)
-    return f"{st.st_size}:{int(st.st_mtime)}"
+    """Bind the plan to the installed toolkit even when its shim is unchanged."""
+    return launcher_identity(resolved_command)
 
 
 def _plan_key(spec_command: str, spec_args: tuple[str, ...]) -> str:
@@ -224,9 +230,7 @@ def resolve(
         _drop("env_vanished")
         return None
     env = plan.get("env")
-    if not isinstance(env, dict) or not all(
-        str(k).startswith(_REPLAY_ENV_PREFIX) for k in env
-    ):
+    if not isinstance(env, dict) or not all(str(k).startswith(_REPLAY_ENV_PREFIX) for k in env):
         # Enforced at APPLY, not just capture: a plan env key outside the
         # replay prefix could clobber workspace pinning (CLIO_KIT_ARTIFACTS).
         _drop("malformed_plan")
@@ -329,9 +333,7 @@ def _learn_scan(spec_name: str, resolved_command: str, spec_args: tuple[str, ...
         diet_argv = _derive_diet_argv(leaf_argv)
         if diet_argv is None:
             return "underivable_leaf"
-        replay_env = {
-            k: v for k, v in leaf_env.items() if k.startswith(_REPLAY_ENV_PREFIX)
-        }
+        replay_env = {k: v for k, v in leaf_env.items() if k.startswith(_REPLAY_ENV_PREFIX)}
         # Learn guards — refuse anything this schema does not fully recognize:
         # the env dir must be THIS server's (``<name>-<hash>``), and its hash
         # must prefix the project sha the launcher stamped into the leaf env.
@@ -341,12 +343,7 @@ def _learn_scan(spec_name: str, resolved_command: str, spec_args: tuple[str, ...
         env_dir = Path(diet_argv[1]).parent.parent.name
         suffix = env_dir.rsplit("-", 1)[-1] if "-" in env_dir else ""
         server = spec_args[1] if len(spec_args) > 1 else spec_name
-        if not (
-            sha
-            and suffix
-            and sha.startswith(suffix)
-            and env_dir.startswith(f"{server}-")
-        ):
+        if not (sha and suffix and sha.startswith(suffix) and env_dir.startswith(f"{server}-")):
             return "layout_mismatch"
         try:
             fingerprint = _launcher_fingerprint(resolved_command)

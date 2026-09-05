@@ -227,12 +227,10 @@ class LMProviderConfig:
     # here. Overridable via CLIO_LM_TEMPERATURE / the PUT body / the
     # config field for callers who want sampling.
     temperature: float = 0.0
-    # 0 is a sentinel "use the provider's max_tokens override (see
-    # PROVIDER_DEFAULTS) if it has one, else 32000". Callers who
-    # explicitly pass any non-zero value win.
+    # 0 omits the client output cap; positive values set an explicit cap.
     max_tokens: int = 0
     planner_temperature: float = 0.3
-    planner_max_tokens: int = 0
+    planner_max_tokens: int | None = None
     router_temperature: float | None = None
     # Sampling surface (None = omit -> the provider/model's own default applies).
     # Greedy decoding (temperature 0) makes Qwen-family REASONING models (qwopus,
@@ -300,8 +298,7 @@ class LMProviderConfig:
                     preset.id, self.provider_options
                 )
         else:
-            self.provider_id = identity
-            defaults = PROVIDER_DEFAULTS.get(self.provider, PROVIDER_DEFAULTS["lm_studio"])
+            raise ValueError(f"Unknown LM provider {identity!r}; configure a supported provider")
         if self.router_temperature is not None:
             self.planner_temperature = self.router_temperature
         self.router_temperature = self.planner_temperature
@@ -325,14 +322,14 @@ class LMProviderConfig:
             self.api_key = (
                 _credentials.resolve(self.provider_id or self.provider, "") or defaults["api_key"]
             )
-        # max_tokens=0 is the sentinel "pick a sensible default for
-        # this provider" — Argonne/ALCF model availability and context
-        # windows vary by running gateway job, and some paths reject
-        # the global 32000 default.
-        if self.max_tokens == 0:
-            self.max_tokens = int(defaults.get("max_tokens", 32000))
+        # Zero means no client output cap. Provider/model discovery must never
+        # turn an omitted cap into a finite limit (#1323).
+        if self.max_tokens < 0 or (
+            self.planner_max_tokens is not None and self.planner_max_tokens < 0
+        ):
+            raise ValueError("max_tokens and planner_max_tokens must be non-negative")
         self._apply_model_profile_defaults()
-        if self.planner_max_tokens == 0:
+        if self.planner_max_tokens is None:
             self.planner_max_tokens = self.max_tokens
         # Capability flags. defaults dict wins — these aren't user-set
         # via env vars (they're wire-protocol facts about the provider),
@@ -368,22 +365,16 @@ class LMProviderConfig:
         if self.planner_temperature == 0.3:
             self.planner_temperature = 0.0
             self.router_temperature = self.planner_temperature
-        if self.planner_max_tokens == 0:
-            self.planner_max_tokens = max(self.max_tokens, 4096)
-        elif self.planner_max_tokens < 4096:
-            self.planner_max_tokens = 4096
+        # Output caps are exact operator choices (#1323). Model profiles may
+        # tune sampling, but must not invent or raise a client-side cap.
 
     def apply_handshake(self, report: Any, *, user_set_max_tokens: bool = False) -> None:
         """Fold a provider handshake report into this config (call at bind time).
 
-        Sets the discovered per-model fields (context window, reasoning/tool
-        capabilities) and, unless the caller explicitly set ``max_tokens``,
-        recomputes a context-aware ``max_tokens`` — replacing the static
-        provider default (e.g. the ALCF 4096 cap on 256K-context models).
-        ``user_set_max_tokens`` must be True when the user/env supplied an
-        explicit value so their choice always wins. No-op when the report has no
-        usable profile (handshake failed / model not found), preserving today's
-        static behaviour.
+        Sets the discovered context window and reasoning/tool capabilities.
+        Output caps remain operator choices: zero omits the cap, and positive
+        values are preserved. ``user_set_max_tokens`` is retained for callers
+        using the earlier signature. No-op when the report has no usable profile.
         """
         profile = None
         models = getattr(report, "models", None) or ()
@@ -406,14 +397,8 @@ class LMProviderConfig:
         self.tool_call_parser = profile.tool_call_parser
         window = profile.effective_context_window
         self.chosen_context = window
-        if not user_set_max_tokens:
-            self.max_tokens = resolve_effective_max_tokens(
-                user_max_tokens=0,
-                provider_default=self.max_tokens,
-                output_limit=profile.output_limit,
-                context_window=window,
-            )
-            self.planner_max_tokens = self.max_tokens
+        # Discovery describes capacity; it does not configure an output cap.
+        # Keep both zero (uncapped) and explicit per-role limits intact.
 
 
 def resolve_effective_max_tokens(

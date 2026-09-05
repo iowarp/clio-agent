@@ -233,6 +233,61 @@ providers.model_catalog_ttl_s: 86400.0
 # attachment leaves CLIO unbounded and unattributed.
 # providers.native_image_url_allowlist:  # default unset; resolved in code
 
+# CLIO_REPAIRER_API_BASE  (str)  <- src/clio_agent/lm/secondary.py
+# Optional repair endpoint override; empty inherits the effective caller
+# endpoint.
+# repairer.api_base:  # default unset; resolved in code
+
+# CLIO_REPAIRER_CREDENTIAL_REF  (str)  <- src/clio_agent/lm/secondary.py
+# Optional repair credential reference resolved at each invocation.
+# repairer.credential_ref:  # default unset; resolved in code
+
+# CLIO_REPAIRER_MAX_TOKENS  (int)  <- src/clio_agent/lm/secondary.py
+# Optional repair output cap; zero omits the client cap and empty inherits.
+# repairer.max_tokens:  # default unset; resolved in code
+
+# CLIO_REPAIRER_MODEL  (str)  <- src/clio_agent/lm/secondary.py
+# Optional repair model override; empty inherits the rejected call model.
+# repairer.model:  # default unset; resolved in code
+
+# CLIO_REPAIRER_PROVIDER  (str)  <- src/clio_agent/lm/secondary.py
+# Optional repair provider override; changing it resolves provider-scoped
+# defaults.
+# repairer.provider:  # default unset; resolved in code
+
+# CLIO_REPAIRER_TRANSPORT  (str)  <- src/clio_agent/lm/secondary.py
+# Optional repair transport override for providers with selectable
+# transports.
+# repairer.transport:  # default unset; resolved in code
+
+# CLIO_SUMMARIZER_API_BASE  (str)  <- src/clio_agent/lm/secondary.py
+# Optional summary endpoint override; empty inherits the effective caller
+# endpoint.
+# summarizer.api_base:  # default unset; resolved in code
+
+# CLIO_SUMMARIZER_CREDENTIAL_REF  (str)  <- src/clio_agent/lm/secondary.py
+# Optional summary credential reference resolved at each invocation.
+# summarizer.credential_ref:  # default unset; resolved in code
+
+# CLIO_SUMMARIZER_MAX_TOKENS  (int)  <- src/clio_agent/lm/secondary.py
+# Optional summary output cap; zero omits the client cap and empty inherits.
+# summarizer.max_tokens:  # default unset; resolved in code
+
+# CLIO_SUMMARIZER_MODEL  (str)  <- src/clio_agent/lm/secondary.py
+# Optional summary model override; empty inherits the effective caller
+# model.
+# summarizer.model:  # default unset; resolved in code
+
+# CLIO_SUMMARIZER_PROVIDER  (str)  <- src/clio_agent/lm/secondary.py
+# Optional summary provider override; changing it resolves provider-scoped
+# defaults.
+# summarizer.provider:  # default unset; resolved in code
+
+# CLIO_SUMMARIZER_TRANSPORT  (str)  <- src/clio_agent/lm/secondary.py
+# Optional summary transport override for providers with selectable
+# transports.
+# summarizer.transport:  # default unset; resolved in code
+
 # ==========================================================================
 # Limits, timeouts and retries
 # ==========================================================================
@@ -674,6 +729,11 @@ hooks.stop_loop_cap: 8
 # Override path for the trusted hook-fingerprint store; set to relocate
 # where hook trust decisions persist.
 # hooks.trust_store:  # default unset; resolved in code
+
+# CLIO_AI_REVIEW_MODEL  (str)  <- src/clio_agent/gact/runtime/ai_review.py
+# Optional reviewer model override on the effective caller provider and
+# endpoint.
+# permissions.ai_review_model:  # default unset; resolved in code
 
 # CLIO_AI_REVIEW_TIMEOUT_S  (str)  <- src/clio_agent/gact/runtime/ai_review.py
 # Seconds the AI-review permission gate waits for a reviewer LM verdict

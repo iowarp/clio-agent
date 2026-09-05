@@ -75,8 +75,8 @@ HANDSHAKE_FALLBACK_REASONS: dict[str, dict[str, Any]] = {
         "recovery_actions": ["retry", "reconfigure", "continue_with_static_caps"],
         "description": (
             "The provider handshake could not connect or authenticate, so the "
-            "expert LM config uses the static PROVIDER_DEFAULTS caps "
-            "(context_window unknown, provider-default max_tokens)."
+            "expert LM config keeps its configured output-cap policy "
+            "(context_window unknown)."
         ),
     },
     "handshake_model_unresolved": {
@@ -86,7 +86,7 @@ HANDSHAKE_FALLBACK_REASONS: dict[str, dict[str, Any]] = {
         "description": (
             "The handshake connected but reported no matching model profile for "
             "the requested model, so the expert LM config uses the static "
-            "PROVIDER_DEFAULTS caps instead of discovered ones."
+            "configured output-cap policy without discovered context metadata."
         ),
     },
     "handshake_error": {
@@ -95,7 +95,7 @@ HANDSHAKE_FALLBACK_REASONS: dict[str, dict[str, Any]] = {
         "recovery_actions": ["retry", "reconfigure", "continue_with_static_caps"],
         "description": (
             "The provider handshake raised unexpectedly; the expert LM config "
-            "falls back to the static PROVIDER_DEFAULTS caps."
+            "keeps its configured output-cap policy without handshake metadata."
         ),
     },
 }
@@ -277,7 +277,7 @@ def _build_key_less_skeleton(spec: "LMSpec") -> tuple["LMProviderConfig", str]:
     config = LMProviderConfig(**kwargs)  # type: ignore[arg-type]
     # Drop the sentinel: the skeleton is key-less by construction.
     config.api_key = ""
-    defaults = PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["lm_studio"])
+    defaults = PROVIDER_DEFAULTS.get(provider, {})
     placeholder = str(defaults.get("api_key", "") or "")
     return config, placeholder
 

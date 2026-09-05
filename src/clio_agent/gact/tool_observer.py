@@ -899,7 +899,11 @@ def _make_tool_observer(app: "FastAPI"):
                     observe_tool_transform,
                 )
 
-                observe_tool_transform(app, sid, name, dict(args), call_id, ok, result)
+                transform_record = observe_tool_transform(
+                    app, sid, name, dict(args), call_id, ok, result
+                )
+            else:
+                transform_record = None
             _OBSERVER_CALL_T0.value = (
                 None  # finding [3]: clear the latch (idle thread -> DIRTY lease)
             )
@@ -943,6 +947,39 @@ def _make_tool_observer(app: "FastAPI"):
                             else {}
                         ),
                         **cancellation_metadata,
+                        **(
+                            {
+                                "provenance_inputs": [
+                                    {
+                                        "name": edge.name,
+                                        "locator": edge.path,
+                                        "arg": edge.arg,
+                                        "evidence": edge.evidence.value,
+                                        "note": edge.note,
+                                    }
+                                    for edge in transform_record.used
+                                    if edge.external_ref
+                                ]
+                            }
+                            if transform_record is not None
+                            and any(edge.external_ref for edge in transform_record.used)
+                            else {}
+                        ),
+                        **(
+                            {
+                                "provenance_warnings": [
+                                    note
+                                    for note in transform_record.notes
+                                    if note.get("reason") == "external_input_contract_unknown"
+                                ]
+                            }
+                            if transform_record is not None
+                            and any(
+                                note.get("reason") == "external_input_contract_unknown"
+                                for note in transform_record.notes
+                            )
+                            else {}
+                        ),
                     },
                 ),
             )

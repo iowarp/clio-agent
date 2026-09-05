@@ -530,12 +530,38 @@ def mint_tool_declared_outputs(
     root = _workspace_root(app, workspace_id)
     minted: list[ArtifactVersion] = []
     seen: set[str] = set()
+    from clio_agent.gact.artifacts.transform_edges import (  # noqa: PLC0415
+        declared_consumed_file_paths,
+        is_non_writing_file_consumer,
+    )
+
+    consumed_paths = declared_consumed_file_paths(tool_name, effective_args)
     # (channel, label, path) — arg channel FIRST so it wins a dedup tie over a
     # result that merely echoes the same arg path.
     designated = [("arg", k, v) for k, v in grounded_output_paths(effective_args).items()]
     designated += [("result", k, v) for k, v in result_declared_paths(result).items()]
     for channel, label, raw_path in designated:
         path = Path(raw_path)
+        try:
+            normalized = str(path.expanduser().resolve(strict=False))
+        except (OSError, ValueError):
+            normalized = str(path)
+        input_echo_outside = (
+            channel == "result"
+            and root is not None
+            and not _contained(path, root)
+            and normalized in consumed_paths
+            and is_non_writing_file_consumer(tool_name)
+        )
+        if input_echo_outside:
+            logger.info(
+                "artifact mint skipped reason=consumed_input_echo tool=%s %s=%s path=%s",
+                tool_name,
+                channel,
+                label,
+                raw_path,
+            )
+            continue
         if root is None:
             logger.warning(
                 "artifact mint skipped reason=containment_unresolved tool=%s %s=%s path=%s",

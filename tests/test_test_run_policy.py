@@ -37,6 +37,15 @@ def test_pytest_state_is_inside_the_lease(tmp_path: Path, pytestconfig: pytest.C
     for key in ("CLIO_ARC_STORE_CONFIG", "CLIO_SERVER_CONF"):
         if os.environ.get(key):
             assert Path(os.environ[key]).is_relative_to(root)
+    assert Path(os.environ["FASTMCP_HOME"]).is_relative_to(root)
+
+
+def test_fastmcp_home_is_inside_the_lease() -> None:
+    """FastMCP's version cache cannot escape into the checkout working tree."""
+    from fastmcp import settings
+
+    root = Path(os.environ[ROOT_ENV])
+    assert settings.home.is_relative_to(root)
 
 
 def test_child_uv_build_install_and_temp_never_use_host_caches(tmp_path: Path) -> None:

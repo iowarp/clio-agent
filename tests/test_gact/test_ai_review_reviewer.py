@@ -351,7 +351,7 @@ def test_respond_permission_stamps_grantor_user(tmp_path: Path) -> None:
 
 def test_verdict_no_lm_escalates(monkeypatch) -> None:
     """No LM resolved -> escalate (fail-safe), never an auto-allow."""
-    monkeypatch.setattr(ai_review_mod, "_resolve_reviewer_lm", lambda: None)
+    monkeypatch.setattr(ai_review_mod, "_resolve_reviewer_lm", lambda app: (None, None))
     app = Mock()
     app.state.sessions.get.return_value = None
     verdict, reason = ai_review_verdict(app, "sess_x", _FS_WRITE, {"filepath": "x"}, None)
@@ -360,7 +360,7 @@ def test_verdict_no_lm_escalates(monkeypatch) -> None:
 
 
 def test_verdict_allow_and_deny_map_to_typed_reasons(monkeypatch) -> None:
-    monkeypatch.setattr(ai_review_mod, "_resolve_reviewer_lm", lambda: object())
+    monkeypatch.setattr(ai_review_mod, "_resolve_reviewer_lm", lambda app: (object(), None))
     app = Mock()
     app.state.sessions.get.return_value = None
 

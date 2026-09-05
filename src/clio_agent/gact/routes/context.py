@@ -326,7 +326,15 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        summary = agents_runtime._summarize_segments_llm(live)
+        # This route runs outside a turn context. Resolve the owning session's
+        # currently accepted main identity explicitly; never consult DSPy's
+        # process boot default (which may be stale or belong to another app).
+        owner = app.state.agent
+        summary = agents_runtime._summarize_segments_llm(
+            live,
+            owning_lm=getattr(owner, "_main_lm", None),
+            owning_adapter=getattr(owner, "_dspy_adapter", None),
+        )
         if not summary:
             raise HTTPException(
                 status_code=503,

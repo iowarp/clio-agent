@@ -1532,13 +1532,25 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 _base_temp = float(getattr(_fwd_config, "temperature", 0.0) or 0.0)
                 _max_repairs = _extract_repair_attempts()
                 _repair_hint = ""
+                from clio_agent.lm.secondary import (  # noqa: PLC0415
+                    read_secondary_settings,
+                )
+
+                _repair_settings = read_secondary_settings("repairer")
+                _repair_caller_lm: Any = None
                 # original attempt + up to _max_repairs bounded SCHEMA-REPAIR retries
                 for _repair_attempt in range(1 + _max_repairs):
                     # Per-attempt temperature: the original keeps the configured base;
                     # each retry bumps temp so it is a genuinely INDEPENDENT sample (a
                     # temp-0 retry reproduces the same greedy output and cannot recover
                     # -- dspy _warn_zero_temp_rollout).
-                    _attempt_temp = _repair_temperature(_base_temp, _repair_attempt)
+                    _effective_config = getattr(_repair_caller_lm, "_clio_provider_config", None)
+                    _effective_temp = (
+                        float(getattr(_effective_config, "temperature", _base_temp) or 0.0)
+                        if _repair_attempt
+                        else _base_temp
+                    )
+                    _attempt_temp = _repair_temperature(_effective_temp, _repair_attempt)
                     _attempt_config = (
                         _fwd_config
                         if _attempt_temp == _base_temp
@@ -1549,12 +1561,30 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                         if not _repair_hint
                         else {**kwargs, "question": f"{kwargs['question']}\n\n{_repair_hint}"}
                     )
+                    _attempt_lm: Any = None
                     try:
                         # track_usage installs the usage tracker so the live plane's
                         # auto-compaction can read each call's exact prompt_tokens.
+                        _attempt_lm = create_hooked_lm(_attempt_config)
+                        if _repair_attempt:
+                            from clio_agent.lm.secondary import (  # noqa: PLC0415
+                                resolve_secondary_lm,
+                            )
+
+                            _repair_route = resolve_secondary_lm(
+                                "repairer",
+                                caller_lm=_repair_caller_lm or _attempt_lm,
+                                caller_adapter=adapter,
+                                settings=_repair_settings,
+                                retry_temperature=_attempt_temp,
+                            )
+                            _attempt_lm = _repair_route.lm
+                            _attempt_adapter = _repair_route.adapter
+                        else:
+                            _attempt_adapter = adapter
                         with (
                             dspy.track_usage(),
-                            dspy.context(lm=create_hooked_lm(_attempt_config), adapter=adapter),
+                            dspy.context(lm=_attempt_lm, adapter=_attempt_adapter),
                         ):
                             result = self.program(**_call_kwargs)
                         break
@@ -1576,6 +1606,12 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                         )
                         break
                     except Exception as exc:
+                        from clio_agent.lm.hooked_lm import (  # noqa: PLC0415
+                            effective_lm_for_call,
+                        )
+
+                        if _attempt_lm is not None:
+                            _repair_caller_lm = effective_lm_for_call(_attempt_lm, _attempt_lm)
                         # Capture the failed extract WITH its retained trajectory before
                         # anything else, so the canonical trace records what the model
                         # produced even when the repair recovers it.
@@ -1639,13 +1675,28 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                                     )
 
                                     reextracted = None
+                                    _effective_config = getattr(
+                                        _repair_caller_lm, "_clio_provider_config", None
+                                    )
+                                    _effective_temp = float(
+                                        getattr(_effective_config, "temperature", _base_temp) or 0.0
+                                    )
                                     for _re_i in range(1, _max_repairs + 1):
-                                        _re_temp = _repair_temperature(_base_temp, _re_i)
+                                        _re_temp = _repair_temperature(_effective_temp, _re_i)
+                                        from clio_agent.lm.secondary import (  # noqa: PLC0415
+                                            resolve_secondary_lm,
+                                        )
+
+                                        _repair_route = resolve_secondary_lm(
+                                            "repairer",
+                                            caller_lm=_repair_caller_lm,
+                                            caller_adapter=adapter,
+                                            settings=_repair_settings,
+                                            retry_temperature=_re_temp,
+                                        )
                                         with dspy.context(
-                                            lm=create_hooked_lm(
-                                                replace(_fwd_config, temperature=_re_temp)
-                                            ),
-                                            adapter=adapter,
+                                            lm=_repair_route.lm,
+                                            adapter=_repair_route.adapter,
                                         ):
                                             reextracted = reforce_submit_over_retained_history(
                                                 self.program, hint
