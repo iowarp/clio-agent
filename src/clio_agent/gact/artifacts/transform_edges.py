@@ -4,19 +4,10 @@ Split out of :mod:`clio_agent.gact.artifacts.transforms` (no-accretion — the r
 model + recording orchestration own that file; edge DISCOVERY owns this one). Two
 detectors, both **precision over recall** (owner decision #966.10):
 
-* :func:`detect_used_edges` — walk the call args for strings that resolve to an
-  existing file inside the workspace root and match a registered artifact by path,
-  then re-hash under the threshold (hash equal → ``schema-arg`` + ``hash-pair``;
-  hash differs → mint a GAP version FIRST and point the edge at it; over threshold
-  → ``stat-pinned`` labeled). An existing contained file NOT in the registry → an
-  ``external:<path>`` edge; anything else → no edge.
-* :func:`detect_authority_edges` — a SPECIFIC catalog input (``stage_resource`` /
-  ``get_dataset_details``) registers its catalog resource ``url`` / ``id`` as an
-  ``authority``-asserted input. NDP results carry no checksum/ETag/DOI (verified
-  against the real server), so the catalog URL/UUID IS the authority. A broad
-  ``search_datasets`` / ``list_organizations`` is DISCOVERY — its hits were listed,
-  not consumed (finding [2]) — so it edges nothing and records a typed
-  ``catalog_hits_not_consumed`` note; absent any recognized NDP shape → a typed skip.
+* :func:`detect_used_edges` — resolve bounded argument paths to registered
+  artifacts, retaining hash/stat evidence and detectable misses.
+* :func:`detect_authority_edges` — retain specific catalog resources as authority-
+  asserted inputs while treating broad search results as discovery.
 
 Both detectors return an :class:`EdgeScan` (edges + typed notes) so a deliberate
 non-edge (precision over recall) stays DETECTABLE on the record, never silent.
@@ -33,6 +24,12 @@ from clio_agent.gact.artifacts.designation import (
     ARTIFACT_SUFFIXES,
     OUTPUT_PATH_ARG_NAMES,
     kind_for_path,
+)
+from clio_agent.gact.artifacts.external_inputs import (
+    external_file_arg_was_consumed,
+    external_file_input_args,
+    is_known_non_consuming_path_tool,
+    is_path_schema_arg,
 )
 from clio_agent.gact.artifacts.records import ArtifactKind, ArtifactVersion, Mechanism
 from clio_agent.gact.artifacts.transform_types import EdgeEvidence, EdgeRole, ProvEdge
@@ -87,7 +84,6 @@ _MAX_ARG_DEPTH = 4
 _MAX_CANDIDATE_STRLEN = 4096
 
 
-# --------------------------------------------------------------------------- #
 # Used-edge detection (item 3) — precision over recall (owner decision #966.10).
 # --------------------------------------------------------------------------- #
 
@@ -225,6 +221,7 @@ def detect_used_edges(
     allowed_workspace_ids: Optional[set[str]] = None,
     call_id: str = "",
     tool_name: str = "",
+    allow_external_inputs: bool = False,
 ) -> EdgeScan:
     """Detect ``used`` edges from call args (item 3 — precision over recall).
 
@@ -240,6 +237,8 @@ def detect_used_edges(
     version FIRST and point the edge at it (the ``note`` carries the ACTUAL
     reconcile class — finding [3]); over threshold → ``stat-pinned`` labeled. An
     existing contained file NOT in the registry → an ``external:<path>`` edge.
+    With ``allow_external_inputs``, a successful call's external input-path args
+    also retain a schema-arg reference, without filesystem reads or byte identity.
 
     ``allowed_workspace_ids`` (P3.1 #1038 — cross-job lineage bind) is the CROSS-JOB
     contributing set the CALLER computed (every workspace sharing this job's
@@ -284,6 +283,43 @@ def detect_used_edges(
             # An over-long / malformed value is never a workspace path (defensive).
             continue
         if not contained:
+            # Successful calls may consume user-supplied files beyond the output
+            # workspace (#1320). Record their declared locator without opening,
+            # hashing or minting it: schema-arg evidence is not byte custody.
+            if (
+                allow_external_inputs
+                and arg_name in external_file_input_args(tool_name)
+                and external_file_arg_was_consumed(tool_name, candidate)
+            ):
+                resolved = str(candidate.expanduser().resolve(strict=False))
+                if resolved not in seen:
+                    seen.add(resolved)
+                    edges.append(
+                        ProvEdge(
+                            role=EdgeRole.USED,
+                            evidence=EdgeEvidence.SCHEMA_ARG,
+                            external_ref=f"external:{resolved}",
+                            path=resolved,
+                            name=Path(resolved).name,
+                            arg=arg_name,
+                            note="external_input_not_hashed",
+                        )
+                    )
+            elif (
+                allow_external_inputs
+                and not is_known_non_consuming_path_tool(tool_name)
+                and arg_name not in external_file_input_args(tool_name)
+                and is_path_schema_arg(arg_name)
+                and _looks_like_path(raw)
+            ):
+                notes.append(
+                    {
+                        "reason": "external_input_contract_unknown",
+                        "tool": tool_name,
+                        "arg": arg_name,
+                        "value": raw,
+                    }
+                )
             continue
         try:
             is_file = candidate.is_file()
@@ -292,7 +328,7 @@ def detect_used_edges(
         if not is_file:
             # A path-looking arg that never resolved to a workspace file is a
             # DETECTABLE miss (finding [4]); a bare query string is not.
-            if _looks_like_path(raw):
+            if is_path_schema_arg(arg_name) and _looks_like_path(raw):
                 notes.append({"reason": "unresolved_path_arg", "arg": arg_name, "value": raw})
             continue
         resolved = str(candidate.expanduser().resolve(strict=False))

@@ -629,6 +629,9 @@ def _bound_guided_output_kwargs(
     defaults = getattr(lm, "kwargs", None)
     default_kwargs = defaults if isinstance(defaults, dict) else {}
     raw_requested = lm_kwargs.get("max_tokens", default_kwargs.get("max_tokens"))
+    if raw_requested is None or raw_requested == 0:
+        # The server owns the remaining-context budget for uncapped requests.
+        return lm_kwargs
     try:
         requested = int(raw_requested) if raw_requested is not None else available
     except (TypeError, ValueError):

@@ -44,6 +44,7 @@ from clio_agent.gact.hooks.dispatcher import (
 from clio_agent.lm.hooked_lm import (
     HookDeniedModelCall,
     build_hooked_lm,
+    effective_lm_for_call,
     install_model_route_resolver,
     wrap_lm_with_hooks,
 )
@@ -194,6 +195,71 @@ def test_model_routing_invokes_routed_lm(tmp_path: Path) -> None:
     assert default.calls == 0  # the default did NOT
 
 
+def test_effective_target_is_per_wrapper_and_cleared_for_synthetic_or_failed_hooks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repair identity never reuses a real target from an earlier hook call."""
+    from clio_agent.gact.hooks.wire import HookOutcome
+    from clio_agent.lm import hooked_lm as hooked_mod
+
+    default = SpyLM(model="default/model")
+    routed = SpyLM(model="routed/model")
+    wrapped = build_hooked_lm(default, route_resolver={"routed": routed}.get)
+    monkeypatch.setattr(
+        hooked_mod,
+        "dispatch_before_model",
+        lambda *args, **kwargs: HookOutcome(decision="modify", model_override="routed"),
+    )
+    monkeypatch.setattr(hooked_mod, "dispatch_after_model", lambda *a, **k: HookOutcome())
+    wrapped(messages=[{"role": "user", "content": "route"}])
+    assert effective_lm_for_call(wrapped) is routed
+
+    monkeypatch.setattr(
+        hooked_mod,
+        "dispatch_before_model",
+        lambda *args, **kwargs: HookOutcome(
+            decision="synthesize", llm_response=["synthetic"], llm_response_present=True
+        ),
+    )
+    sentinel = object()
+    assert wrapped(messages=[{"role": "user", "content": "synth"}]) == ["synthetic"]
+    assert effective_lm_for_call(wrapped, sentinel) is sentinel
+
+    def fail_hook(*args: Any, **kwargs: Any) -> HookOutcome:
+        raise RuntimeError("hook failed")
+
+    monkeypatch.setattr(hooked_mod, "dispatch_before_model", fail_hook)
+    with pytest.raises(RuntimeError, match="hook failed"):
+        wrapped(messages=[{"role": "user", "content": "fail"}])
+    assert effective_lm_for_call(wrapped, sentinel) is sentinel
+
+
+def test_effective_routed_targets_are_concurrent_wrapper_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from clio_agent.gact.hooks.wire import HookOutcome
+    from clio_agent.lm import hooked_lm as hooked_mod
+
+    monkeypatch.setattr(
+        hooked_mod,
+        "dispatch_before_model",
+        lambda request, **kwargs: HookOutcome(decision="modify", model_override=request.model),
+    )
+    monkeypatch.setattr(hooked_mod, "dispatch_after_model", lambda *a, **k: HookOutcome())
+    targets = {f"default/{i}": SpyLM(model=f"target/{i}") for i in range(8)}
+    wrappers = [build_hooked_lm(SpyLM(model=name), route_resolver=targets.get) for name in targets]
+
+    def invoke(wrapper: Any) -> Any:
+        wrapper(messages=[{"role": "user", "content": "go"}])
+        return effective_lm_for_call(wrapper)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        actual = list(pool.map(invoke, wrappers))
+    assert actual == list(targets.values())
+
+
 def test_route_unresolved_falls_back_to_default(tmp_path: Path) -> None:
     """An unresolvable override runs the default and records a typed reason."""
 
@@ -336,7 +402,9 @@ def test_per_request_fires_before_model_once_per_lm_call(tmp_path: Path) -> None
         "noop.py",
         "import json,sys\njson.load(sys.stdin)\nprint(json.dumps({}))\n",  # allow
     )
-    disp = _CountingDispatcher(parse_hook_entries([_command_row("bm", "BeforeModel", script)], source="t"))
+    disp = _CountingDispatcher(
+        parse_hook_entries([_command_row("bm", "BeforeModel", script)], source="t")
+    )
     install_global_dispatcher(disp)
     spy = SpyLM(answer="X")
     wrapped = wrap_lm_with_hooks(spy)

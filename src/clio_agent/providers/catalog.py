@@ -20,117 +20,13 @@ automatically and the gact modal picks the new preset up at the next
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
-#: Wire-level provider kinds. These are the values that flow into
-#: ``LMProviderConfig.provider`` and ultimately into the LiteLLM model
-#: prefix (``openai/``, ``anthropic/``...). Catalog ids are usually a
-#: superset (e.g. ``openrouter`` and ``openai`` both have
-#: ``provider_kind="openai"``).
-ProviderKind = Literal[
-    "lm_studio",
-    "ollama",
-    "openai",
-    "anthropic",
-    "argonne",
-    "codex",
-    "claude_code",
-]
-
-AuthMethod = Literal["none", "api_key", "oauth"]
-
-
-@dataclass(frozen=True)
-class ProviderConfigurationField:
-    """One non-secret provider option rendered by provider clients."""
-
-    id: str
-    label: str
-    description: str = ""
-    placeholder: str = ""
-    required: bool = False
-
-
-@dataclass(frozen=True)
-class ModelEntry:
-    """One row in a provider's static model catalog.
-
-    Used as the fallback when live discovery against the upstream
-    ``/v1/models`` endpoint fails or isn't supported.
-    """
-
-    id: str
-    name: str
-    description: str = ""
-
-
-@dataclass(frozen=True)
-class Provider:
-    """One LM provider preset.
-
-    Carries both the catalog metadata that gact's provider modal renders
-    and the wire defaults that ``LMProviderConfig`` falls back to when
-    the user leaves api_base / model blank.
-    """
-
-    # ----- catalog identity -------------------------------------------
-    id: str
-    label: str
-    description: str
-
-    # ----- wire kind --------------------------------------------------
-    #: Drives ``LMProviderConfig.provider``. Multiple catalog entries can
-    #: share a kind (e.g. openrouter and openai both share
-    #: ``openai``); the entry flagged ``is_kind_default`` supplies the
-    #: dict row in :func:`as_provider_defaults_dict`.
-    provider_kind: ProviderKind
-    #: Exact LiteLLM routing prefix.  This is deliberately independent of
-    #: ``provider_kind`` so legacy configurations keep their broad runtime kind
-    #: while catalog selections such as OpenRouter retain their real identity.
-    litellm_prefix: str
-
-    # ----- wire defaults ----------------------------------------------
-    api_base: str
-    suggested_model: str
-    api_key_default: str = ""
-
-    # ----- auth -------------------------------------------------------
-    requires_api_key: bool = True
-    auth_method: AuthMethod = "api_key"
-    #: Env var that ``LMProviderConfig.__post_init__`` falls back to for
-    #: cloud providers (e.g. ``"OPENAI_API_KEY"``). ``None`` for local /
-    #: OAuth flows.
-    api_key_env: str | None = None
-    supports_live_catalog: bool = True
-    # Whether this provider transport can carry multimodal image parts. This is
-    # not a promise that every selectable model is vision-capable: where the
-    # endpoint reports per-model modalities that evidence still wins, otherwise
-    # the upstream server/model returns the authoritative unsupported-input error.
-    supports_vision: bool = False
-
-    # ----- capability flags -------------------------------------------
-    max_tokens_default: int = 32000
-    #: Whether to strip ``openai/`` / ``anthropic/`` LiteLLM prefixes
-    #: before sending to the upstream model id. ``False`` only for
-    #: HuggingFace-id backends like ALCF where ``openai/gpt-oss-120b``
-    #: *is* the literal model id.
-    strip_openai_prefix: bool = True
-    parse_retry_capability: Literal["bounded", "single_attempt"] = "bounded"
-    configuration_fields: tuple[ProviderConfigurationField, ...] = ()
-    supports_runtime_sizing: bool = False
-    managed_service_id: str = ""
-
-    # ----- registry bookkeeping ---------------------------------------
-    #: When True, this provider's wire fields populate the
-    #: per-``provider_kind`` row returned by
-    #: :func:`as_provider_defaults_dict`. Exactly one entry per kind
-    #: should be flagged; multiple flags collapse to the first.
-    is_kind_default: bool = False
-
-    # ----- static model catalog ---------------------------------------
-    model_catalog: tuple[ModelEntry, ...] = ()
-
+from clio_agent.providers.catalog_types import (
+    ModelEntry,
+    Provider,
+    ProviderConfigurationField,
+)
 
 # -- shared catalogs --------------------------------------------------
 
@@ -636,7 +532,7 @@ PROVIDERS: tuple[Provider, ...] = (
         provider_kind="openai",
         litellm_prefix="hosted_vllm",
         api_base="http://127.0.0.1:8000/v1",
-        suggested_model="meta-llama/Llama-3.1-8B-Instruct",
+        suggested_model="",
         requires_api_key=False,
         auth_method="none",
         supports_vision=True,

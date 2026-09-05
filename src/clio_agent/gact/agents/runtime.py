@@ -47,7 +47,9 @@ def _prediction_structured_metadata(result: Any) -> dict[str, Any]:
     }
 
 
-def _summarize_segments_llm(segments: list[Any]) -> str:
+def _summarize_segments_llm(
+    segments: list[Any], *, owning_lm: Any = None, owning_adapter: Any = None
+) -> str:
     """Summarize live segments into a compact text that preserves what's needed to
     continue the task.
 
@@ -64,6 +66,7 @@ def _summarize_segments_llm(segments: list[Any]) -> str:
 
     from clio_agent.arc.schema import segment_text  # noqa: PLC0415
     from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
+    from clio_agent.lm.secondary import resolve_secondary_lm  # noqa: PLC0415
 
     body = "\n".join(segment_text(s) for s in segments)
     sig = dspy.Signature(
@@ -72,12 +75,13 @@ def _summarize_segments_llm(segments: list[Any]) -> str:
         "compact summary that preserves every fact, result, and decision needed to "
         "continue the task. Be concise but lose no actionable information.",
     )
-    lm = resolve_active_lm(site="agents.runtime._summarize_segments_llm")
+    caller_lm = resolve_active_lm(site="agents.runtime._summarize_segments_llm", explicit=owning_lm)
+    adapter = owning_adapter or getattr(dspy.settings, "adapter", None)
     try:
+        route = resolve_secondary_lm("summarizer", caller_lm=caller_lm, caller_adapter=adapter)
         predict = dspy.Predict(sig)
-        result = (
-            predict(prior_context=body, lm=lm) if lm is not None else predict(prior_context=body)
-        )
+        with dspy.context(lm=route.lm, adapter=route.adapter):
+            result = predict(prior_context=body)
         return str(getattr(result, "summary", "") or "").strip()
     except Exception:  # noqa: BLE001
         logger.warning("arc auto-compaction summary LLM call failed", exc_info=True)

@@ -214,5 +214,22 @@ def register_artifact_lineage_routes(app: FastAPI) -> None:
         _audit(app, route="get_transform", activity_id=activity_id)
         return {"transform": transform.to_payload()}
 
+    @app.get("/v1/transforms/{activity_id}/lineage")
+    async def transform_lineage(activity_id: str) -> dict[str, Any]:
+        """Direct used/generated graph for a tool call, including output-free reads."""
+        from clio_agent.gact.artifacts.lineage import build_activity_lineage  # noqa: PLC0415
+
+        registry = await _registry(app)
+        graph = build_activity_lineage(registry, activity_id)
+        if graph is None:
+            raise _lineage_error(
+                status_code=404,
+                error="not_found",
+                message=f"transform not found: {activity_id}",
+                details={"activity_id": activity_id},
+            )
+        _audit(app, route="transform_lineage", activity_id=activity_id, nodes=len(graph["nodes"]))
+        return graph
+
 
 __all__ = ["register_artifact_lineage_routes"]

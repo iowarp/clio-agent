@@ -114,7 +114,7 @@ def test_post_context_compact_nothing_409(tmp_path):
 def test_post_context_compact_no_summary_503(tmp_path, monkeypatch):
     import clio_agent.gact.agents.runtime as runtime_mod
 
-    monkeypatch.setattr(runtime_mod, "_summarize_segments_llm", lambda segs: "")
+    monkeypatch.setattr(runtime_mod, "_summarize_segments_llm", lambda segs, **kwargs: "")
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     client = _client(tmp_path, arc)
     sid = _session(client)
@@ -128,7 +128,9 @@ def test_post_context_compact_summarizes_working_set(tmp_path, monkeypatch):
     sanctioned summarize op (the same summarizer the auto-compactor uses)."""
     import clio_agent.gact.agents.runtime as runtime_mod
 
-    monkeypatch.setattr(runtime_mod, "_summarize_segments_llm", lambda segs: "COMPACT_SUMMARY")
+    monkeypatch.setattr(
+        runtime_mod, "_summarize_segments_llm", lambda segs, **kwargs: "COMPACT_SUMMARY"
+    )
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     client = _client(tmp_path, arc)
     sid = _session(client)

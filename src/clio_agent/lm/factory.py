@@ -7,6 +7,9 @@ keep working; new code should import from :mod:`clio_agent.lm.factory` directly.
 
 from __future__ import annotations
 
+import logging
+import traceback
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -19,6 +22,7 @@ from clio_agent.lm.adapters import _reasoning_model_capability
 from clio_agent.lm.io_logging import _io_logging_lm_cls
 
 _dspy_cache = None
+logger = logging.getLogger(__name__)
 
 
 def _defer_tiktoken_enabled() -> bool:
@@ -56,6 +60,14 @@ def _construct_lm(*, model: str, **lm_kwargs: Any) -> dspy.LM:
     trace when a GACT turn is active; a cheap no-op otherwise (CLI/optimizer).
     """
     _dspy()  # ensure dspy is importable/configured before constructing the LM
+    endpoint = urlparse(str(lm_kwargs.get("api_base") or ""))
+    # No URL userinfo, query, API keys or prompt text in construction diagnostics.
+    logger.info("lm constructed model=%s endpoint_host=%s", model, endpoint.hostname or "default")
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "lm construction callers=%s",
+            " <- ".join(frame.name for frame in traceback.extract_stack(limit=8)[:-1]),
+        )
     return _io_logging_lm_cls()(model=model, **lm_kwargs)
 
 
@@ -98,7 +110,7 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         model=model_name,
         api_key=config.api_key,
         temperature=config.temperature,
-        max_tokens=config.max_tokens,
+        max_tokens=config.max_tokens or None,
         model_type="chat",
         # iowarp/clio-agent#8: disable DSPy LM cache so token usage
         # always lands in dspy.settings.usage_tracker (cache_hits
@@ -116,6 +128,9 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     provider_id = config.provider_id or str(config.provider)
     try:
         lm._clio_provider_id = provider_id  # type: ignore[attr-defined]
+        lm._clio_provider_config = replace(  # type: ignore[attr-defined]
+            config, provider_options=dict(config.provider_options)
+        )
         lm._clio_reasoning_fallback = provider_id not in {  # type: ignore[attr-defined]
             "codex",
             "claude_code",
@@ -161,6 +176,10 @@ def _resolve_model_name(config: LMProviderConfig) -> str:
     preserve the actual Sophia model id on the wire. Metis does not need
     that double prefix.
     """
+    if not config.model.strip():
+        raise ValueError(
+            f"No model configured for LM provider {config.provider_id or config.provider!r}"
+        )
     if config.provider == "codex":
         bare = config.model.removeprefix("codex/").removeprefix("cdx-")
         return f"codex/cdx-{bare}"
@@ -231,16 +250,25 @@ def create_planner_lm(config: LMProviderConfig) -> dspy.LM:
     model_name = _resolve_model_name(config)
 
     connection = {"api_base": config.api_base} if config.api_base else {}
-    return _construct_lm(
+    lm = _construct_lm(
         model=model_name,
         api_key=config.api_key,
         temperature=config.planner_temperature,
-        max_tokens=config.planner_max_tokens,
+        max_tokens=config.planner_max_tokens or None,
         model_type="chat",
         cache=False,  # see create_lm — same rationale
         **connection,
         **_provider_lm_kwargs(config),
     )
+    # Stamp the effective planner sampling surface. Secondary inference from a
+    # planner call must not silently revert to the main LM's temperature/cap.
+    lm._clio_provider_config = replace(  # type: ignore[attr-defined]
+        config,
+        temperature=config.planner_temperature,
+        max_tokens=config.planner_max_tokens or 0,
+        provider_options=dict(config.provider_options),
+    )
+    return lm
 
 
 def _resolve_lm_studio_model_if_needed(config: LMProviderConfig) -> None:

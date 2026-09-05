@@ -1,24 +1,16 @@
 """Tool-observer + live-assistant transcript cluster (#714 decomposition).
 
-This module owns the runtime plumbing that turns each MCP tool call into:
+It turns each MCP tool call into:
 
 * installed global hooks (permission / cancellation / telemetry observer) via
   :func:`_install_tool_runtime_hooks`;
-* live transcript parts on the in-flight assistant message
-  (:func:`_ensure_live_assistant_message`, :func:`_append_live_assistant_part`
-  and its once-per-turn variant) so the UI shows route banners, tool calls, and
-  tool results in real time (#711);
+* live transcript parts on the in-flight assistant message so the UI shows route
+  banners, tool calls, and results in real time (#711);
 * route/handoff context emitted just before a live tool call
   (:func:`_agent_tool_owner`, :func:`_emit_live_tool_route_context`);
 * the observer callable itself (:func:`_make_tool_observer`) that publishes
   ``tool.call.started`` / ``tool.call.completed`` onto the EventBus + semantic
   highway and appends each completed call to ``app.state.tool_call_ledger``.
-
-These were carved out of ``gact/app.py`` verbatim (pure move, behavior
-preserved). ``app.py`` re-exports every symbol so existing
-``from clio_agent.gact.app import <name>`` callers + test seams stay green; in
-particular ``build_app`` wires ``app.state.make_tool_observer`` and the
-``GactDeps.install_tool_runtime_hooks`` seam from here.
 """
 
 from __future__ import annotations
@@ -33,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.artifacts.ingest_edges import join_call_to_serving_child
+from clio_agent.gact.artifacts.observer_provenance import tool_provenance_metadata
 from clio_agent.gact.delegation import _expert_handoff_fields
 from clio_agent.gact.elicitation_correlation import close_invocation, open_invocation
 from clio_agent.gact.events import Event
@@ -70,6 +63,7 @@ logger = logging.getLogger(__name__)
 _OBSERVER_CALL_IDS = threading.local()
 _OBSERVER_CALL_T0 = threading.local()
 _OBSERVER_ELICIT_REC = threading.local()
+
 
 def _tool_call_event_key(call: Mapping[str, Any]) -> tuple[str, str]:
     """Return a stable identity for de-duplicating tool telemetry events."""
@@ -881,7 +875,11 @@ def _make_tool_observer(app: "FastAPI"):
                     observe_tool_transform,
                 )
 
-                observe_tool_transform(app, sid, name, dict(args), call_id, ok, result)
+                transform_record = observe_tool_transform(
+                    app, sid, name, dict(args), call_id, ok, result
+                )
+            else:
+                transform_record = None
             _OBSERVER_CALL_T0.value = (
                 None  # finding [3]: clear the latch (idle thread -> DIRTY lease)
             )
@@ -925,6 +923,7 @@ def _make_tool_observer(app: "FastAPI"):
                             else {}
                         ),
                         **cancellation_metadata,
+                        **tool_provenance_metadata(transform_record),
                     },
                 ),
             )

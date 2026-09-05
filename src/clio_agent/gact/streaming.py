@@ -59,6 +59,7 @@ from clio_agent.gact.native_model_inputs import (
     record_dropped_model_inputs,
 )
 from clio_agent.gact.providers.config import _provider_runtime_kind
+from clio_agent.gact.stream_chunks import _chunk_reasoning_text, _chunk_text
 from clio_agent.gact.stream_fallbacks import (
     peek_stream_fallback as _peek_stream_fallback,  # noqa: F401
 )
@@ -758,76 +759,6 @@ async def _try_streamed_forward(
             "DSPy streamify returned a final prediction but emitted no visible text chunks.",
         )
     return final_pred
-
-
-def _chunk_reasoning_text(piece: Any) -> str:
-    """Pull reasoning-channel text out of a streamify chunk.
-
-    Reasoning models (qwopus, nemotron, …) stream their chain-of-thought on a
-    SEPARATE delta channel (``delta.reasoning_content`` / ``delta.reasoning``),
-    not ``delta.content``. DSPy's StreamListener only watches ``delta.content``
-    for ``[[ ## field ## ]]`` markers, so reasoning tokens are invisible to it.
-    For an unlistened predict (every blueprint expert), streamify yields the raw
-    chunk straight through to our pump -- but ``_chunk_text`` returns "" for it
-    (content is empty during thinking). We extract the reasoning channel here so
-    the pump can refresh the no-progress watchdog while the model is *actively
-    thinking* (a deep-reasoning expert call can stream tens of thousands of
-    reasoning tokens with zero answer-content tokens; treating that as "no
-    progress" wrongly kills a working model -- see the EarthScope resolver hang).
-    """
-
-    if not piece or isinstance(piece, (str, dict)):
-        # dict shape handled below in the rare OpenAI-dict path; str is answer text.
-        if isinstance(piece, dict):
-            try:
-                delta = piece["choices"][0]["delta"]
-                return str(delta.get("reasoning_content") or delta.get("reasoning") or "")
-            except (KeyError, IndexError, TypeError):
-                return ""
-        return ""
-    try:
-        choices = piece.choices  # type: ignore[attr-defined]
-        if choices:
-            delta = getattr(choices[0], "delta", None)
-            if delta is not None:
-                reasoning = getattr(delta, "reasoning_content", None) or getattr(
-                    delta, "reasoning", None
-                )
-                if reasoning:
-                    return str(reasoning)
-    except Exception:  # noqa: BLE001,S110 - best-effort extraction
-        pass
-    return ""
-
-
-def _chunk_text(piece: Any) -> str:
-    """Pull a string out of whatever streamify yielded.
-
-    Handles litellm ModelResponseStream + plain str + dict shapes.
-    Returns "" when nothing's there (status-message-only chunks
-    don't pollute the part body).
-    """
-
-    if isinstance(piece, str):
-        return piece
-    # litellm stream chunks: choices[0].delta.content
-    try:
-        choices = piece.choices  # type: ignore[attr-defined]
-        if choices:
-            delta = getattr(choices[0], "delta", None)
-            if delta is not None:
-                content = getattr(delta, "content", None)
-                if content:
-                    return str(content)
-    except Exception:  # noqa: BLE001,S110 - content extraction best-effort; falls through
-        pass
-    if isinstance(piece, dict):
-        # OpenAI-style dict.
-        try:
-            return piece["choices"][0]["delta"].get("content", "") or ""
-        except (KeyError, IndexError, TypeError):
-            return ""
-    return ""
 
 
 def _format_react_trajectory(traj: Any) -> str:

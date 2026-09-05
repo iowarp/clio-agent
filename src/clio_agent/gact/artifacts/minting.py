@@ -1,20 +1,8 @@
-"""The artifact minting funnel — identity hashing + the three S1 mint seams.
+"""Artifact identity hashing and minting for tool, harness, and pack outputs.
 
-One funnel (:func:`mint_artifact`) builds an immutable version, emits the durable
-``artifact.created`` semantic event (the sole artifact-event emitter; as of S2
-(#968) it rides the SSE UI wire at ``semantic`` detail, no longer trace-only),
-folds it into the registry projection and patches the SessionStore badge index.
-The three seams feed it:
-
-* :func:`mint_tool_declared_outputs` — gact tool observer ``completed`` phase
-  (mechanism ``tool-schema``, producing ``call_id``);
-* the harness-write mint (mechanism ``harness``) minted by the gact-side
-  ``fs_apply_edit_write`` caller off :func:`mint_artifact` directly;
-* :func:`mint_pack_declared_paths` — the secondary pack ``artifact_paths`` channel.
-
-Identity is hashed by the harness (:func:`compute_identity`), streamed so large
-outputs stay bounded; over the size threshold a version is ``stat-pinned`` (typed,
-permanent — never a silent hash-skip). The model is never load-bearing here.
+The funnel emits durable artifact events, updates projections, and retains
+stat-pinned evidence when an output exceeds the streaming hash threshold. The
+model is never load-bearing here.
 """
 
 from __future__ import annotations
@@ -29,6 +17,10 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent import conf
 from clio_agent.gact.artifacts.cas_gc import record_cas_version
+from clio_agent.gact.artifacts.external_inputs import (
+    consumed_input_echo,
+    declared_consumed_file_paths,
+)
 from clio_agent.gact.artifacts.records import (
     RESERVED_KINDS,
     ArtifactKind,
@@ -530,12 +522,15 @@ def mint_tool_declared_outputs(
     root = _workspace_root(app, workspace_id)
     minted: list[ArtifactVersion] = []
     seen: set[str] = set()
+    consumed_paths = declared_consumed_file_paths(tool_name, effective_args)
     # (channel, label, path) — arg channel FIRST so it wins a dedup tie over a
     # result that merely echoes the same arg path.
     designated = [("arg", k, v) for k, v in grounded_output_paths(effective_args).items()]
     designated += [("result", k, v) for k, v in result_declared_paths(result).items()]
     for channel, label, raw_path in designated:
         path = Path(raw_path)
+        if consumed_input_echo(channel, root, path, tool_name, label, raw_path, consumed_paths):
+            continue
         if root is None:
             logger.warning(
                 "artifact mint skipped reason=containment_unresolved tool=%s %s=%s path=%s",

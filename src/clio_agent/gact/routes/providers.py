@@ -57,13 +57,13 @@ from clio_agent.gact.providers.auth import (
 from clio_agent.gact.providers.config import (
     _default_profile_spec,
     _effective_lm_config,
-    _provider_runtime_kind,
 )
 from clio_agent.gact.providers.lmstudio import (
     _lm_studio_api_root,
     _lm_studio_headers,
     _release_owned_lm_studio_instance,
 )
+from clio_agent.gact.providers.request_normalization import normalize_lm_provider_request
 from clio_agent.gact.relay_wiring import construct_agent_with_relay
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.globals import _process_arc, _set_app_arc
@@ -506,56 +506,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     # ---- /v1/providers/lm ------------------------
 
-    def _normalize_lm_provider_request(req: LMProviderRequest) -> LMProviderRequest:
-        """Convert catalog preset ids to runtime provider kinds before wiring DSPy,
-        and fill an omitted model from the (overlay-aware) preset default.
-
-        An omitted ``model`` resolves through ``_default_model_for`` — the
-        overlay's discovered default when a refresh has run, else the frozen
-        static ``suggested_model`` (#1211 review D2) — so an omitted-model bind
-        follows the CLI's/account's OWN live default (e.g. codex's rotated
-        ``gpt-5.6-sol``) rather than a snapshot id the account may already
-        reject (#1184). Applied UNCONDITIONALLY (not gated behind the
-        provider_kind conversion below): codex/claude_code's catalog id already
-        equals their runtime provider_kind, so the kind-conversion branch alone
-        would never touch ``model`` for them.
-        """
-
-        requested_id = req.provider_id or req.provider
-        preset = next((p for p in _LM_PRESETS if p.id == requested_id), None)
-        if preset is None:
-            from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
-
-            catalog_provider = get_provider(requested_id)
-            if catalog_provider is not None:
-                preset = next((p for p in _LM_PRESETS if p.id == catalog_provider.id), None)
-        if preset is None:
-            return req
-        from clio_agent.providers.catalog import normalize_provider_options  # noqa: PLC0415
-
-        try:
-            provider_options = normalize_provider_options(preset.id, req.provider_options)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        provider_kind = _provider_runtime_kind(preset.id)
-        default_model = req.model or _default_model_for(preset)
-        if (
-            provider_kind == req.provider
-            and preset.id == req.provider_id
-            and default_model == req.model
-            and provider_options == req.provider_options
-        ):
-            return req
-        return req.model_copy(
-            update={
-                "provider_id": preset.id,
-                "provider": provider_kind,
-                "api_base": req.api_base or preset.api_base,
-                "model": default_model,
-                "provider_options": provider_options,
-            }
-        )
-
     def _preset_api_key_env(preset: LMProviderPreset) -> str:
         if preset.api_key_env:
             return preset.api_key_env
@@ -779,7 +729,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         messages) is preserved across the swap.
         """
 
-        req = _normalize_lm_provider_request(req)
+        req = normalize_lm_provider_request(req, _LM_PRESETS, _default_model_for)
 
         def _apply_lm_studio_load_config() -> None:
             """Apply LM Studio load-time options before wiring DSPy."""
@@ -1264,7 +1214,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def put_lm_provider(req: LMProviderRequest) -> LMProviderInfo:
         """Start or perform an LM provider swap without freezing the backend."""
 
-        req = _normalize_lm_provider_request(req)
+        req = normalize_lm_provider_request(req, _LM_PRESETS, _default_model_for)
         running_task = getattr(app.state, "lm_config_task", None)
         if running_task is not None and not running_task.done():
             status = _lm_provider_status()

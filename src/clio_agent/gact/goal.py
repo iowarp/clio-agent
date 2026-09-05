@@ -161,22 +161,43 @@ def _judge_signature() -> Any:
     return dspy.Signature(fields, _JUDGE_INSTRUCTIONS)
 
 
-def _judge_lm() -> Any:
-    """Resolve the cheap judge LM (config-first), or ``None`` to use the ambient default.
+def _judge_route(app: Any) -> tuple[Any, Any]:
+    """Resolve the judge from the effective caller or explicit model override.
 
     ``goal.judge_model`` / ``CLIO_GOAL_JUDGE_MODEL`` names a small/cheap model for the
-    first-pass judge (the ``/goal`` Haiku pattern). When unset the judge runs under the
-    session's ambient ``dspy.settings.lm`` — still a SEPARATE, non-acting judge call, never
-    the acting model in the loop."""
+    first-pass judge. When unset, a bound expert/main LM wins. Calls outside a
+    DSPy context use the app's accepted main identity explicitly; they never read
+    the process boot default."""
 
     model = conf.resolve(
         "goal.judge_model", env="CLIO_GOAL_JUDGE_MODEL", default="", cast=conf.as_str
     )
-    if not model:
-        return None
     import dspy  # noqa: PLC0415
 
-    return dspy.LM(model)
+    from clio_agent.gact.runtime.ambient_lm import active_lm  # noqa: PLC0415
+
+    caller, ambient = active_lm()
+    owner = getattr(app.state, "agent", None)
+    adapter = getattr(dspy.settings, "adapter", None)
+    if ambient:
+        caller = getattr(owner, "_main_lm", None)
+        adapter = getattr(owner, "_dspy_adapter", None)
+    if caller is None:
+        raise RuntimeError("goal judge has no owning session LM")
+    if not model:
+        return caller, adapter
+    from clio_agent.lm.secondary import (  # noqa: PLC0415
+        SecondarySettings,
+        resolve_secondary_lm,
+    )
+
+    route = resolve_secondary_lm(
+        "summarizer",
+        caller_lm=caller,
+        caller_adapter=adapter,
+        settings=SecondarySettings(model=model),
+    )
+    return route.lm, route.adapter
 
 
 def _build_transcript(app: Any, sid: str, *, max_messages: int = 40) -> str:
@@ -214,11 +235,8 @@ def run_llm_judge(app: Any, sid: str, goal: Mapping[str, Any]) -> "GoalJudgement
         import dspy  # noqa: PLC0415
 
         judge = dspy.Predict(_judge_signature())
-        lm = _judge_lm()
-        if lm is not None:
-            with dspy.context(lm=lm):
-                pred = judge(goal_condition=condition, transcript=transcript)
-        else:
+        lm, adapter = _judge_route(app)
+        with dspy.context(lm=lm, adapter=adapter):
             pred = judge(goal_condition=condition, transcript=transcript)
         return GoalJudgement(
             met=bool(getattr(pred, "met", False)),

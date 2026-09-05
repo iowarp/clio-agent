@@ -448,7 +448,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # surface with nothing to show for it). All logic (materialize + emit) lives in
     # the owner module artifacts/versions.py (emit_artifact_used); only the guarded
     # call site is here. Ratchets back with the #714 mint/registry split.
-    "src/clio_agent/gact/artifacts/minting.py": 867,  # provider-store seam: funnel receipt stamp + per-site ingested threading (#1247)
+    "src/clio_agent/gact/artifacts/minting.py": 862,  # external-input echo classification moved to its provenance owner (#1320)
     # #1191: not previously baselined (silently over the 800 cap already, from
     # earlier unbaselined growth on this branch — the create_artifact tool floor).
     # +19 net for the OPTIONAL used=[...] input-refs param on create_artifact (the
@@ -596,7 +596,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # planning reads modalities out of; leaving the previous provider's snapshot
     # in place decided what bytes reached a model it never described. The catalog
     # itself is built in gact/provider_catalog.py; only the invalidation lands here.
-    "src/clio_agent/gact/routes/providers.py": 1351,
+    "src/clio_agent/gact/routes/providers.py": 1339,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the
@@ -669,7 +669,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/native_model_inputs.py; what lands here is its import, one call in the
     # stream_input literal, one call in the compat shim, and the pop/record
     # re-export lines the historical `from gact.streaming import ...` seam needs.
-    "src/clio_agent/gact/streaming.py": 925,
+    "src/clio_agent/gact/streaming.py": 877,
     # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
     # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
     # merge(main->develop): +10 (932 -> 942) integrating main's #964 structured
@@ -700,7 +700,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # wake_on_parent_activity call site right after the tool.call.completed
     # publish (a lazy import + one call). All gating/coalesce/wake logic lives
     # in the owner module gact/spotter_watcher.py.
-    "src/clio_agent/gact/tool_observer.py": 1061,
+    "src/clio_agent/gact/tool_observer.py": 1060,
     # Collector-collapse work already on this branch grew the file to 1303 (>the
     # recorded 986 baseline) before this entry was updated — pre-existing, not
     # introduced here. P5 (wire semantics): +34 for the waited_tasks union-merge
@@ -832,7 +832,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # ``exclude_none`` on every existing dump, so a no-audience-hint question
     # is byte-identical to the pre-#1309 shape (regression-locked,
     # test_agent_elicitation.py::test_no_audience_hint_mints_a_question_with_no_new_fields).
-    "src/clio_agent/gact/types.py": 862,
     # -120 (#891): the SDK-session machinery moved out to sibling owner modules —
     # the blocking-path pool to providers/claude_code_sdk_pool.py and the per-expert
     # streaming session/delta transport to providers/claude_code_sessions.py; this
