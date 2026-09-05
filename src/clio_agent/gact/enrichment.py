@@ -651,7 +651,7 @@ def _sanitize_excerpt(text: str) -> str:
     return text.replace(PENDING_TASK_NOTIFICATION_MARKER, "[marker removed]")
 
 
-def _notify_block(task: Any) -> str:
+def _notify_block(app: "FastAPI", task: Any) -> str:
     """Compose ONE agent-task notification block — a uniform structured field
     template (#948 S6 model-decides lock).
 
@@ -664,11 +664,21 @@ def _notify_block(task: Any) -> str:
 
     result = task.result or {}
     excerpt = _sanitize_excerpt(str(result.get("answer_excerpt", ""))[:_NOTIFY_EXCERPT_MAX])
+    artifact_block = ""
+    if task.artifact_ref:
+        from clio_agent.gact.agent_task_artifacts import (  # noqa: PLC0415
+            artifact_context_for_task,
+            artifact_context_text,
+        )
+
+        artifact_block = "\n" + artifact_context_text(artifact_context_for_task(app, task)).replace(
+            PENDING_TASK_NOTIFICATION_MARKER, "[marker removed]"
+        )
     return (
         f"### task {task.task_id} — {task.agent_ref.get('expert_id', '')} [{task.status}]\n"
         f"- child_session_id: {task.child_session_id}\n"
         f"- error_reason: {task.error_reason}\n"
-        f"- result_excerpt:\n```\n{excerpt}\n```"
+        f"- result_excerpt:\n```\n{excerpt}\n```{artifact_block}"
     )
 
 
@@ -700,7 +710,7 @@ def inject_pending_agent_task_notifications(
     if not pending:
         return enriched_text, []
     selected = pending[:_MAX_NOTIFY_BLOCKS]
-    blocks = [_notify_block(task) for task in selected]
+    blocks = [_notify_block(app, task) for task in selected]
     remaining = len(pending) - len(selected)
     truncation = (
         f"\n\n_({remaining} more finished task(s) pending — they will surface next turn.)_"
@@ -776,6 +786,12 @@ def consume_pending_agent_task_notifications(app: "FastAPI", sid: str, task_ids:
             metadata={"agent_blueprint_id": blueprint_id},
         )
         _emit_delegation_terminal(app, sid, parent_def, claimed or task)
+        if claimed is not None:
+            from clio_agent.gact.agent_task_artifacts import (  # noqa: PLC0415
+                emit_commission_parent_use,
+            )
+
+            emit_commission_parent_use(app, sid, claimed)
 
 
 def _context_file_turn_provenance(app: "FastAPI", sid: str, *, status: str) -> dict[str, Any]:

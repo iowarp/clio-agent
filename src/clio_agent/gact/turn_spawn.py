@@ -155,6 +155,11 @@ class TaskSpec:
     # #1309 C1-S7 F3: the bounded agent-elicitation recursion depth, stamped
     # onto the child's metadata at the SAME mint point for the same reason.
     agent_elicitation_depth: Optional[int] = None
+    # Optional cross-blueprint commission. Kept at the end for positional wire
+    # compatibility with every pre-commission TaskSpec field. When set,
+    # ``child_expert_id`` must be that installed blueprint's enabled root and
+    # the child activates the target instead of inheriting the parent blueprint.
+    target_blueprint_id: str = ""
 
 
 class SpawnError(Exception):
@@ -355,6 +360,7 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         agent_ref={
             "expert_id": spec.child_expert_id,
             "requesting_expert_id": spec.requesting_expert_id,
+            **({"blueprint_id": spec.target_blueprint_id} if spec.target_blueprint_id else {}),
         },
         depth=spec.depth,
         run_index=run_index,
@@ -415,6 +421,7 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
                 # skill-subagent launches faithfully later (parity with task_text).
                 "seed_context": spec.seed_context,
                 "skip_declared_check": spec.skip_declared_check,
+                "target_blueprint_id": spec.target_blueprint_id,
                 # Persist resolved values so queued admission stays self-contained
                 # even when the parent session disappears before launch.
                 "workspace_id": workspace_id,
@@ -756,11 +763,17 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
                 "answer_excerpt": _message_text(final)[:_ANSWER_EXCERPT_MAX],
                 "workflow_state": _child_workflow_state(app, child_sid, final),
             }
+            from clio_agent.gact.agent_task_artifacts import (  # noqa: PLC0415
+                returned_artifact_ref,
+            )
+
+            artifact_ref = returned_artifact_ref(app, final)
             outcome = fold_agent_task_transition(
                 app,
                 task_id,
                 STATUS_COMPLETED,
                 result=result,
+                artifact_ref=artifact_ref or None,
                 notify_pending=(mode == "async"),
                 updated_at=now,
             )
@@ -807,6 +820,9 @@ def _admit_next_queued(app: "FastAPI") -> None:
             child_expert_id=task.agent_ref.get("expert_id", ""),
             task_text=pending.get("task_text", ""),
             parent_session_id=task.parent_session_id,
+            target_blueprint_id=str(
+                pending.get("target_blueprint_id") or task.agent_ref.get("blueprint_id") or ""
+            ),
             requesting_expert_id=task.agent_ref.get("requesting_expert_id", "main"),
             parent_turn_id=task.parent_turn_id,
             depth=task.depth,

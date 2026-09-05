@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
+from clio_agent.gact.agent_task_artifacts import ArtifactRefValue
 from clio_agent.gact.agent_tasks import (
     AGENT_TASK_EVENTS,
     STATUS_COMPLETED,
@@ -43,7 +44,7 @@ def fold_agent_task_transition(
     *,
     error_reason: str = "",
     result: Optional[dict[str, Any]] = None,
-    artifact_ref: Optional[str] = None,
+    artifact_ref: Optional[ArtifactRefValue] = None,
     notify_pending: Optional[bool] = None,
     updated_at: str = "",
 ) -> AgentTaskFoldOutcome:
@@ -182,7 +183,13 @@ def fold_agent_task_event(
     error_reason = str(payload.get("error_reason", ""))
     updated_at = str(payload.get("updated_at", ""))
     artifact_obj = payload.get("artifact_ref")
-    artifact_ref = str(artifact_obj) if artifact_obj is not None else None
+    artifact_ref: ArtifactRefValue | None
+    if isinstance(artifact_obj, Mapping):
+        artifact_ref = dict(artifact_obj)
+    elif artifact_obj is not None:
+        artifact_ref = str(artifact_obj)
+    else:
+        artifact_ref = None
 
     folded_notify = notify_pending
     if folded_notify is None and isinstance(payload.get("notify_pending"), bool):

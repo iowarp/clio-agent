@@ -34,6 +34,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
+from clio_agent.gact.agent_task_artifacts import ArtifactRefValue
 from clio_agent.gact.runtime.permission_policies import inherit_child_session_policies
 
 if TYPE_CHECKING:
@@ -197,9 +198,10 @@ class AgentTask:
     updated_at: str = ""
     # ``result``: {message_ref, answer_excerpt (bounded), workflow_state}.
     result: Optional[dict[str, Any]] = None
-    # RESERVED — the artifacts campaign (#670) fills this with a spill ref when a
-    # child's output is large; carried from day one so federation records match.
-    artifact_ref: str = ""
+    # A commissioned blueprint returns its registered deliverable through the
+    # canonical ArtifactVersion.to_artifact_ref() mapping. A string remains
+    # accepted for older relay records during rolling upgrades.
+    artifact_ref: ArtifactRefValue = ""
     # Async observe-later (#948 S6/S8): completed-but-unconsumed tasks set
     # ``notify_pending``; the parent's next turn consumes them (``consumed_at``).
     notify_pending: bool = False
@@ -333,7 +335,7 @@ class AgentTaskRegistry:
         *,
         error_reason: str = "",
         result: Optional[dict[str, Any]] = None,
-        artifact_ref: Optional[str] = None,
+        artifact_ref: Optional[ArtifactRefValue] = None,
         notify_pending: Optional[bool] = None,
         updated_at: str = "",
     ) -> AgentTask:

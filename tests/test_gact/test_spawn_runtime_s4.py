@@ -12,6 +12,7 @@ import json
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -53,6 +54,7 @@ class _Agent:
 class _Def:
     def __init__(self, agent_id: str) -> None:
         self.id = agent_id
+        self.parent_id = "" if agent_id == "main" else "main"
         self.metadata = {"agent_blueprint_id": "bp"}
 
 
@@ -142,6 +144,23 @@ def test_leaf_expert_without_children_gets_no_spawn_tools(tmp_path: Path, monkey
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app):
         assert _tool_names(app, "leaf_expert", set(), monkeypatch) == []
+
+
+def test_root_without_children_can_commission_installed_blueprint(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        names = _tool_names(app, "main", set(), monkeypatch)
+        assert set(names) == {
+            "spawn_agent_task",
+            "wait_agent_tasks",
+            "check_agent_tasks",
+            "message_agent",
+            "observe_agent_tasks",
+            "get_agent_task_output",
+            "spawn_agents_parallel",
+        }
 
 
 def test_spawn_effect_leaf_gets_collectors_not_declared_child_spawners(
@@ -347,6 +366,59 @@ def test_spawn_agent_task_success_emits_delegation_started_and_returns_task(monk
     }
 
 
+def test_spawn_agent_task_commissions_installed_blueprint_root(monkeypatch) -> None:
+    app = _fake_app()
+    emitted = _capture_emits(monkeypatch)
+    target_scope = {
+        "active_agent_blueprint_id": "deep-researcher",
+        "active_agent_blueprint_name": "Deep Researcher",
+    }
+    monkeypatch.setattr(
+        "clio_agent.gact.spawn_context.resolve_installed_blueprint_target",
+        lambda app, blueprint_id, workspace_id="": (
+            "main",
+            target_scope,
+            "Deep Researcher",
+        ),
+    )
+    invoked: list[Any] = []
+
+    def _invoke(spec: Any) -> SimpleNamespace:
+        invoked.append(spec)
+        return SimpleNamespace(
+            task_id="task_research",
+            status="running",
+            run_index=0,
+            queued_reason="",
+            child_session_id="child_research",
+            run_label=spec.run_label,
+        )
+
+    monkeypatch.setattr(app.state.expert_invoker, "invoke", _invoke)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", set(), monkeypatch)
+        result = json.loads(
+            tools["spawn_agent_task"].func(
+                task="Produce the evidence-backed report.",
+                blueprint_id="deep-researcher",
+            )
+        )
+
+    assert result["task_id"] == "task_research"
+    assert result["run_label"] == "Deep Researcher"
+    assert len(invoked) == 1
+    spec = invoked[0]
+    assert spec.child_expert_id == "main"
+    assert spec.target_blueprint_id == "deep-researcher"
+    assert spec.session_scope_metadata == target_scope
+    assert [event["event_type"] for event in emitted] == [
+        "blueprint.delegation.started",
+        "blueprint.commission.started",
+    ]
+    assert emitted[1]["payload"]["child_session_id"] == "child_research"
+
+
 def test_spawn_agent_task_routes_invoke_through_app_expert_invoker(monkeypatch) -> None:
     """P2.6: the model-facing spawn crosses the configured invoker boundary."""
 
@@ -494,6 +566,61 @@ def test_wait_agent_tasks_completed_returns_wire_payload_and_emits_completed(mon
         "child_expert": "data_expert",
     }
     assert completed["payload"]["stage"] == "delegate.completed"
+
+
+def test_commission_wait_orders_artifact_return_before_parent_use(monkeypatch) -> None:
+    task = replace(
+        _completed_task("task_commission"),
+        agent_ref={
+            "expert_id": "main",
+            "requesting_expert_id": "main",
+            "blueprint_id": "deep-researcher",
+        },
+        artifact_ref={
+            "artifact_id": "artifact_report",
+            "sha256": "a" * 64,
+            "metadata": {"kind": "report", "version": 1},
+        },
+    )
+    registry = AgentTaskRegistry()
+    registry.register(task)
+    app = _fake_app(
+        registry,
+        messages={"child_1": [_assistant_message("msg_1", "child_1", "The report is registered.")]},
+    )
+    emitted = _capture_emits(monkeypatch)
+    monkeypatch.setattr(
+        "clio_agent.gact.agent_task_artifacts.artifact_context_for_task",
+        lambda app, task: {"artifact_ref": task.artifact_ref, "content": "# Report"},
+    )
+
+    def _parent_use(app: Any, session_id: str, task: Any) -> bool:
+        emitted.append(
+            {
+                "event_type": "blueprint.commission.parent_used_artifact",
+                "session_id": session_id,
+                "task_id": task.task_id,
+            }
+        )
+        return True
+
+    monkeypatch.setattr(
+        "clio_agent.gact.agent_task_artifacts.emit_commission_parent_use", _parent_use
+    )
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", set(), monkeypatch)
+        result = json.loads(
+            tools["wait_agent_tasks"].func(task_ids=["task_commission"], timeout_s=1.0)
+        )
+
+    assert result["results"][0]["artifact_context"]["content"] == "# Report"
+    assert [event["event_type"] for event in emitted] == [
+        "blueprint.delegation.completed",
+        "blueprint.commission.artifact_returned",
+        "blueprint.delegation.parent_resumed",
+        "blueprint.commission.parent_used_artifact",
+    ]
 
 
 def test_wait_agent_tasks_return_key_order_matches_declared_tail(monkeypatch) -> None:

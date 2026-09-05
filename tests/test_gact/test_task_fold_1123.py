@@ -79,6 +79,11 @@ def test_folded_task_events_complete_wait_without_in_process_future(tmp_path: Pa
                 "answer_excerpt": "remote result",
                 "workflow_state": {"step": "done"},
             },
+            artifact_ref={
+                "artifact_id": "artifact_report",
+                "sha256": "a" * 64,
+                "metadata": {"kind": "report", "version": 1},
+            },
             notify_pending=True,
             updated_at="2026-07-31T01:00:01+00:00",
         )
@@ -91,6 +96,7 @@ def test_folded_task_events_complete_wait_without_in_process_future(tmp_path: Pa
         assert completed_outcome.applied is True
         assert waited == TaskResult.from_task(completed_outcome.task)
         assert waited == TaskResult.from_task(completed)
+        assert waited.artifact_ref == completed.artifact_ref
         assert app.state.agent_task_registry.event(seeded.task_id).is_set()
 
 

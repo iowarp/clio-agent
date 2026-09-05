@@ -284,6 +284,38 @@ _PLAN_EXIT_DECISIONS: tuple[str, ...] = ("auto", "interactive", "exit_only", "re
 _PLAN_EXIT_CLEAR_CONTEXT = "clear_context"
 
 
+def _plan_review_content(plan_file: str) -> dict[str, Any]:
+    """Read the saved plan into the durable approval record with an explicit bound."""
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    limit = max(
+        1,
+        conf.resolve(
+            "limits.plan_review_chars",
+            env="CLIO_PLAN_REVIEW_CHARS",
+            default=256_000,
+            cast=conf.as_int,
+        ),
+    )
+    try:
+        content = Path(plan_file).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        return {
+            "plan_content": "",
+            "plan_content_status": "unavailable",
+            "plan_content_error": type(exc).__name__,
+        }
+    if len(content) > limit:
+        return {
+            "plan_content": content[:limit],
+            "plan_content_status": "truncated",
+            "plan_content_chars": len(content),
+            "plan_content_included_chars": limit,
+        }
+    return {"plan_content": content, "plan_content_status": "complete"}
+
+
 def _record_plan_exit_request(
     app: "FastAPI",
     sid: str,
@@ -521,6 +553,7 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
             "summary": summary,
             "risk_notes": risk_notes,
             "plan_file": plan_file,
+            **_plan_review_content(plan_file),
             "source_user_message_id": state.user_msg.id,
         },
     )

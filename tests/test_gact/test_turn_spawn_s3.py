@@ -102,6 +102,49 @@ def test_spawn_produces_child_session_and_completed_record(tmp_path: Path, monke
         assert _bus(app, parent, "agent.task.completed"), "no parent-visible completion event"
 
 
+def test_commissioned_child_activates_target_blueprint_scope(tmp_path: Path, monkeypatch) -> None:
+    from clio_agent.gact.turn_spawn import spawn_child_turn
+
+    target_scope = {
+        "active_agent_blueprint_id": "deep-researcher",
+        "active_agent_blueprint_name": "Deep Researcher",
+        "active_agent_blueprint_version": "1.0.0",
+    }
+    monkeypatch.setattr(
+        "clio_agent.gact.spawn_context.resolve_installed_blueprint_target",
+        lambda app, blueprint_id, workspace_id="": (
+            "main",
+            target_scope,
+            "Deep Researcher",
+        ),
+    )
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        parent = app.state.sessions.create(workspace_id="ws_default", title="parent")
+        task = spawn_child_turn(
+            app,
+            TaskSpec(
+                child_expert_id="main",
+                task_text="Research this fully.",
+                parent_session_id=parent.id,
+                requesting_expert_id="main",
+                session_scope_metadata=target_scope,
+                target_blueprint_id="deep-researcher",
+                start_turn=False,
+            ),
+        )
+
+        child = app.state.sessions.get(task.child_session_id)
+        assert child.metadata["active_agent_blueprint_id"] == "deep-researcher"
+        assert child.metadata["active_agent_blueprint_name"] == "Deep Researcher"
+        assert task.agent_ref == {
+            "expert_id": "main",
+            "requesting_expert_id": "main",
+            "blueprint_id": "deep-researcher",
+        }
+        assert child.metadata["pending_spawn"]["target_blueprint_id"] == "deep-researcher"
+
+
 def test_depth_cap_rejected(tmp_path: Path, monkeypatch) -> None:
     # Unit guard on the backstop itself. The TOOL-PATH lock (that the tools actually
     # COMPUTE a depth that reaches this guard) lives in test_spawn_runtime_s4.py

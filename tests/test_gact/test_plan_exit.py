@@ -161,6 +161,8 @@ def test_maybe_pause_mints_approval_question_and_yields(
     assert len(questions) == 1
     q = questions[0]
     assert q.status == "pending"
+    assert q.metadata["plan_content"] == "# Plan\n- do a thing\n"
+    assert q.metadata["plan_content_status"] == "complete"
     assert {o.value for o in q.options} >= {
         "auto",
         "interactive",
@@ -172,6 +174,20 @@ def test_maybe_pause_mints_approval_question_and_yields(
     fresh = app.state.sessions.get(sess.id)
     assert fresh.status == "waiting_user"
     assert fresh.metadata["pending_plan_exit"]["surfaced"] is True
+
+    from clio_agent.gact.routes.interactions import project_pending_interactions
+
+    projection = project_pending_interactions(app, sess.id, include_children=False)
+    [interaction] = projection.rows
+    assert interaction.title == "Review execution plan"
+    assert interaction.source.tool_name == "plan_exit"
+    assert interaction.payload["plan_exit"] == {
+        "summary": "ship it",
+        "recommended_mode": "auto",
+        "plan_file": str(tmp_path / "plan.md"),
+        "plan_content": "# Plan\n- do a thing\n",
+        "plan_content_status": "complete",
+    }
 
     # A second seam call is a no-op (already surfaced) — no double question.
     assert maybe_pause_for_plan_exit(state) is False

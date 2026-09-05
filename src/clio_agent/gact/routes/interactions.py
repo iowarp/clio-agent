@@ -159,6 +159,9 @@ def _agent_answer_task_projection(app: FastAPI, value: object) -> dict[str, Any]
 
 def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingInteraction:
     correlation = _question_correlation(app, question)
+    is_plan_exit = bool(
+        question.source == "plan_exit" or question.metadata.get("plan_exit_approval")
+    )
     is_mcp = question.source == "mcp_elicitation" or bool(
         isinstance(question.metadata, Mapping) and question.metadata.get("elicitation")
     )
@@ -202,7 +205,11 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
         attended_session_id=question.attended_session_id or question.session_id,
         task_id=task_id,
         status=question.status,
-        title="MCP task input required" if kind == "mcp_task_input" else "Question from agent",
+        title=(
+            "MCP task input required"
+            if kind == "mcp_task_input"
+            else ("Review execution plan" if is_plan_exit else "Question from agent")
+        ),
         prompt=question.prompt,
         requires_human_response=requires_human_response,
         audience=question.audience,
@@ -211,7 +218,7 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
         answered_by=question.answered_by,
         source=PendingInteractionSource(
             protocol="mcp" if is_mcp else "native",
-            tool_name=correlation["tool_name"],
+            tool_name="plan_exit" if is_plan_exit else correlation["tool_name"],
             invocation_id=correlation["invocation_id"],
         ),
         created_at=question.created_at,
@@ -232,6 +239,25 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
                 "additional_properties": elicitation.get("additional_properties"),
                 "url": elicitation.get("url"),
                 "container": elicitation.get("container"),
+                "plan_exit": (
+                    {
+                        key: question.metadata.get(key)
+                        for key in (
+                            "summary",
+                            "recommended_mode",
+                            "risk_notes",
+                            "plan_file",
+                            "plan_content",
+                            "plan_content_status",
+                            "plan_content_error",
+                            "plan_content_chars",
+                            "plan_content_included_chars",
+                        )
+                        if question.metadata.get(key) not in ("", None)
+                    }
+                    if is_plan_exit
+                    else None
+                ),
                 "punycode_warning": elicitation.get("punycode_warning"),
                 "punycode_host": elicitation.get("punycode_host"),
                 "punycode_host_raw": elicitation.get("punycode_host_raw"),

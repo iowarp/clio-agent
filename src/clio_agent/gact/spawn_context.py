@@ -111,6 +111,25 @@ def validate_task_spec(app: "FastAPI", spec: "TaskSpec") -> tuple[str, str, dict
         )
     parent = app.state.sessions.get(spec.parent_session_id)
     workspace_id, parent_mode, session_scope_metadata = resolve_spawn_bindings(parent, spec)
+    if spec.target_blueprint_id:
+        root_id, target_scope, _display_name = resolve_installed_blueprint_target(
+            app,
+            spec.target_blueprint_id,
+            workspace_id=workspace_id,
+        )
+        if spec.child_expert_id != root_id:
+            raise SpawnError(
+                f"blueprint {spec.target_blueprint_id!r} must spawn its root expert "
+                f"{root_id!r}, not {spec.child_expert_id!r}",
+                reason="blueprint_root_mismatch",
+            )
+        active_target = str(session_scope_metadata.get("active_agent_blueprint_id") or "").strip()
+        if active_target != spec.target_blueprint_id or session_scope_metadata != target_scope:
+            raise SpawnError(
+                f"spawn bindings do not activate blueprint {spec.target_blueprint_id!r}",
+                reason="blueprint_activation_mismatch",
+            )
+        return workspace_id, parent_mode, session_scope_metadata
     spec_has_bindings = any(
         value is not None
         for value in (spec.workspace_id, spec.session_mode, spec.session_scope_metadata)
@@ -139,6 +158,79 @@ def validate_task_spec(app: "FastAPI", spec: "TaskSpec") -> tuple[str, str, dict
                 reason="undeclared_child",
             )
     return workspace_id, parent_mode, session_scope_metadata
+
+
+def resolve_installed_blueprint_target(
+    app: "FastAPI", blueprint_id: str, *, workspace_id: str
+) -> tuple[str, dict[str, Any], str]:
+    """Resolve an installed blueprint's enabled root and activation metadata.
+
+    The same workspace-aware catalog and runtime MCP validation used for normal
+    session resolution are applied here. A cross-blueprint commission therefore
+    cannot activate a missing, disabled, invalid, or MCP-incomplete definition.
+    """
+
+    from clio_agent.gact.agent_blueprints import (  # noqa: PLC0415
+        discover_agent_blueprints,
+        load_agent_blueprints,
+        validate_agent_hierarchy,
+    )
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        _apply_agent_blueprint_mcp_descriptor_validation,
+        _apply_enabled_agent_blueprint_mcp_tools,
+        _merge_agent_def_rows,
+        _runtime_workspace_catalog_cwd,
+    )
+    from clio_agent.gact.turn_spawn import SpawnError  # noqa: PLC0415
+
+    target_id = str(blueprint_id or "").strip()
+    if not target_id:
+        raise SpawnError("blueprint_id must be non-empty", reason="blueprint_not_found")
+    cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id)
+    definition = next(
+        (row for row in discover_agent_blueprints(cwd=cwd) if row.id == target_id),
+        None,
+    )
+    if definition is None:
+        raise SpawnError(
+            f"installed blueprint not found: {target_id!r}", reason="blueprint_not_found"
+        )
+    if not definition.enabled or definition.validation_errors:
+        raise SpawnError(
+            f"installed blueprint is disabled or invalid: {target_id!r}",
+            reason="blueprint_disabled",
+        )
+    rows = validate_agent_hierarchy(
+        _merge_agent_def_rows(load_agent_blueprints(cwd=cwd, blueprint_id=target_id)),
+        blueprint=definition,
+    )
+    rows = _apply_agent_blueprint_mcp_descriptor_validation(app, rows)
+    rows = _apply_enabled_agent_blueprint_mcp_tools(app, rows)
+    root_id = str(definition.root_expert or "").strip()
+    if not root_id:
+        root_ids = [row.id for row in rows if row.enabled and not row.parent_id]
+        root_id = root_ids[0] if len(root_ids) == 1 else ""
+    root = next((row for row in rows if row.id == root_id), None)
+    if root is None or not root.enabled:
+        raise SpawnError(
+            f"installed blueprint has no enabled root expert: {target_id!r}",
+            reason="blueprint_root_unavailable",
+        )
+    display_name = definition.display_name or definition.title or definition.id
+    scope = {
+        "active_agent_blueprint_id": definition.id,
+        "active_agent_blueprint_name": display_name,
+        "active_agent_blueprint_version": definition.version,
+        "active_agent_blueprint_scope": definition.scope,
+        "active_agent_blueprint_definition_path": str(definition.root_path),
+        "active_agent_blueprint_path": "",
+        "active_expert_pack_id": "",
+        "active_expert_pack_name": "",
+        "active_expert_pack_version": "",
+        "active_expert_pack_path": "",
+        "expert_pack_id": "",
+    }
+    return root_id, scope, display_name
 
 
 def bind_task_spec_to_parent(app: "FastAPI", spec: "TaskSpec") -> "TaskSpec":

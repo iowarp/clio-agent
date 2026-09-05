@@ -219,7 +219,12 @@ def _merge_wait_workflow_states(
     return merge_run_workflow_states(runs)
 
 
-def _completion_payload(app: Any, task: Any) -> dict[str, Any]:
+def _completion_payload(
+    app: Any,
+    task: Any,
+    *,
+    include_artifact_context: bool = False,
+) -> dict[str, Any]:
     """The delegate.completed payload shape (wire parity with the old tool).
 
     ``output`` is the child's FULL answer byte-for-byte (#880), re-read from the
@@ -242,7 +247,14 @@ def _completion_payload(app: Any, task: Any) -> dict[str, Any]:
         "workflow_state": result.get("workflow_state", {}),
         "message_ref": result.get("message_ref", ""),
         "error_reason": task.error_reason,
+        "artifact_ref": task.artifact_ref,
     }
+    if include_artifact_context and task.artifact_ref:
+        from clio_agent.gact.agent_task_artifacts import artifact_context_for_task  # noqa: PLC0415
+
+        artifact_context = artifact_context_for_task(app, task)
+        if artifact_context:
+            payload["artifact_context"] = artifact_context
     payload.update(markers)
     return payload
 
@@ -287,6 +299,7 @@ def _return_handoff_part(agent_def: "AgentDef", task: Any, payload: dict[str, An
         "workflow_state": payload.get("workflow_state", {}),
         "error": task.error_reason or "",
         "run_index": task.run_index,
+        "artifact_ref": task.artifact_ref,
     }
     return_row.update(spawn_group_fields(task))
     # Surface the verbatim-output degradation markers (never silent) onto the Part too.
@@ -367,6 +380,25 @@ def _emit_delegation_terminal(app: Any, session_id: str, agent_def: "AgentDef", 
         payload=dict(payload),
     )
     _append_live_assistant_part(app, session_id, _return_handoff_part(agent_def, task, payload))
+    target_blueprint_id = str(task.agent_ref.get("blueprint_id") or "")
+    if target_blueprint_id and task.artifact_ref:
+        _emit_semantic_event(
+            app,
+            session_id,
+            "blueprint.commission.artifact_returned",
+            turn_id=_active_semantic_turn_id(),
+            trace_id=_active_semantic_trace_id(),
+            status=task.status,
+            summary=f"{target_blueprint_id} returned a registered artifact.",
+            actor={"agent_id": child_id, "role": "commissioned_blueprint"},
+            subject={"agent_id": agent_def.id, "role": "commissioning_parent"},
+            blueprint={
+                "agent_blueprint_id": target_blueprint_id,
+                "parent_expert": agent_def.id,
+                "child_expert": child_id,
+            },
+            payload={"task_id": task.task_id, "artifact_ref": task.artifact_ref},
+        )
     _emit_semantic_event(
         app,
         session_id,
@@ -480,7 +512,15 @@ def build_spawn_runtime_tools(
         else set()
     )
     has_declared_children = bool(declared_child_ids)
-    if _app is None or (not has_declared_children and not enable_skill_task_collection):
+    # Real AgentDef rows always declare ``parent_id``. Treat a missing attribute
+    # on legacy/test stand-ins as unknown rather than silently granting the new
+    # root-only commissioning surface.
+    can_commission_blueprints = getattr(agent_def, "parent_id", None) == ""
+    if _app is None or (
+        not has_declared_children
+        and not enable_skill_task_collection
+        and not can_commission_blueprints
+    ):
         return []
 
     def _ctx_app_session() -> tuple[Any, str]:
@@ -499,6 +539,7 @@ def build_spawn_runtime_tools(
         spawn_group_id: str = "",
         group_size: int = 0,
         input_task_ids: list[str] | None = None,
+        blueprint_id: str | None = None,
     ) -> str:
         """Spawn one declared child through the invoker + emit the started wire
         parity. ``fanout_bound`` (> 0) caps how many of THIS parent's concurrent
@@ -525,6 +566,28 @@ def build_spawn_runtime_tools(
         # reachable (a root session spawns at depth 1) (#948 S4 adversarial review).
         depth = _current_session_depth(app, session_id) + 1
         try:
+            target_blueprint_id = str(blueprint_id or "").strip()
+            child_id = agent
+            target_scope: dict[str, Any] | None = None
+            target_display_name = ""
+            if target_blueprint_id:
+                from clio_agent.gact.spawn_context import (  # noqa: PLC0415
+                    resolve_installed_blueprint_target,
+                )
+
+                parent_session = app.state.sessions.get(session_id)
+                workspace_id = str(getattr(parent_session, "workspace_id", "") or "")
+                child_id, target_scope, target_display_name = resolve_installed_blueprint_target(
+                    app,
+                    target_blueprint_id,
+                    workspace_id=workspace_id,
+                )
+                if agent and agent != child_id:
+                    raise SpawnError(
+                        f"blueprint {target_blueprint_id!r} has root {child_id!r}, "
+                        f"not requested expert {agent!r}",
+                        reason="blueprint_root_mismatch",
+                    )
             briefing, evidence_task_ids = resolve_input_task_evidence(
                 app, session_id, task, input_task_ids
             )
@@ -533,9 +596,10 @@ def build_spawn_runtime_tools(
                 bind_task_spec_to_parent(
                     app,
                     TaskSpec(
-                        child_expert_id=agent,
+                        child_expert_id=child_id,
                         task_text=briefing,
                         parent_session_id=session_id,
+                        target_blueprint_id=target_blueprint_id,
                         requesting_expert_id=agent_def.id,
                         # #953 [2]/[8]: stamp the ACTIVE turn id so run_index resets per
                         # parent turn (else it accumulates across the whole session).
@@ -553,6 +617,8 @@ def build_spawn_runtime_tools(
                         placement=binding.placement,
                         spawn_group_id=spawn_group_id,
                         group_size=group_size,
+                        session_scope_metadata=target_scope,
+                        run_label=target_display_name,
                     ),
                 ),
             )
@@ -569,12 +635,35 @@ def build_spawn_runtime_tools(
             app,
             session_id,
             agent_def,
-            agent,
+            child_id,
             task,
             depth,
             spawned,
             input_task_ids=evidence_task_ids,
         )
+        if target_blueprint_id:
+            _emit_semantic_event(
+                app,
+                session_id,
+                "blueprint.commission.started",
+                turn_id=_active_semantic_turn_id(),
+                trace_id=_active_semantic_trace_id(),
+                status=spawned.status,
+                summary=f"{agent_def.id} commissioned {target_display_name or target_blueprint_id}",
+                actor={"agent_id": agent_def.id, "role": "commissioning_parent"},
+                subject={"agent_id": child_id, "role": "commissioned_blueprint"},
+                blueprint={
+                    "agent_blueprint_id": target_blueprint_id,
+                    "parent_expert": agent_def.id,
+                    "child_expert": child_id,
+                },
+                payload={
+                    "task_id": spawned.task_id,
+                    "target_blueprint_id": target_blueprint_id,
+                    "target_blueprint_name": target_display_name,
+                    "child_session_id": getattr(spawned, "child_session_id", ""),
+                },
+            )
         return json.dumps(
             {
                 "task_id": spawned.task_id,
@@ -583,16 +672,17 @@ def build_spawn_runtime_tools(
                 # Typed queued_reason at the concurrency cap (#948 S6): the handle
                 # returns IMMEDIATELY as queued|running, never blocking on admission.
                 "queued_reason": spawned.queued_reason,
-                **run_handle_fields(spawned, agent),
+                **run_handle_fields(spawned, child_id),
             },
             sort_keys=True,
         )
 
     def spawn_agent_task(
-        agent: str,
-        task: str,
+        agent: str = "",
+        task: str = "",
         placement: str | None = None,
         input_task_ids: list[str] | None = None,
+        blueprint_id: str | None = None,
     ) -> str:
         """Spawn a declared child expert as a background child turn; returns its
         task_id IMMEDIATELY (status queued|running). Fire-and-forget: the child runs
@@ -608,7 +698,13 @@ def build_spawn_runtime_tools(
         and already finished, or the spawn is refused with a typed reason and no
         child is created."""
 
-        return _do_spawn(agent, task, placement=placement, input_task_ids=input_task_ids)
+        return _do_spawn(
+            agent,
+            task,
+            placement=placement,
+            input_task_ids=input_task_ids,
+            blueprint_id=blueprint_id,
+        )
 
     def wait_agent_tasks(task_ids: list[str], timeout_s: float | None = None) -> str:
         """Block until the given spawned tasks finish, then return each result.
@@ -658,7 +754,11 @@ def build_spawn_runtime_tools(
                 results.append({"task_id": tid, "error": exc.reason})
                 structured_rows.append(wait_structured_row(tid, exc.reason, 0.0, ""))
                 continue
-            payload = _completion_payload(app, task_result)
+            payload = _completion_payload(
+                app,
+                task_result,
+                include_artifact_context=True,
+            )
             # #1306: digested_model_row (owner module) digests an oversize output
             # for THIS model-facing row only -- _emit_delegation_terminal below
             # reaches task_result directly and keeps the #880 verbatim payload
@@ -689,6 +789,11 @@ def build_spawn_runtime_tools(
                 # declared-workflow runner (both reach a terminal task via the same
                 # invoker boundary).
                 _emit_delegation_terminal(app, session_id, agent_def, task_result)
+                from clio_agent.gact.agent_task_artifacts import (  # noqa: PLC0415
+                    emit_commission_parent_use,
+                )
+
+                emit_commission_parent_use(app, session_id, task_result)
         # Deterministic ensemble merge (#948 S5): when this wait collected several
         # runs whose typed workflow_state sections COLLIDE, merge them in REQUEST
         # ORDER (run_index, never completion order) and surface every collision as a
@@ -790,6 +895,12 @@ def build_spawn_runtime_tools(
                     "child_session_id": t.child_session_id,
                     "artifact_ref": t.artifact_ref,
                 }
+                if t.artifact_ref:
+                    from clio_agent.gact.agent_task_artifacts import (  # noqa: PLC0415
+                        artifact_context_for_task,
+                    )
+
+                    row["result"]["artifact_context"] = artifact_context_for_task(app, t)
                 # A poll that surfaces the finished result consumes its observe-later
                 # notification (exactly-once via the notify_pending gate) AND closes
                 # the delegation on the wire — the SAME terminal choreography wait
@@ -799,6 +910,11 @@ def build_spawn_runtime_tools(
                 # child left a started with no terminal (a dangling delegation).
                 consume_notification(app, t.task_id)
                 _emit_delegation_terminal(app, session_id, agent_def, t)
+                from clio_agent.gact.agent_task_artifacts import (  # noqa: PLC0415
+                    emit_commission_parent_use,
+                )
+
+                emit_commission_parent_use(app, session_id, t)
             rows.append(row)
         # Declared structured payload (P5 wire semantics, wait_agent_tasks's
         # treatment): message FIRST, rows after. The tally/format logic lives
@@ -857,6 +973,7 @@ def build_spawn_runtime_tools(
             agent = str((entry or {}).get("agent") or "")
             task = str((entry or {}).get("task") or "")
             input_task_ids = (entry or {}).get("input_task_ids") or None
+            blueprint_id = str((entry or {}).get("blueprint_id") or "") or None
             out.append(
                 json.loads(
                     _do_spawn(
@@ -867,6 +984,7 @@ def build_spawn_runtime_tools(
                         spawn_group_id=spawn_group_id,
                         group_size=group_size,
                         input_task_ids=input_task_ids,
+                        blueprint_id=blueprint_id,
                     )
                 )
             )
@@ -903,7 +1021,13 @@ def build_spawn_runtime_tools(
             title="Spawn Agent",
             representation="handoff",
             args={
-                "agent": {"type": "string", "description": "Declared child expert id to spawn."},
+                "agent": {
+                    "type": "string",
+                    "description": (
+                        "Declared child expert id to spawn. Omit when blueprint_id targets "
+                        "an installed blueprint."
+                    ),
+                },
                 "task": {"type": "string", "description": "The specific task for that child."},
                 "placement": {
                     "type": "string",
@@ -921,6 +1045,14 @@ def build_spawn_runtime_tools(
                         "material) -- the parent never sees this text. A foreign, "
                         "unknown, or still-running id refuses the spawn (typed reason; "
                         "no child created)."
+                    ),
+                },
+                "blueprint_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional installed blueprint id to commission. When set, agent must be "
+                        "that blueprint's root expert (or an empty string); the child activates "
+                        "the target blueprint and returns its registered artifact."
                     ),
                 },
             },
@@ -973,7 +1105,7 @@ def build_spawn_runtime_tools(
                 "spawns": {
                     "type": "array",
                     "description": (
-                        "List of {agent, task, input_task_ids?} to fan out. "
+                        "List of {agent, task, input_task_ids?, blueprint_id?} to fan out. "
                         "input_task_ids works exactly like spawn_agent_task's own "
                         "parameter, per entry."
                     ),
@@ -992,6 +1124,11 @@ def build_spawn_runtime_tools(
             "message_agent",
             "observe_agent_tasks",
             "get_agent_task_output",
+            *(
+                {"spawn_agent_task", "spawn_agents_parallel"}
+                if can_commission_blueprints
+                else set()
+            ),
         }
         tools = [tool for tool in tools if getattr(tool, "name", "") in collection_names]
 

@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any, Optional, Protocol, Sequence, runtime_checkable
 
 from clio_agent.gact.agent_message_transport import message_in_process
+from clio_agent.gact.agent_task_artifacts import ArtifactRefValue
 from clio_agent.gact.agent_tasks import (
     AGENT_TASK_CONSUMED_EVENT,
     AGENT_TASK_EVENTS,
@@ -191,8 +192,8 @@ class TaskResult:
 
     Carries the status lifecycle, the create/update timeline, the ``result`` payload
     (``{message_ref, answer_excerpt, workflow_state}``), the typed ``error_reason``
-    and a RESERVED ``artifact_ref`` (the #670 artifacts campaign fills it with a
-    spill ref; carried from day one so a federation record matches).
+    and an ``artifact_ref`` carrying a commissioned blueprint's registered
+    deliverable (with string compatibility for older relay records).
 
     It OMITS all nine :class:`AgentTask` fields that are not part of the executor
     boundary, in four classes:
@@ -221,9 +222,7 @@ class TaskResult:
     created_at: str = ""
     updated_at: str = ""
     result: Optional[dict[str, Any]] = None
-    # RESERVED — filled by the artifacts campaign (#670); present so federation
-    # records match the durable relay ``ArtifactRef`` vocabulary from day one.
-    artifact_ref: str = ""
+    artifact_ref: ArtifactRefValue = ""
     handle_id: str = ""
     run_label: str = ""
     live_state: str = ""
