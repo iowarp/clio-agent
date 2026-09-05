@@ -514,6 +514,7 @@ def test_v3_transcript_preserves_navigable_child_agent_semantics(tmp_path: Path)
             "type": "subagent",
             "subagent_id": "task_geo",
             "stage": "delegate.started",
+            "task": "Ground the requested region before catalog search.",
         },
         {
             "id": "handoff_geo_returned",

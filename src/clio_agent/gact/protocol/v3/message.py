@@ -185,11 +185,13 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
     if part_type == "expert_handoff":
         metadata = _mapping(part.get("metadata"))
         stage = str(part.get("stage") or metadata.get("stage") or "")
+        task = str(metadata.get("question") or "")
         return {
             "id": part_id,
             "type": "subagent",
             "subagent_id": str(part.get("handle_id") or part_id),
             **({"stage": stage} if stage else {}),
+            **({"task": task} if task else {}),
             **common,
         }
     if part_type == "resource_link":
