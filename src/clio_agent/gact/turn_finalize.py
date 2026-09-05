@@ -53,6 +53,7 @@ from clio_agent.gact.artifacts.wire import append_turn_resource_links, proposed_
 from clio_agent.gact.delegation import (
     _produced_turn_workflow_state,
 )
+from clio_agent.gact.direct_response import promote_tool_free_response
 from clio_agent.gact.enrichment import _finalize_context_frame
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
 from clio_agent.gact.evidence import (
@@ -171,31 +172,12 @@ def finalize_turn(
             recoverable=True,
         )
 
-    # The expert that produced this turn's thinking/answer/diff parts: the routed
-    # expert when one was selected, else the active orchestrator.
     responder_agent_id = state.selected_agent or state.invocation_agent_id or "main"
     answer_agent_ids = {
         responder_agent_id,
         state.active_agent_id or state.invocation_agent_id or "main",
     } - {""}
-    # A tool-free ReAct result makes its current ``next_thought`` the terminal
-    # response. Promote that same streamed part to the answer channel now that
-    # the provider's empty tool-call list is authoritative. This is a producer-
-    # identity transition: no text comparison, cleanup, inference, or retry.
-    if str(getattr(pred, "termination_reason", "") or "") == "direct_response":
-        state.transcript.promote_open_text_field(
-            answer_agent_ids,
-            source_field="next_thought",
-            target_field="answer",
-        )
-
-    # ---- #767 PR3: finalize is a READER of the TurnTranscript ledger. ----
-    # Live parts already streamed as they happened; finalize only appends ITS OWN parts (route
-    # banner, wrap-up thinking, the canonical answer channel, file diffs) through the same producer
-    # API and persists the ledger verbatim — no live-parts scans, no rebuild-from-rows, no text swap,
-    # no dedup, no re-publish. Capture stream provenance BEFORE any finalize-time append: an atomic
-    # append is the runtime boundary and clears ``current_stream_part_id`` (the legacy closure var
-    # was only reset by mid-turn boundaries).
+    promote_tool_free_response(state.transcript, pred, answer_agent_ids)
     current_stream_part_id = state.transcript.current_stream_part_id
     live_assistant_parts = state.transcript.snapshot()
     has_live_parts = bool(live_assistant_parts or current_stream_part_id)

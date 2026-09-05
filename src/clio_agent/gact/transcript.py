@@ -48,7 +48,7 @@ import json
 import logging
 import threading
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from typing import Any, Optional, Protocol
 
 from clio_agent.gact.events import Event, EventBus
@@ -784,68 +784,6 @@ class TurnTranscript:
         with self._lock:
             self._close_open_text_locked()
 
-    def promote_open_text_field(
-        self,
-        agent_ids: Iterable[str],
-        *,
-        source_field: str,
-        target_field: str,
-    ) -> bool:
-        """Move the current streamed text part to another contract field.
-
-        ReAct exposes its prose through ``next_thought`` before the provider's
-        tool-call list is known. When that list is empty, the same model-owned
-        part is the terminal answer. Promote that open part by producer identity
-        so the ledger keeps one text part rather than appending a batch copy.
-
-        No text is compared or rewritten. Only the currently open part can move,
-        and the completed-part metadata patch keeps the live and reload views in
-        agreement.
-        """
-
-        allowed_agents = {str(agent_id or "") for agent_id in agent_ids} - {""}
-        source = str(source_field or "")
-        target = str(target_field or "")
-        if not allowed_agents or not source or not target or source == target:
-            return False
-        with self._lock:
-            if self._frozen:
-                self._audit_late_op(
-                    "promote_open_text_field",
-                    source_field=source,
-                    target_field=target,
-                )
-                return False
-            part = self._open_part
-            if (
-                part is None
-                or part.type != "text"
-                or self._open_field != source
-                or self._open_agent not in allowed_agents
-            ):
-                return False
-            agent_id = self._open_agent
-            self._close_open_text_locked()
-            source_key = (agent_id, source)
-            closed = self._closed_text.get(source_key)
-            if not closed or part not in self._parts:
-                return False
-            landed = closed.pop()
-            if not closed:
-                self._closed_text.pop(source_key, None)
-            self._closed_text.setdefault((agent_id, target), []).append(landed)
-            part.metadata["signature_field_name"] = target
-            self._publisher.publish(
-                "message.part.updated",
-                {
-                    "turn_id": self.turn_id,
-                    "message_id": self.message_id,
-                    "part_id": part.id,
-                    "metadata_patch": {"signature_field_name": target},
-                },
-            )
-            return True
-
     def discard_open_text(self) -> bool:
         """Abandon the open streamed part WITHOUT closing/publishing it (D15).
 
@@ -1278,17 +1216,6 @@ class FieldStream:
             open_part = self._open_channel_part_locked()
             if open_part is not None:
                 self.part_id = open_part.id
-            elif self._landed_locked():
-                self.part_id = next(
-                    (
-                        part.id
-                        for part in reversed(transcript._parts)
-                        if part.type == "text"
-                        and part.agent_id in self._covers
-                        and part.metadata.get("signature_field_name") == self._field
-                    ),
-                    None,
-                )
 
     def _open_channel_part_locked(self) -> Optional[Part]:
         """The transcript's open part when it carries THIS channel's field."""

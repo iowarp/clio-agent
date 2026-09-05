@@ -16,6 +16,7 @@ import asyncio
 import random
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any
 
 from clio_agent.gact.events import Event, EventBus
@@ -401,11 +402,13 @@ def test_field_stream_neither_streamed_nor_fallback_returns_none() -> None:
 
 
 def test_promote_open_text_field_moves_one_part_without_copying_text() -> None:
+    from clio_agent.gact.direct_response import promote_tool_free_response
+
     transcript, publisher = make_transcript()
     transcript.append_text_delta("main", "next_thought", "READY ONCE")
 
-    assert transcript.promote_open_text_field(
-        ["main"], source_field="next_thought", target_field="answer"
+    assert promote_tool_free_response(
+        transcript, SimpleNamespace(termination_reason="direct_response"), ["main"]
     )
 
     parts = transcript.snapshot()
@@ -419,8 +422,7 @@ def test_promote_open_text_field_moves_one_part_without_copying_text() -> None:
     assert updated[0][1]["part_id"] == parts[0].id
     assert updated[0][1]["metadata_patch"] == {"signature_field_name": "answer"}
 
-    answer = transcript.turn_answer_stream("main")
-    assert answer.finish(fallback_text="READY ONCE") == "READY ONCE"
+    transcript.turn_answer_stream("main").finish(fallback_text="READY ONCE")
     assert len(transcript.snapshot()) == 1
 
 

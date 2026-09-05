@@ -147,7 +147,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # comment lines explaining why the stamp is deliberately absent here.
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
-    "src/clio_agent/agent.py": 1032,  # blueprint activation moved to gact/blueprint_activation.py
+    "src/clio_agent/agent.py": 986,  # blueprint activation moved to gact/blueprint_activation.py
     "src/clio_agent/arc/memory.py": 1389,  # provider ladder moved to provenance_config.py
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -243,7 +243,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # HeaderMismatch, SEP-2578) -- the retry logic itself lives in the owner
     # module tools/mcp_header_mismatch.py; only the lazy import + call-site swap
     # land here.
-    "src/clio_agent/gact/agents/builders.py": 1947,
+    "src/clio_agent/gact/agents/builders.py": 1619,
     # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
     # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
     # tool callable this loop will ever run (MCP-bridged, instrumented
@@ -269,7 +269,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # was itself the exact ordering bug the B1 fix corrects.
     # MERGE (PR #1298 x #1310): 921 -> 924. Both campaigns' additive call sites
     # land in this file; no logic moved in from either owner module.
-    "src/clio_agent/gact/agents/reactv2.py": 924,
     # #948 S4/S5/S6 growth already carried this file past the flat 800 cap (to 842)
     # before it was ever added to this baseline — a pre-existing gap this change
     # did not introduce (it was silently exempt from the ratchet, not under it).
@@ -431,7 +430,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # never disagree with what the runtime turn path actually executes). All
     # decision logic lives in the owner module; only the two wrapping calls
     # landed here.
-    "src/clio_agent/gact/app.py": 2493,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
+    "src/clio_agent/gact/app.py": 2484,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
