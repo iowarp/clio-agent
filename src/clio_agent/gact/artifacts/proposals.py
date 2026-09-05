@@ -755,9 +755,8 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
         ``path`` registers an EXISTING file; ``content`` authors a NEW file WRITTEN AT
         ``name`` — the target path (workspace-relative or absolute), not a display label.
 
-        ``used`` (#1191, OPTIONAL): cites the inputs this deliverable was DERIVED
-        FROM (paths, artifact ids, and/or exact HTTP(S) source URLs). NOT
-        threaded into the promotion below —
+        ``used`` (#1191, OPTIONAL): cites inputs this deliverable was DERIVED FROM
+        (paths, artifact ids, and/or exact HTTP(S) source URLs). NOT threaded into the promotion below —
         the mint decision is unaffected. The tool-observer transform seam
         (``declared_used_edges.detect_declared_used_edges``, fired AFTER this call
         returns) reads it from this call's own args and records real ``used`` PROV
@@ -852,10 +851,9 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             "used": {
                 "type": "array",
                 "description": (
-                    "OPTIONAL: workspace paths, artifact ids, and/or exact HTTP(S) source "
-                    "URLs this deliverable was derived from. URLs are recorded honestly as "
-                    "assertion-class external evidence; an unresolvable file or artifact ref "
-                    "is typed on the trace, never silently dropped."
+                    "OPTIONAL: workspace paths, artifact ids, and/or exact HTTP(S) source URLs "
+                    "this deliverable was derived from. URLs are assertion-class evidence; "
+                    "unresolved file or artifact refs are typed, never silently dropped."
                 ),
             },
         },
