@@ -612,7 +612,6 @@ def build_spawn_runtime_tools(
 
     def wait_agent_tasks(task_ids: list[str], timeout_s: float | None = None) -> str:
         """Block until the given spawned tasks finish, then return each result.
-
         Omit ``timeout_s`` for a committed wait that returns only after every
         requested task reaches a terminal state. Pass a finite budget when you
         intentionally need a progress checkpoint; that form may return current

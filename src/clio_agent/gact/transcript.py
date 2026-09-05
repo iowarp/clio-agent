@@ -421,10 +421,8 @@ class TurnTranscript:
     def upsert_delegation_part(self, part: Part, *, stream_source: str = "live") -> Optional[Part]:
         """Upsert one lifecycle phase without erasing another phase.
 
-        A delegation start and its later return are distinct chronological
-        ledger events. Repeated observations of the *same* phase update in
-        place, but a terminal phase never replaces the earlier start. This
-        preserves both causal positions while keeping retries idempotent.
+        Start and return are distinct chronological events. Observations of
+        the same phase update in place so retries remain idempotent.
         """
 
         handle_id = str(part.handle_id or "")

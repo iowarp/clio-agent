@@ -716,7 +716,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # encapsulation), trimmed from an initial 77-line addition to 43 by cutting
     # the docstring and collapsing the log call before accepting this ratchet.
     # Ratchet back with #714/#767.
-    "src/clio_agent/gact/transcript.py": 1380,
+    "src/clio_agent/gact/transcript.py": 1379,
     # #918: +17 for the typed SkillNotDelegatableError ladder arm (a skill-bound
     # turn fails typed, never as generic agent_error).
     # #952 S4 Pass C: -1 (the suppressed_parent_resume_offsets init was removed
