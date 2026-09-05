@@ -25,9 +25,9 @@ def _list(value: Any) -> list[Any]:
 def _message_presentation_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
     """Project only metadata needed to classify visible transcript records.
 
-    Native ``ask_user`` answers are delivered back to the runtime as user-role
-    resume envelopes.  The v3 client needs their question identity to avoid
-    presenting that transport record as a second user-authored chat message.
+    Native ``ask_user`` answers and approved plans are delivered back to the
+    runtime as user-role resume envelopes. The v3 client needs their public
+    classification to avoid presenting transport records as human prompts.
     MCP App ``ui/message`` calls are also user-role transport records, but they
     remain visible as their own causal activity rather than masquerading as an
     ordinary composer message. Only the already-public app identity and its
@@ -39,6 +39,8 @@ def _message_presentation_metadata(metadata: Mapping[str, Any]) -> dict[str, Any
     """
 
     projected: dict[str, Any] = {}
+    if metadata.get("plan_exit_resume") is True:
+        projected["plan_exit_resume"] = True
     if metadata.get("ask_user_resume") is True:
         question_id = metadata.get("ask_user_question_id")
         if isinstance(question_id, str) and question_id:

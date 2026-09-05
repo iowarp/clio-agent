@@ -405,6 +405,7 @@ def test_v3_message_projects_only_native_resume_classification_metadata() -> Non
             updated_at="2026-09-04T00:00:01+00:00",
             parts=[Part(id="answer", type="text", text="internal delivery envelope")],
             metadata={
+                "plan_exit_resume": True,
                 "ask_user_resume": True,
                 "ask_user_question_id": "ques_1",
                 "ask_user_answer": "private answer",
@@ -414,6 +415,7 @@ def test_v3_message_projects_only_native_resume_classification_metadata() -> Non
     )
 
     assert projected["metadata"] == {
+        "plan_exit_resume": True,
         "ask_user_resume": True,
         "ask_user_question_id": "ques_1",
     }
