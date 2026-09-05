@@ -80,10 +80,10 @@ class _ProtocolSpy(_InvokeSpy):
     def __init__(self, registry: AgentTaskRegistry) -> None:
         super().__init__()
         self.registry = registry
-        self.wait_calls: list[tuple[TaskHandle, float]] = []
+        self.wait_calls: list[tuple[TaskHandle, float | None]] = []
         self.check_calls: list[list[TaskHandle]] = []
 
-    def wait(self, handle: TaskHandle, timeout_s: float) -> TaskResult:
+    def wait(self, handle: TaskHandle, timeout_s: float | None) -> TaskResult:
         self.wait_calls.append((handle, timeout_s))
         task = self.registry.get(handle.task_id)
         assert task is not None
@@ -399,6 +399,36 @@ def test_spawn_wait_and_check_all_route_through_expert_invoker(monkeypatch) -> N
     assert len(spy.specs) == 1
     assert [handle.task_id for handle, _timeout in spy.wait_calls] == ["task_done"]
     assert [[handle.task_id for handle in batch] for batch in spy.check_calls] == [["task_done"]]
+
+
+def test_wait_agent_tasks_omitted_timeout_is_committed_wait(monkeypatch) -> None:
+    """The optional timeout crosses the invoker boundary as ``None``."""
+
+    registry = AgentTaskRegistry()
+    registry.register(_completed_task())
+    app = _fake_app(registry)
+    spy = _ProtocolSpy(registry)
+    app.state.expert_invoker = spy
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        tools["wait_agent_tasks"].func(task_ids=["task_done"])
+
+    assert [timeout for _handle, timeout in spy.wait_calls] == [None]
+
+
+def test_wait_agent_tasks_schema_requires_only_task_ids(monkeypatch) -> None:
+    """The model-facing schema exposes a genuinely optional checkpoint budget."""
+
+    app = _fake_app()
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        schema = tools["wait_agent_tasks"].format_as_litellm_function_call()
+
+    parameters = schema["function"]["parameters"]
+    assert parameters["required"] == ["task_ids"]
+    assert parameters["properties"]["timeout_s"]["default"] is None
 
 
 def test_spawn_agent_task_spawn_error_returns_reason_and_emits_nothing(monkeypatch) -> None:
@@ -2190,11 +2220,8 @@ def test_return_handoff_part_survives_unparseable_timestamps() -> None:
     assert part.duration_ms == 0.0
 
 
-def test_terminal_handoff_updates_started_part_in_place() -> None:
-    """ONE delegation = ONE expert_handoff part (clean-wire rule): the terminal
-    return UPDATES the started part (same id/sequence, merged metadata carrying
-    the brief AND the output) and publishes message.part.updated — never a
-    second part for the same handle."""
+def test_terminal_handoff_appends_after_started_part() -> None:
+    """Start and return remain separate chronological ledger events."""
 
     from clio_agent.gact.transcript import TurnTranscript
 
@@ -2233,16 +2260,19 @@ def test_terminal_handoff_updates_started_part_in_place() -> None:
     transcript.upsert_delegation_part(terminal)
 
     parts = [p for p in transcript._parts if p.type == "expert_handoff"]
-    assert len(parts) == 1
-    merged = parts[0]
-    assert merged.id == "p_started"  # identity survives the update
-    assert merged.stage == "delegate.completed"
-    assert merged.metadata["question"] == "Resolve LA."
-    assert merged.metadata["output"] == "Resolved."
-    assert merged.duration_ms == 1234.0
+    assert len(parts) == 2
+    assert parts[0].id == "p_started"
+    assert parts[0].stage == "delegate.started"
+    assert parts[0].metadata["question"] == "Resolve LA."
+    assert "output" not in parts[0].metadata
+    assert parts[1].id == "p_terminal"
+    assert parts[1].stage == "delegate.completed"
+    assert parts[1].metadata["output"] == "Resolved."
+    assert "question" not in parts[1].metadata
+    assert parts[1].duration_ms == 1234.0
     kinds = [e for e, _ in events]
-    assert kinds.count("message.part.added") == 1
-    assert kinds.count("message.part.updated") == 1
+    assert kinds.count("message.part.added") == 2
+    assert kinds.count("message.part.updated") == 0
 
 
 def _collector_transcript_app(sid: str = "sess_x") -> tuple[Any, Any, list[tuple[str, dict]]]:

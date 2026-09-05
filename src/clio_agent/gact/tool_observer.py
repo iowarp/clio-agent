@@ -439,8 +439,9 @@ def _append_live_assistant_part(app: "FastAPI", sid: str, part: Part) -> None:
     if transcript is not None:
         # #767 PR1: append through the single-writer ledger — it closes its own
         # open text, mints ids, and publishes message.part.added itself.
-        # ONE delegation = ONE expert_handoff part (clean-wire rule): a terminal
-        # handoff updates its started part in place (message.part.updated).
+        # Each delegation phase owns one ledger row. Repeated observations of
+        # that phase update in place, while the terminal return remains a new
+        # chronological event after the start.
         if part.type == "expert_handoff":
             transcript.upsert_delegation_part(part)
         elif (
@@ -465,7 +466,11 @@ def _append_live_assistant_part(app: "FastAPI", sid: str, part: Part) -> None:
     updated = False
     if part.type == "expert_handoff" and str(part.handle_id or ""):
         for index, row in enumerate(rows):
-            if row.type == "expert_handoff" and str(row.handle_id or "") == str(part.handle_id):
+            if (
+                row.type == "expert_handoff"
+                and str(row.handle_id or "") == str(part.handle_id)
+                and str(row.stage or "") == str(part.stage or "")
+            ):
                 part.id = row.id
                 part.sequence = row.sequence
                 part.metadata = {**row.metadata, **part.metadata}

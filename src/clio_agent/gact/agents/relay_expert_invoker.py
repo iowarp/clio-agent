@@ -163,7 +163,7 @@ class RelayExpertInvoker:
         self._start_event_pump(handle)
         return handle
 
-    def wait(self, handle: TaskHandle, timeout_s: float) -> TaskResult:
+    def wait(self, handle: TaskHandle, timeout_s: float | None) -> TaskResult:
         """Reconnect by retained task id and wait within the caller's budget.
 
         A timeout returns the latest non-terminal record. A fresh client and the
@@ -174,7 +174,7 @@ class RelayExpertInvoker:
         local = self._require_local_task(handle)
         if local.is_terminal:
             return TaskResult.from_task(local)
-        if timeout_s <= 0:
+        if timeout_s is not None and timeout_s <= 0:
             return self.check([handle])[0]
         self._start_event_pump(handle)
         key = self._runtime.task_key(handle)

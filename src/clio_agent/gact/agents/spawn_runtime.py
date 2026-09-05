@@ -7,7 +7,7 @@ consumed by a settle loop, it CALLS these tools:
 
 * ``spawn_agent_task(agent, task)`` — spawn a declared child as a REAL child turn
   (S3 ``spawn_child_turn``) and return its ``task_id``.
-* ``wait_agent_tasks(task_ids, timeout_s)`` — block on the children's completion
+* ``wait_agent_tasks(task_ids, timeout_s=None)`` — block on the children's completion
   and return their results (spawn + wait COMPOSE the old synchronous delegate;
   the child runs on the dedicated pool so waiting here never starves it).
 * ``check_agent_tasks()`` — the parent's spawned tasks + status (consumes a
@@ -610,13 +610,14 @@ def build_spawn_runtime_tools(
 
         return _do_spawn(agent, task, placement=placement, input_task_ids=input_task_ids)
 
-    def wait_agent_tasks(task_ids: list[str], timeout_s: float) -> str:
-        """Block until the given spawned tasks finish (up to timeout_s), then return
-        each one's result. ``timeout_s`` is REQUIRED — pass your own budget; on
-        timeout you get the current statuses and YOU decide (keep waiting, keep
-        working, or finish). The children run on a dedicated pool, so waiting here
-        never starves them. Prefer a short budget (e.g. 30-60s) and continue on a
-        partial — don't block the whole turn on one long child. An oversize
+    def wait_agent_tasks(task_ids: list[str], timeout_s: float | None = None) -> str:
+        """Block until the given spawned tasks finish, then return each result.
+
+        Omit ``timeout_s`` for a committed wait that returns only after every
+        requested task reaches a terminal state. Pass a finite budget when you
+        intentionally need a progress checkpoint; that form may return current
+        non-terminal statuses. The children run on a dedicated pool, so waiting
+        here never starves them. An oversize
         result (past a configured character bound) comes back as a digest
         naming its fetch tool (get_agent_task_output) instead of the full text
         inline — or hand that task's id straight to your NEXT spawn as
@@ -632,7 +633,7 @@ def build_spawn_runtime_tools(
         )
 
         call_start = _time.monotonic()
-        deadline = call_start + max(0.0, float(timeout_s or 0.0))
+        deadline = None if timeout_s is None else call_start + max(0.0, float(timeout_s))
         results = []
         # Typed structured shape (owner ruling, P5): a tool DECLARES its wire
         # presentation instead of the UI inferring it from JSON key order —
@@ -650,7 +651,7 @@ def build_spawn_runtime_tools(
                 results.append({"task_id": tid, "error": "unknown_task"})
                 structured_rows.append(wait_structured_row(tid, "unknown_task", 0.0, ""))
                 continue
-            remaining = max(0.0, deadline - _time.monotonic())
+            remaining = None if deadline is None else max(0.0, deadline - _time.monotonic())
             try:
                 binding = invoker_for_task(app, task)
                 task_result = binding.invoker.wait(TaskHandle.from_task(task), timeout_s=remaining)
@@ -933,13 +934,13 @@ def build_spawn_runtime_tools(
             args={
                 "task_ids": {"type": "array", "description": "Task ids returned by spawn."},
                 "timeout_s": {
-                    "type": "number",
+                    "anyOf": [{"type": "number"}, {"type": "null"}],
+                    "default": None,
                     "description": (
-                        "REQUIRED max seconds to wait before returning current "
-                        "statuses (a wait without a budget is a hang). You decide "
-                        "how to proceed on a partial result. Prefer a short budget "
-                        "(e.g. 30-60s) and re-collect finished children with a follow-up "
-                        "wait or check_agent_tasks rather than blocking the whole turn."
+                        "Optional finite checkpoint budget. Omit it for one committed "
+                        "wait that returns after all requested tasks are terminal. Pass "
+                        "seconds only when you intentionally need current statuses before "
+                        "completion; decide how to proceed from that partial result."
                     ),
                 },
             },

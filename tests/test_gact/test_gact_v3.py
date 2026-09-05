@@ -476,20 +476,30 @@ def test_v3_transcript_preserves_navigable_child_agent_semantics(tmp_path: Path)
             updated_at="2026-08-22T00:00:01+00:00",
             parts=[
                 Part(
-                    id="handoff_geo",
+                    id="handoff_geo_started",
                     type="expert_handoff",
                     handle_id="task_geo",
                     child_agent="geospatial",
                     run_label="Resolve station region",
+                    stage="delegate.started",
+                    live_state="running",
+                    status="running",
+                    text="main -> geospatial",
+                    metadata={"question": "Ground the requested region before catalog search."},
+                ),
+                Part(
+                    id="handoff_geo_returned",
+                    type="expert_handoff",
+                    handle_id="task_geo",
+                    child_agent="geospatial",
+                    run_label="Resolve station region",
+                    stage="delegate.completed",
                     live_state="completed",
                     status="completed",
                     duration_ms=12_500.0,
                     text="main <- geospatial",
-                    metadata={
-                        "question": "Ground the requested region before catalog search.",
-                        "output": "Resolved the region with authoritative coordinates.",
-                    },
-                )
+                    metadata={"output": "Resolved the region with authoritative coordinates."},
+                ),
             ],
         )
     ]
@@ -497,6 +507,21 @@ def test_v3_transcript_preserves_navigable_child_agent_semantics(tmp_path: Path)
     transcript = (
         TestClient(app).get(f"/v1/sessions/{parent.id}/messages", headers=V3_HEADERS).json()
     )
+
+    assert transcript["messages"][0]["blocks"] == [
+        {
+            "id": "handoff_geo_started",
+            "type": "subagent",
+            "subagent_id": "task_geo",
+            "stage": "delegate.started",
+        },
+        {
+            "id": "handoff_geo_returned",
+            "type": "subagent",
+            "subagent_id": "task_geo",
+            "stage": "delegate.completed",
+        },
+    ]
 
     assert transcript["subagents"] == [
         {

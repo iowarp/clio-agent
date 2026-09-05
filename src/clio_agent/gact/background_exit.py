@@ -94,7 +94,7 @@ def emit_background_exit_part(app: "FastAPI", session_id: str, task: "AgentTask"
 
 
 def reconcile_stored_handoff_part(app: "FastAPI", task: "AgentTask") -> bool:
-    """Close a dangling ``delegate.started`` handoff part at terminal-transition time.
+    """Append a return after a stored ``delegate.started`` handoff.
 
     Round-9 wire defect: a parent turn that ends (idle, or the runaway circuit
     breaker) WITHOUT ever waiting on a spawned child leaves that child's
@@ -120,11 +120,11 @@ def reconcile_stored_handoff_part(app: "FastAPI", task: "AgentTask") -> bool:
     (and only ever touches) a part that has ALREADY been finalized into a stored
     message, which happens exactly when no live turn is around to update it.
 
-    Idempotent (handle_id-keyed, mirrors :meth:`TurnTranscript.upsert_delegation_part`'s
-    collapse rule -- same part id/sequence kept, terminal fields layered over the
-    started ones): a part already carrying ``stage == "delegate.completed"`` is
-    left untouched, so a retried fold or a duplicate transport observation never
-    double-writes or double-publishes.
+    Idempotent (handle-id and lifecycle-phase keyed, mirroring
+    :meth:`TurnTranscript.upsert_delegation_part`): an existing terminal return is
+    left untouched, so a retried fold or duplicate transport observation never
+    double-writes or double-publishes. The start remains a separate historical
+    event instead of being rewritten after the fact.
 
     Never raises: runs among terminal side effects on the completion-callback
     thread (the same discipline :func:`clio_agent.gact.delegation_return.stamp_delegation_return`
@@ -162,25 +162,21 @@ def _reconcile_stored_handoff(app: "FastAPI", task: "AgentTask") -> bool:
 
     messages = app.state.messages.get(parent_sid, []) or []
     for message in messages:
-        for index, part in enumerate(message.parts):
-            if part.type != "expert_handoff" or str(part.handle_id or "") != handle_id:
-                continue
-            if part.stage != "delegate.started":
-                # Already superseded (a live wait/drain got there first) or not
-                # the started marker -- never rewritten, never double-published.
-                return False
+        matching = [
+            part
+            for part in message.parts
+            if part.type == "expert_handoff" and str(part.handle_id or "") == handle_id
+        ]
+        if any(part.stage != "delegate.started" for part in matching):
+            return False
+        if matching:
             terminal_part = _stored_terminal_handoff_part(app, task)
-            # Same collapse rule as TurnTranscript.upsert_delegation_part: keep
-            # the started part's identity, layer the terminal metadata on top of
-            # (never replacing) whatever the started row carried (e.g. "question").
-            terminal_part.id = part.id
-            terminal_part.sequence = part.sequence
-            terminal_part.metadata = {**part.metadata, **terminal_part.metadata}
-            message.parts[index] = terminal_part
+            terminal_part.sequence = max((row.sequence for row in message.parts), default=0) + 1
+            message.parts.append(terminal_part)
             _replace_session_messages(app, parent_sid, list(messages))
             app.state.bus.publish(
                 Event(
-                    type="message.part.updated",
+                    type="message.part.added",
                     session_id=parent_sid,
                     payload={
                         "turn_id": message.turn_id,

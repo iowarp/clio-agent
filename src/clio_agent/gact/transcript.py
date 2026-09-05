@@ -419,13 +419,12 @@ class TurnTranscript:
             return part
 
     def upsert_delegation_part(self, part: Part, *, stream_source: str = "live") -> Optional[Part]:
-        """One delegation = ONE ``expert_handoff`` part (clean-wire rule).
+        """Upsert one lifecycle phase without erasing another phase.
 
-        A terminal handoff whose ``handle_id`` matches an earlier handoff part
-        this turn UPDATES that part in place — keeping its id/sequence and the
-        started metadata (the brief) under the terminal fields — and publishes
-        ``message.part.updated``. Without a match it appends normally, so a
-        terminal that arrives without its start (resumed turns) is never lost.
+        A delegation start and its later return are distinct chronological
+        ledger events. Repeated observations of the *same* phase update in
+        place, but a terminal phase never replaces the earlier start. This
+        preserves both causal positions while keeping retries idempotent.
         """
 
         handle_id = str(part.handle_id or "")
@@ -439,7 +438,9 @@ class TurnTranscript:
                 (
                     row
                     for row in self._parts
-                    if row.type == "expert_handoff" and str(row.handle_id or "") == handle_id
+                    if row.type == "expert_handoff"
+                    and str(row.handle_id or "") == handle_id
+                    and str(row.stage or "") == str(part.stage or "")
                 ),
                 None,
             )

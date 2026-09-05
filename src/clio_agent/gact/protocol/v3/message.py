@@ -183,10 +183,13 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             **common,
         }
     if part_type == "expert_handoff":
+        metadata = _mapping(part.get("metadata"))
+        stage = str(part.get("stage") or metadata.get("stage") or "")
         return {
             "id": part_id,
             "type": "subagent",
             "subagent_id": str(part.get("handle_id") or part_id),
+            **({"stage": stage} if stage else {}),
             **common,
         }
     if part_type == "resource_link":
@@ -428,7 +431,9 @@ def _project_subagent(
         metadata.get("summary") or link.get("summary") or result or part.get("text") or ""
     )
     task = str(metadata.get("question") or link.get("task") or "")
+    previous = context.subagents.get(subagent_id, {})
     context.subagents[subagent_id] = {
+        **previous,
         "id": subagent_id,
         "session_id": context.session_id,
         **({"parent_run_id": str(context.wire["turn_id"])} if context.wire.get("turn_id") else {}),

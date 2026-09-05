@@ -384,10 +384,12 @@ class ExpertInvoker(Protocol):
         :class:`SpawnError` (typed reason) for a refused spawn."""
         ...
 
-    def wait(self, handle: TaskHandle, timeout_s: float) -> TaskResult:
-        """Block up to ``timeout_s`` for the task to reach a terminal status, then
-        return its :class:`TaskResult` (the current, possibly non-terminal record on
-        timeout — the caller decides how to proceed)."""
+    def wait(self, handle: TaskHandle, timeout_s: float | None) -> TaskResult:
+        """Wait for terminal status, optionally bounded by ``timeout_s``.
+
+        ``None`` is a committed wait. A finite timeout returns the current,
+        possibly non-terminal record when its budget expires.
+        """
         ...
 
     def check(self, handles: Sequence[TaskHandle]) -> list[TaskResult]:
@@ -435,7 +437,7 @@ class InProcessExpertInvoker:
         task = spawn_child_turn_threadsafe(self._app, spec)
         return TaskHandle.from_task(task)
 
-    def wait(self, handle: TaskHandle, timeout_s: float) -> TaskResult:
+    def wait(self, handle: TaskHandle, timeout_s: float | None) -> TaskResult:
         """Block on the task's completion Event (the S6 wait primitive) up to
         ``timeout_s`` and project the resulting record.
 
@@ -449,7 +451,8 @@ class InProcessExpertInvoker:
         task = reg.get(handle.task_id)
         if task is None:
             raise InvokerError(f"unknown task {handle.task_id!r}", reason="unknown_task")
-        reg.event(handle.task_id).wait(timeout=max(0.0, float(timeout_s or 0.0)))
+        timeout = None if timeout_s is None else max(0.0, float(timeout_s))
+        reg.event(handle.task_id).wait(timeout=timeout)
         task = reg.get(handle.task_id)
         if task is None:  # pragma: no cover - retained records are never removed
             raise InvokerError(f"task {handle.task_id!r} vanished mid-wait", reason="unknown_task")
