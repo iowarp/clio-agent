@@ -178,6 +178,11 @@ def plan_mode_reminder_block(
     bullets.extend(f"- {extra}" for extra in guide.extra_full_bullets)
     bullets.extend(
         (
+            "- The plan file is NOT the user's requested target or final deliverable. Never copy "
+            "the requested target contents alone into the plan file; the plan must describe how "
+            "the requested result will be implemented and verified after approval. Never infer "
+            "a requested filename from the plan-file path or its generated slug; preserve targets "
+            "from the user's request exactly.",
             "- Keep an epistemic ledger of what you know vs. must find out, under the headers: "
             "Given / Learned / To look up / To derive.",
             "- If a plan already exists, evaluate whether it is still relevant to THIS task before "

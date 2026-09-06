@@ -238,6 +238,22 @@ def test_full_reminder_contains_ledger_structure_staleness_and_show_rules(tmp_pa
     assert _SHOW_THE_PLAN in out
 
 
+def test_full_reminder_distinguishes_plan_artifact_from_requested_target(tmp_path: Path) -> None:
+    """A short create-file request cannot be mistaken for the plan document itself."""
+
+    app, sess = _plan_session(tmp_path)
+    request = "Create probe.txt containing exactly QUALIFIED."
+
+    out = inject_plan_mode_reminder(app, sess.id, sess, request)
+
+    assert "The plan file is NOT the user's requested target" in out
+    assert "Never copy the requested target contents alone into the plan file" in out
+    assert (
+        "describe how the requested result will be implemented and verified after approval" in out
+    )
+    assert "Never infer a requested filename from the plan-file path or its generated slug" in out
+
+
 def test_sparse_reminder_stays_a_one_liner(tmp_path: Path) -> None:
     """The SPARSE reminder is a single line: no ledger/structure/staleness/show guidance."""
     app, sess = _plan_session(tmp_path)
