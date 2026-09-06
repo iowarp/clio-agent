@@ -1,19 +1,12 @@
 """Agent-driven elicitation (#1309, C1-S7): the session's agent can answer a
 typed MCP elicitation question, not only the human.
 
-OWNER REQUIREMENT (verbatim intent): "I need my mcps being able to request
-things from the agent." An MCP server, mid-flow, returns ``input_required``
-(the v2 MRTR shape carried through :mod:`clio_agent.gact.elicitation_bridge`)
-and the thing that can answer is the SESSION'S AGENT -- running on the user's
-chosen provider, holding the session's own conversation context -- with the
-human remaining the terminal fallback.
+An MCP server can return v2 ``input_required`` mid-flow and address it to the
+session's contextual agent. The human remains the terminal fallback.
 
-DESIGN INVARIANT -- THE SEMANTIC FIREWALL (owner ruling, 2026-09-03): this is
-**NOT sampling** and must never become an inference channel. The MCP server
-gets no model access, no free-form completions, and no prompt control -- it
-gets exactly what elicitation has always given it: a typed, schema-validated
-answer to its OWN declared question, with the session's agent as a permitted
-answerer alongside the human. The ``requestedSchema`` validation
+THE SEMANTIC FIREWALL: this is **NOT sampling** and must never become an
+inference channel. The MCP server gets no model access or prompt control, only
+a typed, schema-validated answer to its own question. The ``requestedSchema`` validation
 (:func:`clio_agent.gact.elicitation_schema.validate_elicitation_answer`) is
 applied to an agent's answer EXACTLY as it is to a human's -- an agent answer
 that fails it never reaches the server; it falls back to the human path,
@@ -105,11 +98,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from clio_agent import conf
+from clio_agent.gact.agent_elicitation_activity import stamp_agent_answer_turn
 from clio_agent.gact.agent_elicitation_reply import (
     answer_field_text as _answer_field_text,
 )
@@ -578,6 +572,10 @@ def _spawn_agent_answer_turn(
             skip_declared_check=True,
             seed_context=seed_context,
             run_label="agent-elicitation answer",
+            # This is an implementation turn used to answer the paused tool's
+            # question from model context, not delegated user-facing work. The
+            # authoritative interaction remains attached to the invocation.
+            project_to_parent=False,
             # F1/F3 (owner gate review): both stamped onto the child's OWN
             # metadata at MINT time by spawn_child_turn itself -- true before
             # the child's first turn build, never patched in afterward.
@@ -595,6 +593,7 @@ def _run_agent_answer_turn(
     prompt: str,
     depth: int,
     timeout_s: float,
+    on_spawn: Callable[[Any], None] | None = None,
 ) -> str:
     """Spawn + wait for the bounded answer child turn; return its raw reply
     text (the bounded ``answer_excerpt``).
@@ -617,6 +616,8 @@ def _run_agent_answer_turn(
     handle = _spawn_agent_answer_turn(
         app, answer_session_id=answer_session_id, prompt=prompt, depth=depth
     )
+    if on_spawn is not None:
+        on_spawn(handle)
     invoker = InProcessExpertInvoker(app)
     result = invoker.wait(handle, timeout_s=timeout_s)
     if not result.is_terminal:
@@ -714,6 +715,7 @@ async def _dispatch_agent_answer(
     answer_session_id = str(getattr(invocation, "session_id", "") or "") or question.session_id
     prompt = _build_answer_prompt(question, translation)
     timeout_s = _timeout_s()
+
     try:
         reply_text = await asyncio.wait_for(
             asyncio.to_thread(
@@ -723,6 +725,7 @@ async def _dispatch_agent_answer(
                 prompt=prompt,
                 depth=decision.depth,
                 timeout_s=timeout_s,
+                on_spawn=lambda handle: stamp_agent_answer_turn(app, question.id, handle),
             ),
             timeout=timeout_s + _OUTER_TIMEOUT_MARGIN_S,
         )

@@ -18,10 +18,14 @@ from clio_agent.gact.agents.builders import _dynamic_agent_tools
 from clio_agent.gact.agents.reactv2 import retaining_reactv2_cls
 from clio_agent.gact.app import build_app
 from clio_agent.gact.ask_user_tool import arm_ask_user_deadline
-from clio_agent.gact.elicitation_bridge import invocation_with_request_correlation
+from clio_agent.gact.elicitation_bridge import (
+    claim_question_transition,
+    invocation_with_request_correlation,
+)
 from clio_agent.gact.loop_inbox import InboxEvent, LoopInbox
 from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
 from clio_agent.gact.types import AgentDef, UserQuestion, UserQuestionOption
+from clio_agent.gact.user_question_ledger import record_user_question
 from clio_agent.tools.mcp_handlers import MCPInvocationContext
 from clio_agent.tools.mcp_task_records import TaskKey, TaskRecord, resolve_store
 
@@ -131,6 +135,7 @@ def test_ask_user_runtime_tool_injects_owner_task_and_attended_correlation(
     monkeypatch.setattr(gact_context, "active_app", lambda: app)
     monkeypatch.setattr(gact_context, "active_session_id", lambda: child)
     monkeypatch.setattr(gact_context, "active_turn_id", lambda: "turn_child")
+    monkeypatch.setattr("clio_agent.gact.ask_user_tool.observer_call_id", lambda: "call_native_ask")
 
     result = tool(
         question="Which dataset should I use?",
@@ -144,7 +149,8 @@ def test_ask_user_runtime_tool_injects_owner_task_and_attended_correlation(
     assert pending["owner_session_id"] == child
     assert pending["attended_session_id"] == root
     assert pending["task_id"] == "task_child"
-    assert pending["invocation_id"] == "turn_child:child:ask_user"
+    assert pending["tool_name"] == "ask_user"
+    assert pending["invocation_id"] == "call_native_ask"
     assert pending["allow_freeform"] is True
 
 
@@ -284,6 +290,13 @@ def test_interactions_aggregate_children_and_route_question_and_permission(
         )
         assert answered.status_code == 200
         assert calls == [(root, "q_native")]
+        resolved = client.get(
+            f"/v1/sessions/{root}/interactions",
+            params={"include_recent_resolved": True},
+        ).json()["interactions"]
+        resolved_native = next(row for row in resolved if row["id"] == "question:q_native")
+        assert resolved_native["answered_by"] == "human"
+        assert resolved_native["payload"]["answer_metadata"] == {"selected_options": ["yes"]}
         duplicate = client.post(
             f"/v1/sessions/{root}/interactions/question:q_native/respond",
             json={"action": "answer", "selected_options": ["yes"]},
@@ -333,6 +346,48 @@ def test_interactions_aggregate_children_and_route_question_and_permission(
             json={"action": "answer", "answer": "late"},
         )
         assert late.status_code == 409
+
+
+def test_resolved_interaction_hides_legacy_correlation_from_answer_fields(tmp_path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="legacy answer")
+    now = datetime.now(timezone.utc).isoformat()
+    question = UserQuestion(
+        id="q_legacy_answer",
+        session_id=session.id,
+        owner_session_id=session.id,
+        attended_session_id=session.id,
+        prompt="Pick a value",
+        status="answered",
+        source="mcp_elicitation",
+        answered_by="human",
+        created_at=now,
+        updated_at=now,
+        answer_metadata={
+            "interaction_id": "mcp_task_input:q_legacy_answer",
+            "owner_session_id": session.id,
+            "attended_session_id": session.id,
+            "task_id": "task_legacy",
+            "invocation_id": "call_legacy",
+            "value": "visible answer",
+        },
+        metadata={
+            "elicitation": {
+                "tool_name": "guarded_input",
+                "task_id": "task_legacy",
+                "invocation_id": "call_legacy",
+            }
+        },
+    )
+    app.state.user_questions[question.id] = question
+
+    with TestClient(app) as client:
+        rows = client.get(
+            f"/v1/sessions/{session.id}/interactions",
+            params={"include_recent_resolved": True},
+        ).json()["interactions"]
+
+    assert rows[0]["payload"]["answer_metadata"] == {"value": "visible answer"}
 
 
 def test_pending_native_question_survives_backend_restart(tmp_path) -> None:
@@ -567,3 +622,239 @@ def test_child_a2ui_interaction_routes_to_owning_surface(tmp_path) -> None:
 def test_capabilities_advertise_normalized_interactions(tmp_path) -> None:
     with TestClient(build_app(sessions_path=tmp_path / "sessions.json")) as client:
         assert client.get("/v1/capabilities").json()["capabilities"]["x_clio_interactions"] is True
+
+
+def test_agent_routed_questions_project_without_human_actions_and_keep_resolved_history(
+    tmp_path,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="routing")
+    now = datetime.now(timezone.utc).isoformat()
+    fields = [
+        {
+            "name": "count",
+            "type": "integer",
+            "title": "Sample count",
+            "description": "How many samples should be retained?",
+            "required": True,
+            "default": 3,
+            "min_length": None,
+            "max_length": None,
+            "min_items": None,
+            "max_items": None,
+            "multi": False,
+        }
+    ]
+    app.state.user_questions = {
+        "agent_pending": UserQuestion(
+            id="agent_pending",
+            session_id=session.id,
+            prompt="Choose the sample count",
+            source="mcp_elicitation",
+            created_at=now,
+            updated_at=now,
+            answer_metadata={"count": 3},
+            metadata={
+                "elicitation": {
+                    "mode": "form",
+                    "fields": fields,
+                    "additional_properties": False,
+                    "invocation_id": "call_pending",
+                },
+                "agent_answer_task": {
+                    "task_id": "task_answer",
+                    "child_session_id": "sess_answer",
+                },
+            },
+            audience="agent",
+            agent_elicitation_routing="elicitation_routed_to_agent",
+        ),
+        "human_fallback": UserQuestion(
+            id="human_fallback",
+            session_id=session.id,
+            prompt="Choose the sample count",
+            source="mcp_elicitation",
+            created_at=now,
+            updated_at=now,
+            metadata={"elicitation": {"mode": "form", "fields": fields}},
+            audience="agent",
+            agent_elicitation_routing="agent_elicitation_fallback_to_human",
+            agent_elicitation_fallback_detail="agent_answer_timeout",
+        ),
+        "agent_answered": UserQuestion(
+            id="agent_answered",
+            session_id=session.id,
+            prompt="Choose the output format",
+            status="answered",
+            source="mcp_elicitation",
+            created_at=(datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat(),
+            updated_at=(datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat(),
+            metadata={"elicitation": {"invocation_id": "call_pending"}},
+            audience="agent",
+            agent_elicitation_routing="elicitation_routed_to_agent",
+            answered_by="agent",
+        ),
+    }
+    app.state.agent_task_registry.register(
+        AgentTask(
+            task_id="task_answer",
+            parent_session_id=session.id,
+            child_session_id="sess_answer",
+            run_label="agent-elicitation answer",
+            project_to_parent=False,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            f"/v1/sessions/{session.id}/interactions",
+            params={"include_recent_resolved": True, "resolved_limit": 10},
+            headers=HEADERS,
+        )
+        assert response.status_code == 200
+        rows = {row["id"]: row for row in response.json()["interactions"]}
+
+        answering = rows["question:agent_pending"]
+        assert answering["requires_human_response"] is False
+        assert answering["actions"] == []
+        assert answering["routing_state"] == "elicitation_routed_to_agent"
+        assert answering["payload"]["fields"] == fields
+        assert answering["payload"]["answer_metadata"] == {"count": 3}
+        assert answering["payload"]["agent_answer_task"] == {
+            "task_id": "task_answer",
+            "child_session_id": "sess_answer",
+            "status": "completed",
+            "live_state": "completed",
+            "created_at": now,
+            "updated_at": now,
+            "run_label": "agent-elicitation answer",
+        }
+        assert answering["payload"]["request_index"] == 1
+        assert answering["payload"]["request_count"] == 2
+
+        fallback = rows["question:human_fallback"]
+        assert fallback["requires_human_response"] is True
+        assert fallback["actions"] == ["answer", "cancel"]
+        assert fallback["fallback_detail"] == "agent_answer_timeout"
+
+        answered = rows["question:agent_answered"]
+        assert answered["status"] == "answered"
+        assert answered["answered_by"] == "agent"
+        assert answered["requires_human_response"] is False
+        assert answered["payload"]["request_index"] == 2
+        assert answered["payload"]["request_count"] == 2
+
+        rejected = client.post(
+            f"/v1/sessions/{session.id}/interactions/question:agent_pending/respond",
+            json={"action": "answer", "metadata": {"count": 4}},
+            headers=HEADERS,
+        )
+        assert rejected.status_code == 409
+        assert rejected.json()["error"]["error"] == "interaction_not_human_addressed"
+
+
+def test_resolved_agent_question_survives_process_restart(tmp_path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    first = build_app(sessions_path=sessions_path)
+    session = first.state.sessions.create(workspace_id="ws_default", title="restart")
+    now = datetime.now(timezone.utc).isoformat()
+    record_user_question(
+        first,
+        UserQuestion(
+            id="agent_restart",
+            session_id=session.id,
+            prompt="What nonce did the user provide?",
+            source="mcp_elicitation",
+            created_at=now,
+            updated_at=now,
+            metadata={
+                "elicitation": {
+                    "invocation_id": "call_restart",
+                    "tool_name": "v2ex_agent_guarded_input",
+                }
+            },
+            audience="agent",
+            agent_elicitation_routing="elicitation_routed_to_agent",
+        ),
+    )
+    answered = claim_question_transition(
+        first,
+        "agent_restart",
+        "answered",
+        answer_metadata={"nonce": "restart-visible"},
+        answered_by="agent",
+    )
+    assert answered is not None
+
+    restarted = build_app(sessions_path=sessions_path)
+    with TestClient(restarted) as client:
+        response = client.get(
+            f"/v1/sessions/{session.id}/interactions",
+            params={"include_recent_resolved": True},
+            headers=HEADERS,
+        )
+
+    assert response.status_code == 200
+    [row] = response.json()["interactions"]
+    assert row["id"] == "question:agent_restart"
+    assert row["status"] == "answered"
+    assert row["answered_by"] == "agent"
+    assert row["source"] == {
+        "protocol": "mcp",
+        "tool_name": "v2ex_agent_guarded_input",
+        "invocation_id": "call_restart",
+    }
+    assert row["payload"]["answer_metadata"] == {"nonce": "restart-visible"}
+
+
+def test_structured_form_422_keeps_prefill_and_question_pending(tmp_path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="form")
+    now = datetime.now(timezone.utc).isoformat()
+    question = UserQuestion(
+        id="form_required",
+        session_id=session.id,
+        prompt="Configure the guarded input",
+        source="mcp_elicitation",
+        created_at=now,
+        updated_at=now,
+        answer_metadata={"count": 3},
+        metadata={
+            "elicitation": {
+                "mode": "form",
+                "fields": [
+                    {
+                        "name": "count",
+                        "type": "integer",
+                        "title": "Sample count",
+                        "required": True,
+                        "default": 3,
+                    },
+                    {
+                        "name": "label",
+                        "type": "string",
+                        "title": "Label",
+                        "required": True,
+                        "min_length": 2,
+                        "max_length": 8,
+                    },
+                ],
+                "additional_properties": False,
+            }
+        },
+    )
+    app.state.user_questions[question.id] = question
+
+    with TestClient(app) as client:
+        invalid = client.post(
+            f"/v1/sessions/{session.id}/interactions/question:{question.id}/respond",
+            json={"action": "answer", "metadata": {"count": 3, "label": "x"}},
+            headers=HEADERS,
+        )
+        assert invalid.status_code == 422
+        retained = app.state.user_questions[question.id]
+        assert retained.status == "pending"
+        assert retained.answer_metadata == {"count": 3}

@@ -755,8 +755,8 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
         ``path`` registers an EXISTING file; ``content`` authors a NEW file WRITTEN AT
         ``name`` — the target path (workspace-relative or absolute), not a display label.
 
-        ``used`` (#1191, OPTIONAL): cites the inputs this deliverable was DERIVED
-        FROM (paths and/or artifact ids). NOT threaded into the promotion below —
+        ``used`` (#1191, OPTIONAL): cites inputs this deliverable was DERIVED FROM
+        (paths, artifact ids, and/or exact HTTP(S) source URLs). NOT threaded into the promotion below —
         the mint decision is unaffected. The tool-observer transform seam
         (``declared_used_edges.detect_declared_used_edges``, fired AFTER this call
         returns) reads it from this call's own args and records real ``used`` PROV
@@ -814,7 +814,7 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             "intent (why it matters, deliverable vs scratch) in annotation. To "
             "designate several at once pass artifacts=[{name,kind,path|content,"
             "annotation}, ...]. OPTIONAL: cite what this deliverable was DERIVED "
-            "FROM via used=[...] (paths and/or artifact ids) so its lineage graph "
+            "FROM via used=[...] (paths, artifact ids, and/or exact source URLs) so its lineage graph "
             "shows its real inputs. Returns each record on acceptance, or a typed rejection reason "
             "(path_missing, escapes_root, over_cap, invalid_kind, missing_input) you "
             "can correct and retry. Nothing is auto-registered; the artifact exists "
@@ -851,9 +851,9 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             "used": {
                 "type": "array",
                 "description": (
-                    "OPTIONAL: workspace paths and/or artifact ids this deliverable was "
-                    "derived from. Recorded as real provenance edges on this mint; an "
-                    "unresolvable ref is typed on the trace, never silently dropped."
+                    "OPTIONAL: workspace paths, artifact ids, and/or exact HTTP(S) source URLs "
+                    "this deliverable was derived from. URLs are assertion-class evidence; "
+                    "unresolved file or artifact refs are typed, never silently dropped."
                 ),
             },
         },

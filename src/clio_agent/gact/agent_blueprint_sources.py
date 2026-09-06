@@ -160,8 +160,12 @@ def _is_prunable_dead_fixture(source: str) -> bool:
     if not path.is_absolute() or path.exists():
         return False
     lowered = source.lower().replace("\\", "/")
-    temp_root = tempfile.gettempdir().lower().replace("\\", "/")
-    return "pytest-of" in lowered or lowered.startswith(temp_root)
+    temp_dir = Path(tempfile.gettempdir()).expanduser().resolve()
+    temp_roots = [str(temp_dir).lower().replace("\\", "/")]
+    runtime_root = temp_dir.parent
+    if runtime_root.joinpath(".clio-test-run.json").is_file():
+        temp_roots.append(str(runtime_root / "pytest").lower().replace("\\", "/"))
+    return "pytest-of" in lowered or any(lowered.startswith(root) for root in temp_roots)
 
 
 def load_agent_blueprint_sources() -> list[dict[str, Any]]:

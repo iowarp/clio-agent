@@ -24,6 +24,7 @@ build/
 
 # pytest
 .pytest_cache/
+.pytest-runtime/
 .coverage
 htmlcov/
 

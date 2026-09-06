@@ -135,9 +135,11 @@
         "session_approval_profile",
         "placement",
         "run_label",
+        "project_to_parent",
         "start_turn",
         "tool_allowlist",
-        "agent_elicitation_depth"
+        "agent_elicitation_depth",
+        "target_blueprint_id"
       ],
       "required_fields": [
         "child_expert_id",
@@ -164,9 +166,11 @@
         "session_approval_profile",
         "placement",
         "run_label",
+        "project_to_parent",
         "start_turn",
         "tool_allowlist",
-        "agent_elicitation_depth"
+        "agent_elicitation_depth",
+        "target_blueprint_id"
       ]
     }
   },

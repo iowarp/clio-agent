@@ -169,16 +169,15 @@ def test_spawn_tool_spawns_async_mode(tmp_path: Path, monkeypatch) -> None:
     assert captured and captured[0].mode == "async", "model spawn must be fire-and-forget async"
 
 
-def test_wait_timeout_is_required_no_default() -> None:
-    """#670: wait_agent_tasks must require timeout_s (a wait without a budget hangs).
-    The bound function's signature carries no default for timeout_s."""
+def test_wait_timeout_is_optional_for_committed_wait() -> None:
+    """Omitting timeout selects the committed wait; finite polling stays additive."""
 
     from clio_agent.gact.agents import spawn_runtime
 
     src = inspect.getsource(spawn_runtime.build_spawn_runtime_tools)
-    assert "def wait_agent_tasks(task_ids: list[str], timeout_s: float) -> str:" in src, (
-        "timeout_s must be a REQUIRED parameter (no default) on wait_agent_tasks"
-    )
+    assert (
+        "def wait_agent_tasks(task_ids: list[str], timeout_s: float | None = None) -> str:" in src
+    ), "timeout_s must remain optional so orchestrators can commit to one wait"
     # And the removed default constant is gone (no lingering fallback timeout).
     assert not hasattr(spawn_runtime, "_DEFAULT_WAIT_TIMEOUT_S")
 

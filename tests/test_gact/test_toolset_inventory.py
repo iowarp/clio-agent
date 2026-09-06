@@ -135,14 +135,15 @@ def test_blueprint_react_build_emits_toolset_recorded_with_native_tools(
     for row in rows.values():
         assert set(row) == {"name", "title", "source", "representation"}
 
-    # Auto-attached infra is native, never mistaken for an MCP server or the
-    # spawn-runtime surface.
+    # Auto-attached infra is native, never mistaken for an MCP server. A root
+    # blueprint also owns the commissioning surface even without declared
+    # children so it can target an installed blueprint by id.
     assert rows["create_artifact"]["source"] == "native"
     assert rows["create_artifact"]["representation"] == "chip"
     assert rows["write_todos"]["source"] == "native"
     assert rows["goal_status"]["source"] == "native"
-    # No declared children on this def -> the spawn-routing surface is absent.
-    assert "spawn_agent_task" not in rows
+    assert rows["spawn_agent_task"]["source"] == "spawn-runtime"
+    assert rows["spawn_agents_parallel"]["source"] == "spawn-runtime"
 
 
 def test_tool_user_agent_build_also_emits_toolset_recorded(
@@ -488,6 +489,7 @@ def test_changed_toolset_in_the_same_session_emits_again(
         title="Grow",
         system_prompt="Root.",
         module={"kind": "react"},
+        parent_id="parent",
     )
 
     _build_under_turn_identity(

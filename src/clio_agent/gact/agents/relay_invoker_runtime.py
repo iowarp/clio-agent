@@ -60,7 +60,7 @@ class RelayInvokerRuntime:
 
         return run_async(call)
 
-    def resume(self, parent_session_id: str, key: Any, timeout_s: float) -> Any:
+    def resume(self, parent_session_id: str, key: Any, timeout_s: float | None) -> Any:
         """Resume one persisted task on a fresh client."""
 
         async def call() -> Any:

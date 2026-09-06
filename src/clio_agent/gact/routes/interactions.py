@@ -6,13 +6,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 
 from clio_agent import conf
 from clio_agent.gact.a2ui import SERVER_ACTIONS
 from clio_agent.gact.mcp_task_store import app_task_store
 from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
+from clio_agent.gact.routes.async_processes import mcp_task_display_title
+from clio_agent.gact.routes.plan_interactions import is_plan_exit_question, plan_exit_payload
 from clio_agent.gact.session_descendants import descendant_session_ids
 from clio_agent.gact.types import (
     AnswerUserQuestionRequest,
@@ -98,7 +100,13 @@ def _question_correlation(app: FastAPI, question: UserQuestion) -> dict[str, str
     child_elicitation = child_meta.get("elicitation")
     child_elicitation = child_elicitation if isinstance(child_elicitation, Mapping) else {}
     return {
-        "tool_name": str(elicitation.get("tool_name") or child_elicitation.get("tool_name") or ""),
+        "tool_name": str(
+            metadata.get("tool_name")
+            or elicitation.get("tool_name")
+            or child_meta.get("tool_name")
+            or child_elicitation.get("tool_name")
+            or ""
+        ),
         "invocation_id": str(
             metadata.get("invocation_id")
             or elicitation.get("invocation_id")
@@ -117,8 +125,42 @@ def _question_correlation(app: FastAPI, question: UserQuestion) -> dict[str, str
     }
 
 
+def _agent_answer_task_projection(app: FastAPI, value: object) -> dict[str, Any] | None:
+    """Enrich a question's stored answer-turn identity with live task lifecycle.
+
+    ``UserQuestion.metadata`` retains only the stable task/session correlation.
+    The existing ``AgentTaskRegistry`` remains authoritative for lifecycle, so
+    this read-side projection never copies answer text or creates another task
+    record. Missing registry state is preserved honestly as identity-only data.
+    """
+
+    if not isinstance(value, Mapping):
+        return None
+    projected = {
+        key: str(value.get(key) or "") for key in ("task_id", "child_session_id") if value.get(key)
+    }
+    task_id = projected.get("task_id", "")
+    registry = getattr(app.state, "agent_task_registry", None)
+    task = registry.get(task_id) if task_id and registry is not None else None
+    if task is None:
+        return projected or None
+    projected.update(
+        {
+            "status": task.status,
+            "live_state": task.live_state,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+            "run_label": task.run_label,
+        }
+    )
+    if task.error_reason:
+        projected["error_reason"] = task.error_reason
+    return {key: value for key, value in projected.items() if value not in ("", None)}
+
+
 def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingInteraction:
     correlation = _question_correlation(app, question)
+    is_plan_exit = is_plan_exit_question(question)
     is_mcp = question.source == "mcp_elicitation" or bool(
         isinstance(question.metadata, Mapping) and question.metadata.get("elicitation")
     )
@@ -131,6 +173,30 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
     # be resolved, and the row silently changed kind. The client sees the same
     # answerable question either way, but the lost correlation is now stated.
     downgraded = is_mcp and not task_id
+    elicitation = question.metadata.get("elicitation")
+    elicitation = dict(elicitation) if isinstance(elicitation, Mapping) else {}
+    agent_answer_task = _agent_answer_task_projection(
+        app, question.metadata.get("agent_answer_task")
+    )
+    requires_human_response = question.status == "pending" and not (
+        question.audience == "agent"
+        and question.agent_elicitation_routing == "elicitation_routed_to_agent"
+    )
+    answer_metadata = dict(question.answer_metadata)
+    legacy_correlation = {
+        "owner_session_id": question.owner_session_id or question.session_id,
+        "attended_session_id": question.attended_session_id or question.session_id,
+        "task_id": task_id,
+        "invocation_id": correlation["invocation_id"],
+        "interaction_id": f"{kind}:{question.id}",
+    }
+    for key, authoritative_value in legacy_correlation.items():
+        if authoritative_value and answer_metadata.get(key) == authoritative_value:
+            answer_metadata.pop(key)
+    if question.answer and "answer" not in answer_metadata:
+        answer_metadata["answer"] = question.answer
+    if question.selected_options and "selected_options" not in answer_metadata:
+        answer_metadata["selected_options"] = list(question.selected_options)
     return PendingInteraction(
         id=f"{kind}:{question.id}",
         kind=kind,
@@ -138,11 +204,20 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
         attended_session_id=question.attended_session_id or question.session_id,
         task_id=task_id,
         status=question.status,
-        title="MCP task input required" if kind == "mcp_task_input" else "Question from agent",
+        title=(
+            "MCP task input required"
+            if kind == "mcp_task_input"
+            else ("Review execution plan" if is_plan_exit else "Question from agent")
+        ),
         prompt=question.prompt,
+        requires_human_response=requires_human_response,
+        audience=question.audience,
+        routing_state=question.agent_elicitation_routing,
+        fallback_detail=question.agent_elicitation_fallback_detail or "",
+        answered_by=question.answered_by,
         source=PendingInteractionSource(
             protocol="mcp" if is_mcp else "native",
-            tool_name=correlation["tool_name"],
+            tool_name="plan_exit" if is_plan_exit else correlation["tool_name"],
             invocation_id=correlation["invocation_id"],
         ),
         created_at=question.created_at,
@@ -154,8 +229,19 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
                 "question_kind": question.kind,
                 "options": [option.model_dump() for option in question.options],
                 "allow_freeform": question.allow_freeform,
+                "answer_metadata": answer_metadata,
+                "agent_answer_task": agent_answer_task,
                 "expires_at": question.expires_at,
                 "input_key": correlation["input_key"],
+                "mode": elicitation.get("mode"),
+                "fields": elicitation.get("fields"),
+                "additional_properties": elicitation.get("additional_properties"),
+                "url": elicitation.get("url"),
+                "container": elicitation.get("container"),
+                "plan_exit": plan_exit_payload(question) if is_plan_exit else None,
+                "punycode_warning": elicitation.get("punycode_warning"),
+                "punycode_host": elicitation.get("punycode_host"),
+                "punycode_host_raw": elicitation.get("punycode_host_raw"),
                 "degraded": (
                     {
                         "reason": "mcp_task_correlation_missing",
@@ -168,8 +254,41 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
             }.items()
             if value not in ("", [], None)
         },
-        actions=["answer", "cancel"] if question.status == "pending" else [],
+        actions=["answer", "cancel"] if requires_human_response else [],
     )
+
+
+def _stamp_request_sequence(rows: list[PendingInteraction]) -> list[PendingInteraction]:
+    """Number MCP requests inside their durable invocation/task branch.
+
+    This is deliberately called a *request* sequence rather than a protocol
+    round: one MCP task input round may request multiple keys. The stable
+    invocation id is preferred; detached asynchronous task inputs fall back to
+    their task id, so they retain the same causal branch after the initiating
+    tool call has left the transcript.
+    """
+
+    groups: dict[str, list[PendingInteraction]] = {}
+    for row in rows:
+        key = row.source.invocation_id or row.task_id
+        if row.source.protocol != "mcp" or not key:
+            continue
+        groups.setdefault(key, []).append(row)
+    positions: dict[str, tuple[int, int]] = {}
+    for grouped in groups.values():
+        ordered = sorted(grouped, key=lambda row: (row.created_at, row.id))
+        total = len(ordered)
+        positions.update({row.id: (index, total) for index, row in enumerate(ordered, start=1)})
+    stamped: list[PendingInteraction] = []
+    for row in rows:
+        position = positions.get(row.id)
+        if position is None:
+            stamped.append(row)
+            continue
+        payload = dict(row.payload)
+        payload["request_index"], payload["request_count"] = position
+        stamped.append(row.model_copy(update={"payload": payload}))
+    return stamped
 
 
 def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInteraction:
@@ -193,6 +312,7 @@ def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInte
         ),
         status=status,
         title=str(row.get("summary") or "Permission required"),
+        requires_human_response=status == "pending",
         source=PendingInteractionSource(
             protocol="mcp" if row.get("kind") == "external_mcp" else "native",
             tool_name=str(tool_call.get("tool_name") or ""),
@@ -299,6 +419,7 @@ def _a2ui_interactions(
                 task_id=owner_task_id,
                 status="answered" if settled else "pending",
                 title="Interactive surface",
+                requires_human_response=not settled,
                 source=PendingInteractionSource(
                     protocol="native",
                     tool_name="create_a2ui_surface",
@@ -331,7 +452,7 @@ def _orphan_mcp_interaction(app: FastAPI, record: TaskRecord) -> PendingInteract
         owner_session_id=owner,
         attended_session_id=attended_session_id(app, owner),
         task_id=record.task_id,
-        title=f"{record.tool or 'MCP task'} requires input",
+        title=f"{mcp_task_display_title(record)} needs input",
         source=PendingInteractionSource(protocol="mcp", tool_name=record.tool),
         created_at=record.created_at,
         revision=str(getattr(record, "updated_at", "") or record.created_at),
@@ -375,7 +496,12 @@ class InteractionProjection:
 
 
 def project_pending_interactions(
-    app: FastAPI, root_session_id: str, *, include_children: bool
+    app: FastAPI,
+    root_session_id: str,
+    *,
+    include_children: bool,
+    include_recent_resolved: bool = False,
+    resolved_limit: int = 20,
 ) -> InteractionProjection:
     """Project pending interactions from the existing authoritative ledgers.
 
@@ -390,7 +516,7 @@ def project_pending_interactions(
 
     scope = _session_scope(app, root_session_id, include_children)
     degradations: list[dict[str, str]] = []
-    questions = [
+    pending_questions = [
         question
         for question in app.state.user_questions.values()
         if question.status == "pending"
@@ -400,16 +526,35 @@ def project_pending_interactions(
             or question.attended_session_id == root_session_id
         )
     ]
+    resolved_questions: list[UserQuestion] = []
+    if include_recent_resolved:
+        resolved_questions = sorted(
+            (
+                question
+                for question in app.state.user_questions.values()
+                if question.status != "pending"
+                and (
+                    question.session_id in scope
+                    or question.owner_session_id in scope
+                    or question.attended_session_id == root_session_id
+                )
+            ),
+            key=lambda question: question.updated_at,
+            reverse=True,
+        )[:resolved_limit]
+    questions = [*pending_questions, *resolved_questions]
     forwarded_children = {
         str(question.metadata.get("forwarded_from_question") or "")
         for question in questions
         if isinstance(question.metadata, Mapping)
     }
-    question_rows = [
-        _question_interaction(app, question)
-        for question in questions
-        if question.id not in forwarded_children
-    ]
+    question_rows = _stamp_request_sequence(
+        [
+            _question_interaction(app, question)
+            for question in questions
+            if question.id not in forwarded_children
+        ]
+    )
     correlated_tasks = {row.task_id for row in question_rows if row.task_id}
     rows: list[PendingInteraction] = list(question_rows)
     rows.extend(
@@ -465,6 +610,8 @@ def _interaction_wire(row: PendingInteraction) -> dict[str, Any]:
 
     wire = row.model_dump(exclude_defaults=True)
     wire["status"] = row.status
+    wire["requires_human_response"] = row.requires_human_response
+    wire["actions"] = row.actions
     return wire
 
 
@@ -490,16 +637,24 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/sessions/{root_session_id}/interactions")
     async def list_interactions(
-        root_session_id: str, include_children: bool = False
+        root_session_id: str,
+        include_children: bool = False,
+        include_recent_resolved: bool = False,
+        resolved_limit: int = Query(default=20, ge=1, le=100),
     ) -> dict[str, Any]:
         if app.state.sessions.get(root_session_id) is None:
             raise _error(404, "not_found", f"session not found: {root_session_id}")
         projection = project_pending_interactions(
-            app, root_session_id, include_children=include_children
+            app,
+            root_session_id,
+            include_children=include_children,
+            include_recent_resolved=include_recent_resolved,
+            resolved_limit=resolved_limit,
         )
         return {
             "interactions": [_interaction_wire(row) for row in projection.rows],
             "include_children": include_children,
+            "include_recent_resolved": include_recent_resolved,
             # Typed reasons this lane is partial (quarantined surfaces, an owner
             # or row cap). A shorter attention lane is never served as complete.
             "degradations": projection.degradations,
@@ -531,25 +686,30 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
                     interaction_id=interaction_id,
                     status=question.status,
                 )
+            interaction = _question_interaction(app, question)
+            if not interaction.requires_human_response:
+                raise _error(
+                    409,
+                    "interaction_not_human_addressed",
+                    "this interaction is currently being answered by the agent",
+                    interaction_id=interaction_id,
+                    routing_state=interaction.routing_state,
+                )
             action = request.action or "answer"
             if action == "cancel":
                 updated = await app.state.cancel_user_question(question.session_id, question.id)
             elif action == "answer":
-                interaction = _question_interaction(app, question)
                 updated = await app.state.answer_user_question(
                     question.session_id,
                     question.id,
                     AnswerUserQuestionRequest(
                         answer=request.answer,
                         selected_options=request.selected_options,
-                        metadata={
-                            **request.metadata,
-                            "interaction_id": interaction_id,
-                            "owner_session_id": interaction.owner_session_id,
-                            "attended_session_id": interaction.attended_session_id,
-                            "task_id": interaction.task_id,
-                            "invocation_id": interaction.source.invocation_id,
-                        },
+                        # User-submitted form fields remain an exact field map.
+                        # Ownership and correlation stay on the authoritative
+                        # question/interaction instead of overwriting equally
+                        # named schema fields inside answer metadata.
+                        metadata=dict(request.metadata),
                     ),
                 )
             else:

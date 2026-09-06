@@ -147,7 +147,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # comment lines explaining why the stamp is deliberately absent here.
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
-    "src/clio_agent/agent.py": 1032,  # blueprint activation moved to gact/blueprint_activation.py
+    "src/clio_agent/agent.py": 986,  # blueprint activation moved to gact/blueprint_activation.py
     "src/clio_agent/arc/memory.py": 1389,  # provider ladder moved to provenance_config.py
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -243,7 +243,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # HeaderMismatch, SEP-2578) -- the retry logic itself lives in the owner
     # module tools/mcp_header_mismatch.py; only the lazy import + call-site swap
     # land here.
-    "src/clio_agent/gact/agents/builders.py": 1947,
+    "src/clio_agent/gact/agents/builders.py": 1619,
     # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
     # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
     # tool callable this loop will ever run (MCP-bridged, instrumented
@@ -269,7 +269,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # was itself the exact ordering bug the B1 fix corrects.
     # MERGE (PR #1298 x #1310): 921 -> 924. Both campaigns' additive call sites
     # land in this file; no logic moved in from either owner module.
-    "src/clio_agent/gact/agents/reactv2.py": 924,
     # #948 S4/S5/S6 growth already carried this file past the flat 800 cap (to 842)
     # before it was ever added to this baseline — a pre-existing gap this change
     # did not introduce (it was silently exempt from the ratchet, not under it).
@@ -324,7 +323,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # in the owner module agents/agent_task_input_refs.py; only this file's own
     # tuple-unpack + one added kwarg on two call sites (emit_spawn_started's
     # wrapper + _do_spawn's own call) landed here.
-    "src/clio_agent/gact/agents/spawn_runtime.py": 1018,
+    "src/clio_agent/gact/agents/spawn_runtime.py": 950,
     # NEW entry (C1-S7, #1309 gate-review F1): crossed the flat 800 cap
     # (791 -> 842) for the new _apply_session_tool_allowlist owner function --
     # the ONE place that forces an agent-elicitation answer child's bound
@@ -351,7 +350,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # other TaskSpec field already uses in this file.
     # MERGE (PR #1298 x #1310): 820 -> 824. Both campaigns' additive spawn-path
     # lines coexist.
-    "src/clio_agent/gact/turn_spawn.py": 824,
+    "src/clio_agent/gact/turn_spawn.py": 823,
     # (invoker.py's entry retired 2026-08: RelayExpertInvoker moved to its own
     # owner module agents/relay_expert_invoker.py, dropping invoker.py under the
     # 800 default cap — the #1221/#1222 contract-alignment growth that broke the
@@ -431,7 +430,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # never disagree with what the runtime turn path actually executes). All
     # decision logic lives in the owner module; only the two wrapping calls
     # landed here.
-    "src/clio_agent/gact/app.py": 2493,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
+    "src/clio_agent/gact/app.py": 2484,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -574,7 +573,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # CATALOG + recording/query logic itself lives in the NEW owner module
     # gact/mcp_app_observer_reasons.py (no-accretion) -- only the minimal
     # per-gate call + a re-export land here.
-    "src/clio_agent/gact/mcp_apps.py": 802,
     # #895: +6 for threading the provider-generic thinking_level onto the LM bind
     # (LMProviderConfig arg + app.state.lm_config + the GET's thinking_level /
     # thinking_effective fields). The mapping logic itself lives in the owner
@@ -642,7 +640,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # "enrichment" bring-up phase, so the call site in turn.py stays a single
     # (actually net-negative-line) call instead of needing its own timing calls.
     # No logic moves; the two real functions are unchanged.
-    "src/clio_agent/gact/enrichment.py": 809,
     # #933: +8 for the turn-scoped workspace-fleet lease in _tool_session_context.
     # #933 review hardening: typed workspace_lease_unavailable degrade when a
     # rooted turn has no leasable agent (+9).
@@ -717,7 +714,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # encapsulation), trimmed from an initial 77-line addition to 43 by cutting
     # the docstring and collapsing the log call before accepting this ratchet.
     # Ratchet back with #714/#767.
-    "src/clio_agent/gact/transcript.py": 1380,
+    "src/clio_agent/gact/transcript.py": 1379,
     # #918: +17 for the typed SkillNotDelegatableError ladder arm (a skill-bound
     # turn fails typed, never as generic agent_error).
     # #952 S4 Pass C: -1 (the suppressed_parent_resume_offsets init was removed
@@ -771,16 +768,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # existing wire taxonomy) while details carries the full typed payload --
     # no behavior lines added, only the honesty fix's explanation.
     "src/clio_agent/gact/turn.py": 891,
-    # NEW entry (#1282, C1-S2 F5): crossed the flat 800 cap (798 -> 807) for
-    # two new typed reason strings (mcp_capability_refused/
-    # mcp_protocol_refused) added to ERROR_REASONS so turn.py's ClioError
-    # branch's stamped detail reason projects onto a spawned child's
-    # AgentTask record (turn_spawn_failures.child_task_error_reason already
-    # reads it back unchanged) instead of falling back to "agent_error".
-    # +7 (#1282, re-verify round N3): the two backstop reasons
-    # (mcp_call_timeout_backstop / mcp_task_drive_timeout_backstop) joined
-    # ERROR_REASONS -- same diagnosability class as F5's two refusal reasons.
-    "src/clio_agent/gact/agent_tasks.py": 802,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the

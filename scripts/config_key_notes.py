@@ -479,6 +479,11 @@ KEY_NOTES: dict[str, str] = {
         "parent's wait_agent_tasks result; raise to inline larger child answers, lower to bound "
         "coordinator context growth sooner."
     ),
+    "limits.agent_task_artifact_context_chars": (
+        "Character bound on registered artifact content injected into a commissioning parent "
+        "when a child blueprint returns; raise for larger reports, lower to bound resumed "
+        "parent context growth."
+    ),
     "limits.codex_sdk_progress_timeout_s": (
         "Max silence (seconds) for one Codex SDK exchange/event, resetting on every progress event "
         "rather than a fixed clock; raise for long turns."
@@ -486,14 +491,6 @@ KEY_NOTES: dict[str, str] = {
     "limits.context_inline_bytes": (
         "Byte cap per attached file inlined into context injection; raise to inline larger "
         "attachments, lower to bound prompt growth."
-    ),
-    "limits.empty_tool_repair_attempts": (
-        "Bounded retries when a ReAct response omits the required tool-call field; raise for "
-        "models that often emit malformed tool-less output."
-    ),
-    "limits.extract_repair_attempts": (
-        "Bounded independent re-samples after a structured-output schema-repair failure; raise for "
-        "models needing more attempts to recover."
     ),
     "limits.fs_read_bytes": (
         "Byte cap on a single read_file tool call; raise to read larger files whole, lower to "
@@ -531,6 +528,10 @@ KEY_NOTES: dict[str, str] = {
         "Character bound on the model-facing MCP tool-result projection (head/tail cut); distinct "
         "from limits.tool_result_chars."
     ),
+    "limits.plan_review_chars": (
+        "Character bound on saved plan content embedded in an approval record; raise for "
+        "unusually large implementation plans, lower to bound review payloads."
+    ),
     "limits.shell_default_output_bytes": (
         "Default byte cap on shell-command stdout/stderr when the caller specifies none; raise for "
         "commands with verbose output."
@@ -550,10 +551,6 @@ KEY_NOTES: dict[str, str] = {
     "limits.shell_max_timeout_s": (
         "Hard ceiling in seconds on the timeout a shell tool call may request; raise for "
         "legitimately long-running shell operations."
-    ),
-    "limits.submit_repair_attempts": (
-        "Bounded forced-resubmit re-asks when a ReActV2 loop ends with declared outputs missing; "
-        "raise for models needing more nudges to finish."
     ),
     "limits.tool_result_chars": (
         "Character bound on the transcript/evidence-metadata preview of a tool result; raise to "

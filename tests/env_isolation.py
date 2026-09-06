@@ -40,6 +40,13 @@ _PRESERVED_KEYS: tuple[str, ...] = (
     "COMSPEC",
     "TEMP",
     "TMP",
+    "TMPDIR",
+    "UV_CACHE_DIR",
+    "PIP_CACHE_DIR",
+    "PYTHONPYCACHEPREFIX",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "CLIO_TEST_RUNTIME_DIR",
 )
 
 

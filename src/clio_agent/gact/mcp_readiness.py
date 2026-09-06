@@ -2,14 +2,13 @@
 
 The discovery layer intentionally stays process-scoped and single-flight.  This
 module adds the per-session boundary around a selected session's cold mount:
-bounded increasing-wait retries with a typed reason on every retried attempt.
-It never installs an undeclared server and never exposes raw subprocess errors.
+bounded increasing-wait retries with a typed reason on every retried attempt and
+session-scoped progress events for the UI. It never installs an undeclared server
+and never exposes raw subprocess errors.
 
 A terminal failure raises to the existing typed tool-resolution boundary, where
 :func:`clio_agent.gact.agents.builders._resolve_requested_tools` records it in
-the ``mount_failures`` map the ``_UnsupportedSessionAgent`` reason carries --
-that is the lane with a real consumer, so this module adds no wire vocabulary
-of its own.
+the ``mount_failures`` map the ``_UnsupportedSessionAgent`` reason carries.
 """
 
 from __future__ import annotations
@@ -105,6 +104,62 @@ def _retryable_mount_error(exc: BaseException) -> bool:
     return not isinstance(exc, (FileNotFoundError, PermissionError, ValueError))
 
 
+def _namespace_title(namespace: str) -> str:
+    """Return a compact user-facing title for one MCP namespace."""
+
+    words = namespace.replace("-", " ").replace("_", " ").split()
+    label = " ".join(word.upper() if word == "ndp" else word.capitalize() for word in words)
+    return f"{label or namespace} MCP"
+
+
+def _publish_dependency_state(
+    namespace: str,
+    *,
+    phase: str,
+    state: str,
+    attempt: int,
+    max_attempts: int,
+    reason: str = "",
+    retry_in_ms: int | None = None,
+    tool_count: int | None = None,
+) -> None:
+    """Publish one safe, session-scoped MCP preparation projection when available."""
+
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415 - avoid runtime cycle
+    from clio_agent.gact.events import Event  # noqa: PLC0415 - lazy at readiness boundary
+
+    app = _ctx.active_app()
+    session_id = _ctx.active_session_id() or _ctx.active_tool_session_id()
+    bus = getattr(getattr(app, "state", None), "bus", None)
+    if not session_id or bus is None:
+        return
+    dependency_id = f"{session_id}:mcp:{namespace}"
+    payload: dict[str, Any] = {
+        "id": dependency_id,
+        "session_id": session_id,
+        "category": "mcp",
+        "namespace": namespace,
+        "title": _namespace_title(namespace),
+        "phase": phase,
+        "state": state,
+        "attempt": attempt,
+        "max_attempts": max_attempts,
+    }
+    if reason:
+        payload["reason"] = reason
+    if retry_in_ms is not None:
+        payload["retry_in_ms"] = retry_in_ms
+    if tool_count is not None:
+        payload["tool_count"] = tool_count
+    bus.publish(
+        Event(
+            type="infrastructure.dependency.changed",
+            session_id=session_id,
+            payload=payload,
+        )
+    )
+
+
 def mount_namespace_for_session(
     tool_executor: Any,
     namespace: str,
@@ -149,6 +204,13 @@ def mount_namespace_for_session(
     )
     for attempt in range(1, max_attempts + 1):
         phase = "launch"
+        _publish_dependency_state(
+            namespace,
+            phase=phase,
+            state="running",
+            attempt=attempt,
+            max_attempts=max_attempts,
+        )
         try:
             mounted_tools = ensure_namespace(namespace, spec)
             merger = getattr(tool_executor, "merge_namespace_tools", None)
@@ -159,6 +221,13 @@ def mount_namespace_for_session(
             if not callable(connector):
                 raise RuntimeError("live MCP executor cannot prepare namespace connections")
             phase = "connect"
+            _publish_dependency_state(
+                namespace,
+                phase=phase,
+                state="running",
+                attempt=attempt,
+                max_attempts=max_attempts,
+            )
             multiplier = MCP_MOUNT_TIMEOUT_MULTIPLIERS[
                 min(attempt - 1, len(MCP_MOUNT_TIMEOUT_MULTIPLIERS) - 1)
             ]
@@ -166,6 +235,8 @@ def mount_namespace_for_session(
         except Exception as exc:
             if attempt < max_attempts and _retryable_mount_error(exc):
                 delay = retry_delays_s[attempt - 1]
+                reason = _classify_degrade_reason(exc)
+                retry_in_ms = round(delay * 1_000)
                 # Every retried attempt is a typed loud warning -- never silent.
                 logger.warning(
                     "reason=%s namespace=%s phase=%s attempt=%d/%d "
@@ -175,11 +246,36 @@ def mount_namespace_for_session(
                     phase,
                     attempt,
                     max_attempts,
-                    _classify_degrade_reason(exc),
-                    round(delay * 1_000),
+                    reason,
+                    retry_in_ms,
+                )
+                _publish_dependency_state(
+                    namespace,
+                    phase="retry",
+                    state="retrying",
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    reason=reason,
+                    retry_in_ms=retry_in_ms,
                 )
                 time.sleep(delay)
                 continue
+            _publish_dependency_state(
+                namespace,
+                phase=phase,
+                state="failed",
+                attempt=attempt,
+                max_attempts=max_attempts,
+                reason=_classify_degrade_reason(exc),
+            )
             raise
+        _publish_dependency_state(
+            namespace,
+            phase="connect",
+            state="ready",
+            attempt=attempt,
+            max_attempts=max_attempts,
+            tool_count=len(mounted_tools),
+        )
         return mounted_tools
     raise AssertionError("MCP readiness attempts exhausted without a result")

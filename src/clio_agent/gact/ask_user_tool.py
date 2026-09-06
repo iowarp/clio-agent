@@ -9,6 +9,7 @@ from typing import Any
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents.tool_instrumentation import native_tool
+from clio_agent.gact.artifacts.observer_bridge import observer_call_id
 from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.types import UserQuestion, UserQuestionOption
 from clio_agent.gact.user_question_ledger import record_user_question
@@ -171,6 +172,9 @@ def build_ask_user_tool(agent_def: Any) -> Any:
         owner = session_id
         attended = attended_session_id(app, owner)
         task_id = _task_id_for_session(app, owner)
+        invocation_id = observer_call_id() or (
+            f"{_ctx.active_turn_id()}:{getattr(agent_def, 'id', '')}:ask_user"
+        )
         pending = {
             "action": "ask_user",
             "question": prompt,
@@ -182,7 +186,8 @@ def build_ask_user_tool(agent_def: Any) -> Any:
             "owner_session_id": owner,
             "attended_session_id": attended,
             "task_id": task_id,
-            "invocation_id": f"{_ctx.active_turn_id()}:{getattr(agent_def, 'id', '')}:ask_user",
+            "tool_name": "ask_user",
+            "invocation_id": invocation_id,
             "caller": {"agent_id": str(getattr(agent_def, "id", "") or "")},
             "surfaced": False,
         }

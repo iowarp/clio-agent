@@ -62,6 +62,8 @@ import threading
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
+import dspy
+
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.tools.execution import TOOL_OBSERVED_ATTR
 
@@ -76,6 +78,22 @@ DEFAULT_REPRESENTATION = "row"
 TOOL_REPRESENTATIONS = frozenset({"row", "handoff", "chip"})
 
 TITLE_MAX_CHARS = 80
+
+
+class ClioNativeTool(dspy.Tool):
+    """DSPy tool whose JSON schema honors declared argument defaults."""
+
+    def format_as_litellm_function_call(self) -> dict[str, Any]:
+        """Return a LiteLLM schema that requires only arguments without defaults."""
+
+        formatted = super().format_as_litellm_function_call()
+        function_schema = formatted["function"]
+        properties = function_schema["parameters"]["properties"]
+        function_schema["parameters"]["required"] = [
+            arg_name for arg_name, arg_schema in properties.items() if "default" not in arg_schema
+        ]
+        return formatted
+
 
 # name -> (representation, sanitized title). Populated at the assembly seam
 # (:func:`instrument_tools`); read by the live tool observer. Tool names are
@@ -271,11 +289,9 @@ def native_tool(
     ONE sanctioned native construction path (CI guard baseline 0).
     """
 
-    import dspy  # noqa: PLC0415
-
     setattr(func, REPRESENTATION_ATTR, _validated_representation(representation, tool_name=name))
     setattr(func, TITLE_ATTR, sanitize_tool_title(title))
-    return dspy.Tool(func=func, name=name, desc=desc, args=args)
+    return ClioNativeTool(func=func, name=name, desc=desc, args=args)
 
 
 def boundary_observed_tool(
@@ -299,8 +315,6 @@ def boundary_observed_tool(
     ``Part.tool_title`` — no separate wire path.
     """
 
-    import dspy  # noqa: PLC0415
-
     setattr(func, TOOL_OBSERVED_ATTR, True)
     setattr(func, TITLE_ATTR, sanitize_tool_title(title))
     return dspy.Tool(func=func, name=name, desc=desc, args=args)
@@ -322,8 +336,6 @@ def rebuilt_tool(
     double-wrapped at the seam and notify twice. Propagates the observed /
     representation / title markers from ``inner_tool``'s callable onto ``func``.
     """
-
-    import dspy  # noqa: PLC0415
 
     inner_func = getattr(inner_tool, "func", None)
     for attr in (TOOL_OBSERVED_ATTR, REPRESENTATION_ATTR, TITLE_ATTR):

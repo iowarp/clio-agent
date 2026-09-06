@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
+from urllib.parse import urlsplit
 
 from clio_agent.gact.artifacts.transform_edges import EdgeScan
 from clio_agent.gact.artifacts.transform_types import EdgeEvidence, EdgeRole, ProvEdge
@@ -55,8 +56,9 @@ def detect_declared_used_edges(
 
     Each ref resolves against the registry: an ``artifact_<hex>`` id resolves
     DIRECTLY (:meth:`ArtifactRegistry.get_by_artifact_id`, workspace-agnostic —
-    the model may cite an input it read from a sibling workspace); anything
-    else is a workspace path, containment-checked against the bound root and
+    the model may cite an input it read from a sibling workspace); an exact
+    HTTP(S) URL becomes an assertion-class external source; anything else is a
+    workspace path, containment-checked against the bound root and
     matched by :meth:`ArtifactRegistry.find_version_by_path` (the SAME matcher
     ``transform_edges.detect_used_edges`` uses for the generic arg-scan
     channel — which excludes THIS arg via ``_DECLARED_CHANNEL_ARG_NAMES`` so
@@ -85,6 +87,10 @@ def detect_declared_used_edges(
         if ref in seen:
             continue
         seen.add(ref)
+        url_edge = _declared_url_edge(ref)
+        if url_edge is not None:
+            edges.append(url_edge)
+            continue
         resolved = _resolve_declared_used_ref(registry, root, workspace_id, ref, _contained)
         if resolved is None:
             notes.append({"reason": "used_ref_unresolved", "arg": "used", "ref": ref})
@@ -104,6 +110,27 @@ def detect_declared_used_edges(
             )
         )
     return EdgeScan(edges, notes)
+
+
+def _declared_url_edge(ref: str) -> ProvEdge | None:
+    """Represent an explicitly cited HTTP(S) source without claiming it was fetched."""
+    try:
+        parsed = urlsplit(ref)
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    if parsed.username or parsed.password:
+        return None
+    return ProvEdge(
+        role=EdgeRole.USED,
+        evidence=EdgeEvidence.ASSERTION,
+        authority=ref,
+        external_ref=f"external:{ref}",
+        name=parsed.hostname,
+        arg="used",
+        note="model_declared_url",
+    )
 
 
 def _resolve_declared_used_ref(

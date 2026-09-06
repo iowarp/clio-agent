@@ -99,14 +99,18 @@ def test_plan_exit_rejects_bad_recommended_mode(tmp_path: Path) -> None:
         _call_plan_exit(app, sess.id, summary="ok", recommendedMode="whatever")
 
 
-def test_plan_exit_success_records_pending_request(tmp_path: Path) -> None:
+def test_plan_exit_success_records_pending_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     app = _make_app(tmp_path)
     sess = _plan_session(app, tmp_path)
+    monkeypatch.setattr("clio_agent.gact.plan_mode.observer_call_id", lambda: "call_plan_exit")
     out = _call_plan_exit(app, sess.id, summary="ship it", recommendedMode="auto", riskNotes="none")
     assert "handed back to the user" in out
     pending = app.state.sessions.get(sess.id).metadata.get("pending_plan_exit")
     assert pending["summary"] == "ship it"
     assert pending["recommended_mode"] == "auto"
+    assert pending["invocation_id"] == "call_plan_exit"
     assert pending["surfaced"] is False
 
 
@@ -140,6 +144,7 @@ def test_maybe_pause_mints_approval_question_and_yields(
 ) -> None:
     app = _make_app(tmp_path)
     sess = _plan_session(app, tmp_path)
+    monkeypatch.setattr("clio_agent.gact.plan_mode.observer_call_id", lambda: "call_plan_exit")
     _call_plan_exit(app, sess.id, summary="ship it", recommendedMode="auto")
 
     monkeypatch.setattr("clio_agent.gact.turn_stream.settle_turn_transcript", lambda state: None)
@@ -161,6 +166,8 @@ def test_maybe_pause_mints_approval_question_and_yields(
     assert len(questions) == 1
     q = questions[0]
     assert q.status == "pending"
+    assert q.metadata["plan_content"] == "# Plan\n- do a thing\n"
+    assert q.metadata["plan_content_status"] == "complete"
     assert {o.value for o in q.options} >= {
         "auto",
         "interactive",
@@ -172,6 +179,21 @@ def test_maybe_pause_mints_approval_question_and_yields(
     fresh = app.state.sessions.get(sess.id)
     assert fresh.status == "waiting_user"
     assert fresh.metadata["pending_plan_exit"]["surfaced"] is True
+
+    from clio_agent.gact.routes.interactions import project_pending_interactions
+
+    projection = project_pending_interactions(app, sess.id, include_children=False)
+    [interaction] = projection.rows
+    assert interaction.title == "Review execution plan"
+    assert interaction.source.tool_name == "plan_exit"
+    assert interaction.source.invocation_id == "call_plan_exit"
+    assert interaction.payload["plan_exit"] == {
+        "summary": "ship it",
+        "recommended_mode": "auto",
+        "plan_file": str(tmp_path / "plan.md"),
+        "plan_content": "# Plan\n- do a thing\n",
+        "plan_content_status": "complete",
+    }
 
     # A second seam call is a no-op (already surfaced) — no double question.
     assert maybe_pause_for_plan_exit(state) is False
@@ -230,6 +252,8 @@ def _pending_plan_exit_question(app: Any, sess: Any, *, plan_file: str) -> UserQ
             PLAN_EXIT_APPROVAL_META: True,
             "resume_on_answer": True,
             "plan_file": plan_file,
+            "plan_content": "# Plan\n- do a thing\n",
+            "plan_content_status": "complete",
             "recommended_mode": "auto",
         },
     )
@@ -265,6 +289,9 @@ def test_approve_auto_transitions_edit_and_injects_constraint_lift(tmp_path: Pat
     assert "[STATE TRANSITION OVERRIDE]" in resume["text"]
     assert plan_file in resume["text"]
     assert "Begin implementing the approved plan now." in resume["text"]
+    assert "<approved-plan>\n# Plan\n- do a thing\n</approved-plan>" in resume["text"]
+    assert resume["metadata"]["approved_plan"]["content_status"] == "complete"
+    assert resume["metadata"]["approved_plan"]["content"] == "# Plan\n- do a thing\n"
     assert resume["metadata"]["plan_exit_result"] == "approved"
     # The pending-request bookkeeping is cleared.
     assert not fresh.metadata.get("pending_plan_exit")
@@ -313,6 +340,10 @@ def test_approve_clear_context_modifier_applies(tmp_path: Path) -> None:
     assert len(deps._calls["replace"]) == 1  # history was cleared
     assert deps._calls["replace"][0]["messages"] == []
     assert deps._calls["resume"][0]["metadata"]["plan_exit_context_cleared"] is True
+    assert (
+        "<approved-plan>\n# Plan\n- do a thing\n</approved-plan>"
+        in deps._calls["resume"][0]["text"]
+    )
 
 
 def test_reject_stays_in_plan_mode_with_feedback(tmp_path: Path) -> None:

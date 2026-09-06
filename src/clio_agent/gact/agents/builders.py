@@ -8,8 +8,8 @@ compile registered dynamic agents into concrete DSPy modules:
 * Agent-Blueprint experts (:func:`_build_blueprint_dspy_module`) using predict,
   chain-of-thought, or ReAct modules.
 
-Supporting machinery covers tool/LM resolution, telemetry, bounded schema repair,
-tool-intent recovery, and child delegation. The retaining ReAct engine, resolution,
+Supporting machinery covers tool/LM resolution, telemetry, non-ReAct schema repair,
+and child delegation. The retaining ReAct engine, resolution,
 and prompt composition remain in sibling modules; cross-concern helpers load lazily
 to preserve the strangler seam without a module cycle.
 """
@@ -21,7 +21,6 @@ import json
 import logging
 import re
 import threading
-import time
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, Optional, cast
@@ -44,13 +43,6 @@ from clio_agent.gact.agents.composition import (
     _runtime_dynamic_agent_children_context,
 )
 from clio_agent.gact.agents.declared_native_tools import resolve_declared_native_tools
-from clio_agent.gact.agents.reactv2_events import is_turn_yield_prediction
-from clio_agent.gact.agents.reactv2_submit import (
-    adapter_tool_intent_from_exception as _adapter_tool_intent_from_exception,
-)
-from clio_agent.gact.agents.reactv2_submit import (
-    call_recovered_dspy_tool as _call_recovered_dspy_tool,
-)
 from clio_agent.gact.agents.reactv2_submit import tool_names as _tool_names
 from clio_agent.gact.agents.resolution import _active_workflow_state_schema
 from clio_agent.gact.agents.runtime import (
@@ -296,14 +288,7 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
                         executor_work_may_continue=False,
                     )
                 )
-            answer = str(getattr(result, "answer", "") or "").strip()
-            if not answer:
-                # #948 S4: an empty answer is a typed failure, never a legitimate
-                # deliverable. The settle/handoff-repair layer that once consumed an
-                # empty root answer is deleted, so an empty-STRING answer is routed
-                # into the typed ``agent_error`` ladder (turn.py) exactly like the
-                # tool-agent path -- not returned as a silent empty deliverable.
-                raise RuntimeError(f"user agent {self.agent_def.id!r} returned an empty answer")
+            answer = str(getattr(result, "answer", "") or "")
             return dspy.Prediction(
                 answer=answer,
                 selected_expert=self.agent_def.id,
@@ -706,171 +691,6 @@ def _dynamic_agent_tools(
     return [_recording_blueprint_tool(available_tools[name]) for name in resolved_tools]
 
 
-def _extract_repair_attempts() -> int:
-    """How many bounded SCHEMA-REPAIR retries to attempt after the first failure.
-
-    Each retry is an INDEPENDENT sample (see _repair_temperature): dspy/Qwen note
-    that at temperature 0 a retry is identical (greedy), so retries only help at
-    temp>0 -- and a single retry leaves most recoverable cases on the table. Default
-    3 -> at ~80%/attempt recovery, 1-0.2^3 ~ 99%. Override: CLIO_EXTRACT_REPAIR_ATTEMPTS.
-    """
-    try:
-        from clio_agent import conf  # noqa: PLC0415
-
-        n = int(
-            conf.resolve(
-                "limits.extract_repair_attempts",
-                env="CLIO_EXTRACT_REPAIR_ATTEMPTS",
-                default=3.0,
-                cast=conf.as_float,
-            )
-        )
-    except Exception:  # noqa: BLE001 - never let config break a turn
-        return 3
-    return max(0, n)
-
-
-def _repair_temperature(base: float, repair_index: int) -> float:
-    """Temperature for SCHEMA-REPAIR retry ``repair_index`` (1-based).
-
-    A retry must SAMPLE (vary) but must NOT raise format drift. clio runs LMs with
-    cache disabled, so a retry at the SAME temp>0 already re-samples a fresh,
-    independent output -- no temperature bump is needed for variation. Bumping temp
-    was actively harmful: higher temp increases structured-format drift (more
-    AdapterParseError / dropped fields), which is the opposite of what the
-    parse-error class needs (verified: a +0.1/retry grind regressed SD vs the
-    constant-temp baseline). So retries reuse the base temperature; the ONLY lift is
-    off greedy decoding (temp 0), where every retry would otherwise be identical
-    (dspy _warn_zero_temp_rollout) -- there we sample at a modest non-zero floor.
-    """
-    if repair_index <= 0 or base > 0.0:
-        return base
-    return 0.5
-
-
-def _is_repairable_typed_output_error(exc: BaseException) -> bool:
-    """Whether an expert's failure is a typed-output SCHEMA validation miss that a
-    single re-ask can fix -- a required field was DROPPED or set null by a model
-    that already has the data -- as opposed to a tool/runtime error. Detected by the
-    pydantic / DSPy validation signature so it covers BOTH the strict remote
-    JSONAdapter and the local lenient adapter."""
-
-    text = f"{type(exc).__name__}: {exc}".lower()
-    markers = (
-        "validation error",  # pydantic header
-        "field required",  # a required field was dropped
-        "input should be",  # wrong type / null where a value is required
-        "adapterparseerror",  # DSPy wrapper around a parse/validation miss
-        "expected to find output fields",  # adapter could not locate a declared field
-    )
-    return any(m in text for m in markers)
-
-
-def _typed_output_repair_hint(exc: BaseException) -> str:
-    """Build ONE bounded-repair instruction from a typed-output validation error,
-    fed back to the SAME expert so it re-emits with the field corrected. This is
-    clio's documented "re-ask when something is missing" bounded repair -- NOT a
-    default and NOT hiding: the model fixes its own drop using evidence it already
-    has."""
-
-    detail = str(exc).replace("\n", " ").strip()
-    # Keep BOTH ends: the HEAD shows what the model actually produced (the rejected
-    # response the adapter echoes), the TAIL shows the actionable diff the adapter
-    # appends AFTER it ("Expected to find output fields ... Actual ..." / the missing
-    # field name / "Field required"). A head-only truncation drops exactly the part
-    # the model needs to self-correct.
-    if len(detail) > 1600:
-        detail = f"{detail[:1000]} […] {detail[-600:]}"
-    return (
-        "SCHEMA-REPAIR (your previous response was REJECTED by output validation). "
-        "Here is exactly what you produced and why it was rejected:\n"
-        f"{detail}\n"
-        "Re-emit your COMPLETE response in the required format, fixing EXACTLY that: a "
-        "REQUIRED output field was missing, null, or unparseable. Emit EVERY declared "
-        "field with a correct, non-empty value consistent with the evidence you already "
-        "gathered (e.g. a 'ranked' status MUST include the list of station ids you "
-        "ranked; a required boolean must be true or false, never null). Do NOT add keys "
-        "outside the declared schema, and do NOT drop any other required field."
-    )
-
-
-def _recover_blueprint_react_tool_intent(
-    *,
-    tools: Iterable[Any],
-    exc: BaseException,
-) -> Any | None:
-    """Execute a scoped ReAct tool intent that was emitted in final-output form."""
-
-    import dspy  # noqa: PLC0415
-
-    from clio_agent.gact.app import (  # noqa: PLC0415
-        _tool_result_is_error,
-        _tool_result_preview,
-    )
-
-    tools_by_name = {
-        str(getattr(tool, "name", "") or "").strip(): tool
-        for tool in tools
-        if str(getattr(tool, "name", "") or "").strip()
-    }
-    intent = _adapter_tool_intent_from_exception(
-        exc,
-        allowed_tools=tools_by_name.keys(),
-    )
-    if intent is None:
-        return None
-    tool_name = str(intent["tool_name"])
-    tool_args = dict(intent["tool_args"])
-    started_at = time.perf_counter()
-    try:
-        result = _call_recovered_dspy_tool(tools_by_name[tool_name], tool_args)
-        ok = not _tool_result_is_error(result)
-        error = _tool_result_preview(result) if ok is False else None
-    except BaseException as tool_exc:  # noqa: BLE001
-        result = None
-        ok = False
-        error = str(tool_exc)
-    duration_ms = int((time.perf_counter() - started_at) * 1000)
-    tool_row: dict[str, Any] = {
-        "name": tool_name,
-        "args": tool_args,
-        "result": result,
-        "ok": ok,
-        "duration_ms": duration_ms,
-        "telemetry_source": "react_adapter_tool_intent_recovery",
-    }
-    if error:
-        tool_row["error"] = error
-    workflow_state: dict[str, Any] = {}
-    preview = _tool_result_preview(result).strip()
-    status = "succeeded" if ok else "failed"
-    answer_parts = [
-        (
-            "Recovered a malformed ReAct tool intent that was emitted as final "
-            f"JSON and executed scoped tool `{tool_name}`; tool execution {status}."
-        )
-    ]
-    if error:
-        answer_parts.append(f"Tool error: {error}")
-    if preview:
-        answer_parts.append(f"Tool result:\n{preview}")
-    trajectory = {
-        "step_0_tool_name": tool_name,
-        "step_0_tool_args": tool_args,
-        "step_0_observation": result,
-    }
-    return dspy.Prediction(
-        answer="\n\n".join(answer_parts),
-        workflow_state=workflow_state,
-        evidence=preview,
-        errors=error or "",
-        delegation="",
-        trajectory=trajectory,
-        tools_called=[tool_row],
-        expert_handoffs=[],
-    )
-
-
 def _invalid_tool_selection_from_exception(
     exc: BaseException,
     *,
@@ -1200,7 +1020,6 @@ def _emit_blueprint_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseExcep
         "error": str(exc).replace("\n", " ")[:2000],
         "error_full": str(exc),
         "error_type": type(exc).__name__,
-        "repairable": bool(_is_repairable_typed_output_error(exc)),
     }
     if retained and retained.get("trajectory"):
         payload["trajectory"] = wire_value(retained.get("trajectory"), mode="gact_runtime")
@@ -1236,7 +1055,6 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
         _coerce_expert_handoff_rows,
         _extract_tools_called_from_trajectory,
         _merge_tool_call_rows,
-        _tool_agent_empty_answer_fallback,
         _workflow_state_from_outputs,
     )
     from clio_agent.lm.hooked_lm import create_hooked_lm  # noqa: PLC0415
@@ -1525,166 +1343,36 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 )
             try:
                 # Resolve the credential fresh for this call (tokens rotate); the
-                # dspy.context boundary below is unchanged (design §4). The temp
-                # variants replace() off this per-call config, never self.config.
+                # dspy.context boundary below is unchanged (design §4).
                 _fwd_config = self._resolved_spec.materialize(self._cred_resolver)
                 adapter = create_chat_adapter(_fwd_config)
-                _base_temp = float(getattr(_fwd_config, "temperature", 0.0) or 0.0)
-                _max_repairs = _extract_repair_attempts()
-                _repair_hint = ""
-                # original attempt + up to _max_repairs bounded SCHEMA-REPAIR retries
-                for _repair_attempt in range(1 + _max_repairs):
-                    # Per-attempt temperature: the original keeps the configured base;
-                    # each retry bumps temp so it is a genuinely INDEPENDENT sample (a
-                    # temp-0 retry reproduces the same greedy output and cannot recover
-                    # -- dspy _warn_zero_temp_rollout).
-                    _attempt_temp = _repair_temperature(_base_temp, _repair_attempt)
-                    _attempt_config = (
-                        _fwd_config
-                        if _attempt_temp == _base_temp
-                        else replace(_fwd_config, temperature=_attempt_temp)
+                try:
+                    # track_usage installs the usage tracker so the live plane's
+                    # auto-compaction can read the call's exact prompt_tokens.
+                    with (
+                        dspy.track_usage(),
+                        dspy.context(lm=create_hooked_lm(_fwd_config), adapter=adapter),
+                    ):
+                        result = self.program(**kwargs)
+                except _BlueprintTerminalWorkflowState as terminal_exc:
+                    terminal_state = terminal_exc.result.get("clio_runtime", {}).get(
+                        "workflow_state", {}
                     )
-                    _call_kwargs = (
-                        kwargs
-                        if not _repair_hint
-                        else {**kwargs, "question": f"{kwargs['question']}\n\n{_repair_hint}"}
+                    terminal_mapping = (
+                        dict(terminal_state) if isinstance(terminal_state, Mapping) else {}
                     )
-                    try:
-                        # track_usage installs the usage tracker so the live plane's
-                        # auto-compaction can read each call's exact prompt_tokens.
-                        with (
-                            dspy.track_usage(),
-                            dspy.context(lm=create_hooked_lm(_attempt_config), adapter=adapter),
-                        ):
-                            result = self.program(**_call_kwargs)
-                        break
-                    except _BlueprintTerminalWorkflowState as terminal_exc:
-                        terminal_state = terminal_exc.result.get("clio_runtime", {}).get(
-                            "workflow_state", {}
-                        )
-                        terminal_mapping = (
-                            dict(terminal_state) if isinstance(terminal_state, Mapping) else {}
-                        )
-                        result = dspy.Prediction(
-                            answer="The workflow reached a terminal typed state.",
-                            workflow_state=terminal_mapping,
-                            evidence=[terminal_exc.result],
-                            errors=[],
-                            delegation={},
-                            trajectory=None,
-                            tools_called=[],
-                        )
-                        break
-                    except Exception as exc:
-                        # Capture the failed extract WITH its retained trajectory before
-                        # anything else, so the canonical trace records what the model
-                        # produced even when the repair recovers it.
-                        _emit_blueprint_llm_failure(self.agent_def, self.kind, exc)
-                        _eid = getattr(self.agent_def, "id", "?")
-                        _esum = str(exc).replace("\n", " ")[:160]
-                        # Bounded SCHEMA-REPAIR: a typed-output validation/parse miss (a
-                        # required field dropped/null/unparseable by a model that HAS the
-                        # evidence) is re-askable. Each retry is an independent sample at a
-                        # bumped temperature; the model corrects its own drop (not a
-                        # default, not hiding).
-                        if _repair_attempt < _max_repairs and _is_repairable_typed_output_error(
-                            exc
-                        ):
-                            hint = _typed_output_repair_hint(exc)
-                            if self.kind == "react":
-                                retained = _ctx.active_trajectory()
-                                has_traj = isinstance(retained, dict) and bool(
-                                    retained.get("history")
-                                )
-                                if has_traj:
-                                    # Typed-output miss after a completed tool loop:
-                                    # re-drive ONLY a forced submit over the retained
-                                    # History (the V2 repair; the classic re-extract
-                                    # died with the classic loop in v0.8.0), multiple
-                                    # times at increasing temperature (cheap; no
-                                    # tool-loop restart).
-                                    from clio_agent.gact.agents.reactv2 import (  # noqa: PLC0415
-                                        reforce_submit_over_retained_history,
-                                    )
-
-                                    reextracted = None
-                                    for _re_i in range(1, _max_repairs + 1):
-                                        _re_temp = _repair_temperature(_base_temp, _re_i)
-                                        with dspy.context(
-                                            lm=create_hooked_lm(
-                                                replace(_fwd_config, temperature=_re_temp)
-                                            ),
-                                            adapter=adapter,
-                                        ):
-                                            reextracted = reforce_submit_over_retained_history(
-                                                self.program, hint
-                                            )
-                                        if reextracted is not None:
-                                            trace.event(
-                                                "SCHEMA-REPAIR",
-                                                "%s :: re-extract-only ok (try %d temp %.2f) :: %s",
-                                                _eid,
-                                                _re_i,
-                                                _re_temp,
-                                                _esum,
-                                            )
-                                            break
-                                    if reextracted is not None:
-                                        result = reextracted
-                                        break
-                                    # All re-extracts failed -> recover intent / surface;
-                                    # do NOT full-re-ask (the tool loop already succeeded,
-                                    # restarting it just re-bloats the prompt).
-                                    trace.event(
-                                        "SCHEMA-REPAIR",
-                                        "%s :: re-extract exhausted (%d tries) :: %s",
-                                        _eid,
-                                        _max_repairs,
-                                        _esum,
-                                    )
-                                else:
-                                    # No retained trajectory: the model failed at the FIRST
-                                    # react step -- it emitted PROSE instead of the
-                                    # next_tool_name/next_tool_args fields and ran NO tools
-                                    # (observed: ndp_dataset_discovery wrote "I need to
-                                    # execute three tool calls..." as prose). So a full
-                                    # re-ask is CHEAP (nothing to restart) and each is an
-                                    # INDEPENDENT sample that may format correctly. Re-ask up
-                                    # to _max_repairs via the outer loop (not just once);
-                                    # token-liveness keeps a slow re-ask alive.
-                                    _repair_hint = hint
-                                    trace.event(
-                                        "SCHEMA-REPAIR",
-                                        "%s :: no trajectory -> full re-ask (attempt %d) :: %s",
-                                        _eid,
-                                        _repair_attempt + 1,
-                                        _esum,
-                                    )
-                                    continue
-                            else:
-                                # predict/CoT: re-ask the whole (cheap) program at the next
-                                # attempt's bumped temperature.
-                                _repair_hint = hint
-                                trace.event(
-                                    "SCHEMA-REPAIR",
-                                    "%s :: re-asking (attempt %d) :: %s",
-                                    _eid,
-                                    _repair_attempt + 1,
-                                    _esum,
-                                )
-                                continue
-                        recovered = (
-                            _recover_blueprint_react_tool_intent(
-                                tools=self.tools,
-                                exc=exc,
-                            )
-                            if self.kind == "react"
-                            else None
-                        )
-                        if recovered is None:
-                            raise
-                        result = recovered
-                        break
+                    result = dspy.Prediction(
+                        answer="The workflow reached a terminal typed state.",
+                        workflow_state=terminal_mapping,
+                        evidence=[terminal_exc.result],
+                        errors=[],
+                        delegation={},
+                        trajectory=None,
+                        tools_called=[],
+                    )
+                except Exception as exc:
+                    _emit_blueprint_llm_failure(self.agent_def, self.kind, exc)
+                    raise
             finally:
                 # Single-var stack: each token captured the FULL context at its set,
                 # so reset MUST unwind in strict reverse-LIFO of the sets
@@ -1704,8 +1392,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                         executor_work_may_continue=False,
                     )
                 )
-            answer = str(getattr(result, "answer", "") or "").strip()
-            turn_yielded = is_turn_yield_prediction(result)
+            answer = str(getattr(result, "answer", "") or "")
             tools_called: list[dict[str, Any]] = []
             if self.kind == "react":
                 tools_called = _extract_tools_called_from_trajectory(
@@ -1713,17 +1400,6 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 )
                 if blueprint_tool_rows:
                     tools_called = _merge_tool_call_rows(tools_called, blueprint_tool_rows)
-                if not answer and not turn_yielded:
-                    answer = _tool_agent_empty_answer_fallback(getattr(result, "trajectory", None))
-            if not answer and not turn_yielded:
-                # #948 S4: an empty answer is a typed failure (see the required
-                # ``answer`` field on the runtime signature). The settle/synthesis
-                # layer that once consumed an empty orchestrator answer is deleted;
-                # raise into the typed ``agent_error`` ladder (turn.py) like the
-                # tool-agent path instead of returning a silent empty deliverable.
-                raise RuntimeError(
-                    f"blueprint expert {self.agent_def.id!r} returned an empty answer"
-                )
             handoff_rows = _coerce_expert_handoff_rows(getattr(result, "expert_handoffs", None))
             return dspy.Prediction(
                 answer=answer,
@@ -1739,6 +1415,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 trajectory=getattr(result, "trajectory", None),
                 reasoning=getattr(result, "reasoning", ""),
                 tools_called=tools_called,
+                termination_reason=getattr(result, "termination_reason", ""),
                 # #953 [5]: carry the variant winner stamp (else dropped here) to the turn.
                 variant_selection=getattr(result, "variant_selection", None),
                 error_info=None,
@@ -1757,7 +1434,6 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
         _cancelled_error_info,
         _coerce_expert_handoff_rows,
         _extract_tools_called_from_trajectory,
-        _tool_agent_empty_answer_fallback,
     )
     from clio_agent.lm.hooked_lm import create_hooked_lm  # noqa: PLC0415
     from clio_agent.prompts import PromptRegistry  # noqa: PLC0415
@@ -1921,12 +1597,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                         executor_work_may_continue=False,
                     )
                 )
-            answer = str(getattr(result, "answer", "") or "").strip()
-            turn_yielded = is_turn_yield_prediction(result)
-            if not answer and not turn_yielded:
-                answer = _tool_agent_empty_answer_fallback(getattr(result, "trajectory", None))
-            if not answer and not turn_yielded:
-                raise RuntimeError(f"user agent {self.agent_def.id!r} returned an empty answer")
+            answer = str(getattr(result, "answer", "") or "")
             tools_called = _extract_tools_called_from_trajectory(
                 getattr(result, "trajectory", None)
             )
@@ -1941,6 +1612,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 ),
                 trajectory=getattr(result, "trajectory", None),
                 tools_called=tools_called,
+                termination_reason=getattr(result, "termination_reason", ""),
                 error_info=None,
             )
 

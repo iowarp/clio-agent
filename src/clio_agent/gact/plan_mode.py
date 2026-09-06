@@ -42,6 +42,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact.artifacts.observer_bridge import observer_call_id
+from clio_agent.gact.plan_exit_resume import approved_plan_resume_text, rejected_plan_resume_text
+from clio_agent.gact.plan_review import ensure_owned_plan_directory, plan_review_content
 from clio_agent.gact.planning import (
     PLAN_MODE_REMINDER_MARKER,
     PLAN_VARIANT_METADATA_KEY,
@@ -193,6 +196,11 @@ def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_t
     if plan_file is None:
         plan_file = str(_compute_plan_file_path(app, sid, session))
         metadata_patch[_PLAN_FILE_METADATA_KEY] = plan_file
+    # CLIO owns the plan path and its parent directory; the model owns only the
+    # Markdown content. Without this, a clean checkout cannot make its first
+    # permitted plan write because the edit tool intentionally does not create
+    # missing parent directories.
+    ensure_owned_plan_directory(plan_file)
     exists = Path(plan_file).exists()
 
     # P1.6a #1068: a recorded plan VARIANT (plan_workflow / plan_small) shapes the reminder — a
@@ -243,10 +251,7 @@ def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_t
     )
 
 
-# =========================================================================== #
-# P1.4 #1066 — plan_exit tool + N-way approval + constraint-lift + durable defer
-# =========================================================================== #
-#
+# P1.4 #1066 — plan_exit tool + N-way approval + constraint-lift + durable defer.
 # ``plan_exit`` is a TURN-ENDING YIELD, structurally identical to the ask-user pause
 # (``turn_finalize.maybe_pause_for_user``): the model records the request via the tool, the
 # post-forward seam (:func:`maybe_pause_for_plan_exit`) mints an approval ``UserQuestion`` and
@@ -258,24 +263,15 @@ def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_t
 
 
 class PlanExitError(RuntimeError):
-    """A ``plan_exit`` precondition failed (not in plan mode, or no plan file exists).
-
-    Raised by the ``plan_exit`` tool BEFORE any session mutation, so a rejected call leaves the
-    session in plan mode unchanged (no silent fallback — the model sees a typed reason it can act
-    on). ReAct surfaces the message as a tool observation the model reads and retries against.
-    """
+    """A ``plan_exit`` precondition failed before any session mutation."""
 
 
-#: ``session.metadata`` key: a ``plan_exit`` the model requested this turn, awaiting the post-forward
-#: seam to surface it as an approval question (no fifth store — rides the session record, #948 pattern).
+#: Pending model-requested plan exit, stored on the existing session record.
 _PLAN_EXIT_PENDING_KEY = "pending_plan_exit"
 
-#: ``question.metadata`` flag marking a ``UserQuestion`` as a plan-exit N-way approval (P1.4 #1066).
-#: The ask-user answer route branches on it to run :func:`resolve_plan_exit_answer` instead of the
-#: generic ask-user resume.
+#: Marks a ``UserQuestion`` as a Plan-exit N-way approval.
 PLAN_EXIT_APPROVAL_META = "plan_exit_approval"
 
-#: The exit postures the model MAY hint via ``recommendedMode`` (the approver still has final say).
 _PLAN_EXIT_RECOMMENDED_MODES = frozenset({"auto", "interactive", "exit_only"})
 
 #: The approval decisions the approver selects. ``clear_context`` is a co-selectable MODIFIER, not a
@@ -332,6 +328,7 @@ def _record_plan_exit_request(
                 "recommended_mode": rec,
                 "risk_notes": str(risk_notes or "").strip(),
                 "plan_file": plan_file,
+                "invocation_id": observer_call_id(),
                 "surfaced": False,
             }
         },
@@ -425,7 +422,7 @@ def _plan_exit_options() -> list[Any]:
             description="Leave plan mode but do NOT execute; await further direction.",
         ),
         UserQuestionOption(
-            label="Reject — keep planning",
+            label="Request changes — keep planning",
             value="reject",
             description="Stay in plan mode; return feedback so the plan can be revised.",
         ),
@@ -521,6 +518,8 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
             "summary": summary,
             "risk_notes": risk_notes,
             "plan_file": plan_file,
+            "invocation_id": str(pending.get("invocation_id") or ""),
+            **plan_review_content(plan_file),
             "source_user_message_id": state.user_msg.id,
         },
     )
@@ -571,41 +570,6 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
     )
     settle_turn_transcript(state)
     return True
-
-
-#: The Gemini "State Transition Override" constraint-lifting preamble injected into the resumed
-#: turn on approval — the explicit signal that plan mode's read-only restrictions are lifted.
-_CONSTRAINT_LIFT_HEADER = "[STATE TRANSITION OVERRIDE]"
-
-
-def _plan_exit_constraint_lift_text(decision: str, plan_file: str) -> str:
-    """Compose the constraint-lifting resume text for an APPROVED plan exit (auto/interactive).
-
-    Names the state transition explicitly (previous read-only/plan constraints are lifted; the model
-    is authorized to modify files to implement the approved plan) and points at the plan file. The
-    ``auto`` variant tells the model to begin executing now; the ``interactive`` variant tells it to
-    expect a prompt per action. Never used for ``exit_only`` (which injects NO execute-now message).
-    """
-
-    base = (
-        f"{_CONSTRAINT_LIFT_HEADER} Your plan at {plan_file} has been APPROVED. The previous "
-        "read-only / plan-mode constraints are now LIFTED — you are authorized to modify files to "
-        "implement the approved plan."
-    )
-    if decision == "interactive":
-        return base + " Begin implementing it; you will be prompted to approve each action."
-    return base + " Begin implementing the approved plan now."
-
-
-def _plan_exit_reject_text(feedback: str, plan_file: str) -> str:
-    """Compose the resume text for a REJECTED plan exit (stays in plan mode with feedback)."""
-
-    note = feedback or "(no additional feedback provided)"
-    return (
-        "Your request to exit plan mode was REJECTED — you are STILL in plan mode. Revise the plan "
-        f"at {plan_file} per the reviewer's feedback, then call plan_exit again.\n\n"
-        f"Reviewer feedback: {note}"
-    )
 
 
 def _stage_plan_exit_resume(
@@ -719,7 +683,7 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
             deps,
             sid,
             session,
-            _plan_exit_reject_text(feedback, plan_file),
+            rejected_plan_resume_text(feedback, plan_file),
             {"plan_exit_result": "rejected", "plan_file": plan_file},
             question_id=question.id,
         )
@@ -743,7 +707,22 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
     # Guarded + non-fatal: a degraded save records a typed reason but never blocks this resume.
     from clio_agent.gact.plan_reuse import save_approved_plan  # noqa: PLC0415
 
-    save_approved_plan(app, sid, plan_file=plan_file)
+    saved_plan = save_approved_plan(app, sid, plan_file=plan_file)
+    review = {
+        "content": str(q_meta.get("plan_content") or ""),
+        "content_status": str(q_meta.get("plan_content_status") or ""),
+    }
+    if not review["content_status"]:
+        loaded_review = plan_review_content(plan_file)
+        review = {
+            "content": str(loaded_review.get("plan_content") or ""),
+            "content_status": str(loaded_review.get("plan_content_status") or "unavailable"),
+        }
+    approved_plan = {
+        "artifact_ref": saved_plan,
+        "plan_file": plan_file,
+        **review,
+    }
     cleared = False
     if clear_context:
         # The wipe destroys transcript-owned A2UI surfaces; announce each one
@@ -760,6 +739,7 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
         "plan_exit_mode": decision,
         "plan_exit_context_cleared": cleared,
         "plan_file": plan_file,
+        "approved_plan": approved_plan,
     }
 
     if decision == "exit_only":
@@ -794,7 +774,7 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
         deps,
         sid,
         session,
-        _plan_exit_constraint_lift_text(decision, plan_file),
+        approved_plan_resume_text(decision, plan_file, approved_plan),
         resume_metadata,
         question_id=question.id,
     )

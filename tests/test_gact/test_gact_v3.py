@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent import __version__ as clio_agent_version
@@ -333,6 +334,34 @@ def test_v3_text_defaults_to_the_server_owned_answer_channel() -> None:
     assert block["channel"] == "answer"
 
 
+def test_v3_projects_mcp_app_as_a_typed_opaque_block() -> None:
+    block = part_to_v3_block(
+        {
+            "id": "part_app",
+            "type": "mcp_app",
+            "app_instance_id": "app_123",
+            "resource_uri": "ui://vigil/viewer",
+            "source_server": "vigil",
+            "tool_name": "vigil_open_viewer",
+            "data_ref": "opaque-capability",
+            "mime_type": "text/html;profile=mcp-app",
+            "height": 420,
+        }
+    )
+
+    assert block == {
+        "id": "part_app",
+        "type": "mcp_app",
+        "app_instance_id": "app_123",
+        "resource_uri": "ui://vigil/viewer",
+        "source_server": "vigil",
+        "tool_name": "vigil_open_viewer",
+        "data_ref": "opaque-capability",
+        "mime_type": "text/html;profile=mcp-app",
+        "height": 420,
+    }
+
+
 def test_v3_message_deduplicates_repeated_artifact_references() -> None:
     projected = message_to_v3(
         Message(
@@ -367,6 +396,110 @@ def test_v3_message_deduplicates_repeated_artifact_references() -> None:
     ]
 
 
+def test_v3_message_projects_only_native_resume_classification_metadata() -> None:
+    projected = message_to_v3(
+        Message(
+            id="msg_resume",
+            session_id="sess_resume",
+            role="user",
+            created_at="2026-09-04T00:00:00+00:00",
+            updated_at="2026-09-04T00:00:01+00:00",
+            parts=[Part(id="answer", type="text", text="internal delivery envelope")],
+            metadata={
+                "plan_exit_resume": True,
+                "ask_user_resume": True,
+                "ask_user_question_id": "ques_1",
+                "ask_user_answer": "private answer",
+                "runtime_secret": "never project",
+            },
+        )
+    )
+
+    assert projected["metadata"] == {
+        "plan_exit_resume": True,
+        "ask_user_resume": True,
+        "ask_user_question_id": "ques_1",
+    }
+
+
+@pytest.mark.parametrize("execution_mode", ["plan", "deep_research"])
+def test_v3_message_projects_special_prompt_execution_mode(execution_mode: str) -> None:
+    projected = message_to_v3(
+        Message(
+            id=f"msg_{execution_mode}",
+            session_id="sess_mode",
+            role="user",
+            created_at="2026-09-05T00:00:00+00:00",
+            updated_at="2026-09-05T00:00:01+00:00",
+            parts=[Part(id="prompt", type="text", text="A user prompt")],
+            metadata={
+                "behavior": {
+                    "execution_mode": execution_mode,
+                    "reasoning_effort": "medium",
+                    "confirmation_policy": "ask",
+                },
+                "client_message_id": "private-client-identity",
+            },
+        )
+    )
+
+    assert projected["metadata"] == {"behavior": {"execution_mode": execution_mode}}
+    assert "private-client-identity" not in str(projected)
+    assert "reasoning_effort" not in str(projected)
+    assert "confirmation_policy" not in str(projected)
+
+
+def test_v3_message_omits_execute_prompt_mode_from_presentation_metadata() -> None:
+    projected = message_to_v3(
+        Message(
+            id="msg_execute",
+            session_id="sess_mode",
+            role="user",
+            created_at="2026-09-05T00:00:00+00:00",
+            updated_at="2026-09-05T00:00:01+00:00",
+            parts=[Part(id="prompt", type="text", text="A user prompt")],
+            metadata={"behavior": {"execution_mode": "execute"}},
+        )
+    )
+
+    assert "metadata" not in projected
+
+
+def test_v3_message_projects_only_public_mcp_app_response_identity() -> None:
+    projected = message_to_v3(
+        Message(
+            id="msg_app_response",
+            session_id="sess_app",
+            role="user",
+            created_at="2026-09-04T00:00:00+00:00",
+            updated_at="2026-09-04T00:00:01+00:00",
+            parts=[Part(id="part_response", type="text", text="Continue with this result")],
+            metadata={
+                "mcp_app": {
+                    "app_instance_id": "app_123",
+                    "source_server": "v2ex",
+                    "resource_uri": "ui://v2ex/panel",
+                    "model_context": {
+                        "present": True,
+                        "sha256": "private-digest",
+                        "bytes": 912,
+                    },
+                },
+                "delivery": "steer",
+                "pending_steer": True,
+                "client_message_id": "private-client-identity",
+            },
+        )
+    )
+
+    assert projected["metadata"] == {
+        "mcp_app_response": {"app_instance_id": "app_123", "state": "pending"}
+    }
+    serialized = str(projected)
+    assert "private-digest" not in serialized
+    assert "private-client-identity" not in serialized
+
+
 def test_v3_transcript_preserves_navigable_child_agent_semantics(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json")
     parent = app.state.sessions.create(workspace_id="ws_default", title="Flat NDP")
@@ -389,20 +522,30 @@ def test_v3_transcript_preserves_navigable_child_agent_semantics(tmp_path: Path)
             updated_at="2026-08-22T00:00:01+00:00",
             parts=[
                 Part(
-                    id="handoff_geo",
+                    id="handoff_geo_started",
                     type="expert_handoff",
                     handle_id="task_geo",
                     child_agent="geospatial",
                     run_label="Resolve station region",
+                    stage="delegate.started",
+                    live_state="running",
+                    status="running",
+                    text="main -> geospatial",
+                    metadata={"question": "Ground the requested region before catalog search."},
+                ),
+                Part(
+                    id="handoff_geo_returned",
+                    type="expert_handoff",
+                    handle_id="task_geo",
+                    child_agent="geospatial",
+                    run_label="Resolve station region",
+                    stage="delegate.completed",
                     live_state="completed",
                     status="completed",
                     duration_ms=12_500.0,
                     text="main <- geospatial",
-                    metadata={
-                        "question": "Ground the requested region before catalog search.",
-                        "output": "Resolved the region with authoritative coordinates.",
-                    },
-                )
+                    metadata={"output": "Resolved the region with authoritative coordinates."},
+                ),
             ],
         )
     ]
@@ -410,6 +553,22 @@ def test_v3_transcript_preserves_navigable_child_agent_semantics(tmp_path: Path)
     transcript = (
         TestClient(app).get(f"/v1/sessions/{parent.id}/messages", headers=V3_HEADERS).json()
     )
+
+    assert transcript["messages"][0]["blocks"] == [
+        {
+            "id": "handoff_geo_started",
+            "type": "subagent",
+            "subagent_id": "task_geo",
+            "stage": "delegate.started",
+            "task": "Ground the requested region before catalog search.",
+        },
+        {
+            "id": "handoff_geo_returned",
+            "type": "subagent",
+            "subagent_id": "task_geo",
+            "stage": "delegate.completed",
+        },
+    ]
 
     assert transcript["subagents"] == [
         {
@@ -472,6 +631,35 @@ def test_v3_projects_authoritative_child_relation_without_handoff_part(tmp_path:
             "result": "Seattle resolved to an authoritative region.",
         }
     ]
+
+
+def test_v3_omits_internal_runtime_child_from_parent_transcript(tmp_path: Path) -> None:
+    """A runtime helper is a real child turn, but not user-facing delegation."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    parent = app.state.sessions.create(workspace_id="ws_default", title="Parent")
+    internal = seed_agent_task(
+        app,
+        parent_session_id=parent.id,
+        parent_turn_id="run_tool",
+        agent_ref={"expert_id": "main"},
+        task_id="task_agent_answer",
+        status="running",
+        run_label="agent-elicitation answer",
+        project_to_parent=False,
+    )
+
+    transcript = (
+        TestClient(app).get(f"/v1/sessions/{parent.id}/messages", headers=V3_HEADERS).json()
+    )
+
+    assert transcript["subagents"] == []
+    assert transcript["messages"] == []
+    child_events = app.state.bus._history[internal.child_session_id]
+    assert any(event.type == "agent.task.started" for event in child_events)
+    assert not any(
+        event.type.startswith("agent.task.") for event in app.state.bus._history[parent.id]
+    )
 
 
 def test_v3_omits_missing_parent_run_from_authoritative_child_relation(tmp_path: Path) -> None:

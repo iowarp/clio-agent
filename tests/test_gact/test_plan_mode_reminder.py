@@ -150,6 +150,27 @@ def test_plan_file_path_recorded_on_first_plan_turn(tmp_path: Path) -> None:
     assert recorded_plan_file(fresh) == plan_file
 
 
+def test_first_plan_turn_creates_only_the_owned_plan_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A clean checkout can write its first plan without CLIO pre-writing content."""
+
+    owned_plans = tmp_path / "clean-checkout" / ".clio" / "plans"
+    monkeypatch.setattr(
+        "clio_agent.gact.runtime.grant_resolver.plans_dir",
+        lambda: owned_plans.resolve(strict=False),
+    )
+    app, sess = _plan_session(tmp_path)
+    assert not owned_plans.exists()
+
+    inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+
+    plan_file = Path(app.state.sessions.get(sess.id).metadata[_PLAN_FILE_METADATA_KEY])
+    assert owned_plans.is_dir()
+    assert plan_file.parent == owned_plans.resolve(strict=False)
+    assert not plan_file.exists()
+
+
 def test_plan_file_path_is_stable_across_turns(tmp_path: Path) -> None:
     """The recorded path does not change turn to turn (recorded once, re-read thereafter)."""
     app, sess = _plan_session(tmp_path)
@@ -215,6 +236,22 @@ def test_full_reminder_contains_ledger_structure_staleness_and_show_rules(tmp_pa
     assert _STRUCTURE_HINT in out
     assert _STALENESS in out
     assert _SHOW_THE_PLAN in out
+
+
+def test_full_reminder_distinguishes_plan_artifact_from_requested_target(tmp_path: Path) -> None:
+    """A short create-file request cannot be mistaken for the plan document itself."""
+
+    app, sess = _plan_session(tmp_path)
+    request = "Create probe.txt containing exactly QUALIFIED."
+
+    out = inject_plan_mode_reminder(app, sess.id, sess, request)
+
+    assert "The plan file is NOT the user's requested target" in out
+    assert "Never copy the requested target contents alone into the plan file" in out
+    assert (
+        "describe how the requested result will be implemented and verified after approval" in out
+    )
+    assert "Never infer a requested filename from the plan-file path or its generated slug" in out
 
 
 def test_sparse_reminder_stays_a_one_liner(tmp_path: Path) -> None:

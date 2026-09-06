@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any, Optional, Protocol, Sequence, runtime_checkable
 
 from clio_agent.gact.agent_message_transport import message_in_process
+from clio_agent.gact.agent_task_artifacts import ArtifactRefValue
 from clio_agent.gact.agent_tasks import (
     AGENT_TASK_CONSUMED_EVENT,
     AGENT_TASK_EVENTS,
@@ -191,11 +192,11 @@ class TaskResult:
 
     Carries the status lifecycle, the create/update timeline, the ``result`` payload
     (``{message_ref, answer_excerpt, workflow_state}``), the typed ``error_reason``
-    and a RESERVED ``artifact_ref`` (the #670 artifacts campaign fills it with a
-    spill ref; carried from day one so a federation record matches).
+    and an ``artifact_ref`` carrying a commissioned blueprint's registered
+    deliverable (with string compatibility for older relay records).
 
-    It OMITS all eight :class:`AgentTask` fields that are not part of the executor
-    boundary, in three classes:
+    It OMITS all nine :class:`AgentTask` fields that are not part of the executor
+    boundary, in four classes:
 
     * parent-side observe-later + wire-dedup bookkeeping — ``notify_pending`` /
       ``consumed_at`` / ``delegation_reported`` — choreography that stays local under
@@ -204,7 +205,9 @@ class TaskResult:
       authored — ``parent_turn_id`` / ``child_turn_id`` / ``fanout_bound`` — which the
       executor need not echo back in its result; and
     * parent-side run-list display state — ``detached`` / ``dismissed`` — which is
-      never executor-owned.
+      never executor-owned; and
+    * parent-projection policy — ``project_to_parent`` — which belongs to the local
+      orchestration boundary and must not cross the executor wire.
     """
 
     task_id: str
@@ -219,9 +222,7 @@ class TaskResult:
     created_at: str = ""
     updated_at: str = ""
     result: Optional[dict[str, Any]] = None
-    # RESERVED — filled by the artifacts campaign (#670); present so federation
-    # records match the durable relay ``ArtifactRef`` vocabulary from day one.
-    artifact_ref: str = ""
+    artifact_ref: ArtifactRefValue = ""
     handle_id: str = ""
     run_label: str = ""
     live_state: str = ""
@@ -382,10 +383,12 @@ class ExpertInvoker(Protocol):
         :class:`SpawnError` (typed reason) for a refused spawn."""
         ...
 
-    def wait(self, handle: TaskHandle, timeout_s: float) -> TaskResult:
-        """Block up to ``timeout_s`` for the task to reach a terminal status, then
-        return its :class:`TaskResult` (the current, possibly non-terminal record on
-        timeout — the caller decides how to proceed)."""
+    def wait(self, handle: TaskHandle, timeout_s: float | None) -> TaskResult:
+        """Wait for terminal status, optionally bounded by ``timeout_s``.
+
+        ``None`` is a committed wait. A finite timeout returns the current,
+        possibly non-terminal record when its budget expires.
+        """
         ...
 
     def check(self, handles: Sequence[TaskHandle]) -> list[TaskResult]:
@@ -433,7 +436,7 @@ class InProcessExpertInvoker:
         task = spawn_child_turn_threadsafe(self._app, spec)
         return TaskHandle.from_task(task)
 
-    def wait(self, handle: TaskHandle, timeout_s: float) -> TaskResult:
+    def wait(self, handle: TaskHandle, timeout_s: float | None) -> TaskResult:
         """Block on the task's completion Event (the S6 wait primitive) up to
         ``timeout_s`` and project the resulting record.
 
@@ -447,7 +450,8 @@ class InProcessExpertInvoker:
         task = reg.get(handle.task_id)
         if task is None:
             raise InvokerError(f"unknown task {handle.task_id!r}", reason="unknown_task")
-        reg.event(handle.task_id).wait(timeout=max(0.0, float(timeout_s or 0.0)))
+        timeout = None if timeout_s is None else max(0.0, float(timeout_s))
+        reg.event(handle.task_id).wait(timeout=timeout)
         task = reg.get(handle.task_id)
         if task is None:  # pragma: no cover - retained records are never removed
             raise InvokerError(f"task {handle.task_id!r} vanished mid-wait", reason="unknown_task")

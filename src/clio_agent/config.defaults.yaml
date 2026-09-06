@@ -239,6 +239,12 @@ providers.model_catalog_ttl_s: 86400.0
 # Per-call byte/character/time bounds and bounded-retry budgets across the
 # tool and LM paths.
 
+# CLIO_AGENT_TASK_ARTIFACT_CONTEXT_CHARS  (int)  <- src/clio_agent/gact/agent_task_artifacts.py
+# Character bound on registered artifact content injected into a
+# commissioning parent when a child blueprint returns; raise for larger
+# reports, lower to bound resumed parent context growth.
+limits.agent_task_artifact_context_chars: 64000
+
 # CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS  (int)  <- src/clio_agent/gact/agents/agent_task_output_digest.py
 # Character bound above which a completed spawned child's full output is
 # digested (excerpt + a durable session/message reference) instead of
@@ -256,16 +262,6 @@ limits.codex_sdk_progress_timeout_s: 120.0
 # Byte cap per attached file inlined into context injection; raise to inline
 # larger attachments, lower to bound prompt growth.
 limits.context_inline_bytes: 32768
-
-# CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS  (int)  <- src/clio_agent/gact/agents/reactv2_events.py
-# Bounded retries when a ReAct response omits the required tool-call field;
-# raise for models that often emit malformed tool-less output.
-limits.empty_tool_repair_attempts: 3
-
-# CLIO_EXTRACT_REPAIR_ATTEMPTS  (float)  <- src/clio_agent/gact/agents/builders.py
-# Bounded independent re-samples after a structured-output schema-repair
-# failure; raise for models needing more attempts to recover.
-limits.extract_repair_attempts: 3.0
 
 # CLIO_FS_MAX_READ_BYTES  (int)  <- src/clio_agent/tools/servers/fs_server.py
 # Byte cap on a single read_file tool call; raise to read larger files
@@ -312,6 +308,12 @@ limits.mcp_reconnect_timeout_s: 15.0
 # cut); distinct from limits.tool_result_chars.
 limits.model_tool_result_chars: 12000
 
+# CLIO_PLAN_REVIEW_CHARS  (int)  <- src/clio_agent/gact/plan_review.py
+# Character bound on saved plan content embedded in an approval record;
+# raise for unusually large implementation plans, lower to bound review
+# payloads.
+limits.plan_review_chars: 256000
+
 # CLIO_SHELL_DEFAULT_OUTPUT_BYTES  (int)  <- src/clio_agent/tools/servers/shell_server.py
 # Default byte cap on shell-command stdout/stderr when the caller specifies
 # none; raise for commands with verbose output.
@@ -336,11 +338,6 @@ limits.shell_max_output_bytes: 131072
 # Hard ceiling in seconds on the timeout a shell tool call may request;
 # raise for legitimately long-running shell operations.
 limits.shell_max_timeout_s: 30.0
-
-# CLIO_SUBMIT_REPAIR_ATTEMPTS  (float)  <- src/clio_agent/gact/agents/reactv2.py
-# Bounded forced-resubmit re-asks when a ReActV2 loop ends with declared
-# outputs missing; raise for models needing more nudges to finish.
-limits.submit_repair_attempts: 3.0
 
 # CLIO_TOOL_RESULT_CHARS  (int)  <- src/clio_agent/gact/evidence.py
 # Character bound on the transcript/evidence-metadata preview of a tool
