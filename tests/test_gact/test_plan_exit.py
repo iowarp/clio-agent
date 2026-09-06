@@ -252,6 +252,8 @@ def _pending_plan_exit_question(app: Any, sess: Any, *, plan_file: str) -> UserQ
             PLAN_EXIT_APPROVAL_META: True,
             "resume_on_answer": True,
             "plan_file": plan_file,
+            "plan_content": "# Plan\n- do a thing\n",
+            "plan_content_status": "complete",
             "recommended_mode": "auto",
         },
     )
@@ -287,6 +289,9 @@ def test_approve_auto_transitions_edit_and_injects_constraint_lift(tmp_path: Pat
     assert "[STATE TRANSITION OVERRIDE]" in resume["text"]
     assert plan_file in resume["text"]
     assert "Begin implementing the approved plan now." in resume["text"]
+    assert "<approved-plan>\n# Plan\n- do a thing\n</approved-plan>" in resume["text"]
+    assert resume["metadata"]["approved_plan"]["content_status"] == "complete"
+    assert resume["metadata"]["approved_plan"]["content"] == "# Plan\n- do a thing\n"
     assert resume["metadata"]["plan_exit_result"] == "approved"
     # The pending-request bookkeeping is cleared.
     assert not fresh.metadata.get("pending_plan_exit")
@@ -335,6 +340,10 @@ def test_approve_clear_context_modifier_applies(tmp_path: Path) -> None:
     assert len(deps._calls["replace"]) == 1  # history was cleared
     assert deps._calls["replace"][0]["messages"] == []
     assert deps._calls["resume"][0]["metadata"]["plan_exit_context_cleared"] is True
+    assert (
+        "<approved-plan>\n# Plan\n- do a thing\n</approved-plan>"
+        in deps._calls["resume"][0]["text"]
+    )
 
 
 def test_reject_stays_in_plan_mode_with_feedback(tmp_path: Path) -> None:

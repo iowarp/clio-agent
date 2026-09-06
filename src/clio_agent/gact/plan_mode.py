@@ -35,6 +35,7 @@ discipline). ``turn.py`` calls :func:`inject_plan_mode_reminder` from its enrich
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import re
 from collections.abc import Mapping
@@ -576,7 +577,9 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
 _CONSTRAINT_LIFT_HEADER = "[STATE TRANSITION OVERRIDE]"
 
 
-def _plan_exit_constraint_lift_text(decision: str, plan_file: str) -> str:
+def _plan_exit_constraint_lift_text(
+    decision: str, plan_file: str, approved_plan: Mapping[str, Any]
+) -> str:
     """Compose the constraint-lifting resume text for an APPROVED plan exit (auto/interactive).
 
     Names the state transition explicitly (previous read-only/plan constraints are lifted; the model
@@ -590,9 +593,23 @@ def _plan_exit_constraint_lift_text(decision: str, plan_file: str) -> str:
         "read-only / plan-mode constraints are now LIFTED — you are authorized to modify files to "
         "implement the approved plan."
     )
-    if decision == "interactive":
-        return base + " Begin implementing it; you will be prompted to approve each action."
-    return base + " Begin implementing the approved plan now."
+    instruction = (
+        " Begin implementing it; you will be prompted to approve each action."
+        if decision == "interactive"
+        else " Begin implementing the approved plan now."
+    )
+    content = str(approved_plan.get("content") or "")
+    safe_content = content.replace("</approved-plan>", "[closing tag removed]")
+    context_metadata = {key: value for key, value in approved_plan.items() if key != "content"}
+    return (
+        base
+        + instruction
+        + "\n\nApproved plan context: "
+        + json.dumps(context_metadata, ensure_ascii=False, sort_keys=True, default=str)
+        + "\n<approved-plan>\n"
+        + safe_content
+        + "</approved-plan>"
+    )
 
 
 def _plan_exit_reject_text(feedback: str, plan_file: str) -> str:
@@ -741,7 +758,22 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
     # Guarded + non-fatal: a degraded save records a typed reason but never blocks this resume.
     from clio_agent.gact.plan_reuse import save_approved_plan  # noqa: PLC0415
 
-    save_approved_plan(app, sid, plan_file=plan_file)
+    saved_plan = save_approved_plan(app, sid, plan_file=plan_file)
+    review = {
+        "content": str(q_meta.get("plan_content") or ""),
+        "content_status": str(q_meta.get("plan_content_status") or ""),
+    }
+    if not review["content_status"]:
+        loaded_review = plan_review_content(plan_file)
+        review = {
+            "content": str(loaded_review.get("plan_content") or ""),
+            "content_status": str(loaded_review.get("plan_content_status") or "unavailable"),
+        }
+    approved_plan = {
+        "artifact_ref": saved_plan,
+        "plan_file": plan_file,
+        **review,
+    }
     cleared = False
     if clear_context:
         # The wipe destroys transcript-owned A2UI surfaces; announce each one
@@ -758,6 +790,7 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
         "plan_exit_mode": decision,
         "plan_exit_context_cleared": cleared,
         "plan_file": plan_file,
+        "approved_plan": approved_plan,
     }
 
     if decision == "exit_only":
@@ -792,7 +825,7 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
         deps,
         sid,
         session,
-        _plan_exit_constraint_lift_text(decision, plan_file),
+        _plan_exit_constraint_lift_text(decision, plan_file, approved_plan),
         resume_metadata,
         question_id=question.id,
     )
