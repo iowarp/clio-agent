@@ -488,22 +488,24 @@ def test_a_recovered_pending_steer_is_delivered_after_a_restart(tmp_path: Path) 
     the user's accepted message is silently never delivered.
     """
 
+    from clio_agent.gact.message_intents import PendingSteer
+    from clio_agent.gact.types import Part
+
     sessions_path = tmp_path / "s.json"
-    first = build_app(sessions_path=sessions_path, agent=_SlowAgent(sleep_s=1.5))
+    first = build_app(sessions_path=sessions_path, agent=FakeClioAgent(answer="unused"))
     with TestClient(first) as client:
         sid = client.post("/v1/sessions", json={"title": "restart"}).json()["id"]
-        assert (
-            client.post(
-                f"/v1/sessions/{sid}/messages",
-                json={"parts": [{"type": "text", "text": "first"}]},
-            ).status_code
-            == 200
+        steer_id = "msg_recovered_steer"
+        first.state.message_intents.add_pending(
+            PendingSteer(
+                message_id=steer_id,
+                session_id=sid,
+                parts=[Part(type="text", text="recovered steer")],
+                text="recovered steer",
+                accepted_at="2026-08-30T12:00:00+00:00",
+                metadata={"delivery": "steer", "pending_steer": True},
+            )
         )
-        _wait_busy(first, sid)
-        steer_id = client.post(
-            f"/v1/sessions/{sid}/messages",
-            json={"parts": [{"type": "text", "text": "recovered steer"}]},
-        ).json()["message_id"]
 
     agent = FakeClioAgent(answer="after restart")
     restarted = build_app(sessions_path=sessions_path, agent=agent)
