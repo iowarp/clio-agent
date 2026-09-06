@@ -224,20 +224,19 @@ def test_folded_terminal_racing_local_callback_is_first_wins(
             updated_at=now,
         )
 
-        original_transition = app.state.agent_task_registry.transition
         contenders_ready = threading.Barrier(2)
 
-        def synchronized_transition(task_id: str, new_status: str, **kwargs: object) -> AgentTask:
-            if new_status == STATUS_COMPLETED:
-                contenders_ready.wait(timeout=5.0)
-            return original_transition(task_id, new_status, **kwargs)
+        def complete_locally() -> None:
+            contenders_ready.wait(timeout=5.0)
+            _on_child_done(app, running.task_id, running.child_session_id, "async")
 
-        app.state.agent_task_registry.transition = synchronized_transition
+        def complete_remotely() -> task_fold.AgentTaskFoldOutcome:
+            contenders_ready.wait(timeout=5.0)
+            return task_fold.fold_agent_task_event(app, _task_event(remote))
+
         with ThreadPoolExecutor(max_workers=2) as pool:
-            callback_future = pool.submit(
-                _on_child_done, app, running.task_id, running.child_session_id, "async"
-            )
-            fold_future = pool.submit(task_fold.fold_agent_task_event, app, _task_event(remote))
+            callback_future = pool.submit(complete_locally)
+            fold_future = pool.submit(complete_remotely)
             callback_future.result(timeout=10.0)
             fold_outcome = fold_future.result(timeout=10.0)
 
@@ -272,3 +271,66 @@ def test_nonterminal_fold_updates_progress_without_terminalizing(tmp_path: Path)
         assert outcome.task.updated_at == "2026-07-31T05:00:00+00:00"
         assert not app.state.agent_task_registry.event(queued.task_id).is_set()
         assert [event.type for event in app.state.bus._history[parent]] == ["agent.task.started"]
+
+
+def test_nonterminal_fold_cannot_publish_after_concurrent_terminal(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Persistence and publication retain the transition winner's order."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        queued = seed_agent_task(
+            app,
+            parent_session_id=parent,
+            agent_ref={"expert_id": "remote", "requesting_expert_id": "main"},
+        )
+        app.state.bus._history[parent].clear()
+        app.state.bus._history[queued.child_session_id].clear()
+        monkeypatch.setattr(app.state.turn_runner, "busy", lambda _sid: True)
+
+        running = replace(
+            queued,
+            status=STATUS_RUNNING,
+            updated_at="2026-07-31T05:00:00+00:00",
+        )
+        completed = replace(
+            running,
+            status=STATUS_COMPLETED,
+            result={"answer_excerpt": "finished"},
+            updated_at="2026-07-31T05:00:01+00:00",
+        )
+        running_persist_entered = threading.Event()
+        release_running_persist = threading.Event()
+        terminal_persisted = threading.Event()
+        original_persist = task_fold.persist_agent_task
+
+        def held_persist(app_arg: object, task: AgentTask) -> None:
+            if task.status == STATUS_RUNNING:
+                running_persist_entered.set()
+                assert release_running_persist.wait(timeout=5.0)
+            original_persist(app_arg, task)
+            if task.status == STATUS_COMPLETED:
+                terminal_persisted.set()
+
+        monkeypatch.setattr(task_fold, "persist_agent_task", held_persist)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            running_future = pool.submit(task_fold.fold_agent_task_event, app, _task_event(running))
+            assert running_persist_entered.wait(timeout=5.0)
+            terminal_future = pool.submit(
+                task_fold.fold_agent_task_event,
+                app,
+                _task_event(completed),
+            )
+            terminal_persisted.wait(timeout=1.0)
+            release_running_persist.set()
+            running_future.result(timeout=10.0)
+            terminal_future.result(timeout=10.0)
+
+        final = app.state.agent_task_registry.get(queued.task_id)
+        assert final is not None and final.status == STATUS_COMPLETED
+        assert [event.type for event in app.state.bus._history[parent]] == [
+            "agent.task.started",
+            "agent.task.completed",
+        ]

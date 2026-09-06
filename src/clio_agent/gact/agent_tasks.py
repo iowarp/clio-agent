@@ -255,7 +255,7 @@ class AgentTaskRegistry:
     """
 
     def __init__(self) -> None:
-        self._lock = threading.RLock()
+        self.lifecycle_lock = self._lock = threading.RLock()
         self._tasks: dict[str, AgentTask] = {}
         self._by_parent: dict[str, set[str]] = {}
         self._events: dict[str, threading.Event] = {}
