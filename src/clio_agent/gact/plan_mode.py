@@ -35,7 +35,6 @@ discipline). ``turn.py`` calls :func:`inject_plan_mode_reminder` from its enrich
 from __future__ import annotations
 
 import fnmatch
-import json
 import os
 import re
 from collections.abc import Mapping
@@ -44,6 +43,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.artifacts.observer_bridge import observer_call_id
+from clio_agent.gact.plan_exit_resume import approved_plan_resume_text, rejected_plan_resume_text
 from clio_agent.gact.plan_review import ensure_owned_plan_directory, plan_review_content
 from clio_agent.gact.planning import (
     PLAN_MODE_REMINDER_MARKER,
@@ -572,57 +572,6 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
     return True
 
 
-#: The Gemini "State Transition Override" constraint-lifting preamble injected into the resumed
-#: turn on approval — the explicit signal that plan mode's read-only restrictions are lifted.
-_CONSTRAINT_LIFT_HEADER = "[STATE TRANSITION OVERRIDE]"
-
-
-def _plan_exit_constraint_lift_text(
-    decision: str, plan_file: str, approved_plan: Mapping[str, Any]
-) -> str:
-    """Compose the constraint-lifting resume text for an APPROVED plan exit (auto/interactive).
-
-    Names the state transition explicitly (previous read-only/plan constraints are lifted; the model
-    is authorized to modify files to implement the approved plan) and points at the plan file. The
-    ``auto`` variant tells the model to begin executing now; the ``interactive`` variant tells it to
-    expect a prompt per action. Never used for ``exit_only`` (which injects NO execute-now message).
-    """
-
-    base = (
-        f"{_CONSTRAINT_LIFT_HEADER} Your plan at {plan_file} has been APPROVED. The previous "
-        "read-only / plan-mode constraints are now LIFTED — you are authorized to modify files to "
-        "implement the approved plan."
-    )
-    instruction = (
-        " Begin implementing it; you will be prompted to approve each action."
-        if decision == "interactive"
-        else " Begin implementing the approved plan now."
-    )
-    content = str(approved_plan.get("content") or "")
-    safe_content = content.replace("</approved-plan>", "[closing tag removed]")
-    context_metadata = {key: value for key, value in approved_plan.items() if key != "content"}
-    return (
-        base
-        + instruction
-        + "\n\nApproved plan context: "
-        + json.dumps(context_metadata, ensure_ascii=False, sort_keys=True, default=str)
-        + "\n<approved-plan>\n"
-        + safe_content
-        + "</approved-plan>"
-    )
-
-
-def _plan_exit_reject_text(feedback: str, plan_file: str) -> str:
-    """Compose the resume text for a REJECTED plan exit (stays in plan mode with feedback)."""
-
-    note = feedback or "(no additional feedback provided)"
-    return (
-        "Your request to exit plan mode was REJECTED — you are STILL in plan mode. Revise the plan "
-        f"at {plan_file} per the reviewer's feedback, then call plan_exit again.\n\n"
-        f"Reviewer feedback: {note}"
-    )
-
-
 def _stage_plan_exit_resume(
     app: "FastAPI",
     deps: "GactDeps",
@@ -734,7 +683,7 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
             deps,
             sid,
             session,
-            _plan_exit_reject_text(feedback, plan_file),
+            rejected_plan_resume_text(feedback, plan_file),
             {"plan_exit_result": "rejected", "plan_file": plan_file},
             question_id=question.id,
         )
@@ -825,7 +774,7 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
         deps,
         sid,
         session,
-        _plan_exit_constraint_lift_text(decision, plan_file, approved_plan),
+        approved_plan_resume_text(decision, plan_file, approved_plan),
         resume_metadata,
         question_id=question.id,
     )
