@@ -599,8 +599,8 @@ def build_spawn_runtime_tools(
                 # Once-per-task wire emission: the ROW above is returned on EVERY wait
                 # (the model may legitimately re-collect), but the terminal EVENT +
                 # return Part + parent-resume fire exactly once — the server owns the
-                # de-duplicated stream. A re-wait (partial-timeout re-collect, id
-                # repeated in a batch) claims nothing and emits nothing. Shared with the
+                # de-duplicated stream. A re-wait (or an id repeated in a batch)
+                # claims nothing and emits nothing. Shared with the
                 # declared-workflow runner (both reach a terminal task via the same
                 # invoker boundary).
                 _emit_delegation_terminal(app, session_id, agent_def, task_result)

@@ -357,7 +357,7 @@ def observe_agent_tasks_impl(
     Behaviour:
     * no ``pattern`` — return the current incremental snapshot immediately.
     * supplied ``pattern`` — hold this single call open until bounded event text
-      matches, or until every requested task is unknown/terminal.  Waiting is
+      matches, or until any requested task is unknown/terminal.  Waiting is
       event-driven through the child sessions' existing EventBus history; there is
       no wall-clock ceiling and no sleep/poll loop.
 
