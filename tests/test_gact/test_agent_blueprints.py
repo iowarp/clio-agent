@@ -2054,7 +2054,8 @@ Coordinate genomics work.
     assert "requested children are terminal" in context
     assert "do not repeatedly poll" in context
     assert "NEXT turn" in context  # observe-later: results inject into the next turn
-    assert "check_agent_tasks" in context  # non-blocking collection while working
+    assert "observe_agent_tasks" in context  # non-blocking observation while working
+    assert "check_agent_tasks" not in context  # observe owns snapshots and monitoring
     # The old serial teaching must be gone (it made sync spawn→wait the default).
     assert "Spawn one child, wait for its evidence" not in context
     # The evidence-grounding guarantee must survive the rewrite intact.

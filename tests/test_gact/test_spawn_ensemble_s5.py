@@ -728,7 +728,7 @@ def test_wait_merges_ensemble_workflow_state_in_request_order_with_conflict_rows
     with _active_turn(app):
         wait = _wait_tool(app, monkeypatch)
         result = json.loads(
-            wait.func(task_ids=["task_run0", "task_run1", "task_run2"], timeout_s=1.0)
+            wait.func(task_ids=["task_run0", "task_run1", "task_run2"])
         )
 
     # Deterministic request-order merge: highest run_index wins the colliding key.
@@ -767,7 +767,7 @@ def test_wait_merge_is_completion_order_independent_sabotage_lock(monkeypatch) -
         wait = _wait_tool(app, monkeypatch)
         # Collect in REVERSED order — run 2 first, run 0 last.
         result = json.loads(
-            wait.func(task_ids=["task_run2", "task_run1", "task_run0"], timeout_s=1.0)
+            wait.func(task_ids=["task_run2", "task_run1", "task_run0"])
         )
 
     assert result["merged_workflow_state"]["k"] == {"v": 2}, "arrival order leaked into the merge"
@@ -785,7 +785,7 @@ def test_ensemble_return_parts_carry_run_index(monkeypatch) -> None:
 
     with _active_turn(app):
         wait = _wait_tool(app, monkeypatch)
-        json.loads(wait.func(task_ids=["task_run0", "task_run1"], timeout_s=1.0))
+        json.loads(wait.func(task_ids=["task_run0", "task_run1"]))
 
     # One return Part per run, each carrying its own run_index (ensemble identity).
     handoffs = [p for p in parts if p.type == "expert_handoff"]

@@ -169,15 +169,14 @@ def test_spawn_tool_spawns_async_mode(tmp_path: Path, monkeypatch) -> None:
     assert captured and captured[0].mode == "async", "model spawn must be fire-and-forget async"
 
 
-def test_wait_timeout_is_optional_for_committed_wait() -> None:
-    """Omitting timeout selects the committed wait; finite polling stays additive."""
+def test_wait_has_no_timeout_for_committed_wait() -> None:
+    """The model-visible wait is unconditionally committed and has no timeout."""
 
     from clio_agent.gact.agents import spawn_runtime
 
     src = inspect.getsource(spawn_runtime.build_spawn_runtime_tools)
-    assert (
-        "def wait_agent_tasks(task_ids: list[str], timeout_s: float | None = None) -> str:" in src
-    ), "timeout_s must remain optional so orchestrators can commit to one wait"
+    assert "def wait_agent_tasks(task_ids: list[str]) -> str:" in src
+    assert "def wait_agent_tasks(task_ids: list[str], timeout_s" not in src
     # And the removed default constant is gone (no lingering fallback timeout).
     assert not hasattr(spawn_runtime, "_DEFAULT_WAIT_TIMEOUT_S")
 
@@ -462,7 +461,7 @@ def test_injection_bounded_with_truncation_note(tmp_path: Path, monkeypatch) -> 
 
 
 # --------------------------------------------------------------------------- #
-# 4. consume-on-collect (wait / check) + durability                           #
+# 4. consume-on-collect (wait) + durability                                   #
 # --------------------------------------------------------------------------- #
 
 
@@ -478,13 +477,13 @@ def test_wait_consumes_notification_so_next_turn_skips(tmp_path: Path, monkeypat
             tools = {
                 t.name: t for t in spawn_runtime.build_spawn_runtime_tools(_Agent(), _Def("main"))
             }
-            tools["wait_agent_tasks"].func(task_ids=[task.task_id], timeout_s=1.0)
+            tools["wait_agent_tasks"].func(task_ids=[task.task_id])
         assert app.state.agent_task_registry.get(task.task_id).notify_pending is False
         # Collected in-turn → the next turn injects NOTHING for it.
         assert inject_pending_agent_task_notifications(app, parent, "Q") == ("Q", [])
 
 
-def test_check_returns_completed_result_and_consumes(tmp_path: Path, monkeypatch) -> None:
+def test_observe_returns_completed_snapshot_without_consuming(tmp_path: Path, monkeypatch) -> None:
     from clio_agent.gact.agents import spawn_runtime
 
     _declare(monkeypatch, "data_expert")
@@ -498,15 +497,16 @@ def test_check_returns_completed_result_and_consumes(tmp_path: Path, monkeypatch
             }
             import json as _json
 
-            out = _json.loads(tools["check_agent_tasks"].func())
+            out = _json.loads(tools["observe_agent_tasks"].func(task_ids=[task.task_id]))
         (row,) = out["tasks"]
         assert row["status"] == "completed"
-        assert row["result"]["answer_excerpt"] == "poll result"
-        assert row["result"]["message_ref"] == "msg_x"
-        assert "artifact_ref" in row["result"]  # reserved field carried
-        # Poll consumed it → not re-injected next turn.
-        assert app.state.agent_task_registry.get(task.task_id).notify_pending is False
-        assert inject_pending_agent_task_notifications(app, parent, "Q") == ("Q", [])
+        assert row["task_id"] == task.task_id
+        assert "result" not in row  # observation does not collect the child output
+        # Observe is read-only. Collection remains pending for the next turn.
+        assert app.state.agent_task_registry.get(task.task_id).notify_pending is True
+        injected, staged = inject_pending_agent_task_notifications(app, parent, "Q")
+        assert task.task_id in injected
+        assert staged == [task.task_id]
 
 
 def test_consumed_survives_boot_rebuild(tmp_path: Path, monkeypatch) -> None:
@@ -729,10 +729,8 @@ def _return_parts(parts: list[Any]) -> list[Any]:
     return [p for p in parts if getattr(p, "stage", "") == "delegate.completed"]
 
 
-def test_check_collect_emits_delegation_terminal_once(tmp_path: Path, monkeypatch) -> None:
-    """[1]/[9]: collecting an async child via check_agent_tasks emits the SAME
-    terminal choreography as wait — completed + parent_resumed + one return Part —
-    so the delegation is closed on the wire, not left dangling."""
+def test_observe_does_not_emit_delegation_terminal(tmp_path: Path, monkeypatch) -> None:
+    """Observing a child is read-only and does not close the delegation."""
 
     from clio_agent.gact.agents import spawn_runtime
 
@@ -740,23 +738,21 @@ def test_check_collect_emits_delegation_terminal_once(tmp_path: Path, monkeypatc
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app) as client:
         parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
-        _seed_terminal_task(app, parent, excerpt="poll result")
+        task = _seed_terminal_task(app, parent, excerpt="poll result")
         events, parts = _capture_terminal(monkeypatch)
         with _active_turn(app, parent):
             tools = {
                 t.name: t for t in spawn_runtime.build_spawn_runtime_tools(_Agent(), _Def("main"))
             }
-            tools["check_agent_tasks"].func()
-        assert [e["event_type"] for e in events] == [
-            "blueprint.delegation.completed",
-            "blueprint.delegation.parent_resumed",
-        ]
-        assert len(_return_parts(parts)) == 1, "check-collect must append exactly one return Part"
+            tools["observe_agent_tasks"].func(task_ids=[task.task_id])
+        assert events == []
+        assert _return_parts(parts) == []
+        assert app.state.agent_task_registry.get(task.task_id).notify_pending is True
 
 
 def test_injection_collect_emits_delegation_terminal_once(tmp_path: Path, monkeypatch) -> None:
     """[1]/[9]: observe-later injection collect emits the SAME terminal choreography
-    as wait/check when the turn commits to run — the flagship S6 path no longer
+    as wait when the turn commits to run — the flagship S6 path no longer
     leaves a started with no terminal."""
 
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
@@ -795,7 +791,7 @@ def test_injection_then_wait_terminal_emitted_exactly_once(tmp_path: Path, monke
             tools = {
                 t.name: t for t in spawn_runtime.build_spawn_runtime_tools(_Agent(), _Def("main"))
             }
-            tools["wait_agent_tasks"].func(task_ids=[task.task_id], timeout_s=1.0)
+            tools["wait_agent_tasks"].func(task_ids=[task.task_id])
         assert [e["event_type"] for e in events] == [
             "blueprint.delegation.completed",
             "blueprint.delegation.parent_resumed",
@@ -1016,8 +1012,8 @@ def test_terminal_delegation_stamps_child_final_message_with_return_metadata(
             tools = {
                 t.name: t for t in spawn_runtime.build_spawn_runtime_tools(_Agent(), _Def("main"))
             }
-            tools["wait_agent_tasks"].func(task_ids=[settled.task_id], timeout_s=2.0)
-            tools["wait_agent_tasks"].func(task_ids=[settled.task_id], timeout_s=2.0)
+            tools["wait_agent_tasks"].func(task_ids=[settled.task_id])
+            tools["wait_agent_tasks"].func(task_ids=[settled.task_id])
         rows_after = _child_messages(client, settled.child_session_id)
         stamped_after = [
             m
@@ -1071,7 +1067,7 @@ def test_stamp_falls_back_to_newest_assistant_when_message_ref_absent(
             tools = {
                 t.name: t for t in spawn_runtime.build_spawn_runtime_tools(_Agent(), _Def("main"))
             }
-            tools["wait_agent_tasks"].func(task_ids=["task_noref"], timeout_s=1.0)
+            tools["wait_agent_tasks"].func(task_ids=["task_noref"])
         rows = _child_messages(client, child.id)
         stamped = [
             m for m in rows if isinstance((m.get("metadata") or {}).get("delegation_return"), dict)

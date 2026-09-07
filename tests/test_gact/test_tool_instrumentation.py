@@ -864,7 +864,6 @@ def test_spawn_runtime_tools_declare_handoff_for_spawn_and_row_for_collectors(
         "spawn_agent_task": ("handoff", "Spawn Agent"),
         "spawn_agents_parallel": ("handoff", "Spawn Agents"),
         "wait_agent_tasks": ("row", "Wait"),
-        "check_agent_tasks": ("row", "Check Tasks"),
         "observe_agent_tasks": ("row", "Observe"),
         "get_agent_task_output": ("row", "Get Task Output"),
         "message_agent": ("row", "Message Agent"),
@@ -911,7 +910,7 @@ def test_no_registered_native_title_contains_a_paren(tmp_path: Path, monkeypatch
     builder functions (not a source-grep) and asserts none carries parens.
 
     Sabotage baseline: before the 2026-08-06 rename this failed on
-    ``spawn_agent_task``/``wait_agent_tasks``/``check_agent_tasks``/
+    ``spawn_agent_task``/``wait_agent_tasks``/
     ``spawn_agents_parallel``/``run_workflow``/``create_artifact``/
     ``observe_agent_tasks``/``message_agent``/``plan_exit``/``goal_status``/
     ``load_skill``/``cron_create``/``cron_list``/``cron_delete`` — every one

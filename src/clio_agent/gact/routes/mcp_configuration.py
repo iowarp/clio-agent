@@ -14,6 +14,7 @@ from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.routes.mcp_server_specs import stdio_server_spec
 from clio_agent.tools.mcp_config import transport_from_spec
 from clio_agent.tools.mcp_redaction import redact_mcp_spec
+from clio_agent.tools.mcp_runtime import make_mcp_client
 
 
 def _configuration_name(value: str) -> str:
@@ -78,10 +79,8 @@ async def _probe_user_mcp_server(spec: Mapping[str, Any]) -> tuple[list[str], st
     """Return live tools and a degraded detail for one saved spec."""
 
     try:
-        from fastmcp import Client
-
         transport = transport_from_spec(dict(spec))
-        async with Client(transport) as client:
+        async with make_mcp_client(transport, server_id="user-configuration-probe") as client:
             tools = await client.list_tools()
         tool_names = [str(tool.name) for tool in tools]
     except Exception as exc:  # noqa: BLE001 - saved configuration remains durable

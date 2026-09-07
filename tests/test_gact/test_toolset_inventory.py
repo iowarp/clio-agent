@@ -305,7 +305,8 @@ def test_declared_children_give_spawn_tools_the_spawn_runtime_source(
     }
     assert rows["spawn_agent_task"]["source"] == "spawn-runtime"
     assert rows["wait_agent_tasks"]["source"] == "spawn-runtime"
-    assert rows["check_agent_tasks"]["source"] == "spawn-runtime"
+    assert rows["observe_agent_tasks"]["source"] == "spawn-runtime"
+    assert "check_agent_tasks" not in rows
     assert rows["spawn_agents_parallel"]["source"] == "spawn-runtime"
 
 
