@@ -823,6 +823,41 @@ def test_content_write_refused_in_plan_mode(tmp_path, monkeypatch):
     assert not (tmp_path / "report.md").exists()
 
 
+def test_registered_artifact_publication_allowed_in_architect_mode(tmp_path, monkeypatch):
+    """Architect can publish its report through create_artifact without gaining file tools."""
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    app, sess, _ = _make_app(tmp_path, mode="architect")
+    out = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name="research-report.md", kind="report", content="# Findings\n"),
+        workspace_id="ws1",
+    )
+    assert out.accepted and out.created
+    assert (tmp_path / "research-report.md").read_text(encoding="utf-8") == "# Findings\n"
+
+
+def test_user_deny_blocks_registered_artifact_publication_in_architect_mode(
+    tmp_path, monkeypatch
+):
+    """Architect publication remains subordinate to an explicit user permission deny."""
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    app, sess, _ = _make_app(
+        tmp_path,
+        mode="architect",
+        policies=[{"scope": "session", "tool_name_pattern": "create_artifact", "action": "deny"}],
+    )
+    out = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name="research-report.md", kind="report", content="# Findings\n"),
+        workspace_id="ws1",
+    )
+    assert out.accepted is False
+    assert out.reason == RejectionReason.POLICY_DENIED.value
+    assert not (tmp_path / "research-report.md").exists()
+
+
 def test_path_proposal_not_mode_gated_in_plan_mode(tmp_path, monkeypatch):
     # Registering an EXISTING file (path channel) stays NON-destructive: plan/
     # architect mode must NOT refuse it (only content writes are gated).

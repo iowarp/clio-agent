@@ -40,6 +40,7 @@ from typing import Any
 
 from clio_agent.gact.runtime.plan_acl import (
     PLAN_ACL_ALLOW_TOOL_PRIORITY,
+    PLAN_ACL_ARCHITECT_TOOLS,
     PLAN_ACL_DENY_PRIORITY,
     PLAN_ACL_MODES,
     PLAN_ACL_PLAN_FILE_PRIORITY,
@@ -148,8 +149,9 @@ def _plan_acl_default_matches(
 
     F1 narrowing (#1057 B5): the ``allow_tool`` band is TIGHTEN-ONLY except for ``plan_exit``. When
     any matching user row is a ``deny``, the allow-band row for a non-``plan_exit`` tool
-    (``ask_user``/``web_fetch``) is NOT emitted, so the user's deny wins. ``plan_exit`` always keeps
-    its allow (anti-lockout: a user ``deny plan_exit`` can never strand the model in plan mode).
+    (``ask_user``/``web_fetch`` in Plan mode or ``create_artifact`` in Architect mode) is NOT
+    emitted, so the user's deny wins. ``plan_exit`` always keeps its allow (anti-lockout: a user
+    ``deny plan_exit`` can never strand the model in plan mode).
     """
 
     priorities = _plan_acl_priorities(user_matches)
@@ -781,6 +783,7 @@ __all__ = [
     "KIND_DOMAIN",
     "KIND_HOOK",
     "KIND_PLAN_ACL",
+    "PLAN_ACL_ARCHITECT_TOOLS",
     "KIND_ROOT",
     "KIND_TOOL",
     "PLAN_ACL_ALLOW_TOOL_PRIORITY",
