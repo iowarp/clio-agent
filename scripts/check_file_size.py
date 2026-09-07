@@ -323,7 +323,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # in the owner module agents/agent_task_input_refs.py; only this file's own
     # tuple-unpack + one added kwarg on two call sites (emit_spawn_started's
     # wrapper + _do_spawn's own call) landed here.
-    "src/clio_agent/gact/agents/spawn_runtime.py": 950,
+    "src/clio_agent/gact/agents/spawn_runtime.py": 846,
     # NEW entry (C1-S7, #1309 gate-review F1): crossed the flat 800 cap
     # (791 -> 842) for the new _apply_session_tool_allowlist owner function --
     # the ONE place that forces an agent-elicitation answer child's bound

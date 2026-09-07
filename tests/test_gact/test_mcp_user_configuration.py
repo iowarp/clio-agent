@@ -10,7 +10,10 @@ import yaml
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
-from clio_agent.gact.routes.mcp import _configured_web_remote_url, _probe_web_search_remote
+from clio_agent.gact.routes.mcp_configuration import (
+    _configured_web_remote_url,
+    _probe_web_search_remote,
+)
 from clio_agent.tools.mcp_config import load_mcp_servers
 
 
@@ -88,7 +91,7 @@ def test_user_mcp_configuration_persists_across_restart_and_preserves_siblings(
         return ["web_search", "web_fetch"], None
 
     monkeypatch.setattr(
-        "clio_agent.gact.routes.mcp._probe_user_mcp_server",
+        "clio_agent.gact.routes.mcp_configuration._probe_user_mcp_server",
         ready_probe,
     )
 
@@ -125,7 +128,9 @@ def test_edit_replaces_named_server_without_duplicate_runtime_or_yaml_rows(
         del spec
         return ["web_search"], None
 
-    monkeypatch.setattr("clio_agent.gact.routes.mcp._probe_user_mcp_server", ready_probe)
+    monkeypatch.setattr(
+        "clio_agent.gact.routes.mcp_configuration._probe_user_mcp_server", ready_probe
+    )
     app = build_app(sessions_path=tmp_path / "sessions.json")
     app.state.external_mcp_servers = {
         "mcp_ext_old": {
@@ -165,7 +170,7 @@ def test_unreachable_configuration_is_saved_and_remains_retryable_after_restart(
         return [], "ConnectionError: service offline"
 
     monkeypatch.setattr(
-        "clio_agent.gact.routes.mcp._probe_user_mcp_server",
+        "clio_agent.gact.routes.mcp_configuration._probe_user_mcp_server",
         unavailable_probe,
     )
     app = build_app(sessions_path=tmp_path / "first.json")
@@ -198,7 +203,9 @@ def test_remove_user_override_restores_pack_local_fallback(
         del spec
         return ["web_search"], None
 
-    monkeypatch.setattr("clio_agent.gact.routes.mcp._probe_user_mcp_server", ready_probe)
+    monkeypatch.setattr(
+        "clio_agent.gact.routes.mcp_configuration._probe_user_mcp_server", ready_probe
+    )
     app = build_app(sessions_path=tmp_path / "sessions.json")
     with TestClient(app) as client:
         client.put(
