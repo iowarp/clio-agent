@@ -9,6 +9,11 @@ normal user approval path.
 
 from __future__ import annotations
 
+import asyncio
+import codecs
+import io
+import json
+import logging
 import os
 import platform
 import re
@@ -18,12 +23,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 
 from clio_agent import conf
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 
 shell_server = FastMCP("shell")
+logger = logging.getLogger(__name__)
 
 # Declared MCP ToolAnnotations — the SINGLE source of truth for the shell tool's
 # effect class (#1061). ``bash`` runs an arbitrary command whose writes/egress
@@ -281,18 +287,67 @@ def build_shell_tool_description(facts: ShellEnvFacts) -> str:
 _SHELL_TOOL_DESCRIPTION = build_shell_tool_description(_detect_shell_env())
 
 
-def _clip_output(text: str, max_bytes: int) -> tuple[str, bool]:
-    """Clip text by UTF-8 byte size while preserving valid text."""
+async def _read_process_stream(
+    reader: asyncio.StreamReader,
+    *,
+    stream: str,
+    ctx: Context,
+    max_output_bytes: int,
+) -> tuple[str, bool]:
+    """Drain one process stream while forwarding typed terminal chunks."""
 
-    raw = text.encode("utf-8", errors="replace")
-    if len(raw) <= max_bytes:
-        return text, False
-    clipped = raw[:max_bytes].decode("utf-8", errors="replace")
-    return clipped, True
+    raw = bytearray()
+    truncated = False
+    decoder = io.IncrementalNewlineDecoder(
+        codecs.getincrementaldecoder("utf-8")(errors="replace"),
+        translate=True,
+    )
+    text_chunks: list[str] = []
+    while chunk := await reader.read(4096):
+        remaining = max_output_bytes - len(raw)
+        accepted = chunk[: max(0, remaining)]
+        if len(accepted) < len(chunk):
+            truncated = True
+        if not accepted:
+            continue
+        raw.extend(accepted)
+        text = decoder.decode(accepted, final=False)
+        if not text:
+            continue
+        text_chunks.append(text)
+        message = json.dumps(
+            {"type": "clio.terminal.chunk", "stream": stream, "text": text},
+            ensure_ascii=False,
+        )
+        try:
+            await ctx.report_progress(progress=len(raw), total=None, message=message)
+        except Exception as exc:  # noqa: BLE001 - display progress cannot fail the command
+            logger.warning(
+                "shell progress delivery failed stream=%s reason=progress_delivery_failed error=%r",
+                stream,
+                exc,
+            )
+    tail = decoder.decode(b"", final=True)
+    if tail:
+        text_chunks.append(tail)
+        message = json.dumps(
+            {"type": "clio.terminal.chunk", "stream": stream, "text": tail},
+            ensure_ascii=False,
+        )
+        try:
+            await ctx.report_progress(progress=len(raw), total=None, message=message)
+        except Exception as exc:  # noqa: BLE001 - display progress cannot fail the command
+            logger.warning(
+                "shell progress delivery failed stream=%s reason=progress_delivery_failed error=%r",
+                stream,
+                exc,
+            )
+    return "".join(text_chunks), truncated
 
 
 @shell_server.tool(description=_SHELL_TOOL_DESCRIPTION, annotations=_BASH_ANNOTATIONS)
-def bash(
+async def bash(
+    ctx: Context,
     command: str,
     cwd: str | None = None,
     timeout_s: float = _DEFAULT_TIMEOUT_S,
@@ -366,13 +421,11 @@ def bash(
     run_env = {**os.environ, **confined.env_overlay} if confined.env_overlay else None
 
     try:
-        completed = subprocess.run(
-            run_argv,
+        process = await asyncio.create_subprocess_exec(
+            *run_argv,
             cwd=str(safe_cwd),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             env=run_env,
             **confined.popen_kwargs,
             # Give the child an immediately-EOF stdin. Without this the spawned
@@ -381,34 +434,44 @@ def bash(
             # that stream — every command then hits the timeout with empty output.
             stdin=subprocess.DEVNULL,
         )
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
-        stdout, stdout_truncated = _clip_output(stdout, max_output_bytes)
-        stderr, stderr_truncated = _clip_output(stderr, max_output_bytes)
-        return {
-            "command": command,
-            "cwd": str(safe_cwd),
-            "exit_code": None,
-            "stdout": stdout,
-            "stderr": stderr,
-            "timed_out": True,
-            "timeout_s": timeout,
-            "stdout_truncated": stdout_truncated,
-            "stderr_truncated": stderr_truncated,
-        }
     except Exception as exc:  # noqa: BLE001
         return _error("execution_failed", str(exc), details={"command": command})
 
-    stdout, stdout_truncated = _clip_output(completed.stdout, max_output_bytes)
-    stderr, stderr_truncated = _clip_output(completed.stderr, max_output_bytes)
+    assert process.stdout is not None
+    assert process.stderr is not None
+    stdout_task = asyncio.create_task(
+        _read_process_stream(
+            process.stdout,
+            stream="stdout",
+            ctx=ctx,
+            max_output_bytes=max_output_bytes,
+        )
+    )
+    stderr_task = asyncio.create_task(
+        _read_process_stream(
+            process.stderr,
+            stream="stderr",
+            ctx=ctx,
+            max_output_bytes=max_output_bytes,
+        )
+    )
+    timed_out = False
+    try:
+        await asyncio.wait_for(process.wait(), timeout=timeout)
+    except TimeoutError:
+        timed_out = True
+        process.kill()
+        await process.wait()
+    stdout_result, stderr_result = await asyncio.gather(stdout_task, stderr_task)
+    stdout, stdout_truncated = stdout_result
+    stderr, stderr_truncated = stderr_result
     return {
         "command": command,
         "cwd": str(safe_cwd),
-        "exit_code": completed.returncode,
+        "exit_code": None if timed_out else process.returncode,
         "stdout": stdout,
         "stderr": stderr,
-        "timed_out": False,
+        "timed_out": timed_out,
         "timeout_s": timeout,
         "stdout_truncated": stdout_truncated,
         "stderr_truncated": stderr_truncated,

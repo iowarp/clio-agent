@@ -834,6 +834,36 @@ def test_event_projection_scopes_session_and_normalizes_delta() -> None:
     }
 
 
+def test_event_projection_preserves_live_tool_output_stream() -> None:
+    """Correlated MCP progress updates the running tool without a fake chat row."""
+
+    envelope = event_to_v3(
+        Event(
+            type="tool.call.progress",
+            session_id="sess_1",
+            payload={
+                "call_id": "call_1",
+                "tool": "shell_bash",
+                "progress": 12,
+                "total": None,
+                "output_stream": "first line\n",
+            },
+        ),
+        workspace_id="ws_1",
+    )
+
+    assert envelope["type"] == "tool.upserted"
+    assert envelope["entity_id"] == "call_1"
+    assert envelope["payload"] == {
+        "id": "call_1",
+        "session_id": "sess_1",
+        "name": "shell_bash",
+        "state": "running",
+        "output_stream": "first line\n",
+        "progress": 12.0,
+    }
+
+
 def test_connection_event_does_not_inherit_focused_session_scope() -> None:
     event = Event(type="lm.provider.changed", session_id="", payload={"provider": "codex"})
 

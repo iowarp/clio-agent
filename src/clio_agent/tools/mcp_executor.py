@@ -20,6 +20,7 @@ from clio_agent.tools.launcher_cache_lock import (
     aacquire_launcher_cache_lock,
     uses_shared_launcher_cache,
 )
+from clio_agent.tools.mcp_call_progress import call_tool_with_progress
 from clio_agent.tools.mcp_connection_era import (
     MCPConnectionEra,
     classify_connection_era,
@@ -406,8 +407,15 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         outcome = await self.call_tool_result(name, args)
         return outcome.model_text
 
-    async def call_tool_result(self, name: str, args: Mapping[str, Any]) -> _MCPCallOutcome:
-        """Call an MCP tool and preserve its private raw result projection."""
+    async def call_tool_result(
+        self,
+        name: str,
+        args: Mapping[str, Any],
+        *,
+        progress_handler: Callable[[float, float | None, str | None], Awaitable[None]]
+        | None = None,
+    ) -> _MCPCallOutcome:
+        """Execute one call, optionally forwarding its correlated progress."""
         if self._closed:
             raise RuntimeError("AsyncMCPToolExecutor is closed")
         if self._client is None or self._call_lock is None:
@@ -431,33 +439,19 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
             # both reset it (run_with_activity_backstop's own docstring). An
             # unbounded commitment (timeout is None, #1225 wait_for_terminal)
             # needs no backstop at all, activity-driven or otherwise.
-            from clio_agent.tools.mcp_header_mismatch import (  # noqa: PLC0415
-                call_tool_with_header_retry,
-            )
             from clio_agent.tools.mcp_wait_ladder import (  # noqa: PLC0415
-                ActivityClock,
                 MCPCallTimeoutBackstopError,
-                activity_progress_handler,
-                run_with_activity_backstop,
                 typed_call_timeout_error,
             )
 
             try:
-                if timeout is None:
-                    result = await call_tool_with_header_retry(client, on_server_name, dict(args))
-                else:
-                    activity = ActivityClock()
-                    result = await run_with_activity_backstop(
-                        call_tool_with_header_retry(
-                            client,
-                            on_server_name,
-                            dict(args),
-                            progress_handler=activity_progress_handler(activity),
-                        ),
-                        tool=name,
-                        timeout=timeout,
-                        activity=activity,
-                    )
+                result = await call_tool_with_progress(
+                    client,
+                    on_server_name,
+                    args,
+                    timeout=timeout,
+                    progress_handler=progress_handler,
+                )
             except TimeoutError as exc:
                 # Conservative: a first-call timeout may be tool latency, not
                 # spawn health — the dropped plan self-heals (declared respawn

@@ -1,16 +1,7 @@
-"""Tool-observer + live-assistant transcript cluster (#714 decomposition).
+"""Tool observation and live-assistant transcript projection (#714).
 
-It turns each MCP tool call into:
-
-* installed global hooks (permission / cancellation / telemetry observer) via
-  :func:`_install_tool_runtime_hooks`;
-* live transcript parts on the in-flight assistant message so the UI shows route
-  banners, tool calls, and results in real time (#711);
-* route/handoff context emitted just before a live tool call
-  (:func:`_agent_tool_owner`, :func:`_emit_live_tool_route_context`);
-* the observer callable itself (:func:`_make_tool_observer`) that publishes
-  ``tool.call.started`` / ``tool.call.completed`` onto the EventBus + semantic
-  highway and appends each completed call to ``app.state.tool_call_ledger``.
+Installs runtime hooks and projects route context, call lifecycle events, live
+parts, and per-turn ledger entries without changing tool execution semantics.
 """
 
 from __future__ import annotations
@@ -45,6 +36,7 @@ from clio_agent.gact.runtime.globals import (
     _resolve_tool_session,
 )
 from clio_agent.gact.thought_dedup import TOOL_THOUGHT_STAGE, classify_live_thought
+from clio_agent.gact.tool_progress import ToolProgressRegistry
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime import trace
 from clio_agent.runtime.stream_audit import stream_audit
@@ -616,14 +608,8 @@ def _emit_live_tool_route_context(app: "FastAPI", sid: str, tool_name: str) -> N
 def _make_tool_observer(app: "FastAPI"):
     """Build a callable suitable for MCPToolBridge.tool_observer.
 
-    Publishes tool.call.started / tool.call.completed events into
-    the EventBus, attaching to the active turn session when present
-    and falling back to recency only for out-of-band calls. Also
-    appends each completed call into ``app.state.tool_call_ledger[sid]`` so the
-    turn handler can attach a per-turn ``tools_called`` list to the
-    assistant message metadata even when the underlying expert
-    didn't populate ``pred.tools_called`` itself (e.g. the
-    deterministic short-circuit paths).
+    Events attach to the active session when present and fall back to recency
+    only for out-of-band calls; completions also enter the per-turn ledger.
     """
 
     # Declared-presentation + call-metadata registries (populated at the seam;
@@ -636,20 +622,30 @@ def _make_tool_observer(app: "FastAPI"):
         tool_call_metadata_resolver,
     )
 
+    progress_registry = ToolProgressRegistry()
+
     def observe(
         name: str,
         args: Mapping[str, Any],
         phase: Optional[str],
         error: Optional[str],
         result: Any | None = None,
-    ) -> None:
+    ) -> Any | None:
+        if phase == "progress":
+            projected = progress_registry.project(name, result)
+            if projected is None:
+                return None
+            sid, payload, handle = projected
+            app.state.bus.publish(Event(type="tool.call.progress", session_id=sid, payload=payload))
+            return handle
+
         if phase == "started":
             # Belt-and-braces leak fix: discard a PRIOR call's leaked
             # declare_structured_content() before it can be misread as this call's.
             pop_declared_structured_content()
         sid, _current = _resolve_tool_session(app)
         if not sid:
-            return
+            return None
         # A representation may only ADD adornment, never remove the call row
         # (owner ruling, P5 wire semantics) -- every EXECUTED call emits its
         # tool_call/tool_result parts unconditionally. "handoff" alone skips
@@ -678,6 +674,7 @@ def _make_tool_observer(app: "FastAPI"):
             _OBSERVER_ELICIT_REC.value = open_invocation(
                 app, session_id=sid, tool_name=name, invocation_id=call_id
             )
+            observer_handle = progress_registry.started(call_id, sid)
             # B5 #979.7 (deferred B4 WRITER): join call_id → confined FLEET child (no-op on the
             # floor / built-in namespaces → the egress mint abstains). See ingest_edges.
             join_call_to_serving_child(app, sid, name, call_id)
@@ -708,7 +705,7 @@ def _make_tool_observer(app: "FastAPI"):
                 Event(type="tool.call.started", session_id=sid, payload=started_payload)
             )
             if representation == "handoff":
-                return
+                return observer_handle
             step_thought = _ctx.active_step_thought()
             # #732/#883: next_thought owns its OWN streamed text row; the copy on
             # tool_call.thought is redundant. Clear it IFF THIS step's next_thought
@@ -762,9 +759,11 @@ def _make_tool_observer(app: "FastAPI"):
                     metadata=call_metadata,
                 ),
             )
+            return observer_handle
         elif phase == "completed":
             close_invocation(getattr(_OBSERVER_ELICIT_REC, "value", None))  # P1.3 #1113
             call_id = getattr(_OBSERVER_CALL_IDS, "value", "") or ""
+            progress_registry.completed(call_id)
             t0 = getattr(_OBSERVER_CALL_T0, "value", None)
             duration_ms = (time.time() - t0) * 1000 if t0 else 0.0
             cancel_event = app.state.cancel_events.get(sid)
@@ -884,7 +883,7 @@ def _make_tool_observer(app: "FastAPI"):
                 None  # finding [3]: clear the latch (idle thread -> DIRTY lease)
             )
             if representation == "handoff":
-                return
+                return None
             result_text = completion_error or (
                 _tool_result_preview(result) if result is not None else "completed"
             )
@@ -927,6 +926,7 @@ def _make_tool_observer(app: "FastAPI"):
                     },
                 ),
             )
+        return None
 
     return observe
 

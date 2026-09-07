@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -133,6 +134,58 @@ async def test_shell_bash_runs_simple_command(
     assert data["timed_out"] is False
     assert data["stdout"].strip() == "CLIO_SHELL_OK"
     assert data["stderr"] == ""
+
+
+@pytest.mark.asyncio
+async def test_shell_bash_streams_typed_terminal_chunks_before_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Shell stdout reaches MCP progress before the process exits."""
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    conf.reload()
+    script = tmp_path / "stream_probe.py"
+    script.write_text(
+        "import time\nprint('FIRST', flush=True)\ntime.sleep(0.5)\nprint('SECOND', flush=True)\n",
+        encoding="utf-8",
+    )
+    if os.name == "nt":
+        command = f"& '{sys.executable}' -u '{script}'"
+    else:
+        command = f"'{sys.executable}' -u '{script}'"
+    progress_messages: list[str] = []
+    first_chunk = asyncio.Event()
+
+    async def on_progress(
+        _progress: float,
+        _total: float | None,
+        message: str | None,
+    ) -> None:
+        if message is not None:
+            progress_messages.append(message)
+            first_chunk.set()
+
+    try:
+        async with Client(shell_server) as client:
+            call = asyncio.create_task(
+                client.call_tool(
+                    "bash",
+                    {"command": command, "cwd": str(tmp_path), "timeout_s": 5},
+                    progress_handler=on_progress,
+                )
+            )
+            await asyncio.wait_for(first_chunk.wait(), timeout=2.0)
+            assert not call.done(), "first output was buffered until process completion"
+            result = await call
+    finally:
+        conf.reload()
+
+    chunks = [json.loads(message) for message in progress_messages]
+    assert all(chunk["type"] == "clio.terminal.chunk" for chunk in chunks)
+    assert "FIRST" in "".join(chunk["text"] for chunk in chunks)
+    data = _parse_result(result)
+    assert data["stdout"] == "FIRST\nSECOND\n"
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,7 @@ from clio_agent.errors import ClioError
 from clio_agent.runtime import commitment_activity
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools import foreground_cancellation as foreground_cancel
+from clio_agent.tools import tool_presentation
 from clio_agent.tools.file_policy import FileAccessPolicy
 from clio_agent.tools.mcp_executor import (
     AsyncMCPToolExecutor,
@@ -39,24 +40,22 @@ from clio_agent.tools.mcp_namespace_executor import SyncNamespacePreparationMixi
 from clio_agent.tools.mcp_results import call_tool_result_to_observer
 from clio_agent.tools.result_errors import structured_tool_result_error
 from clio_agent.tools.tool_hooks import InterceptDecision, PostToolHook, assemble_model_observation
+from clio_agent.tools.tool_observation import (
+    LegacyToolObserver,
+    ToolObserver,
+    notify_tool_observer,
+    observer_progress_handler,
+)
 
 logger = logging.getLogger(__name__)
-
-
 # iowarp/clio-agent#7 + #2 + #735: the four tool-runtime hooks (permission
 # gate, telemetry observer, preflight interceptor, cancellation checker) are
 # resolved per tool call through the ``ToolRuntimeHooks`` seam below — gact
-ToolObserver = Callable[
-    [str, Mapping[str, Any], Optional[str], Optional[str], Any | None],
-    None,
-]
-LegacyToolObserver = Callable[[str, Mapping[str, Any], Optional[str], Optional[str]], None]
 MCPAppObserver = Callable[[str, Mapping[str, Any], Any, Any, str | None], None]
 PermissionGate = (
     Callable[[str, Mapping[str, Any]], str]
     | Callable[[str, Mapping[str, Any], Mapping[str, Any]], str]
 )
-
 # The active session workspace root rides its own ContextVar (kept: it is read on
 # the app-less CLI grounding path where no app resolves — see ``agent.py`` /
 # ``file_policy.py`` — so it cannot fold into the ``active_app()``-keyed bundle).
@@ -64,7 +63,6 @@ _ACTIVE_TOOL_WORKSPACE_ROOT: contextvars.ContextVar[str] = contextvars.ContextVa
     "clio_active_tool_workspace_root",
     default="",
 )
-
 # The session's EXPLICITLY-activated Agent Blueprint id, for the SAME reason the
 # workspace root gets its own ContextVar (#1232 pt 1): ``agent.py``'s per-workspace
 # tool-gateway builder reads this to decide which blueprint's declared
@@ -275,43 +273,13 @@ def current_tool_runtime() -> ToolRuntimeHooks:
 TOOL_OBSERVED_ATTR = "_clio_tool_observed"
 
 
-def notify_tool_observer(
-    observer: Optional[ToolObserver | LegacyToolObserver],
-    name: str,
-    args: Mapping[str, Any],
-    phase: str,
-    error: str | None = None,
-    result: Any | None = None,
-) -> None:
-    """Notify a tool observer, swallowing observer failures."""
-
-    if observer is None:
-        return
-    try:
-        if result is None:
-            observer(name, dict(args), phase, error)  # type: ignore[misc, call-arg]
-        else:
-            try:
-                observer(name, dict(args), phase, error, result)  # type: ignore[misc, call-arg]
-            except TypeError:
-                observer(name, dict(args), phase, error)  # type: ignore[misc, call-arg]
-    except Exception as exc:  # noqa: BLE001 - observers must never break tool execution
-        logger.warning(
-            "tool observer raised; its view of this call is lost "
-            "reason=tool_observer_failed tool=%s phase=%s error=%s",
-            name,
-            phase,
-            exc,
-        )
-
-
 def notify_global_tool_observer(
     name: str,
     args: Mapping[str, Any],
     phase: str,
     error: str | None = None,
     result: Any | None = None,
-) -> None:
+) -> Any | None:
     """Notify the active tool observer (per-turn override, else global fallback).
 
     Prefers the current turn's observer so an in-turn caller (a live-observed
@@ -319,7 +287,14 @@ def notify_global_tool_observer(
     app's process-global (iowarp/clio-agent#735).
     """
 
-    notify_tool_observer(current_tool_runtime().tool_observer, name, args, phase, error, result)
+    return notify_tool_observer(
+        current_tool_runtime().tool_observer,
+        name,
+        args,
+        phase,
+        error,
+        result,
+    )
 
 
 class AsyncToolExecutor(Protocol):
@@ -769,7 +744,11 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
                 synthetic=True,
             )
 
-        notify_tool_observer(tool_observer, name, effective_args, "started", None)
+        observer_handle = notify_tool_observer(tool_observer, name, effective_args, "started", None)
+        presentation_snapshot = tool_presentation.capture_tool_presentation(name, effective_args)
+        forward_progress = observer_progress_handler(
+            tool_observer, name, effective_args, observer_handle
+        )
 
         budget = self._async_executor._timeout_budget_for_call(name, effective_args)
         timeout = budget.seconds  # None == unbounded wait_for_terminal commitment, #1225
@@ -780,7 +759,11 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             with commitment_activity.track(timeout is None):
                 outcome = foreground_cancel._run_foreground_coroutine(
                     self._loop,
-                    self._async_executor.call_tool_result(name, effective_args),
+                    self._async_executor.call_tool_result(
+                        name,
+                        effective_args,
+                        progress_handler=forward_progress,
+                    ),
                     timeout=(None if timeout is None else timeout + SYNC_TOOL_RESULT_GRACE_SECONDS),
                     action=f"MCP tool {name!r}",
                     cancellation_checker=cancellation_checker,
@@ -817,7 +800,9 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             )
             raise
         result = outcome.model_text
-        observer_result = call_tool_result_to_observer(outcome.raw_result)
+        observer_result = tool_presentation.enrich_tool_observer_result(
+            call_tool_result_to_observer(outcome.raw_result), effective_args, presentation_snapshot
+        )
         structured_error = structured_tool_result_error(outcome.raw_result)
         if structured_error:
             self._record_tool_failure(name, structured_error)

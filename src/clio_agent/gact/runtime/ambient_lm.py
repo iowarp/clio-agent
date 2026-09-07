@@ -160,8 +160,11 @@ def active_lm() -> tuple[Any, bool]:
             from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
 
             return main_thread_config.get("lm"), True
-        except Exception:  # noqa: BLE001 - tolerate dspy settings shape drift
-            pass
+        except Exception as exc:  # noqa: BLE001 - tolerate dspy settings shape drift
+            logger.warning(
+                "ambient LM lookup degraded reason=dspy_settings_shape_drift error=%s",
+                type(exc).__name__,
+            )
     lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
     return lm, ambient
 
