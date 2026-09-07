@@ -147,11 +147,9 @@ def _plan_acl_default_matches(
     ``user_matches``, the matching user rows already collected for this same call -- so the
     built-in mode-lock always outranks every user row, never just the static @40/@50/@70 floors.
 
-    F1 narrowing (#1057 B5): the ``allow_tool`` band is TIGHTEN-ONLY except for ``plan_exit``. When
-    any matching user row is a ``deny``, the allow-band row for a non-``plan_exit`` tool
-    (``ask_user``/``web_fetch`` in Plan mode or ``create_artifact`` in Architect mode) is NOT
-    emitted, so the user's deny wins. ``plan_exit`` always keeps its allow (anti-lockout: a user
-    ``deny plan_exit`` can never strand the model in plan mode).
+    F1 narrowing (#1057 B5): ``allow_tool`` is TIGHTEN-ONLY except for ``plan_exit``. A user
+    ``deny`` suppresses the allow band for every other Plan/Architect tool, so the deny wins.
+    ``plan_exit`` always keeps its allow, preventing the model from being stranded in Plan mode.
     """
 
     priorities = _plan_acl_priorities(user_matches)
