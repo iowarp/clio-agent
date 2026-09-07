@@ -45,6 +45,7 @@ from clio_agent.gact.artifacts.minting import (
 from clio_agent.gact.artifacts.proposals import Proposal, ProposalOutcome, promote_proposal
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.runtime import trace
+from clio_agent.tools.execution import tool_workspace_context
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -123,7 +124,13 @@ def _register_plan_artifact(app: "FastAPI", sid: str, plan_path: str) -> Proposa
         proposal = Proposal(
             name=name, kind=SAVED_PLAN_KIND, content=content, annotation=_SAVED_PLAN_ANNOTATION
         )
-    return promote_proposal(app, sid, proposal, workspace_id=workspace_id)
+    # Approval resolution runs outside the agent's tool-turn context. Bind the
+    # session workspace explicitly so the policy-checked inline channel sees the
+    # same workspace root it would see during a normal create_artifact tool call.
+    # This does not widen containment: promotion still targets ``root / name``
+    # and passes through the ordinary permission and file-policy gates.
+    with tool_workspace_context(root):
+        return promote_proposal(app, sid, proposal, workspace_id=workspace_id)
 
 
 def save_approved_plan(app: "FastAPI", sid: str, *, plan_file: str) -> dict[str, Any]:

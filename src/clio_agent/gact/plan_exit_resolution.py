@@ -90,6 +90,7 @@ def _stage_plan_revision_message(
     from clio_agent.gact.loop_inbox import enqueue_user_steer
 
     metadata = {
+        "behavior": {"execution_mode": "plan"},
         "plan_revision_feedback": True,
         "plan_exit_result": "rejected",
         "plan_file": plan_file,

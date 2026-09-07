@@ -383,6 +383,7 @@ def test_composer_request_changes_is_a_real_plan_mode_user_message(tmp_path: Pat
     assert len(deps._calls["resume"]) == 1
     resume = deps._calls["resume"][0]
     assert resume["text"] == "Add rollback and verification steps."
+    assert resume["metadata"]["behavior"] == {"execution_mode": "plan"}
     assert resume["metadata"]["plan_revision_feedback"] is True
     assert resume["metadata"].get("plan_exit_resume") is None
     assert "[STATE TRANSITION OVERRIDE]" not in resume["text"]

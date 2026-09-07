@@ -461,7 +461,9 @@ def test_plan_ref_beside_inline_playbook_is_typed_reject() -> None:
     assert exc.value.reason == "conflicting_playbook_declarations"
 
 
-def test_save_approved_plan_content_channel_outside_workspace(tmp_path: Path) -> None:
+def test_save_approved_plan_content_channel_outside_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A plan file OUTSIDE the workspace root saves via the inline-content channel.
 
     This is the realistic topology: ``plan_acl.plans_dir()`` is cwd-relative while the
@@ -477,6 +479,9 @@ def test_save_approved_plan_content_channel_outside_workspace(tmp_path: Path) ->
     sess = app.state.sessions.create(workspace_id="ws_default", title="t", mode="edit")
     plan_file = outside / "fix-it.md"
     plan_file.write_text(_PLAN_MD, encoding="utf-8")
+    process_root = tmp_path / "process-root"
+    process_root.mkdir()
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(process_root))
 
     ref = save_approved_plan(app, sess.id, plan_file=str(plan_file))
 
