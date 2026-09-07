@@ -242,11 +242,10 @@ def latest_workflow_state(app: Any, task: Any) -> dict[str, Any]:
 # --- read-once + event-driven hold -------------------------------------------- #
 
 
-def _no_more_events(resolved: Mapping[str, Any]) -> bool:
-    """True when every REQUESTED task is unknown or terminal — no further events will
-    land, so blocking for a pattern match is pointless (return promptly)."""
+def _terminal_or_error_reached(resolved: Mapping[str, Any]) -> bool:
+    """True when any requested task is unknown or terminal, or none were requested."""
 
-    return all(task is None or task.is_terminal for task in resolved.values())
+    return not resolved or any(task is None or task.is_terminal for task in resolved.values())
 
 
 def _read_once(
@@ -411,7 +410,7 @@ def observe_agent_tasks_impl(
         )
         if compiled is None:
             return _finish_observe(result)
-        if result["matched"] or _no_more_events(resolved):
+        if result["matched"] or _terminal_or_error_reached(resolved):
             return _finish_observe(result)
         # A patterned hold scans every already-buffered page before subscribing.
         # This avoids missing a match beyond the caller's display limit without

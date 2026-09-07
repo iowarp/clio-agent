@@ -328,6 +328,43 @@ def test_pattern_hold_returns_on_terminal_without_match(
     assert _from_parent(out["tasks"], task.task_id)["status"] == terminal_status
 
 
+def test_pattern_hold_returns_when_any_requested_child_is_terminal(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """One terminal child releases a multi-child hold while siblings keep running."""
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        first = _seed_running_task(app, parent, task_id="task_first")
+        sibling = _seed_running_task(app, parent, task_id="task_sibling")
+        tools = _tools(app, parent)
+
+        def finish_first() -> None:
+            time.sleep(0.15)
+            app.state.agent_task_registry.transition(first.task_id, STATUS_COMPLETED)
+            app.state.bus.publish(
+                Event(type="agent.task.completed", session_id=first.child_session_id, payload={})
+            )
+
+        finisher = threading.Thread(target=finish_first)
+        finisher.start()
+        out = _observe(
+            app,
+            parent,
+            tools,
+            task_ids=[first.task_id, sibling.task_id],
+            cursor=1,
+            pattern="never-matches",
+        )
+        finisher.join()
+
+    assert out["matched"] is False
+    assert _from_parent(out["tasks"], first.task_id)["status"] == STATUS_COMPLETED
+    assert _from_parent(out["tasks"], sibling.task_id)["status"] == STATUS_RUNNING
+
+
 def test_no_pattern_returns_current_snapshot_immediately(tmp_path: Path, monkeypatch) -> None:
     _declare(monkeypatch, "data_expert")
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
