@@ -24,6 +24,10 @@ clio-kit web MCP server and a single `main` expert whose `tools:` frontmatter
 names the exact namespaced tools the declared `web` server exposes
 (`web_fetch`, `web_search`, `web_fetch_events`).
 
+The expert presents concise human results. Authoritative structured tool
+results remain the qualification source; raw JSON is retained only in the
+tool's expandable technical details.
+
 This is the WORKING path leg B/C ride instead of the bare-session builtin
 main: the builtin main's toolset is a hardcoded 4-tool list, so a
 declared-server tool never reaches it (#1301, deferred upstream). An Agent

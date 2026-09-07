@@ -66,6 +66,7 @@ def test_first_plan_turn_gets_full_reminder(tmp_path: Path) -> None:
     assert PLAN_MODE_REMINDER_MARKER in out
     assert _FULL_ONLY in out
     assert str(plans_dir()) in out
+    assert "call plan_exit" in out
     # The original user text is preserved after the attachment.
     assert out.endswith(_USER_TEXT)
 
@@ -78,6 +79,7 @@ def test_second_plan_turn_is_sparse_within_window(tmp_path: Path) -> None:
     assert _SPARSE_ONLY in out
     assert _FULL_ONLY not in out
     assert str(plans_dir()) in out
+    assert "with plan_exit" in out
 
 
 def test_post_compaction_turn_reinjects_full(tmp_path: Path) -> None:

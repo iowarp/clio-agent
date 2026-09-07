@@ -11,6 +11,8 @@ SPEC §6.7 third-party MCP server surface the gact-tui MCP browser and the
   count per server.
 * ``POST /v1/mcp/servers`` -- install + connect to a third-party server (stdio or
   http), record it on ``app.state.external_mcp_servers``.
+* ``GET|PUT|DELETE /v1/mcp/configuration/{name}`` -- read, atomically persist, or
+  remove one durable user-level ``mcp.yaml`` declaration.
 * ``POST /v1/mcp/servers/{sid}/call`` -- invoke a tool on an installed server,
   firing the same permission gate + tool observer the agent uses.
 * ``DELETE /v1/mcp/servers/{sid}`` -- uninstall a third-party server (gated by the
@@ -128,6 +130,135 @@ def _external_mcp_tool_annotations(info: Mapping[str, Any], tool_name: str) -> A
     return None
 
 
+def _mcp_configuration_name(value: str) -> str:
+    """Validate one user-level MCP declaration key."""
+
+    name = str(value or "").strip()
+    if not name or len(name) > 128 or any(char in name for char in ("/", "\\", "\x00")):
+        raise HTTPException(status_code=422, detail="Invalid MCP configuration name")
+    return name
+
+
+def _mcp_configuration_spec(body: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the persisted declaration through the public install grammar."""
+
+    transport_kind = str(body.get("transport") or "stdio").lower()
+    if transport_kind == "stdio":
+        return stdio_server_spec(body)
+    if transport_kind in {"http", "streamable-http"}:
+        url = body.get("url")
+        if not isinstance(url, str) or not url.strip():
+            raise HTTPException(status_code=422, detail="http transport requires 'url'")
+        return {"transport": "http", "url": url.strip()}
+    raise HTTPException(
+        status_code=422,
+        detail=f"unknown transport: {transport_kind!r} (use stdio|http)",
+    )
+
+
+async def _probe_user_mcp_server(spec: Mapping[str, Any]) -> tuple[list[str], str | None]:
+    """Return live tool names and a typed degraded detail for one saved spec."""
+
+    try:
+        from fastmcp import Client
+
+        transport = transport_from_spec(dict(spec))
+        async with Client(transport) as client:
+            tools = await client.list_tools()
+        tool_names = [str(tool.name) for tool in tools]
+    except Exception as exc:  # noqa: BLE001 - saved configuration remains durable
+        return [], f"{type(exc).__name__}: {exc}"
+
+    remote_url = _configured_web_remote_url(spec)
+    if not remote_url:
+        return tool_names, None
+    try:
+        await _probe_web_search_remote(remote_url)
+    except Exception as exc:  # noqa: BLE001 - preserve tools while surfacing readiness
+        return tool_names, f"{type(exc).__name__}: {exc}"
+    return tool_names, None
+
+
+def _configured_web_remote_url(spec: Mapping[str, Any]) -> str:
+    """Return the explicit ``--remote-url`` value without discovering an endpoint."""
+
+    args = spec.get("args")
+    if not isinstance(args, (list, tuple)):
+        return ""
+    values = [str(value) for value in args]
+    try:
+        index = values.index("--remote-url")
+    except ValueError:
+        return ""
+    return values[index + 1].strip() if index + 1 < len(values) else ""
+
+
+async def _probe_web_search_remote(remote_url: str) -> None:
+    """Require the configured high-capacity service's declared readiness endpoint."""
+
+    from urllib.parse import urljoin  # noqa: PLC0415
+
+    import httpx  # noqa: PLC0415
+
+    if not remote_url.startswith(("http://", "https://")):
+        raise ValueError("Web Search remote URL must use http:// or https://")
+    ready_url = urljoin(remote_url.rstrip("/") + "/", "readyz")
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.get(ready_url)
+    response.raise_for_status()
+    payload = response.json()
+    checks = payload.get("checks") if isinstance(payload, Mapping) else None
+    if not isinstance(checks, Mapping) or checks.get("docling") != "ready":
+        raise RuntimeError("Web Search document conversion is not ready")
+    unavailable = sorted(str(name) for name, state in checks.items() if state != "ready")
+    if unavailable:
+        raise RuntimeError(f"Web Search dependency not ready: {', '.join(unavailable)}")
+
+
+def _forget_ephemeral_mcp_duplicates(app: FastAPI, name: str) -> None:
+    """Remove old process-only rows for a declaration now owned by ``mcp.yaml``."""
+
+    installed = getattr(app.state, "external_mcp_servers", {}) or {}
+    duplicates = [
+        server_id
+        for server_id, info in installed.items()
+        if str(info.get("name") or "").strip().casefold() == name.casefold()
+        or str(server_id).strip().casefold() == name.casefold()
+    ]
+    for server_id in duplicates:
+        installed.pop(server_id, None)
+
+
+async def _user_mcp_configuration_row(name: str, spec: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Shape a durable configuration row, probing saved declarations on read."""
+
+    if spec is None:
+        return {
+            "name": name,
+            "configured": False,
+            "scope": "user",
+            "status": "local_fallback",
+            "tools": [],
+            "tools_count": 0,
+            "retryable": False,
+        }
+    tools, error = await _probe_user_mcp_server(spec)
+    row: dict[str, Any] = {
+        "name": name,
+        "configured": True,
+        "scope": "user",
+        "status": "ready" if error is None else "degraded",
+        "transport": str(spec.get("transport") or "stdio"),
+        "spec": redact_mcp_spec(dict(spec)),
+        "tools": tools,
+        "tools_count": len(tools),
+        "retryable": error is not None,
+    }
+    if error is not None:
+        row["error"] = error
+    return row
+
+
 def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register the SPEC §6.7 MCP server registry + dispatch routes on ``app``.
 
@@ -137,6 +268,75 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
     through the ``app.state.make_permission_gate`` / ``app.state.make_tool_observer``
     constructors and the destructive-action guard through ``deps``.
     """
+
+    @app.get("/v1/mcp/configuration/{name}")
+    async def get_mcp_configuration(name: str) -> dict[str, Any]:
+        """Read and live-probe one durable user-level MCP declaration."""
+
+        from clio_agent.gact.mcp_user_configuration import (  # noqa: PLC0415
+            McpUserConfigurationError,
+            get_user_mcp_server,
+        )
+
+        key = _mcp_configuration_name(name)
+        try:
+            spec = await asyncio.to_thread(get_user_mcp_server, key)
+        except McpUserConfigurationError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return await _user_mcp_configuration_row(key, spec)
+
+    @app.put("/v1/mcp/configuration/{name}")
+    async def put_mcp_configuration(name: str, request: Request) -> dict[str, Any]:
+        """Atomically create or replace one durable user-level declaration.
+
+        Persistence happens before the live probe.  An unreachable server is
+        therefore returned as a durable ``degraded`` configuration with an
+        explicit retry posture rather than rejected and forgotten.
+        """
+
+        from clio_agent.gact.mcp_user_configuration import (  # noqa: PLC0415
+            McpUserConfigurationError,
+            set_user_mcp_server,
+        )
+
+        key = _mcp_configuration_name(name)
+        body = await json_body(request, route="PUT /v1/mcp/configuration/{name}")
+        spec = _mcp_configuration_spec(body)
+        try:
+            saved = await asyncio.to_thread(set_user_mcp_server, key, spec)
+        except McpUserConfigurationError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        _forget_ephemeral_mcp_duplicates(app, key)
+        display_name = str(body.get("name") or "").strip()
+        if display_name:
+            _forget_ephemeral_mcp_duplicates(app, display_name)
+        return await _user_mcp_configuration_row(key, saved)
+
+    @app.delete("/v1/mcp/configuration/{name}")
+    async def delete_mcp_configuration(name: str) -> dict[str, Any]:
+        """Remove one durable user declaration and expose local fallback state."""
+
+        from clio_agent.gact.mcp_user_configuration import (  # noqa: PLC0415
+            McpUserConfigurationError,
+            remove_user_mcp_server,
+        )
+
+        key = _mcp_configuration_name(name)
+        try:
+            removed = await asyncio.to_thread(remove_user_mcp_server, key)
+        except McpUserConfigurationError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        _forget_ephemeral_mcp_duplicates(app, key)
+        return {
+            "name": key,
+            "configured": False,
+            "removed": removed,
+            "scope": "user",
+            "status": "local_fallback",
+            "tools": [],
+            "tools_count": 0,
+            "retryable": False,
+        }
 
     @app.get("/v1/mcp/servers")
     async def list_mcp_servers(workspace_id: str = "", session_id: str = "") -> dict[str, Any]:

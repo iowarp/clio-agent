@@ -697,8 +697,8 @@ def consume_pending_agent_task_notifications(app: "FastAPI", sid: str, task_ids:
 
     * consume it exactly once (durable ``consumed_at`` + ``agent.task.consumed``),
       atomically via the ``notify_pending`` once-guard; and
-    * emit its delegation TERMINAL — the SAME choreography ``wait_agent_tasks`` /
-      ``check_agent_tasks`` emit (``blueprint.delegation.completed|failed`` + the
+    * emit its delegation TERMINAL — the SAME choreography ``wait_agent_tasks``
+      emits (``blueprint.delegation.completed|failed`` + the
       return ``expert_handoff`` Part + ``blueprint.delegation.parent_resumed``),
       keyed to the parent expert that requested the child.
 

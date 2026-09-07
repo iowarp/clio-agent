@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
+import threading
 import time
 from collections import defaultdict
 from collections.abc import Mapping
@@ -176,6 +177,12 @@ class EventBus:
         # _note_delivery_recovered. The warning-log RATE itself is decade-
         # boundary gated in _record_drop, independent of this flag (#1214 D1).
         self._drop_burst_active: dict[str, bool] = defaultdict(bool)
+        # Synchronous child observers run in the agent worker thread while the
+        # server loop owns delivery.  This condition is the bridge between those
+        # two worlds: every non-transient publish advances replay history and
+        # wakes observers without a sleep/poll loop.  It is deliberately tied to
+        # the existing event history rather than creating another event store.
+        self._history_condition = threading.Condition()
 
     def publish(self, event: Event) -> None:
         """Fan-out to every subscriber of event.session_id + record
@@ -263,11 +270,13 @@ class EventBus:
     def _record_history(self, event: Event) -> None:
         """Append to the bounded per-session replay log."""
 
-        self._highest_event_id = max(self._highest_event_id, event.id)
-        log = self._history[event.session_id]
-        log.append(event)
-        if len(log) > self._history_cap:
-            del log[: len(log) - self._history_cap]
+        with self._history_condition:
+            self._highest_event_id = max(self._highest_event_id, event.id)
+            log = self._history[event.session_id]
+            log.append(event)
+            if len(log) > self._history_cap:
+                del log[: len(log) - self._history_cap]
+            self._history_condition.notify_all()
 
     def _deliver(self, event: Event) -> None:
         """Record replay history + fan out to live subscriber queues.
@@ -387,15 +396,16 @@ class EventBus:
     def _history_snapshot(self, session_id: str) -> list[Event]:
         """Return global plus session history ordered by event id."""
 
-        if session_id == "":
-            return list(self._history.get("", []))
-        return sorted(
-            [
-                *self._history.get("", []),
-                *self._history.get(session_id, []),
-            ],
-            key=lambda event: event.id,
-        )
+        with self._history_condition:
+            if session_id == "":
+                return list(self._history.get("", []))
+            return sorted(
+                [
+                    *self._history.get("", []),
+                    *self._history.get(session_id, []),
+                ],
+                key=lambda event: event.id,
+            )
 
     async def subscribe(self, session_id: str, *, last_event_id: int = 0) -> AsyncIterator[Event]:
         """Yield events for ``session_id`` until the consumer drops.
@@ -504,10 +514,54 @@ class EventBus:
 
         events: list[Event] = []
         keys = ("", session_id) if session_id else ("",)
-        for key in keys:
-            events.extend(self._history.get(key, ())[:])
+        with self._history_condition:
+            for key in keys:
+                events.extend(self._history.get(key, ())[:])
         events.sort(key=lambda event: event.id)
         return [event for event in events if event.id >= cursor]
+
+    def wait_for_session_events(
+        self,
+        session_ids: list[str],
+        *,
+        after_event_id: int,
+    ) -> None:
+        """Block until a requested session receives a newer recorded event.
+
+        This is the synchronous subscription primitive used by
+        ``observe_agent_tasks``.  The condition predicate is checked while
+        holding the same lock used to append replay history, so an event that
+        lands between an observer's snapshot and this call cannot be missed.
+        There is intentionally no timeout: the caller's supplied regex or a
+        requested child's terminal lifecycle event is the return condition.
+        """
+
+        wanted = {str(session_id) for session_id in session_ids if session_id}
+        if not wanted:
+            return
+
+        def has_new_event() -> bool:
+            return any(
+                max(
+                    (event.id for event in self._history.get(session_id, ())),
+                    default=0,
+                )
+                > after_event_id
+                for session_id in wanted
+            )
+
+        with self._history_condition:
+            self._history_condition.wait_for(has_new_event)
+
+    def latest_session_event_id(self, session_ids: list[str]) -> int:
+        """Return the newest event id recorded directly for the requested sessions."""
+
+        wanted = {str(session_id) for session_id in session_ids if session_id}
+        with self._history_condition:
+            return max(
+                (event.id for session_id in wanted for event in self._history.get(session_id, ())),
+                default=0,
+            )
 
 
 def heartbeat_payload() -> dict[str, Any]:

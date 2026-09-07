@@ -7,13 +7,11 @@ consumed by a settle loop, it CALLS these tools:
 
 * ``spawn_agent_task(agent, task)`` — spawn a declared child as a REAL child turn
   (S3 ``spawn_child_turn``) and return its ``task_id``.
-* ``wait_agent_tasks(task_ids, timeout_s=None)`` — block on the children's completion
+* ``wait_agent_tasks(task_ids)`` — commit to the children's completion
   and return their results (spawn + wait COMPOSE the old synchronous delegate;
   the child runs on the dedicated pool so waiting here never starves it).
-* ``check_agent_tasks()`` — the parent's spawned tasks + status (consumes a
-  finished child: collect-and-close).
 * ``observe_agent_tasks(task_ids, cursor=...)`` — the OBSERVE posture (#1000):
-  read a child's event stream incrementally without consuming it.
+  snapshot or hold on a child's event stream without consuming it.
 * ``spawn_agents_parallel(spawns)`` — fan out several children at once.
 Each tool re-emits the wire-facing delegation/fanout events and appends the
 ``expert_handoff`` Parts the deleted sync-delegate path appended. Child sessions
@@ -510,8 +508,8 @@ def build_spawn_runtime_tools(
     ) -> str:
         """Spawn a declared child expert as a background child turn; returns its
         task_id IMMEDIATELY (status queued|running). Fire-and-forget: the child runs
-        untied to this turn — collect it now with wait_agent_tasks, poll it with
-        check_agent_tasks, or let its result surface in your NEXT turn. Prefer to spawn
+        untied to this turn — collect it now with wait_agent_tasks, inspect progress
+        with observe_agent_tasks, or let its result surface in your NEXT turn. Prefer to spawn
         ALL independent children before waiting on any.
 
         Pass input_task_ids to hand THIS child the FULL stored output of tasks
@@ -530,13 +528,11 @@ def build_spawn_runtime_tools(
             blueprint_id=blueprint_id,
         )
 
-    def wait_agent_tasks(task_ids: list[str], timeout_s: float | None = None) -> str:
+    def wait_agent_tasks(task_ids: list[str]) -> str:
         """Block until the given spawned tasks finish, then return each result.
-        Omit ``timeout_s`` for a committed wait that returns only after every
-        requested task reaches a terminal state. Pass a finite budget when you
-        intentionally need a progress checkpoint; that form may return current
-        non-terminal statuses. The children run on a dedicated pool, so waiting
-        here never starves them. An oversize
+        This is an unconditional committed wait: it returns only after every
+        requested task reaches a terminal state. The children run on a dedicated
+        pool, so waiting here never starves them. An oversize
         result (past a configured character bound) comes back as a digest
         naming its fetch tool (get_agent_task_output) instead of the full text
         inline — or hand that task's id straight to your NEXT spawn as
@@ -552,7 +548,6 @@ def build_spawn_runtime_tools(
         )
 
         call_start = _time.monotonic()
-        deadline = None if timeout_s is None else call_start + max(0.0, float(timeout_s))
         results = []
         # Typed structured shape (owner ruling, P5): a tool DECLARES its wire
         # presentation instead of the UI inferring it from JSON key order —
@@ -570,10 +565,9 @@ def build_spawn_runtime_tools(
                 results.append({"task_id": tid, "error": "unknown_task"})
                 structured_rows.append(wait_structured_row(tid, "unknown_task", 0.0, ""))
                 continue
-            remaining = None if deadline is None else max(0.0, deadline - _time.monotonic())
             try:
                 binding = invoker_for_task(app, task)
-                task_result = binding.invoker.wait(TaskHandle.from_task(task), timeout_s=remaining)
+                task_result = binding.invoker.wait(TaskHandle.from_task(task), timeout_s=None)
             except (InvokerError, SpawnError) as exc:
                 results.append({"task_id": tid, "error": exc.reason})
                 structured_rows.append(wait_structured_row(tid, exc.reason, 0.0, ""))
@@ -662,81 +656,6 @@ def build_spawn_runtime_tools(
             default=str,
         )
 
-    def check_agent_tasks(task_ids: list[str] | None = None) -> str:
-        """Non-blocking poll of this session's spawned tasks: each one's status AND,
-        for finished tasks, a bounded result excerpt + message_ref (full text via
-        get_agent_task_output, or hand the task_id straight to your next spawn as
-        input_task_ids). Pass ``task_ids`` to poll a subset, or omit for all.
-        Polling a finished task collects it (its result won't re-surface next turn).
-        Use it to collect finished children while you keep working, instead of
-        blocking in wait."""
-
-        app, session_id = _ctx_app_session()
-        from clio_agent.gact.agent_tasks import consume_notification  # noqa: PLC0415
-
-        tasks = app.state.agent_task_registry.for_parent(session_id)
-        wanted = set(task_ids or [])
-        if wanted:
-            tasks = [t for t in tasks if t.task_id in wanted]
-        grouped: list[tuple[Any, list[TaskHandle]]] = []
-        for task in tasks:
-            invoker = invoker_for_task(app, task).invoker
-            for grouped_invoker, handles in grouped:
-                if grouped_invoker is invoker:
-                    handles.append(TaskHandle.from_task(task))
-                    break
-            else:
-                grouped.append((invoker, [TaskHandle.from_task(task)]))
-        by_id: dict[str, Any] = {}
-        for invoker, handles in grouped:
-            by_id.update({result.task_id: result for result in invoker.check(handles)})
-        task_results = [by_id[task.task_id] for task in tasks]
-        rows: list[dict[str, Any]] = []
-        for t in task_results:
-            row: dict[str, Any] = {
-                "task_id": t.task_id,
-                "agent": t.agent_ref.get("expert_id", ""),
-                "status": t.status,
-                "queued_reason": t.queued_reason,
-            }
-            if t.is_terminal:
-                result = t.result or {}
-                # Uniform structured fields for EVERY terminal task — success and
-                # failure alike (the model decides): a size-bounded excerpt, the
-                # message_ref for the full text, the typed error_reason, and the
-                # child session id. artifact_ref is reserved (#670).
-                row["result"] = {
-                    "answer_excerpt": str(result.get("answer_excerpt", "")),
-                    "message_ref": str(result.get("message_ref", "")),
-                    "error_reason": t.error_reason,
-                    "child_session_id": t.child_session_id,
-                    "artifact_ref": t.artifact_ref,
-                }
-                row["result"].update(completion_context_fields(app, t))
-                # A poll that surfaces the finished result consumes its observe-later
-                # notification (exactly-once via the notify_pending gate) AND closes
-                # the delegation on the wire — the SAME terminal choreography wait
-                # emits (blueprint.delegation.completed|failed + return Part +
-                # parent_resumed), through the shared delegation_reported once-gate so
-                # a later wait can't double-emit ([1]/[9]). Without this a polled async
-                # child left a started with no terminal (a dangling delegation).
-                consume_notification(app, t.task_id)
-                _emit_delegation_terminal(app, session_id, agent_def, t)
-                collect_commission_artifact(app, session_id, t)
-            rows.append(row)
-        # Declared structured payload (P5 wire semantics, wait_agent_tasks's
-        # treatment): message FIRST, rows after. The tally/format logic lives
-        # in the owner module task_summary (shared with observe_agent_tasks).
-        from clio_agent.gact.agents.task_summary import task_status_message  # noqa: PLC0415
-        from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
-            declare_structured_content,
-        )
-
-        declare_structured_content(
-            {"message": task_status_message([r.get("status", "") for r in rows]), "tasks": rows}
-        )
-        return json.dumps({"tasks": rows}, sort_keys=True)
-
     def spawn_agents_parallel(spawns: list[dict], placement: str | None = None) -> str:
         """Fan out several declared children at once. ``spawns`` is a list of
         {agent, task, input_task_ids?}; returns their task_ids (collect with
@@ -819,7 +738,7 @@ def build_spawn_runtime_tools(
     # tools' wire representation IS their ``expert_handoff`` part — declared
     # ``handoff`` so the seam-attached observer records telemetry without a
     # second representation on the wire. The collectors are plain ``row`` tools
-    # (owner, 2026-08-05: a wait/check is a REAL call, never invisible mechanism
+    # (owner, 2026-08-05: a wait/observe is a REAL call, never invisible mechanism
     # the narration references).
     tools = [
         native_tool(
@@ -859,32 +778,10 @@ def build_spawn_runtime_tools(
             title="Wait",
             args={
                 "task_ids": {"type": "array", "description": "Task ids returned by spawn."},
-                "timeout_s": {
-                    "anyOf": [{"type": "number"}, {"type": "null"}],
-                    "default": None,
-                    "description": (
-                        "Optional finite checkpoint budget. Omit it for one committed "
-                        "wait that returns after all requested tasks are terminal. Pass "
-                        "seconds only when you intentionally need current statuses before "
-                        "completion; decide how to proceed from that partial result."
-                    ),
-                },
-            },
-        ),
-        native_tool(
-            check_agent_tasks,
-            name="check_agent_tasks",
-            desc=check_agent_tasks.__doc__,
-            title="Check Tasks",
-            args={
-                "task_ids": {
-                    "type": "array",
-                    "description": "Optional subset of task ids to poll (omit for all).",
-                },
             },
         ),
         build_message_agent_tool(agent_def),
-        # OBSERVE posture (#1000): the read-only sibling of check_agent_tasks, built in
+        # OBSERVE posture (#1000): the read-only child-progress surface, built in
         # its owner module (observe_runtime) so this file stays under the size ratchet.
         build_observe_tool(),
         # #1306 recoverability: fetches a digested (oversize) completed task's full
@@ -915,7 +812,6 @@ def build_spawn_runtime_tools(
     if not has_declared_children:
         collection_names = {
             "wait_agent_tasks",
-            "check_agent_tasks",
             "message_agent",
             "observe_agent_tasks",
             "get_agent_task_output",

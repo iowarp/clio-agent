@@ -1,14 +1,9 @@
-"""Shared task-status tally + message composer for polling tools' declared
-``structured_content`` (P5 wire semantics, the ``wait_agent_tasks`` treatment
-extended to ``check_agent_tasks`` / ``observe_agent_tasks``).
+"""Task-status tally + message composer for observation structured content.
 
-Both tools poll a set of this session's spawned children and need the SAME
+Observation reports a set of this session's spawned children and needs an
 "N tasks: X running, Y completed" summary line for the wire's declared
 ``message`` field (:func:`clio_agent.gact.agents.tool_instrumentation.declare_structured_content`).
-This owner module holds the ONE tally/format so it is not duplicated between
-``spawn_runtime.py`` (``check_agent_tasks``) and ``observe_runtime.py``
-(``observe_agent_tasks``) — no-accretion (both call sites stay a single import
-+ call, keeping their own ratcheted line counts flat).
+This owner module keeps that formatting separate from the observation mechanics.
 """
 
 from __future__ import annotations

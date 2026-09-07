@@ -2,8 +2,8 @@
 
 "All tools by default need to be instrumented as a matter of definition."
 Per-tool manual observer shims (the former ``_observed_collector`` wrap in
-``spawn_runtime`` that made ``wait_agent_tasks`` / ``check_agent_tasks``
-visible) do not scale: every other native ``dspy.Tool`` — and every future
+``spawn_runtime`` that made task collection calls visible) do not scale:
+every other native ``dspy.Tool`` — and every future
 one — stayed invisible unless someone remembered to hand-wrap it. This owner
 module replaces that per-tool opt-in with ONE assembly seam:
 

@@ -1,24 +1,23 @@
 """Cursor-based incremental child observation — the OBSERVE posture (#1000).
 
-The owner module for ``observe_agent_tasks``, the read-only sibling of
-``check_agent_tasks``. It mirrors the SEMANTICS of clio-relay's ``relay_observe``
+The owner module for ``observe_agent_tasks``. It mirrors the SEMANTICS of
+clio-relay's ``relay_observe``
 (``clio-relay/src/clio_relay/mcp_server.py::_observe_job``) adapted to clio-agent's
 spawn substrate:
 
 * **Cursor** — read a child's event stream incrementally from a resumable,
   monotonic cursor (the process-global event id); two sequential observes never
   miss and never re-read (``EventBus.session_events_since``).
-* **Pattern** — an optional regex that makes the call return EARLY the moment new
-  event text matches, so the parent acts on intermediate evidence (a typed
-  ``workflow_state`` landing, a stage completing) instead of waiting for the
-  child's terminal.
+* **Pattern** — an optional regex that holds this one call open until new event
+  text matches or a requested child becomes terminal, so the parent acts on
+  intermediate evidence without generating a ladder of polling tool calls.
 * **Non-consuming** — observation reads only. It never touches ``notify_pending`` /
   ``consumed_at`` and never emits a delegation terminal; the delegation stays open
-  until ``wait_agent_tasks`` / ``check_agent_tasks`` / next-turn injection collects
+  until ``wait_agent_tasks`` / next-turn injection collects
   it (the exactly-once contract is unchanged — observe is repeatable).
 
 The three postures after a fire-and-forget spawn: WAIT (blocking terminal-seeking,
-``wait_agent_tasks``), OBSERVE (non-blocking incremental progress-watching, HERE),
+``wait_agent_tasks``), OBSERVE (incremental progress-watching, HERE),
 CONTINUE (observe-later injection, ``enrichment``).
 """
 
@@ -27,7 +26,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
 from collections import defaultdict
 from collections.abc import Mapping
 from typing import Any
@@ -48,13 +46,6 @@ OBSERVE_EXCERPT_MAX_CHARS = 600
 #: The regex is only ever run over this many characters of an already-bounded
 #: per-event excerpt+summary — the bounded match window (never the raw payload).
 OBSERVE_MATCH_MAX_CHARS = 4000
-#: Poll interval while blocking for a pattern match (relay's ``poll_seconds``
-#: analogue; short so intra-turn evidence surfaces promptly).
-OBSERVE_POLL_SECONDS = 0.2
-#: Hard ceiling on how long a single observe call may block (a runaway backstop; a
-#: caller asking for more is capped, never allowed to wedge the turn).
-MAX_OBSERVE_TIMEOUT_S = 120.0
-
 # --- Event-family curation ----------------------------------------------------- #
 # The child's bus history already carries only the SSE-served ReAct atoms
 # (``event_reaches_ui``): react steps, the extract's typed landing, delegation
@@ -248,7 +239,7 @@ def latest_workflow_state(app: Any, task: Any) -> dict[str, Any]:
     return latest
 
 
-# --- read-once + poll loop ----------------------------------------------------- #
+# --- read-once + event-driven hold -------------------------------------------- #
 
 
 def _no_more_events(resolved: Mapping[str, Any]) -> bool:
@@ -333,8 +324,7 @@ def _declare_observe_structured_content(result: Mapping[str, Any]) -> None:
     tallying every requested task's status FIRST, then the SAME per-task
     ``tasks`` rows + cursor/limit/matched internals the model-facing return
     already carries (never invented, never re-authored). The tally/format
-    logic lives in the owner module ``task_summary`` (shared with
-    ``check_agent_tasks``)."""
+    logic lives in the owner module ``task_summary``."""
 
     from clio_agent.gact.agents.task_summary import task_status_message  # noqa: PLC0415
     from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
@@ -362,21 +352,18 @@ def observe_agent_tasks_impl(
     limit: int = DEFAULT_OBSERVE_LIMIT,
     pattern: str | None = None,
     include_state: bool = True,
-    timeout_s: float | None = None,
 ) -> str:
     """Implementation of the ``observe_agent_tasks`` tool (see the module docstring).
 
-    Blocking behaviour:
-    * ``timeout_s=None`` — pure non-blocking read (cursor semantics only).
-    * ``timeout_s`` + ``pattern`` — block up to ``timeout_s``, but return EARLY the
-      moment a new event's bounded text matches the regex (poll every
-      ``OBSERVE_POLL_SECONDS``); on timeout return the events so far, ``matched=false``.
-    * ``timeout_s`` without ``pattern`` — block up to ``timeout_s`` watching for
-      progress, then return the accumulated window (short-circuits early once every
-      requested child is terminal — no more events can land).
+    Behaviour:
+    * no ``pattern`` — return the current incremental snapshot immediately.
+    * supplied ``pattern`` — hold this single call open until bounded event text
+      matches, or until every requested task is unknown/terminal.  Waiting is
+      event-driven through the child sessions' existing EventBus history; there is
+      no wall-clock ceiling and no sleep/poll loop.
 
     Never consumes: no ``notify_pending``/``consumed_at`` mutation, no delegation
-    terminal emission (repeatable; ``wait``/``check``/injection keep exactly-once).
+    terminal emission (repeatable; ``wait``/injection keep exactly-once).
     """
 
     registry = app.state.agent_task_registry
@@ -411,31 +398,37 @@ def observe_agent_tasks_impl(
     requested = [str(t) for t in (task_ids or [])]
     resolved: dict[str, Any] = {tid: registry.get(tid) for tid in requested}
 
-    blocking = timeout_s is not None
-    deadline = 0.0
-    if blocking:
-        budget = min(max(0.0, float(timeout_s or 0.0)), MAX_OBSERVE_TIMEOUT_S)
-        deadline = time.monotonic() + budget
-
+    scan_cursor = cursor_i
     while True:
         result = _read_once(
             app,
             resolved,
             requested,
-            cursor=cursor_i,
+            cursor=scan_cursor,
             limit=limit_i,
             compiled=compiled,
             include_state=include_state,
         )
-        if not blocking:
+        if compiled is None:
             return _finish_observe(result)
-        if compiled is not None and result["matched"]:
+        if result["matched"] or _no_more_events(resolved):
             return _finish_observe(result)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0.0 or _no_more_events(resolved):
-            return _finish_observe(result)
-        time.sleep(min(OBSERVE_POLL_SECONDS, remaining))
-        # Refresh task records so a running→terminal transition is seen next poll.
+        # A patterned hold scans every already-buffered page before subscribing.
+        # This avoids missing a match beyond the caller's display limit without
+        # returning a model-visible polling ladder.
+        if result["events_truncated"]:
+            scan_cursor = int(result["next_cursor"])
+            continue
+        # Use the highest event visible in this snapshot as the condition
+        # watermark.  wait_for_session_events checks its predicate under the same
+        # lock as EventBus history append, closing the snapshot→subscribe race.
+        child_session_ids = [
+            task.child_session_id for task in resolved.values() if task is not None
+        ]
+        watermark = app.state.bus.latest_session_event_id(child_session_ids)
+        app.state.bus.wait_for_session_events(child_session_ids, after_event_id=watermark)
+        # A lifecycle event may represent running→terminal, so refresh the
+        # authoritative task projection after every event-driven wake.
         resolved = {tid: registry.get(tid) for tid in requested}
 
 
@@ -456,7 +449,6 @@ def build_observe_tool() -> Any:
         limit: int = DEFAULT_OBSERVE_LIMIT,
         pattern: str | None = None,
         include_state: bool = True,
-        timeout_s: float | None = None,
     ) -> str:
         """Watch spawned children's progress INCREMENTALLY without consuming them.
 
@@ -465,11 +457,11 @@ def build_observe_tool() -> Any:
         and returns per-task rows: bounded excerpts of the useful events (react
         thoughts + tool calls, the child's typed workflow_state landings, delegation
         stage transitions), the child's current ``workflow_state`` snapshot, and its
-        status. Unlike ``wait``/``check`` this does NOT collect the child — the
-        delegation stays open and you can observe again. Use it to ACT on intermediate
-        evidence while the child keeps running. Pass ``pattern`` (a regex) with a
-        ``timeout_s`` to return the MOMENT matching evidence appears (e.g. a station
-        id landing) instead of waiting for the child to finish."""
+        status. Unlike ``wait`` this does NOT collect the child — the delegation
+        stays open and you can observe again. With no pattern this returns the
+        current snapshot immediately. Pass ``pattern`` (a regex) to hold this ONE
+        call open until matching evidence appears (for example, an id landing) or a
+        requested child becomes terminal. There is no timeout or polling ladder."""
 
         app = _ctx.active_app()
         if app is None or not _ctx.active_session_id():
@@ -481,7 +473,6 @@ def build_observe_tool() -> Any:
             limit=limit,
             pattern=pattern,
             include_state=include_state,
-            timeout_s=timeout_s,
         )
 
     return native_tool(
@@ -508,20 +499,14 @@ def build_observe_tool() -> Any:
             "pattern": {
                 "type": "string",
                 "description": (
-                    "Optional regex — with timeout_s, return the MOMENT a new "
-                    "event's text matches (e.g. an id landing), not at timeout."
+                    "Optional regex. When supplied, hold this one call open until a "
+                    "new event matches or a requested child becomes terminal. Omit "
+                    "for an immediate incremental snapshot."
                 ),
             },
             "include_state": {
                 "type": "boolean",
                 "description": "Include each child's current typed workflow_state snapshot.",
-            },
-            "timeout_s": {
-                "type": "number",
-                "description": (
-                    "Omit for a non-blocking read. Set to block up to this many "
-                    "seconds watching for progress / a pattern match."
-                ),
             },
         },
     )

@@ -638,6 +638,73 @@ def _stage_plan_exit_resume(
     )
 
 
+def _stage_plan_revision_message(
+    app: "FastAPI",
+    deps: "GactDeps",
+    sid: str,
+    session: Any,
+    feedback: str,
+    *,
+    plan_file: str,
+    question_id: str,
+) -> None:
+    """Resume a rejected plan with the reviewer's prose as the real user message.
+
+    The composer is the request-changes control. Its prose must remain visible as an ordinary
+    user-authored Plan-mode turn, not be replaced by the internal plan-resume envelope used for
+    non-composer protocol clients. Server-owned correlation stays in metadata while the model sees
+    the user's text unchanged plus the normal per-turn Plan-mode reminder.
+    """
+
+    from clio_agent.gact.events import Event  # noqa: PLC0415
+    from clio_agent.gact.loop_inbox import enqueue_user_steer  # noqa: PLC0415
+
+    metadata = {
+        "plan_revision_feedback": True,
+        "plan_exit_result": "rejected",
+        "plan_file": plan_file,
+        "question_id": question_id,
+    }
+    if app.state.agent is not None and app.state.turn_runner.busy(sid):
+        enqueue_user_steer(app, sid, feedback, metadata)
+        app.state.bus.publish(
+            Event(
+                type="plan_exit.revision_deferred",
+                session_id=sid,
+                payload={"session_id": sid, "question_id": question_id},
+            )
+        )
+        return
+    if app.state.agent is not None:
+        resumed = deps.start_background_user_turn(
+            sid,
+            session,
+            feedback,
+            metadata=metadata,
+            prev_status=str(getattr(session, "status", "waiting_user") or "waiting_user"),
+        )
+        app.state.bus.publish(
+            Event(
+                type="plan_exit.revision_started",
+                session_id=sid,
+                payload={
+                    "session_id": sid,
+                    "question_id": question_id,
+                    "user_message_id": resumed.id,
+                },
+            )
+        )
+        return
+    app.state.sessions.update(sid, status="idle")
+    app.state.bus.publish(
+        Event(
+            type="session.status_changed",
+            session_id=sid,
+            payload={"session_id": sid, "status": "idle", "prev_status": "waiting_user"},
+        )
+    )
+
+
 def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, question: Any) -> None:
     """Apply an answered plan-exit approval: mode transition + constraint-lift + resume (P1.4 #1066).
 
@@ -678,15 +745,37 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
 
     if decision == "reject":
         session = app.state.sessions.get(sid)
-        _stage_plan_exit_resume(
-            app,
-            deps,
-            sid,
-            session,
-            rejected_plan_resume_text(feedback, plan_file),
-            {"plan_exit_result": "rejected", "plan_file": plan_file},
-            question_id=question.id,
+        app.state.bus.publish(
+            Event(
+                type="plan_exit.resolved",
+                session_id=sid,
+                payload={
+                    "decision": "reject",
+                    "plan_file": plan_file,
+                    "composer_user_message": bool(answer_meta.get("composer_user_message")),
+                },
+            )
         )
+        if feedback and answer_meta.get("composer_user_message") is True:
+            _stage_plan_revision_message(
+                app,
+                deps,
+                sid,
+                session,
+                feedback,
+                plan_file=plan_file,
+                question_id=question.id,
+            )
+        else:
+            _stage_plan_exit_resume(
+                app,
+                deps,
+                sid,
+                session,
+                rejected_plan_resume_text(feedback, plan_file),
+                {"plan_exit_result": "rejected", "plan_file": plan_file},
+                question_id=question.id,
+            )
         return
 
     # Approve: the SANCTIONED plan-mode exit (unlike the enter_mode no-escape guard). Clear any
@@ -701,6 +790,18 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
         mode="edit",
         approval_mode=approval_mode,
         metadata_patch={PLAN_VARIANT_METADATA_KEY: ""},
+    )
+    app.state.bus.publish(
+        Event(
+            type="session.updated",
+            session_id=sid,
+            payload={
+                "session_id": sid,
+                "mode": "edit",
+                "approval_mode": approval_mode,
+                "reason": "plan_exit_approved",
+            },
+        )
     )
     transition_playbook_to_execution(app, sid)
     # P1.6c #1068: register the approved plan as a provenance-tracked artifact (save-and-reuse).
@@ -741,6 +842,18 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
         "plan_file": plan_file,
         "approved_plan": approved_plan,
     }
+    app.state.bus.publish(
+        Event(
+            type="plan_exit.resolved",
+            session_id=sid,
+            payload={
+                "decision": decision,
+                "cleared_context": cleared,
+                "plan_file": plan_file,
+                "artifact_ref": saved_plan,
+            },
+        )
+    )
 
     if decision == "exit_only":
         # Leave plan mode but do NOT execute: no resume turn, no execute-now message.
@@ -754,17 +867,6 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
                 type="session.status_changed",
                 session_id=sid,
                 payload={"session_id": sid, "status": "idle", "prev_status": "waiting_user"},
-            )
-        )
-        app.state.bus.publish(
-            Event(
-                type="plan_exit.resolved",
-                session_id=sid,
-                payload={
-                    "decision": "exit_only",
-                    "cleared_context": cleared,
-                    "plan_file": plan_file,
-                },
             )
         )
         return

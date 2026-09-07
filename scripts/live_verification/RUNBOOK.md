@@ -92,6 +92,28 @@ the same conversion ID. If any of those observations is missing, preserve the
 session as failed evidence and run a new visible qualification session; do not
 substitute a fast HTML result.
 
+This is the deployment gate, not a smoke-test preference. A qualifying
+PDF/Office/XML/image run must prove all of the following from authoritative
+structured results: `web_fetch(to_file=true)` accepted the document, returned
+a conversion ID, emitted asynchronous progress, completed with saved Markdown
+and metadata outputs, registered the returned files as artifacts, and
+`web_fetch_events` returned the lifecycle for that same conversion ID. The
+configured `web` MCP declaration must be ready and point at a service with the
+document-conversion capacity needed by the selected input. Endpoint discovery
+by network scanning and development/homelab addresses hard-coded into the
+qualification are forbidden. An HTML fetch alone cannot pass this gate.
+
+### Windows and CI validation policy
+
+On Windows, run focused unit and integration suites first with repository-owned
+isolated scratch directories and caches. Never disable, weaken, or add
+exclusions to Microsoft Defender to make a suite pass. Host-policy or ACL
+failures are reported as failures or explicitly blocked evidence; they are not
+converted into skips or green claims. GitHub Actions owns the broad platform
+and version matrix. Observe one authoritative CI run at the exact changed head
+through completion. A failed, skipped, cancelled, pending, or unrun required
+check is not acceptance.
+
 **The WIRE tier** (#1286: "conformance test with a kit-web backend ...
 client built through the GATEWAY construction path, assert `fetch` reaches
 `tasks/get`; `_NoExtensionClient` negative control adjacent") is a

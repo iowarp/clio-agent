@@ -5,7 +5,7 @@ consuming it, with optional regex pattern-return and bounded excerpts. Mirrors
 clio-relay's ``relay_observe`` semantics on clio-agent's spawn substrate.
 
 Covers (failing-first / sabotage-checked): cursor resume (no repeat / no gap;
-sabotage = cursor ignored), pattern early-return vs no-pattern-at-timeout,
+sabotage = cursor ignored), event-driven pattern hold vs immediate snapshot,
 non-consumption (notify_pending survives observe; a later wait collects + emits the
 terminal exactly once; sabotage = observe consuming), invalid regex → typed row,
 bounded excerpts + truncation note, and tool gating on declared children.
@@ -26,6 +26,9 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agent_tasks import (
+    STATUS_CANCELLED,
+    STATUS_COMPLETED,
+    STATUS_FAILED,
     STATUS_RUNNING,
     AgentTask,
     persist_agent_task,
@@ -83,8 +86,15 @@ def _observe(app: Any, parent: str, tools: dict[str, Any], **kw: Any) -> dict[st
         return json.loads(tools["observe_agent_tasks"].func(**kw))
 
 
-def _emit(app: Any, sid: str, event_type: str, *, status: str = "completed",
-          summary: str = "", payload: dict[str, Any] | None = None) -> None:
+def _emit(
+    app: Any,
+    sid: str,
+    event_type: str,
+    *,
+    status: str = "completed",
+    summary: str = "",
+    payload: dict[str, Any] | None = None,
+) -> None:
     """Publish one bus event shaped like the SSE ``semantic.event`` projection the
     child's react loop produces (event_type/status/summary + body ``payload``)."""
 
@@ -102,8 +112,9 @@ def _emit(app: Any, sid: str, event_type: str, *, status: str = "completed",
     )
 
 
-def _seed_running_task(app: Any, parent: str, *, task_id: str = "task_run",
-                       expert: str = "data_expert") -> AgentTask:
+def _seed_running_task(
+    app: Any, parent: str, *, task_id: str = "task_run", expert: str = "data_expert"
+) -> AgentTask:
     child = app.state.sessions.create(
         workspace_id="ws_default", title="c", parent_session_id=parent
     )
@@ -121,8 +132,9 @@ def _seed_running_task(app: Any, parent: str, *, task_id: str = "task_run",
     return task
 
 
-def _seed_terminal_task(app: Any, parent: str, *, task_id: str = "task_done",
-                        expert: str = "data_expert") -> AgentTask:
+def _seed_terminal_task(
+    app: Any, parent: str, *, task_id: str = "task_done", expert: str = "data_expert"
+) -> AgentTask:
     from clio_agent.gact.agent_tasks import STATUS_COMPLETED
 
     child = app.state.sessions.create(
@@ -182,10 +194,20 @@ def test_cursor_resume_no_repeat_no_gap(tmp_path: Path, monkeypatch) -> None:
         task = _seed_running_task(app, parent)
         tools = _tools(app, parent)
 
-        _emit(app, task.child_session_id, "react.step.completed",
-              summary="step 0", payload={"thought": "look up station", "tool_name": "search"})
-        _emit(app, task.child_session_id, "react.step.completed",
-              summary="step 1", payload={"thought": "stage csv", "tool_name": "stage"})
+        _emit(
+            app,
+            task.child_session_id,
+            "react.step.completed",
+            summary="step 0",
+            payload={"thought": "look up station", "tool_name": "search"},
+        )
+        _emit(
+            app,
+            task.child_session_id,
+            "react.step.completed",
+            summary="step 1",
+            payload={"thought": "stage csv", "tool_name": "stage"},
+        )
 
         first = _observe(app, parent, tools, task_ids=[task.task_id], cursor=1)
         row1 = _from_parent(first["tasks"], task.task_id)
@@ -195,8 +217,13 @@ def test_cursor_resume_no_repeat_no_gap(tmp_path: Path, monkeypatch) -> None:
         assert next_cursor == max(seqs_1) + 1
 
         # A third event lands AFTER the first read.
-        _emit(app, task.child_session_id, "react.step.completed",
-              summary="step 2", payload={"thought": "download", "tool_name": "get"})
+        _emit(
+            app,
+            task.child_session_id,
+            "react.step.completed",
+            summary="step 2",
+            payload={"thought": "download", "tool_name": "get"},
+        )
 
         second = _observe(app, parent, tools, task_ids=[task.task_id], cursor=next_cursor)
         row2 = _from_parent(second["tasks"], task.task_id)
@@ -208,7 +235,7 @@ def test_cursor_resume_no_repeat_no_gap(tmp_path: Path, monkeypatch) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 3. Pattern early-return vs no-pattern-at-timeout                             #
+# 3. Pattern hold vs immediate no-pattern snapshot                            #
 # --------------------------------------------------------------------------- #
 
 
@@ -222,25 +249,51 @@ def test_pattern_returns_early_before_terminal(tmp_path: Path, monkeypatch) -> N
 
         def _slow_emit() -> None:
             time.sleep(0.2)
-            _emit(app, task.child_session_id, "expert.extract.completed", summary="landed",
-                  payload={"structured": {"workflow_state": {"station_id": "AZ.MONP"}}})
+            _emit(
+                app,
+                task.child_session_id,
+                "expert.extract.completed",
+                summary="landed",
+                payload={"structured": {"workflow_state": {"station_id": "AZ.MONP"}}},
+            )
 
         t = threading.Thread(target=_slow_emit)
         t.start()
         start = time.monotonic()
-        out = _observe(app, parent, tools, task_ids=[task.task_id], cursor=1,
-                       pattern=r"AZ\.MONP", timeout_s=5.0)
+        out = _observe(
+            app,
+            parent,
+            tools,
+            task_ids=[task.task_id],
+            cursor=1,
+            pattern=r"AZ\.MONP",
+        )
         elapsed = time.monotonic() - start
         t.join()
 
         assert out["matched"] is True, "pattern must return matched=true on the landed evidence"
-        assert elapsed < 4.0, "must return EARLY on match, not block the full timeout"
+        assert elapsed < 4.0, "must return as soon as the matching child event lands"
         row = _from_parent(out["tasks"], task.task_id)
         assert row["status"] == STATUS_RUNNING, "returned BEFORE the child terminal"
         assert any(e.get("matched") for e in row["new_events"])
 
 
-def test_no_pattern_blocks_until_timeout_returns_events_so_far(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "terminal_status,event_type",
+    [
+        (STATUS_COMPLETED, "agent.task.completed"),
+        (STATUS_FAILED, "agent.task.failed"),
+        (STATUS_CANCELLED, "agent.task.cancelled"),
+    ],
+)
+def test_pattern_hold_returns_on_terminal_without_match(
+    tmp_path: Path,
+    monkeypatch,
+    terminal_status: str,
+    event_type: str,
+) -> None:
+    """A terminal lifecycle event releases the hold even when the regex never matches."""
+
     _declare(monkeypatch, "data_expert")
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app) as client:
@@ -248,22 +301,74 @@ def test_no_pattern_blocks_until_timeout_returns_events_so_far(tmp_path: Path, m
         task = _seed_running_task(app, parent)
         tools = _tools(app, parent)
 
-        def _slow_emit() -> None:
+        def finish_child() -> None:
             time.sleep(0.15)
-            _emit(app, task.child_session_id, "react.step.completed", summary="mid",
-                  payload={"thought": "progress", "tool_name": "stage"})
+            app.state.agent_task_registry.transition(
+                task.task_id,
+                terminal_status,
+                error_reason="agent_error" if terminal_status == STATUS_FAILED else "",
+            )
+            app.state.bus.publish(
+                Event(type=event_type, session_id=task.child_session_id, payload={})
+            )
 
-        t = threading.Thread(target=_slow_emit)
-        t.start()
+        finisher = threading.Thread(target=finish_child)
+        finisher.start()
+        out = _observe(
+            app,
+            parent,
+            tools,
+            task_ids=[task.task_id],
+            cursor=1,
+            pattern="never-matches",
+        )
+        finisher.join()
+
+    assert out["matched"] is False
+    assert _from_parent(out["tasks"], task.task_id)["status"] == terminal_status
+
+
+def test_no_pattern_returns_current_snapshot_immediately(tmp_path: Path, monkeypatch) -> None:
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        task = _seed_running_task(app, parent)
+        tools = _tools(app, parent)
+
         start = time.monotonic()
-        out = _observe(app, parent, tools, task_ids=[task.task_id], cursor=1, timeout_s=0.6)
+        out = _observe(app, parent, tools, task_ids=[task.task_id], cursor=1)
         elapsed = time.monotonic() - start
-        t.join()
 
         assert out["matched"] is False
-        assert elapsed >= 0.5, "without a pattern it blocks the full timeout (child still running)"
+        assert elapsed < 0.5, "without a pattern observation is an immediate snapshot"
         row = _from_parent(out["tasks"], task.task_id)
-        assert row["new_events"], "returns the events accumulated during the window"
+        assert row["new_events"] == []
+
+
+def test_event_subscription_wakes_only_for_a_requested_child_session(tmp_path: Path) -> None:
+    """Unrelated global traffic cannot turn patterned observation into polling."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        finished = threading.Event()
+
+        def wait_for_child() -> None:
+            app.state.bus.wait_for_session_events(
+                ["sess_child"],
+                after_event_id=app.state.bus.latest_session_event_id(["sess_child"]),
+            )
+            finished.set()
+
+        waiter = threading.Thread(target=wait_for_child)
+        waiter.start()
+        app.state.bus.publish(Event(type="global.progress", session_id="", payload={}))
+        assert not finished.wait(0.1)
+        app.state.bus.publish(
+            Event(type="expert.lifecycle.started", session_id="sess_child", payload={})
+        )
+        assert finished.wait(1.0)
+        waiter.join()
 
 
 # --------------------------------------------------------------------------- #
@@ -279,15 +384,22 @@ def test_observe_never_consumes_wait_still_collects_once(tmp_path: Path, monkeyp
     with TestClient(app) as client:
         parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
         task = _seed_terminal_task(app, parent)
-        _emit(app, task.child_session_id, "expert.extract.completed", summary="fin",
-              payload={"output": "the staged CSV is ready"})
+        _emit(
+            app,
+            task.child_session_id,
+            "expert.extract.completed",
+            summary="fin",
+            payload={"output": "the staged CSV is ready"},
+        )
         tools = _tools(app, parent)
 
         # Observe repeatedly — the read-only sibling never collects.
         for _ in range(3):
             _observe(app, parent, tools, task_ids=[task.task_id], cursor=1)
         rec = app.state.agent_task_registry.get(task.task_id)
-        assert rec.notify_pending is True, "sabotage lock: observe must NOT consume (notify_pending)"
+        assert rec.notify_pending is True, (
+            "sabotage lock: observe must NOT consume (notify_pending)"
+        )
         assert not rec.consumed_at
         assert not any(
             e.type == "semantic.event"
@@ -306,7 +418,7 @@ def test_observe_never_consumes_wait_still_collects_once(tmp_path: Path, monkeyp
             lambda *a, **k: None,
         )
         with _active_turn(app, parent):
-            tools["wait_agent_tasks"].func(task_ids=[task.task_id], timeout_s=2.0)
+            tools["wait_agent_tasks"].func(task_ids=[task.task_id])
         assert [e["event_type"] for e in events] == [
             "blueprint.delegation.completed",
             "blueprint.delegation.parent_resumed",
@@ -328,8 +440,14 @@ def test_invalid_regex_returns_typed_row(tmp_path: Path, monkeypatch) -> None:
         parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
         task = _seed_running_task(app, parent)
         tools = _tools(app, parent)
-        out = _observe(app, parent, tools, task_ids=[task.task_id], cursor=1,
-                       pattern="(unclosed[", timeout_s=None)
+        out = _observe(
+            app,
+            parent,
+            tools,
+            task_ids=[task.task_id],
+            cursor=1,
+            pattern="(unclosed[",
+        )
     assert out["error"] == "invalid_pattern"
     assert "pattern" in out and out["tasks"] == []
 
@@ -344,8 +462,13 @@ def test_huge_event_text_is_bounded_with_truncation_note(tmp_path: Path, monkeyp
         task = _seed_running_task(app, parent)
         tools = _tools(app, parent)
         huge = "X" * 50_000
-        _emit(app, task.child_session_id, "react.step.completed", summary="big",
-              payload={"thought": huge, "tool_name": "noop"})
+        _emit(
+            app,
+            task.child_session_id,
+            "react.step.completed",
+            summary="big",
+            payload={"thought": huge, "tool_name": "noop"},
+        )
         out = _observe(app, parent, tools, task_ids=[task.task_id], cursor=1)
     row = _from_parent(out["tasks"], task.task_id)
     excerpt = row["new_events"][0]["excerpt"]
@@ -365,11 +488,22 @@ def test_unknown_task_returns_typed_row_and_state_snapshot(tmp_path: Path, monke
     with TestClient(app) as client:
         parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
         task = _seed_running_task(app, parent)
-        _emit(app, task.child_session_id, "expert.extract.completed", summary="s",
-              payload={"structured": {"workflow_state": {"selected_station": "CI.PASA"}}})
+        _emit(
+            app,
+            task.child_session_id,
+            "expert.extract.completed",
+            summary="s",
+            payload={"structured": {"workflow_state": {"selected_station": "CI.PASA"}}},
+        )
         tools = _tools(app, parent)
-        out = _observe(app, parent, tools, task_ids=[task.task_id, "task_missing"],
-                       cursor=1, include_state=True)
+        out = _observe(
+            app,
+            parent,
+            tools,
+            task_ids=[task.task_id, "task_missing"],
+            cursor=1,
+            include_state=True,
+        )
     unknown = _from_parent(out["tasks"], "task_missing")
     assert unknown["error"] == "unknown_task"
     known = _from_parent(out["tasks"], task.task_id)
@@ -415,6 +549,17 @@ def test_observe_agent_tasks_declares_typed_structured_content_shape(
     assert [row["task_id"] for row in shape["tasks"]] == ["task_a", "task_b", "task_missing"]
     # Internals (cursor/next_cursor/limit/matched/events_truncated) still ride after.
     assert "cursor" in shape and "next_cursor" in shape and "limit" in shape
+
+
+def test_observe_agent_tasks_schema_has_no_timeout(tmp_path: Path, monkeypatch) -> None:
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        tool = _tools(app, parent)["observe_agent_tasks"]
+        schema = tool.format_as_litellm_function_call()["function"]["parameters"]
+
+    assert "timeout_s" not in schema["properties"]
 
 
 def test_observe_agent_tasks_structured_content_empty_case(tmp_path: Path, monkeypatch) -> None:

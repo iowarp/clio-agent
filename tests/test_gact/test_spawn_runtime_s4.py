@@ -2,13 +2,14 @@
 
 The routing surface that replaces the inline delegate_to_<child> / fanout tools +
 the next_expert settle loop. A react main with declared children gets
-spawn_agent_task / wait_agent_tasks / check_agent_tasks / spawn_agents_parallel;
+spawn_agent_task / wait_agent_tasks / observe_agent_tasks / spawn_agents_parallel;
 a leaf (no children) gets none.
 """
 
 from __future__ import annotations
 
 import json
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -132,7 +133,6 @@ def test_react_main_with_children_gets_spawn_tools(tmp_path: Path, monkeypatch) 
         assert set(names) == {
             "spawn_agent_task",
             "wait_agent_tasks",
-            "check_agent_tasks",
             "message_agent",
             "observe_agent_tasks",
             "get_agent_task_output",
@@ -155,7 +155,6 @@ def test_root_without_children_can_commission_installed_blueprint(
         assert set(names) == {
             "spawn_agent_task",
             "wait_agent_tasks",
-            "check_agent_tasks",
             "message_agent",
             "observe_agent_tasks",
             "get_agent_task_output",
@@ -179,7 +178,6 @@ def test_spawn_effect_leaf_gets_collectors_not_declared_child_spawners(
         )
         assert set(names) == {
             "wait_agent_tasks",
-            "check_agent_tasks",
             "message_agent",
             "observe_agent_tasks",
             "get_agent_task_output",
@@ -452,8 +450,8 @@ def test_spawn_runtime_has_no_direct_spawn_substrate_reference() -> None:
     assert "spawn_child_turn_threadsafe" not in source
 
 
-def test_spawn_wait_and_check_all_route_through_expert_invoker(monkeypatch) -> None:
-    """P2.6: the complete model-facing operation set crosses one invoker stub."""
+def test_spawn_and_committed_wait_route_through_expert_invoker(monkeypatch) -> None:
+    """P2.6: spawn and committed wait cross one invoker stub."""
 
     registry = AgentTaskRegistry()
     registry.register(_completed_task())
@@ -465,12 +463,11 @@ def test_spawn_wait_and_check_all_route_through_expert_invoker(monkeypatch) -> N
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
         tools["spawn_agent_task"].func(agent="data_expert", task="analyze")
-        tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
-        tools["check_agent_tasks"].func(task_ids=["task_done"])
+        tools["wait_agent_tasks"].func(task_ids=["task_done"])
 
     assert len(spy.specs) == 1
     assert [handle.task_id for handle, _timeout in spy.wait_calls] == ["task_done"]
-    assert [[handle.task_id for handle in batch] for batch in spy.check_calls] == [["task_done"]]
+    assert spy.check_calls == []
 
 
 def test_wait_agent_tasks_omitted_timeout_is_committed_wait(monkeypatch) -> None:
@@ -490,8 +487,59 @@ def test_wait_agent_tasks_omitted_timeout_is_committed_wait(monkeypatch) -> None
     assert [timeout for _handle, timeout in spy.wait_calls] == [None]
 
 
+@pytest.mark.parametrize("terminal_status", ["completed", "failed", "cancelled"])
+def test_wait_agent_tasks_blocks_until_each_terminal_status(
+    monkeypatch,
+    terminal_status: str,
+) -> None:
+    """The public wait has no checkpoint return; every terminal edge releases it."""
+
+    registry = AgentTaskRegistry()
+    registry.register(
+        AgentTask(
+            task_id="task_running",
+            parent_session_id="sess_x",
+            child_session_id="child_wait",
+            agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
+            status="running",
+        )
+    )
+    app = _fake_app(
+        registry,
+        messages={
+            "child_wait": [_assistant_message("msg_wait", "child_wait", "terminal child response")]
+        },
+    )
+    _capture_emits(monkeypatch)
+
+    def finish_child() -> None:
+        time.sleep(0.15)
+        registry.transition(
+            "task_running",
+            terminal_status,
+            error_reason="agent_error" if terminal_status == "failed" else "",
+            result={
+                "answer_excerpt": "terminal child response",
+                "message_ref": "msg_wait",
+                "workflow_state": {},
+            },
+        )
+
+    finisher = threading.Thread(target=finish_child)
+    finisher.start()
+    started = time.monotonic()
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_running"]))
+    elapsed = time.monotonic() - started
+    finisher.join()
+
+    assert elapsed >= 0.1
+    assert result["results"][0]["status"] == terminal_status
+
+
 def test_wait_agent_tasks_schema_requires_only_task_ids(monkeypatch) -> None:
-    """The model-facing schema exposes a genuinely optional checkpoint budget."""
+    """The model-facing schema has no timeout or checkpoint posture."""
 
     app = _fake_app()
     with _active_turn(app):
@@ -500,7 +548,7 @@ def test_wait_agent_tasks_schema_requires_only_task_ids(monkeypatch) -> None:
 
     parameters = schema["function"]["parameters"]
     assert parameters["required"] == ["task_ids"]
-    assert parameters["properties"]["timeout_s"]["default"] is None
+    assert set(parameters["properties"]) == {"task_ids"}
 
 
 def test_spawn_agent_task_spawn_error_returns_reason_and_emits_nothing(monkeypatch) -> None:
@@ -537,7 +585,7 @@ def test_wait_agent_tasks_completed_returns_wire_payload_and_emits_completed(mon
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0))
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_done"]))
 
     (payload,) = result["results"]
     assert payload["task_id"] == "task_done"
@@ -610,9 +658,7 @@ def test_commission_wait_orders_artifact_return_before_parent_use(monkeypatch) -
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", set(), monkeypatch)
-        result = json.loads(
-            tools["wait_agent_tasks"].func(task_ids=["task_commission"], timeout_s=1.0)
-        )
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_commission"]))
 
     assert result["results"][0]["artifact_context"]["content"] == "# Report"
     assert [event["event_type"] for event in emitted] == [
@@ -643,7 +689,7 @@ def test_wait_agent_tasks_return_key_order_matches_declared_tail(monkeypatch) ->
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        raw = tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
+        raw = tools["wait_agent_tasks"].func(task_ids=["task_done"])
 
     # Content is unchanged (parses to the same rows the wire-payload test above
     # asserts) — only ORDER is under test here, on the raw JSON text itself
@@ -685,7 +731,7 @@ def test_wait_agent_tasks_declares_typed_structured_content_shape(monkeypatch) -
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
+        tools["wait_agent_tasks"].func(task_ids=["task_done"])
 
     assert len(declared) == 1
     shape = declared[0]
@@ -712,60 +758,17 @@ def test_wait_agent_tasks_declares_typed_structured_content_shape(monkeypatch) -
 
 
 # --------------------------------------------------------------------------- #
-# check_agent_tasks — the SAME declared structured_content grammar (P5).       #
+# check_agent_tasks — removed from the model-visible lifecycle.                #
 # --------------------------------------------------------------------------- #
 
 
-def test_check_agent_tasks_declares_typed_structured_content_shape(monkeypatch) -> None:
-    """check_agent_tasks gets wait_agent_tasks's OWN treatment: a tally ``message``
-    FIRST, then the SAME per-task rows the model-facing return already carries."""
-
-    registry = AgentTaskRegistry()
-    registry.register(_completed_task("task_done"))
-    registry.register(
-        AgentTask(
-            task_id="task_running",
-            parent_session_id="sess_x",
-            child_session_id="child_2",
-            agent_ref={"expert_id": "hpc_expert", "requesting_expert_id": "main"},
-            status="running",
-        )
-    )
-    app = _fake_app(registry)
-    _capture_emits(monkeypatch)
-    declared: list[dict[str, Any]] = []
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
-        lambda value: declared.append(dict(value)),
-    )
-
-    with _active_turn(app):
-        tools = _tools_by_name(app, "main", {"data_expert", "hpc_expert"}, monkeypatch)
-        tools["check_agent_tasks"].func()
-
-    assert len(declared) == 1
-    shape = declared[0]
-    assert list(shape.keys()) == ["message", "tasks"]
-    assert shape["message"] == "2 tasks: 1 running, 1 completed"
-    assert {row["task_id"] for row in shape["tasks"]} == {"task_done", "task_running"}
-
-
-def test_check_agent_tasks_structured_content_empty_case(monkeypatch) -> None:
-    """No spawned tasks at all -> the honest "no tasks" message, never "0 tasks: "."""
+def test_check_agent_tasks_is_absent_from_model_inventory(monkeypatch) -> None:
+    """Snapshots belong to observe_agent_tasks; no compatibility alias is exposed."""
 
     app = _fake_app()
-    _capture_emits(monkeypatch)
-    declared: list[dict[str, Any]] = []
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
-        lambda value: declared.append(dict(value)),
-    )
-
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        tools["check_agent_tasks"].func()
-
-    assert declared == [{"message": "no tasks", "tasks": []}]
+    assert "check_agent_tasks" not in tools
 
 
 def test_wait_agent_tasks_failed_emits_delegation_failed_with_status(monkeypatch) -> None:
@@ -788,7 +791,7 @@ def test_wait_agent_tasks_failed_emits_delegation_failed_with_status(monkeypatch
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_bad"], timeout_s=1.0))
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_bad"]))
 
     (payload,) = result["results"]
     assert payload["status"] == "failed"
@@ -808,10 +811,7 @@ def test_wait_agent_tasks_unknown_task_returns_error_and_emits_nothing(monkeypat
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        # timeout_s=0 so the never-set completion Event of an unknown id returns at once.
-        result = json.loads(
-            tools["wait_agent_tasks"].func(task_ids=["task_missing"], timeout_s=0.0)
-        )
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_missing"]))
 
     assert result["results"] == [{"task_id": "task_missing", "error": "unknown_task"}]
     assert emitted == []
@@ -1100,7 +1100,7 @@ def test_wait_returns_child_answer_verbatim_past_the_excerpt_bound(monkeypatch) 
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_big"], timeout_s=1.0))
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_big"]))
 
     (payload,) = result["results"]
     # Byte-identical, FULL length — the truncated excerpt would be 2000 chars.
@@ -1143,7 +1143,7 @@ def test_wait_digests_oversize_child_answer_with_durable_reference(monkeypatch) 
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_big"], timeout_s=1.0))
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_big"]))
 
     (payload,) = result["results"]
     # The MODEL-facing row never carries the raw full text a second time. The
@@ -1207,45 +1207,11 @@ def test_wait_verbatim_at_default_cap_boundary_through_real_path(monkeypatch) ->
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_exact"], timeout_s=1.0))
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_exact"]))
 
     (payload,) = result["results"]
     assert payload["output"] == exact
     assert len(payload["output"]) == default_cap
-
-
-def test_check_agent_tasks_never_inlines_full_output_regardless_of_size(monkeypatch) -> None:
-    """Regression pin: check_agent_tasks already returns only the bounded
-    ``answer_excerpt`` (never the raw ``output``) — true both below and above
-    the #1306 digest cap, so this tool needed no change to satisfy #1306."""
-
-    big = " | ".join(f"line-{i:04d} the child's deliverable" for i in range(400))
-    assert len(big) > 8_000
-    registry = AgentTaskRegistry()
-    registry.register(
-        AgentTask(
-            task_id="task_big",
-            parent_session_id="sess_x",
-            child_session_id="child_big",
-            agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
-            status="completed",
-            result={"answer_excerpt": big[:2000], "workflow_state": {}, "message_ref": "msg_big"},
-        )
-    )
-    app = _fake_app(
-        registry, messages={"child_big": [_assistant_message("msg_big", "child_big", big)]}
-    )
-    _capture_emits(monkeypatch)
-
-    with _active_turn(app):
-        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        result = json.loads(tools["check_agent_tasks"].func(task_ids=["task_big"]))
-
-    (row,) = result["tasks"]
-    assert "output" not in row["result"]
-    assert row["result"]["answer_excerpt"] == big[:2000]
-    assert row["result"]["message_ref"] == "msg_big"
-    assert row["result"]["child_session_id"] == "child_big"
 
 
 def test_get_agent_task_output_tool_fetches_full_output_for_completed_task(monkeypatch) -> None:
@@ -1633,7 +1599,7 @@ def test_wait_falls_back_to_excerpt_with_typed_marker_when_message_gone(monkeypa
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_gone"], timeout_s=1.0))
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_gone"]))
 
     (payload,) = result["results"]
     # Never silent: the excerpt is served WITH a typed degradation marker.
@@ -1655,9 +1621,7 @@ def test_unknown_task_id_returns_immediately_not_after_timeout(monkeypatch) -> N
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
         start = time.monotonic()
-        # A LARGE timeout: the old code (event().wait BEFORE get) would block the
-        # full 30s on an unknown id's freshly-minted, never-set Event.
-        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["ghost"], timeout_s=30.0))
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["ghost"]))
         elapsed = time.monotonic() - start
 
     assert result["results"] == [{"task_id": "ghost", "error": "unknown_task"}]
@@ -1685,8 +1649,8 @@ def test_double_wait_emits_terminal_event_once_but_returns_row_each_time(monkeyp
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        first = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0))
-        second = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0))
+        first = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_done"]))
+        second = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_done"]))
 
     # The row is RETURNED both times (the model may legitimately re-collect).
     assert first["results"][0]["output"] == "child produced the staged CSV"
@@ -1712,9 +1676,7 @@ def test_same_terminal_id_twice_in_one_batch_emits_event_once(monkeypatch) -> No
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        result = json.loads(
-            tools["wait_agent_tasks"].func(task_ids=["task_done", "task_done"], timeout_s=1.0)
-        )
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_done", "task_done"]))
 
     # Two rows returned (once per requested id), but exactly one terminal + one
     # parent_resumed wire event.
@@ -1872,7 +1834,7 @@ def test_wait_completed_appends_return_part_with_verbatim_output(monkeypatch) ->
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
+        tools["wait_agent_tasks"].func(task_ids=["task_done"])
 
     assert len(parts) == 1
     _sid, part = parts[0]
@@ -1906,7 +1868,7 @@ def test_wait_failed_appends_return_part_on_terminal_lane_visible(monkeypatch) -
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        tools["wait_agent_tasks"].func(task_ids=["task_bad"], timeout_s=1.0)
+        tools["wait_agent_tasks"].func(task_ids=["task_bad"])
 
     # A FAILED child is NOT invisible: it still gets a return Part, on the SAME terminal
     # lane (stage delegate.completed, #882) with status=failed and the typed reason.
@@ -1933,8 +1895,8 @@ def test_return_part_appended_once_on_double_wait(monkeypatch) -> None:
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
-        tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
+        tools["wait_agent_tasks"].func(task_ids=["task_done"])
+        tools["wait_agent_tasks"].func(task_ids=["task_done"])
 
     # The return Part shares the once-per-task gate with the terminal event: exactly one
     # across both waits (no duplicate return row on a re-collect).
@@ -1962,7 +1924,7 @@ def test_parent_resumed_event_re_pins_parent_after_terminal(monkeypatch) -> None
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
+        tools["wait_agent_tasks"].func(task_ids=["task_done"])
 
     resumed = [e for e in emitted if e["event_type"] == "blueprint.delegation.parent_resumed"]
     assert len(resumed) == 1

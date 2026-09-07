@@ -366,6 +366,45 @@ def test_reject_stays_in_plan_mode_with_feedback(tmp_path: Path) -> None:
     assert resume["metadata"]["plan_exit_result"] == "rejected"
 
 
+def test_composer_request_changes_is_a_real_plan_mode_user_message(tmp_path: Path) -> None:
+    app = _make_app(tmp_path)
+    plan_file = str(tmp_path / "plan.md")
+    sess = _plan_session(app, tmp_path)
+    q = _pending_plan_exit_question(app, sess, plan_file=plan_file)
+    deps = _fake_deps()
+    app.state.agent = object()
+
+    answered = _answer(q, selected=["reject"], answer="Add rollback and verification steps.")
+    answered = answered.model_copy(update={"answer_metadata": {"composer_user_message": True}})
+    resolve_plan_exit_answer(app, deps, sess.id, answered)
+
+    fresh = app.state.sessions.get(sess.id)
+    assert fresh.mode == "plan"
+    assert len(deps._calls["resume"]) == 1
+    resume = deps._calls["resume"][0]
+    assert resume["text"] == "Add rollback and verification steps."
+    assert resume["metadata"]["plan_revision_feedback"] is True
+    assert resume["metadata"].get("plan_exit_resume") is None
+    assert "[STATE TRANSITION OVERRIDE]" not in resume["text"]
+
+
+def test_plan_approval_publishes_authoritative_posture_before_resume(tmp_path: Path) -> None:
+    app = _make_app(tmp_path)
+    sess = _plan_session(app, tmp_path)
+    q = _pending_plan_exit_question(app, sess, plan_file=str(tmp_path / "plan.md"))
+    deps = _fake_deps()
+
+    resolve_plan_exit_answer(app, deps, sess.id, _answer(q, selected=["auto"]))
+
+    events = app.state.bus.session_events_since(sess.id, cursor=1)
+    updated = next(event for event in events if event.type == "session.updated")
+    resolved = next(event for event in events if event.type == "plan_exit.resolved")
+    assert updated.payload["mode"] == "edit"
+    assert updated.payload["approval_mode"] == "auto-edits"
+    assert resolved.payload["decision"] == "auto"
+    assert events.index(updated) < events.index(resolved)
+
+
 def test_empty_selection_rejects_safe_ignoring_recommended_mode(tmp_path: Path) -> None:
     """A decisionless approval (no option selected) must reject-safe, NEVER substitute the model's
     recommended_mode. Otherwise a plan the human never explicitly approved would auto-execute."""

@@ -401,7 +401,7 @@ class AgentTaskRegistry:
 
         The claim is a check-and-set under the registry lock — mirroring
         :meth:`mark_delegation_reported` — so two concurrent consumers
-        (``wait_agent_tasks`` / ``check_agent_tasks`` / next-turn injection) race to
+        (``wait_agent_tasks`` / next-turn injection) race to
         claim exactly once: the FIRST call on a terminal, still-``notify_pending``
         task flips the flag and returns the record; every LATER call returns ``None``
         (already consumed) with no restamp, so :func:`consume_notification` never
@@ -543,8 +543,8 @@ def settle_interrupted_agent_tasks(app: "FastAPI") -> int:
     A ``queued``/``running`` task in the rebuilt registry was interrupted by an
     unclean stop (crash / power loss / SIGKILL): its in-flight turn does not exist
     on this fresh process and cannot be resumed, so leaving it non-terminal makes it
-    a permanent zombie — ``wait_agent_tasks`` blocks its full budget on a never-set
-    Event, ``check_agent_tasks`` reports it ``running`` forever, and it permanently
+    a permanent zombie — ``wait_agent_tasks`` blocks on a never-set Event,
+    ``observe_agent_tasks`` reports it ``running`` forever, and it permanently
     counts against the per-depth concurrency cap (progressive slot starvation across
     restarts). Each such task is transitioned to ``failed`` with the typed reason
     ``server_restart_interrupted`` and ``notify_pending=True``, so the parent's next
@@ -705,7 +705,7 @@ AGENT_TASK_CONSUMED_EVENT = "agent.task.consumed"
 
 def pending_notifications(app: "FastAPI", parent_session_id: str) -> list[AgentTask]:
     """Terminal, still-``notify_pending`` tasks a parent spawned async and has NOT
-    yet consumed (via wait/check/injection), oldest-completed first (#948 S6).
+    yet consumed (via wait/injection), oldest-completed first (#948 S6).
 
     This is the observe-later feed the parent's NEXT turn drains: an async child
     that finished after (or during) the spawning turn sets ``notify_pending`` at
@@ -721,8 +721,8 @@ def pending_notifications(app: "FastAPI", parent_session_id: str) -> list[AgentT
 def consume_notification(app: "FastAPI", task_id: str) -> Optional[AgentTask]:
     """Mark ONE async task's result consumed — exactly once (#948 S6).
 
-    Shared by the three consumers (``wait_agent_tasks`` / ``check_agent_tasks`` /
-    next-turn injection). The claim is ATOMIC: :meth:`AgentTaskRegistry.mark_consumed`
+    Shared by the two live consumers (``wait_agent_tasks`` / next-turn injection).
+    The claim is ATOMIC: :meth:`AgentTaskRegistry.mark_consumed`
     does the ``notify_pending`` check-and-set under the registry lock (like
     ``mark_delegation_reported``), so exactly one caller flips ``notify_pending``
     off + stamps ``consumed_at`` and returns the record; a concurrent/later caller
