@@ -247,3 +247,62 @@ def test_missing_named_configuration_reports_local_fallback(
         "tools_count": 0,
         "retryable": False,
     }
+
+
+def test_saved_web_endpoint_also_configures_uploaded_source_conversion(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    user_dir = tmp_path / "user"
+    monkeypatch.setenv("CLIO_USER_DIR", str(user_dir))
+    monkeypatch.setenv("CLIO_DOCUMENT_PROCESSOR_URL", "http://local.example:8089")
+    config_path = user_dir / "mcp.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        yaml.safe_dump({"mcp_servers": {"web": _web_spec("http://remote.example:8089")}}),
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+
+    capabilities = app.state.resource_converter_factory.capabilities()
+    assert capabilities == [
+        {
+            "id": "clio-web-search-docling",
+            "priority": 100,
+            "configured": True,
+            "endpoint": "http://remote.example:8089",
+        }
+    ]
+
+
+def test_web_configuration_updates_document_conversion_live_and_remove_restores_local(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path / "user"))
+    monkeypatch.setenv("CLIO_DOCUMENT_PROCESSOR_URL", "http://local.example:8089")
+
+    async def ready_probe(spec: Any) -> tuple[list[str], str | None]:
+        del spec
+        return ["web_fetch"], None
+
+    monkeypatch.setattr(
+        "clio_agent.gact.routes.mcp_configuration._probe_user_mcp_server", ready_probe
+    )
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        saved = client.put(
+            "/v1/mcp/configuration/web",
+            json=_web_spec("http://remote.example:8089"),
+        )
+        assert saved.status_code == 200, saved.text
+        assert app.state.resource_converter_factory.capabilities()[0]["endpoint"] == (
+            "http://remote.example:8089"
+        )
+
+        removed = client.delete("/v1/mcp/configuration/web")
+        assert removed.status_code == 200, removed.text
+        assert app.state.resource_converter_factory.capabilities()[0]["endpoint"] == (
+            "http://local.example:8089"
+        )

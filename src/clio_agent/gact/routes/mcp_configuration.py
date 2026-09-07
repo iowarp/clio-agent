@@ -10,6 +10,9 @@ from urllib.parse import urljoin
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent import conf
+from clio_agent.gact.mcp_user_configuration import mcp_server_arg_value
+from clio_agent.gact.resource_processing import DocumentProcessorClient
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.routes.mcp_server_specs import stdio_server_spec
 from clio_agent.tools.mcp_config import transport_from_spec
@@ -46,15 +49,26 @@ def _configuration_spec(body: dict[str, Any]) -> dict[str, Any]:
 def _configured_web_remote_url(spec: Mapping[str, Any]) -> str:
     """Return the explicit ``--remote-url`` value without discovery."""
 
-    args = spec.get("args")
-    if not isinstance(args, (list, tuple)):
-        return ""
-    values = [str(value) for value in args]
-    try:
-        index = values.index("--remote-url")
-    except ValueError:
-        return ""
-    return values[index + 1].strip() if index + 1 < len(values) else ""
+    return mcp_server_arg_value(spec, "--remote-url")
+
+
+def _sync_document_processor(app: FastAPI, remote_url: str) -> None:
+    """Point uploaded-source conversion at the same configured Web Search service."""
+
+    factory = getattr(app.state, "resource_converter_factory", None)
+    if factory is None:
+        return
+    current = factory.get(DocumentProcessorClient.id)
+    max_resource_bytes = int(getattr(current, "max_resource_bytes", 0) or 0)
+    fallback_url = conf.resolve(
+        "resources.document_processor_url",
+        env="CLIO_DOCUMENT_PROCESSOR_URL",
+        default="",
+        cast=conf.as_str,
+    )
+    factory.register(
+        DocumentProcessorClient(remote_url or fallback_url, max_resource_bytes=max_resource_bytes)
+    )
 
 
 async def _probe_web_search_remote(remote_url: str) -> None:
@@ -172,6 +186,8 @@ def register_mcp_configuration_routes(app: FastAPI) -> None:
         display_name = str(body.get("name") or "").strip()
         if display_name:
             _forget_ephemeral_duplicates(app, display_name)
+        if key == "web":
+            _sync_document_processor(app, _configured_web_remote_url(saved))
         return await _configuration_row(key, saved)
 
     @app.delete("/v1/mcp/configuration/{name}")
@@ -182,6 +198,8 @@ def register_mcp_configuration_routes(app: FastAPI) -> None:
         except McpUserConfigurationError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         _forget_ephemeral_duplicates(app, key)
+        if key == "web":
+            _sync_document_processor(app, "")
         return {
             "name": key,
             "configured": False,
