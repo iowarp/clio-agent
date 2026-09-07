@@ -2438,448 +2438,51 @@ def _collector_result(
     )
 
 
-def test_repeated_same_args_waits_collapse_to_one_tool_pair() -> None:
-    """One logical activity (waiting on task_X) = ONE tool_call+tool_result pair
-    (clean-wire rule): a re-polled wait with identical args REPLACES the prior
-    pair in place — same part ids, cumulative attempts/total_wait_ms, the NEWEST
-    result text verbatim — publishing message.part.updated, never new rows."""
+def test_repeated_waits_remain_separate_tool_pairs() -> None:
+    """Every model-emitted wait remains a distinct ledger event."""
 
     from clio_agent.gact.tool_observer import _append_live_assistant_part
 
     app, transcript, events = _collector_transcript_app()
-    for call_id, text in [
-        ("call_a", "running"),
-        ("call_b", "still running"),
-        ("call_c", "completed"),
-    ]:
+    for call_id, text in [("call_a", "running"), ("call_b", "completed")]:
         _append_live_assistant_part(
-            app, "sess_x", _collector_call(call_id, task_ids=["task_1"], timeout_s=30.0)
+            app, "sess_x", _collector_call(call_id, task_ids=["task_1"])
         )
-        _append_live_assistant_part(app, "sess_x", _collector_result(call_id, text, 30000.0))
+        _append_live_assistant_part(app, "sess_x", _collector_result(call_id, text, 5.0))
 
     parts = transcript.snapshot()
-    assert [p.type for p in parts] == ["tool_call", "tool_result"]
-    call, result = parts
-    assert call.id == "live_call_a_call"  # identity survives the collapse
-    assert call.call_id == "call_c"  # ...but the newest attempt owns the call
-    assert call.metadata["attempts"] == 3
-    assert result.id == "live_call_a_result"
-    assert result.metadata["attempts"] == 3
-    assert result.metadata["total_wait_ms"] == 90000.0
-    assert result.content[0].text == "completed"  # newest result VERBATIM
-    kinds = [e for e, _ in events]
-    assert kinds.count("message.part.added") == 2  # one pair, ever
-    assert kinds.count("message.part.updated") == 4  # 2 re-polls x (call + result)
+    assert [part.type for part in parts] == ["tool_call", "tool_result"] * 2
+    assert [part.call_id for part in parts] == ["call_a", "call_a", "call_b", "call_b"]
+    assert [event for event, _ in events].count("message.part.added") == 4
+    assert [event for event, _ in events].count("message.part.updated") == 0
 
 
-def test_different_timeout_budget_same_task_ids_still_collapses() -> None:
-    """Round-6 real-turn evidence: the model re-polls the SAME task set with a
-    DIFFERENT ``timeout_s`` each time (observed 60 then 90 on one task set —
-    the owner's original wait-wall varied budgets 60/90/120s too). Canonicalizing
-    the FULL args dict (timeout_s included) never collapses this shape — the
-    EXACT case the feature exists for. The collapse identity is the SEMANTIC
-    activity (tool name + task set) only, so this still collapses to one pair,
-    and the per-attempt budgets are recorded honestly rather than silently
-    dropped."""
+def test_historical_check_agent_tasks_call_renders_without_translation() -> None:
+    """A stored legacy tool name remains visible as the actual historical call."""
 
     from clio_agent.gact.tool_observer import _append_live_assistant_part
 
     app, transcript, events = _collector_transcript_app()
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=60.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 60000.0))
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_b", task_ids=["task_1"], timeout_s=90.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 90000.0))
-
-    parts = transcript.snapshot()
-    assert [p.type for p in parts] == ["tool_call", "tool_result"]
-    call, result = parts
-    assert call.id == "live_call_a_call"  # identity survives the collapse
-    assert call.call_id == "call_b"  # ...but the newest attempt owns the call
-    assert call.metadata["attempts"] == 2
-    assert call.metadata["budgets"] == [60.0, 90.0]  # honest per-attempt budgets
-    assert result.id == "live_call_a_result"
-    assert result.metadata["attempts"] == 2
-    assert result.metadata["total_wait_ms"] == 150000.0
-    assert result.content[0].text == "completed"  # newest result VERBATIM
-    kinds = [e for e, _ in events]
-    assert kinds.count("message.part.added") == 2  # one pair, ever
-    assert kinds.count("message.part.updated") == 2  # 1 re-poll x (call + result)
-
-
-def test_task_ids_reordered_between_polls_still_collapses() -> None:
-    """The collapse identity sorts ``task_ids`` (order-insensitive): a re-poll
-    that lists the same task set in a different order is still ONE activity."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, _events = _collector_transcript_app()
-    _append_live_assistant_part(
-        app,
-        "sess_x",
-        _collector_call("call_a", task_ids=["task_1", "task_2"], timeout_s=30.0),
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
-    _append_live_assistant_part(
-        app,
-        "sess_x",
-        _collector_call("call_b", task_ids=["task_2", "task_1"], timeout_s=45.0),
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 45000.0))
-
-    parts = transcript.snapshot()
-    assert [p.type for p in parts] == ["tool_call", "tool_result"]
-    assert parts[0].metadata["attempts"] == 2
-    assert parts[0].metadata["budgets"] == [30.0, 45.0]
-
-
-def test_check_error_repoll_collapses_and_shows_newest_error_verbatim() -> None:
-    """check_agent_tasks collapses the same way, and a failed re-poll's VISIBLE
-    result is the newest error verbatim — never a merge that keeps the prior
-    attempt's stale result evidence under the failure."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, _events = _collector_transcript_app()
     _append_live_assistant_part(
         app, "sess_x", _collector_call("call_a", tool_name="check_agent_tasks", task_ids=None)
     )
     _append_live_assistant_part(
         app,
         "sess_x",
-        _collector_result("call_a", '{"results": []}', 5.0, tool_name="check_agent_tasks"),
-    )
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_b", tool_name="check_agent_tasks", task_ids=None)
-    )
-    _append_live_assistant_part(
-        app,
-        "sess_x",
         _collector_result(
-            "call_b", "registry gone", 3.0, tool_name="check_agent_tasks", is_error=True
+            "call_a", '{"results": []}', 5.0, tool_name="check_agent_tasks"
         ),
     )
 
     parts = transcript.snapshot()
-    assert [p.type for p in parts] == ["tool_call", "tool_result"]
-    result = parts[1]
-    assert result.is_error is True
-    assert result.content[0].text == "registry gone"
-    assert result.metadata["attempts"] == 2
-    assert result.metadata["total_wait_ms"] == 8.0
-    assert "result" not in result.metadata  # no stale prior-attempt evidence
+    assert [part.type for part in parts] == ["tool_call", "tool_result"]
+    assert [part.tool_name for part in parts] == ["check_agent_tasks", "check_agent_tasks"]
+    assert [event for event, _ in events].count("message.part.added") == 2
+    assert [event for event, _ in events].count("message.part.updated") == 0
 
 
-def test_repoll_structured_content_follows_the_newest_attempt() -> None:
-    """#1190: the TOP-LEVEL ``structured_content`` field stays consistent across
-    collector re-poll upserts — the newest attempt's value (or absence) owns the
-    merged part, exactly like the visible result text. A prior attempt's
-    structured payload must never survive under a newer attempt that lacks it,
-    and never leak back in via the metadata merge (metadata carries no copy)."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, _events = _collector_transcript_app()
-    # Attempt 1 carries a structured payload; the re-poll (attempt 2) does not.
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(
-        app,
-        "sess_x",
-        _collector_result("call_a", "running", 30000.0, structured_content={"status": "running"}),
-    )
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_b", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 5.0))
-
-    parts = transcript.snapshot()
-    assert [p.type for p in parts] == ["tool_call", "tool_result"]
-    result = parts[1]
-    assert result.metadata["attempts"] == 2
-    assert result.structured_content is None  # newest attempt owns the facts
-    assert "structured_content" not in result.to_wire()  # absent-when-None
-    assert "structured_content" not in result.metadata  # ONE home: never metadata
-
-    # And the reverse: a re-poll that GAINS a structured payload serves it.
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_c", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(
-        app,
-        "sess_x",
-        _collector_result("call_c", "completed", 3.0, structured_content={"status": "completed"}),
-    )
-    result = transcript.snapshot()[1]
-    assert result.metadata["attempts"] == 3
-    assert result.structured_content == {"status": "completed"}
-    assert result.to_wire()["structured_content"] == {"status": "completed"}
-    assert "structured_content" not in result.metadata
-
-
-def test_repoll_waited_tasks_union_by_task_id() -> None:
-    """A collapsed wait covering two re-poll attempts on the SAME task set must
-    carry the UNION of resolved ``waited_tasks`` rows, never a narrower result
-    than either attempt saw (the collector collapse's generic ``{**existing,
-    **new}`` metadata merge would otherwise let the newest attempt silently
-    drop a row an earlier attempt resolved)."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, _events = _collector_transcript_app()
-    row_a = {
-        "task_id": "task_1",
-        "agent_id": "geospatial",
-        "run_index": 0,
-        "run_label": "",
-        "child_session_id": "child_1",
-        "name": "geospatial #1",
-    }
-    row_b = {
-        "task_id": "task_2",
-        "agent_id": "ndp",
-        "run_index": 0,
-        "run_label": "",
-        "child_session_id": "child_2",
-        "name": "ndp #1",
-    }
-    # Attempt 1 resolves only task_1 (task_2's registry row wasn't there yet, or
-    # attempt 1 simply requested a subset); attempt 2 resolves BOTH, with an
-    # updated row_a (its run_label got set in between).
-    _append_live_assistant_part(
-        app,
-        "sess_x",
-        _collector_call(
-            "call_a", task_ids=["task_1", "task_2"], timeout_s=30.0, waited_tasks=[row_a]
-        ),
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
-    row_a_updated = {**row_a, "run_label": "LA scan", "name": "LA scan"}
-    _append_live_assistant_part(
-        app,
-        "sess_x",
-        _collector_call(
-            "call_b",
-            task_ids=["task_1", "task_2"],
-            timeout_s=30.0,
-            waited_tasks=[row_a_updated, row_b],
-        ),
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 5.0))
-
-    call_part = next(p for p in transcript.snapshot() if p.type == "tool_call")
-    assert call_part.metadata["attempts"] == 2
-    # Union by task_id: BOTH rows present, and task_1's NEWEST (attempt 2) facts win.
-    assert call_part.metadata["waited_tasks"] == [row_a_updated, row_b]
-
-
-def test_different_args_waits_stay_separate_rows() -> None:
-    """A wait on DIFFERENT task ids is a different activity — separate row pairs,
-    never an in-place update."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, events = _collector_transcript_app()
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_b", task_ids=["task_2"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "running", 30000.0))
-
-    parts = transcript.snapshot()
-    assert [p.type for p in parts] == ["tool_call", "tool_result", "tool_call", "tool_result"]
-    assert "attempts" not in parts[2].metadata
-    assert [e for e, _ in events].count("message.part.updated") == 0
-
-
-def test_narration_between_waits_collapses_and_keeps_narration() -> None:
-    """Real turns interleave narration TEXT between every re-poll (round-4 live
-    evidence, msg_asst_bf61e558ce51: 5 separate wait rows under the strict
-    adjacency rule). Narration never breaks the chain: the same-args re-poll
-    still collapses onto the prior pair at its ORIGINAL position, while the
-    narration parts stay exactly where they are, in order, as separate text
-    parts — never absorbed, never reordered."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, events = _collector_transcript_app()
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
-    transcript.append_text_delta("main", "next_thought", "Still waiting on task_1...")
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_b", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(
-        app, "sess_x", _collector_result("call_b", "still running", 30000.0)
-    )
-    transcript.append_text_delta("main", "next_thought", "Task_1 is close, polling again...")
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_c", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_c", "completed", 30000.0))
-
-    parts = transcript.snapshot()
-    assert [p.type for p in parts] == ["tool_call", "tool_result", "text", "text"]
-    call, result, narration1, narration2 = parts
-    assert call.id == "live_call_a_call"  # the pair keeps its ORIGINAL position/id
-    assert call.call_id == "call_c"  # ...owned by the newest attempt
-    assert call.metadata["attempts"] == 3
-    assert result.id == "live_call_a_result"
-    assert result.metadata["attempts"] == 3
-    assert result.metadata["total_wait_ms"] == 90000.0
-    assert result.content[0].text == "completed"  # newest result VERBATIM
-    assert narration1.text == "Still waiting on task_1..."
-    assert narration2.text == "Task_1 is close, polling again..."
-    kinds = [e for e, _ in events]
-    assert kinds.count("message.part.added") == 4  # one pair + the two narrations
-    assert kinds.count("message.part.updated") == 4  # 2 re-polls x (call + result)
-
-
-def test_thinking_and_text_between_waits_collapses_and_keeps_both_verbatim() -> None:
-    """LIVE evidence (rerun sess_c6241fc8906f, msg_asst_8894cb745b15): the
-    provider-thinking lane came alive alongside narration text, so the stored
-    shape between two same-args re-polls is tool_call, tool_result,
-    THINKING, text, tool_call(same args)... — not just text. A ``thinking``
-    part is the same narration lane as ``text`` (both stay exactly where they
-    streamed, never absorbed): it must not break the collapse chain either."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, events = _collector_transcript_app()
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
-    transcript.append_text_delta("main", "provider_thinking:main", "Checking on task_1...")
-    transcript.append_text_delta("main", "next_thought", "Still waiting on task_1...")
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_b", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 30000.0))
-
-    parts = transcript.snapshot()
-    assert [p.type for p in parts] == ["tool_call", "tool_result", "thinking", "text"]
-    call, result, thinking, narration = parts
-    assert call.id == "live_call_a_call"  # the pair keeps its ORIGINAL position/id
-    assert call.call_id == "call_b"  # ...owned by the newest attempt
-    assert call.metadata["attempts"] == 2
-    assert result.id == "live_call_a_result"
-    assert result.metadata["attempts"] == 2
-    assert result.metadata["total_wait_ms"] == 60000.0
-    assert result.content[0].text == "completed"  # newest result VERBATIM
-    assert thinking.text == "Checking on task_1..."
-    assert narration.text == "Still waiting on task_1..."
-    kinds = [e for e, _ in events]
-    assert kinds.count("message.part.added") == 4  # one pair + thinking + text
-    assert kinds.count("message.part.updated") == 2  # 1 re-poll x (call + result)
-
-
-def test_interleaved_other_tool_call_breaks_the_collapse_chain() -> None:
-    """A DIFFERENT tool's call/result pair between same-args waits BREAKS the
-    chain — collapsing across another tool's activity would reorder reality."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, events = _collector_transcript_app()
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_x", tool_name="read_file", filepath="x.h5")
-    )
-    _append_live_assistant_part(
-        app, "sess_x", _collector_result("call_x", "bytes", 5.0, tool_name="read_file")
-    )
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_b", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 30000.0))
-
-    parts = transcript.snapshot()
-    assert [p.type for p in parts] == [
-        "tool_call",
-        "tool_result",
-        "tool_call",
-        "tool_result",
-        "tool_call",
-        "tool_result",
-    ]
-    assert "attempts" not in parts[4].metadata
-    assert [e for e, _ in events].count("message.part.updated") == 0
-
-
-def test_interleaved_expert_handoff_breaks_the_collapse_chain() -> None:
-    """A spawn (expert_handoff) between same-args waits BREAKS the chain — the
-    wait after a new delegation is a new activity, never a re-poll of the old."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, events = _collector_transcript_app()
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
-    _append_live_assistant_part(
-        app,
-        "sess_x",
-        Part(
-            id="p_handoff",
-            type="expert_handoff",
-            agent_id="main",
-            child_agent="data_expert",
-            stage="delegate.started",
-            handle_id="task_9",
-            status="running",
-        ),
-    )
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_b", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 30000.0))
-
-    parts = transcript.snapshot()
-    assert [p.type for p in parts] == [
-        "tool_call",
-        "tool_result",
-        "expert_handoff",
-        "tool_call",
-        "tool_result",
-    ]
-    assert [e for e, _ in events].count("message.part.updated") == 0
-
-
-def test_non_collector_tools_never_collapse() -> None:
-    """Scope is STRICTLY the two collector tools by name — an identical-args
-    re-run of any other tool appends normally (no generic tool collapsing)."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, events = _collector_transcript_app()
-    for call_id in ("call_a", "call_b"):
-        _append_live_assistant_part(
-            app, "sess_x", _collector_call(call_id, tool_name="read_file", filepath="x.h5")
-        )
-        _append_live_assistant_part(
-            app, "sess_x", _collector_result(call_id, "bytes", 5.0, tool_name="read_file")
-        )
-
-    parts = transcript.snapshot()
-    assert [p.type for p in parts] == ["tool_call", "tool_result", "tool_call", "tool_result"]
-    assert [e for e, _ in events].count("message.part.updated") == 0
-
-
-def test_collector_tools_notify_the_live_observer() -> None:
-    """wait/check are REAL tool calls the model makes; they must reach the
+def test_wait_and_observe_tools_notify_the_live_observer() -> None:
+    """wait/observe are REAL tool calls the model makes; they must reach the
     observer (started + completed with the verbatim result) instead of being
     invisible mechanism the narration references (owner, 2026-08-05). The
     per-tool ``_observed_collector`` shim is generalized into the default-on
@@ -2897,32 +2500,32 @@ def test_collector_tools_notify_the_live_observer() -> None:
     _execution.notify_global_tool_observer = _capture
     try:
 
-        def fake_wait(task_ids: list[str], timeout_s: float) -> str:
+        def fake_wait(task_ids: list[str]) -> str:
             return '{"results": []}'
 
         wrapped = observed_tool_callable(fake_wait, "wait_agent_tasks")
-        out = wrapped(["task_1"], 30.0)
+        out = wrapped(["task_1"])
         assert out == '{"results": []}'
         assert [(c[0], c[2]) for c in calls] == [
             ("wait_agent_tasks", "started"),
             ("wait_agent_tasks", "completed"),
         ]
-        assert calls[0][1] == {"task_ids": ["task_1"], "timeout_s": 30.0}
+        assert calls[0][1] == {"task_ids": ["task_1"]}
         assert calls[1][4] == '{"results": []}'
 
         calls.clear()
 
-        def boom(task_ids: list[str] | None = None) -> str:
+        def boom(task_ids: list[str]) -> str:
             raise RuntimeError("registry gone")
 
-        wrapped_boom = observed_tool_callable(boom, "check_agent_tasks")
+        wrapped_boom = observed_tool_callable(boom, "observe_agent_tasks")
         with pytest.raises(RuntimeError):
-            wrapped_boom()
+            wrapped_boom(["task_1"])
         assert [(c[0], c[2], c[3]) for c in calls] == [
-            ("check_agent_tasks", "started", None),
-            ("check_agent_tasks", "completed", "registry gone"),
+            ("observe_agent_tasks", "started", None),
+            ("observe_agent_tasks", "completed", "registry gone"),
         ]
-        assert calls[0][1] == {"task_ids": None}
+        assert calls[0][1] == {"task_ids": ["task_1"]}
     finally:
         _execution.notify_global_tool_observer = original
 

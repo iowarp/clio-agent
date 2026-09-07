@@ -700,7 +700,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # wake_on_parent_activity call site right after the tool.call.completed
     # publish (a lazy import + one call). All gating/coalesce/wake logic lives
     # in the owner module gact/spotter_watcher.py.
-    "src/clio_agent/gact/tool_observer.py": 1079,
+    "src/clio_agent/gact/tool_observer.py": 1061,
     # Collector-collapse work already on this branch grew the file to 1303 (>the
     # recorded 986 baseline) before this entry was updated — pre-existing, not
     # introduced here. P5 (wire semantics): +34 for the waited_tasks union-merge
@@ -714,7 +714,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # encapsulation), trimmed from an initial 77-line addition to 43 by cutting
     # the docstring and collapsing the log call before accepting this ratchet.
     # Ratchet back with #714/#767.
-    "src/clio_agent/gact/transcript.py": 1379,
+    "src/clio_agent/gact/transcript.py": 1089,
     # #918: +17 for the typed SkillNotDelegatableError ladder arm (a skill-bound
     # turn fails typed, never as generic agent_error).
     # #952 S4 Pass C: -1 (the suppressed_parent_resume_offsets init was removed
