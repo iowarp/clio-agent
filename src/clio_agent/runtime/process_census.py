@@ -27,15 +27,24 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from clio_agent.errors import PROCESS_CENSUS_ORPHAN_REAPED
-from clio_agent.runtime.process_tree import _classify_child
+from clio_agent.runtime.process_snapshot import (
+    ProcessNode,
+    belongs_to_runtime,
+    snapshot_process_nodes,
+)
+from clio_agent.runtime.process_snapshot import (
+    process_cmdline as _default_process_cmdline,
+)
+from clio_agent.runtime.process_tree import _classify_child as classify_process_child
 from clio_agent.runtime.sandbox import confinement_for_kind
 from clio_agent.runtime.status import IntegrationState, IntegrationStatus
 
 logger = logging.getLogger(__name__)
+_classify_child = classify_process_child
 
 # Typed parentage verdicts (so the doctor / trace never guess).
 DESCENDS_SERVER_ROOT = "server_root"
@@ -43,42 +52,6 @@ DESCENDS_DAEMON_ROOT = "daemon_root"
 ORPHANED_FROM_TREE = "orphaned_from_tree"
 
 _MAX_CHAIN_DEPTH = 64  # guard against a cyclic/self-referential ppid table
-
-
-@dataclass(frozen=True)
-class ProcessNode:
-    """One process in a census snapshot (the minimal fields parentage needs).
-
-    Attributes:
-        pid: The process id.
-        ppid: The parent process id (0/dead when the parent is gone).
-        name: The executable name (used only for the coarse ``kind`` classification
-            and display -- see :func:`clio_agent.runtime.process_tree._classify_child`).
-        create_time: The process's start time (epoch seconds), from the SNAPSHOT.
-            The REAP re-verifies this against the live process right before killing
-            (#1303 F3, mirroring :func:`clio_agent.serve._pid_alive`'s PID-reuse
-            defeat): a PID recycled by the OS between snapshot and kill gets a
-            DIFFERENT creation time, so a stale row is never mistaken for the
-            process it named.
-        kind: The coarse child kind.
-        cmdline: The process's argv, captured best-effort (#1303). Empty by default --
-            populated only for reparented-orphan candidates in the live
-            :func:`_snapshot_process_nodes` scan (``AccessDenied``/any resolution
-            failure also yields empty). This is the REAP's positive product
-            evidence (see :func:`_has_clio_product_evidence`): a name-substring
-            match plus a dead parent is NOT evidence on its own -- every detached
-            job on the box has a dead parent -- so an empty cmdline is treated as
-            NO evidence, never as implicit ownership.
-    """
-
-    pid: int
-    ppid: int
-    name: str
-    create_time: float
-    kind: str
-    executable: str = ""
-    cwd: str = ""
-    cmdline: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -250,127 +223,25 @@ def _has_clio_product_evidence(node: ProcessNode) -> bool:
     return any(marker in joined for marker in _CLIO_CMDLINE_MARKERS)
 
 
-def _process_cmdline(pid: int) -> tuple[str, ...]:
-    """Best-effort live ``cmdline()`` for ``pid`` (#1303 instance-evidence gate).
+_process_cmdline = _default_process_cmdline
 
-    Only called for reparented-orphan candidates in :func:`_snapshot_process_nodes`
-    (never the whole machine-wide scan), so the extra per-process syscall stays cheap.
-    Returns an empty tuple on ANY resolution failure -- already exited, permission
-    denied, a zombie, a psutil-less environment -- which :func:`_has_clio_product_evidence`
-    then correctly reads as no evidence, never as implicit ownership.
-    """
-    try:
-        import psutil  # noqa: PLC0415
-    except ImportError:
-        return ()
-    try:
-        return tuple(psutil.Process(pid).cmdline())
-    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
-        return ()
+
+def _belongs_to_runtime(node: ProcessNode, owner_roots: Sequence[str]) -> bool:
+    """Preserve the process-census ownership seam for callers and tests."""
+
+    return belongs_to_runtime(node, owner_roots)
 
 
 def _snapshot_process_nodes(
     server_root_pid: int, daemon_root_pid: Optional[int]
 ) -> list[ProcessNode]:
-    """Build a live process snapshot scoped to CLIO's tree (best-effort, psutil-gated).
+    """Build the live snapshot through the patchable command-line evidence seam."""
 
-    Included: every descendant of the two roots, the roots themselves, and any CLIO-kind
-    process whose parent PID is not alive (a reparented orphan) and whose executable or
-    working directory is rooted in this server/daemon runtime. The path ownership check is
-    required because a shared ``clio_run`` daemon intentionally survives its launcher;
-    scanning every process named ``clio_run``/``node``/``python`` on the machine otherwise
-    reports parallel installations as this server's orphans. A psutil-less environment
-    yields an empty list.
-    """
-    try:
-        import psutil  # noqa: PLC0415
-    except ImportError:
-        return []
-
-    raw: dict[int, ProcessNode] = {}
-    for proc in psutil.process_iter(["pid", "ppid", "name", "create_time", "exe", "cwd"]):
-        try:
-            info = proc.info
-            pid = int(info["pid"])
-            raw[pid] = ProcessNode(
-                pid=pid,
-                ppid=int(info.get("ppid") or 0),
-                name=str(info.get("name") or ""),
-                create_time=float(info.get("create_time") or 0.0),
-                kind=_classify_child(str(info.get("name") or "")),
-                executable=str(info.get("exe") or ""),
-                cwd=str(info.get("cwd") or ""),
-            )
-        except (psutil.NoSuchProcess, psutil.AccessDenied, KeyError, TypeError, ValueError):
-            continue
-
-    alive = set(raw)
-    children_of: dict[int, list[int]] = {}
-    for node in raw.values():
-        children_of.setdefault(node.ppid, []).append(node.pid)
-
-    keep: set[int] = set()
-    for root in (server_root_pid, daemon_root_pid):
-        if root is None or root not in raw:
-            if root is not None and root == server_root_pid:
-                keep.add(root)  # our own pid may be absent from a partial scan; keep it
-            continue
-        keep.add(root)
-        stack = list(children_of.get(root, ()))
-        while stack:
-            pid = stack.pop()
-            if pid in keep:
-                continue
-            keep.add(pid)
-            stack.extend(children_of.get(pid, ()))
-
-    owner_root_values: list[str] = []
-    for root_pid in (server_root_pid, daemon_root_pid):
-        if root_pid is None:
-            continue
-        root_node = raw.get(root_pid)
-        if root_node is not None and root_node.cwd:
-            owner_root_values.append(root_node.cwd)
-    owner_roots = tuple(owner_root_values)
-
-    # Reparented orphans: a CLIO-kind process whose parent is no longer alive and that
-    # can still be attributed to this runtime. Names alone are deliberately insufficient
-    # ownership evidence, and the two campaigns' guards stack rather than replace each
-    # other: `_belongs_to_runtime` requires PATH evidence (the row's executable or cwd
-    # sits under a live root's cwd) before the row is censused at all, and #1303 attaches
-    # the live cmdline here -- lazily, only for these candidate rows, never the whole
-    # machine-wide scan -- so the REAP's evidence gate (`_has_clio_product_evidence`)
-    # can additionally require an actual clio marker before a kill is ever considered.
-    # Rows already reachable from a root never pass through here; they were never orphan
-    # candidates in the first place.
-    for node in list(raw.values()):
-        if (
-            node.kind != "other"
-            and node.ppid not in alive
-            and node.pid not in keep
-            and _belongs_to_runtime(node, owner_roots)
-        ):
-            raw[node.pid] = replace(node, cmdline=_process_cmdline(node.pid))
-            keep.add(node.pid)
-
-    return [raw[pid] for pid in keep if pid in raw]
-
-
-def _belongs_to_runtime(node: ProcessNode, owner_roots: Sequence[str]) -> bool:
-    """Return whether a detached process still has path evidence of runtime ownership."""
-
-    for owner_root in owner_roots:
-        for candidate in (node.executable, node.cwd):
-            if not candidate:
-                continue
-            try:
-                normalized_root = os.path.normcase(os.path.abspath(owner_root))
-                normalized_candidate = os.path.normcase(os.path.abspath(candidate))
-                if os.path.commonpath((normalized_root, normalized_candidate)) == normalized_root:
-                    return True
-            except (OSError, ValueError):
-                continue
-    return False
+    return snapshot_process_nodes(
+        server_root_pid,
+        daemon_root_pid,
+        cmdline_resolver=_process_cmdline,
+    )
 
 
 def probe_process_parentage(
@@ -740,7 +611,33 @@ def reap_orphaned_processes(
     return reaped
 
 
-async def boot_reap_off_loop() -> None:
+def _boot_reap_and_probe(
+    skip_counts: dict[str, int],
+) -> tuple[list[ReapedProcess], list[IntegrationStatus]]:
+    """Run one boot census, reap from it, and derive the post-reap doctor row."""
+
+    server_root_pid = os.getpid()
+    daemon_root_pid = _daemon_root_pid()
+    snapshot = _snapshot_process_nodes(server_root_pid, daemon_root_pid)
+    reaped = reap_orphaned_processes(
+        nodes=snapshot,
+        server_root_pid=server_root_pid,
+        daemon_root_pid=daemon_root_pid,
+        _daemon_unset=False,
+        skip_counts=skip_counts,
+    )
+    reaped_pids = {row.pid for row in reaped}
+    remaining = [node for node in snapshot if node.pid not in reaped_pids]
+    status = probe_process_parentage(
+        nodes=remaining,
+        server_root_pid=server_root_pid,
+        daemon_root_pid=daemon_root_pid,
+        _daemon_unset=False,
+    )
+    return reaped, [status]
+
+
+async def boot_reap_off_loop() -> list[IntegrationStatus]:
     """Run :func:`reap_orphaned_processes` off the event loop (server-boot hook, #1232 pt 4).
 
     Called BEFORE ``tools.mcp_cache.boot_prune_off_loop`` in the lifespan
@@ -770,14 +667,22 @@ async def boot_reap_off_loop() -> None:
     loop = asyncio.get_running_loop()
     skip_counts: dict[str, int] = {}
     try:
-        reaped = await loop.run_in_executor(
-            None, functools.partial(reap_orphaned_processes, skip_counts=skip_counts)
+        reaped, status_rows = await loop.run_in_executor(
+            None, functools.partial(_boot_reap_and_probe, skip_counts)
         )
-    except Exception:  # noqa: BLE001 - best-effort boot reap; a failure must never break server boot
+    except Exception as exc:  # noqa: BLE001 - best-effort boot reap; a failure must never break server boot
         logging.getLogger(__name__).exception(
             "boot orphan-process reap failed (#1232 pt 4); continuing boot"
         )
-        return
+        return [
+            IntegrationStatus(
+                name="child_parentage",
+                state=IntegrationState.DEGRADED,
+                summary=f"boot orphan scan collection failed: {exc!r}",
+                config_source="runtime:process_census",
+                next_action="Inspect the gact server logs for the orphan-scan failure.",
+            )
+        ]
     if reaped:
         logging.getLogger(__name__).warning(
             "boot orphan-process reap killed %d process(es): %s",
@@ -789,6 +694,7 @@ async def boot_reap_off_loop() -> None:
             "boot orphan-process reap skip summary (#1303): %s",
             ", ".join(f"{reason}={count}" for reason, count in sorted(skip_counts.items())),
         )
+    return status_rows
 
 
 __all__ = [

@@ -230,7 +230,10 @@ def test_snapshot_attaches_live_cmdline_only_to_orphan_candidates(
         def __init__(self, info: dict) -> None:
             self.info = info
 
+    requested_attrs: list[str] = []
+
     def _fake_process_iter(attrs: list[str]) -> list[_FakeProc]:
+        requested_attrs.extend(attrs)
         return [
             _FakeProc(server_info),
             _FakeProc(rooted_child_info),
@@ -244,6 +247,7 @@ def test_snapshot_attaches_live_cmdline_only_to_orphan_candidates(
     nodes = pc._snapshot_process_nodes(_SERVER, None)
     by_pid = {n.pid: n for n in nodes}
 
+    assert requested_attrs == ["pid", "ppid", "name", "create_time"]
     assert by_pid[700].cmdline == live_marker, (
         "the reparented-orphan candidate must carry the LIVE-captured cmdline -- if "
         "this is empty, the `replace(node, cmdline=_process_cmdline(...))` wiring in "
@@ -252,6 +256,9 @@ def test_snapshot_attaches_live_cmdline_only_to_orphan_candidates(
     assert by_pid[300].cmdline == (), (
         "a properly-rooted descendant is never an orphan candidate and must never pay "
         "for (or receive) a live cmdline capture"
+    )
+    assert by_pid[300].cwd == "", (
+        "a rooted descendant must not pay for machine-wide path resolution"
     )
 
 
@@ -768,15 +775,18 @@ async def test_boot_reap_off_loop_runs_the_reap_and_never_raises(
     ``skip_counts`` out-param for the boot-time skip-count-by-reason summary.
     """
     calls: list[str] = []
+    monkeypatch.setattr(pc, "_snapshot_process_nodes", lambda *_args: [])
     monkeypatch.setattr(pc, "reap_orphaned_processes", lambda **kwargs: calls.append("ran") or [])
-    await pc.boot_reap_off_loop()
+    rows = await pc.boot_reap_off_loop()
     assert calls == ["ran"]
+    assert rows[0].name == "child_parentage"
 
     def _boom(**kwargs: object) -> list[pc.ReapedProcess]:
         raise RuntimeError("boom")
 
     monkeypatch.setattr(pc, "reap_orphaned_processes", _boom)
-    await pc.boot_reap_off_loop()  # must not raise
+    rows = await pc.boot_reap_off_loop()  # must not raise
+    assert rows[0].state == pc.IntegrationState.DEGRADED
 
 
 @pytest.mark.asyncio
@@ -795,6 +805,7 @@ async def test_boot_reap_off_loop_logs_skip_count_summary(
         skip_counts["pid_recycled"] = 1
         return []
 
+    monkeypatch.setattr(pc, "_snapshot_process_nodes", lambda *_args: [])
     monkeypatch.setattr(pc, "reap_orphaned_processes", _fake_reap)
     with caplog.at_level("INFO", logger="clio_agent.runtime.process_census"):
         await pc.boot_reap_off_loop()

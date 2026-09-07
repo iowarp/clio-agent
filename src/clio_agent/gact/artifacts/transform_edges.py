@@ -1,13 +1,9 @@
 """Provenance edge detection for TransformRecords (S5 #971) — used + authority.
 
-Split out of :mod:`clio_agent.gact.artifacts.transforms` (no-accretion — the record
-model + recording orchestration own that file; edge DISCOVERY owns this one). Two
-detectors, both **precision over recall** (owner decision #966.10):
+Split from :mod:`clio_agent.gact.artifacts.transforms`; both detectors favor precision:
 
-* :func:`detect_used_edges` — resolve bounded argument paths to registered
-  artifacts, retaining hash/stat evidence and detectable misses.
-* :func:`detect_authority_edges` — retain specific catalog resources as authority-
-  asserted inputs while treating broad search results as discovery.
+* :func:`detect_used_edges` resolves bounded paths with hash/stat evidence.
+* :func:`detect_authority_edges` keeps specific catalog resources as authority.
 
 Both detectors return an :class:`EdgeScan` (edges + typed notes) so a deliberate
 non-edge (precision over recall) stays DETECTABLE on the record, never silent.

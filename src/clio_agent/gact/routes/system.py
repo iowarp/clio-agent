@@ -1,26 +1,16 @@
 """System + observability routes for the GACT server (#714).
 
-The "system" concern is the read-only operational surface the TUI polls to render
-its connection/doctor/metrics affordances -- it never mutates session state:
+Read-only operational routes consumed by the TUI:
 
 * ``GET /v1/health`` -- per-subsystem status (api/sessions/agent/memory/lm) rolled
   up to a worst-case ``overall_status``; returns 503 when unavailable.
-* ``GET /v1/capabilities`` -- the contract version + capability/transport/auth
-  flags so clients can disable UI for surfaces this build does not provide.
-* ``GET /v1/capability-gaps`` -- intentionally-unsupported / future rows, kept
-  visible so "not supported yet" affordances do not have to be inferred.
+* ``GET /v1/capabilities`` and ``/v1/capability-gaps`` -- supported and future flags.
 * ``GET /v1/metrics`` -- aggregate runtime counters (sessions/messages/tokens/
   cost) plus real recorded tool-call latency percentiles (SPEC §6.16).
-* ``GET /v1/memory/stats`` -- ARC cache counters + per-session retained-context
-  pressure + global ARC totals (zeros are a valid signal when ARC is unwired).
+* ``GET /v1/memory/stats`` -- ARC and retained-context pressure counters.
 
-The static catalogs these project (stream-fallback reasons, capability gaps, the
-latency-stat helper) and the wire/limit constants live in the leaves
-:mod:`clio_agent.gact.runtime.capabilities` / :mod:`clio_agent.gact.runtime.constants`
-(single source, shared with the message-turn path in :mod:`clio_agent.gact.app`).
-The per-session retention-estimate helpers are concern-private and live here. This
-module imports only leaf packages (runtime, providers.config, types, stdlib) and
-never loads :mod:`clio_agent.gact.app`.
+Static catalogs and wire limits live in :mod:`clio_agent.gact.runtime`; this module
+keeps only the concern-private retention estimates and route projections.
 """
 
 from __future__ import annotations
@@ -104,14 +94,13 @@ _PROBE_STATE_TO_WIRE: dict[str, Literal["ready", "degraded", "unavailable"]] = {
 # CLIO process orphaned from both roots (#900 PART B). /v1/health is POLLED    #
 # (the TUI doctor modal hits it on a timer), so it MUST NOT pay that cold walk #
 # inline. We serve that one row the same way this handler already serves the   #
-# LM handshake: from a cache, refreshed in the background (stale-while-        #
-# revalidate), and — before any scan has run — a typed "collecting" placeholder#
-# instead of a blocking wait. The cheap reaper + child_processes rows stay     #
-# synchronous; the CLI doctor still collects the orphan scan fresh             #
+# LM handshake: from a cache populated by the boot reaper, and — before the    #
+# boot scan has finished — a typed "collecting" placeholder instead of a      #
+# blocking wait. The boot reaper publishes its one census here; the cheap      #
+# reaper + child_processes rows stay synchronous, and the CLI doctor still     #
+# collects an explicitly-requested fresh orphan scan.                          #
 # (collect_runtime_status defaults include_process_census=True).              #
 # --------------------------------------------------------------------------- #
-
-_ORPHAN_SCAN_TTL_S = 15.0
 
 
 def _orphan_scan_placeholder() -> IntegrationStatus:
@@ -183,22 +172,32 @@ def _kick_orphan_scan_refresh(app: "FastAPI") -> None:
 
 
 def _folded_orphan_scan_rows(app: "FastAPI") -> list[IntegrationStatus]:
-    """Cached orphan-scan row(s) for the polled /v1/health, stale-while-revalidate.
+    """Boot-cached orphan-scan row(s) for the polled /v1/health.
 
-    Returns the last cached rows immediately (kicking a background refresh when
-    they are older than the TTL); before any scan has run, returns a single typed
-    'collecting' placeholder and kicks the first fill. Never blocks the request on
-    the cold psutil walk.
+    The full-box census detects debris from an earlier server lifetime, so boot is
+    its natural event boundary. Repeating it on a wall-clock timer both duplicates
+    the reaper and can starve Windows request handling. Environments that call the
+    route without the application lifespan still get one fallback background fill.
     """
 
     cached = getattr(app.state, "orphan_scan_rows", None)
-    collected_at = getattr(app.state, "orphan_scan_at", 0.0)
     if cached is None:
         _kick_orphan_scan_refresh(app)
         return [_orphan_scan_placeholder()]
-    if time.time() - collected_at > _ORPHAN_SCAN_TTL_S:
-        _kick_orphan_scan_refresh(app)  # refresh in background; serve stale now
     return list(cached)
+
+
+async def _prime_orphan_scan_cache(app: "FastAPI") -> None:
+    """Populate health from the boot reaper's single full-box census."""
+
+    from clio_agent.runtime.process_census import boot_reap_off_loop  # noqa: PLC0415
+
+    app.state.orphan_scan_refreshing = True
+    try:
+        app.state.orphan_scan_rows = await boot_reap_off_loop()
+        app.state.orphan_scan_at = time.time()
+    finally:
+        app.state.orphan_scan_refreshing = False
 
 
 def _integration_to_wire(item: IntegrationStatus) -> Integration:

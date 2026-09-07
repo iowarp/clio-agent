@@ -868,7 +868,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # clear both gates. Neither guard was dropped to fit the cap and the rationale
     # is not trimmed to fit a ratchet; the baseline moves instead. Ratchets back
     # when the snapshot/classify/reap trio is split into its own module.
-    "src/clio_agent/runtime/process_census.py": 805,
     # NEW entry (#1305 review round): crossed the flat 800 cap (800 -> 825)
     # for the F2/F4/F6b fixes an adversarial review demanded on
     # _StreamClientEntry itself: (F2) the STREAM_END sentinel now queues

@@ -852,14 +852,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Reap proven CLIO orphans before the MCP-cache peer-liveness check; a
     # surviving orphan otherwise defers pruning indefinitely. Keep the order
     # real while running blocking cleanup off-loop with typed logging.
+    from clio_agent.gact.routes.system import _prime_orphan_scan_cache  # noqa: PLC0415
     from clio_agent.providers.codex_credential_home import (  # noqa: PLC0415
         _reap_orphaned_codex_homes,
     )
-    from clio_agent.runtime.process_census import boot_reap_off_loop  # noqa: PLC0415
     from clio_agent.tools.mcp_cache import boot_prune_off_loop  # noqa: PLC0415
 
     async def _reap_orphans_then_prune_mcp_cache() -> None:
-        await boot_reap_off_loop()
+        await _prime_orphan_scan_cache(app)
         await asyncio.to_thread(_reap_orphaned_codex_homes)
         await boot_prune_off_loop()
 

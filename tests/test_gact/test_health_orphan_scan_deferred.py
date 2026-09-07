@@ -2,13 +2,15 @@
 
 The ``child_parentage`` row is a psutil enumeration of every process on the host
 (~9s COLD on Windows). /v1/health is polled, so it serves that one row from a
-background-refreshed cache — returning a typed 'collecting' placeholder before the
-first scan completes — while the cheap reaper + child_processes rows stay
-synchronous. Prior to this fix a cold /v1/health blocked ~10s on the first call.
+boot-populated cache — returning a typed 'collecting' placeholder before the scan
+completes — while the cheap reaper + child_processes rows stay synchronous. A
+route-only fallback fills that cache once. Prior to this fix a cold /v1/health
+blocked ~10s on the first call and repeatedly rescanned the whole machine.
 """
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from pathlib import Path
@@ -16,8 +18,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+import clio_agent.runtime.process_census as process_census
 import clio_agent.runtime.process_tree as process_tree
 from clio_agent.gact.app import build_app
+from clio_agent.gact.routes.system import _folded_orphan_scan_rows
 from clio_agent.runtime.status import (
     IntegrationState,
     IntegrationStatus,
@@ -27,9 +31,7 @@ from clio_agent.runtime.status import (
 
 class _Agent:
     def forward(self, question: str, session_id: str):
-        return type(
-            "P", (), {"answer": "ok", "selected_expert": "", "routing_rationale": ""}
-        )()
+        return type("P", (), {"answer": "ok", "selected_expert": "", "routing_rationale": ""})()
 
 
 def _rows(body: dict) -> dict[str, dict]:
@@ -59,11 +61,11 @@ def test_health_defers_orphan_scan_and_fills_in_background(
     release = threading.Event()
     scanned = threading.Event()
 
-    def _blocked_scan() -> list[IntegrationStatus]:
+    async def _blocked_scan() -> list[IntegrationStatus]:
         # Model the ~9s cold walk: block until the test releases it, so the first
         # poll is guaranteed to see the placeholder (not a fast-filled real row).
         scanned.set()
-        release.wait(timeout=30)
+        await asyncio.to_thread(release.wait, 30)
         return [
             IntegrationStatus(
                 name="child_parentage",
@@ -74,7 +76,7 @@ def test_health_defers_orphan_scan_and_fills_in_background(
             )
         ]
 
-    monkeypatch.setattr(process_tree, "live_orphan_scan_rows", _blocked_scan)
+    monkeypatch.setattr(process_census, "boot_reap_off_loop", _blocked_scan)
 
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app) as client:
@@ -103,10 +105,18 @@ def test_orphan_scan_refresh_flag_clears_even_on_error(
     serve a typed degraded row — never wedge the guard True (which would freeze the
     cache and silently kill orphan detection forever)."""
 
-    def _boom() -> list[IntegrationStatus]:
-        raise RuntimeError("psutil exploded")
+    async def _failed_scan() -> list[IntegrationStatus]:
+        return [
+            IntegrationStatus(
+                name="child_parentage",
+                state=IntegrationState.DEGRADED,
+                summary="boot orphan scan collection failed: RuntimeError('psutil exploded')",
+                config_source="runtime:process_census",
+                next_action="Inspect the gact server logs for the orphan-scan failure.",
+            )
+        ]
 
-    monkeypatch.setattr(process_tree, "live_orphan_scan_rows", _boom)
+    monkeypatch.setattr(process_census, "boot_reap_off_loop", _failed_scan)
 
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app) as client:
@@ -119,3 +129,27 @@ def test_orphan_scan_refresh_flag_clears_even_on_error(
         row = _rows(client.get("/v1/health").json())["child_parentage"]
         assert row["status"] == "degraded"
         assert "psutil exploded" in row["detail"]
+
+
+def test_health_does_not_repeat_a_cached_full_box_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cached boot census is stable; health polling never starts a timed rescan."""
+
+    def _unexpected_scan() -> list[IntegrationStatus]:
+        raise AssertionError("cached health must not rescan the machine")
+
+    monkeypatch.setattr(process_tree, "live_orphan_scan_rows", _unexpected_scan)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    cached = IntegrationStatus(
+        name="child_parentage",
+        state=IntegrationState.READY,
+        summary="BOOT_SCAN",
+        config_source="runtime:process_census",
+        next_action="No action required.",
+    )
+    app.state.orphan_scan_rows = [cached]
+    app.state.orphan_scan_at = 0.0
+
+    for _ in range(3):
+        assert _folded_orphan_scan_rows(app) == [cached]
