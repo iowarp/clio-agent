@@ -81,7 +81,7 @@ def _summarize_segments_llm(
         route = resolve_secondary_lm("summarizer", caller_lm=caller_lm, caller_adapter=adapter)
         predict = dspy.Predict(sig)
         with dspy.context(lm=route.lm, adapter=route.adapter):
-            result = predict(prior_context=body)
+            result = predict(prior_context=body, lm=route.lm)
         return str(getattr(result, "summary", "") or "").strip()
     except Exception:  # noqa: BLE001
         logger.warning("arc auto-compaction summary LLM call failed", exc_info=True)

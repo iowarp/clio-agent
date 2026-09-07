@@ -309,7 +309,7 @@ def _thinking_disabled() -> bool:
 def _provider_lm_kwargs(config: LMProviderConfig) -> dict[str, Any]:
     """Return provider-specific LiteLLM kwargs for dspy.LM construction."""
     extras = _thinking_kwargs(config)
-    extras.update(config.provider_options)
+    extras.update(getattr(config, "provider_options", {}) or {})
     # Qwen-family reasoning models (e.g. qwopus) run their reasoning_content away
     # on the pipeline's structured routing/tool-decision calls — consuming the whole
     # token budget without reaching the decision (uncapped → >900s → wedge; capped →

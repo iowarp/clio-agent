@@ -154,8 +154,16 @@ def active_lm() -> tuple[Any, bool]:
         import dspy  # noqa: PLC0415
     except Exception:  # noqa: BLE001 - metering is best-effort
         return None, True
+    ambient = not _context_lm_bound()
+    if ambient:
+        try:
+            from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
+
+            return main_thread_config.get("lm"), True
+        except Exception:  # noqa: BLE001 - tolerate dspy settings shape drift
+            pass
     lm = getattr(dspy.settings, "lm", None) if hasattr(dspy, "settings") else None
-    return lm, not _context_lm_bound()
+    return lm, ambient
 
 
 def resolve_active_lm(

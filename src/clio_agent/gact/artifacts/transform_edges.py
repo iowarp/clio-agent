@@ -288,6 +288,7 @@ def detect_used_edges(
             # hashing or minting it: schema-arg evidence is not byte custody.
             if (
                 allow_external_inputs
+                and Path(raw).is_absolute()
                 and arg_name in external_file_input_args(tool_name)
                 and external_file_arg_was_consumed(tool_name, candidate)
             ):
@@ -307,6 +308,7 @@ def detect_used_edges(
                     )
             elif (
                 allow_external_inputs
+                and Path(raw).is_absolute()
                 and not is_known_non_consuming_path_tool(tool_name)
                 and arg_name not in external_file_input_args(tool_name)
                 and is_path_schema_arg(arg_name)
