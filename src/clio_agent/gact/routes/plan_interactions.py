@@ -16,6 +16,7 @@ _PLAN_REVIEW_KEYS = (
     "plan_content_error",
     "plan_content_chars",
     "plan_content_included_chars",
+    "artifact_ref",
 )
 
 

@@ -4,11 +4,12 @@ Owner module for the REGISTER and REUSE halves of save-and-reuse; the GENERALIZE
 :func:`clio_agent.gact.planning.playbook_from_saved_plan` derive) lives in the ``planning`` owner
 module. Composes with the artifacts provenance substrate (#966) — there is no new store.
 
-**REGISTER (:func:`save_approved_plan`).** When a plan-mode session is APPROVED via ``plan_exit``,
-the approved plan file (already on disk under ``plan_acl.plans_dir()``) is registered as a
-provenance-tracked artifact through the ONE :func:`~clio_agent.gact.artifacts.proposals.promote_proposal`
-path — the same funnel ``create_artifact`` uses (harness-hashed identity, content dedup, version
-chain, producer provenance). The ``plan`` :class:`~clio_agent.gact.artifacts.records.ArtifactKind`
+**REGISTER (:func:`save_approved_plan`).** When a plan-mode session reaches ``plan_exit``, the
+reviewed plan file (already on disk under ``plan_acl.plans_dir()``) is registered as a
+provenance-tracked artifact through the ONE :func:`~clio_agent.gact.artifacts.minting.mint_artifact_outcome`
+funnel (harness-hashed identity, content dedup, version chain, producer provenance). Registration
+does not copy the plan into the workspace and therefore does not weaken Plan mode's edit lock. The
+``plan`` :class:`~clio_agent.gact.artifacts.records.ArtifactKind`
 is RESERVED (nothing may mint it — a typed guard at the mint boundary), so a plan DOCUMENT rides the
 existing ``report`` kind (a markdown deliverable). Registration is a TYPED, NON-SILENT step: success
 records the artifact ref on ``session.metadata`` (:data:`SAVED_PLAN_METADATA_KEY`, no fifth store)
@@ -38,14 +39,15 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import planning
 from clio_agent.gact.artifacts.minting import (
-    _contained,
     _session_workspace_id,
     _workspace_root,
+    mint_artifact_outcome,
 )
-from clio_agent.gact.artifacts.proposals import Proposal, ProposalOutcome, promote_proposal
+from clio_agent.gact.artifacts.proposals import ProposalOutcome
+from clio_agent.gact.artifacts.records import ArtifactKind, Mechanism
 from clio_agent.gact.artifacts.registry import get_registry
+from clio_agent.gact.artifacts.storage import ingest_artifact_identity
 from clio_agent.runtime import trace
-from clio_agent.tools.execution import tool_workspace_context
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -69,7 +71,7 @@ PLAYBOOK_FROM_PLAN_META_KEY = planning.PLAYBOOK_FROM_PLAN_META_KEY
 validate_plan_ref_placement = planning.validate_plan_ref_placement
 
 #: The quarantined model-facing annotation stamped on the registered plan artifact.
-_SAVED_PLAN_ANNOTATION = "approved plan saved for reuse (P1.6c)"
+_SAVED_PLAN_ANNOTATION = "plan snapshot registered for review and reuse (P1.6c)"
 
 
 class PlanReuseError(RuntimeError):
@@ -96,47 +98,77 @@ def _rejected_outcome(reason: str, detail: str) -> ProposalOutcome:
     return ProposalOutcome(accepted=False, reason=reason, detail=detail)
 
 
-def _register_plan_artifact(app: "FastAPI", sid: str, plan_path: str) -> ProposalOutcome:
-    """Register the plan file through the ONE ``promote_proposal`` path (typed outcome).
+def _register_plan_artifact(
+    app: "FastAPI", sid: str, plan_path: str, *, turn_id: str = "", trace_id: str = ""
+) -> ProposalOutcome:
+    """Register the CLIO-owned plan through the harness mint funnel (typed outcome).
 
-    Registers by PATH when the plan file resolves inside the bound workspace root (non-destructive —
-    the on-disk file is hashed/ingested in place); otherwise reads its bytes and registers via the
-    inline ``content`` channel (the plans dir may live outside the workspace). Pre-promotion guards
-    (missing file / unresolvable workspace) return a typed rejection outcome, never raise.
+    The plan file already exists at the runtime-owned path recorded on the session. Ingest those
+    bytes directly into the workspace artifact store and mint the review snapshot without making a
+    workspace edit. This keeps Plan mode read-only while making the reviewed document durable.
     """
 
     if not plan_path or not Path(plan_path).is_file():
         return _rejected_outcome("plan_file_missing", f"no plan file on disk at {plan_path!r}")
+    session = app.state.sessions.get(sid)
+    metadata = getattr(session, "metadata", None)
+    recorded = str(metadata.get("plan_file") or "") if isinstance(metadata, Mapping) else ""
+    if not recorded or Path(recorded).resolve(strict=False) != Path(plan_path).resolve(strict=False):
+        return _rejected_outcome(
+            "plan_file_unowned", "the requested plan is not the plan path recorded for the session"
+        )
     workspace_id = _session_workspace_id(app, sid)
     if not workspace_id:
         return _rejected_outcome("workspace_unresolved", "no workspace bound to the session")
-    name = Path(plan_path).name
     root = _workspace_root(app, workspace_id)
-    if root is not None and _contained(Path(plan_path), root):
-        proposal = Proposal(
-            name=name, kind=SAVED_PLAN_KIND, path=plan_path, annotation=_SAVED_PLAN_ANNOTATION
-        )
-    else:
-        try:
-            content = Path(plan_path).read_text(encoding="utf-8")
-        except OSError as exc:
-            return _rejected_outcome("plan_content_unreadable", str(exc))
-        proposal = Proposal(
-            name=name, kind=SAVED_PLAN_KIND, content=content, annotation=_SAVED_PLAN_ANNOTATION
-        )
-    # Approval resolution runs outside the agent's tool-turn context. Bind the
-    # session workspace explicitly so the policy-checked inline channel sees the
-    # same workspace root it would see during a normal create_artifact tool call.
-    # This does not widen containment: promotion still targets ``root / name``
-    # and passes through the ordinary permission and file-policy gates.
-    with tool_workspace_context(root):
-        return promote_proposal(app, sid, proposal, workspace_id=workspace_id)
+    if root is None:
+        return _rejected_outcome("workspace_unresolved", "workspace root is unavailable")
+    ingested = ingest_artifact_identity(app, plan_path, workspace_root=root)
+    mint = mint_artifact_outcome(
+        app,
+        sid,
+        name=Path(plan_path).name,
+        workspace_id=workspace_id,
+        evidence=ingested.evidence,
+        kind=ArtifactKind(SAVED_PLAN_KIND),
+        mechanism=Mechanism.HARNESS,
+        producer={
+            "designation": "plan-exit-review",
+            "session_id": sid,
+            "turn_id": turn_id,
+        },
+        custody=ingested.custody,
+        path=plan_path,
+        annotation=_SAVED_PLAN_ANNOTATION,
+        turn_id=turn_id,
+        trace_id=trace_id,
+        ingested=ingested,
+        not_ingested_size=ingested.not_ingested_size,
+    )
+    if mint is None or mint.version is None:
+        return _rejected_outcome("save_failed", "artifact mint returned no version")
+    return ProposalOutcome(
+        accepted=True,
+        name=Path(plan_path).name,
+        reason="" if mint.created else mint.reason,
+        created=mint.created,
+        version=mint.version,
+        workspace_id=workspace_id,
+    )
 
 
-def save_approved_plan(app: "FastAPI", sid: str, *, plan_file: str) -> dict[str, Any]:
-    """Register an APPROVED plan file as a provenance-tracked artifact (P1.6c #1068).
+def save_approved_plan(
+    app: "FastAPI",
+    sid: str,
+    *,
+    plan_file: str,
+    turn_id: str = "",
+    trace_id: str = "",
+) -> dict[str, Any]:
+    """Register a plan-review snapshot as a provenance-tracked artifact (P1.6c #1068).
 
-    Called from ``plan_mode.resolve_plan_exit_answer`` on every APPROVE decision. The whole
+    Called when ``plan_exit`` is surfaced for review. Older approval records without a pre-minted
+    ref use the same function as a compatibility fallback. The whole
     registration is guarded: any failure (a typed rejection from ``promote_proposal`` OR an
     exception — e.g. the registry fold refusing on the event loop) degrades to a typed reason
     recorded on ``session.metadata`` and emitted on the semantic highway; it NEVER raises, so a
@@ -150,7 +182,9 @@ def save_approved_plan(app: "FastAPI", sid: str, *, plan_file: str) -> dict[str,
 
     plan_path = str(plan_file or "").strip()
     try:
-        outcome = _register_plan_artifact(app, sid, plan_path)
+        outcome = _register_plan_artifact(
+            app, sid, plan_path, turn_id=turn_id, trace_id=trace_id
+        )
     except Exception as exc:  # noqa: BLE001 — a degraded save must never block the plan-exit resume
         return _record_degrade(
             app, sid, plan_path, reason="save_failed_exception", detail=repr(exc)
@@ -184,12 +218,12 @@ def _record_saved(
         app,
         sid,
         status="completed",
-        summary=f"saved approved plan {outcome.name!r} as artifact {ver.artifact_id} v{ver.version}",
+        summary=f"registered plan snapshot {outcome.name!r} as artifact {ver.artifact_id} v{ver.version}",
         payload=ref,
     )
     trace.event(
         "PLAN",
-        "saved approved plan as artifact %s v%d (%s) for %s",
+        "registered plan snapshot as artifact %s v%d (%s) for %s",
         ver.artifact_id,
         ver.version,
         outcome.name,

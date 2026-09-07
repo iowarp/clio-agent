@@ -480,6 +480,7 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
 
     from clio_agent.gact.enrichment import _finalize_context_frame  # noqa: PLC0415
     from clio_agent.gact.events import Event  # noqa: PLC0415
+    from clio_agent.gact.plan_reuse import save_approved_plan  # noqa: PLC0415
     from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
         _emit_semantic_event,
         _new_question_id,
@@ -491,6 +492,16 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
     summary = str(pending.get("summary") or "")
     recommended = str(pending.get("recommended_mode") or "")
     risk_notes = str(pending.get("risk_notes") or "")
+    # The document presented for human review is the durable plan record. Register it at the
+    # plan-exit boundary, before approval, so the review and the eventual execution reference the
+    # same immutable artifact version. Approval reuses this ref; it must not mint a second version.
+    plan_artifact_ref = save_approved_plan(
+        app,
+        state.sid,
+        plan_file=plan_file,
+        turn_id=state.turn_id,
+        trace_id=state.trace_id,
+    )
     now_iso = datetime.now(timezone.utc).isoformat()
     from clio_agent.gact.permission_delivery import attended_session_id  # noqa: PLC0415
 
@@ -515,6 +526,7 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
             "summary": summary,
             "risk_notes": risk_notes,
             "plan_file": plan_file,
+            "artifact_ref": plan_artifact_ref,
             "invocation_id": str(pending.get("invocation_id") or ""),
             **plan_review_content(plan_file),
             "source_user_message_id": state.user_msg.id,

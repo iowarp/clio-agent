@@ -168,6 +168,8 @@ def test_maybe_pause_mints_approval_question_and_yields(
     assert q.status == "pending"
     assert q.metadata["plan_content"] == "# Plan\n- do a thing\n"
     assert q.metadata["plan_content_status"] == "complete"
+    assert q.metadata["artifact_ref"]["saved"] is True
+    assert q.metadata["artifact_ref"]["artifact_id"]
     assert {o.value for o in q.options} >= {
         "auto",
         "interactive",
@@ -193,6 +195,7 @@ def test_maybe_pause_mints_approval_question_and_yields(
         "plan_file": str(tmp_path / "plan.md"),
         "plan_content": "# Plan\n- do a thing\n",
         "plan_content_status": "complete",
+        "artifact_ref": q.metadata["artifact_ref"],
     }
 
     # A second seam call is a no-op (already surfaced) — no double question.
@@ -295,6 +298,40 @@ def test_approve_auto_transitions_edit_and_injects_constraint_lift(tmp_path: Pat
     assert resume["metadata"]["plan_exit_result"] == "approved"
     # The pending-request bookkeeping is cleared.
     assert not fresh.metadata.get("pending_plan_exit")
+
+
+def test_approval_reuses_reviewed_plan_artifact_without_minting_a_second_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _make_app(tmp_path)
+    sess = _plan_session(app, tmp_path)
+    _call_plan_exit(app, sess.id, summary="ship it", recommendedMode="auto")
+    monkeypatch.setattr("clio_agent.gact.turn_stream.settle_turn_transcript", lambda state: None)
+    monkeypatch.setattr("clio_agent.gact.enrichment._finalize_context_frame", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "clio_agent.gact.runtime.globals._emit_semantic_event", lambda *a, **k: None
+    )
+
+    assert maybe_pause_for_plan_exit(_fake_state(app, sess)) is True
+    q = next(
+        q for q in app.state.user_questions.values() if q.metadata.get(PLAN_EXIT_APPROVAL_META)
+    )
+    reviewed_ref = dict(q.metadata["artifact_ref"])
+    assert reviewed_ref["saved"] is True
+
+    from clio_agent.gact import plan_reuse
+
+    monkeypatch.setattr(
+        plan_reuse,
+        "save_approved_plan",
+        lambda *args, **kwargs: pytest.fail("approval minted a second plan artifact"),
+    )
+    deps = _fake_deps()
+    app.state.agent = object()
+    resolve_plan_exit_answer(app, deps, sess.id, _answer(q, selected=["auto"]))
+
+    resume = deps._calls["resume"][0]
+    assert resume["metadata"]["approved_plan"]["artifact_ref"] == reviewed_ref
 
 
 def test_approve_interactive_uses_ask_approval_mode(tmp_path: Path) -> None:

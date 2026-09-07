@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.plan_exit_resume import approved_plan_resume_text, rejected_plan_resume_text
@@ -217,7 +218,12 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
 
     from clio_agent.gact.plan_reuse import save_approved_plan
 
-    saved_plan = save_approved_plan(app, sid, plan_file=plan_file)
+    reviewed_artifact = q_meta.get("artifact_ref")
+    saved_plan = (
+        dict(reviewed_artifact)
+        if isinstance(reviewed_artifact, Mapping) and reviewed_artifact.get("saved") is True
+        else save_approved_plan(app, sid, plan_file=plan_file)
+    )
     review = {
         "content": str(q_meta.get("plan_content") or ""),
         "content_status": str(q_meta.get("plan_content_status") or ""),
