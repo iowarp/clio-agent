@@ -193,14 +193,15 @@ def _diff(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
         after = Path(validate_read_path(snapshot.path)).read_text(
             encoding="utf-8", errors="replace"
         )
-        diff = "\n".join(
-            difflib.unified_diff(
-                snapshot.content.splitlines(),
-                after.splitlines(),
-                fromfile=f"a/{Path(snapshot.path).name}",
-                tofile=f"b/{Path(snapshot.path).name}",
-                lineterm="",
-            )
+        lines = difflib.unified_diff(
+            snapshot.content.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile=f"a/{Path(snapshot.path).name}",
+            tofile=f"b/{Path(snapshot.path).name}",
+        )
+        diff = "".join(
+            line if line.endswith("\n") else f"{line}\n\\ No newline at end of file\n"
+            for line in lines
         )
     return {
         "summary": str(row.get("path") or args.get("filepath") or ""),
