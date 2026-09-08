@@ -28,6 +28,7 @@ from clio_agent.gact.permission_gate import (
     _make_cancellation_checker,
     _make_permission_gate,
 )
+from clio_agent.gact.presentation_observer import completed_presentation, publish_presentation_delta
 from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
     _emit_semantic_event,
@@ -57,28 +58,12 @@ _OBSERVER_CALL_T0 = threading.local()
 _OBSERVER_ELICIT_REC = threading.local()
 
 
-def _tool_call_event_key(call: Mapping[str, Any]) -> tuple[str, str]:
-    """Return a stable identity for de-duplicating tool telemetry events."""
-    call_id = str(call.get("call_id") or "").strip()
-    if call_id:
-        return "__call_id__", call_id
-    return _tool_call_name_args_key(call)
-
-
-def _tool_call_name_args_key(call: Mapping[str, Any]) -> tuple[str, str]:
-    """Return a tool-name/arguments identity for posthoc trajectory rows."""
-
-    name = str(call.get("name") or call.get("tool") or "")
-    args = call.get("args")
-    if args is None:
-        args = call.get("arguments")
-    if args is None:
-        args = call.get("params")
-    try:
-        encoded_args = json.dumps(args or {}, sort_keys=True, default=str)
-    except TypeError:
-        encoded_args = str(args or {})
-    return name, encoded_args
+from clio_agent.gact.tool_event_identity import (
+    _tool_call_event_key as _tool_call_event_key,
+)
+from clio_agent.gact.tool_event_identity import (
+    _tool_call_name_args_key as _tool_call_name_args_key,
+)
 
 
 def _tool_call_has_result_evidence(call: Mapping[str, Any]) -> bool:
@@ -636,6 +621,7 @@ def _make_tool_observer(app: "FastAPI"):
             if projected is None:
                 return None
             sid, payload, handle = projected
+            publish_presentation_delta(app, sid, payload)
             app.state.bus.publish(Event(type="tool.call.progress", session_id=sid, payload=payload))
             return handle
 
@@ -675,6 +661,9 @@ def _make_tool_observer(app: "FastAPI"):
                 app, session_id=sid, tool_name=name, invocation_id=call_id
             )
             observer_handle = progress_registry.started(call_id, sid)
+            from clio_agent.tools.tool_presentation import starting_presentation
+
+            initial_presentation = starting_presentation(name, args)
             # B5 #979.7 (deferred B4 WRITER): join call_id → confined FLEET child (no-op on the
             # floor / built-in namespaces → the egress mint abstains). See ingest_edges.
             join_call_to_serving_child(app, sid, name, call_id)
@@ -685,6 +674,7 @@ def _make_tool_observer(app: "FastAPI"):
                 "call_id": call_id,
                 "tool": name,
                 "args": dict(args),
+                "presentation": initial_presentation,
                 "telemetry_source": "live_observer",
                 **representation_fields,
                 **tool_title_fields,
@@ -756,6 +746,7 @@ def _make_tool_observer(app: "FastAPI"):
                     # model's text and the action it chose are one ordered event.
                     thought=step_thought,
                     input=bounded_tool_call_input(name, args),
+                    presentation=initial_presentation,
                     metadata=call_metadata,
                 ),
             )
@@ -763,7 +754,7 @@ def _make_tool_observer(app: "FastAPI"):
         elif phase == "completed":
             close_invocation(getattr(_OBSERVER_ELICIT_REC, "value", None))  # P1.3 #1113
             call_id = getattr(_OBSERVER_CALL_IDS, "value", "") or ""
-            progress_registry.completed(call_id)
+            terminal_output = progress_registry.completed(call_id)
             t0 = getattr(_OBSERVER_CALL_T0, "value", None)
             duration_ms = (time.time() - t0) * 1000 if t0 else 0.0
             cancel_event = app.state.cancel_events.get(sid)
@@ -799,6 +790,9 @@ def _make_tool_observer(app: "FastAPI"):
                 )
             )
             result_summary = f"Tool {name} {'completed' if ok else 'failed'}."
+            result, presentation = completed_presentation(
+                name, args, result, structured_content, terminal_output
+            )
             # Served payload = the tool-response atom's FACTS (ok/duration/cached/result/
             # error). No ui_summary/result_summary captions — clio transmits, it does not
             # author UI labels; the envelope ``summary`` below is the one short caption.
@@ -806,6 +800,7 @@ def _make_tool_observer(app: "FastAPI"):
                 "call_id": call_id,
                 "tool": name,
                 "ok": ok,
+                "presentation": presentation,
                 "duration_ms": duration_ms,
                 "cached": False,
                 "telemetry_source": "live_observer",
@@ -904,6 +899,7 @@ def _make_tool_observer(app: "FastAPI"):
                     # ``metadata``. Wire-only: the model's observation is the
                     # separate ``model_text`` built at the execution boundary.
                     structured_content=structured_content,
+                    presentation=presentation,
                     content_blocks=content_blocks_for_wire(result),  # #1188
                     content=[
                         Part(

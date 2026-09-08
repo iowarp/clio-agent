@@ -444,6 +444,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
         native_tool(
             resource_list,
             name="workspace_resource_list",
+            presentation="resource",
             title="List Uploaded Resources",
             representation="row",
             desc=(
@@ -455,6 +456,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
         native_tool(
             resource_inspect,
             name="workspace_resource_inspect",
+            presentation="resource",
             title="Inspect Uploaded Resource",
             representation="row",
             desc=(
@@ -466,6 +468,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
         native_tool(
             resource_wait,
             name="workspace_resource_wait",
+            presentation="resource",
             title="Wait for Resource Conversion",
             representation="row",
             desc=(
@@ -488,6 +491,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
         native_tool(
             resource_read,
             name="workspace_resource_read",
+            presentation="resource",
             title="Read Uploaded Text",
             representation="row",
             desc=(
@@ -505,6 +509,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
         native_tool(
             resource_search,
             name="workspace_resource_search",
+            presentation="resource",
             title="Search Uploaded Resource",
             representation="row",
             desc=(
@@ -523,6 +528,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
         native_tool(
             resource_structure,
             name="workspace_resource_structure",
+            presentation="resource",
             title="Read Document Structure",
             representation="row",
             desc=(

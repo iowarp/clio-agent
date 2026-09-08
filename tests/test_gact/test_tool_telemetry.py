@@ -707,7 +707,10 @@ def test_live_observer_correlates_and_accumulates_terminal_progress(tmp_path: Pa
     assert [event.payload["call_id"] for event in progress] == [call_id, call_id]
     assert completed[0].payload["call_id"] == call_id
     assert progress[0].payload["output_stream"] == "collecting\n"
-    assert progress[1].payload["output_stream"] == ("collecting\n\x1b[31mwarning\n\x1b[0m")
+    assert progress[1].payload["output_stream"] == "collecting\nwarning\n"
+    deltas = [event for event in history if event.type == "tool.presentation.delta"]
+    assert [event.payload["channel"] for event in deltas] == ["stdout", "stderr"]
+    assert [event.payload["text"] for event in deltas] == ["collecting\n", "warning\n"]
 
 
 def test_wait_agent_tasks_tool_call_stamps_waited_tasks_display_rows(tmp_path: Path) -> None:

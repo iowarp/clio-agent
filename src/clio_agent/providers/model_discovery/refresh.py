@@ -214,6 +214,7 @@ def build_refresh_provider_models_tool() -> Any:
     return native_tool(
         refresh_provider_models,
         name="refresh_provider_models",
+        presentation="model_catalog",
         desc=refresh_provider_models.__doc__,
         title="Refresh Provider Models",
         args={},

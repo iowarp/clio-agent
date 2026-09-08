@@ -55,6 +55,7 @@ bridge, so a future tool cannot be born invisible.
 
 from __future__ import annotations
 
+import copy
 import functools
 import inspect
 import logging
@@ -73,6 +74,8 @@ logger = logging.getLogger(__name__)
 # survive ``functools.wraps``, which copies ``__dict__``).
 REPRESENTATION_ATTR = "_clio_tool_representation"
 TITLE_ATTR = "_clio_tool_title"
+PRESENTER_ATTR = "_clio_tool_result_presenter"
+_RESULT_PRESENTERS: dict[str, Any] = {}
 
 DEFAULT_REPRESENTATION = "row"
 TOOL_REPRESENTATIONS = frozenset({"row", "handoff", "chip"})
@@ -278,6 +281,7 @@ def native_tool(
     name: str,
     desc: str | None,
     args: dict[str, Any],
+    presentation: Any,
     title: str = "",
     representation: str = DEFAULT_REPRESENTATION,
 ) -> Any:
@@ -289,6 +293,10 @@ def native_tool(
     ONE sanctioned native construction path (CI guard baseline 0).
     """
 
+    from clio_agent.gact.agents.native_presenters import validate_declaration
+
+    validate_declaration(presentation)
+    setattr(func, PRESENTER_ATTR, presentation)
     setattr(func, REPRESENTATION_ATTR, _validated_representation(representation, tool_name=name))
     setattr(func, TITLE_ATTR, sanitize_tool_title(title))
     return ClioNativeTool(func=func, name=name, desc=desc, args=args)
@@ -338,7 +346,7 @@ def rebuilt_tool(
     """
 
     inner_func = getattr(inner_tool, "func", None)
-    for attr in (TOOL_OBSERVED_ATTR, REPRESENTATION_ATTR, TITLE_ATTR):
+    for attr in (TOOL_OBSERVED_ATTR, REPRESENTATION_ATTR, TITLE_ATTR, PRESENTER_ATTR):
         value = getattr(inner_func, attr, None)
         if value is not None:
             setattr(func, attr, value)
@@ -489,6 +497,9 @@ def _instrument_tool(tool: Any) -> Any:
     )
     title = sanitize_tool_title(getattr(func, TITLE_ATTR, ""))
     _TOOL_PRESENTATIONS[name] = (representation, title)
+    presenter = getattr(func, PRESENTER_ATTR, None)
+    if presenter is not None:
+        _RESULT_PRESENTERS[name] = presenter
     if getattr(func, TOOL_OBSERVED_ATTR, False):
         return tool
     tool.func = observed_tool_callable(func, name)
@@ -505,3 +516,18 @@ def declared_tool_title(name: str) -> str:
     """The curated, sanitized title for ``name`` (empty when uncurated)."""
 
     return _TOOL_PRESENTATIONS.get(str(name or ""), (DEFAULT_REPRESENTATION, ""))[1]
+
+
+def present_native_result(
+    name: str, args: Mapping[str, Any], result: Any, structured: Any
+) -> dict[str, Any] | None:
+    """Run a registered observer presenter without changing the tool result."""
+
+    from clio_agent.gact.agents.native_presenters import native_presentation
+
+    presenter = _RESULT_PRESENTERS.get(name)
+    if presenter is None:
+        return None
+    if callable(presenter):
+        return presenter(copy.deepcopy(args), copy.deepcopy(result), copy.deepcopy(structured))
+    return native_presentation(presenter, args, result, structured)

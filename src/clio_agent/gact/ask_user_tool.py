@@ -200,6 +200,7 @@ def build_ask_user_tool(agent_def: Any) -> Any:
     return native_tool(
         ask_user,
         name="ask_user",
+        presentation="specialized",
         desc=ask_user.__doc__,
         title="Ask User",
         args={

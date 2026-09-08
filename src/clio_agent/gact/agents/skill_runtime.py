@@ -408,6 +408,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
     return native_tool(
         load_skill,
         name="load_skill",
+        presentation="text",
         title="Load Skill",
         desc=(
             "Load the full procedure of one of this expert's declared skills "
@@ -473,6 +474,7 @@ def build_spawn_skill_task_tool(agent_def: "AgentDef", runtime: SkillRuntime) ->
     return native_tool(
         spawn_skill_task,
         name="spawn_skill_task",
+        presentation="specialized",
         title="Start child agent",
         representation="handoff",
         desc=(

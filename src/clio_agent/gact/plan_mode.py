@@ -378,6 +378,7 @@ def build_plan_exit_tool(agent_def: Any) -> Any:
     return native_tool(
         plan_exit,
         name="plan_exit",
+        presentation="specialized",
         desc=plan_exit.__doc__,
         title="Exit Plan",
         args={

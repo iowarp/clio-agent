@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from clio_agent.gact.a2ui import project_a2ui_parts
+from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.protocol.v3 import utcnow_iso
+from clio_agent.gact.tool_result_presentation import project_presentation
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -398,6 +400,9 @@ def _project_tool(context: _TranscriptProjection, part: Mapping[str, Any], part_
             if value is not None and (key not in {"content", "text"} or value):
                 output = value
                 break
+    presentation = project_presentation(
+        part.get("presentation"), context.session_id, tool_id, running=state == "running"
+    ) or current.get("presentation")
     context.tools[tool_id] = {
         "id": tool_id,
         "session_id": context.session_id,
@@ -410,7 +415,8 @@ def _project_tool(context: _TranscriptProjection, part: Mapping[str, Any], part_
         ),
         "state": state,
         "input": current.get("input", part.get("input")),
-        "output": output,
+        "output": _bounded_tool_call_result(output),
+        **({"presentation": presentation} if presentation is not None else {}),
         "duration_ms": part.get("duration_ms") or current.get("duration_ms"),
         **({"error": str(part.get("text") or "Tool failed")} if failed else {}),
     }

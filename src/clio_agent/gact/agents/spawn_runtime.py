@@ -37,6 +37,7 @@ from clio_agent.gact.agents.blueprint_commission import (
     emit_commission_started,
     resolve_commission_target,
 )
+from clio_agent.gact.agents.native_presenters import build_wait_tool
 from clio_agent.gact.agents.spawn_completion import (
     completion_payload as _completion_payload,
 )
@@ -744,6 +745,7 @@ def build_spawn_runtime_tools(
         native_tool(
             spawn_agent_task,
             name="spawn_agent_task",
+            presentation="specialized",
             desc=spawn_agent_task.__doc__,
             title="Spawn Agent",
             representation="handoff",
@@ -771,15 +773,7 @@ def build_spawn_runtime_tools(
                 "blueprint_id": SPAWN_BLUEPRINT_ARGUMENT,
             },
         ),
-        native_tool(
-            wait_agent_tasks,
-            name="wait_agent_tasks",
-            desc=wait_agent_tasks.__doc__,
-            title="Wait",
-            args={
-                "task_ids": {"type": "array", "description": "Task ids returned by spawn."},
-            },
-        ),
+        build_wait_tool(wait_agent_tasks),
         build_message_agent_tool(agent_def),
         # OBSERVE posture (#1000): the read-only child-progress surface, built in
         # its owner module (observe_runtime) so this file stays under the size ratchet.
@@ -790,6 +784,7 @@ def build_spawn_runtime_tools(
         native_tool(
             spawn_agents_parallel,
             name="spawn_agents_parallel",
+            presentation="specialized",
             desc=spawn_agents_parallel.__doc__,
             title="Spawn Agents",
             representation="handoff",
@@ -832,6 +827,7 @@ def build_spawn_runtime_tools(
             native_tool(
                 run_workflow,
                 name="run_workflow",
+                presentation="specialized",
                 desc=run_workflow.__doc__,
                 title="Run Workflow",
                 representation="handoff",

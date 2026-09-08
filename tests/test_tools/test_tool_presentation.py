@@ -22,12 +22,12 @@ def test_file_write_diff_is_added_only_to_observer_result(tmp_path) -> None:
         "content": [],
         "structuredContent": {"path": str(target), "written_path": str(target), "ok": True},
     }
+    target.write_text("SECOND", encoding="utf-8")
     enriched = enrich_tool_observer_result(original, args, snapshot)
 
     assert original["structuredContent"].get("unified_diff") is None
-    assert enriched["structuredContent"]["unified_diff"].endswith("-FIRST\n+SECOND")
-    assert enriched["structuredContent"]["lines_added"] == 1
-    assert enriched["structuredContent"]["lines_removed"] == 1
+    assert enriched["structuredContent"] == original["structuredContent"]
+    assert enriched["presentation"]["blocks"][0]["text"].endswith("-FIRST\n+SECOND")
 
 
 def test_non_file_tool_has_no_presentation_snapshot() -> None:

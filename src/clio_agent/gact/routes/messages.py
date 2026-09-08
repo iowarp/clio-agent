@@ -188,6 +188,29 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     # ---- GET /v1/sessions/{sid}/messages/search (BBB27) ---------------
 
+    @app.get("/v1/sessions/{sid}/tools/{call_id}/presentation/{block_id}")
+    async def get_tool_presentation_content(
+        sid: str, call_id: str, block_id: str, cursor: int = 0
+    ) -> dict[str, Any]:
+        """Page persisted presentation content within the owning session only."""
+
+        from clio_agent.gact.tool_result_presentation import presentation_page
+
+        if app.state.sessions.get(sid) is None:
+            raise _session_not_found(sid)
+        parts = [part for message in app.state.messages.get(sid, []) for part in message.parts]
+        parts.extend(getattr(app.state, "live_assistant_parts", {}).get(sid, []))
+        for part in reversed(parts):
+            if part.call_id != call_id:
+                continue
+            for block in (part.presentation or {}).get("blocks", []):
+                if block["id"] == block_id:
+                    try:
+                        return presentation_page(block, cursor)
+                    except ValueError as exc:
+                        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail="Presentation content not found in session")
+
     @app.get("/v1/sessions/{sid}/messages/search")
     async def search_messages(sid: str, q: str = "") -> dict[str, Any]:
         """Case-insensitive substring search across stored messages.

@@ -1,0 +1,247 @@
+"""Declared native-tool presenters, isolated from execution and observation."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable, Mapping
+from typing import Any
+
+Presenter = Callable[[Mapping[str, Any], Any, Any], dict[str, Any]]
+
+
+def build_wait_tool(callback: Callable[..., Any]) -> Any:
+    """Declare the committed collector's model interface and observer result view."""
+    from clio_agent.gact.agents.tool_instrumentation import native_tool
+
+    return native_tool(
+        callback,
+        name="wait_agent_tasks",
+        presentation="tasks",
+        desc=callback.__doc__,
+        title="Wait",
+        args={"task_ids": {"type": "array", "description": "Task ids returned by spawn."}},
+    )
+
+
+def _record(value: Any) -> dict[str, Any]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def native_presentation(
+    declaration: str, args: Mapping[str, Any], result: Any, structured: Any
+) -> dict[str, Any]:
+    """Render an explicitly selected native result contract, never guess a tool."""
+
+    row = _record(structured) if structured is not None else _record(result)
+    summary = str(row.get("message") or "")
+    blocks: list[dict[str, Any]] = []
+    if declaration == "text":
+        if isinstance(result, str):
+            blocks.append({"id": "content", "type": "markdown", "text": result})
+    elif declaration == "task_output":
+        summary = f"Collected task {row.get('task_id', args.get('task_id', ''))} · {row.get('status', '')}"
+        blocks.append({"id": "output", "type": "markdown", "text": str(row.get("output") or "")})
+        child = _child_session(str(row.get("task_id") or args.get("task_id") or ""))
+        if child:
+            blocks.insert(
+                0,
+                {
+                    "id": "child",
+                    "type": "link",
+                    "target": "session",
+                    "uri": child,
+                    "label": "Open child conversation",
+                },
+            )
+    elif declaration == "tasks":
+        summary = str(row.get("summary") or summary)
+        source = _record(result)
+        task_rows = source.get(
+            "results", source.get("tasks", row.get("results", row.get("tasks", [])))
+        )
+        display_rows = row.get("results", [])
+        for index, task in enumerate(task_rows):
+            if not isinstance(task, Mapping):
+                continue
+            task_id = str(task.get("task_id") or task.get("id") or "")
+            display = display_rows[index] if index < len(display_rows) else {}
+            label = str(display.get("name") or task.get("name") or task_id or "Task")
+            child = str(
+                task.get("child_session_id") or task.get("session_id") or _child_session(task_id)
+            )
+            if child:
+                blocks.append(
+                    {
+                        "id": f"task-{index}",
+                        "type": "link",
+                        "target": "session",
+                        "uri": child,
+                        "label": f"{label} · {task.get('status', '')}",
+                    }
+                )
+            else:
+                blocks.append(
+                    {
+                        "id": f"task-{index}",
+                        "type": "text",
+                        "text": f"{label} · {task.get('status', '')}",
+                    }
+                )
+            excerpt = display.get("answer_excerpt")
+            if isinstance(excerpt, str) and excerpt:
+                blocks.append({"id": f"task-{index}-result", "type": "markdown", "text": excerpt})
+    elif declaration == "model_catalog":
+        entries = []
+        for provider in row.get("results", []):
+            if not isinstance(provider, Mapping):
+                continue
+            entries.append(
+                f"{provider.get('provider', '')} · {provider.get('source', '')} · default: {provider.get('default_model', '')}"
+            )
+            for field in ("added", "removed", "unchanged", "failed_reason", "rejected"):
+                value = provider.get(field)
+                if isinstance(value, list) and all(isinstance(item, str) for item in value):
+                    entries.append(f"{field}: {', '.join(value)}")
+                elif isinstance(value, str | int):
+                    entries.append(f"{field}: {value}")
+        blocks.append({"id": "models", "type": "text", "text": "\n".join(entries)})
+    elif declaration == "todos":
+        text = "\n".join(
+            f"{index + 1}. **{str(todo.get('status', '')).replace('_', ' ').capitalize()}** — {todo.get('content', '')}"
+            for index, todo in enumerate(row.get("todos", []))
+            if isinstance(todo, Mapping)
+        )
+        blocks.append({"id": "todos", "type": "markdown", "text": text})
+    elif declaration == "schedules":
+        text = "\n".join(
+            f"{schedule.get('id', '')} · {schedule.get('cron', '')} · {schedule.get('timezone', '')}\n{schedule.get('prompt', '')}\nNext: {schedule.get('next_fire_at', '')}"
+            for schedule in row.get("schedules", [])
+            if isinstance(schedule, Mapping)
+        )
+        blocks.append({"id": "schedules", "type": "text", "text": text})
+    elif declaration == "resource":
+        summary = str(row.get("name") or row.get("resource_id") or summary)
+        record = row.get("resource")
+        if isinstance(record, Mapping):
+            summary = str(
+                record.get("display_name")
+                or record.get("name")
+                or record.get("resource_id")
+                or summary
+            )
+            fields = [
+                f"{key.replace('_', ' ')}: {record[key]}"
+                for key in ("detected_mime", "size_bytes", "revision")
+                if key in record
+            ]
+            blocks.append({"id": "identity", "type": "text", "text": "\n".join(fields)})
+        processing = row.get("processing")
+        if isinstance(processing, Mapping):
+            fields = [
+                f"{key.replace('_', ' ')}: {processing[key]}"
+                for key in ("state", "stage", "message", "progress", "error")
+                if isinstance(processing.get(key), str | int | float)
+            ]
+            blocks.append({"id": "processing", "type": "text", "text": "\n".join(fields)})
+        matches = row.get("matches")
+        if isinstance(matches, list):
+            blocks.append(
+                {
+                    "id": "matches",
+                    "type": "text",
+                    "text": "\n".join(
+                        f"{match.get('line', '')}: {match.get('text', '')}"
+                        for match in matches
+                        if isinstance(match, Mapping)
+                    ),
+                }
+            )
+        node = row.get("node")
+        if isinstance(node, Mapping):
+            # A document node is declared resource structure, not a model response.
+            fields = [
+                str(node[key])
+                for key in ("title", "text", "content", "caption")
+                if isinstance(node.get(key), str)
+            ]
+            blocks.append({"id": "node", "type": "text", "text": "\n".join(fields)})
+        content = row.get("text", row.get("content"))
+        if isinstance(content, str):
+            blocks.append({"id": "content", "type": "text", "text": content})
+        for index, resource in enumerate(row.get("resources", [])):
+            if isinstance(resource, Mapping):
+                blocks.append(
+                    {
+                        "id": f"resource-{index}",
+                        "type": "link",
+                        "target": "resource",
+                        "uri": str(resource.get("resource_id") or resource.get("id") or ""),
+                        "label": str(resource.get("name") or "Resource"),
+                    }
+                )
+    elif declaration == "artifact":
+        for index, artifact in enumerate(row.get("artifacts", [row])):
+            if isinstance(artifact, Mapping):
+                uri = str(artifact.get("uri") or artifact.get("artifact_id") or "")
+                if uri:
+                    blocks.append(
+                        {
+                            "id": f"artifact-{index}",
+                            "type": "link",
+                            "target": "artifact",
+                            "uri": uri,
+                            "label": str(
+                                artifact.get("name") or artifact.get("title") or "Artifact"
+                            ),
+                        }
+                    )
+    elif declaration.startswith("fields:"):
+        for field in declaration.removeprefix("fields:").split(","):
+            value = row.get(field)
+            if isinstance(value, str | int | float | bool) and value != "":
+                blocks.append(
+                    {
+                        "id": field,
+                        "type": "text",
+                        "text": f"{field.replace('_', ' ').capitalize()}: {value}",
+                    }
+                )
+    elif declaration != "specialized":
+        raise ValueError(f"Unknown native presentation declaration: {declaration}")
+    return {"summary": summary, "blocks": blocks}
+
+
+def validate_declaration(value: str | Presenter) -> None:
+    """Reject missing or unknown declarations when a native tool is registered."""
+
+    if callable(value):
+        return
+    if value in {
+        "text",
+        "tasks",
+        "task_output",
+        "resource",
+        "artifact",
+        "specialized",
+        "todos",
+        "schedules",
+        "model_catalog",
+    }:
+        return
+    if isinstance(value, str) and value.startswith("fields:") and value[7:]:
+        return
+    raise ValueError("Every native tool must declare result presentation semantics")
+
+
+def _child_session(task_id: str) -> str:
+    from clio_agent.gact import context
+
+    app = context.active_app()
+    registry = getattr(app.state, "agent_task_registry", None) if app is not None else None
+    task = registry.get(task_id) if registry is not None else None
+    return str(getattr(task, "child_session_id", "") or "")

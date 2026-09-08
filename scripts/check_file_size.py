@@ -323,7 +323,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # in the owner module agents/agent_task_input_refs.py; only this file's own
     # tuple-unpack + one added kwarg on two call sites (emit_spawn_started's
     # wrapper + _do_spawn's own call) landed here.
-    "src/clio_agent/gact/agents/spawn_runtime.py": 846,
+    "src/clio_agent/gact/agents/spawn_runtime.py": 842,
     # NEW entry (C1-S7, #1309 gate-review F1): crossed the flat 800 cap
     # (791 -> 842) for the new _apply_session_tool_allowlist owner function --
     # the ONE place that forces an agent-elicitation answer child's bound
@@ -469,7 +469,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # owner modules artifacts/proposal_effects.py, artifacts/dedup_enrichment.py and
     # artifacts/versions.py (emit_artifact_enriched) — only the call sites + the
     # typed outcome field landed here. Ratchets back with the #714 decomposition.
-    "src/clio_agent/gact/artifacts/proposals.py": 876,  # inline-content ingest channel through the selected store (#1247)
     # #971 GAP B (S5 live gate): not baselined before this entry (silently over the
     # 800 cap already, from earlier unbaselined growth on this branch).
     # #1191: +51 for the per-session artifact-USE index (record_artifact_used /
@@ -700,7 +699,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # wake_on_parent_activity call site right after the tool.call.completed
     # publish (a lazy import + one call). All gating/coalesce/wake logic lives
     # in the owner module gact/spotter_watcher.py.
-    "src/clio_agent/gact/tool_observer.py": 1060,
+    "src/clio_agent/gact/tool_observer.py": 1056,
     # Collector-collapse work already on this branch grew the file to 1303 (>the
     # recorded 986 baseline) before this entry was updated — pre-existing, not
     # introduced here. P5 (wire semantics): +34 for the waited_tasks union-merge
@@ -984,7 +983,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # thin sync delegate to AsyncMCPToolExecutor.merge_namespace_tools
     # (mcp_executor.py), the actual live-tool-table merge target for an
     # on-demand mount (gact/agents/builders.py).
-    "src/clio_agent/tools/execution.py": 1191,  # structured result parsing moved to tools/result_errors.py
+    "src/clio_agent/tools/execution.py": 1190,  # structured result parsing moved to tools/result_errors.py
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.

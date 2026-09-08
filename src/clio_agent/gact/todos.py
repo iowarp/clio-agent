@@ -232,6 +232,7 @@ def build_write_todos_tool(agent_def: Any) -> Any:
     return native_tool(
         write_todos,
         name="write_todos",
+        presentation="todos",
         desc=write_todos.__doc__,
         title="Write Todos",
         args={

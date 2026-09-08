@@ -230,6 +230,7 @@ def build_create_a2ui_surface_tool() -> Any:
     return native_tool(
         create_a2ui_surface,
         name="create_a2ui_surface",
+        presentation="specialized",
         desc=create_a2ui_surface.__doc__,
         title="Build Analysis View",
         args={

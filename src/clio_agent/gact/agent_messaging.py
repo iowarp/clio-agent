@@ -377,6 +377,7 @@ def build_message_agent_tool(agent_def: Any) -> Any:
     return native_tool(
         message_agent,
         name="message_agent",
+        presentation="fields:message_id,status,recipient",
         desc=message_agent.__doc__,
         title="Message Agent",
         args={
