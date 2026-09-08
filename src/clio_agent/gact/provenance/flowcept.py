@@ -354,6 +354,14 @@ class FlowceptProvenanceProvider:
             "provider": _safe_value(event.provider, redact=True),
             "privacy": self.config.privacy,
         }
+        # The kvnorm join key (Stage 3) is correlation METADATA -- an opaque
+        # provider response id, the same sensitivity class as session/span ids --
+        # so it survives every privacy mode, unlike the content payload below.
+        # Present only when provenance_config.kvnorm_join_enabled stamped it.
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        response_id = str(payload.get("response_id") or "")
+        if response_id:
+            clio["response_id"] = response_id
         if self.config.privacy != "metadata":
             clio["payload"] = _safe_value(
                 event.payload,
