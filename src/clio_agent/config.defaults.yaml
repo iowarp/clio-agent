@@ -1101,6 +1101,21 @@ tools.mcp.discovery_concurrency: 8
 # discovery; lower to recover faster, raise to cut retry noise.
 tools.mcp.discovery_heal_interval_s: 20.0
 
+# CLIO_MCP_ELICITATION_AGENT_AUDIENCE_ANSWER_MODE  (str)  <- src/clio_agent/gact/agent_elicitation.py
+# Which answerer fulfills a routed agent-audience elicitation: "inline"
+# (default) runs one bounded tool-less completion on the session's own model;
+# "turn" spawns the child answer turn (deadlocks while the parent tool call
+# holds the session's turn slot — retained for lifecycle parity only).
+tools.mcp.elicitation.agent_audience.answer_mode: "inline"
+
+# CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DEFAULT_UNHINTED  (bool)  <- src/clio_agent/gact/agent_elicitation.py
+# Whether an UNHINTED form-mode elicitation defaults to the agent. fastmcp
+# drops the nested _meta on the InputRequiredResult round-trip, so an explicit
+# x-clio-agent/audience tag cannot survive MRTR; on = route by the negotiated
+# agent-driven-elicitation extension contract, off = strict explicit-tag
+# routing (unhinted questions go to the human).
+tools.mcp.elicitation.agent_audience.default_unhinted: true
+
 # CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DENIED_SERVERS  (list)  <- src/clio_agent/gact/agent_elicitation.py
 # CSV of declared MCP server names whose agent-audience elicitations always
 # fall back to the human; the per-server opt-out for agent-driven
