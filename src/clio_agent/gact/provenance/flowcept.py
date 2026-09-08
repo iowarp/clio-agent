@@ -127,10 +127,26 @@ def _windows_uname() -> tuple[str, str, str, str, str]:
     )
 
 
+def _mongo_safe_key(key: str) -> str:
+    """Escape a dict key for MongoDB update documents.
+
+    Payloads carry arbitrary tool data whose keys can contain ``.`` (e.g. a CSV
+    column named ``yr.doy``) or start with ``$`` — both illegal as field paths in
+    Mongo's ``$set`` upserts (error 16412), which silently drops the whole batch
+    at the DocumentInserter. Escaped with fullwidth lookalikes so the display
+    stays readable and the original is recoverable.
+    """
+
+    key = key.replace(".", "．")  # '.' -> '．' (FULLWIDTH FULL STOP)
+    if key.startswith("$"):
+        key = "＄" + key[1:]  # '$' -> '＄' (FULLWIDTH DOLLAR SIGN)
+    return key
+
+
 def _safe_value(value: Any, *, redact: bool) -> Any:
     if isinstance(value, dict):
         return {
-            str(key): (
+            _mongo_safe_key(str(key)): (
                 "[redacted]"
                 if str(key).lower().replace("-", "_") in _SECRET_KEYS
                 or (redact and str(key).lower() in _CONTENT_KEYS)

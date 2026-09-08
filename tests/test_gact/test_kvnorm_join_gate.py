@@ -74,6 +74,20 @@ def test_response_id_survives_privacy_metadata() -> None:
     assert "response_id" not in meta_plain["clio"]
 
 
+def test_payload_keys_are_mongo_safe() -> None:
+    """Dotted / dollar-prefixed keys in tool payloads (e.g. a CSV column named
+    ``yr.doy``) must not reach Mongo as field paths — its ``$set`` upserts reject
+    them (code 16412) and the DocumentInserter drops the whole batch."""
+
+    from clio_agent.gact.provenance.flowcept import _safe_value
+
+    out = _safe_value(
+        {"yr.doy": 1, "$where": "x", "nested": {"Hght(m)": {"a.b": 2}}},
+        redact=False,
+    )
+    assert out == {"yr．doy": 1, "＄where": "x", "nested": {"Hght(m)": {"a．b": 2}}}
+
+
 def test_response_id_from_object_and_dict() -> None:
     resp = SimpleNamespace(id="chatcmpl-80fdc07ecb38f335-80b6501f")
     assert _kvnorm_response_id(resp) == "chatcmpl-80fdc07ecb38f335-80b6501f"
