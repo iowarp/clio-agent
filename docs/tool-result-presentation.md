@@ -41,6 +41,11 @@ returns a contiguous page, `next_cursor` (null at EOF), and total character coun
 The endpoint resolves only content owned by that session and call; it cannot read
 an arbitrary file path. Invalid cursors are errors.
 
+Question and Plan approval boundaries persist the observed assistant turn before
+retiring its live ledger. A resumed answer starts a separate assistant turn;
+previous tool parts remain exactly once in the paused turn. No answer is
+synthesized, and the pending question/approval remains in its own durable ledger.
+
 `tool.presentation.delta` carries call ID, block ID, absolute Unicode-character
 offset/sequence, stdout/stderr channel, and appended text. A running snapshot
 contains accumulated output (a bounded tail over the wire) and `stream_offset`.

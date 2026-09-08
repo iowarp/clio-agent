@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from clio_agent.gact.enrichment import _finalize_context_frame
 from clio_agent.gact.events import Event
 from clio_agent.gact.messaging import _ask_user_options_from_action, _coerce_ask_user_action
+from clio_agent.gact.paused_transcript import persist_paused_transcript
 from clio_agent.gact.runtime.globals import _emit_semantic_event, _new_question_id
 from clio_agent.gact.turn_stream import settle_turn_transcript
 from clio_agent.gact.types import UserQuestion
@@ -83,6 +84,7 @@ def maybe_pause_for_user(
             "route_reason": state.route_reason,
         },
     )
+    assistant_message_id = persist_paused_transcript(state)
     record_user_question(state.app, question)
     _emit_semantic_event(
         state.app,
@@ -119,7 +121,7 @@ def maybe_pause_for_user(
         state.app,
         state.sid,
         state.context_frame["id"],
-        "",
+        assistant_message_id,
         "completed",
         error_info=None,
     )

@@ -481,6 +481,7 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
 
     from clio_agent.gact.enrichment import _finalize_context_frame  # noqa: PLC0415
     from clio_agent.gact.events import Event  # noqa: PLC0415
+    from clio_agent.gact.paused_transcript import persist_paused_transcript  # noqa: PLC0415
     from clio_agent.gact.plan_reuse import save_approved_plan  # noqa: PLC0415
     from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
         _emit_semantic_event,
@@ -533,6 +534,7 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
             "source_user_message_id": state.user_msg.id,
         },
     )
+    assistant_message_id = persist_paused_transcript(state)
     record_user_question(app, question)
     updated = app.state.sessions.update(
         state.sid,
@@ -544,7 +546,12 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
         },
     )
     _finalize_context_frame(
-        app, state.sid, state.context_frame["id"], "", "completed", error_info=None
+        app,
+        state.sid,
+        state.context_frame["id"],
+        assistant_message_id,
+        "completed",
+        error_info=None,
     )
     _emit_semantic_event(
         app,

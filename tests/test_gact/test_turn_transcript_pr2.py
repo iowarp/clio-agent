@@ -563,13 +563,14 @@ class _AskUserThenAnswerAgent:
         return _Pred(answer=f"resumed: {question[-20:]}", selected_expert="main")
 
 
-def test_ask_user_early_return_settles_ledger_and_resume_adopts_carry(
+def test_ask_user_pause_persists_activity_and_resume_has_a_distinct_turn(
     tmp_path: Path,
 ) -> None:
-    """The ask_user pause retires the turn's ledger (no poison) while the
-    resume turn adopts the carried in-flight assistant message: same message
-    id, ONE message.created, and the pre-question tool parts persist in the
-    final assistant message."""
+    """Pause and resume retain every observed part exactly once, even on reload.
+
+    The paused assistant is durable before the answer, rather than relying on
+    process-local carry dictionaries which disappear on restart.
+    """
 
     agent = _AskUserThenAnswerAgent()
     app = _build(tmp_path, "askuser", agent)
@@ -588,12 +589,16 @@ def test_ask_user_early_return_settles_ledger_and_resume_adopts_carry(
         session = client.get(f"/v1/sessions/{sid}").json()
         assert session["status"] == "waiting_user"
 
-        # Ledger settled at the early return; carried state stays in the
-        # legacy dicts for the resume turn to adopt.
         assert app.state.turn_transcripts.get(sid) is None
-        carried_msg_id = app.state.live_assistant_message_ids[sid]
-        carried_part_ids = [p.id for p in app.state.live_assistant_parts[sid]]
-        assert any(pid.endswith("_call") for pid in carried_part_ids)
+        paused_messages = app.state.message_store.load_session(sid)
+        paused = [m for m in paused_messages if m.role == "assistant"]
+        assert len(paused) == 1
+        paused_msg_id = paused[0].id
+        paused_part_ids = [p.id for p in paused[0].parts]
+        assert any(pid.endswith("_call") for pid in paused_part_ids)
+        assert paused[0].stop_reason == "waiting_user"
+        assert sid not in app.state.live_assistant_message_ids
+        assert sid not in app.state.live_assistant_parts
 
         question_id = session["metadata"]["pending_user_question_id"]
         answered = client.post(
@@ -609,7 +614,9 @@ def test_ask_user_early_return_settles_ledger_and_resume_adopts_carry(
             settled = [
                 m
                 for m in msgs
-                if m["role"] == "assistant" and not m.get("metadata", {}).get("live")
+                if m["role"] == "assistant"
+                and m["id"] != paused_msg_id
+                and not m.get("metadata", {}).get("live")
             ]
             if settled:
                 assistant = settled[-1]
@@ -617,17 +624,21 @@ def test_ask_user_early_return_settles_ledger_and_resume_adopts_carry(
             time.sleep(0.05)
         assert assistant is not None, "resume turn did not settle"
 
-        # The resumed turn CONTINUED the carried assistant message.
-        assert assistant["id"] == carried_msg_id
-        persisted_ids = [p["id"] for p in assistant["parts"]]
-        for pid in carried_part_ids:
-            assert pid in persisted_ids
+        assert assistant["id"] != paused_msg_id
+        persisted = app.state.message_store.load_session(sid)
+        assistants = [m for m in persisted if m.role == "assistant"]
+        assert len(assistants) == 2
+        assert assistants[0].model_dump() == paused[0].model_dump()
+        all_part_ids = [p.id for m in assistants for p in m.parts]
+        for pid in paused_part_ids:
+            assert all_part_ids.count(pid) == 1
         created = [
             ev
             for ev in app.state.bus._history.get(sid, [])
-            if ev.type == "message.created" and ev.payload.get("id") == carried_msg_id
+            if ev.type == "message.created"
+            and ev.payload.get("id") in {paused_msg_id, assistant["id"]}
         ]
-        assert len(created) == 1, "the carried message id must be created exactly once"
+        assert len(created) == 2, "each actual assistant turn must be created exactly once"
         assert app.state.turn_transcripts.get(sid) is None
 
 
