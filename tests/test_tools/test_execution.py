@@ -386,7 +386,7 @@ def test_root_data_result_is_publicly_projected_without_private_metadata() -> No
     assert json.loads(result) == root.model_dump(mode="json")
     completed = [row for row in telemetry if row[2] == "completed"]
     assert len(completed) == 1
-    assert completed[0][4] == {
+    assert {key: value for key, value in completed[0][4].items() if key != "presentation"} == {
         "content": [{"type": "text", "text": f"Root({root!s})"}],
         "structuredContent": {
             "schema_version": "jarvis.execution.v1",
@@ -395,6 +395,9 @@ def test_root_data_result_is_publicly_projected_without_private_metadata() -> No
         },
     }
     assert "secret" not in str(completed)
+    assert completed[0][4]["presentation"]["summary"] == ""
+    assert completed[0][4]["presentation"]["blocks"][0]["type"] == "text"
+    assert completed[0][4]["presentation"]["blocks"][0]["text"] == f"Root({root!s})"
     assert len(app_results) == 1
     assert app_results[0][3] is private_result
 
@@ -725,7 +728,7 @@ def test_sync_mcp_tool_executor_reports_structured_tool_error_result():
     assert "parent_not_found" in observed[-1][3]
     # #964: the observer receives the preserved structured projection, not the
     # flattened model text — the full structuredContent payload is retained.
-    assert observed[-1][4] == {
+    assert {key: value for key, value in observed[-1][4].items() if key != "presentation"} == {
         "content": [],
         "structuredContent": {
             "error": {
@@ -737,6 +740,7 @@ def test_sync_mcp_tool_executor_reports_structured_tool_error_result():
             "args": {"output_path": "/missing/plot.png"},
         },
     }
+    assert observed[-1][4]["presentation"] == {"summary": "", "blocks": []}
 
 
 def test_oversized_structured_failure_uses_raw_result_for_error_truth() -> None:
