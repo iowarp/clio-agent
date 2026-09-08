@@ -1,12 +1,19 @@
 """Agent-driven elicitation (#1309, C1-S7): the session's agent can answer a
 typed MCP elicitation question, not only the human.
 
-An MCP server can return v2 ``input_required`` mid-flow and address it to the
-session's contextual agent. The human remains the terminal fallback.
+OWNER REQUIREMENT (verbatim intent): "I need my mcps being able to request
+things from the agent." An MCP server, mid-flow, returns ``input_required``
+(the v2 MRTR shape carried through :mod:`clio_agent.gact.elicitation_bridge`)
+and the thing that can answer is the SESSION'S AGENT -- running on the user's
+chosen provider, holding the session's own conversation context -- with the
+human remaining the terminal fallback.
 
-THE SEMANTIC FIREWALL: this is **NOT sampling** and must never become an
-inference channel. The MCP server gets no model access or prompt control, only
-a typed, schema-validated answer to its own question. The ``requestedSchema`` validation
+DESIGN INVARIANT -- THE SEMANTIC FIREWALL (owner ruling, 2026-09-03): this is
+**NOT sampling** and must never become an inference channel. The MCP server
+gets no model access, no free-form completions, and no prompt control -- it
+gets exactly what elicitation has always given it: a typed, schema-validated
+answer to its OWN declared question, with the session's agent as a permitted
+answerer alongside the human. The ``requestedSchema`` validation
 (:func:`clio_agent.gact.elicitation_schema.validate_elicitation_answer`) is
 applied to an agent's answer EXACTLY as it is to a human's -- an agent answer
 that fails it never reaches the server; it falls back to the human path,
@@ -61,6 +68,16 @@ below. Its answer feeds the EXISTING atomic answer primitives
 ones the shared answer route drives -- so the MRTR retry resumes the server
 unchanged and every answer is transcript-visible with typed attribution
 (``UserQuestion.answered_by == "agent"``).
+
+ANSWER STRATEGY. The default answerer is an inline bounded completion on the
+session's own model (:func:`_run_agent_answer_inline`, ``answer_mode="inline"``).
+A child-turn spawn (:func:`_run_agent_answer_turn`, behind ``answer_mode="turn"``)
+deadlocks: the parent tool call is paused on the same session and still holds
+the turn slot, so the child never runs and the call hangs to the MCP backstop.
+The inline answerer is the same model, same bounded transcript excerpt, same
+schema-validated JSON, still tool-less -- one completion off the event loop
+(mirroring :mod:`clio_agent.gact.runtime.ai_review`), never the MCP sampling
+channel.
 
 THE RESIDUAL CHANNEL, NAMED HONESTLY: a server-declared ``{"type": "string"}``
 field (no ``enum``) is still an agent-authored free-text value -- the widest
@@ -125,6 +142,7 @@ __all__ = [
     "AGENT_ELICITATION_REASONS",
     "FALLBACK_REASON",
     "ROUTED_REASON",
+    "ROUTED_UNHINTED_REASON",
     "AgentElicitationDecision",
     "audience_hint",
     "decide_routing",
@@ -148,10 +166,20 @@ AGENT_AUDIENCE_VALUE = "agent"
 #: catalog keys, never a bare/unexplained field flip). Named per the owner's
 #: 2026-09-03 vocabulary refinement -- never "sampling"/"agent-fulfilled MRTR".
 ROUTED_REASON = "elicitation_routed_to_agent"
+#: A form-mode elicitation routed to the agent WITHOUT an explicit ``_meta`` tag:
+#: fastmcp's InputRequiredResult round-trip drops the nested ``_meta``, so the
+#: tag cannot survive MRTR. clio advertises the agent-driven-elicitation
+#: extension on every execution client, so under that contract an unhinted form
+#: elicitation reaching the handler is treated as agent-directed.
+ROUTED_UNHINTED_REASON = "elicitation_routed_to_agent_unhinted"
 FALLBACK_REASON = "agent_elicitation_fallback_to_human"
 
 AGENT_ELICITATION_REASONS: dict[str, str] = {
     ROUTED_REASON: "audience=agent and policy allows; the session's agent is answering",
+    ROUTED_UNHINTED_REASON: (
+        "no surviving audience tag (fastmcp drops InputRequiredResult _meta); routed to "
+        "the agent by the negotiated agent-driven-elicitation contract, policy allowing"
+    ),
     FALLBACK_REASON: "an agent-audience elicitation question fell back to the human path",
 }
 
@@ -231,6 +259,43 @@ def _timeout_s() -> float:
     )
 
 
+def _answer_mode() -> str:
+    """Which answerer fulfills a routed agent-audience elicitation.
+
+    ``"inline"`` (default): a bounded tool-less completion off the event loop.
+    ``"turn"``: the child-turn spawn, which deadlocks while the parent tool
+    call holds the session's turn slot (see the module docstring).
+    """
+
+    return (
+        conf.resolve(
+            "tools.mcp.elicitation.agent_audience.answer_mode",
+            env="CLIO_MCP_ELICITATION_AGENT_AUDIENCE_ANSWER_MODE",
+            default="inline",
+            cast=conf.as_str,
+        )
+        .strip()
+        .lower()
+    )
+
+
+def _default_unhinted() -> bool:
+    """Whether an UNHINTED form elicitation defaults to the agent (default ON).
+
+    fastmcp's ``InputRequiredResult`` round-trip drops the nested ``_meta``, so
+    an explicit ``x-clio-agent/audience`` tag never survives MRTR -- ``audience``
+    arrives empty. Default ON so agent-driven elicitation functions at all over
+    MRTR; set off to force strict explicit-tag routing.
+    """
+
+    return conf.resolve(
+        "tools.mcp.elicitation.agent_audience.default_unhinted",
+        env="CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DEFAULT_UNHINTED",
+        default=True,
+        cast=conf.as_bool,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # The signal + the routing decision                                          #
 # --------------------------------------------------------------------------- #
@@ -291,16 +356,22 @@ def decide_routing(
 ) -> AgentElicitationDecision:
     """Decide whether ONE freshly-minted elicitation question routes to the agent.
 
-    Keys ONLY on the typed ``audience`` value + policy + the structural
-    ``mode``/recursion-depth facts below -- never on question/prompt CONTENT
-    (superseding principle #1: clio never keyword-matches a model's or a
-    server's prose to decide). ``audience`` must be EXACTLY
-    :data:`AGENT_AUDIENCE_VALUE`; anything else returns the regression-locked
-    no-op decision.
+    Keys on structural facts ONLY -- the typed ``audience`` value, ``mode``,
+    policy, and recursion depth -- never on question/prompt CONTENT (superseding
+    principle #1: clio never keyword-matches a model's or a server's prose).
+
+    An explicit ``audience == "agent"`` routes. An EMPTY audience also routes by
+    default (:func:`_default_unhinted`, typed :data:`ROUTED_UNHINTED_REASON`)
+    because fastmcp drops the ``_meta`` tag in transit. An unrecognized non-empty
+    audience, or ``url`` mode, never routes.
     """
 
-    if audience != AGENT_AUDIENCE_VALUE:
-        return AgentElicitationDecision(route=False)
+    explicit_agent = audience == AGENT_AUDIENCE_VALUE
+    if not explicit_agent:
+        # Unrecognized non-empty value, url mode, or strict routing -> no-op.
+        # An empty audience falls through to the same policy gates below.
+        if audience or mode == "url" or not _default_unhinted():
+            return AgentElicitationDecision(route=False)
     if not session_id:
         return AgentElicitationDecision(route=False, reason=FALLBACK_REASON, detail="no_session")
     if not _enabled():
@@ -327,7 +398,8 @@ def decide_routing(
         return AgentElicitationDecision(
             route=False, reason=FALLBACK_REASON, detail="recursion_depth_exceeded"
         )
-    return AgentElicitationDecision(route=True, reason=ROUTED_REASON, depth=depth + 1)
+    reason = ROUTED_REASON if explicit_agent else ROUTED_UNHINTED_REASON
+    return AgentElicitationDecision(route=True, reason=reason, depth=depth + 1)
 
 
 def routing_fields(decision: AgentElicitationDecision) -> dict[str, Any]:
@@ -644,6 +716,81 @@ def _run_agent_answer_turn(
     return str(payload.get("answer_excerpt", ""))
 
 
+def _resolve_answer_lm(app: Any) -> tuple[Any, Any]:
+    """Resolve the session's OWN model + adapter for the inline answer.
+
+    Mirrors :func:`clio_agent.gact.runtime.ai_review._resolve_reviewer_lm`. The
+    inline answer runs on a fresh thread that does not inherit the parent turn's
+    thread-locals, so the app's accepted main identity is the explicit fallback.
+    """
+
+    import dspy  # noqa: PLC0415
+
+    from clio_agent.gact.runtime.ambient_lm import active_lm  # noqa: PLC0415
+
+    caller, ambient = active_lm()
+    owner = getattr(app.state, "agent", None)
+    adapter = getattr(dspy.settings, "adapter", None)
+    if ambient or caller is None:
+        caller = getattr(owner, "_main_lm", None)
+        adapter = getattr(owner, "_dspy_adapter", None)
+    return caller, adapter
+
+
+def _run_agent_answer_inline(app: Any, *, answer_session_id: str, prompt: str) -> str:
+    """Answer the paused elicitation with ONE bounded, tool-less completion on the
+    session's OWN model.
+
+    Runs on a worker thread (dispatched via ``asyncio.to_thread``), bounded by
+    the caller's ``asyncio.wait_for``. Same transcript excerpt and same
+    reply/parse/validate/resolve path as the turn answerer -- only the
+    fulfillment mechanism differs, so it cannot deadlock while the parent tool
+    call is paused on this session.
+    """
+
+    import dspy  # noqa: PLC0415
+
+    lm, _adapter = _resolve_answer_lm(app)
+    if lm is None:
+        raise RuntimeError("no LM resolved for inline agent-elicitation answer")
+    seed = _bounded_transcript_excerpt(app, answer_session_id)
+
+    # ChainOfThought, not Predict: a reasoning model needs a reasoning output
+    # field, or its whole output is prose and ``answer_json`` never gets filled.
+
+    class _AgentAnswer(dspy.Signature):
+        """Answer a paused MCP tool's typed question using ONLY this conversation's
+        own context. Never guess -- decline unless the conversation established it."""
+
+        conversation: str = dspy.InputField(
+            desc="Bounded excerpt of THIS session's own transcript."
+        )
+        instruction: str = dspy.InputField(
+            desc="The paused tool's question, its answer fields, and the reply format."
+        )
+        answer_json: str = dspy.OutputField(
+            desc='Exactly one JSON object and nothing else: {"answer": {<one key per '
+            'field>}} or {"decline": true, "reason": "..."}.'
+        )
+
+    cot = dspy.ChainOfThought(_AgentAnswer)
+    logger.info(
+        "agent_elicitation inline answer START lm.model=%r seed_len=%d",
+        getattr(lm, "model", lm),
+        len(seed),
+    )
+    with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        result = cot(conversation=seed, instruction=prompt)
+    reply = str(getattr(result, "answer_json", "") or "").strip()
+    logger.info(
+        "agent_elicitation inline answer DONE reply_len=%d reply_head=%r reasoning_head=%r",
+        len(reply),
+        reply[:200],
+        str(getattr(result, "reasoning", "") or "")[:120],
+    )
+    return reply
+
+
 def _fallback(app: Any, question: "UserQuestion", detail: str, *, extra: str = "") -> None:
     """Record a typed agent-elicitation fallback WITHOUT touching question state.
 
@@ -690,6 +837,27 @@ def _fallback(app: Any, question: "UserQuestion", detail: str, *, extra: str = "
     )
 
 
+def _publish_answered(app: Any, question: "UserQuestion") -> None:
+    """Publish the ``user_question.answered`` event for an agent-resolved question.
+
+    Shared by the accept and the forwarded-decline paths -- both resolve the
+    parked call through the same atomic primitives, so both announce the same way.
+    """
+
+    bus = getattr(app.state, "bus", None)
+    if bus is None:
+        return
+    from clio_agent.gact.events import Event  # noqa: PLC0415
+
+    bus.publish(
+        Event(
+            type="user_question.answered",
+            session_id=question.session_id,
+            payload=question.model_dump(exclude_none=True),
+        )
+    )
+
+
 async def _dispatch_agent_answer(
     app: Any,
     question: "UserQuestion",
@@ -715,20 +883,33 @@ async def _dispatch_agent_answer(
     answer_session_id = str(getattr(invocation, "session_id", "") or "") or question.session_id
     prompt = _build_answer_prompt(question, translation)
     timeout_s = _timeout_s()
-
+    inline = _answer_mode() != "turn"
     try:
-        reply_text = await asyncio.wait_for(
-            asyncio.to_thread(
-                _run_agent_answer_turn,
-                app,
-                answer_session_id=answer_session_id,
-                prompt=prompt,
-                depth=decision.depth,
-                timeout_s=timeout_s,
-                on_spawn=lambda handle: stamp_agent_answer_turn(app, question.id, handle),
-            ),
-            timeout=timeout_s + _OUTER_TIMEOUT_MARGIN_S,
-        )
+        if inline:
+            # Default: one bounded, tool-less completion on the session's own model
+            # off the event loop -- cannot deadlock while THIS call is paused.
+            reply_text = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _run_agent_answer_inline,
+                    app,
+                    answer_session_id=answer_session_id,
+                    prompt=prompt,
+                ),
+                timeout=timeout_s + _OUTER_TIMEOUT_MARGIN_S,
+            )
+        else:
+            reply_text = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _run_agent_answer_turn,
+                    app,
+                    answer_session_id=answer_session_id,
+                    prompt=prompt,
+                    depth=decision.depth,
+                    timeout_s=timeout_s,
+                    on_spawn=lambda handle: stamp_agent_answer_turn(app, question.id, handle),
+                ),
+                timeout=timeout_s + _OUTER_TIMEOUT_MARGIN_S,
+            )
     except SpawnError as exc:
         _fallback(app, question, "spawn_refused", extra=exc.reason)
         return
@@ -748,18 +929,41 @@ async def _dispatch_agent_answer(
     if parsed is None:
         _fallback(app, question, "agent_answer_unparseable")
         return
+    from clio_agent.gact.elicitation_bridge import (  # noqa: PLC0415
+        claim_question_transition,
+        resolve_elicitation,
+    )
+    from clio_agent.gact.elicitation_correlation import (  # noqa: PLC0415
+        record_narrowing_disclosure,
+    )
+
     if parsed.get("decline"):
-        _fallback(app, question, "agent_declined")
+        # A deliberate decline is a valid elicitation RESPONSE: forward it to the
+        # server (action="decline") so the server applies its own fallback. The
+        # human path stays reserved for genuine NON-answers
+        # (error/timeout/unparseable/schema-invalid/spawn-refused).
+        declined = claim_question_transition(
+            app,
+            question.id,
+            "answered",
+            answer_metadata={"elicitation_action": "decline"},
+            answered_by="agent",
+        )
+        if declined is None:
+            return
+        record_narrowing_disclosure(
+            str(getattr(invocation, "session_id", "") or "") or declined.session_id,
+            str(getattr(invocation, "tool_name", "") or ""),
+            {"declined": True, "reason": str(parsed.get("reason") or "")},
+        )
+        resolve_elicitation(app, declined)
+        _publish_answered(app, declined)
         return
     answer_obj = parsed.get("answer")
     if not isinstance(answer_obj, Mapping):
         _fallback(app, question, "agent_answer_unparseable")
         return
 
-    from clio_agent.gact.elicitation_bridge import (  # noqa: PLC0415
-        claim_question_transition,
-        resolve_elicitation,
-    )
     from clio_agent.gact.elicitation_schema import validate_elicitation_answer  # noqa: PLC0415
 
     # THE SEMANTIC FIREWALL: the agent's answer is validated against the
@@ -785,15 +989,13 @@ async def _dispatch_agent_answer(
         # claimed the question first. Not a failure of this feature -- the
         # question is already resolved, so there is nothing to fall back on.
         return
+    # Record the narrowing BEFORE resolving, so the resumed call's result carries
+    # the disclosure at the model-observation seam even if the server never
+    # self-discloses.
+    record_narrowing_disclosure(
+        str(getattr(invocation, "session_id", "") or "") or updated.session_id,
+        str(getattr(invocation, "tool_name", "") or ""),
+        answer_obj,
+    )
     resolve_elicitation(app, updated)
-    bus = getattr(app.state, "bus", None)
-    if bus is not None:
-        from clio_agent.gact.events import Event  # noqa: PLC0415
-
-        bus.publish(
-            Event(
-                type="user_question.answered",
-                session_id=updated.session_id,
-                payload=updated.model_dump(exclude_none=True),
-            )
-        )
+    _publish_answered(app, updated)

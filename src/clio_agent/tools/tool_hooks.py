@@ -124,6 +124,51 @@ def merge_artifact_identity(name: str, observation: Any) -> Any:
         return observation
 
 
+def merge_elicitation_disclosure(name: str, observation: Any) -> Any:
+    """Stamp clio's own narrowing disclosure onto the model observation (#1325).
+
+    Drains the per-call disclosure the answer path recorded and stamps it into
+    the model-facing result (a ``_clio.elicitation`` key on a JSON result, else
+    a one-line note) -- so the agent is told a result was narrowed even when the
+    server never self-discloses.
+
+    Drains UNCONDITIONALLY, including for a non-string observation it cannot
+    stamp: a disclosure left behind would be falsely stamped onto the tool's
+    NEXT call on this session (the unstampable case logs a typed reason).
+
+    Lazily imported like ``merge_artifact_identity`` (this module loads during
+    ``clio_agent.gact`` package init). A failure never breaks the boundary --
+    the original observation stands, with a typed reason logged.
+    """
+
+    try:
+        from clio_agent.gact.context import active_tool_session_id  # noqa: PLC0415
+        from clio_agent.gact.elicitation_correlation import (  # noqa: PLC0415
+            drain_narrowing_disclosures,
+            stamp_observation_with_disclosures,
+        )
+
+        disclosures = drain_narrowing_disclosures(active_tool_session_id(), name)
+        if disclosures and not isinstance(observation, str):
+            logger.warning(
+                "elicitation disclosure dropped: observation is not a string, so the "
+                "narrowing note cannot be stamped "
+                "reason=elicitation_disclosure_unstampable tool=%s type=%s",
+                name,
+                type(observation).__name__,
+            )
+            return observation
+        return stamp_observation_with_disclosures(observation, disclosures)
+    except Exception as exc:  # noqa: BLE001 - disclosure must never break the boundary
+        logger.warning(
+            "elicitation disclosure merge skipped; the original observation stands "
+            "reason=elicitation_disclosure_merge_failed tool=%s error=%r",
+            name,
+            exc,
+        )
+        return observation
+
+
 def assemble_model_observation(
     post_tool: Optional[PostToolHook],
     name: str,
@@ -135,13 +180,16 @@ def assemble_model_observation(
 ) -> Any:
     """Build the model-visible observation for one completed call (the ONE seam).
 
-    Artifact identity first (registry truth about what this call produced), then the
-    ``PostToolUse`` hook (a user rewrite must be able to see — and override — the
-    enriched result, exactly as it can override the raw one). Returns the
-    observation unchanged when neither step contributes anything.
+    Artifact identity first (registry truth about what this call produced), then
+    clio's own author-independent narrowing disclosure (so the agent is told when a
+    result was shaped by an agent-answered elicitation), then the ``PostToolUse``
+    hook (a user rewrite must be able to see — and override — the enriched result,
+    exactly as it can override the raw one). Returns the observation unchanged when
+    no step contributes anything.
     """
 
     observation = merge_artifact_identity(name, observation)
+    observation = merge_elicitation_disclosure(name, observation)
     return apply_post_tool_hook(
         post_tool, name, args, observation, is_error=is_error, synthetic=synthetic
     )

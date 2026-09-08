@@ -25,6 +25,7 @@ from mcp.server.mcpserver import MCPServer
 
 from clio_agent.errors import MCP_TASKS_DECLARATION_SUPPRESSED
 from clio_agent.tools.mcp_extension_registry import (
+    AGENT_ELICITATION_EXTENSION_ID,
     ENTERPRISE_MANAGED_AUTH_EXTENSION_ID,
     KNOWN_EXTENSIONS,
     MCP_APP_MIME_TYPE,
@@ -53,29 +54,33 @@ def test_extensions_declaration_returns_the_typed_shape() -> None:
 
 def test_extensions_declaration_entry_order_is_tasks_then_ui() -> None:
     """Registry order: tasks stays entry #1 (matches its pre-registry
-    precedence), ui is entry #2 (#1283 letter (d))."""
+    precedence), ui is entry #2 (#1283 letter (d)), agent-driven-elicitation is
+    entry #3 (#1325 negotiation signal)."""
 
     declaration = extensions_declaration(Client, object())
     assert [entry.identifier for entry in declaration.entries] == [
         TASKS_EXTENSION_ID,
         UI_EXTENSION_ID,
+        AGENT_ELICITATION_EXTENSION_ID,
     ]
 
 
-def test_extensions_declaration_a_plain_client_declares_both() -> None:
+def test_extensions_declaration_a_plain_client_declares_all_three() -> None:
     declaration = extensions_declaration(Client, object())
 
-    assert len(declaration.extensions) == 2
+    assert len(declaration.extensions) == 3
     assert {ext.identifier for ext in declaration.extensions} == {
         TASKS_EXTENSION_ID,
         UI_EXTENSION_ID,
+        AGENT_ELICITATION_EXTENSION_ID,
     }
     assert all(entry.reason is None for entry in declaration.entries)
 
 
 def test_extensions_declaration_a_proxy_client_suppresses_only_tasks() -> None:
-    """The tasks-specific suppression (#1119) is unchanged; ui is never
-    suppressed for a client class forbidding internal extensions (#1283)."""
+    """The tasks-specific suppression (#1119) is unchanged; ui and
+    agent-driven-elicitation are never suppressed for a client class forbidding
+    internal extensions (#1283, #1325)."""
 
     declaration = extensions_declaration(ProxyClient, object())
     by_id = {entry.identifier: entry for entry in declaration.entries}
@@ -84,7 +89,12 @@ def test_extensions_declaration_a_proxy_client_suppresses_only_tasks() -> None:
     assert by_id[TASKS_EXTENSION_ID].reason == MCP_TASKS_DECLARATION_SUPPRESSED
     assert by_id[UI_EXTENSION_ID].extension is not None
     assert by_id[UI_EXTENSION_ID].reason is None
-    assert [ext.identifier for ext in declaration.extensions] == [UI_EXTENSION_ID]
+    assert by_id[AGENT_ELICITATION_EXTENSION_ID].extension is not None
+    assert by_id[AGENT_ELICITATION_EXTENSION_ID].reason is None
+    assert [ext.identifier for ext in declaration.extensions] == [
+        UI_EXTENSION_ID,
+        AGENT_ELICITATION_EXTENSION_ID,
+    ]
 
 
 def test_extensions_declaration_ui_entry_is_ad_only() -> None:
@@ -103,6 +113,23 @@ def test_extensions_declaration_ui_entry_is_ad_only() -> None:
     assert ui_entry.extension.settings() == {"mimeTypes": [MCP_APP_MIME_TYPE]}
     assert ui_entry.extension.claims() == ()
     assert ui_entry.extension.notifications() == ()
+
+
+def test_extensions_declaration_agent_elicitation_entry_is_ad_only() -> None:
+    """The agent-driven-elicitation entry (#1325) is a bare capability ad -- no
+    claims, no notifications, no settings. A size-guard server only needs its
+    PRESENCE (``ctx.client_supports_extension``); it carries no behavior of its
+    own, so it stays ad-only like ``ui``."""
+
+    declaration = extensions_declaration(Client, object())
+    entry = next(
+        e for e in declaration.entries if e.identifier == AGENT_ELICITATION_EXTENSION_ID
+    )
+
+    assert entry.extension is not None
+    assert entry.extension.settings() == {}
+    assert entry.extension.claims() == ()
+    assert entry.extension.notifications() == ()
 
 
 def test_extensions_declaration_is_called_fresh_every_construction() -> None:
@@ -129,6 +156,7 @@ def test_known_extensions_catalog_covers_every_active_entry_and_the_two_enumerat
     assert identifiers == {
         TASKS_EXTENSION_ID,
         UI_EXTENSION_ID,
+        AGENT_ELICITATION_EXTENSION_ID,
         OAUTH_CLIENT_CREDENTIALS_EXTENSION_ID,
         ENTERPRISE_MANAGED_AUTH_EXTENSION_ID,
     }

@@ -100,6 +100,33 @@ def cancellation_requested() -> bool:
     return bool(checker is not None and checker())
 
 
+def _correlated_execution_client_factory() -> Any:
+    """The executor client factory that carries CLIO's elicitation handler.
+
+    For a PROXY-routed namespace (no SEP-2663 tasks capability) the executor's
+    outer client is the one that drives the MRTR ``InputRequiredResult`` loop,
+    so it must carry the same correlated elicitation handler + capability
+    declaration ``build_gateway`` threads onto the backend/direct clients --
+    a bare ``make_mcp_client`` fails ``-32600 Elicitation not supported``
+    (#1325/#1113). The handler resolves its invocation from the correlation
+    record, so one shared factory is safe across namespaces.
+    """
+
+    from functools import partial  # noqa: PLC0415
+
+    from clio_agent.gact.elicitation_correlation import (  # noqa: PLC0415
+        correlated_capabilities,
+        make_correlated_handlers,
+    )
+    from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
+
+    return partial(
+        make_mcp_client,
+        handlers=make_correlated_handlers(),
+        capabilities=correlated_capabilities(),
+    )
+
+
 class ClioAgent(dspy.Module):
     """CLIO Agent host: providers, tools, ARC, workspaces, and registry.
 
@@ -284,6 +311,7 @@ class ClioAgent(dspy.Module):
             preloaded_tools=self._tool_definitions,
             namespace_servers=namespace_proxies(self._tool_gateway),
             server_id="gateway:default",
+            client_factory=_correlated_execution_client_factory(),
         )
         # Cache of workspace root -> sync tool executor (lazy, one per workspace).
         # Guarded by _workspace_executor_lock (shared with the #933 reaper);
@@ -626,6 +654,7 @@ class ClioAgent(dspy.Module):
                     preloaded_tools=preloaded,
                     namespace_servers=namespace_proxies(gateway),
                     server_id=f"gateway:{root}",
+                    client_factory=_correlated_execution_client_factory(),
                 )
                 # Stamps (ids/epoch/specs) live with the merge owner module.
                 # #1281 F5: direct-client factories are NOT re-stamped here --
