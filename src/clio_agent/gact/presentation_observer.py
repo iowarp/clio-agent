@@ -12,6 +12,15 @@ from clio_agent.gact.tool_result_presentation import ToolPresentation
 logger = logging.getLogger(__name__)
 
 
+def starting_presentation(name: str, args: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Resolve native or MCP running presentation at the observer-only boundary."""
+    from clio_agent.gact.agents.tool_instrumentation import present_native_start
+    from clio_agent.tools.tool_presentation import starting_presentation as mcp_start
+
+    native = present_native_start(name, args)
+    return native if native is not None else mcp_start(name, args)
+
+
 def publish_presentation_delta(app: Any, sid: str, payload: dict[str, Any]) -> None:
     """Retain an append in the live snapshot and publish its ordered delta."""
     delta = payload.get("presentation_delta")
