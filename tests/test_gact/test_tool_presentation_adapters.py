@@ -133,6 +133,44 @@ def test_generic_mcp_resource_content_is_readable_and_structured_json_is_technic
     assert view["blocks"][0]["text"] == "Actual report"
 
 
+def test_web_document_identity_and_degraded_empty_search_are_visible() -> None:
+    """Display the actual document title and failed search coverage, not only an acknowledgement."""
+    payload = {
+        "structuredContent": {
+            "ok": True,
+            "title": None,
+            "url": "https://example.org/guide.pdf",
+            "document": {
+                "metadata": {"title": "Official guide"},
+                "structure_summary": {"pages": 19},
+            },
+            "conversion_id": "conversion-1",
+            "status": 200,
+        }
+    }
+    before = json.dumps(payload)
+    view = present_mcp_result("web_fetch", {}, payload)
+    assert view["summary"] == "Official guide"
+    assert view["blocks"][0]["uri"] == "https://example.org/guide.pdf"
+    assert "Pages: 19" in view["blocks"][1]["text"]
+    assert json.dumps(payload) == before
+    search = present_mcp_result(
+        "web_search",
+        {"query": "research"},
+        {
+            "structuredContent": {
+                "provider": "searxng",
+                "results": [],
+                "engines_answered": [],
+                "unresponsive_engines": [{"engine": "duckduckgo", "reason": "CAPTCHA"}],
+            }
+        },
+    )
+    blocks = {block["id"]: block for block in search["blocks"]}
+    assert blocks["result-count"]["text"] == "0 search results"
+    assert blocks["engine-status"]["text"] == "duckduckgo: CAPTCHA"
+
+
 def test_file_result_has_one_portable_filename_link() -> None:
     path = r"D:\workspace\evidence.txt"
     view = present_mcp_result(

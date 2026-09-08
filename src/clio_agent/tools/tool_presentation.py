@@ -255,16 +255,61 @@ def _web(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
     del snapshot
     row = _structured(result)
     blocks: list[dict[str, Any]] = []
+    document = row.get("document")
+    document = document if isinstance(document, Mapping) else {}
+    metadata = document.get("metadata")
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    title = row.get("title") or metadata.get("title")
     for field in ("markdown", "content", "text"):
         if isinstance(row.get(field), str):
             blocks.append({"id": field, "type": "markdown", "text": row[field]})
             break
     identity = []
-    for field in ("conversion_id", "status", "provider", "extractor", "content_type", "size_bytes"):
+    for field, label in (
+        ("conversion_id", "Conversion"),
+        ("status", "HTTP status"),
+        ("provider", "Provider"),
+        ("extractor", "Extractor"),
+        ("content_type", "Content type"),
+        ("size_bytes", "Bytes"),
+    ):
         if isinstance(row.get(field), str | int):
-            identity.append(f"{field.replace('_', ' ')}: {row[field]}")
+            identity.append(f"{label}: {row[field]}")
+    structure = document.get("structure_summary")
+    if isinstance(structure, Mapping) and isinstance(structure.get("pages"), int):
+        identity.append(f"Pages: {structure['pages']}")
     if identity:
         blocks.append({"id": "identity", "type": "text", "text": "\n".join(identity)})
+    if isinstance(row.get("results"), list):
+        blocks.append(
+            {"id": "result-count", "type": "text", "text": f"{len(row['results'])} search results"}
+        )
+    failures = row.get("unresponsive_engines")
+    if isinstance(failures, list) and failures:
+        blocks.append(
+            {
+                "id": "engine-status",
+                "type": "text",
+                "text": "\n".join(
+                    f"{engine.get('engine', 'Search engine')}: {engine.get('reason', 'Unavailable')}"
+                    for engine in failures
+                    if isinstance(engine, Mapping)
+                ),
+            }
+        )
+    if row.get("error"):
+        blocks.append({"id": "error", "type": "text", "text": str(row["error"])})
+    if title and row.get("url"):
+        blocks.insert(
+            0,
+            {
+                "id": "source",
+                "type": "link",
+                "target": "url",
+                "uri": str(row["url"]),
+                "label": "Source document",
+            },
+        )
     events = row.get("events", [])
     if isinstance(events, list):
         text = "\n".join(
@@ -301,9 +346,7 @@ def _web(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
                 }
             )
     return {
-        "summary": str(
-            row.get("title") or row.get("url") or args.get("url") or args.get("query") or ""
-        ),
+        "summary": str(title or row.get("url") or args.get("url") or args.get("query") or ""),
         "blocks": blocks,
     }
 
