@@ -98,8 +98,12 @@ def standard_mcp_presentation(result: Any) -> dict[str, Any]:
             blocks.append(
                 {
                     "id": block_id,
-                    "type": "text",
-                    "text": f"{str(item['type']).capitalize()} · {item.get('mimeType', '')}",
+                    "type": "media" if item.get("data") else "text",
+                    "media_type": str(item.get("mimeType") or ""),
+                    "label": f"{str(item['type']).capitalize()} · {item.get('mimeType', '')}",
+                    "text": str(
+                        item.get("data") or "Media payload unavailable in the retained tool result."
+                    ),
                 }
             )
         elif item.get("type") in {"resource", "resource_link"}:

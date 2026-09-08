@@ -157,6 +157,7 @@ def test_file_result_has_one_portable_filename_link() -> None:
         "language": "",
         "command": "",
         "timed_out": False,
+        "media_type": "",
     }
     assert view["blocks"][1]["label"] == ""
 
@@ -284,3 +285,27 @@ def test_failed_task_collection_does_not_claim_it_collected_a_result() -> None:
     )
     assert view["summary"] == "Task missing · unknown_task"
     assert view["blocks"][0]["text"] == ""
+
+
+def test_standard_mcp_media_is_declared_and_binary_is_paged_not_dumped() -> None:
+    from clio_agent.gact.tool_result_presentation import project_presentation
+
+    data = "AAAA" * 1000
+    original = {"content": [{"type": "image", "mimeType": "image/png", "data": data}]}
+    view = present_mcp_result("third_party", {}, original)
+    assert view["blocks"][0]["type"] == "media"
+    assert view["blocks"][0]["media_type"] == "image/png"
+    projected = project_presentation(view, "s", "call")
+    assert len(projected["blocks"][0]["text"]) == 2048
+    assert projected["blocks"][0]["content_ref"]["total_chars"] == 4000
+    assert original["content"][0]["data"] == data
+
+
+def test_elided_mcp_media_does_not_claim_a_preview_exists() -> None:
+    view = present_mcp_result(
+        "third_party",
+        {},
+        {"content": [{"type": "audio", "mimeType": "audio/mpeg", "elided": "too_large"}]},
+    )
+    assert view["blocks"][0]["type"] == "text"
+    assert "unavailable" in view["blocks"][0]["text"]

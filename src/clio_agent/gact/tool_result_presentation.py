@@ -18,7 +18,8 @@ class PresentationBlock(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     id: str = Field(min_length=1)
-    type: Literal["text", "markdown", "code", "diff", "terminal", "link", "check"]
+    type: Literal["text", "markdown", "code", "diff", "terminal", "link", "check", "media"]
+    media_type: str = ""
     text: str = ""
     label: str = ""
     language: str = ""
