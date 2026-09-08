@@ -467,13 +467,13 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
         return row
 
     @app.get("/v1/commands")
-    async def list_commands(
+    def list_commands(
         agent_id: Optional[str] = None,
         session_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
         planner: bool = False,
     ) -> dict[str, Any]:
-        """SPEC §6.13 — backend-provided slash commands."""
+        """SPEC §6.13 — discover slash commands in FastAPI's worker pool."""
 
         cwd, extra_roots = command_context_for_request(app, session_id or "", workspace_id or "")
         if planner:
