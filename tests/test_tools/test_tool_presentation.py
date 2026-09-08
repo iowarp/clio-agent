@@ -30,7 +30,7 @@ def test_file_write_diff_is_added_only_to_observer_result(tmp_path) -> None:
 
     assert original["structuredContent"].get("unified_diff") is None
     assert enriched["structuredContent"] == original["structuredContent"]
-    assert enriched["presentation"]["blocks"][0]["text"].endswith(
+    assert enriched["presentation"]["blocks"][1]["text"].endswith(
         "-FIRST\n\\ No newline at end of file\n+SECOND\n\\ No newline at end of file\n"
     )
 
@@ -46,7 +46,7 @@ def test_file_diff_exposes_trailing_newline_change(
     snapshot = capture_tool_presentation("fs_apply_edit_write", args)
     target.write_text(after, encoding="utf-8")
     original = {"content": [], "structuredContent": {"path": str(target), "ok": True}}
-    diff = enrich_tool_observer_result(original, args, snapshot)["presentation"]["blocks"][0][
+    diff = enrich_tool_observer_result(original, args, snapshot)["presentation"]["blocks"][1][
         "text"
     ]
     assert "-same\n" in diff and "+same\n" in diff
@@ -56,3 +56,22 @@ def test_file_diff_exposes_trailing_newline_change(
 
 def test_non_file_tool_has_no_presentation_snapshot() -> None:
     assert capture_tool_presentation("shell_bash", {"command": "echo hi"}) is None
+
+
+def test_diff_preview_uses_one_context_line_not_a_ten_line_quota(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "context.txt"
+    before = "\n".join(f"line {index}" for index in range(20)) + "\n"
+    target.write_text(before, encoding="utf-8")
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    args = {"filepath": str(target)}
+    snapshot = capture_tool_presentation("fs_apply_edit_write", args)
+    target.write_text(before.replace("line 10\n", "edited\n"), encoding="utf-8")
+    view = enrich_tool_observer_result(
+        {"structuredContent": {"path": str(target), "ok": True}}, args, snapshot
+    )["presentation"]
+    diff = view["blocks"][1]["text"]
+    assert len(diff.splitlines()) == 7
+    assert " line 9\n-line 10\n+edited\n line 11\n" in diff
+    assert view["summary"] == ""

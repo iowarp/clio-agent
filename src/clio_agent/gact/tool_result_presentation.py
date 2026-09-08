@@ -18,11 +18,12 @@ class PresentationBlock(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     id: str = Field(min_length=1)
-    type: Literal["text", "markdown", "code", "diff", "terminal", "link"]
+    type: Literal["text", "markdown", "code", "diff", "terminal", "link", "check"]
     text: str = ""
     label: str = ""
     language: str = ""
-    target: Literal["artifact", "resource", "session", "url"] | None = None
+    target: Literal["artifact", "resource", "session", "url", "file"] | None = None
+    state: Literal["pending", "in_progress", "completed"] | None = None
     uri: str = ""
     command: str = ""
     exit_code: int | None = None

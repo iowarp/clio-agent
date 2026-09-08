@@ -111,12 +111,17 @@ def native_presentation(
                     entries.append(f"{field}: {value}")
         blocks.append({"id": "models", "type": "text", "text": "\n".join(entries)})
     elif declaration == "todos":
-        text = "\n".join(
-            f"{index + 1}. **{str(todo.get('status', '')).replace('_', ' ').capitalize()}** — {todo.get('content', '')}"
+        summary = ""
+        blocks.extend(
+            {
+                "id": f"todo-{index}",
+                "type": "check",
+                "state": todo.get("status", "pending"),
+                "text": str(todo.get("content", "")),
+            }
             for index, todo in enumerate(row.get("todos", []))
             if isinstance(todo, Mapping)
         )
-        blocks.append({"id": "todos", "type": "markdown", "text": text})
     elif declaration == "schedules":
         text = "\n".join(
             f"{schedule.get('id', '')} · {schedule.get('cron', '')} · {schedule.get('timezone', '')}\n{schedule.get('prompt', '')}\nNext: {schedule.get('next_fire_at', '')}"

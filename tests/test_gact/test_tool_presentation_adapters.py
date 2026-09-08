@@ -42,11 +42,14 @@ def test_todos_show_indexed_content_and_status_not_only_acknowledgement() -> Non
     )
     assert view["blocks"] == [
         {
-            "id": "todos",
-            "type": "markdown",
-            "text": "1. **In progress** — Collect evidence\n2. **Pending** — Review evidence",
-        }
+            "id": "todo-0",
+            "type": "check",
+            "state": "in_progress",
+            "text": "Collect evidence",
+        },
+        {"id": "todo-1", "type": "check", "state": "pending", "text": "Review evidence"},
     ]
+    assert view["summary"] == ""
 
 
 def test_presenter_failure_is_diagnostic_without_rewriting_observation(
@@ -128,3 +131,58 @@ def test_generic_mcp_resource_content_is_readable_and_structured_json_is_technic
     )
     assert len(view["blocks"]) == 1
     assert view["blocks"][0]["text"] == "Actual report"
+
+
+def test_file_result_has_one_portable_filename_link() -> None:
+    path = r"D:\workspace\evidence.txt"
+    view = present_mcp_result(
+        "fs_read_file",
+        {},
+        {
+            "structuredContent": {
+                "path": path,
+                "size_bytes": 12,
+                "content": "Evidence body",
+            }
+        },
+    )
+    assert view["summary"] == "12 bytes"
+    assert view["blocks"][0] == {
+        "id": "file-link",
+        "type": "link",
+        "target": "file",
+        "uri": path,
+        "label": "evidence.txt",
+        "text": "",
+        "language": "",
+        "command": "",
+        "timed_out": False,
+    }
+    assert view["blocks"][1]["label"] == ""
+
+
+def test_failed_handoff_live_and_snapshot_explain_the_same_failure() -> None:
+    from clio_agent.gact.events import Event
+    from clio_agent.gact.protocol.v3.event import event_to_v3
+    from clio_agent.gact.protocol.v3.message import subagent_from_part
+
+    part = {
+        "id": "failed-call",
+        "type": "expert_handoff",
+        "child_agent": "researcher",
+        "status": "failed",
+        "stage": "delegate.completed",
+        "text": "main -> researcher",
+        "metadata": {"error": "blueprint_not_found"},
+    }
+    snapshot = subagent_from_part(part, "session")
+    event = Event(
+        type="message.part.added",
+        session_id="session",
+        payload={"message_id": "message", "part": part},
+    )
+    live = event_to_v3(event, workspace_id="workspace")
+    assert live["payload"]["subagent"] == snapshot
+    assert snapshot["summary"] == "blueprint_not_found"
+    assert snapshot["state"] == "failed"
+    assert part["text"] == "main -> researcher"

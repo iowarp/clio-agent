@@ -8,7 +8,7 @@ import json
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from clio_agent.gact.tool_result_presentation import ToolPresentation
@@ -174,14 +174,20 @@ def _read(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
     if "content" not in row:
         return standard_mcp_presentation(result)
     return {
-        "summary": f"{row.get('path', '')} · {row.get('size_bytes', 0)} bytes",
+        "summary": f"{row.get('size_bytes', 0)} bytes",
         "blocks": [
+            {
+                "id": "file-link",
+                "type": "link",
+                "target": "file",
+                "uri": str(row.get("path") or ""),
+                "label": PureWindowsPath(str(row.get("path") or "")).name,
+            },
             {
                 "id": "file",
                 "type": "code",
-                "label": str(row.get("path") or ""),
                 "text": str(row.get("content") or ""),
-            }
+            },
         ],
     }
 
@@ -198,20 +204,27 @@ def _diff(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
             after.splitlines(keepends=True),
             fromfile=f"a/{Path(snapshot.path).name}",
             tofile=f"b/{Path(snapshot.path).name}",
+            n=1,
         )
         diff = "".join(
             line if line.endswith("\n") else f"{line}\n\\ No newline at end of file\n"
             for line in lines
         )
     return {
-        "summary": str(row.get("path") or args.get("filepath") or ""),
+        "summary": "",
         "blocks": [
+            {
+                "id": "file-link",
+                "type": "link",
+                "target": "file",
+                "uri": str(row.get("path") or args.get("filepath") or ""),
+                "label": PureWindowsPath(str(row.get("path") or args.get("filepath") or "")).name,
+            },
             {
                 "id": "diff",
                 "type": "diff",
-                "label": str(row.get("path") or args.get("filepath") or ""),
                 "text": diff,
-            }
+            },
         ],
     }
 
@@ -220,7 +233,7 @@ def _terminal(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, 
     del snapshot
     row = _structured(result)
     return {
-        "summary": str(row.get("cwd") or ""),
+        "summary": "",
         "blocks": [
             {
                 "id": "terminal",

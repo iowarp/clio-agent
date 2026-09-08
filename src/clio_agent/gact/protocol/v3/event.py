@@ -8,7 +8,7 @@ from typing import Any, Callable, Mapping
 from clio_agent.gact.events import Event
 from clio_agent.gact.protocol.v3 import CONNECTION_ID, GACT_V3, Projection
 from clio_agent.gact.protocol.v3.composer import COMPOSER_PROJECTORS
-from clio_agent.gact.protocol.v3.message import message_to_v3, part_to_v3_block
+from clio_agent.gact.protocol.v3.message import message_to_v3, part_to_v3_block, subagent_from_part
 from clio_agent.gact.protocol.v3.session import session_to_v3
 
 # Cancellation facts that live ONLY on a session.status_changed payload (they are
@@ -102,9 +102,12 @@ def _message_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Pro
 
 
 def _message_block_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Projection:
-    del event, session
-    block = part_to_v3_block(_mapping(payload.get("part")))
+    del session
+    part = _mapping(payload.get("part"))
+    block = part_to_v3_block(part)
     projected = {"message_id": str(payload.get("message_id") or ""), "block": block}
+    if part.get("type") == "expert_handoff":
+        projected["subagent"] = subagent_from_part(part, event.session_id)
     return _Projection("message.block.upserted", projected, str(block.get("id") or ""))
 
 

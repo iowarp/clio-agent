@@ -445,7 +445,13 @@ def _project_subagent(
     )
     result = str(metadata.get("output") or link.get("result") or "")
     summary = str(
-        metadata.get("summary") or link.get("summary") or result or part.get("text") or ""
+        metadata.get("error")
+        or metadata.get("error_reason")
+        or metadata.get("summary")
+        or link.get("summary")
+        or result
+        or part.get("text")
+        or ""
     )
     task = str(metadata.get("question") or link.get("task") or "")
     previous = context.subagents.get(subagent_id, {})
@@ -467,6 +473,13 @@ def _project_subagent(
             else {}
         ),
     }
+
+
+def subagent_from_part(part: Mapping[str, Any], session_id: str) -> dict[str, Any]:
+    """Project a live handoff with the same semantics as its reconnect snapshot."""
+    context = _TranscriptProjection(session_id=session_id, wire={}, subagent_links={})
+    _project_subagent(context, part, str(part.get("id") or ""))
+    return next(iter(context.subagents.values()))
 
 
 def _project_artifact(
