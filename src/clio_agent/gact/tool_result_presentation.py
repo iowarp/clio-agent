@@ -44,13 +44,28 @@ class ToolPresentation(BaseModel):
 
 
 def project_presentation(
-    value: dict[str, Any] | None, session_id: str, call_id: str, *, running: bool = False
+    value: dict[str, Any] | None,
+    session_id: str,
+    call_id: str,
+    *,
+    running: bool = False,
+    tool_name: str = "",
 ) -> dict[str, Any] | None:
     """Bound each block's transport body while retaining its durable identity."""
 
     if value is None:
         return None
     projected = {**value, "blocks": []}
+    if tool_name and not value.get("action"):
+        from clio_agent.tools.tool_presentation import MCP_PRESENTATION_ADAPTERS
+
+        adapter = MCP_PRESENTATION_ADAPTERS.get(tool_name)
+        if adapter is not None and adapter.action:
+            projected["action"] = adapter.action
+            # Older declared blocks can adopt today's header placement without
+            # changing their persisted text, rerunning a tool, or reading a file.
+            if not value.get("subject") and adapter.subject:
+                projected["subject"] = adapter.subject
     for source in value.get("blocks", []):
         block = dict(source)
         body = block.get("text", "")

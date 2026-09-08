@@ -61,6 +61,30 @@ def test_every_native_registration_declares_presentation() -> None:
                     assert f"{namespace}_{node.name}" in MCP_PRESENTATION_ADAPTERS
 
 
+def test_historical_header_projection_preserves_original_blocks() -> None:
+    original = {
+        "summary": "",
+        "blocks": [
+            {
+                "id": "file-link",
+                "type": "link",
+                "target": "file",
+                "uri": "/workspace/f.txt",
+                "label": "f.txt",
+            },
+            {"id": "diff", "type": "diff", "text": "@@ -1 +1 @@\n-before\n+after"},
+        ],
+    }
+    before = json.dumps(original)
+    view = project_presentation(original, "session", "call", tool_name="fs_apply_edit_write")
+    assert view is not None and view["action"] == "Write"
+    assert view["subject"] == "file-link"
+    assert view["blocks"] == original["blocks"]
+    assert json.dumps(original) == before
+    unknown = project_presentation(original, "session", "call", tool_name="third_party")
+    assert unknown == original
+
+
 def test_persisted_block_and_pages_reconstruct_exact_unicode_content() -> None:
     text = "aé🌻\n" * 5000
     full = ToolPresentation(

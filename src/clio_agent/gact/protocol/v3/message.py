@@ -401,7 +401,11 @@ def _project_tool(context: _TranscriptProjection, part: Mapping[str, Any], part_
                 output = value
                 break
     presentation = project_presentation(
-        part.get("presentation"), context.session_id, tool_id, running=state == "running"
+        part.get("presentation"),
+        context.session_id,
+        tool_id,
+        running=state == "running",
+        tool_name=str(part.get("tool_name") or current.get("name") or ""),
     ) or current.get("presentation")
     context.tools[tool_id] = {
         "id": tool_id,

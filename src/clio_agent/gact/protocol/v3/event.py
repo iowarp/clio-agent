@@ -225,7 +225,10 @@ def _tool_completed(event: Event, payload: dict[str, Any], session: Any) -> _Pro
         **(
             {
                 "presentation": project_presentation(
-                    payload["presentation"], event.session_id, entity_id
+                    payload["presentation"],
+                    event.session_id,
+                    entity_id,
+                    tool_name=str(payload.get("tool") or ""),
                 )
             }
             if payload.get("presentation") is not None

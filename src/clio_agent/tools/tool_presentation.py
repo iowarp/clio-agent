@@ -29,6 +29,7 @@ class PresentationAdapter:
     capture: Capture | None = None
     start: Capture | None = None
     action: str = ""
+    subject: str = ""
 
 
 @dataclass(frozen=True)
@@ -416,14 +417,18 @@ def _web(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
 
 
 register_presentation_adapter(
-    "fs_read_file", PresentationAdapter(_read, start=_file_start, action="Read")
+    "fs_read_file",
+    PresentationAdapter(_read, start=_file_start, action="Read", subject="file-link"),
 )
 register_presentation_adapter(
-    "fs_propose_edit", PresentationAdapter(_diff, start=_file_start, action="Propose edit")
+    "fs_propose_edit",
+    PresentationAdapter(_diff, start=_file_start, action="Propose edit", subject="file-link"),
 )
 register_presentation_adapter(
     "fs_apply_edit_write",
-    PresentationAdapter(_diff, _capture_write, start=_file_start, action="Write"),
+    PresentationAdapter(
+        _diff, _capture_write, start=_file_start, action="Write", subject="file-link"
+    ),
 )
 register_presentation_adapter(
     "shell_bash",
