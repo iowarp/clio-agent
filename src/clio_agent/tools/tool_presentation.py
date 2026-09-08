@@ -67,7 +67,10 @@ def starting_presentation(name: str, args: Mapping[str, Any]) -> dict[str, Any] 
     if adapter is None or adapter.start is None:
         return None
     try:
-        value = {**adapter.start(copy.deepcopy(args)), "action": adapter.action}
+        content = adapter.start(copy.deepcopy(args))
+        if content is None:
+            return None
+        value = {**content, "action": adapter.action or None}
         return ToolPresentation.model_validate(value).model_dump(exclude_none=True)
     except Exception:
         logger.exception("Starting tool presentation failed: %s", name)
@@ -140,7 +143,7 @@ def present_mcp_result(
             if adapter
             else standard_mcp_presentation(result)
         )
-        if adapter and adapter.action:
+        if adapter and adapter.action and (value.get("blocks") or value.get("summary")):
             value = {**value, "action": adapter.action}
         return ToolPresentation.model_validate(value).model_dump(exclude_none=True)
     except Exception:
@@ -177,9 +180,11 @@ def _capture_write(args: Mapping[str, Any]) -> FileWriteSnapshot:
     return FileWriteSnapshot(str(path), content)
 
 
-def _file_start(args: Mapping[str, Any]) -> dict[str, Any]:
+def _file_start(args: Mapping[str, Any]) -> dict[str, Any] | None:
     """Name the declared file before execution, without inventing its effects."""
     path = str(args.get("filepath") or "")
+    if not path:
+        return None
     return {
         "subject": "file-link",
         "summary": "",

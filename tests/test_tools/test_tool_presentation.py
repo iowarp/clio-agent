@@ -57,6 +57,23 @@ def test_declared_search_and_running_shell_headers() -> None:
     assert running["blocks"][0]["command"] == "echo exact"
 
 
+def test_missing_declared_file_subject_does_not_invent_a_header() -> None:
+    assert starting_presentation("fs_read_file", {"path": "README.md"}) is None
+    original = {"ok": True, "text": "readme contents"}
+    assert present_mcp_result("fs_read_file", {"path": "README.md"}, original) == {
+        "summary": "",
+        "blocks": [],
+    }
+    assert original == {"ok": True, "text": "readme contents"}
+
+
+def test_unknown_mcp_without_standard_content_keeps_optional_headers_absent() -> None:
+    assert present_mcp_result("third_party", {}, {"structuredContent": {"ok": False}}) == {
+        "summary": "",
+        "blocks": [],
+    }
+
+
 def test_file_write_diff_is_added_only_to_observer_result(tmp_path) -> None:
     target = tmp_path / "result.txt"
     target.write_text("FIRST", encoding="utf-8")
