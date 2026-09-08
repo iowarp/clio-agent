@@ -576,6 +576,11 @@ KEY_NOTES: dict[str, str] = {
         'Selects the Codex transport; "sdk" is the only supported value, kept as an explicit '
         "contract check, not a tuning knob."
     ),
+    "lm.context_window": (
+        "Override the effective context window (tokens); 0 auto-derives from the "
+        "handshake-discovered served window, set >0 to assert a larger window than the provider "
+        "serves (e.g. when vLLM's --max-model-len clips the native maximum)."
+    ),
     "lm.defer_tiktoken": (
         "Defers litellm's ~40MB cl100k tiktoken vocab load until first real encode; disable if "
         "something depends on eager tiktoken load at boot."
@@ -774,6 +779,11 @@ KEY_NOTES: dict[str, str] = {
     "provenance.artifacts.queue_size": (
         "Max queued artifact-provenance events awaiting async dispatch; raise if a slow provider "
         "causes drops under bursty activity."
+    ),
+    "provenance.kvnorm": (
+        "Stamp the vLLM response id (chatcmpl-*) onto each lm.call provenance record as the join "
+        "key between clio's ai_model_invocation stream and vllm-kvnorm's kv_token_importance "
+        "stream; only effective when Flowcept is a configured provenance provider."
     ),
     "providers.claude_code.max_concurrent_processes": (
         "Process-wide cap on concurrently-connected claude CLI subprocesses; a connect beyond it "

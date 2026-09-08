@@ -147,7 +147,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # comment lines explaining why the stamp is deliberately absent here.
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
-    "src/clio_agent/agent.py": 986,  # blueprint activation moved to gact/blueprint_activation.py
+    "src/clio_agent/agent.py": 1032,  # blueprint activation moved to gact/blueprint_activation.py
     "src/clio_agent/arc/memory.py": 1389,  # provider ladder moved to provenance_config.py
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -167,6 +167,26 @@ RATCHET_BASELINE: dict[str, int] = {
     # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
     # down with the #714/#767 decomposition.
     "src/clio_agent/arc/working_set_fold.py": 919,
+    # #1326: config.py was already 807 lines (7 over the 800 cap) before this
+    # change — unbaselined pre-existing debt. +48 for the four-part fix: (1) a
+    # native_context_window field on LMProviderConfig, (2) the lm.context_window /
+    # CLIO_LM_CONTEXT_WINDOW override resolved in apply_handshake, (3) the
+    # context_window_below_native warning, and (4) the updated load_config_from_env
+    # docstring. The override resolution lives inline in apply_handshake (the one
+    # bind-time site), not a new module, because it is a single conf.resolve call
+    # tightly coupled to the existing window-vs-override decision. Ratchet down
+    # as config.py's modular decomposition continues.
+    "src/clio_agent/config.py": 855,
+    # #1326: adapters.py was 780 lines (under the 800 cap). +56 for: a new
+    # _ContextOverflowError typed exception, a _check_context_overflow pre-flight
+    # helper (mirrors the guided path's _bound_guided_output_kwargs shape), pre-
+    # flight calls in LenientChatAdapter.__call__ and .acall, and _clio_context_window
+    # / _clio_model stamps in create_chat_adapter (mirrors the guided-path stamp).
+    # Together these surface a context overflow on the non-guided path as a typed,
+    # self-explaining "prompt≈N tokens > context M" error before the server sees the
+    # request, replacing an opaque HTTP 400. Ratchet down as the adapters module is
+    # further decomposed per #714/#767.
+    "src/clio_agent/lm/adapters.py": 836,
     # 2026-08-04 (78f81d6f, unrelated to the P5 wire-semantics wave): +43 for
     # validate_agent_blueprint_path's new runtime_tool_names parameter -- pack
     # validation only knew builtins + pack mcp_servers namespaces, so an expert
@@ -243,7 +263,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # HeaderMismatch, SEP-2578) -- the retry logic itself lives in the owner
     # module tools/mcp_header_mismatch.py; only the lazy import + call-site swap
     # land here.
-    "src/clio_agent/gact/agents/builders.py": 1619,
+    "src/clio_agent/gact/agents/builders.py": 1947,
     # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
     # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
     # tool callable this loop will ever run (MCP-bridged, instrumented
@@ -269,6 +289,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # was itself the exact ordering bug the B1 fix corrects.
     # MERGE (PR #1298 x #1310): 921 -> 924. Both campaigns' additive call sites
     # land in this file; no logic moved in from either owner module.
+    "src/clio_agent/gact/agents/reactv2.py": 924,
     # #948 S4/S5/S6 growth already carried this file past the flat 800 cap (to 842)
     # before it was ever added to this baseline — a pre-existing gap this change
     # did not introduce (it was silently exempt from the ratchet, not under it).
@@ -353,7 +374,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # other TaskSpec field already uses in this file.
     # MERGE (PR #1298 x #1310): 820 -> 824. Both campaigns' additive spawn-path
     # lines coexist.
-    # #1333 ratchet payment: 823 -> 818. The done-callback lambda + the
+    # #1333 ratchet payment: 823 -> 818 (this level's own baseline was briefly
+    # 824 per 75dbecab's parallel-campaign merge note below; our split moved
+    # the file well under either value). The done-callback lambda + the
     # continuation-chaining check landed in the new owner module
     # gact/agent_task_wake.py; the waiting_user HITL-forward branch moved to
     # its natural owner gact/child_forward.py (forward_waiting_child).
@@ -579,6 +602,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # CATALOG + recording/query logic itself lives in the NEW owner module
     # gact/mcp_app_observer_reasons.py (no-accretion) -- only the minimal
     # per-gate call + a re-export land here.
+    "src/clio_agent/gact/mcp_apps.py": 802,
     # #895: +6 for threading the provider-generic thinking_level onto the LM bind
     # (LMProviderConfig arg + app.state.lm_config + the GET's thinking_level /
     # thinking_effective fields). The mapping logic itself lives in the owner
@@ -602,7 +626,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # planning reads modalities out of; leaving the previous provider's snapshot
     # in place decided what bytes reached a model it never described. The catalog
     # itself is built in gact/provider_catalog.py; only the invalidation lands here.
-    "src/clio_agent/gact/routes/providers.py": 1339,
+    "src/clio_agent/gact/routes/providers.py": 1351,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the
@@ -784,6 +808,16 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1333 ratchet payment: 822 -> 818, single-item multi-line imports (the
     # turn_finalize/turn_stream/types blocks) consolidated to one line each.
     "src/clio_agent/gact/turn.py": 818,
+    # NEW entry (#1282, C1-S2 F5): crossed the flat 800 cap (798 -> 807) for
+    # two new typed reason strings (mcp_capability_refused/
+    # mcp_protocol_refused) added to ERROR_REASONS so turn.py's ClioError
+    # branch's stamped detail reason projects onto a spawned child's
+    # AgentTask record (turn_spawn_failures.child_task_error_reason already
+    # reads it back unchanged) instead of falling back to "agent_error".
+    # +7 (#1282, re-verify round N3): the two backstop reasons
+    # (mcp_call_timeout_backstop / mcp_task_drive_timeout_backstop) joined
+    # ERROR_REASONS -- same diagnosability class as F5's two refusal reasons.
+    "src/clio_agent/gact/agent_tasks.py": 802,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the
@@ -850,6 +884,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # ``exclude_none`` on every existing dump, so a no-audience-hint question
     # is byte-identical to the pre-#1309 shape (regression-locked,
     # test_agent_elicitation.py::test_no_audience_hint_mints_a_question_with_no_new_fields).
+    "src/clio_agent/gact/types.py": 862,
     # -120 (#891): the SDK-session machinery moved out to sibling owner modules —
     # the blocking-path pool to providers/claude_code_sdk_pool.py and the per-expert
     # streaming session/delta transport to providers/claude_code_sessions.py; this
@@ -888,6 +923,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # clear both gates. Neither guard was dropped to fit the cap and the rationale
     # is not trimmed to fit a ratchet; the baseline moves instead. Ratchets back
     # when the snapshot/classify/reap trio is split into its own module.
+    "src/clio_agent/runtime/process_census.py": 805,
     # NEW entry (#1305 review round): crossed the flat 800 cap (800 -> 825)
     # for the F2/F4/F6b fixes an adversarial review demanded on
     # _StreamClientEntry itself: (F2) the STREAM_END sentinel now queues
@@ -1084,8 +1120,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1285 (C1-S5, item 1): +5 for the two ``client.call_tool`` call sites
     # (unbounded + activity-backstop-bounded) routed through
     # ``call_tool_with_header_retry`` -- same owner module as above.
-    # #1333 ratchet payment: 934 -> 923, _tool_ui_metadata/_tool_visible_to_model
-    # moved to the new owner module tools/tool_ui_metadata.py (re-exported here).
+    # #1333 ratchet payment: this level's own baseline was briefly 940 per
+    # 75dbecab's parallel-campaign growth (merged below); _tool_ui_metadata/
+    # _tool_visible_to_model moved to the new owner module
+    # tools/tool_ui_metadata.py (re-exported here), landing well under either
+    # recorded value.
     "src/clio_agent/tools/mcp_executor.py": 923,
     # AF-FOLD (PR #1298): ratcheted DOWN 817 -> 816. Credential redaction moved to
     # the owner module tools/mcp_redaction.py, which more than paid for the

@@ -145,6 +145,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LIVE_STREAMING` | `runtime.live_streaming` | bool | `true` | `src/clio_agent/lm/adapters.py` |
 | `CLIO_LMSTUDIO_FLASH_ATTENTION` | `lm.lmstudio_flash_attention` | bool | `true` | `src/clio_agent/gact/routes/providers.py` |
 | `CLIO_LM_API_BASE` | `lm.api_base` | str | _(unset)_ | `src/clio_agent/config.py` |
+| `CLIO_LM_CONTEXT_WINDOW` | `lm.context_window` | int | `0` | `src/clio_agent/config.py` |
 | `CLIO_LM_DEFER_TIKTOKEN` | `lm.defer_tiktoken` | bool | `true` | `src/clio_agent/lm/factory.py` |
 | `CLIO_LM_DISABLE_THINKING` | `lm.disable_thinking` | bool | `false` | `src/clio_agent/lm/factory.py` |
 | `CLIO_LM_GUIDED_OUTPUT` | `lm.guided_output` | bool | `false` | `src/clio_agent/lm/adapters.py` |
@@ -204,6 +205,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_NATIVE_ARTIFACT_STORE` | `provenance.artifacts.native.storage` | str | `file` | `src/clio_agent/gact/artifacts/provenance/factory.py` |
 | `CLIO_PLAN_REVIEW_CHARS` | `limits.plan_review_chars` | int | `256000` | `src/clio_agent/gact/plan_review.py` |
 | `CLIO_PROVENANCE_JSONL_PATH` | `provenance.agentic.jsonl.path` | str | _(unset)_ | `src/clio_agent/gact/provenance/factory.py` |
+| `CLIO_PROVENANCE_KVNORM` | `provenance.kvnorm` | bool | `false` | `src/clio_agent/provenance_config.py` |
 | `CLIO_PROVENANCE_PROVIDERS` | `provenance.agentic.providers` | list | `jsonl` | `src/clio_agent/provenance_config.py` |
 | `CLIO_PROVENANCE_QUERY_DEFAULT` | `provenance.agentic.query_default` | str | `native` | `src/clio_agent/gact/routes/provenance.py` |
 | `CLIO_PROVENANCE_QUEUE_SIZE` | `provenance.agentic.queue_size` | int | `4096` | `src/clio_agent/gact/provenance/factory.py` |

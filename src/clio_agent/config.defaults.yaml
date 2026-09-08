@@ -92,6 +92,15 @@ sandbox.enabled: true
 # explicit contract check, not a tuning knob.
 # lm.codex_transport:  # default unset; resolved in code
 
+# CLIO_LM_CONTEXT_WINDOW  (int)  <- src/clio_agent/config.py (apply_handshake)
+# Override the effective context window (tokens) used by clio. 0 = auto-derive
+# from the handshake-discovered served window (max_model_len / loaded_context_
+# length). Set to a positive integer to assert a larger window than the provider
+# serves — e.g. when vLLM's --max-model-len clips a model's native 131072 to
+# 32768. A warning is still logged when the served window is below the model's
+# native catalog maximum regardless of this override.
+lm.context_window: 0
+
 # CLIO_LM_DEFER_TIKTOKEN  (bool)  <- src/clio_agent/lm/factory.py
 # Defers litellm's ~40MB cl100k tiktoken vocab load until first real encode;
 # disable if something depends on eager tiktoken load at boot.
@@ -1384,6 +1393,13 @@ debug.memprof_frames: 20
 # Filesystem path for JSONL stream-audit records (SSE scheduling, transcript
 # events, receive times); set to diagnose streaming issues.
 # debug.stream_audit_log:  # default unset; resolved in code
+
+# CLIO_PROVENANCE_KVNORM  (bool)  <- src/clio_agent/provenance_config.py
+# Stamp the vLLM response id (chatcmpl-*) onto each lm.call provenance record
+# as the join key between clio's ai_model_invocation stream and vllm-kvnorm's
+# kv_token_importance stream; only effective when Flowcept is a configured
+# provenance provider.
+provenance.kvnorm: false
 
 # CLIO_FLOWCEPT_CAMPAIGN_ID  (str)  <- src/clio_agent/gact/provenance/factory.py
 # Free-text campaign label attached to every Flowcept provenance record; set
