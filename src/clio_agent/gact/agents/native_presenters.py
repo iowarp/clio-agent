@@ -177,7 +177,7 @@ def native_presentation(
             for field in ("wallclock_s", "tokens"):
                 if field in budget:
                     progress.append(f"{field}: {budget[field]}")
-        if progress:
+        if progress and (row.get("active") or row.get("condition") or row.get("iters_elapsed")):
             blocks.append({"id": "progress", "type": "text", "text": "\n".join(progress)})
     elif declaration == "model_catalog":
         entries = []
@@ -243,7 +243,8 @@ def native_presentation(
             for schedule in row.get("schedules", [])
             if isinstance(schedule, Mapping)
         )
-        blocks.append({"id": "schedules", "type": "text", "text": text})
+        if text:
+            blocks.append({"id": "schedules", "type": "text", "text": text})
     elif declaration == "schedule_created":
         if row.get("schedule_id"):
             summary = f"{'Recurring' if row.get('recurring') else 'One-shot'} schedule · {row['schedule_id']}"
@@ -274,19 +275,18 @@ def native_presentation(
                 or record.get("resource_id")
                 or summary
             )
-            fields = [
-                f"{key.replace('_', ' ')}: {record[key]}"
-                for key in (
-                    "detected_mime",
-                    "declared_size",
-                    "received_size",
-                    "revision",
-                    "state",
-                    "failure",
-                )
-                if key in record and record[key] != ""
-            ]
-            blocks.append({"id": "identity", "type": "text", "text": "\n".join(fields)})
+            fields = [str(record["detected_mime"])] if record.get("detected_mime") else []
+            size = record.get("received_size", record.get("declared_size"))
+            if isinstance(size, int):
+                fields.append(f"{size:,} bytes")
+            if record.get("revision") is not None:
+                fields.append(f"Revision {record['revision']}")
+            if record.get("state"):
+                fields.append(str(record["state"]).capitalize())
+            if fields:
+                blocks.append({"id": "identity", "type": "text", "text": " · ".join(fields)})
+            if record.get("failure"):
+                blocks.append({"id": "failure", "type": "text", "text": str(record["failure"])})
         resource_id = str(
             row.get("resource_id")
             or (record.get("id") if isinstance(record, Mapping) else "")
@@ -298,12 +298,22 @@ def native_presentation(
             blocks.insert(0, resource_link)
         processing = row.get("processing")
         if isinstance(processing, Mapping):
-            fields = [
-                f"{key.replace('_', ' ')}: {processing[key]}"
-                for key in ("state", "stage", "message", "progress", "error")
-                if isinstance(processing.get(key), str | int | float)
-            ]
-            blocks.append({"id": "processing", "type": "text", "text": "\n".join(fields)})
+            state = str(processing.get("state") or "")
+            message = str(processing.get("message") or (f"Conversion {state}" if state else ""))
+            if isinstance(processing.get("progress"), int | float) and state not in {
+                "complete",
+                "completed",
+                "failed",
+                "cancelled",
+            }:
+                message += f" · {processing['progress']}%"
+            if processing.get("error"):
+                message += f"\n{processing['error']}"
+            identity = next((block for block in blocks if block["id"] == "identity"), None)
+            if message and identity is not None:
+                identity["text"] += f"\n{message}"
+            elif message:
+                blocks.append({"id": "processing", "type": "text", "text": message})
         matches = row.get("matches")
         if isinstance(matches, list):
             blocks.append(
@@ -407,6 +417,13 @@ def native_presentation(
             if declaration == "task_output":
                 links[0]["label"] = str(args.get("task_id") or "Child task")
                 summary = str(row.get("error") or row.get("error_reason") or "")
+            elif declaration == "artifact":
+                artifacts = row.get("artifacts", [])
+                if len(artifacts) == 1 and artifacts[0].get("accepted") is True:
+                    artifact = artifacts[0]
+                    summary = "Created" if artifact.get("created") else "Reused existing artifact"
+                    if artifact.get("version"):
+                        summary += f" · v{artifact['version']}"
     if declaration == "text" and args.get("skill_id"):
         subject = "skill-name"
         blocks.insert(0, {"id": subject, "type": "text", "text": str(args["skill_id"])})
