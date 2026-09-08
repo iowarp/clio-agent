@@ -78,6 +78,7 @@ PRESENTER_ATTR = "_clio_tool_result_presenter"
 START_PRESENTER_ATTR = "_clio_tool_start_presenter"
 _RESULT_PRESENTERS: dict[str, Any] = {}
 _START_PRESENTERS: dict[str, Callable[[Mapping[str, Any]], dict[str, Any]]] = {}
+_PRESENTER_KEYWORD_CONTAINERS: dict[str, tuple[str, ...]] = {}
 
 DEFAULT_REPRESENTATION = "row"
 TOOL_REPRESENTATIONS = frozenset({"row", "handoff", "chip"})
@@ -510,6 +511,11 @@ def _instrument_tool(tool: Any) -> Any:
     presenter = getattr(func, PRESENTER_ATTR, None)
     if presenter is not None:
         _RESULT_PRESENTERS[name] = presenter
+        _PRESENTER_KEYWORD_CONTAINERS[name] = tuple(
+            parameter.name
+            for parameter in inspect.signature(func).parameters.values()
+            if parameter.kind is inspect.Parameter.VAR_KEYWORD
+        )
     start_presenter = getattr(func, START_PRESENTER_ATTR, None)
     if start_presenter is not None:
         _START_PRESENTERS[name] = start_presenter
@@ -543,9 +549,21 @@ def present_native_result(
     presenter = _RESULT_PRESENTERS.get(name)
     if presenter is None:
         return None
+    args = _presentation_arguments(name, args)
     if callable(presenter):
         return presenter(copy.deepcopy(args), copy.deepcopy(result), copy.deepcopy(structured))
     return native_presentation(presenter, args, result, structured)
+
+
+def _presentation_arguments(name: str, args: Mapping[str, Any]) -> dict[str, Any]:
+    """Unbind declared **keywords only for the observer's presentation copy."""
+    projected = copy.deepcopy(dict(args))
+    for container in _PRESENTER_KEYWORD_CONTAINERS.get(name, ()):
+        keywords = projected.get(container)
+        if isinstance(keywords, Mapping):
+            projected.pop(container)
+            projected.update(keywords)
+    return projected
 
 
 def present_native_start(name: str, args: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -556,9 +574,9 @@ def present_native_start(name: str, args: Mapping[str, Any]) -> dict[str, Any] |
     if presenter is None:
         return None
     try:
-        return ToolPresentation.model_validate(presenter(copy.deepcopy(args))).model_dump(
-            exclude_none=True
-        )
+        return ToolPresentation.model_validate(
+            presenter(_presentation_arguments(name, args))
+        ).model_dump(exclude_none=True)
     except Exception:
         logger.exception("Starting native presentation failed: %s", name)
         return {"summary": "", "blocks": [], "diagnostic": "presentation_failed"}
