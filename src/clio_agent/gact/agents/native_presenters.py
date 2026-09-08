@@ -44,8 +44,11 @@ def native_presentation(
         if isinstance(result, str):
             blocks.append({"id": "content", "type": "markdown", "text": result})
     elif declaration == "task_output":
-        summary = f"Collected task {row.get('task_id', args.get('task_id', ''))} · {row.get('status', '')}"
+        task_id = str(row.get("task_id", args.get("task_id", "")))
+        summary = f"Task {task_id} · {row.get('error') or row.get('status') or 'output'}"
         blocks.append({"id": "output", "type": "markdown", "text": str(row.get("output") or "")})
+        if row.get("error_reason"):
+            blocks.append({"id": "error", "type": "text", "text": str(row["error_reason"])})
         child = _child_session(str(row.get("task_id") or args.get("task_id") or ""))
         if child:
             blocks.insert(
@@ -81,7 +84,7 @@ def native_presentation(
                         "type": "link",
                         "target": "session",
                         "uri": child,
-                        "label": f"{label} · {task.get('status', '')}",
+                        "label": f"{label} · {task.get('error') or task.get('status', '')}",
                     }
                 )
             else:
@@ -89,12 +92,47 @@ def native_presentation(
                     {
                         "id": f"task-{index}",
                         "type": "text",
-                        "text": f"{label} · {task.get('status', '')}",
+                        "text": f"{label} · {task.get('error') or task.get('status', '')}",
                     }
                 )
             excerpt = display.get("answer_excerpt")
             if isinstance(excerpt, str) and excerpt:
                 blocks.append({"id": f"task-{index}-result", "type": "markdown", "text": excerpt})
+    elif declaration == "message":
+        task_id = str(row.get("task_id") or args.get("task_id") or "")
+        child = _child_session(task_id)
+        if child:
+            blocks.append(
+                {
+                    "id": "recipient",
+                    "type": "link",
+                    "target": "session",
+                    "uri": child,
+                    "label": "Open recipient conversation",
+                }
+            )
+        if isinstance(args.get("message"), str):
+            blocks.append({"id": "message", "type": "text", "text": args["message"]})
+        for field in ("action", "transport", "error"):
+            if row.get(field):
+                blocks.append(
+                    {"id": field, "type": "text", "text": f"{field.capitalize()}: {row[field]}"}
+                )
+    elif declaration == "goal":
+        summary = "Active goal" if row.get("active") else "No active goal"
+        if row.get("condition"):
+            blocks.append({"id": "condition", "type": "text", "text": str(row["condition"])})
+        progress = []
+        for field in ("iters_elapsed", "max_goal_iters"):
+            if field in row:
+                progress.append(f"{field.replace('_', ' ')}: {row[field]}")
+        budget = row.get("budget_spent")
+        if isinstance(budget, Mapping):
+            for field in ("wallclock_s", "tokens"):
+                if field in budget:
+                    progress.append(f"{field}: {budget[field]}")
+        if progress:
+            blocks.append({"id": "progress", "type": "text", "text": "\n".join(progress)})
     elif declaration == "model_catalog":
         entries = []
         for provider in row.get("results", []):
@@ -111,7 +149,7 @@ def native_presentation(
                     entries.append(f"{field}: {value}")
         blocks.append({"id": "models", "type": "text", "text": "\n".join(entries)})
     elif declaration == "todos":
-        summary = ""
+        summary = "" if row.get("todos") else "No tasks in this list"
         blocks.extend(
             {
                 "id": f"todo-{index}",
@@ -131,6 +169,8 @@ def native_presentation(
         blocks.append({"id": "schedules", "type": "text", "text": text})
     elif declaration == "resource":
         summary = str(row.get("name") or row.get("resource_id") or summary)
+        if row.get("resources") == []:
+            summary = "No workspace resources"
         record = row.get("resource")
         if isinstance(record, Mapping):
             summary = str(
@@ -249,6 +289,8 @@ def validate_declaration(value: str | Presenter) -> None:
         "todos",
         "schedules",
         "model_catalog",
+        "message",
+        "goal",
     }:
         return
     if isinstance(value, str) and value.startswith("fields:") and value[7:]:

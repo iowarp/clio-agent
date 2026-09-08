@@ -186,3 +186,101 @@ def test_failed_handoff_live_and_snapshot_explain_the_same_failure() -> None:
     assert snapshot["summary"] == "blueprint_not_found"
     assert snapshot["state"] == "failed"
     assert part["text"] == "main -> researcher"
+
+
+@pytest.mark.parametrize(
+    ("declaration", "row", "expected"),
+    [
+        (
+            "fields:schedule_id,cron,run_at,recurring,next_fire_at,timezone",
+            {
+                "schedule_id": "schedule",
+                "run_at": "2026-09-09T12:00Z",
+                "recurring": False,
+                "timezone": "UTC",
+            },
+            [
+                "Schedule id: schedule",
+                "Run at: 2026-09-09T12:00Z",
+                "Recurring: False",
+                "Timezone: UTC",
+            ],
+        ),
+        (
+            "fields:loop_id,next_fire_at,stopped",
+            {"loop_id": "loop", "next_fire_at": "later", "stopped": False},
+            ["Loop id: loop", "Next fire at: later", "Stopped: False"],
+        ),
+        (
+            "goal",
+            {
+                "active": True,
+                "condition": "Finish the report",
+                "iters_elapsed": 2,
+                "budget_spent": {"tokens": 32},
+            },
+            ["Finish the report", "iters elapsed: 2\ntokens: 32"],
+        ),
+        (
+            "resource",
+            {
+                "resource_id": "document",
+                "node": {"title": "Findings", "text": "The actual evidence"},
+            },
+            ["Findings\nThe actual evidence"],
+        ),
+        (
+            "resource",
+            {"resource_id": "document", "content": "Actual document body"},
+            ["Actual document body"],
+        ),
+        (
+            "resource",
+            {"resource_id": "document", "matches": [{"line": 8, "text": "Evidence match"}]},
+            ["8: Evidence match"],
+        ),
+        (
+            "schedules",
+            {
+                "schedules": [
+                    {
+                        "id": "schedule",
+                        "cron": "0 9 * * *",
+                        "timezone": "UTC",
+                        "prompt": "Review work",
+                        "next_fire_at": "tomorrow",
+                    }
+                ]
+            },
+            ["schedule · 0 9 * * * · UTC\nReview work\nNext: tomorrow"],
+        ),
+        ("text", {}, ["# Real skill\nLoaded procedure"]),
+    ],
+)
+def test_each_native_family_exposes_actual_result_content(
+    declaration: str, row: dict[str, Any], expected: list[str]
+) -> None:
+    raw: Any = "# Real skill\nLoaded procedure" if declaration == "text" else row
+    before = json.dumps(raw)
+    view = native_presentation(declaration, {}, raw, row)
+    assert [block["text"] for block in view["blocks"]] == expected
+    assert json.dumps(raw) == before
+
+
+def test_message_exposes_sent_content_and_transport_without_json() -> None:
+    view = native_presentation(
+        "message",
+        {"message": "Review this evidence", "task_id": "unknown"},
+        {},
+        {"message": "queued", "transport": "inbox", "action": "steer"},
+    )
+    assert view["blocks"][0]["text"] == "Review this evidence"
+    assert view["blocks"][2]["text"] == "Transport: inbox"
+
+
+def test_failed_task_collection_does_not_claim_it_collected_a_result() -> None:
+    view = native_presentation(
+        "task_output", {}, {"task_id": "missing", "error": "unknown_task"}, None
+    )
+    assert view["summary"] == "Task missing · unknown_task"
+    assert view["blocks"][0]["text"] == ""

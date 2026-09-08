@@ -645,7 +645,7 @@ def build_goal_status_tool() -> Any:
     return native_tool(
         goal_status,
         name="goal_status",
-        presentation="fields:condition,active,iters_elapsed",
+        presentation="goal",
         desc=goal_status.__doc__,
         title="Goal Status",
         args={},
