@@ -133,6 +133,34 @@ class TestDiscoverPackServers:
         )
         assert agent._discover_pack_servers("not-installed") == {}
 
+    def test_unknown_blueprint_id_degrades_loudly_with_typed_reason(
+        self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A session bound to a blueprint id that resolves to NO discovered blueprint
+        must degrade LOUDLY (typed reason on the session API + trace), not silently —
+        the footgun that ran a real agent on built-ins only with no signal."""
+
+        monkeypatch.setattr(
+            "clio_agent.gact.agent_blueprints.discover_agent_blueprints",
+            lambda: [_blueprint("pack-a", {"a-server": "uvx a-mcp serve"})],
+        )
+        app = SimpleNamespace(state=SimpleNamespace(sessions={}))
+        from clio_agent.gact import context as gact_context
+
+        app_token = gact_context.set_app(app)
+        session_token = gact_context.set_session_id("session-1")
+        try:
+            assert agent._discover_pack_servers("not-installed") == {}
+        finally:
+            gact_context.reset(session_token)
+            gact_context.reset(app_token)
+
+        reasons = blueprint_resolution_reasons(app, "session-1")
+        assert len(reasons) == 1
+        assert reasons[0]["reason"] == "installed_blueprint_id_unresolved"
+        assert reasons[0]["blueprint_id"] == "not-installed"
+        assert reasons[0]["category"] == "configuration_invalid"
+
     def test_workspace_blueprint_is_discovered_from_gateway_cwd(
         self, agent: ClioAgent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

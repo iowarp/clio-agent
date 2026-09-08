@@ -50,6 +50,18 @@ _BLUEPRINT_RESOLUTION_REASON_DEFINITIONS: dict[str, dict[str, str]] = {
         "category": "capability_unavailable",
         "description": "Installed Agent Blueprint discovery failed.",
     },
+    "installed_blueprint_id_unresolved": {
+        "category": "configuration_invalid",
+        "description": (
+            "The session's Agent Blueprint id was not found in any discovered registry "
+            "(global or workspace) — the agent runs with built-in tools only and the "
+            "blueprint's declared MCP servers are dropped."
+        ),
+    },
+    "installed_blueprint_no_servers": {
+        "category": "configuration_invalid",
+        "description": "The resolved Agent Blueprint declares no MCP servers.",
+    },
 }
 
 
@@ -148,7 +160,13 @@ def blueprint_mcp_servers(
         servers = blueprint_server_map(blueprint)
         if servers:
             return {blueprint.id: servers}
+        # Blueprint found but declares no MCP servers — degrade loudly, not silently.
+        _record_resolution_reason("installed_blueprint_no_servers", blueprint_id)
         return {}
+    # The bound blueprint id resolved to NO discovered blueprint (global or workspace).
+    # This is the footgun that silently ran the agent on built-ins only: surface it so it
+    # reaches the trace + the live session API (no-silent-fallback ground rule).
+    _record_resolution_reason("installed_blueprint_id_unresolved", blueprint_id)
     return {}
 
 
@@ -205,6 +223,7 @@ def resolve_active_blueprint_servers(
     servers = blueprint_server_map(blueprint)
     if servers:
         return {blueprint.id: servers}
+    _record_resolution_reason("installed_blueprint_no_servers", blueprint_id)
     return {}
 
 
