@@ -69,6 +69,18 @@ def test_presenter_failure_is_diagnostic_without_rewriting_observation(
     assert view == {"summary": "", "blocks": [], "diagnostic": "presentation_failed"}
 
 
+def test_failed_execution_presents_the_authoritative_reason_without_fabricating_a_result() -> None:
+    from clio_agent.gact.presentation_observer import completed_presentation
+
+    raw, view = completed_presentation(
+        "missing_native", {}, None, None, "", error="Requested file does not exist"
+    )
+    assert raw is None
+    assert view["blocks"] == [
+        {"id": "execution-error", "type": "text", "text": "Requested file does not exist"}
+    ]
+
+
 def test_observe_uses_child_identity_and_declared_display_name() -> None:
     raw = json.dumps(
         {"results": [{"task_id": "task", "child_session_id": "child", "status": "completed"}]}

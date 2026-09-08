@@ -791,7 +791,7 @@ def _make_tool_observer(app: "FastAPI"):
             )
             result_summary = f"Tool {name} {'completed' if ok else 'failed'}."
             result, presentation = completed_presentation(
-                name, args, result, structured_content, terminal_output
+                name, args, result, structured_content, terminal_output, error=completion_error
             )
             # Served payload = the tool-response atom's FACTS (ok/duration/cached/result/
             # error). No ui_summary/result_summary captions — clio transmits, it does not

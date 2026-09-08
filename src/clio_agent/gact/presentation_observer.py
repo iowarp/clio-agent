@@ -35,7 +35,13 @@ def publish_presentation_delta(app: Any, sid: str, payload: dict[str, Any]) -> N
 
 
 def completed_presentation(
-    name: str, args: Mapping[str, Any], result: Any, structured: Any, terminal_output: str
+    name: str,
+    args: Mapping[str, Any],
+    result: Any,
+    structured: Any,
+    terminal_output: str,
+    *,
+    error: str = "",
 ) -> tuple[Any, dict[str, Any]]:
     """Prepare the observer view; failures cannot alter the tool's result or status."""
     from clio_agent.gact.agents.tool_instrumentation import present_native_result
@@ -50,6 +56,8 @@ def completed_presentation(
         if presentation is None:
             presentation = present_mcp_result(name, args, result)
         presentation = ToolPresentation.model_validate(presentation).model_dump(exclude_none=True)
+        if error:
+            presentation["blocks"].append({"id": "execution-error", "type": "text", "text": error})
         if terminal_output:
             for block in presentation["blocks"]:
                 if block["type"] == "terminal":
