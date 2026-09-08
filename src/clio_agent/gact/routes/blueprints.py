@@ -66,6 +66,7 @@ from clio_agent.gact.agents.resolution import (
 )
 from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
 from clio_agent.gact.permission_gate import _normalize_mcp_tool_annotations
+from clio_agent.gact.routes.blueprint_catalog import register_blueprint_catalog_route
 from clio_agent.gact.routes.blueprint_file_write import register_blueprint_file_write_route
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
 
@@ -174,13 +175,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         return {"deleted": {"id": source_id}}
 
-    @app.get("/v1/agent-blueprints")
-    async def list_agent_blueprints(workspace_id: Optional[str] = None) -> dict[str, Any]:
-        """Read the installed catalog without blocking live session streams."""
-        cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id or "")
-        discovered = await asyncio.to_thread(discover_agent_blueprints, cwd=cwd)
-        blueprints = [row.to_wire() for row in discovered]
-        return {"agent_blueprints": blueprints}
+    register_blueprint_catalog_route(app)
 
     @app.get("/v1/agent-blueprints/{blueprint_id}/files")
     async def list_agent_blueprint_files(

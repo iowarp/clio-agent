@@ -11,7 +11,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from clio_agent.gact.routes import blueprints, interactions
+from clio_agent.gact.routes import blueprint_catalog, interactions
 
 
 @pytest.mark.asyncio
@@ -66,9 +66,9 @@ async def test_catalog_discovery_does_not_block_other_requests(
         assert release.wait(5), "test did not release catalog discovery"
         return [SimpleNamespace(to_wire=lambda: {"id": "test-blueprint"})]
 
-    monkeypatch.setattr(blueprints, "discover_agent_blueprints", discover)
-    monkeypatch.setattr(blueprints, "_runtime_workspace_catalog_cwd", lambda *a, **k: None)
-    blueprints.register_blueprints_routes(app, None)  # type: ignore[arg-type]
+    monkeypatch.setattr(blueprint_catalog, "discover_agent_blueprints", discover)
+    monkeypatch.setattr(blueprint_catalog, "_runtime_workspace_catalog_cwd", lambda *a, **k: None)
+    blueprint_catalog.register_blueprint_catalog_route(app)
 
     @app.get("/probe")
     async def probe() -> dict[str, bool]:
