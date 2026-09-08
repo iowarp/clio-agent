@@ -8,7 +8,53 @@ import pytest
 from clio_agent.tools.tool_presentation import (
     capture_tool_presentation,
     enrich_tool_observer_result,
+    present_mcp_result,
+    starting_presentation,
 )
+
+
+@pytest.mark.parametrize(
+    "name,action",
+    [
+        ("fs_read_file", "Read"),
+        ("fs_apply_edit_write", "Write"),
+        ("fs_propose_edit", "Propose edit"),
+    ],
+)
+def test_declared_file_header_excludes_payload(name: str, action: str) -> None:
+    original = {
+        "structuredContent": {
+            "path": "D:/workspace/evidence.txt",
+            "content": "private payload",
+            "size_bytes": 15,
+        }
+    }
+    view = present_mcp_result(name, {"filepath": "D:/workspace/evidence.txt"}, original)
+    assert view["action"] == action
+    assert view["subject"] == "file-link"
+    subject = next(block for block in view["blocks"] if block["id"] == view["subject"])
+    assert subject["label"] == "evidence.txt"
+    assert subject["uri"] == "D:/workspace/evidence.txt"
+    assert "private payload" not in str(subject)
+    assert "presentation" not in original
+    running = starting_presentation(
+        name, {"filepath": "D:/workspace/evidence.txt", "new_content": "payload"}
+    )
+    assert running is not None and running["action"] == action
+    assert running["subject"] == "file-link"
+    assert [block["type"] for block in running["blocks"]] == ["link"]
+
+
+def test_declared_search_and_running_shell_headers() -> None:
+    view = present_mcp_result(
+        "web_search", {"query": "HDF5 SWMR"}, {"structuredContent": {"results": []}}
+    )
+    assert view["action"] == "Search"
+    assert view["blocks"][0]["text"] == "HDF5 SWMR"
+    assert view["subject"] == "subject"
+    running = starting_presentation("shell_bash", {"command": "echo exact"})
+    assert running is not None and running["action"] == "Run"
+    assert running["blocks"][0]["command"] == "echo exact"
 
 
 def test_file_write_diff_is_added_only_to_observer_result(tmp_path) -> None:

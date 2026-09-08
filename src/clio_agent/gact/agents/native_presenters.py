@@ -397,7 +397,21 @@ def native_presentation(
                 )
     elif declaration != "specialized":
         raise ValueError(f"Unknown native presentation declaration: {declaration}")
-    return {"summary": summary, "blocks": blocks}
+    # Header subjects are explicitly chosen by each result family. The client
+    # never guesses arguments or promotes arbitrary output into an action label.
+    subject = ""
+    if declaration in {"resource", "task_output", "message", "artifact"}:
+        links = [block for block in blocks if block["type"] == "link"]
+        if len(links) == 1:
+            subject = links[0]["id"]
+            if declaration == "task_output":
+                links[0]["label"] = str(args.get("task_id") or "Child task")
+                summary = str(row.get("error") or row.get("error_reason") or "")
+    if declaration == "text" and args.get("skill_id"):
+        subject = "skill-name"
+        blocks.insert(0, {"id": subject, "type": "text", "text": str(args["skill_id"])})
+        summary = ""
+    return {**({"subject": subject} if subject else {}), "summary": summary, "blocks": blocks}
 
 
 def validate_declaration(value: str | Presenter) -> None:

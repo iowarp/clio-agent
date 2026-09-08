@@ -414,7 +414,9 @@ def test_web_conversion_exposes_saved_outputs_and_progress() -> None:
     }
     before = json.dumps(result)
     view = present_mcp_result("web_fetch", {}, result)
-    assert view["summary"] == "https://example.org/paper.pdf"
+    assert view["summary"] == ""
+    assert view["subject"] == "subject"
+    assert view["blocks"][0]["uri"] == "https://example.org/paper.pdf"
     blocks = {block["id"]: block for block in view["blocks"]}
     assert "conversion" in blocks["identity"]["text"]
     assert blocks["events"]["text"] == "docling · Converting page 3"
@@ -459,7 +461,9 @@ def test_web_document_identity_and_degraded_empty_search_are_visible() -> None:
     }
     before = json.dumps(payload)
     view = present_mcp_result("web_fetch", {}, payload)
-    assert view["summary"] == "Official guide"
+    assert view["summary"] == ""
+    assert view["subject"] == "subject"
+    assert view["blocks"][0]["label"] == "Official guide"
     assert view["blocks"][0]["uri"] == "https://example.org/guide.pdf"
     assert "Pages: 19" in view["blocks"][1]["text"]
     assert json.dumps(payload) == before

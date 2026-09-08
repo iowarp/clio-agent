@@ -28,6 +28,7 @@ class PresentationAdapter:
     present: Adapter
     capture: Capture | None = None
     start: Capture | None = None
+    action: str = ""
 
 
 @dataclass(frozen=True)
@@ -65,9 +66,8 @@ def starting_presentation(name: str, args: Mapping[str, Any]) -> dict[str, Any] 
     if adapter is None or adapter.start is None:
         return None
     try:
-        return ToolPresentation.model_validate(adapter.start(copy.deepcopy(args))).model_dump(
-            exclude_none=True
-        )
+        value = {**adapter.start(copy.deepcopy(args)), "action": adapter.action}
+        return ToolPresentation.model_validate(value).model_dump(exclude_none=True)
     except Exception:
         logger.exception("Starting tool presentation failed: %s", name)
         return None
@@ -139,6 +139,8 @@ def present_mcp_result(
             if adapter
             else standard_mcp_presentation(result)
         )
+        if adapter and adapter.action:
+            value = {**value, "action": adapter.action}
         return ToolPresentation.model_validate(value).model_dump(exclude_none=True)
     except Exception:
         logger.exception("Tool presentation failed: %s", name)
@@ -174,6 +176,24 @@ def _capture_write(args: Mapping[str, Any]) -> FileWriteSnapshot:
     return FileWriteSnapshot(str(path), content)
 
 
+def _file_start(args: Mapping[str, Any]) -> dict[str, Any]:
+    """Name the declared file before execution, without inventing its effects."""
+    path = str(args.get("filepath") or "")
+    return {
+        "subject": "file-link",
+        "summary": "",
+        "blocks": [
+            {
+                "id": "file-link",
+                "type": "link",
+                "target": "file",
+                "uri": path,
+                "label": PureWindowsPath(path).name,
+            }
+        ],
+    }
+
+
 def _read(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
     del args, snapshot
     row = _structured(result)
@@ -207,6 +227,7 @@ def _read(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
     elif path.suffix.lower() in {".txt", ".log"}:
         kind = "text"
     return {
+        "subject": "file-link",
         "summary": f"{row.get('size_bytes', 0)} bytes",
         "blocks": [
             {
@@ -245,6 +266,7 @@ def _diff(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
             for line in lines
         )
     return {
+        "subject": "file-link",
         "summary": "",
         "blocks": [
             {
@@ -375,17 +397,41 @@ def _web(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
                     "label": str(hit.get("title") or hit["url"]),
                 }
             )
-    return {
-        "summary": str(title or row.get("url") or args.get("url") or args.get("query") or ""),
-        "blocks": blocks,
-    }
+    url = str(row.get("url") or args.get("url") or "")
+    query = str(args.get("query") or args.get("conversion_id") or "")
+    if url or query:
+        blocks = [block for block in blocks if block["id"] != "source"]
+        blocks.insert(
+            0,
+            {
+                "id": "subject",
+                "type": "link" if url else "text",
+                "target": "url" if url else None,
+                "uri": url,
+                "label": str(title or url or query),
+                "text": query,
+            },
+        )
+    return {"subject": "subject" if url or query else "", "summary": "", "blocks": blocks}
 
 
-register_presentation_adapter("fs_read_file", PresentationAdapter(_read))
-register_presentation_adapter("fs_propose_edit", PresentationAdapter(_diff))
-register_presentation_adapter("fs_apply_edit_write", PresentationAdapter(_diff, _capture_write))
 register_presentation_adapter(
-    "shell_bash", PresentationAdapter(_terminal, start=lambda args: _terminal(args, {}, None))
+    "fs_read_file", PresentationAdapter(_read, start=_file_start, action="Read")
 )
-for _name in ("web_search", "web_fetch", "web_fetch_events"):
-    register_presentation_adapter(_name, PresentationAdapter(_web))
+register_presentation_adapter(
+    "fs_propose_edit", PresentationAdapter(_diff, start=_file_start, action="Propose edit")
+)
+register_presentation_adapter(
+    "fs_apply_edit_write",
+    PresentationAdapter(_diff, _capture_write, start=_file_start, action="Write"),
+)
+register_presentation_adapter(
+    "shell_bash",
+    PresentationAdapter(_terminal, start=lambda args: _terminal(args, {}, None), action="Run"),
+)
+for _name, _action in (
+    ("web_search", "Search"),
+    ("web_fetch", "Fetch"),
+    ("web_fetch_events", "Conversion events"),
+):
+    register_presentation_adapter(_name, PresentationAdapter(_web, action=_action))

@@ -36,6 +36,8 @@ class ToolPresentation(BaseModel):
     """Ordered result blocks authored by a tool's declared presenter."""
 
     model_config = ConfigDict(extra="forbid")
+    action: str = ""
+    subject: str = ""
     summary: str = ""
     blocks: list[PresentationBlock] = Field(default_factory=list)
     diagnostic: str | None = None

@@ -409,7 +409,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
         load_skill,
         name="load_skill",
         presentation="text",
-        title="Load Skill",
+        title="Load skill",
         desc=(
             "Load the full procedure of one of this expert's declared skills "
             "(see 'Skills available to you'). Call BEFORE performing the task "

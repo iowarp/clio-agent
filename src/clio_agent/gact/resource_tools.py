@@ -445,7 +445,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             resource_list,
             name="workspace_resource_list",
             presentation="resource",
-            title="List Uploaded Resources",
+            title="List resources",
             representation="row",
             desc=(
                 "List uploaded resources owned by this workspace. Returns immutable resource "
@@ -457,7 +457,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             resource_inspect,
             name="workspace_resource_inspect",
             presentation="resource",
-            title="Inspect Uploaded Resource",
+            title="Inspect",
             representation="row",
             desc=(
                 "Inspect one uploaded resource without reading its bytes. Returns custody, "
@@ -469,7 +469,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             resource_wait,
             name="workspace_resource_wait",
             presentation="resource",
-            title="Wait for Resource Conversion",
+            title="Await conversion",
             representation="row",
             desc=(
                 "Wait once for a workspace resource conversion task to complete, fail, or be "
@@ -492,7 +492,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             resource_read,
             name="workspace_resource_read",
             presentation="resource",
-            title="Read Uploaded Text",
+            title="Read",
             representation="row",
             desc=(
                 "Read a bounded textual upload or named Docling textual derivative. Use this "
@@ -510,7 +510,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             resource_search,
             name="workspace_resource_search",
             presentation="resource",
-            title="Search Uploaded Resource",
+            title="Search",
             representation="row",
             desc=(
                 "Search bounded original text or a named Docling textual derivative. Use "
@@ -529,7 +529,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             resource_structure,
             name="workspace_resource_structure",
             presentation="resource",
-            title="Read Document Structure",
+            title="Inspect structure",
             representation="row",
             desc=(
                 "Read the bounded Docling outline for an uploaded document, or one exact page, "

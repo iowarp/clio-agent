@@ -234,7 +234,7 @@ def build_write_todos_tool(agent_def: Any) -> Any:
         name="write_todos",
         presentation="todos",
         desc=write_todos.__doc__,
-        title="Write Todos",
+        title="Update tasks",
         args={
             "todos": {
                 "type": "array",

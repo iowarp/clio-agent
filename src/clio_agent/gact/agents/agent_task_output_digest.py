@@ -278,7 +278,7 @@ def build_agent_task_output_tool() -> Any:
         name=FETCH_FULL_OUTPUT_TOOL,
         presentation="task_output",
         desc=get_agent_task_output.__doc__,
-        title="Get Task Output",
+        title="Collect",
         args={
             "task_id": {
                 "type": "string",

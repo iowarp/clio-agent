@@ -841,7 +841,7 @@ def test_auto_react_tools_carry_their_declared_presentation() -> None:
     assert declared_tool_title("create_artifact") == "Create Artifact"
     for name, title in [
         ("plan_exit", "Exit Plan"),
-        ("write_todos", "Write Todos"),
+        ("write_todos", "Update tasks"),
         ("cron_create", "Create Cron"),
         ("cron_list", "List Crons"),
         ("cron_delete", "Delete Cron"),
@@ -876,7 +876,7 @@ def test_spawn_runtime_tools_declare_handoff_for_spawn_and_row_for_collectors(
         "spawn_agents_parallel": ("handoff", "Spawn Agents"),
         "wait_agent_tasks": ("row", "Wait"),
         "observe_agent_tasks": ("row", "Observe"),
-        "get_agent_task_output": ("row", "Get Task Output"),
+        "get_agent_task_output": ("row", "Collect"),
         "message_agent": ("row", "Message Agent"),
     }
     assert {t.name for t in tools} == set(expected)
