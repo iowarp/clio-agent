@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import difflib
 import json
 import logging
 from collections.abc import Callable, Mapping
@@ -14,6 +13,7 @@ from typing import Any
 import yaml
 
 from clio_agent.gact.tool_result_presentation import ToolPresentation
+from clio_agent.tools.file_diff import unified_file_diff
 from clio_agent.tools.file_policy import validate_read_path, validate_write_path
 
 logger = logging.getLogger(__name__)
@@ -260,17 +260,7 @@ def _diff(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
         after = Path(validate_read_path(snapshot.path)).read_text(
             encoding="utf-8", errors="replace"
         )
-        lines = difflib.unified_diff(
-            snapshot.content.splitlines(keepends=True),
-            after.splitlines(keepends=True),
-            fromfile=f"a/{Path(snapshot.path).name}",
-            tofile=f"b/{Path(snapshot.path).name}",
-            n=1,
-        )
-        diff = "".join(
-            line if line.endswith("\n") else f"{line}\n\\ No newline at end of file\n"
-            for line in lines
-        )
+        diff = unified_file_diff(snapshot.content, after, Path(snapshot.path).name, context=1)
     return {
         "subject": "file-link",
         "summary": "",
