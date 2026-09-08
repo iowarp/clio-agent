@@ -687,7 +687,7 @@ def build_loop_wakeup_tool() -> Any:
     return native_tool(
         loop_wakeup,
         name="loop_wakeup",
-        presentation="fields:loop_id,next_fire_at,stopped",
+        presentation="loop",
         desc=loop_wakeup.__doc__,
         title="Loop Wakeup",
         args={

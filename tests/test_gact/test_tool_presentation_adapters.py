@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -247,6 +248,41 @@ def test_resource_markdown_derivative_declares_rendered_document_content() -> No
 def test_resource_search_empty_result_is_explicit() -> None:
     view = native_presentation("resource", {}, {"resource_id": "paper", "matches": []}, None)
     assert view["blocks"][0]["text"] == "No matching passages"
+
+
+def test_resource_result_links_the_authoritative_name_within_current_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.gact import context
+
+    lookups: list[tuple[str, str]] = []
+
+    def lookup(workspace: str, resource_id: str) -> Any:
+        lookups.append((workspace, resource_id))
+        return SimpleNamespace(name="Evidence.pdf") if resource_id == "owned" else None
+
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            sessions={"s": SimpleNamespace(workspace_id="w")},
+            resource_store=SimpleNamespace(get=lookup),
+        )
+    )
+    monkeypatch.setattr(context, "active_app", lambda: app)
+    monkeypatch.setattr(context, "active_session_id", lambda: "s")
+    view = native_presentation("resource", {}, {"resource_id": "owned", "content": "Body"}, None)
+    assert view["summary"] == ""
+    assert view["blocks"][0] == {
+        "id": "resource",
+        "type": "link",
+        "target": "resource",
+        "uri": "owned",
+        "label": "Evidence.pdf",
+    }
+    foreign = native_presentation(
+        "resource", {}, {"resource_id": "foreign", "content": "Body"}, None
+    )
+    assert all(block["type"] != "link" for block in foreign["blocks"])
+    assert lookups == [("w", "owned"), ("w", "foreign")]
 
 
 def test_resource_truncation_is_not_mistaken_for_a_complete_document() -> None:
@@ -635,6 +671,61 @@ def test_failed_task_collection_does_not_claim_it_collected_a_result() -> None:
     )
     assert view["summary"] == "Task missing · unknown_task"
     assert view["blocks"][0]["text"] == ""
+
+
+def test_model_catalog_exposes_actual_changes_and_failures_without_empty_fields() -> None:
+    row = {
+        "results": [
+            {
+                "provider": "codex",
+                "source": "codex_sdk",
+                "default_model": "model-a",
+                "added": [],
+                "removed": [],
+                "unchanged": ["model-a"],
+            },
+            {
+                "provider": "local",
+                "source": "live_handshake",
+                "default_model": "",
+                "added": [],
+                "removed": [],
+                "unchanged": [],
+                "failed_reason": "Connection refused",
+            },
+        ]
+    }
+    before = json.dumps(row)
+    view = native_presentation("model_catalog", {}, row, None)
+    assert view["summary"] == "2 provider results"
+    assert (
+        view["blocks"][0]["text"]
+        == "codex · codex_sdk · default: model-a\nUnchanged: model-a\n\nlocal · live_handshake\nUnavailable: Connection refused"
+    )
+    assert json.dumps(row) == before
+
+
+@pytest.mark.parametrize(
+    ("row", "summary"),
+    [
+        (
+            {"loop_id": "l1", "stopped": False, "next_fire_at": "later"},
+            "Next iteration scheduled · l1",
+        ),
+        ({"loop_id": "l1", "stopped": True, "next_fire_at": ""}, "Loop stopped · l1"),
+        ({"loop_id": "", "stopped": True, "next_fire_at": ""}, "No active loop"),
+    ],
+)
+def test_loop_presentation_distinguishes_scheduled_stopped_and_absent(
+    row: dict[str, Any], summary: str
+) -> None:
+    view = native_presentation("loop", {"prompt": "Qualification marker"}, row, None)
+    assert view["summary"] == summary
+    assert view["blocks"] == (
+        [{"id": "next", "type": "text", "text": "Qualification marker\nNext: later"}]
+        if not row["stopped"]
+        else []
+    )
 
 
 def test_standard_mcp_media_is_declared_and_binary_is_paged_not_dumped() -> None:

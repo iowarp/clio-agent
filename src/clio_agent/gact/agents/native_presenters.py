@@ -184,16 +184,38 @@ def native_presentation(
         for provider in row.get("results", []):
             if not isinstance(provider, Mapping):
                 continue
-            entries.append(
-                f"{provider.get('provider', '')} · {provider.get('source', '')} · default: {provider.get('default_model', '')}"
+            header = " · ".join(
+                str(provider[key]) for key in ("provider", "source") if provider.get(key)
             )
-            for field in ("added", "removed", "unchanged", "failed_reason", "rejected"):
+            if provider.get("default_model"):
+                header += f" · default: {provider['default_model']}"
+            details = [header]
+            for field, label in (
+                ("added", "Added"),
+                ("removed", "Removed"),
+                ("unchanged", "Unchanged"),
+                ("failed_reason", "Unavailable"),
+                ("rejected", "Rejected"),
+            ):
                 value = provider.get(field)
-                if isinstance(value, list) and all(isinstance(item, str) for item in value):
-                    entries.append(f"{field}: {', '.join(value)}")
-                elif isinstance(value, str | int):
-                    entries.append(f"{field}: {value}")
-        blocks.append({"id": "models", "type": "text", "text": "\n".join(entries)})
+                if (
+                    isinstance(value, list)
+                    and value
+                    and all(isinstance(item, str) for item in value)
+                ):
+                    details.append(f"{label}: {', '.join(value)}")
+                elif isinstance(value, str | int) and value != "":
+                    details.append(f"{label}: {value}")
+            entries.append("\n".join(details))
+        summary = f"{len(entries)} provider results" if entries else "No provider results"
+        blocks.append({"id": "models", "type": "text", "text": "\n\n".join(entries)})
+    elif declaration == "loop":
+        if row.get("stopped") is True:
+            summary = f"Loop stopped · {row['loop_id']}" if row.get("loop_id") else "No active loop"
+        elif row.get("next_fire_at"):
+            summary = f"Next iteration scheduled · {row.get('loop_id', '')}".rstrip(" ·")
+            details = [str(args.get("prompt") or ""), f"Next: {row['next_fire_at']}"]
+            blocks.append({"id": "next", "type": "text", "text": "\n".join(filter(None, details))})
     elif declaration == "todos":
         summary = "" if row.get("todos") else "No tasks in this list"
         blocks.extend(
@@ -265,6 +287,15 @@ def native_presentation(
                 if key in record and record[key] != ""
             ]
             blocks.append({"id": "identity", "type": "text", "text": "\n".join(fields)})
+        resource_id = str(
+            row.get("resource_id")
+            or (record.get("id") if isinstance(record, Mapping) else "")
+            or ""
+        )
+        resource_link = _resource_link(resource_id) if resource_id else None
+        if resource_link is not None:
+            summary = ""
+            blocks.insert(0, resource_link)
         processing = row.get("processing")
         if isinstance(processing, Mapping):
             fields = [
@@ -387,6 +418,7 @@ def validate_declaration(value: str | Presenter) -> None:
         "schedule_created",
         "schedule_deleted",
         "model_catalog",
+        "loop",
         "message",
         "goal",
     }:
@@ -403,3 +435,27 @@ def _child_session(task_id: str) -> str:
     registry = getattr(app.state, "agent_task_registry", None) if app is not None else None
     task = registry.get(task_id) if registry is not None else None
     return str(getattr(task, "child_session_id", "") or "")
+
+
+def _resource_link(resource_id: str) -> dict[str, Any] | None:
+    """Resolve a display name only inside the observing session's workspace."""
+    from clio_agent.gact import context
+
+    app = context.active_app()
+    session_id = context.active_session_id()
+    if app is None or not session_id:
+        return None
+    session = app.state.sessions.get(session_id)
+    resource_store = getattr(app.state, "resource_store", None)
+    if session is None or resource_store is None:
+        return None
+    record = resource_store.get(session.workspace_id, resource_id)
+    if record is None:
+        return None
+    return {
+        "id": "resource",
+        "type": "link",
+        "target": "resource",
+        "uri": resource_id,
+        "label": record.name,
+    }
