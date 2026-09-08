@@ -75,7 +75,9 @@ logger = logging.getLogger(__name__)
 REPRESENTATION_ATTR = "_clio_tool_representation"
 TITLE_ATTR = "_clio_tool_title"
 PRESENTER_ATTR = "_clio_tool_result_presenter"
+START_PRESENTER_ATTR = "_clio_tool_start_presenter"
 _RESULT_PRESENTERS: dict[str, Any] = {}
+_START_PRESENTERS: dict[str, Callable[[Mapping[str, Any]], dict[str, Any]]] = {}
 
 DEFAULT_REPRESENTATION = "row"
 TOOL_REPRESENTATIONS = frozenset({"row", "handoff", "chip"})
@@ -282,6 +284,7 @@ def native_tool(
     desc: str | None,
     args: dict[str, Any],
     presentation: Any,
+    presentation_start: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None,
     title: str = "",
     representation: str = DEFAULT_REPRESENTATION,
 ) -> Any:
@@ -297,6 +300,7 @@ def native_tool(
 
     validate_declaration(presentation)
     setattr(func, PRESENTER_ATTR, presentation)
+    setattr(func, START_PRESENTER_ATTR, presentation_start)
     setattr(func, REPRESENTATION_ATTR, _validated_representation(representation, tool_name=name))
     setattr(func, TITLE_ATTR, sanitize_tool_title(title))
     return ClioNativeTool(func=func, name=name, desc=desc, args=args)
@@ -346,7 +350,13 @@ def rebuilt_tool(
     """
 
     inner_func = getattr(inner_tool, "func", None)
-    for attr in (TOOL_OBSERVED_ATTR, REPRESENTATION_ATTR, TITLE_ATTR, PRESENTER_ATTR):
+    for attr in (
+        TOOL_OBSERVED_ATTR,
+        REPRESENTATION_ATTR,
+        TITLE_ATTR,
+        PRESENTER_ATTR,
+        START_PRESENTER_ATTR,
+    ):
         value = getattr(inner_func, attr, None)
         if value is not None:
             setattr(func, attr, value)
@@ -500,6 +510,11 @@ def _instrument_tool(tool: Any) -> Any:
     presenter = getattr(func, PRESENTER_ATTR, None)
     if presenter is not None:
         _RESULT_PRESENTERS[name] = presenter
+    start_presenter = getattr(func, START_PRESENTER_ATTR, None)
+    if start_presenter is not None:
+        _START_PRESENTERS[name] = start_presenter
+    else:
+        _START_PRESENTERS.pop(name, None)
     if getattr(func, TOOL_OBSERVED_ATTR, False):
         return tool
     tool.func = observed_tool_callable(func, name)
@@ -531,3 +546,19 @@ def present_native_result(
     if callable(presenter):
         return presenter(copy.deepcopy(args), copy.deepcopy(result), copy.deepcopy(structured))
     return native_presentation(presenter, args, result, structured)
+
+
+def present_native_start(name: str, args: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Project declared running activity without invoking the tool or changing arguments."""
+    from clio_agent.gact.tool_result_presentation import ToolPresentation
+
+    presenter = _START_PRESENTERS.get(name)
+    if presenter is None:
+        return None
+    try:
+        return ToolPresentation.model_validate(presenter(copy.deepcopy(args))).model_dump(
+            exclude_none=True
+        )
+    except Exception:
+        logger.exception("Starting native presentation failed: %s", name)
+        return {"summary": "", "blocks": [], "diagnostic": "presentation_failed"}

@@ -69,7 +69,7 @@ def test_presenter_failure_is_diagnostic_without_rewriting_observation(
     assert view == {"summary": "", "blocks": [], "diagnostic": "presentation_failed"}
 
 
-def test_wait_uses_child_identity_and_declared_display_name() -> None:
+def test_observe_uses_child_identity_and_declared_display_name() -> None:
     raw = json.dumps(
         {"results": [{"task_id": "task", "child_session_id": "child", "status": "completed"}]}
     )
@@ -85,10 +85,207 @@ def test_wait_uses_child_identity_and_declared_display_name() -> None:
     assert view["blocks"][1]["text"] == "Evidence packet"
 
 
+@pytest.mark.parametrize("status", ["completed", "failed", "cancelled", "unknown_task"])
+def test_wait_reports_lifecycle_without_repeating_child_output(status: str) -> None:
+    raw = json.dumps(
+        {
+            "results": [
+                {
+                    "task_id": "task",
+                    "child_session_id": "child",
+                    "status": status,
+                    "output": "FULL CHILD ANSWER",
+                }
+            ]
+        }
+    )
+    structured = {
+        "summary": "waited 12.0s for 1 task",
+        "results": [
+            {
+                "name": "Researcher #1",
+                "status": status,
+                "duration_ms": 11000,
+                "answer_excerpt": "CHILD EXCERPT",
+            }
+        ],
+    }
+    view = native_presentation("wait", {}, raw, structured)
+    assert view["summary"] == structured["summary"]
+    assert view["blocks"] == [
+        {
+            "id": "task-0",
+            "type": "link",
+            "target": "session",
+            "uri": "child",
+            "label": f"Researcher #1 · {status} · 11 s",
+        }
+    ]
+    assert "CHILD" not in json.dumps(view)
+    assert json.loads(raw)["results"][0]["output"] == "FULL CHILD ANSWER"
+
+
+def test_declared_running_presenter_survives_wrapping_and_cannot_change_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.gact.agents.tool_instrumentation import (
+        instrument_tools,
+        native_tool,
+        present_native_start,
+        rebuilt_tool,
+    )
+
+    def execute(task_ids: list[str]) -> str:
+        return "unchanged"
+
+    def start(args: Any) -> dict[str, Any]:
+        args["task_ids"].clear()
+        return {"summary": "Waiting for Researcher #1", "blocks": []}
+
+    tool = native_tool(
+        execute,
+        name="start_probe",
+        desc="probe",
+        args={},
+        presentation="wait",
+        presentation_start=start,
+    )
+    wrapped = rebuilt_tool(
+        tool, lambda task_ids: "unchanged", name="start_probe", desc="probe", args={}
+    )
+    instrument_tools([wrapped])
+    arguments = {"task_ids": ["task"]}
+    assert present_native_start("start_probe", arguments)["summary"] == "Waiting for Researcher #1"
+    assert arguments == {"task_ids": ["task"]}
+
+    def broken(args: Any) -> dict[str, Any]:
+        raise ValueError("observer failed")
+
+    monkeypatch.setitem(tool_instrumentation._START_PRESENTERS, "start_probe", broken)
+    assert present_native_start("start_probe", arguments)["diagnostic"] == "presentation_failed"
+
+
+def test_wait_start_identifies_requested_tasks_without_collecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.gact import context
+    from clio_agent.gact.agents.native_presenters import waiting_presentation
+
+    monkeypatch.setattr(context, "active_app", lambda: None)
+    assert waiting_presentation({"task_ids": ["x", "y"]}) == {
+        "summary": "Waiting for x, y",
+        "blocks": [],
+    }
+    assert waiting_presentation({"task_ids": []})["summary"] == "No tasks requested"
+
+
+def test_markdown_file_presents_readable_frontmatter_and_body() -> None:
+    content = "---\nname: imagegen\ndescription: Create images\n---\n# Image generation\n\nRead the **procedure**."
+    result = {
+        "structuredContent": {
+            "path": r"D:\skills\SKILL.md",
+            "size_bytes": len(content),
+            "content": content,
+        }
+    }
+    before = json.dumps(result)
+    view = present_mcp_result("fs_read_file", {}, result)
+    blocks = {block["id"]: block for block in view["blocks"]}
+    assert blocks["file"]["type"] == "markdown"
+    assert blocks["file"]["text"] == "# Image generation\n\nRead the **procedure**."
+    assert blocks["metadata"]["type"] == "text"
+    assert blocks["metadata"]["text"] == "Name: imagegen\nDescription: Create images"
+    assert json.dumps(result) == before
+
+
+@pytest.mark.parametrize(
+    ("path", "content", "kind"),
+    [
+        ("readme.MD", "# Heading", "markdown"),
+        ("note.txt", "plain text", "text"),
+        ("main.py", "print('hello')", "code"),
+        ("broken.md", "---\nname: [broken\n---\nBody", "markdown"),
+    ],
+)
+def test_file_format_is_declared_by_read_presenter(path: str, content: str, kind: str) -> None:
+    view = present_mcp_result(
+        "fs_read_file", {}, {"structuredContent": {"path": path, "content": content}}
+    )
+    block = next(block for block in view["blocks"] if block["id"] == "file")
+    assert block["type"] == kind
+    assert block["text"] == content
+
+
 def test_resource_outline_exposes_the_returned_collections() -> None:
     result = {"resource_id": "paper", "collections": {"pages": 7, "tables": 3, "texts": 28}}
     view = native_presentation("resource", {}, result, None)
     assert view["blocks"][0]["text"] == "Pages: 7\nTables: 3\nTexts: 28"
+
+
+def test_observation_displays_incremental_events_not_only_task_status() -> None:
+    row = {
+        "tasks": [
+            {
+                "task_id": "task",
+                "status": "running",
+                "new_events": [
+                    {"summary": "Reading evidence", "excerpt": "Official guide fetched"}
+                ],
+            }
+        ]
+    }
+    before = json.dumps(row)
+    view = native_presentation("tasks", {}, row, None)
+    assert view["blocks"][-1]["text"] == "Reading evidence\nOfficial guide fetched"
+    assert json.dumps(row) == before
+
+
+def test_resource_list_uses_the_custody_name_and_identifier() -> None:
+    view = native_presentation(
+        "resource", {}, {"resources": [{"id": "r1", "name": "Guide.pdf"}]}, None
+    )
+    assert view["blocks"][0]["label"] == "Guide.pdf"
+    assert view["blocks"][0]["uri"] == "r1"
+
+
+def test_resource_inspection_uses_the_custody_size_fields() -> None:
+    view = native_presentation(
+        "resource",
+        {},
+        {
+            "resource": {
+                "id": "r1",
+                "name": "Guide.pdf",
+                "detected_mime": "application/pdf",
+                "declared_size": 1200,
+                "received_size": 1200,
+                "revision": 1,
+                "state": "ready",
+            }
+        },
+        None,
+    )
+    assert "Declared size: 1200".lower() in view["blocks"][0]["text"]
+    assert "received size: 1200" in view["blocks"][0]["text"]
+
+
+def test_rejected_artifact_explains_the_actual_rejection() -> None:
+    view = native_presentation(
+        "artifact",
+        {},
+        {
+            "artifacts": [
+                {
+                    "accepted": False,
+                    "name": "report.md",
+                    "reason": "path_missing",
+                    "detail": "File does not exist",
+                }
+            ]
+        },
+        None,
+    )
+    assert view["blocks"][0]["text"] == "report.md: path_missing\nFile does not exist"
 
 
 def test_web_conversion_exposes_saved_outputs_and_progress() -> None:

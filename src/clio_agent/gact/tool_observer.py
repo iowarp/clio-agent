@@ -661,9 +661,12 @@ def _make_tool_observer(app: "FastAPI"):
                 app, session_id=sid, tool_name=name, invocation_id=call_id
             )
             observer_handle = progress_registry.started(call_id, sid)
+            from clio_agent.gact.agents.tool_instrumentation import present_native_start
             from clio_agent.tools.tool_presentation import starting_presentation
 
-            initial_presentation = starting_presentation(name, args)
+            initial_presentation = present_native_start(name, args)
+            if initial_presentation is None:
+                initial_presentation = starting_presentation(name, args)
             # B5 #979.7 (deferred B4 WRITER): join call_id → confined FLEET child (no-op on the
             # floor / built-in namespaces → the egress mint abstains). See ingest_edges.
             join_call_to_serving_child(app, sid, name, call_id)

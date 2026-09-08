@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -773,10 +774,23 @@ class _RecordingDispatcher(HookDispatcher):
     def __init__(self) -> None:
         super().__init__([])
         self.events: list[tuple[str, HookEnvelope]] = []
+        self.changed = threading.Condition()
 
     def dispatch(self, event: str, envelope: HookEnvelope) -> HookOutcome:  # type: ignore[override]
-        self.events.append((event, envelope))
+        with self.changed:
+            self.events.append((event, envelope))
+            self.changed.notify_all()
         return HookOutcome()
+
+    def wait_for_task(self, event: str, task_id: str) -> bool:
+        """Wait for the hook itself, not the earlier registry terminal projection."""
+        with self.changed:
+            return self.changed.wait_for(
+                lambda: any(
+                    ev == event and env.payload.get("task_id") == task_id for ev, env in self.events
+                ),
+                timeout=10,
+            )
 
     def count(self, event: str) -> int:
         return sum(1 for ev, _ in self.events if ev == event)
@@ -972,12 +986,11 @@ def test_subagent_start_and_stop_fire_exactly_once(tmp_path: Path, monkeypatch) 
                 ),
             )
             assert disp.count(SUBAGENT_START) - before_start == 1
-            # Wait for the child to settle => SubagentStop fires exactly once.
-            for _ in range(200):
-                rec = app.state.agent_task_registry.get(task.task_id)
-                if rec is not None and rec.is_terminal:
-                    break
-                time.sleep(0.05)
+            # Terminal projection precedes terminal side effects. Synchronize
+            # with THIS child's hook rather than racing that publication edge.
+            assert disp.wait_for_task(SUBAGENT_STOP, task.task_id)
+            rec = app.state.agent_task_registry.get(task.task_id)
+            assert rec is not None and rec.is_terminal
             assert disp.count(SUBAGENT_STOP) - before_stop == 1
     finally:
         install_global_dispatcher(None)

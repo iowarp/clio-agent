@@ -16,11 +16,31 @@ def build_wait_tool(callback: Callable[..., Any]) -> Any:
     return native_tool(
         callback,
         name="wait_agent_tasks",
-        presentation="tasks",
+        presentation="wait",
+        presentation_start=waiting_presentation,
         desc=callback.__doc__,
         title="Wait",
         args={"task_ids": {"type": "array", "description": "Task ids returned by spawn."}},
     )
+
+
+def waiting_presentation(args: Mapping[str, Any]) -> dict[str, Any]:
+    """Identify the requested children while the single committed wait is open."""
+    from clio_agent.gact import context
+    from clio_agent.gact.agent_tasks import resolve_waited_task_rows
+
+    task_ids = args.get("task_ids", [])
+    if not isinstance(task_ids, list) or not all(isinstance(tid, str) for tid in task_ids):
+        return {"summary": "Waiting for tasks", "blocks": []}
+    app = context.active_app()
+    rows = resolve_waited_task_rows(app, task_ids) if app is not None else []
+    names = [str(row.get("name") or row.get("task_id") or "Task") for row in rows]
+    return {
+        "summary": "Waiting for " + ", ".join(names or task_ids)
+        if task_ids
+        else "No tasks requested",
+        "blocks": [],
+    }
 
 
 def _record(value: Any) -> dict[str, Any]:
@@ -38,7 +58,7 @@ def native_presentation(
     """Render an explicitly selected native result contract, never guess a tool."""
 
     row = _record(structured) if structured is not None else _record(result)
-    summary = str(row.get("message") or "")
+    summary = str(row.get("message") or row.get("error") or "")
     blocks: list[dict[str, Any]] = []
     if declaration == "text":
         if isinstance(result, str):
@@ -61,7 +81,7 @@ def native_presentation(
                     "label": "Open child conversation",
                 },
             )
-    elif declaration == "tasks":
+    elif declaration in {"tasks", "wait"}:
         summary = str(row.get("summary") or summary)
         source = _record(result)
         task_rows = source.get(
@@ -74,6 +94,10 @@ def native_presentation(
             task_id = str(task.get("task_id") or task.get("id") or "")
             display = display_rows[index] if index < len(display_rows) else {}
             label = str(display.get("name") or task.get("name") or task_id or "Task")
+            label = f"{label} · {task.get('error') or task.get('status', '')}"
+            duration = display.get("duration_ms")
+            if declaration == "wait" and isinstance(duration, int | float) and duration > 0:
+                label += f" · {duration / 1000:g} s"
             child = str(
                 task.get("child_session_id") or task.get("session_id") or _child_session(task_id)
             )
@@ -84,7 +108,7 @@ def native_presentation(
                         "type": "link",
                         "target": "session",
                         "uri": child,
-                        "label": f"{label} · {task.get('error') or task.get('status', '')}",
+                        "label": label,
                     }
                 )
             else:
@@ -92,12 +116,26 @@ def native_presentation(
                     {
                         "id": f"task-{index}",
                         "type": "text",
-                        "text": f"{label} · {task.get('error') or task.get('status', '')}",
+                        "text": label,
                     }
                 )
             excerpt = display.get("answer_excerpt")
-            if isinstance(excerpt, str) and excerpt:
+            if declaration == "tasks" and isinstance(excerpt, str) and excerpt:
                 blocks.append({"id": f"task-{index}-result", "type": "markdown", "text": excerpt})
+            if declaration == "tasks":
+                for event_index, event in enumerate(task.get("new_events", [])):
+                    if isinstance(event, Mapping):
+                        text = "\n".join(
+                            str(event[key]) for key in ("summary", "excerpt") if event.get(key)
+                        )
+                        if text:
+                            blocks.append(
+                                {
+                                    "id": f"task-{index}-event-{event_index}",
+                                    "type": "text",
+                                    "text": text,
+                                }
+                            )
     elif declaration == "message":
         task_id = str(row.get("task_id") or args.get("task_id") or "")
         child = _child_session(task_id)
@@ -181,7 +219,14 @@ def native_presentation(
             )
             fields = [
                 f"{key.replace('_', ' ')}: {record[key]}"
-                for key in ("detected_mime", "size_bytes", "revision")
+                for key in (
+                    "detected_mime",
+                    "declared_size",
+                    "received_size",
+                    "revision",
+                    "state",
+                    "failure",
+                )
                 if key in record
             ]
             blocks.append({"id": "identity", "type": "text", "text": "\n".join(fields)})
@@ -239,12 +284,21 @@ def native_presentation(
                         "type": "link",
                         "target": "resource",
                         "uri": str(resource.get("resource_id") or resource.get("id") or ""),
-                        "label": str(resource.get("name") or "Resource"),
+                        "label": str(resource.get("name") or resource.get("id") or "Resource"),
                     }
                 )
     elif declaration == "artifact":
         for index, artifact in enumerate(row.get("artifacts", [row])):
             if isinstance(artifact, Mapping):
+                if artifact.get("accepted") is False:
+                    blocks.append(
+                        {
+                            "id": f"rejection-{index}",
+                            "type": "text",
+                            "text": f"{artifact.get('name') or 'Artifact'}: {artifact.get('reason') or 'rejected'}\n{artifact.get('detail') or ''}".rstrip(),
+                        }
+                    )
+                    continue
                 uri = str(artifact.get("uri") or artifact.get("artifact_id") or "")
                 if uri:
                     blocks.append(
@@ -282,6 +336,7 @@ def validate_declaration(value: str | Presenter) -> None:
     if value in {
         "text",
         "tasks",
+        "wait",
         "task_output",
         "resource",
         "artifact",

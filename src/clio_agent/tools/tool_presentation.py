@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
+import yaml
+
 from clio_agent.gact.tool_result_presentation import ToolPresentation
 from clio_agent.tools.file_policy import validate_read_path, validate_write_path
 
@@ -177,6 +179,33 @@ def _read(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
     row = _structured(result)
     if "content" not in row:
         return standard_mcp_presentation(result)
+    path = PureWindowsPath(str(row.get("path") or ""))
+    content = str(row.get("content") or "")
+    kind = "code"
+    metadata: list[dict[str, Any]] = []
+    if path.suffix.lower() in {".md", ".markdown"}:
+        kind = "markdown"
+        # This is declared file-format presentation, not model-output repair.
+        # The unmodified source remains in the result's technical evidence.
+        lines = content.splitlines(keepends=True)
+        if lines and lines[0].strip() == "---":
+            end = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), None)
+            if end is not None:
+                try:
+                    frontmatter = yaml.safe_load("".join(lines[1:end]))
+                except yaml.YAMLError:
+                    frontmatter = None
+                if isinstance(frontmatter, Mapping):
+                    identity = "\n".join(
+                        f"{key.replace('_', ' ').capitalize()}: {value}"
+                        for key, value in frontmatter.items()
+                        if isinstance(key, str) and isinstance(value, str | int | float | bool)
+                    )
+                    if identity:
+                        metadata.append({"id": "metadata", "type": "text", "text": identity})
+                    content = "".join(lines[end + 1 :]).lstrip("\r\n")
+    elif path.suffix.lower() in {".txt", ".log"}:
+        kind = "text"
     return {
         "summary": f"{row.get('size_bytes', 0)} bytes",
         "blocks": [
@@ -185,12 +214,13 @@ def _read(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
                 "type": "link",
                 "target": "file",
                 "uri": str(row.get("path") or ""),
-                "label": PureWindowsPath(str(row.get("path") or "")).name,
+                "label": path.name,
             },
+            *metadata,
             {
                 "id": "file",
-                "type": "code",
-                "text": str(row.get("content") or ""),
+                "type": kind,
+                "text": content,
             },
         ],
     }
