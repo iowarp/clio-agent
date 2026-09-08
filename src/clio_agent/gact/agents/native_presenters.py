@@ -161,6 +161,19 @@ def native_presentation(
                     ),
                 }
             )
+        collections = row.get("collections")
+        if isinstance(collections, Mapping):
+            blocks.append(
+                {
+                    "id": "outline",
+                    "type": "text",
+                    "text": "\n".join(
+                        f"{str(name).capitalize()}: {count}"
+                        for name, count in collections.items()
+                        if isinstance(count, int)
+                    ),
+                }
+            )
         node = row.get("node")
         if isinstance(node, Mapping):
             # A document node is declared resource structure, not a model response.

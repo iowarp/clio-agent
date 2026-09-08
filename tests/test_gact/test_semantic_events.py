@@ -304,6 +304,7 @@ def test_tool_observer_stamps_curated_title_on_call_events(tmp_path: Path) -> No
     tool = native_tool(
         _rank_stations,
         name="p5_rank_stations",
+        presentation="text",
         desc="rank",
         args={},
         title="Rank stations",

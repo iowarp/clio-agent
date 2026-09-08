@@ -82,6 +82,12 @@ def test_wait_uses_child_identity_and_declared_display_name() -> None:
     assert view["blocks"][1]["text"] == "Evidence packet"
 
 
+def test_resource_outline_exposes_the_returned_collections() -> None:
+    result = {"resource_id": "paper", "collections": {"pages": 7, "tables": 3, "texts": 28}}
+    view = native_presentation("resource", {}, result, None)
+    assert view["blocks"][0]["text"] == "Pages: 7\nTables: 3\nTexts: 28"
+
+
 def test_web_conversion_exposes_saved_outputs_and_progress() -> None:
     result = {
         "structuredContent": {
