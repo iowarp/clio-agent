@@ -176,8 +176,10 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/agent-blueprints")
     async def list_agent_blueprints(workspace_id: Optional[str] = None) -> dict[str, Any]:
+        """Read the installed catalog without blocking live session streams."""
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id or "")
-        blueprints = [row.to_wire() for row in discover_agent_blueprints(cwd=cwd)]
+        discovered = await asyncio.to_thread(discover_agent_blueprints, cwd=cwd)
+        blueprints = [row.to_wire() for row in discovered]
         return {"agent_blueprints": blueprints}
 
     @app.get("/v1/agent-blueprints/{blueprint_id}/files")

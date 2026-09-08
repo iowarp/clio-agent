@@ -8,8 +8,10 @@ way to understand a result.
 ## Observer contract
 
 `ToolInvocation.presentation` has a concise provider-authored `summary` and
-ordered blocks (`text`, `markdown`, `code`, `diff`, `terminal`, `link`). Blocks
-have stable IDs. Links declare artifact, resource, child-session, or URL targets.
+ordered blocks (`text`, `markdown`, `code`, `diff`, `terminal`, `link`, `check`,
+`media`). Blocks have stable IDs. Links declare file, artifact, resource,
+child-session, or URL targets. Checks carry pending/in-progress/completed state;
+media carries its declared MIME type. Clients do not infer these from tool names.
 Tool arguments and raw results are separate technical evidence.
 
 Native tools must supply `presentation=` to `native_tool`: a registered native
@@ -46,6 +48,11 @@ Clients append only at the expected offset; a final upsert replaces the body,
 preventing repeated terminal output on completion or reconnect. Late terminal
 progress after completion is ignored. Shell deltas are published before process
 completion, not synthesized from the final exit code.
+
+Transport paging is independent of visual expansion: a client may retrieve all
+remaining pages in a separate viewer after one Show more action. File presenters
+emit a single basename link, and edit presenters retain one surrounding context
+line per hunk. The preview budget is a maximum, not a requirement to pad a diff.
 
 ## Qualification
 
