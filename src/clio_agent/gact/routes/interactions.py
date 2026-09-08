@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from starlette.concurrency import run_in_threadpool
 
 from clio_agent import conf
 from clio_agent.gact.a2ui import SERVER_ACTIONS
@@ -644,7 +645,11 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
     ) -> dict[str, Any]:
         if app.state.sessions.get(root_session_id) is None:
             raise _error(404, "not_found", f"session not found: {root_session_id}")
-        projection = project_pending_interactions(
+        # Restoring retained ledgers can perform synchronous CTE reads/writes.
+        # Keep that work off the ASGI event loop so attention hydration cannot
+        # freeze tool deltas, prompt submission, or unrelated health requests.
+        projection = await run_in_threadpool(
+            project_pending_interactions,
             app,
             root_session_id,
             include_children=include_children,
