@@ -41,7 +41,7 @@ def completed_presentation(
     structured: Any,
     terminal_output: str,
     *,
-    error: str = "",
+    error: str | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Prepare the observer view; failures cannot alter the tool's result or status."""
     from clio_agent.gact.agents.tool_instrumentation import present_native_result
