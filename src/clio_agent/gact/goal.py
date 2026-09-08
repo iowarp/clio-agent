@@ -48,6 +48,7 @@ from typing import Any, Literal, Optional
 
 from clio_agent import conf
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.work_state import work_record_patch
 from clio_agent.runtime import trace
 
 logger = logging.getLogger(__name__)
@@ -99,7 +100,9 @@ def _put_goal(app: Any, sid: str, goal: dict[str, Any]) -> None:
     ``SessionStore.update`` does a SHALLOW merge, so writing the whole ``goal`` dict
     replaces the prior one wholesale (no stale sub-keys)."""
 
-    app.state.sessions.update(sid, metadata_patch={GOAL_METADATA_KEY: goal})
+    session = app.state.sessions.get(sid)
+    metadata = getattr(session, "metadata", None) or {}
+    app.state.sessions.update(sid, metadata_patch=work_record_patch(metadata, "goal", goal))
 
 
 def _parse_iso(value: Any) -> Optional[datetime]:

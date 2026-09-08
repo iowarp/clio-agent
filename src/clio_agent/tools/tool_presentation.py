@@ -12,7 +12,6 @@ from typing import Any
 
 import yaml
 
-from clio_agent.gact.tool_result_presentation import ToolPresentation
 from clio_agent.tools.file_diff import unified_file_diff
 from clio_agent.tools.file_policy import validate_read_path, validate_write_path
 
@@ -62,6 +61,8 @@ def capture_tool_presentation(name: str, args: dict[str, Any]) -> Any:
 
 def starting_presentation(name: str, args: Mapping[str, Any]) -> dict[str, Any] | None:
     """Expose declared invocation content before the result arrives."""
+
+    from clio_agent.gact.tool_result_presentation import ToolPresentation
 
     adapter = MCP_PRESENTATION_ADAPTERS.get(name)
     if adapter is None or adapter.start is None:
@@ -134,6 +135,8 @@ def present_mcp_result(
     name: str, args: Mapping[str, Any], result: Any, snapshot: Any = None
 ) -> dict[str, Any]:
     """Validate an adapter's output, falling back with a technical diagnostic."""
+
+    from clio_agent.gact.tool_result_presentation import ToolPresentation
 
     try:
         args, result = copy.deepcopy(args), copy.deepcopy(result)

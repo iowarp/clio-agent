@@ -26,13 +26,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import Response
 
 from clio_agent.gact.cron_tools import cancel_schedule
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.scheduler import CronError, default_timezone_name
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
+from clio_agent.gact.work_state import work_snapshot
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -47,6 +48,23 @@ def register_schedules_routes(app: FastAPI, deps: "GactDeps") -> None:
     actual scheduled-turn firing is owned by the scheduler tick task in
     :mod:`clio_agent.gact.app`, so these handlers only mutate the store.
     """
+
+    @app.get("/v1/sessions/{sid}/work")
+    async def session_work(sid: str, cursor: int = Query(default=0, ge=0)) -> dict[str, Any]:
+        """Read work state without changing, starting, pausing, or judging work."""
+        session = app.state.sessions.get(sid)
+        if session is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"session not found: {sid}",
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return work_snapshot(session.metadata or {}, cursor)
 
     @app.get("/v1/sessions/{sid}/schedules")
     async def list_schedules(sid: str) -> dict[str, Any]:
