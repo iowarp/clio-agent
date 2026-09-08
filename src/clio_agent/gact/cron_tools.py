@@ -294,7 +294,7 @@ def build_cron_create_tool() -> Any:
     return native_tool(
         cron_create,
         name="cron_create",
-        presentation="fields:schedule_id,cron,run_at,recurring,next_fire_at,timezone",
+        presentation="schedule_created",
         desc=cron_create.__doc__,
         title="Create Cron",
         args={
@@ -413,7 +413,7 @@ def build_cron_delete_tool() -> Any:
     return native_tool(
         cron_delete,
         name="cron_delete",
-        presentation="fields:schedule_id,deleted",
+        presentation="schedule_deleted",
         desc=cron_delete.__doc__,
         title="Delete Cron",
         args={

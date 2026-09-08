@@ -117,7 +117,7 @@ def test_wait_reports_lifecycle_without_repeating_child_output(status: str) -> N
             {
                 "name": "Researcher #1",
                 "status": status,
-                "duration_ms": 11000,
+                "duration_ms": 11004,
                 "answer_excerpt": "CHILD EXCERPT",
             }
         ],
@@ -234,6 +234,28 @@ def test_resource_outline_exposes_the_returned_collections() -> None:
     assert view["blocks"][0]["text"] == "Pages: 7\nTables: 3\nTexts: 28"
 
 
+def test_resource_markdown_derivative_declares_rendered_document_content() -> None:
+    result = {
+        "resource_id": "paper",
+        "representation": "markdown",
+        "content": "## Evidence\n\nActual finding",
+    }
+    view = native_presentation("resource", {}, result, None)
+    assert view["blocks"] == [{"id": "content", "type": "markdown", "text": result["content"]}]
+
+
+def test_resource_search_empty_result_is_explicit() -> None:
+    view = native_presentation("resource", {}, {"resource_id": "paper", "matches": []}, None)
+    assert view["blocks"][0]["text"] == "No matching passages"
+
+
+def test_resource_truncation_is_not_mistaken_for_a_complete_document() -> None:
+    result = {"resource_id": "paper", "content": "First passage", "truncated": True}
+    view = native_presentation("resource", {}, result, None)
+    assert view["blocks"][-1]["text"] == "Result truncated by the resource tool"
+    assert result == {"resource_id": "paper", "content": "First passage", "truncated": True}
+
+
 def test_observation_displays_incremental_events_not_only_task_status() -> None:
     row = {
         "tasks": [
@@ -258,6 +280,48 @@ def test_resource_list_uses_the_custody_name_and_identifier() -> None:
     )
     assert view["blocks"][0]["label"] == "Guide.pdf"
     assert view["blocks"][0]["uri"] == "r1"
+
+
+@pytest.mark.parametrize("event_type", ["react.step.completed", "expert.extract.completed"])
+def test_observation_keeps_serialized_action_and_full_extraction_technical(event_type: str) -> None:
+    row = {
+        "tasks": [
+            {
+                "task_id": "task",
+                "status": "running",
+                "new_events": [
+                    {
+                        "event_type": event_type,
+                        "summary": "Researcher completed its analysis",
+                        "excerpt": 'tool: submit({"answer": "FULL REPORT"})',
+                    }
+                ],
+            }
+        ]
+    }
+    before = json.dumps(row)
+    view = native_presentation("tasks", {}, row, None)
+    assert view["blocks"][-1]["text"] == "Researcher completed its analysis"
+    assert json.dumps(row) == before
+
+
+def test_observation_does_not_repeat_an_identical_event_excerpt() -> None:
+    row = {
+        "tasks": [
+            {
+                "task_id": "task",
+                "new_events": [
+                    {
+                        "event_type": "expert.lifecycle.started",
+                        "summary": "Researcher started",
+                        "excerpt": "Researcher started",
+                    }
+                ],
+            }
+        ]
+    }
+    view = native_presentation("tasks", {}, row, None)
+    assert view["blocks"][-1]["text"] == "Researcher started"
 
 
 def test_resource_inspection_uses_the_custody_size_fields() -> None:
@@ -524,6 +588,45 @@ def test_message_exposes_sent_content_and_transport_without_json() -> None:
     )
     assert view["blocks"][0]["text"] == "Review this evidence"
     assert view["blocks"][2]["text"] == "Transport: inbox"
+
+
+def test_one_shot_schedule_has_trigger_and_no_empty_separator() -> None:
+    row = {
+        "schedules": [
+            {"id": "s1", "cron": "", "timezone": "UTC", "prompt": "Review", "next_fire_at": "later"}
+        ]
+    }
+    view = native_presentation("schedules", {}, row, None)
+    assert view["blocks"][0]["text"] == "s1 · One-shot · UTC\nReview\nNext: later"
+
+
+def test_created_schedule_shows_prompt_and_one_timestamp_without_repeating_acknowledgment() -> None:
+    row = {
+        "schedule_id": "s1",
+        "recurring": False,
+        "next_fire_at": "later",
+        "run_at": "later",
+        "timezone": "UTC",
+        "message": "armed s1 later",
+    }
+    view = native_presentation("schedule_created", {"prompt": "Review"}, row, None)
+    assert view == {
+        "summary": "One-shot schedule · s1",
+        "blocks": [
+            {"id": "schedule", "type": "text", "text": "Review\nNext: later\nTimezone: UTC"}
+        ],
+    }
+
+
+@pytest.mark.parametrize("deleted", [True, False])
+def test_schedule_removal_preserves_actual_outcome_without_duplicate_fields(deleted: bool) -> None:
+    row = {
+        "schedule_id": "s1",
+        "deleted": deleted,
+        "message": "cancelled s1" if deleted else "no schedule s1 to cancel",
+    }
+    view = native_presentation("schedule_deleted", {}, deleted, row)
+    assert view == {"summary": row["message"], "blocks": []}
 
 
 def test_failed_task_collection_does_not_claim_it_collected_a_result() -> None:

@@ -97,7 +97,7 @@ def native_presentation(
             label = f"{label} · {task.get('error') or task.get('status', '')}"
             duration = display.get("duration_ms")
             if declaration == "wait" and isinstance(duration, int | float) and duration > 0:
-                label += f" · {duration / 1000:g} s"
+                label += f" · {round(duration / 1000, 1):g} s"
             child = str(
                 task.get("child_session_id") or task.get("session_id") or _child_session(task_id)
             )
@@ -125,8 +125,16 @@ def native_presentation(
             if declaration == "tasks":
                 for event_index, event in enumerate(task.get("new_events", [])):
                     if isinstance(event, Mapping):
+                        # These event types carry serialized model calls or full
+                        # extracted output, not a second conversation result.
+                        keys = (
+                            ("summary",)
+                            if event.get("event_type")
+                            in {"react.step.completed", "expert.extract.completed"}
+                            else ("summary", "excerpt")
+                        )
                         text = "\n".join(
-                            str(event[key]) for key in ("summary", "excerpt") if event.get(key)
+                            dict.fromkeys(str(event[key]) for key in keys if event.get(key))
                         )
                         if text:
                             blocks.append(
@@ -200,11 +208,38 @@ def native_presentation(
         )
     elif declaration == "schedules":
         text = "\n".join(
-            f"{schedule.get('id', '')} · {schedule.get('cron', '')} · {schedule.get('timezone', '')}\n{schedule.get('prompt', '')}\nNext: {schedule.get('next_fire_at', '')}"
+            " · ".join(
+                str(value)
+                for value in (
+                    schedule.get("id"),
+                    schedule.get("cron") or "One-shot",
+                    schedule.get("timezone"),
+                )
+                if value
+            )
+            + f"\n{schedule.get('prompt', '')}\nNext: {schedule.get('next_fire_at', '')}"
             for schedule in row.get("schedules", [])
             if isinstance(schedule, Mapping)
         )
         blocks.append({"id": "schedules", "type": "text", "text": text})
+    elif declaration == "schedule_created":
+        if row.get("schedule_id"):
+            summary = f"{'Recurring' if row.get('recurring') else 'One-shot'} schedule · {row['schedule_id']}"
+            details = [str(args.get("prompt") or "")]
+            if row.get("cron"):
+                details.append(f"Cron: {row['cron']}")
+            details.extend(
+                f"{label}: {row[key]}"
+                for key, label in (("next_fire_at", "Next"), ("timezone", "Timezone"))
+                if row.get(key)
+            )
+            blocks.append(
+                {"id": "schedule", "type": "text", "text": "\n".join(filter(None, details))}
+            )
+    elif declaration == "schedule_deleted":
+        # The declared message already names the schedule and actual removal state.
+        # Repeating the identifier and boolean beneath it adds no result evidence.
+        pass
     elif declaration == "resource":
         summary = str(row.get("name") or row.get("resource_id") or summary)
         if row.get("resources") == []:
@@ -227,7 +262,7 @@ def native_presentation(
                     "state",
                     "failure",
                 )
-                if key in record
+                if key in record and record[key] != ""
             ]
             blocks.append({"id": "identity", "type": "text", "text": "\n".join(fields)})
         processing = row.get("processing")
@@ -248,7 +283,8 @@ def native_presentation(
                         f"{match.get('line', '')}: {match.get('text', '')}"
                         for match in matches
                         if isinstance(match, Mapping)
-                    ),
+                    )
+                    or "No matching passages",
                 }
             )
         collections = row.get("collections")
@@ -275,7 +311,12 @@ def native_presentation(
             blocks.append({"id": "node", "type": "text", "text": "\n".join(fields)})
         content = row.get("text", row.get("content"))
         if isinstance(content, str):
-            blocks.append({"id": "content", "type": "text", "text": content})
+            kind = "markdown" if row.get("representation") == "markdown" else "text"
+            blocks.append({"id": "content", "type": kind, "text": content})
+        if row.get("truncated") is True:
+            blocks.append(
+                {"id": "bounded", "type": "text", "text": "Result truncated by the resource tool"}
+            )
         for index, resource in enumerate(row.get("resources", [])):
             if isinstance(resource, Mapping):
                 blocks.append(
@@ -343,6 +384,8 @@ def validate_declaration(value: str | Presenter) -> None:
         "specialized",
         "todos",
         "schedules",
+        "schedule_created",
+        "schedule_deleted",
         "model_catalog",
         "message",
         "goal",
