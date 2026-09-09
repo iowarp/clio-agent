@@ -270,7 +270,13 @@ async def run_llm_judge(app: Any, sid: str, goal: Mapping[str, Any]) -> "GoalJud
     A separate judge model (``dspy.context``) that ONLY reads the transcript — it never acts.
     Its verdict is the sole completion decision (the deterministic tier was deleted, A4); the
     typed loop bounds remain the hard stops. A judge failure degrades to a not-met verdict with
-    a typed reason (so an unavailable judge re-drives until a bound trips, never falsely halts)."""
+    a typed reason (so an unavailable judge re-drives until a bound trips, never falsely halts).
+
+    The judge is awaited on the server loop through the native async path
+    (``Predict.acall`` -> ``LM.aforward`` -> the provider's ``acompletion``), never a sync
+    predict (#1333). A sync predict on the loop thread froze every session/stream/heartbeat
+    for the judge's duration and, for providers whose sync path nests ``asyncio.run()``
+    (codex), crashed outright as ``judge unavailable``."""
 
     condition = str(goal.get("condition") or "")
     transcript = _build_transcript(app, sid)
@@ -510,7 +516,11 @@ async def dispatch_goal_at_finalize(
     loop-inbox seam (the same bounded mechanism the Stop-loop rides), carrying the judge reason
     as guidance. A dispatch error is swallowed (post-turn contract). Returns the decision, or
     ``None`` when no goal/failed. A judge-met decision also stops any armed loop with the typed
-    ``loop_goal_met`` reason — that compose lives in the ``turn_finalize`` glue (goal is a leaf)."""
+    ``loop_goal_met`` reason — that compose is ``turn_finalize`` glue, invoked from
+    ``turn_finalize_goal`` (goal is a leaf). Awaited inside the turn coroutine (#1333): the loop stays live while the judge runs,
+    so a ``/goal clear`` or ``/cancel`` can now interleave — the goal is re-read after the
+    await and a cleared/replaced record discards the verdict instead of re-arming it. A
+    ``CancelledError`` at the await deliberately propagates (a cancelled turn ends)."""
 
     try:
         goal = _get_goal(app, session_id)
