@@ -377,8 +377,8 @@ def test_resource_inspection_uses_the_custody_size_fields() -> None:
         },
         None,
     )
-    assert "Declared size: 1200".lower() in view["blocks"][0]["text"]
-    assert "received size: 1200" in view["blocks"][0]["text"]
+    assert view["blocks"][0]["text"] == "application/pdf · 1,200 bytes · Revision 1 · Ready"
+    assert view["blocks"][0]["text"].count("1,200") == 1
 
 
 def test_rejected_artifact_explains_the_actual_rejection() -> None:
@@ -462,7 +462,7 @@ def test_web_document_identity_and_degraded_empty_search_are_visible() -> None:
     }
     before = json.dumps(payload)
     view = present_mcp_result("web_fetch", {}, payload)
-    assert view["summary"] == ""
+    assert view["summary"] == "HTTP 200"
     assert view["subject"] == "subject"
     assert view["blocks"][0]["label"] == "Official guide"
     assert view["blocks"][0]["uri"] == "https://example.org/guide.pdf"
