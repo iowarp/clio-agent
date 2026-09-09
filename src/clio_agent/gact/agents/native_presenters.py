@@ -159,10 +159,13 @@ def native_presentation(
             )
         if isinstance(args.get("message"), str):
             blocks.append({"id": "message", "type": "text", "text": args["message"]})
-        summary = str(
-            row.get("error")
-            or {"queue": "Queued", "wake": "Follow-up started"}.get(row.get("action"), summary)
+        action = row.get("action")
+        action_summary = (
+            {"queue": "Queued", "wake": "Follow-up started"}.get(action, summary)
+            if isinstance(action, str)
+            else summary
         )
+        summary = str(row.get("error") or action_summary)
         if row.get("error"):
             blocks.append({"id": "error", "type": "text", "text": str(row["error"])})
     elif declaration == "goal":
