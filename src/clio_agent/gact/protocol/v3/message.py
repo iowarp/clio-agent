@@ -303,6 +303,17 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "detail": str(part.get("rationale") or ""),
             **common,
         }
+    if part_type == "agent_message":
+        return {
+            "id": part_id,
+            "type": "agent_message",
+            "subagent_id": str(part.get("handle_id") or part_id),
+            "label": str(part.get("run_label") or part.get("child_agent") or "Child agent"),
+            "message": str(part.get("text") or ""),
+            "action": str(part.get("message_action") or ""),
+            "status": str(part.get("status") or ""),
+            **common,
+        }
     text = str(part.get("text") or "")
     return {
         "id": part_id,

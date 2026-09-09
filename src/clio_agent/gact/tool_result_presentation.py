@@ -18,7 +18,17 @@ class PresentationBlock(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     id: str = Field(min_length=1)
-    type: Literal["text", "markdown", "code", "diff", "terminal", "link", "check", "media"]
+    type: Literal[
+        "text",
+        "markdown",
+        "code",
+        "diff",
+        "terminal",
+        "link",
+        "check",
+        "media",
+        "item",
+    ]
     media_type: str = ""
     text: str = ""
     label: str = ""
@@ -30,6 +40,11 @@ class PresentationBlock(BaseModel):
     exit_code: int | None = None
     timed_out: bool = False
     channel: Literal["stdout", "stderr"] | None = None
+    status: str = ""
+    detail: str = ""
+    duration_ms: float | None = None
+    items: list[str] = Field(default_factory=list)
+    action_label: str = ""
 
 
 class ToolPresentation(BaseModel):

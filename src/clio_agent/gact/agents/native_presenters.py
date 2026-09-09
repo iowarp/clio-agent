@@ -60,12 +60,13 @@ def native_presentation(
     row = _record(structured) if structured is not None else _record(result)
     summary = str(row.get("message") or row.get("error") or "")
     blocks: list[dict[str, Any]] = []
+    header_action = ""
     if declaration == "text":
         if isinstance(result, str):
             blocks.append({"id": "content", "type": "markdown", "text": result})
     elif declaration == "task_output":
         task_id = str(row.get("task_id", args.get("task_id", "")))
-        summary = f"Task {task_id} · {row.get('error') or row.get('status') or 'output'}"
+        summary = f"Task {task_id}: {row.get('error') or row.get('status') or 'output'}"
         blocks.append({"id": "output", "type": "markdown", "text": str(row.get("output") or "")})
         if row.get("error_reason"):
             blocks.append({"id": "error", "type": "text", "text": str(row["error_reason"])})
@@ -94,36 +95,15 @@ def native_presentation(
             task_id = str(task.get("task_id") or task.get("id") or "")
             display = display_rows[index] if index < len(display_rows) else {}
             label = str(display.get("name") or task.get("name") or task_id or "Task")
-            label = f"{label} · {task.get('error') or task.get('status', '')}"
+            status = "failed" if task.get("error") else str(task.get("status") or "")
             duration = display.get("duration_ms")
-            if declaration == "wait" and isinstance(duration, int | float) and duration > 0:
-                label += f" · {round(duration / 1000, 1):g} s"
             child = str(
                 task.get("child_session_id") or task.get("session_id") or _child_session(task_id)
             )
-            if child:
-                blocks.append(
-                    {
-                        "id": f"task-{index}",
-                        "type": "link",
-                        "target": "session",
-                        "uri": child,
-                        "label": label,
-                    }
-                )
-            else:
-                blocks.append(
-                    {
-                        "id": f"task-{index}",
-                        "type": "text",
-                        "text": label,
-                    }
-                )
             excerpt = display.get("answer_excerpt")
-            if declaration == "tasks" and isinstance(excerpt, str) and excerpt:
-                blocks.append({"id": f"task-{index}-result", "type": "markdown", "text": excerpt})
+            details: list[str] = []
             if declaration == "tasks":
-                for event_index, event in enumerate(task.get("new_events", [])):
+                for event in task.get("new_events", []):
                     if isinstance(event, Mapping):
                         # These event types carry serialized model calls or full
                         # extracted output, not a second conversation result.
@@ -137,13 +117,27 @@ def native_presentation(
                             dict.fromkeys(str(event[key]) for key in keys if event.get(key))
                         )
                         if text:
-                            blocks.append(
-                                {
-                                    "id": f"task-{index}-event-{event_index}",
-                                    "type": "text",
-                                    "text": text,
-                                }
-                            )
+                            details.append(text)
+            if declaration == "tasks" and isinstance(excerpt, str) and excerpt:
+                details.insert(0, excerpt)
+            blocks.append(
+                {
+                    "id": f"task-{index}",
+                    "type": "item",
+                    "target": "session" if child else None,
+                    "uri": child,
+                    "label": label,
+                    "status": status,
+                    "duration_ms": (
+                        float(duration)
+                        if declaration == "wait"
+                        and isinstance(duration, int | float)
+                        and duration > 0
+                        else None
+                    ),
+                    "detail": "\n".join(details),
+                }
+            )
     elif declaration == "message":
         task_id = str(row.get("task_id") or args.get("task_id") or "")
         child = _child_session(task_id)
@@ -157,8 +151,6 @@ def native_presentation(
                     "label": task_id or "Recipient",
                 }
             )
-        if isinstance(args.get("message"), str):
-            blocks.append({"id": "message", "type": "text", "text": args["message"]})
         action = row.get("action")
         action_summary = (
             {"queue": "Queued", "wake": "Follow-up started"}.get(action, summary)
@@ -184,40 +176,56 @@ def native_presentation(
         if progress and (row.get("active") or row.get("condition") or row.get("iters_elapsed")):
             blocks.append({"id": "progress", "type": "text", "text": "\n".join(progress)})
     elif declaration == "model_catalog":
-        entries = []
+        entries = 0
         for provider in row.get("results", []):
             if not isinstance(provider, Mapping):
                 continue
-            header = " · ".join(
-                str(provider[key]) for key in ("provider", "source") if provider.get(key)
-            )
-            if provider.get("default_model"):
-                header += f" · default: {provider['default_model']}"
-            details = [header]
-            for field, label in (
-                ("added", "Added"),
-                ("removed", "Removed"),
-                ("unchanged", "Unchanged"),
-                ("failed_reason", "Unavailable"),
-                ("rejected", "Rejected"),
-            ):
+            entries += 1
+            provider_id = str(provider.get("provider") or f"provider-{entries}")
+            source = str(provider.get("source") or "")
+            default_model = str(provider.get("default_model") or "")
+            failed_reason = str(provider.get("failed_reason") or "")
+            models: list[str] = []
+            for field in ("added", "unchanged"):
                 value = provider.get(field)
-                if (
-                    isinstance(value, list)
-                    and value
-                    and all(isinstance(item, str) for item in value)
-                ):
-                    details.append(f"{label}: {', '.join(value)}")
-                elif isinstance(value, str | int) and value != "":
-                    details.append(f"{label}: {value}")
-            entries.append("\n".join(details))
-        summary = f"{len(entries)} provider results" if entries else "No provider results"
-        blocks.append({"id": "models", "type": "text", "text": "\n\n".join(entries)})
+                if isinstance(value, list):
+                    models.extend(str(item) for item in value if isinstance(item, str))
+            details = []
+            if source:
+                details.append(f"Source: {source}")
+            if default_model:
+                details.append(f"Default model: {default_model}")
+            if failed_reason:
+                details.append(failed_reason)
+            removed = provider.get("removed")
+            if isinstance(removed, list) and removed:
+                details.append(f"Removed: {', '.join(str(item) for item in removed)}")
+            rejected = provider.get("rejected")
+            if isinstance(rejected, list) and rejected:
+                details.append(f"Rejected: {', '.join(str(item) for item in rejected)}")
+            blocks.append(
+                {
+                    "id": f"provider-{entries}",
+                    "type": "item",
+                    "target": "url",
+                    "uri": f"/settings/providers?provider={provider_id}",
+                    "label": provider_id,
+                    "status": "failed" if failed_reason else "succeeded",
+                    "detail": "\n".join(details),
+                    "items": list(dict.fromkeys(models)),
+                    "action_label": "Change",
+                }
+            )
+        summary = f"{entries} provider results" if entries else "No provider results"
     elif declaration == "loop":
         if row.get("stopped") is True:
-            summary = f"Loop stopped · {row['loop_id']}" if row.get("loop_id") else "No active loop"
+            summary = f"Loop {row['loop_id']} stopped" if row.get("loop_id") else "No active loop"
         elif row.get("next_fire_at"):
-            summary = f"Next iteration scheduled · {row.get('loop_id', '')}".rstrip(" ·")
+            summary = (
+                f"Next iteration scheduled for loop {row['loop_id']}"
+                if row.get("loop_id")
+                else "Next iteration scheduled"
+            )
             details = [str(args.get("prompt") or ""), f"Next: {row['next_fire_at']}"]
             blocks.append({"id": "next", "type": "text", "text": "\n".join(filter(None, details))})
     elif declaration == "todos":
@@ -234,7 +242,7 @@ def native_presentation(
         )
     elif declaration == "schedules":
         text = "\n".join(
-            " · ".join(
+            "\n".join(
                 str(value)
                 for value in (
                     schedule.get("id"),
@@ -251,7 +259,10 @@ def native_presentation(
             blocks.append({"id": "schedules", "type": "text", "text": text})
     elif declaration == "schedule_created":
         if row.get("schedule_id"):
-            summary = f"{'Recurring' if row.get('recurring') else 'One-shot'} schedule · {row['schedule_id']}"
+            summary = (
+                f"{'Recurring' if row.get('recurring') else 'One-shot'} schedule "
+                f"{row['schedule_id']}"
+            )
             details = [str(args.get("prompt") or "")]
             if row.get("cron"):
                 details.append(f"Cron: {row['cron']}")
@@ -288,7 +299,7 @@ def native_presentation(
             if record.get("state"):
                 fields.append(str(record["state"]).capitalize())
             if fields:
-                blocks.append({"id": "identity", "type": "text", "text": " · ".join(fields)})
+                blocks.append({"id": "identity", "type": "text", "text": "\n".join(fields)})
             if record.get("failure"):
                 blocks.append({"id": "failure", "type": "text", "text": str(record["failure"])})
         resource_id = str(
@@ -310,7 +321,7 @@ def native_presentation(
                 "failed",
                 "cancelled",
             }:
-                message += f" · {processing['progress']}%"
+                message += f"\nProgress: {processing['progress']}%"
             if processing.get("error"):
                 message += f"\n{processing['error']}"
             identity = next((block for block in blocks if block["id"] == "identity"), None)
@@ -340,7 +351,7 @@ def native_presentation(
                 {
                     "id": "outline",
                     "type": "text",
-                    "text": " · ".join(
+                    "text": "\n".join(
                         f"{str(name).capitalize()}: {count}"
                         for name, count in collections.items()
                         if isinstance(count, int)
@@ -427,15 +438,20 @@ def native_presentation(
                 artifacts = row.get("artifacts", [])
                 if len(artifacts) == 1 and artifacts[0].get("accepted") is True:
                     artifact = artifacts[0]
-                    summary = "Created" if artifact.get("created") else "Reused existing artifact"
+                    summary = ""
+                    header_action = "Created" if artifact.get("created") else "Reused"
                     if artifact.get("version"):
-                        summary += f" · v{artifact['version']}"
+                        summary = f"Version {artifact['version']}"
     if declaration == "text" and args.get("skill_id"):
         subject = "skill-name"
         blocks.insert(0, {"id": subject, "type": "text", "text": str(args["skill_id"])})
         summary = ""
     return {
-        **({"action": "Message"} if declaration == "message" else {}),
+        **(
+            {"action": "Message"}
+            if declaration == "message"
+            else ({"action": header_action} if header_action else {})
+        ),
         **({"subject": subject} if subject else {}),
         "summary": summary,
         "blocks": blocks,
