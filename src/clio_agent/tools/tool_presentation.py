@@ -325,10 +325,7 @@ def _web(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
         identity.append(f"Pages: {structure['pages']}")
     if identity:
         blocks.append({"id": "identity", "type": "text", "text": " · ".join(identity)})
-    if isinstance(row.get("results"), list):
-        blocks.append(
-            {"id": "result-count", "type": "text", "text": f"{len(row['results'])} search results"}
-        )
+    results = row.get("results")
     failures = row.get("unresponsive_engines")
     if isinstance(failures, list) and failures:
         blocks.append(
@@ -379,7 +376,7 @@ def _web(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
                     "label": label,
                 }
             )
-    for index, hit in enumerate(row.get("results", [])):
+    for index, hit in enumerate(results if isinstance(results, list) else []):
         if isinstance(hit, Mapping) and hit.get("url"):
             blocks.append(
                 {
@@ -406,7 +403,12 @@ def _web(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
             },
         )
     status = row.get("status")
-    summary = f"HTTP {status}" if isinstance(status, int) else ""
+    if isinstance(status, int):
+        summary = f"HTTP {status}"
+    elif isinstance(results, list):
+        summary = f"{len(results)} {'result' if len(results) == 1 else 'results'}"
+    else:
+        summary = ""
     return {"subject": "subject" if url or query else "", "summary": summary, "blocks": blocks}
 
 

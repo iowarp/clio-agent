@@ -481,7 +481,8 @@ def test_web_document_identity_and_degraded_empty_search_are_visible() -> None:
         },
     )
     blocks = {block["id"]: block for block in search["blocks"]}
-    assert blocks["result-count"]["text"] == "0 search results"
+    assert search["summary"] == "0 results"
+    assert "result-count" not in blocks
     assert blocks["engine-status"]["text"] == "duckduckgo: CAPTCHA"
 
 
