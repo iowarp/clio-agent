@@ -553,11 +553,7 @@ def build_spawn_runtime_tools(
         call_start = _time.monotonic()
         wait_started_at = datetime.now(timezone.utc)
         results = []
-        # Typed structured shape (owner ruling, P5): a tool DECLARES its wire
-        # presentation instead of the UI inferring it from JSON key order —
-        # built alongside ``results`` from the SAME per-task facts, and declared
-        # onto the wire's structured_content channel below (never returned to
-        # the model — that lane stays the compact ``results``/conflict rows).
+        # Structured rows use structured_content; the model lane remains compact.
         structured_rows: list[dict[str, Any]] = []
         for tid in task_ids or []:
             # Validate the id BEFORE waiting: registry.event() would setdefault a
