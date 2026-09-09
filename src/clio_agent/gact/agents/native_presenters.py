@@ -61,6 +61,7 @@ def native_presentation(
     summary = str(row.get("message") or row.get("error") or "")
     blocks: list[dict[str, Any]] = []
     header_action = ""
+    presentation_status = ""
     if declaration == "text":
         if isinstance(result, str):
             blocks.append({"id": "content", "type": "markdown", "text": result})
@@ -84,9 +85,9 @@ def native_presentation(
             )
     elif declaration in {"tasks", "wait"}:
         summary = str(row.get("summary") or summary)
-        source = _record(result)
-        task_rows = source.get(
-            "results", source.get("tasks", row.get("results", row.get("tasks", [])))
+        result_record = _record(result)
+        task_rows = result_record.get(
+            "results", result_record.get("tasks", row.get("results", row.get("tasks", [])))
         )
         display_rows = row.get("results", [])
         for index, task in enumerate(task_rows):
@@ -94,32 +95,26 @@ def native_presentation(
                 continue
             task_id = str(task.get("task_id") or task.get("id") or "")
             display = display_rows[index] if index < len(display_rows) else {}
-            label = str(display.get("name") or task.get("name") or task_id or "Task")
+            label = str(
+                display.get("name") or task.get("name") or _child_name(task_id) or task_id or "Task"
+            )
             status = "failed" if task.get("error") else str(task.get("status") or "")
-            duration = display.get("duration_ms")
             child = str(
                 task.get("child_session_id") or task.get("session_id") or _child_session(task_id)
             )
-            excerpt = display.get("answer_excerpt")
             details: list[str] = []
             if declaration == "tasks":
                 for event in task.get("new_events", []):
-                    if isinstance(event, Mapping):
-                        # These event types carry serialized model calls or full
-                        # extracted output, not a second conversation result.
-                        keys = (
-                            ("summary",)
-                            if event.get("event_type")
-                            in {"react.step.completed", "expert.extract.completed"}
-                            else ("summary", "excerpt")
-                        )
-                        text = "\n".join(
-                            dict.fromkeys(str(event[key]) for key in keys if event.get(key))
-                        )
-                        if text:
+                    if not isinstance(event, Mapping):
+                        continue
+                    for key in ("summary", "excerpt"):
+                        text = str(event.get(key) or "").strip()
+                        if text and text not in details:
                             details.append(text)
-            if declaration == "tasks" and isinstance(excerpt, str) and excerpt:
-                details.insert(0, excerpt)
+            else:
+                excerpt = str(display.get("answer_excerpt") or "").strip()
+                if excerpt:
+                    details.append(excerpt)
             blocks.append(
                 {
                     "id": f"task-{index}",
@@ -128,11 +123,11 @@ def native_presentation(
                     "uri": child,
                     "label": label,
                     "status": status,
+                    "result_kind": "snapshot" if declaration == "tasks" else "completion",
                     "duration_ms": (
-                        float(duration)
+                        float(display.get("waited_ms") or 0)
                         if declaration == "wait"
-                        and isinstance(duration, int | float)
-                        and duration > 0
+                        and isinstance(display.get("waited_ms"), int | float)
                         else None
                     ),
                     "detail": "\n".join(details),
@@ -160,6 +155,16 @@ def native_presentation(
         summary = str(row.get("error") or action_summary)
         if row.get("error"):
             blocks.append({"id": "error", "type": "text", "text": str(row["error"])})
+        sent_message = str(args.get("message") or "").strip()
+        if sent_message:
+            blocks.append(
+                {
+                    "id": "message",
+                    "type": "item",
+                    "result_kind": "message",
+                    "text": sent_message,
+                }
+            )
     elif declaration == "goal":
         summary = "Active goal" if row.get("active") else "No active goal"
         if row.get("condition"):
@@ -182,7 +187,7 @@ def native_presentation(
                 continue
             entries += 1
             provider_id = str(provider.get("provider") or f"provider-{entries}")
-            source = str(provider.get("source") or "")
+            provider_source = str(provider.get("source") or "")
             default_model = str(provider.get("default_model") or "")
             failed_reason = str(provider.get("failed_reason") or "")
             models: list[str] = []
@@ -191,8 +196,8 @@ def native_presentation(
                 if isinstance(value, list):
                     models.extend(str(item) for item in value if isinstance(item, str))
             details = []
-            if source:
-                details.append(f"Source: {source}")
+            if provider_source:
+                details.append(f"Source: {provider_source}")
             if default_model:
                 details.append(f"Default model: {default_model}")
             if failed_reason:
@@ -387,19 +392,26 @@ def native_presentation(
                     }
                 )
     elif declaration == "artifact":
-        for index, artifact in enumerate(row.get("artifacts", [row])):
+        artifact_rows = row.get("artifacts", [row])
+        accepted = 0
+        rejected = 0
+        for index, artifact in enumerate(artifact_rows):
             if isinstance(artifact, Mapping):
                 if artifact.get("accepted") is False:
+                    rejected += 1
                     blocks.append(
                         {
                             "id": f"rejection-{index}",
                             "type": "text",
-                            "text": f"{artifact.get('name') or 'Artifact'}: {artifact.get('reason') or 'rejected'}\n{artifact.get('detail') or ''}".rstrip(),
+                            "label": "Artifact rejected",
+                            "severity": "error",
+                            "text": _artifact_rejection_message(artifact),
                         }
                     )
                     continue
                 uri = str(artifact.get("uri") or artifact.get("artifact_id") or "")
                 if uri:
+                    accepted += 1
                     blocks.append(
                         {
                             "id": f"artifact-{index}",
@@ -411,6 +423,9 @@ def native_presentation(
                             ),
                         }
                     )
+        if rejected:
+            presentation_status = "degraded" if accepted else "failed"
+            summary = ""
     elif declaration.startswith("fields:"):
         for field in declaration.removeprefix("fields:").split(","):
             value = row.get(field)
@@ -427,6 +442,17 @@ def native_presentation(
     # Header subjects are explicitly chosen by each result family. The client
     # never guesses arguments or promotes arbitrary output into an action label.
     subject = ""
+    if declaration in {"tasks", "wait"}:
+        item_blocks = [block for block in blocks if block["type"] == "item"]
+        if item_blocks:
+            if declaration == "wait":
+                item_blocks.sort(key=lambda block: float(block.get("duration_ms") or 0))
+                blocks = item_blocks
+            labels = [str(block.get("label") or "Task") for block in item_blocks]
+            subject_text = ", ".join(labels) if len(labels) <= 2 else f"{len(labels)} tasks"
+            subject = "task-subject"
+            blocks.insert(0, {"id": subject, "type": "text", "text": subject_text})
+            summary = ""
     if declaration in {"resource", "task_output", "message", "artifact"}:
         links = [block for block in blocks if block["type"] == "link"]
         if len(links) == 1:
@@ -453,6 +479,7 @@ def native_presentation(
             else ({"action": header_action} if header_action else {})
         ),
         **({"subject": subject} if subject else {}),
+        **({"status": presentation_status} if presentation_status else {}),
         "summary": summary,
         "blocks": blocks,
     }
@@ -493,6 +520,39 @@ def _child_session(task_id: str) -> str:
     registry = getattr(app.state, "agent_task_registry", None) if app is not None else None
     task = registry.get(task_id) if registry is not None else None
     return str(getattr(task, "child_session_id", "") or "")
+
+
+def _artifact_rejection_message(artifact: Mapping[str, Any]) -> str:
+    """Explain a rejected artifact with user-facing workspace semantics."""
+
+    reason = str(artifact.get("reason") or "rejected")
+    explanations = {
+        "escapes_root": (
+            "The requested path is outside the active workspace. "
+            "Artifacts can only reference files inside this workspace."
+        ),
+        "missing": "The requested artifact file does not exist.",
+        "not_found": "The requested artifact file does not exist.",
+    }
+    explanation = explanations.get(
+        reason, f"The artifact was rejected because {reason.replace('_', ' ')}."
+    )
+    detail = str(artifact.get("detail") or "").strip()
+    return f"{explanation}\n{detail}" if detail else explanation
+
+
+def _child_name(task_id: str) -> str:
+    """Resolve the recorded child label without exposing an opaque task id."""
+    from clio_agent.gact import context
+    from clio_agent.gact.agent_tasks import display_run_name
+
+    app = context.active_app()
+    registry = getattr(app.state, "agent_task_registry", None) if app is not None else None
+    task = registry.get(task_id) if registry is not None else None
+    if task is None:
+        return ""
+    agent_id = str(task.agent_ref.get("expert_id") or task.agent_ref.get("blueprint_id") or "Task")
+    return display_run_name(agent_id, task.run_index, task.run_label)
 
 
 def _resource_link(resource_id: str) -> dict[str, Any] | None:

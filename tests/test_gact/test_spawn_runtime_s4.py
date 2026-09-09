@@ -741,8 +741,7 @@ def test_wait_agent_tasks_declares_typed_structured_content_shape(monkeypatch) -
         "workflow_state_conflicts",
         "merged_workflow_state",
     ]
-    assert shape["summary"].startswith("waited ")
-    assert "1 completed" in shape["summary"]
+    assert shape["summary"] == "1 task: 1 completed"
     (row,) = shape["results"]
     # The compact UI-ladder row: display name (the SAME rule waited_tasks uses),
     # typed status, duration, and the ALREADY-BOUNDED excerpt (never the full
@@ -751,6 +750,7 @@ def test_wait_agent_tasks_declares_typed_structured_content_shape(monkeypatch) -
         "name": "data_expert #1",
         "status": "completed",
         "duration_ms": 0.0,
+        "waited_ms": 0.0,
         "answer_excerpt": "child produced the staged CSV",
     }
     assert shape["workflow_state_conflicts"] == []
@@ -2445,9 +2445,7 @@ def test_repeated_waits_remain_separate_tool_pairs() -> None:
 
     app, transcript, events = _collector_transcript_app()
     for call_id, text in [("call_a", "running"), ("call_b", "completed")]:
-        _append_live_assistant_part(
-            app, "sess_x", _collector_call(call_id, task_ids=["task_1"])
-        )
+        _append_live_assistant_part(app, "sess_x", _collector_call(call_id, task_ids=["task_1"]))
         _append_live_assistant_part(app, "sess_x", _collector_result(call_id, text, 5.0))
 
     parts = transcript.snapshot()
@@ -2469,9 +2467,7 @@ def test_historical_check_agent_tasks_call_renders_without_translation() -> None
     _append_live_assistant_part(
         app,
         "sess_x",
-        _collector_result(
-            "call_a", '{"results": []}', 5.0, tool_name="check_agent_tasks"
-        ),
+        _collector_result("call_a", '{"results": []}', 5.0, tool_name="check_agent_tasks"),
     )
 
     parts = transcript.snapshot()

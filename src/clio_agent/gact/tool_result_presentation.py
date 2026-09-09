@@ -45,6 +45,8 @@ class PresentationBlock(BaseModel):
     duration_ms: float | None = None
     items: list[str] = Field(default_factory=list)
     action_label: str = ""
+    result_kind: Literal["snapshot", "completion"] | None = None
+    severity: Literal["info", "warning", "error"] | None = None
 
 
 class ToolPresentation(BaseModel):
@@ -53,6 +55,7 @@ class ToolPresentation(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: str | None = None
     subject: str | None = None
+    status: str | None = None
     summary: str = ""
     blocks: list[PresentationBlock] = Field(default_factory=list)
     diagnostic: str | None = None

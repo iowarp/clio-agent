@@ -93,9 +93,23 @@ def test_observe_uses_child_identity_and_declared_display_name() -> None:
         ],
     }
     view = native_presentation("tasks", {}, raw, structured)
-    assert view["blocks"][0]["uri"] == "child"
-    assert view["blocks"][0]["label"] == "Researcher #1 · completed"
-    assert view["blocks"][1]["text"] == "Evidence packet"
+    assert view["summary"] == ""
+    assert view["blocks"][0] == {
+        "id": "task-subject",
+        "type": "text",
+        "text": "Researcher #1",
+    }
+    assert view["blocks"][1] == {
+        "id": "task-0",
+        "type": "item",
+        "target": "session",
+        "uri": "child",
+        "label": "Researcher #1",
+        "status": "completed",
+        "result_kind": "snapshot",
+        "duration_ms": None,
+        "detail": "",
+    }
 
 
 @pytest.mark.parametrize("status", ["completed", "failed", "cancelled", "unknown_task"])
@@ -119,22 +133,32 @@ def test_wait_reports_lifecycle_without_repeating_child_output(status: str) -> N
                 "name": "Researcher #1",
                 "status": status,
                 "duration_ms": 11004,
+                "waited_ms": 7004,
                 "answer_excerpt": "CHILD EXCERPT",
             }
         ],
     }
     view = native_presentation("wait", {}, raw, structured)
-    assert view["summary"] == structured["summary"]
+    assert view["summary"] == ""
     assert view["blocks"] == [
         {
+            "id": "task-subject",
+            "type": "text",
+            "text": "Researcher #1",
+        },
+        {
             "id": "task-0",
-            "type": "link",
+            "type": "item",
             "target": "session",
             "uri": "child",
-            "label": f"Researcher #1 · {status} · 11 s",
-        }
+            "label": "Researcher #1",
+            "status": status,
+            "result_kind": "completion",
+            "duration_ms": 7004.0,
+            "detail": "CHILD EXCERPT",
+        },
     ]
-    assert "CHILD" not in json.dumps(view)
+    assert "FULL CHILD ANSWER" not in json.dumps(view)
     assert json.loads(raw)["results"][0]["output"] == "FULL CHILD ANSWER"
 
 
@@ -232,7 +256,7 @@ def test_file_format_is_declared_by_read_presenter(path: str, content: str, kind
 def test_resource_outline_exposes_the_returned_collections() -> None:
     result = {"resource_id": "paper", "collections": {"pages": 7, "tables": 3, "texts": 28}}
     view = native_presentation("resource", {}, result, None)
-    assert view["blocks"][0]["text"] == "Pages: 7 · Tables: 3 · Texts: 28"
+    assert view["blocks"][0]["text"] == "Pages: 7\nTables: 3\nTexts: 28"
 
 
 def test_resource_markdown_derivative_declares_rendered_document_content() -> None:
@@ -306,7 +330,7 @@ def test_observation_displays_incremental_events_not_only_task_status() -> None:
     }
     before = json.dumps(row)
     view = native_presentation("tasks", {}, row, None)
-    assert view["blocks"][-1]["text"] == "Reading evidence\nOfficial guide fetched"
+    assert view["blocks"][-1]["detail"] == "Reading evidence\nOfficial guide fetched"
     assert json.dumps(row) == before
 
 
@@ -337,7 +361,9 @@ def test_observation_keeps_serialized_action_and_full_extraction_technical(event
     }
     before = json.dumps(row)
     view = native_presentation("tasks", {}, row, None)
-    assert view["blocks"][-1]["text"] == "Researcher completed its analysis"
+    assert view["blocks"][-1]["detail"] == (
+        'Researcher completed its analysis\ntool: submit({"answer": "FULL REPORT"})'
+    )
     assert json.dumps(row) == before
 
 
@@ -357,7 +383,7 @@ def test_observation_does_not_repeat_an_identical_event_excerpt() -> None:
         ]
     }
     view = native_presentation("tasks", {}, row, None)
-    assert view["blocks"][-1]["text"] == "Researcher started"
+    assert view["blocks"][-1]["detail"] == "Researcher started"
 
 
 def test_resource_inspection_uses_the_custody_size_fields() -> None:
@@ -377,7 +403,7 @@ def test_resource_inspection_uses_the_custody_size_fields() -> None:
         },
         None,
     )
-    assert view["blocks"][0]["text"] == "application/pdf · 1,200 bytes · Revision 1 · Ready"
+    assert view["blocks"][0]["text"] == "application/pdf\n1,200 bytes\nRevision 1\nReady"
     assert view["blocks"][0]["text"].count("1,200") == 1
 
 
@@ -397,7 +423,14 @@ def test_rejected_artifact_explains_the_actual_rejection() -> None:
         },
         None,
     )
-    assert view["blocks"][0]["text"] == "report.md: path_missing\nFile does not exist"
+    assert view["status"] == "failed"
+    assert view["blocks"][0] == {
+        "id": "rejection-0",
+        "type": "text",
+        "label": "Artifact rejected",
+        "severity": "error",
+        "text": "The artifact was rejected because path missing.\nFile does not exist",
+    }
 
 
 def test_web_conversion_exposes_saved_outputs_and_progress() -> None:
@@ -511,6 +544,10 @@ def test_file_result_has_one_portable_filename_link() -> None:
         "command": "",
         "timed_out": False,
         "media_type": "",
+        "status": "",
+        "detail": "",
+        "items": [],
+        "action_label": "",
     }
     assert view["blocks"][1]["label"] == ""
 
@@ -606,7 +643,7 @@ def test_failed_handoff_live_and_snapshot_explain_the_same_failure() -> None:
                     }
                 ]
             },
-            ["schedule · 0 9 * * * · UTC\nReview work\nNext: tomorrow"],
+            ["schedule\n0 9 * * *\nUTC\nReview work\nNext: tomorrow"],
         ),
         ("text", {}, ["# Real skill\nLoaded procedure"]),
     ],
@@ -642,7 +679,7 @@ def test_one_shot_schedule_has_trigger_and_no_empty_separator() -> None:
         ]
     }
     view = native_presentation("schedules", {}, row, None)
-    assert view["blocks"][0]["text"] == "s1 · One-shot · UTC\nReview\nNext: later"
+    assert view["blocks"][0]["text"] == "s1\nOne-shot\nUTC\nReview\nNext: later"
 
 
 def test_created_schedule_shows_prompt_and_one_timestamp_without_repeating_acknowledgment() -> None:
@@ -656,7 +693,7 @@ def test_created_schedule_shows_prompt_and_one_timestamp_without_repeating_ackno
     }
     view = native_presentation("schedule_created", {"prompt": "Review"}, row, None)
     assert view == {
-        "summary": "One-shot schedule · s1",
+        "summary": "One-shot schedule s1",
         "blocks": [
             {"id": "schedule", "type": "text", "text": "Review\nNext: later\nTimezone: UTC"}
         ],
@@ -678,7 +715,7 @@ def test_failed_task_collection_does_not_claim_it_collected_a_result() -> None:
     view = native_presentation(
         "task_output", {}, {"task_id": "missing", "error": "unknown_task"}, None
     )
-    assert view["summary"] == "Task missing · unknown_task"
+    assert view["summary"] == "Task missing: unknown_task"
     assert view["blocks"][0]["text"] == ""
 
 
@@ -707,10 +744,30 @@ def test_model_catalog_exposes_actual_changes_and_failures_without_empty_fields(
     before = json.dumps(row)
     view = native_presentation("model_catalog", {}, row, None)
     assert view["summary"] == "2 provider results"
-    assert (
-        view["blocks"][0]["text"]
-        == "codex · codex_sdk · default: model-a\nUnchanged: model-a\n\nlocal · live_handshake\nUnavailable: Connection refused"
-    )
+    assert view["blocks"] == [
+        {
+            "id": "provider-1",
+            "type": "item",
+            "target": "url",
+            "uri": "/settings/providers?provider=codex",
+            "label": "codex",
+            "status": "succeeded",
+            "detail": "Source: codex_sdk\nDefault model: model-a",
+            "items": ["model-a"],
+            "action_label": "Change",
+        },
+        {
+            "id": "provider-2",
+            "type": "item",
+            "target": "url",
+            "uri": "/settings/providers?provider=local",
+            "label": "local",
+            "status": "failed",
+            "detail": "Source: live_handshake\nConnection refused",
+            "items": [],
+            "action_label": "Change",
+        },
+    ]
     assert json.dumps(row) == before
 
 
@@ -719,9 +776,9 @@ def test_model_catalog_exposes_actual_changes_and_failures_without_empty_fields(
     [
         (
             {"loop_id": "l1", "stopped": False, "next_fire_at": "later"},
-            "Next iteration scheduled · l1",
+            "Next iteration scheduled for loop l1",
         ),
-        ({"loop_id": "l1", "stopped": True, "next_fire_at": ""}, "Loop stopped · l1"),
+        ({"loop_id": "l1", "stopped": True, "next_fire_at": ""}, "Loop l1 stopped"),
         ({"loop_id": "", "stopped": True, "next_fire_at": ""}, "No active loop"),
     ],
 )

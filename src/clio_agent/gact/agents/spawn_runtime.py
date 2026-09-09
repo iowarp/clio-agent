@@ -25,6 +25,7 @@ import json
 import logging
 import uuid
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
@@ -52,6 +53,7 @@ from clio_agent.gact.agents.spawn_events import _started_handoff_part as _starte
 from clio_agent.gact.agents.spawn_events import emit_spawn_started as _emit_spawn_started
 from clio_agent.gact.agents.spawn_group import (
     failed_spawn_metadata_row,
+    wait_completion_offset_ms,
     wait_structured_row,
     wait_summary,
 )
@@ -549,6 +551,7 @@ def build_spawn_runtime_tools(
         )
 
         call_start = _time.monotonic()
+        wait_started_at = datetime.now(timezone.utc)
         results = []
         # Typed structured shape (owner ruling, P5): a tool DECLARES its wire
         # presentation instead of the UI inferring it from JSON key order —
@@ -590,6 +593,7 @@ def build_spawn_runtime_tools(
                     task_result.status,
                     _task_duration_ms(task_result),
                     (task_result.result or {}).get("answer_excerpt", ""),
+                    wait_completion_offset_ms(wait_started_at, task_result.updated_at),
                 )
             )
             if task_result.is_terminal:

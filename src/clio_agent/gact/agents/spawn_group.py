@@ -20,6 +20,7 @@ tool/Part construction; this module owns only the pure derivation logic.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 
@@ -68,12 +69,17 @@ def spawn_group_fields(run: Any) -> dict[str, Any]:
 
 
 def wait_structured_row(
-    name: str, status: str, duration_ms: float, answer_excerpt: str
+    name: str,
+    status: str,
+    duration_ms: float,
+    answer_excerpt: str,
+    waited_ms: float = 0.0,
 ) -> dict[str, Any]:
     """One row of ``wait_agent_tasks``'s declared structured ``results`` — the
     UI-ladder-friendly per-task summary: display ``name``
     (:func:`clio_agent.gact.agent_tasks.display_run_name`), typed ``status``,
-    wall-clock ``duration_ms``, and the ALREADY-BOUNDED ``answer_excerpt``
+    child wall-clock ``duration_ms``, time elapsed within this wait as
+    ``waited_ms``, and the ALREADY-BOUNDED ``answer_excerpt``
     (never the full verbatim output — that stays on the model-facing
     ``results`` row, the #880 fidelity contract). Used for both a resolved
     task and an unknown-id/error row (``name`` falls back to the raw id,
@@ -84,8 +90,22 @@ def wait_structured_row(
         "name": name,
         "status": status,
         "duration_ms": duration_ms,
+        "waited_ms": waited_ms,
         "answer_excerpt": answer_excerpt,
     }
+
+
+def wait_completion_offset_ms(wait_started_at: datetime, task_updated_at: str) -> float:
+    """Return when a child completed relative to this wait's wall-clock start."""
+
+    try:
+        completed_at = datetime.fromisoformat(task_updated_at)
+        if completed_at.tzinfo is None:
+            completed_at = completed_at.replace(tzinfo=wait_started_at.tzinfo)
+        offset_ms = (completed_at - wait_started_at).total_seconds() * 1000
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, offset_ms)
 
 
 # Typed status vocabulary the wait summary tallies, in the order it reports
@@ -105,7 +125,7 @@ _WAIT_SUMMARY_LABELS = {
 def wait_summary(_elapsed_s: float, rows: list[dict[str, Any]]) -> str:
     """The one-line human summary the wire's structured_content ladder shows
     FIRST (owner ruling: presentation via a DECLARED shape, never inferred
-    dict-key order) — e.g. ``"3 tasks — 1 completed, 2 still running"``.
+    dict-key order), e.g. ``"3 tasks: 1 completed, 2 still running"``.
     The shared activity row already shows the call duration, so repeating the
     elapsed time here makes the transcript harder to scan. This is a literal
     tally over each row's typed ``status``; any status
@@ -127,4 +147,4 @@ def wait_summary(_elapsed_s: float, rows: list[dict[str, Any]]) -> str:
             parts.append(f"{count} {key}")
     breakdown = ", ".join(parts) if parts else "no tasks"
     n = len(rows)
-    return f"{n} task{'' if n == 1 else 's'} — {breakdown}"
+    return f"{n} task{'' if n == 1 else 's'}: {breakdown}"
