@@ -154,16 +154,17 @@ def native_presentation(
                     "type": "link",
                     "target": "session",
                     "uri": child,
-                    "label": "Open recipient conversation",
+                    "label": task_id or "Recipient",
                 }
             )
         if isinstance(args.get("message"), str):
             blocks.append({"id": "message", "type": "text", "text": args["message"]})
-        for field in ("action", "transport", "error"):
-            if row.get(field):
-                blocks.append(
-                    {"id": field, "type": "text", "text": f"{field.capitalize()}: {row[field]}"}
-                )
+        summary = str(
+            row.get("error")
+            or {"queue": "Queued", "wake": "Follow-up started"}.get(row.get("action"), summary)
+        )
+        if row.get("error"):
+            blocks.append({"id": "error", "type": "text", "text": str(row["error"])})
     elif declaration == "goal":
         summary = "Active goal" if row.get("active") else "No active goal"
         if row.get("condition"):
@@ -316,6 +317,8 @@ def native_presentation(
                 blocks.append({"id": "processing", "type": "text", "text": message})
         matches = row.get("matches")
         if isinstance(matches, list):
+            if args.get("query"):
+                summary = f"{len(matches)} {'match' if len(matches) == 1 else 'matches'} for “{args['query']}”"
             blocks.append(
                 {
                     "id": "matches",
@@ -334,7 +337,7 @@ def native_presentation(
                 {
                     "id": "outline",
                     "type": "text",
-                    "text": "\n".join(
+                    "text": " · ".join(
                         f"{str(name).capitalize()}: {count}"
                         for name, count in collections.items()
                         if isinstance(count, int)
@@ -428,7 +431,12 @@ def native_presentation(
         subject = "skill-name"
         blocks.insert(0, {"id": subject, "type": "text", "text": str(args["skill_id"])})
         summary = ""
-    return {**({"subject": subject} if subject else {}), "summary": summary, "blocks": blocks}
+    return {
+        **({"action": "Message"} if declaration == "message" else {}),
+        **({"subject": subject} if subject else {}),
+        "summary": summary,
+        "blocks": blocks,
+    }
 
 
 def validate_declaration(value: str | Presenter) -> None:

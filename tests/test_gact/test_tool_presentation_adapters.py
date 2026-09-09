@@ -232,7 +232,7 @@ def test_file_format_is_declared_by_read_presenter(path: str, content: str, kind
 def test_resource_outline_exposes_the_returned_collections() -> None:
     result = {"resource_id": "paper", "collections": {"pages": 7, "tables": 3, "texts": 28}}
     view = native_presentation("resource", {}, result, None)
-    assert view["blocks"][0]["text"] == "Pages: 7\nTables: 3\nTexts: 28"
+    assert view["blocks"][0]["text"] == "Pages: 7 · Tables: 3 · Texts: 28"
 
 
 def test_resource_markdown_derivative_declares_rendered_document_content() -> None:
@@ -414,11 +414,12 @@ def test_web_conversion_exposes_saved_outputs_and_progress() -> None:
     }
     before = json.dumps(result)
     view = present_mcp_result("web_fetch", {}, result)
-    assert view["summary"] == ""
+    assert view["summary"] == "HTTP 200"
     assert view["subject"] == "subject"
     assert view["blocks"][0]["uri"] == "https://example.org/paper.pdf"
     blocks = {block["id"]: block for block in view["blocks"]}
-    assert "conversion" in blocks["identity"]["text"]
+    assert blocks["identity"]["text"] == "application/pdf"
+    assert "Conversion:" not in json.dumps(blocks)
     assert blocks["events"]["text"] == "docling · Converting page 3"
     assert blocks["local_path"]["uri"] == "D:/workspace/paper.md"
     assert blocks["metadata_path"]["uri"] == "D:/workspace/paper.json"
@@ -619,15 +620,18 @@ def test_each_native_family_exposes_actual_result_content(
     assert json.dumps(raw) == before
 
 
-def test_message_exposes_sent_content_and_transport_without_json() -> None:
+def test_message_exposes_sent_content_and_keeps_transport_in_raw_details() -> None:
+    raw = {"message": "queued", "transport": "inbox", "action": "queue"}
     view = native_presentation(
         "message",
         {"message": "Review this evidence", "task_id": "unknown"},
         {},
-        {"message": "queued", "transport": "inbox", "action": "steer"},
+        raw,
     )
     assert view["blocks"][0]["text"] == "Review this evidence"
-    assert view["blocks"][2]["text"] == "Transport: inbox"
+    assert view["summary"] == "Queued"
+    assert len(view["blocks"]) == 1
+    assert raw == {"message": "queued", "transport": "inbox", "action": "queue"}
 
 
 def test_one_shot_schedule_has_trigger_and_no_empty_separator() -> None:

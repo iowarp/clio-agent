@@ -316,21 +316,15 @@ def _web(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
             blocks.append({"id": field, "type": "markdown", "text": row[field]})
             break
     identity = []
-    for field, label in (
-        ("conversion_id", "Conversion"),
-        ("status", "HTTP status"),
-        ("provider", "Provider"),
-        ("extractor", "Extractor"),
-        ("content_type", "Content type"),
-        ("size_bytes", "Bytes"),
-    ):
-        if isinstance(row.get(field), str | int):
-            identity.append(f"{label}: {row[field]}")
+    if row.get("content_type"):
+        identity.append(str(row["content_type"]))
+    if isinstance(row.get("size_bytes"), int):
+        identity.append(f"{row['size_bytes']:,} bytes")
     structure = document.get("structure_summary")
     if isinstance(structure, Mapping) and isinstance(structure.get("pages"), int):
         identity.append(f"Pages: {structure['pages']}")
     if identity:
-        blocks.append({"id": "identity", "type": "text", "text": "\n".join(identity)})
+        blocks.append({"id": "identity", "type": "text", "text": " · ".join(identity)})
     if isinstance(row.get("results"), list):
         blocks.append(
             {"id": "result-count", "type": "text", "text": f"{len(row['results'])} search results"}
@@ -411,7 +405,9 @@ def _web(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
                 "text": query,
             },
         )
-    return {"subject": "subject" if url or query else "", "summary": "", "blocks": blocks}
+    status = row.get("status")
+    summary = f"HTTP {status}" if isinstance(status, int) else ""
+    return {"subject": "subject" if url or query else "", "summary": summary, "blocks": blocks}
 
 
 register_presentation_adapter(

@@ -3,6 +3,17 @@
 from clio_agent.gact.agents.native_presenters import native_presentation
 
 
+def test_resource_search_identifies_the_query_without_repeating_transport_metadata() -> None:
+    view = native_presentation(
+        "resource",
+        {"query": "evidence"},
+        {"matches": [{"line": 3, "text": "Actual evidence"}]},
+        None,
+    )
+    assert view["summary"] == "1 match for “evidence”"
+    assert view["blocks"][0]["text"] == "3: Actual evidence"
+
+
 def test_idle_goal_and_empty_schedule_list_have_no_empty_panels() -> None:
     assert (
         native_presentation("goal", {}, {"active": False, "iters_elapsed": 0}, None)["blocks"] == []
