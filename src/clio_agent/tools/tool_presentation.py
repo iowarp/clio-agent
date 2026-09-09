@@ -41,6 +41,38 @@ class FileWriteSnapshot:
 
 MCP_PRESENTATION_ADAPTERS: dict[str, PresentationAdapter] = {}
 
+_CODE_LANGUAGE_BY_SUFFIX = {
+    ".c": "c",
+    ".cc": "cpp",
+    ".cpp": "cpp",
+    ".css": "css",
+    ".go": "go",
+    ".h": "c",
+    ".hpp": "cpp",
+    ".html": "html",
+    ".java": "java",
+    ".js": "javascript",
+    ".json": "json",
+    ".jsx": "jsx",
+    ".mjs": "javascript",
+    ".php": "php",
+    ".ps1": "powershell",
+    ".py": "python",
+    ".rb": "ruby",
+    ".rs": "rust",
+    ".sh": "shellscript",
+    ".sql": "sql",
+    ".toml": "toml",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    ".vue": "vue",
+    ".xml": "xml",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+}
+
+_CODE_LANGUAGE_BY_NAME = {"dockerfile": "dockerfile", "makefile": "make"}
+
 
 def register_presentation_adapter(name: str, adapter: PresentationAdapter) -> None:
     """Register result semantics without modifying the upstream MCP server."""
@@ -235,6 +267,9 @@ def _read(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
                     content = "".join(lines[end + 1 :]).lstrip("\r\n")
     elif path.suffix.lower() in {".txt", ".log"}:
         kind = "text"
+    language = _CODE_LANGUAGE_BY_NAME.get(path.name.lower()) or _CODE_LANGUAGE_BY_SUFFIX.get(
+        path.suffix.lower(), "text"
+    )
     return {
         "subject": "file-link",
         "summary": f"{row.get('size_bytes', 0)} bytes",
@@ -251,6 +286,7 @@ def _read(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
                 "id": "file",
                 "type": kind,
                 "text": content,
+                "language": language if kind == "code" else "",
             },
         ],
     }

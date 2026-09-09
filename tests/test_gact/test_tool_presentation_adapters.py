@@ -236,21 +236,26 @@ def test_markdown_file_presents_readable_frontmatter_and_body() -> None:
 
 
 @pytest.mark.parametrize(
-    ("path", "content", "kind"),
+    ("path", "content", "kind", "language"),
     [
-        ("readme.MD", "# Heading", "markdown"),
-        ("note.txt", "plain text", "text"),
-        ("main.py", "print('hello')", "code"),
-        ("broken.md", "---\nname: [broken\n---\nBody", "markdown"),
+        ("readme.MD", "# Heading", "markdown", ""),
+        ("note.txt", "plain text", "text", ""),
+        ("main.py", "print('hello')", "code", "python"),
+        ("worker.ps1", "Write-Output 'hello'", "code", "powershell"),
+        ("Dockerfile", "FROM scratch", "code", "dockerfile"),
+        ("broken.md", "---\nname: [broken\n---\nBody", "markdown", ""),
     ],
 )
-def test_file_format_is_declared_by_read_presenter(path: str, content: str, kind: str) -> None:
+def test_file_format_is_declared_by_read_presenter(
+    path: str, content: str, kind: str, language: str
+) -> None:
     view = present_mcp_result(
         "fs_read_file", {}, {"structuredContent": {"path": path, "content": content}}
     )
     block = next(block for block in view["blocks"] if block["id"] == "file")
     assert block["type"] == kind
     assert block["text"] == content
+    assert block["language"] == language
 
 
 def test_resource_outline_exposes_the_returned_collections() -> None:
