@@ -690,12 +690,8 @@ class ClaudeCodeLLM(CustomLLM):
         timeout: Any = None,
         client: Any = None,
     ) -> ModelResponse:
-        # The pooled SDK session is a BLOCKING contract (``run_coroutine_threadsafe(...)
-        # .result()`` serialized per session on its own loop thread). Awaiting it on the
-        # caller's loop must not hold that loop: the finalize goal judge awaits this path
-        # on the server loop (#1333), and a blocking call here froze every session,
-        # stream, and heartbeat for the judge's duration. ``to_thread`` copies the
-        # caller's contextvars, so the bound ``dspy.context`` reaches the worker.
+        # The pooled SDK bridge BLOCKS its caller; awaited on the server loop (the goal
+        # judge, #1333) it froze the loop, so it runs on a worker (contextvars copied).
         return await asyncio.to_thread(
             self.completion,
             model=model,
