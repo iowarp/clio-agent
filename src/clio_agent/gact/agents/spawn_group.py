@@ -102,11 +102,13 @@ _WAIT_SUMMARY_LABELS = {
 }
 
 
-def wait_summary(elapsed_s: float, rows: list[dict[str, Any]]) -> str:
+def wait_summary(_elapsed_s: float, rows: list[dict[str, Any]]) -> str:
     """The one-line human summary the wire's structured_content ladder shows
     FIRST (owner ruling: presentation via a DECLARED shape, never inferred
-    dict-key order) — e.g. ``"waited 120.2s for 3 tasks — 1 completed, 2 still
-    running"``. A literal tally over each row's typed ``status``; any status
+    dict-key order) — e.g. ``"3 tasks — 1 completed, 2 still running"``.
+    The shared activity row already shows the call duration, so repeating the
+    elapsed time here makes the transcript harder to scan. This is a literal
+    tally over each row's typed ``status``; any status
     outside the known vocabulary (e.g. ``unknown_task``, an invoker error
     reason) is still counted, appended after the known ones.
     """
@@ -125,4 +127,4 @@ def wait_summary(elapsed_s: float, rows: list[dict[str, Any]]) -> str:
             parts.append(f"{count} {key}")
     breakdown = ", ".join(parts) if parts else "no tasks"
     n = len(rows)
-    return f"waited {elapsed_s:.1f}s for {n} task{'' if n == 1 else 's'} — {breakdown}"
+    return f"{n} task{'' if n == 1 else 's'} — {breakdown}"

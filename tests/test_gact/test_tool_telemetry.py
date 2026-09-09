@@ -317,7 +317,7 @@ class _LiveObservedDeclaredStructuredContentAgent:
         notify_global_tool_observer("wait_agent_tasks", args, "started", None)
         declare_structured_content(
             {
-                "summary": "waited 0.0s for 1 task — 1 completed",
+                "summary": "1 task — 1 completed",
                 "results": [
                     {
                         "name": "geospatial #1",
@@ -795,7 +795,7 @@ def test_declared_structured_content_wins_over_raw_result_and_is_one_shot(
     assert len(tool_results) == 2
     wait_result, other_result = tool_results
     assert wait_result["structured_content"] == {
-        "summary": "waited 0.0s for 1 task — 1 completed",
+        "summary": "1 task — 1 completed",
         "results": [
             {
                 "name": "geospatial #1",
