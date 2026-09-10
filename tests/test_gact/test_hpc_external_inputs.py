@@ -370,7 +370,10 @@ def test_real_observer_persists_output_free_external_read_for_api_and_tool_row(
             for event in app.state.bus._history.get(session["id"], [])
             if event.type == "tool.call.completed"
         ]
-        assert completed_events[-1].payload["presentation"] == result_part.presentation
+        # Compare against the RELOADED part (a serialize/validate round-trip), not
+        # the live one: the live part is the same value the payload carries, so it
+        # could never catch a persistence-shape divergence.
+        assert completed_events[-1].payload["presentation"] == reloaded_part.presentation
         response = client.get(f"/v1/transforms/{call_id}/lineage")
         assert response.status_code == 200
         graph = response.json()
@@ -410,7 +413,7 @@ def test_real_observer_persists_output_free_external_read_for_api_and_tool_row(
             for event in app.state.bus._history.get(session["id"], [])
             if event.type == "tool.call.completed"
         ]
-        assert completed_events[-1].payload["presentation"] == warning_part.presentation
+        assert completed_events[-1].payload["presentation"] == reloaded_warning_part.presentation
 
         # Both completions observed the transform record before publishing.
         assert transform_present_at_publish == [True, True]

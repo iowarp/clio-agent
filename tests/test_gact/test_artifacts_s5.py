@@ -1243,6 +1243,9 @@ def test_observe_tool_transform_drives_real_observer_seam(tmp_path, monkeypatch)
         )
         out_path = tmp_path / "chart.png"
         observe = _make_tool_observer(app)
+        # Everything the SEED mint already published is out of scope for the wire
+        # order pinned below; only this call's events count.
+        seeded_events = len(app.state.bus._history.get(sid, []))
         # Drive the REAL observer seam POSITIONALLY, exactly as production does.
         observe("plot", {"data_path": str(in_path)}, "started", None)
         out_path.write_bytes(b"\x89PNG chart")
@@ -1259,6 +1262,23 @@ def test_observe_tool_transform_drives_real_observer_seam(tmp_path, monkeypatch)
         # observe_tool_transform(...) call -> the record never lands -> red.
         assert rec is not None
         assert any(e.path == str(out_path) or e.name == "chart.png" for e in rec.generated)
+        # #1336 moved this seam AHEAD of the ``tool.call.completed`` publish so the
+        # live payload and the stored part carry the same provenance-augmented
+        # presentation. ``artifact.transform.recorded`` is trace-only, but
+        # ``artifact.created`` IS an SSE UI event, so the SERVED order changed with
+        # it: the minted artifact is announced before the row that produced it
+        # completes (that row already exists from ``tool.call.started``). Pinned so
+        # the ordering stays a decision rather than an accident.
+        wire: list[str] = []
+        for event in app.state.bus._history.get(sid, [])[seeded_events:]:
+            if event.type == "tool.call.completed":
+                wire.append(event.type)
+            elif event.type == "semantic.event":
+                event_type = str(event.payload.get("event_type") or "")
+                if event_type.startswith("artifact."):
+                    wire.append(event_type)
+        assert "artifact.created" in wire
+        assert wire.index("artifact.created") < wire.index("tool.call.completed")
 
 
 def test_transform_record_failure_is_typed_not_swallowed(tmp_path, monkeypatch):

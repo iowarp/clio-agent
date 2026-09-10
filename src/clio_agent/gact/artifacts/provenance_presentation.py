@@ -12,13 +12,25 @@ result, this module only shapes it.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import logging
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from clio_agent.gact.tool_result_presentation import ToolPresentation
 
+logger = logging.getLogger(__name__)
+
 _DEGRADED_STATUS = "degraded"
 _FAILED_STATUS = "failed"
+#: Typed reason surfaced on the row when a provenance record cannot be shaped
+#: into blocks — the degradation is never silent (cleanup-program ground rule).
+_SHAPE_FAILED_DIAGNOSTIC = "provenance_presentation_failed"
+
+
+def _field(value: Any) -> str:
+    """Render one provenance field as block text (format-only, never semantic)."""
+
+    return "" if value is None else str(value)
 
 
 def with_provenance_blocks(
@@ -29,8 +41,14 @@ def with_provenance_blocks(
     Adds one ``link`` block per ``provenance["provenance_inputs"]`` entry
     (block id ``input-source-<i>``), and — when ``provenance_warnings`` is
     non-empty — one ``text`` warning block (id ``provenance-incomplete``)
-    naming the unrecognized argument, degrading ``status`` unless it is
+    naming every unrecognized argument, degrading ``status`` unless it is
     already ``"failed"`` and setting ``diagnostic`` if it was unset.
+
+    This runs on the tool-completion hot path, BEFORE the ``tool.call.completed``
+    payload is built (``gact/tool_observer.py``), so a provenance record it
+    cannot shape must degrade the ROW, never break the completion: the tool's
+    own presentation is returned carrying the typed
+    ``provenance_presentation_failed`` diagnostic.
 
     Args:
         presentation: A tool's own presenter output (a ``ToolPresentation``
@@ -50,23 +68,40 @@ def with_provenance_blocks(
     warnings = provenance.get("provenance_warnings") or []
     if not inputs and not warnings:
         return presentation
+    try:
+        return _augmented(presentation, inputs, warnings)
+    except Exception:  # noqa: BLE001 - a provenance record must never break the tool row
+        logger.exception(
+            "presentation blocks skipped reason=%s provenance=%r",
+            _SHAPE_FAILED_DIAGNOSTIC,
+            provenance,
+        )
+        return {
+            **presentation,
+            "diagnostic": presentation.get("diagnostic") or _SHAPE_FAILED_DIAGNOSTIC,
+        }
 
-    blocks = [*presentation.get("blocks", [])]
+
+def _augmented(
+    presentation: Mapping[str, Any], inputs: Sequence[Any], warnings: Sequence[Any]
+) -> dict[str, Any]:
+    """Build the schema-validated presentation carrying the provenance blocks."""
+
+    blocks = [*(presentation.get("blocks") or [])]
     for index, source in enumerate(inputs):
         blocks.append(
             {
                 "id": f"input-source-{index}",
                 "type": "link",
                 "target": "file",
-                "label": source.get("name", ""),
-                "uri": source.get("locator", ""),
+                "label": _field(source.get("name")),
+                "uri": _field(source.get("locator")),
                 "detail": "external input (not hashed)",
             }
         )
     status = presentation.get("status")
     diagnostic = presentation.get("diagnostic")
     if warnings:
-        reason = warnings[0].get("arg") or warnings[0].get("reason", "unrecognized")
         blocks.append(
             {
                 "id": "provenance-incomplete",
@@ -74,7 +109,7 @@ def with_provenance_blocks(
                 "severity": "warning",
                 "text": (
                     "Provenance incomplete: an external file argument was not "
-                    f"recognized ({reason})"
+                    f"recognized ({_unrecognized(warnings)})"
                 ),
             }
         )
@@ -85,3 +120,14 @@ def with_provenance_blocks(
 
     augmented = {**presentation, "blocks": blocks, "status": status, "diagnostic": diagnostic}
     return ToolPresentation.model_validate(augmented).model_dump(exclude_none=True)
+
+
+def _unrecognized(warnings: Sequence[Any]) -> str:
+    """Name EVERY unrecognized argument — one warning row must not hide the rest."""
+
+    named: list[str] = []
+    for warning in warnings:
+        name = _field(warning.get("arg")) or _field(warning.get("reason")) or "unrecognized"
+        if name not in named:
+            named.append(name)
+    return ", ".join(named)

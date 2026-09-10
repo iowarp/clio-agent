@@ -13,6 +13,16 @@ that #389 replaced wholesale — is superseded and its branch is gone; the
 Chromium/pnpm verification steps it describes no longer apply to the current
 client.
 
+Because the block projection runs on the tool-completion hot path — ahead of
+the `tool.call.completed` publish, so the live payload and the stored part
+carry the same presentation — it can never break the row: a provenance record
+`with_provenance_blocks` cannot shape returns the tool's own presentation
+carrying the typed `provenance_presentation_failed` diagnostic (logged with the
+same `reason=` shape as the other degraded paths), never a raised
+`ValidationError`. Moving the seam ahead of the publish also moved
+`artifact.created` — an SSE UI event — ahead of the completion of the row that
+minted it; that order is pinned in `test_artifacts_s5.py`.
+
 Successful calls to the qualified built-in filesystem reader and CLIO Kit
 Geo/Pandas/Plot consumers retain external file arguments as durable `used`
 edges. Each edge records the resolved locator, readable basename, originating

@@ -136,3 +136,51 @@ def test_block_ids_never_collide_with_presenter_ids() -> None:
     assert "input-source-0" in new_ids
     assert "provenance-incomplete" in new_ids
     ToolPresentation.model_validate(result)
+
+
+def test_every_unrecognized_argument_is_named() -> None:
+    """Two unknown path args must not render as one — the row would under-report."""
+    presentation = _base_presentation()
+    provenance = {
+        "provenance_warnings": [
+            {"reason": "external_input_contract_unknown", "arg": "path"},
+            {"reason": "external_input_contract_unknown", "arg": "sidecar_path"},
+            {"reason": "external_input_contract_unknown", "arg": "path"},
+        ]
+    }
+    result = with_provenance_blocks(presentation, provenance)
+    assert result is not None
+    warning_block = next(b for b in result["blocks"] if b["id"] == "provenance-incomplete")
+    assert warning_block["text"] == (
+        "Provenance incomplete: an external file argument was not recognized (path, sidecar_path)"
+    )
+
+
+def test_absent_locator_never_breaks_the_row() -> None:
+    """A missing name/locator is rendered empty (format-only), never a ValidationError.
+
+    ``with_provenance_blocks`` runs BEFORE the ``tool.call.completed`` publish, so a
+    raise here would drop the tool row entirely.
+    """
+    result = with_provenance_blocks(
+        _base_presentation(), {"provenance_inputs": [{"name": None, "locator": None}]}
+    )
+    assert result is not None
+    assert result["blocks"] == [_link_block("input-source-0", "", "")]
+    ToolPresentation.model_validate(result)
+
+
+def test_unshapeable_provenance_degrades_with_a_typed_diagnostic() -> None:
+    """A record the schema rejects keeps the tool's own row and says so (no silent drop)."""
+    presentation = {**_base_presentation(), "blocks": [{"id": "kept", "type": "text", "text": "x"}]}
+    result = with_provenance_blocks(presentation, {"provenance_inputs": ["not-a-mapping"]})
+    assert result is not None
+    assert result["blocks"] == [{"id": "kept", "type": "text", "text": "x"}]
+    assert result["diagnostic"] == "provenance_presentation_failed"
+
+
+def test_unshapeable_provenance_never_clobbers_an_existing_diagnostic() -> None:
+    presentation = {**_base_presentation(), "diagnostic": "presentation_failed"}
+    result = with_provenance_blocks(presentation, {"provenance_inputs": ["not-a-mapping"]})
+    assert result is not None
+    assert result["diagnostic"] == "presentation_failed"
