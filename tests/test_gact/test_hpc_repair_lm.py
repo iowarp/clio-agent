@@ -20,9 +20,22 @@ from clio_agent.gact.hooks.wire import HookOutcome
 from clio_agent.gact.types import AgentDef
 from clio_agent.lm import hooked_lm as hooked_lm_mod
 from clio_agent.lm.io_logging import LMOutputTruncatedError
-from tests.test_gact.test_reactv2_repair import _build, _non_submit_response, _WsSig
+from tests.test_gact.test_reactv2_repair import _build, _WsSig
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
+
+def _non_submit_response() -> dict[str, Any]:
+    """A DummyLM turn that calls a non-submit tool (forces a repair re-ask).
+
+    Reactv2_repair.py dropped its own copy of this helper (#901 S4 cleanup,
+    88e3d07a) once it no longer needed it; this file still does, so it is kept
+    local here rather than reintroduced as shared dead weight there.
+    """
+    return {
+        "next_thought": "t",
+        "tool_calls": {"tool_calls": [{"name": "search", "args": {"q": "x"}}]},
+    }
 
 
 def test_forced_submit_repair_keeps_session_model_and_endpoint(
