@@ -125,9 +125,17 @@ class _HealthProbe(threading.Thread):
             self.stop.wait(0.25)
 
     def max_in_window(self, start: float, end: float) -> tuple[float, int]:
-        """Max latency of probes whose wallclock start lies in ``[start, end]``."""
+        """Max latency of probes whose REQUEST OVERLAPS ``[start, end]``.
 
-        inside = [lat for wall, lat in self.rows if start <= wall <= end]
+        Overlap, not containment of the request's start stamp: the probe is serial
+        (one blocking request, then a 250 ms wait), so a loop stall of duration D
+        produces at most ONE sample, and that sample was issued just BEFORE the stall
+        began — outside the window under a containment test. Keying on the start stamp
+        therefore drops exactly the sample that measures the stall this leg hunts, and
+        the window then reads as empty on the worst possible run.
+        """
+
+        inside = [lat for wall, lat in self.rows if wall <= end and (wall + lat) >= start]
         return (max(inside) if inside else 0.0), len(inside)
 
     def slow(self, threshold_s: float = 0.5) -> list[dict[str, Any]]:
@@ -351,7 +359,11 @@ def run_leg(
             and loop_probe.max_latency_s < max_health_latency_s,
             # #1334: the accept path and the turn prologue no longer wait on the store.
             "post_message_fast": verdict["post_message_latency_s"] < max_post_latency_s,
-            "loop_live_turn_start": start_window is not None and start_max < max_health_latency_s,
+            # ``start_samples > 0`` (the sibling judge check's guard): without it an
+            # empty window scores start_max = 0.0 and the check passes with NO evidence.
+            "loop_live_turn_start": start_window is not None
+            and start_samples > 0
+            and start_max < max_health_latency_s,
         }
         verdict["checks"] = checks
         verdict["pass"] = all(checks.values())

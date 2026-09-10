@@ -837,3 +837,276 @@ def test_paused_transcript_persists_only_the_remainder(
     # The remainder: the never-sealed tool_result + the envelope = 2 atoms written here.
     assert len(calls) == 2
     close_turn_minter(app, session.id)
+
+
+# --------------------------------------------------------------------------- #
+# 18. Review (#1334/#1337): an ARC with NO canonical log (a degraded / metrics-only
+#     memory stub, the documented capability-gate case) must take the inline path,
+#     never crash finalize on ``arc._segments``.
+# --------------------------------------------------------------------------- #
+
+
+def test_minter_refuses_an_arc_without_a_canonical_log(tmp_path: Path) -> None:
+    """``open_turn_minter`` gates on the segment store, like ``transcript_projection._arc``.
+
+    An ARC that cannot hold the canonical log (no ``_segments``) is a supported
+    runtime state -- the documented capability gate (``transcript_projection._arc``:
+    "a metrics-only / degraded ARC stub without a segment store has NO canonical log
+    to project"). Taking it at face value made every mint an ``AttributeError`` on
+    ``self.arc._segments``, which failed finalize AND the failed-finalize envelope
+    that was supposed to recover it, so the turn never settled.
+    """
+
+    degraded = SimpleNamespace()  # an ARC-shaped object with no segment store
+    app = _fake_app(None)
+    app.state.arc = degraded
+
+    minter = open_turn_minter(app, "sess_degraded", "turn_degraded")
+    assert minter.arc is None, "a segment-store-less ARC must not be adopted by the minter"
+
+    message = Message(
+        id="msg_asst_degraded",
+        session_id="sess_degraded",
+        turn_id="turn_degraded",
+        role="assistant",
+        created_at="t",
+        updated_at="t",
+        parts=[Part(id="p1", type="text", text="hello")],
+        stop_reason="end_turn",
+    )
+    persist_finalized_message(app, "sess_degraded", message)  # must not raise
+    assert [m.id for m in app.state.messages["sess_degraded"]] == ["msg_asst_degraded"]
+    close_turn_minter(app, "sess_degraded")
+
+
+# --------------------------------------------------------------------------- #
+# 19. Review (#1337): a mint failure at finalize must not ALSO lose the message from
+#     the retained ledger -- that copy is the re-derivable backfill source
+#     (``transcript_projection.mint_atoms_from_ledger``), and appending before minting
+#     is the order ``_append_session_message`` has always used.
+# --------------------------------------------------------------------------- #
+
+
+def test_finalize_mint_failure_still_lands_the_retained_ledger_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    arc = _arc(tmp_path)
+    app = _fake_app(arc)
+
+    def _always_fails(store: Any, sid: str, content: dict[str, Any]) -> Any:
+        raise RuntimeError("simulated clio-core RPC failure")
+
+    open_turn_minter(app, "sess_lost", "turn_lost")
+    monkeypatch.setattr(part_atom_minter, "append_part_atom", _always_fails)
+
+    message = Message(
+        id="msg_asst_lost",
+        session_id="sess_lost",
+        turn_id="turn_lost",
+        role="assistant",
+        created_at="t",
+        updated_at="t",
+        parts=[Part(id="p1", type="text", text="hello")],
+        stop_reason="end_turn",
+    )
+    with pytest.raises(RuntimeError):
+        persist_finalized_message(app, "sess_lost", message)
+    # The must-succeed contract still raises, but the retained copy is NOT lost:
+    # it is what a later reload backfills the atom lane from.
+    assert [m.id for m in app.state.messages["sess_lost"]] == ["msg_asst_lost"]
+    close_turn_minter(app, "sess_lost")
+
+
+# --------------------------------------------------------------------------- #
+# 20. Review (#1337): no minter thread leaks across many sequential turns.
+# --------------------------------------------------------------------------- #
+
+
+def test_minter_threads_do_not_leak_across_many_turns(tmp_path: Path) -> None:
+    arc = _arc(tmp_path)
+    app = _fake_app(arc)
+
+    def _live() -> int:
+        return sum(1 for t in threading.enumerate() if t.name.startswith("clio-atom-mint-"))
+
+    before = _live()
+    for n in range(50):
+        sid = f"sess_leak_{n % 3}"  # a few sessions, reused: also covers the replace path
+        open_turn_minter(app, sid, f"turn{n}")
+        close_turn_minter(app, sid)
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and _live() > before:
+        time.sleep(0.02)
+    assert _live() == before
+
+
+# --------------------------------------------------------------------------- #
+# 21. Review (#1337): an envelope-less atom group is never closed, so a LATER message
+#     that REUSES its id (duplicate msg_asst_* ids exist in real ledgers) must not be
+#     absorbed into it -- which would merge two messages AND hide the typed incomplete.
+# --------------------------------------------------------------------------- #
+
+
+def _sealed(message_id: str, turn_id: str, part_id: str, index: int, text: str) -> dict[str, Any]:
+    stub = message_stub(message_id=message_id, turn_id=turn_id, session_id="s", created_at="c")
+    dump = {"id": part_id, "type": "text", "text": text, "sequence": index + 1}
+    return build_sealed_part_atom(stub, dump, index, sealed_at=f"t{index}", seal_source="live")
+
+
+def _asst(message_id: str, turn_id: str, parts: list[Part], **kwargs: Any) -> Message:
+    return Message(
+        id=message_id,
+        session_id="s",
+        turn_id=turn_id,
+        role="assistant",
+        created_at="c",
+        updated_at="u",
+        parts=parts,
+        **kwargs,
+    )
+
+
+def test_a_later_turn_reusing_a_crashed_message_id_is_not_absorbed_by_it() -> None:
+    survivor = Part(id="q0", type="text", text="a whole new message", sequence=1)
+    lane = [
+        _sealed("msg_asst_dup", "turn1", "p0", 0, "crashed turn"),  # envelope never landed
+        _sealed("msg_asst_dup", "turn2", "q0", 0, "a whole new message"),
+        build_envelope_atom(_asst("msg_asst_dup", "turn2", [survivor], stop_reason="end_turn")),
+    ]
+    groups = group_atoms_in_order(lane)
+    assert len(groups) == 2, "the crashed turn and the later one must stay distinct messages"
+    crashed, later = (Message(**reproduce_message_wire(g)) for g in groups)
+    assert crashed.stop_reason == "incomplete"
+    assert crashed.metadata["transcript_incomplete"]["reason"] == TRANSCRIPT_INCOMPLETE_REASON
+    assert [p.text for p in crashed.parts] == ["crashed turn"]
+    assert later.stop_reason == "end_turn"
+    assert [p.text for p in later.parts] == ["a whole new message"]
+
+
+def test_two_envelope_less_turns_sharing_one_message_id_stay_distinct() -> None:
+    lane = [
+        _sealed("msg_asst_dup", "turn1", "p0", 0, "crash one"),
+        _sealed("msg_asst_dup", "turn2", "p0", 0, "crash two"),
+    ]
+    groups = group_atoms_in_order(lane)
+    assert [[a["part"]["text"] for a in g] for g in groups] == [["crash one"], ["crash two"]]
+
+
+def test_a_remainder_part_minted_at_a_lower_index_never_splits_its_message() -> None:
+    """The boundary must key on the TURN, not the ordinal.
+
+    ``mint_remainder`` legitimately writes a never-sealed part (an ``expert_handoff``, a
+    ``tool_result``) AFTER a live-sealed part that sits at a HIGHER index, so an ordinal
+    boundary would tear one message in two.
+    """
+
+    handoff = Part(id="p_handoff", type="text", text="handoff", sequence=1)
+    streamed = Part(id="p_text", type="text", text="streamed text", sequence=2)
+    lane = [
+        _sealed("msg_asst_one", "turn1", "p_text", 1, "streamed text"),  # sealed live
+        _sealed("msg_asst_one", "turn1", "p_handoff", 0, "handoff"),  # remainder, lower index
+        build_envelope_atom(
+            _asst("msg_asst_one", "turn1", [handoff, streamed], stop_reason="end_turn")
+        ),
+    ]
+    groups = group_atoms_in_order(lane)
+    assert len(groups) == 1, "one turn's atoms are ONE message regardless of mint order"
+    message = Message(**reproduce_message_wire(groups[0]))
+    assert [p.text for p in message.parts] == ["handoff", "streamed text"]
+
+
+# --------------------------------------------------------------------------- #
+# 22. Review (#1337): a crash while a streamed text part is still OPEN must persist
+#     the buffered text, not an empty part -- the same live==reload class the slice
+#     fixed for the batch-fallback answer.
+# --------------------------------------------------------------------------- #
+
+
+def test_failed_finalize_settles_an_open_streamed_text_part(tmp_path: Path) -> None:
+    """``failed_finalize_identity`` must CLOSE the open part, like ``finalize()`` does.
+
+    ``snapshot()`` is the raw ledger: an open streamed part still carries ``text=""``
+    (the deltas live in the transcript's buffer until the close assigns them). A finalize
+    crash landing before ``transcript.finalize()`` therefore persisted a VISIBLY EMPTY
+    part where the SSE stream had delivered real text -- reload != live, with a blank
+    bubble instead of the answer the user watched arrive.
+    """
+
+    app = _fake_app(_arc(tmp_path))
+    transcript = _transcript("sess_open", "turn_open", app)
+    transcript.ensure_message()
+    transcript.append_text_delta("main", "answer", "Hello ")
+    transcript.append_text_delta("main", "answer", "world")  # never closed: the crash lands here
+
+    app.state.turn_transcripts = SimpleNamespace(get=lambda sid: transcript)
+    message_id, parts = part_atom_minter.failed_finalize_identity(app, "sess_open")
+
+    assert message_id == transcript.message_id
+    assert [p.text for p in parts] == ["Hello world"], (
+        f"the streamed text must survive the crash, not persist empty: {[p.text for p in parts]}"
+    )
+    assert [p.sequence for p in parts] == [1]
+
+
+def test_failed_finalize_drops_a_whitespace_only_open_part(tmp_path: Path) -> None:
+    """Closing the open part must keep the ledger's own drop rule: nothing to persist."""
+
+    app = _fake_app(_arc(tmp_path))
+    transcript = _transcript("sess_ws", "turn_ws", app)
+    transcript.ensure_message()
+    transcript.append_text_delta("main", "answer", "   \n ")
+
+    app.state.turn_transcripts = SimpleNamespace(get=lambda sid: transcript)
+    _message_id, parts = part_atom_minter.failed_finalize_identity(app, "sess_ws")
+    assert parts == []
+
+
+# --------------------------------------------------------------------------- #
+# 23. Review (#1337): a mutation of an ALREADY-SEALED part (a presentation delta that
+#     lands after the tool_result, finalize rewriting tool_result.content, an
+#     expert_handoff upsert) must be caught by mint_remainder's dump comparison --
+#     a sealed atom that diverges from the final part is a reload != live defect.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_mutation_after_the_seal_is_reminted_by_the_remainder(tmp_path: Path) -> None:
+    arc = _arc(tmp_path)
+    app = _fake_app(arc)
+    minter = open_turn_minter(app, "sess_reseal", "turn_reseal")
+    transcript = _transcript("sess_reseal", "turn_reseal", app)
+
+    call_part = transcript.append_part(_tool_call("call_z", "tc_z"))
+    assert call_part is not None
+    call_part.presentation = {"summary": "running", "blocks": [{"id": "b1", "text": "partial"}]}
+    transcript.append_part(_tool_result("call_z", "tr_z"))  # seals the tool_call HERE
+    assert minter.drain(timeout=5.0)
+    assert [
+        a["part"]["presentation"]["blocks"][0]["text"] for a in _atoms_on_lane(arc, "sess_reseal")
+    ] == ["partial"]
+
+    # publish_presentation_delta mutates the block dict IN PLACE, after the seal.
+    call_part.presentation["blocks"][0]["text"] = "COMPLETE OUTPUT"
+
+    message = Message(
+        id=transcript.message_id,
+        session_id="sess_reseal",
+        turn_id="turn_reseal",
+        role="assistant",
+        created_at="t",
+        updated_at="t",
+        parts=transcript.finalize(),
+        stop_reason="end_turn",
+    )
+    app.state.messages["sess_reseal"] = []
+    persist_finalized_message(app, "sess_reseal", message)
+
+    reloaded = assemble_session_messages(arc, "sess_reseal")
+    assert len(reloaded) == 1, "the reseal must stay in ONE message"
+    served = next(p for p in reloaded[0].parts if p.id == "tc_z")
+    assert served.presentation["blocks"][0]["text"] == "COMPLETE OUTPUT", (
+        "the stale sealed atom won: reload != live"
+    )
+    report = N.diff_persistence(
+        [message.model_dump(exclude_none=True)], [reloaded[0].model_dump(exclude_none=True)]
+    )
+    assert report.empty, report.pretty()

@@ -632,7 +632,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # purges the deleted session's agent-task rows (the registry is a projection
     # over this store, so they are stale the moment it loses the session); the
     # purge itself lives in the owner module gact/session_descendants.py.
-    "src/clio_agent/gact/routes/sessions.py": 1436,
+    # #1334 review: the compact summary's ARC conversation mirror (read + write, both
+    # store RPCs, both on the loop) moved to the gact/compact_memory.py owner module and
+    # is now awaited off-loop -- 1436 -> 1407.
+    "src/clio_agent/gact/routes/sessions.py": 1407,
     # #1215 S5: crossed the 800 new-file cap (793 -> 809) for enrich_turn_context —
     # a thin timed combinator wrapping the TWO existing enrichment calls
     # (_enrich_with_context_files + _enrich_with_requested_memory_search) in ONE

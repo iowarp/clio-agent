@@ -20,6 +20,7 @@ Slice 0 (this file's introduction) only stands the dataclass up and threads
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
@@ -27,14 +28,42 @@ from clio_agent.gact import context as _ctx
 from clio_agent.gact.runtime.globals import _semantic_trace_id
 
 if TYPE_CHECKING:
-    import threading
-
     from fastapi import FastAPI
 
     from clio_agent.gact.events import EventBus
     from clio_agent.gact.transcript import TurnTranscript
     from clio_agent.gact.types import AgentDef, ErrorInfo, Message, Session
     from clio_agent.gact.workflow_state.schema import WorkflowStateSchema
+
+
+class DeferredTranscriptJob:
+    """The user message's ARC persist, handed to the turn to run FIRST — exactly once.
+
+    #1334 moved this write out of ``POST /messages`` so the accept path never waits on a
+    store RPC: the turn's off-loop prologue runs it before anything else, which keeps the
+    user message's atoms ahead of everything the turn appends. A turn task that never
+    reaches its prologue, though — cancelled before its first step (a stop landing during
+    turn start, the shutdown drain) — used to drop the job on the floor. The message then
+    lives in the in-memory ledger and the local store with NO atoms, and because
+    ``transcript_projection.materialize_ledger`` takes its ``has_atoms`` branch on any
+    session that has ever completed a turn, the message VANISHES from the transcript on
+    the next rehydrate.
+
+    The holder makes the hand-off single-consumer (:meth:`take` returns the job once, to
+    whoever asks first) so :func:`spawn_user_turn` can arm a done-callback that flushes an
+    unconsumed job off the loop without ever risking a double persist.
+    """
+
+    def __init__(self, job: Optional[Callable[[], None]]) -> None:
+        self._job = job
+        self._lock = threading.Lock()
+
+    def take(self) -> Optional[Callable[[], None]]:
+        """Claim the job. Returns it to the FIRST caller only; ``None`` thereafter."""
+
+        with self._lock:
+            job, self._job = self._job, None
+            return job
 
 
 @dataclass(kw_only=True)
@@ -91,7 +120,7 @@ class TurnState:
     # #1334: the user message's deferred ARC transcript persist (staged on the accept
     # path with ``atoms_minted=True``); the turn's off-loop setup runs it FIRST, must-
     # succeed. ``None`` when the accept path minted inline (tests / legacy callers).
-    transcript_job: "Optional[Callable[[], None]]" = None
+    transcript_job: "Optional[DeferredTranscriptJob]" = None
     # #1334: the attached-context failure the off-loop setup observed, raised as
     # ``_ContextFileAccessError`` at the commit-to-run seam (formerly a body local).
     context_file_error: "Optional[ErrorInfo]" = None

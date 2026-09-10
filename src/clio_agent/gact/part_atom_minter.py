@@ -288,11 +288,18 @@ def _registry(app: Any) -> dict[str, PartAtomMinter]:
 
 
 def open_turn_minter(app: Any, session_id: str, turn_id: str) -> PartAtomMinter:
-    """Open (or replace) the session's minter for this turn."""
+    """Open (or replace) the session's minter for this turn.
 
-    minter = PartAtomMinter(
-        session_id=session_id, turn_id=turn_id, arc=getattr(app.state, "arc", None)
-    )
+    The ARC is bound through the ONE capability gate the persist seam uses
+    (``transcript_projection.canonical_log_arc``): an app whose ARC cannot hold the
+    canonical log (no segment store — a degraded / metrics-only memory) gets a minter
+    with ``arc=None``, so every path falls back to the inline profile instead of dying
+    on ``arc._segments``.
+    """
+
+    from clio_agent.gact.transcript_projection import canonical_log_arc  # noqa: PLC0415
+
+    minter = PartAtomMinter(session_id=session_id, turn_id=turn_id, arc=canonical_log_arc(app))
     with _REGISTRY_LOCK:
         reg = getattr(app.state, "turn_minters", None)
         if reg is None:
@@ -365,8 +372,14 @@ def persist_finalized_message(app: Any, session_id: str, message: Any) -> None:
             minter.barrier()
         _append_session_message(app, session_id, message)
         return
-    minter.mint_remainder(message)
+    # The in-memory ledger + local store copy lands FIRST — the order
+    # ``_append_session_message`` has always used (append, then mint). That retained
+    # copy is the documented re-derivable fallback ``mint_atoms_from_ledger`` backfills
+    # the atom lane from, so a failing store RPC in the mint below must degrade to
+    # "atoms missing, message present", never to "the turn's message is gone from every
+    # ledger". The must-succeed contract is unchanged: the mint still raises here.
     _append_session_message(app, session_id, message, atoms_minted=True)
+    minter.mint_remainder(message)
     record_state_merge_best_effort(minter.arc, session_id, message)
 
 
@@ -381,9 +394,17 @@ def failed_finalize_identity(app: Any, session_id: str) -> tuple[str, list[Any]]
     so ``minter.minted_in_order()`` alone would drop it. ``transcript.snapshot()`` is
     the full ledger instead; its parts are sequence-stamped here exactly as
     ``finalize()`` would (idempotent for the already-sealed ones — their index never
-    shifts). Reads only: never calls ``transcript.finalize()`` itself, the failed
-    envelope must not publish, and the caller abandons the ledger right after this
-    returns.
+    shifts).
+
+    An OPEN streamed text part is settled first, because ``snapshot()`` is the RAW ledger
+    and an open part still carries ``text=""`` (its deltas live in the transcript's buffer
+    until the close assigns them). A crash landing before ``transcript.finalize()`` — which
+    closes it — otherwise persisted a VISIBLY EMPTY part where the SSE stream had already
+    delivered real text: the same reload != live class as the batch-fallback drop above,
+    with a blank bubble in place of the answer the user watched arrive. ``close_open_text``
+    is the ledger's own rule (buffer assigned in place, a whitespace-only part dropped,
+    ``message.part.completed`` published) and is idempotent; it is NOT ``finalize()`` — the
+    ledger stays unfrozen for the caller's ``abandon()``.
 
     ``("", [])`` when no assistant message was ever minted for this turn (the envelope
     mints a fresh id).
@@ -393,6 +414,7 @@ def failed_finalize_identity(app: Any, session_id: str) -> tuple[str, list[Any]]
     transcript = registry.get(session_id) if registry is not None else None
     if transcript is None or not transcript.message_id:
         return "", []
+    transcript.close_open_text()
     parts = transcript.snapshot()
     for index, part in enumerate(parts, start=1):
         part.sequence = index  # idempotent re-stamp, mirrors TurnTranscript.finalize()

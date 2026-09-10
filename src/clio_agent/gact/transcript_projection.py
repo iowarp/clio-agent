@@ -145,6 +145,20 @@ def _arc(app: "FastAPI") -> Any:
     return arc if getattr(arc, "_segments", None) is not None else None
 
 
+def canonical_log_arc(app: "FastAPI") -> Any:
+    """The capability gate (:func:`_arc`) as a public seam for cross-module callers.
+
+    ``part_atom_minter.open_turn_minter`` binds the turn's ARC through this, so the
+    minter and the persist seam agree on exactly ONE definition of "this app can hold
+    the canonical log". Taking ``app.state.arc`` at face value instead adopted a
+    degraded / metrics-only ARC that has no ``_segments``, and every mint then died on
+    ``AttributeError`` inside finalize AND inside the failed-finalize envelope meant to
+    recover it.
+    """
+
+    return _arc(app)
+
+
 def atoms_active(app: "FastAPI") -> bool:
     """Whether the atom projection is in play for this app: a canonical-log
     substrate exists. Single regime (v0.8.0): every session on an app with ARC

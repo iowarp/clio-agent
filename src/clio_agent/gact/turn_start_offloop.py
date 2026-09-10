@@ -19,7 +19,8 @@ is carried on ``state.context_file_error`` and raised at the commit-to-run seam.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable
+import logging
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from clio_agent.gact.enrichment import (
     _context_file_turn_provenance,
@@ -28,6 +29,7 @@ from clio_agent.gact.enrichment import (
     inject_pending_agent_task_notifications,
 )
 from clio_agent.gact.events import _publish_transcript_event
+from clio_agent.gact.off_loop import schedule_off_loop
 from clio_agent.gact.part_atom_minter import open_turn_minter
 from clio_agent.gact.plan_mode import inject_plan_mode_reminder
 from clio_agent.gact.replanning import inject_replan_suggestion
@@ -39,9 +41,67 @@ from clio_agent.gact.runtime.globals import (
 )
 from clio_agent.gact.session_store import _compile_session_conversation_history
 from clio_agent.gact.todos import inject_todo_recitation
+from clio_agent.gact.turn_state import DeferredTranscriptJob
+from clio_agent.runtime.stream_audit import stream_audit
 
 if TYPE_CHECKING:
     from clio_agent.gact.turn_state import TurnState
+
+logger = logging.getLogger(__name__)
+
+#: Typed reason for a deferred user-message persist the turn never got to run.
+DEFERRED_JOB_ORPHANED = "deferred_user_message_persist_orphaned"
+
+
+def spawn_user_turn(
+    app: Any,
+    session_id: str,
+    *,
+    turn_id: str,
+    transcript_job: Optional[Callable[[], None]],
+    run_turn: Callable[..., Any],
+    args: tuple[Any, ...],
+) -> Any:
+    """Spawn the turn task through the ``TurnRunner``, guarding its deferred persist.
+
+    The task's done-callback flushes a :class:`DeferredTranscriptJob` the turn never
+    claimed (it never reached its prologue), off the loop and with a typed audit. Ordering
+    is safe by construction: an unclaimed job means the prologue never ran, so the turn
+    appended no atoms of its own for this message to land behind.
+    """
+
+    holder = DeferredTranscriptJob(transcript_job)
+    task = app.state.turn_runner.spawn(
+        run_turn(*args, transcript_job=holder), sid=session_id, turn_id=turn_id
+    )
+
+    def _flush_orphaned_job(_task: Any) -> None:
+        leftover = holder.take()
+        if leftover is None:
+            return  # the prologue claimed and ran it, as it does on every normal turn
+        stream_audit(
+            "transcript.deferred_job_orphaned",
+            session_id=session_id,
+            turn_id=turn_id,
+            reason=DEFERRED_JOB_ORPHANED,
+        )
+        logger.warning(
+            "turn %s never reached its prologue; flushing the user message's deferred "
+            "transcript persist off the loop (%s)",
+            turn_id,
+            DEFERRED_JOB_ORPHANED,
+        )
+        schedule_off_loop(leftover, label=f"transcript.orphaned_user_message:{turn_id}")
+
+    add_done_callback = getattr(task, "add_done_callback", None)
+    if add_done_callback is None:
+        # The runner handed back no task handle (a test double that discards the
+        # coroutine): there is no turn to run the prologue, so flush now. ``take()``
+        # makes a double persist impossible even if a turn does materialise.
+        _flush_orphaned_job(task)
+    else:
+        add_done_callback(_flush_orphaned_job)
+    return task
 
 
 def prepare_turn_off_loop(state: "TurnState", *, update_retry_attempt: Callable[..., Any]) -> str:
@@ -55,9 +115,9 @@ def prepare_turn_off_loop(state: "TurnState", *, update_retry_attempt: Callable[
     # #1334 / #1337: the session's minter takes every later deferred persist (a steer,
     # an a2ui part); the user message's own persist runs first, inline, must-succeed.
     open_turn_minter(state.app, state.sid, state.turn_id)
-    if state.transcript_job is not None:
-        state.transcript_job()
-        state.transcript_job = None
+    job = state.transcript_job.take() if state.transcript_job is not None else None
+    if job is not None:
+        job()
 
     _emit_semantic_event(
         state.app,
@@ -155,4 +215,4 @@ def prepare_turn_off_loop(state: "TurnState", *, update_retry_attempt: Callable[
     return run_user_prompt_submit(state, update_retry_attempt=update_retry_attempt)
 
 
-__all__ = ["prepare_turn_off_loop"]
+__all__ = ["DEFERRED_JOB_ORPHANED", "prepare_turn_off_loop", "spawn_user_turn"]

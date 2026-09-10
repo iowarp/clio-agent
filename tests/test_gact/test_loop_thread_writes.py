@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -147,3 +148,93 @@ def test_routes_that_touch_the_ledger_never_write_from_the_loop(tmp_path: Path, 
             client.delete(f"/v1/sessions/{sid}/messages/{user['id']}")
         client.delete(f"/v1/sessions/{sid}")
     assert _write_hits() == []
+
+
+def test_compact_stores_the_arc_conversation_record_off_the_loop(tmp_path: Path) -> None:
+    """Review find: ``POST /compact`` still wrote ARC's conversation record on the loop.
+
+    The parametrized sweep above drives this route but cannot see the write: its
+    ``FakeClioAgent`` carries no ``.arc``, so ``routes/sessions.py``'s whole ARC block
+    is skipped -- and the ``conversations`` kind is not on the shared ``segments``
+    persist seam the guard hooks, so the in-memory backend records no hit either. Bind
+    a real ARC and assert the invariant DIRECTLY, with the guard's own predicate: the
+    thread that issues the store call must have no running loop on it.
+
+    Against the real clio-core store the missed write was not merely slow: the guard
+    raised ``LoopThreadStoreWrite``, the handler's ``except Exception`` turned it into
+    an HTTP 500 ``memory_update_failed``, and ``POST /compact`` failed outright.
+    """
+
+    reset_guard_hits()
+    agent = FakeClioAgent()
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    arc = app.state.arc
+    agent.arc = arc  # the route reads ``agent.arc``; the fake has none by default
+    agent._run_chat_agent = lambda prompt, _ctx: "compact summary"  # the summarise step
+
+    on_loop: list[bool] = []
+    real_store = arc.store_conversation
+
+    def _record(conversation: Any) -> Any:
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return real_store(conversation)
+
+    arc.store_conversation = _record  # type: ignore[method-assign]
+    with TestClient(app) as client:
+        sid = _create_session(client)
+        complete_turn(client, sid, "first")
+        response = client.post(f"/v1/sessions/{sid}/compact", json={})
+        assert response.status_code == 200, response.text
+        events = app.state.memory_events[sid]
+        assert events[-1]["arc_status"] == "stored", events[-1]
+    assert on_loop == [False], f"the conversation record was stored on the loop: {on_loop}"
+    assert _write_hits() == []
+
+
+def test_a_turn_cancelled_before_its_prologue_still_persists_the_user_message(
+    tmp_path: Path,
+) -> None:
+    """Review find: the deferred user-message persist must not die with the turn task.
+
+    #1334 handed the user message's ARC persist to the turn (so ``POST /messages`` never
+    waits on a store RPC), and the turn runs it first, in its off-loop prologue. A task
+    cancelled before its FIRST step never runs its body at all -- not even a ``finally``
+    -- so the job was silently dropped. The message then sat in the in-memory ledger and
+    the local store with no atoms, and ``materialize_ledger`` takes its ``has_atoms``
+    branch on any session that already completed a turn, so the message VANISHED from the
+    transcript on the next rehydrate. ``spawn_user_turn``'s done-callback flushes it.
+    """
+
+    reset_guard_hits()
+    app = build_app(sessions_path=tmp_path / "s.json", agent=FakeClioAgent(answer="ok"))
+    with TestClient(app) as client:
+        sid = _create_session(client)
+        complete_turn(client, sid, "first")  # the lane now HAS atoms: no backfill will run
+        settle_turn_slot(client, sid)
+
+        real_spawn = app.state.turn_runner.spawn
+
+        def _spawn_then_cancel(coro: Any, *, sid: str, turn_id: str) -> Any:
+            task = real_spawn(coro, sid=sid, turn_id=turn_id)
+            task.cancel()  # before its first step: the coroutine body never runs
+            return task
+
+        app.state.turn_runner.spawn = _spawn_then_cancel
+        ack = client.post(
+            f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": "second"}]}
+        )
+        assert ack.status_code == 200, ack.text
+        user_id = ack.json()["message_id"]
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if user_id in load_message_part_atoms(app.state.arc, sid):
+                break
+            client.get(f"/v1/sessions/{sid}")  # keep the loop turning so the flush lands
+            time.sleep(0.05)
+        atoms = load_message_part_atoms(app.state.arc, sid)
+    assert user_id in atoms, f"the cancelled turn dropped its user message's atoms: {atoms.keys()}"
+    assert _write_hits() == [], "the orphan flush must run off the loop"

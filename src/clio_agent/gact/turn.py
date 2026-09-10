@@ -39,7 +39,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.errors import ClioError
 from clio_agent.gact.context_reference_delivery import record_context_reference_deliveries
@@ -93,8 +93,8 @@ from clio_agent.gact.turn_finalize import (
 )
 from clio_agent.gact.turn_finalize_goal import finalize_turn_async
 from clio_agent.gact.turn_forward import _run_turn_setup_off_loop, forward_turn
-from clio_agent.gact.turn_start_offloop import prepare_turn_off_loop
-from clio_agent.gact.turn_state import new_turn_state
+from clio_agent.gact.turn_start_offloop import prepare_turn_off_loop, spawn_user_turn
+from clio_agent.gact.turn_state import DeferredTranscriptJob, new_turn_state
 from clio_agent.gact.turn_stream import (
     bind_live_emitter,
     settle_turn_transcript,
@@ -158,7 +158,7 @@ async def _run_turn_in_background(
     user_text: str,
     user_msg: "Message",
     turn_agent_id: str = "",
-    transcript_job: Optional[Callable[[], None]] = None,
+    transcript_job: Optional[DeferredTranscriptJob] = None,
 ) -> None:
     """Drive an agent turn off the request thread.
 
@@ -815,15 +815,15 @@ def _start_background_user_turn(
     )
 
     # #948 S1 (#662): route through the TurnRunner, the single owner of turn-task
-    # lifetime. It holds a master strong ref (no GC-cancellation), anchors the
-    # task to the app loop, records the busy-gate handle, and drops the
-    # per-session slot on completion — replacing the raw create_task + manual
-    # in_flight_turns bookkeeping that lived here.
-    app.state.turn_runner.spawn(
-        _run_turn_in_background(
-            app, sid, user_text, user_msg, turn_agent_id, transcript_job=transcript_job
-        ),
-        sid=sid,
+    # lifetime (master strong ref, app-loop anchor, busy-gate handle, slot release).
+    # ``spawn_user_turn`` wraps that spawn with the deferred-persist guard: a turn
+    # cancelled before its prologue must not take the user message's atoms with it.
+    spawn_user_turn(
+        app,
+        sid,
         turn_id=user_msg_id,
+        transcript_job=transcript_job,
+        run_turn=_run_turn_in_background,
+        args=(app, sid, user_text, user_msg, turn_agent_id),
     )
     return user_msg

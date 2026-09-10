@@ -290,6 +290,18 @@ def build_envelope_atom(message: Message) -> dict[str, Any]:
     }
 
 
+def _atom_turn_id(content: Mapping[str, Any]) -> str:
+    """The TURN an atom belongs to: its message stub's (part) or envelope's ``turn_id``."""
+
+    for key in ("message_stub", "message"):
+        holder = content.get(key)
+        if isinstance(holder, Mapping):
+            turn_id = str(holder.get("turn_id") or "")
+            if turn_id:
+                return turn_id
+    return ""
+
+
 def group_atoms_in_order(atoms: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     """Split a lane (append order) into per-message atom groups.
 
@@ -301,6 +313,15 @@ def group_atoms_in_order(atoms: list[dict[str, Any]]) -> list[list[dict[str, Any
     in the corpus, ``sess_b2d2c710f0f4``) stay distinct. Keying by id (not append
     contiguity) is what keeps an atom of ANOTHER message interleaved mid-turn (an a2ui
     part persisted while a turn streams) out of the in-flight message's group.
+
+    The ``"atom"`` profile needs its own boundary for the SAME duplicate-id case, because
+    an envelope-less group (a turn that died between its last seal and finalize) is never
+    closed and would otherwise swallow the next message that reuses its id — merging two
+    messages into one AND hiding the typed ``incomplete`` reassembly behind the later
+    message's envelope. The ordinal rule cannot serve here: ``mint_remainder`` legitimately
+    writes a never-sealed part at a LOWER index than an already-sealed one. The
+    discriminator is the TURN: one turn mints one assistant message, so an atom stamped
+    with a different ``turn_id`` than the open group's is a different message.
     """
 
     groups: list[list[dict[str, Any]]] = []
@@ -319,6 +340,11 @@ def group_atoms_in_order(atoms: list[dict[str, Any]]) -> list[list[dict[str, Any
             # index does not advance the group under an unseen id is the next message.
             if role == "envelope" or (index <= max_index and pid not in seen_ids):
                 group = None  # the inline boundary: a new message under the same id
+        elif group is not None:
+            open_turn = _atom_turn_id(group[0])
+            this_turn = _atom_turn_id(content)
+            if open_turn and this_turn and open_turn != this_turn:
+                group = None  # a different TURN reusing this message id: a new message
         if group is None:
             group = [content]
             groups.append(group)

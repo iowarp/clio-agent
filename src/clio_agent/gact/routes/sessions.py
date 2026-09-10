@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse
 from clio_agent.gact import context as _ctx
 from clio_agent.gact import context_reference_retry
 from clio_agent.gact.autonomous_loop import stop_session_loop
+from clio_agent.gact.compact_memory import ARC_NOT_CONFIGURED, store_compact_conversation
 from clio_agent.gact.events import Event
 from clio_agent.gact.goal import stop_session_goal
 from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
@@ -796,53 +797,23 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
 
         arc = getattr(agent, "arc", None)
-        arc_status = "not_configured"
+        arc_status = ARC_NOT_CONFIGURED
         if arc is not None:
             try:
-                from clio_agent.arc.schema import (  # noqa: PLC0415
-                    Conversation as ARCConversation,
-                )
-                from clio_agent.arc.schema import Message as ARCMessage  # noqa: PLC0415
-
-                now_ts = time.time()
-                arc_summary = ARCMessage(
-                    role="assistant",
-                    content="[compact summary]\n" + (summary or "").strip(),
-                    timestamp=now_ts,
-                    metadata={
-                        "source": "gact_compact",
-                        "synthetic": "compact_summary",
-                        "memory_event_id": event_id,
-                        "archived_count": len(ledger),
-                    },
-                )
-                conv = arc.get_conversation(sid)
-                if conv is None:
-                    conv = ARCConversation(
-                        session_id=sid,
-                        user_id="default_user",
-                        created_at=now_ts,
-                        updated_at=now_ts,
-                        last_accessed=now_ts,
-                        status="active",
-                        messages=[arc_summary],
-                        routing_decisions=[],
-                        metadata={
-                            "clio_agent_version": _installed_clio_agent_version(),
-                            "arc_enabled": True,
-                            "compacted_by": "gact",
-                        },
-                        storage_tier="warm",
+                # #1334 review: the conversation-record read + write are store RPCs and
+                # must not run on the loop (against the real store the guard REFUSES the
+                # write and the handler below turned that into a 500). Owner module:
+                # gact/compact_memory.py.
+                arc_status = await run_off_loop(
+                    lambda: store_compact_conversation(
+                        arc,
+                        sid,
+                        summary=summary or "",
+                        event_id=event_id,
+                        archived_count=len(ledger),
+                        clio_agent_version=_installed_clio_agent_version(),
                     )
-                else:
-                    conv.messages = [arc_summary]
-                    conv.updated_at = now_ts
-                    conv.last_accessed = now_ts
-                    conv.metadata["compacted_by"] = "gact"
-                    conv.metadata["compacted_at"] = now_ts
-                    conv.metadata["archived_message_count"] = len(ledger)
-                arc.store_conversation(conv)
-                arc_status = "stored"
+                )
             except Exception as exc:  # noqa: BLE001
                 raise HTTPException(
                     status_code=500,
