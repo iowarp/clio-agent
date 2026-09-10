@@ -57,6 +57,7 @@ from clio_agent.gact.transcript_projection import (
 )
 from clio_agent.gact.types import Message, Part, Tokens
 from tests.equivalence import normalizers as N
+from tests.test_gact.conftest import settle_turn_slot
 from tests.test_gact.test_post_messages import FakeClioAgent
 
 
@@ -74,6 +75,9 @@ def _run_turn(client: TestClient, sid: str, text: str = "how many stations?") ->
     deadline = time.monotonic() + 30.0
     while time.monotonic() < deadline:
         if client.get(f"/v1/sessions/{sid}").json()["status"] != "running":
+            # #1334: finalize runs on the turn executor; the status flips a few ms
+            # before the turn slot clears, and the next POST needs the slot.
+            settle_turn_slot(client, sid, timeout=max(1.0, deadline - time.monotonic()))
             return
         time.sleep(0.05)
     raise TimeoutError(f"turn on session {sid!r} did not settle within 30s")

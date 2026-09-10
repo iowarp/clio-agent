@@ -53,12 +53,14 @@ from clio_agent.gact.artifacts.wire import append_turn_resource_links, proposed_
 from clio_agent.gact.delegation import (
     _produced_turn_workflow_state,
 )
+from clio_agent.gact.diff_ledger import index_turn_file_diffs
 from clio_agent.gact.direct_response import promote_tool_free_response
 from clio_agent.gact.enrichment import _finalize_context_frame
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
 from clio_agent.gact.evidence import (
     _tool_result_preview,
 )
+from clio_agent.gact.part_atom_minter import close_turn_minter, persist_finalized_message
 from clio_agent.gact.runtime.globals import (
     _emit_semantic_event,
     _iso_from_epoch,
@@ -66,7 +68,6 @@ from clio_agent.gact.runtime.globals import (
     _new_part_id,
     _session_agent_id,
 )
-from clio_agent.gact.runtime.retention import enforce_list_bound
 from clio_agent.gact.streaming import (
     _pop_stream_fallback,
     _pop_stream_fallback_notes,
@@ -131,10 +132,7 @@ def finalize_turn(
     # #714 danger set: bind through app at call time so test monkeypatches of
     # clio_agent.gact.app._enrich_cancellation_error_info /
     # _append_session_message keep intercepting with zero test edits.
-    from clio_agent.gact.app import (  # noqa: PLC0415
-        _append_session_message,
-        _enrich_cancellation_error_info,
-    )
+    from clio_agent.gact.app import _enrich_cancellation_error_info  # noqa: PLC0415
 
     # Final user-facing text only: correct any fabricated local artifact path the
     # answer presents as produced, by grounding it against the session's REGISTERED
@@ -466,25 +464,8 @@ def finalize_turn(
         error_info=state.error_info,
     )
 
-    # Index file_diff parts so /diffs/apply + /diffs/reject find them.
-    bucket = state.app.state.pending_diffs.setdefault(state.sid, [])
-    for p in assistant_parts:
-        if p.type != "file_diff":
-            continue
-        write_content = (
-            p.new_content if p.new_content or p.edit_mode in {"whole", "patch"} else None
-        )
-        bucket.append(
-            {
-                "path": p.path,
-                "unified_diff": p.unified_diff,
-                "new_content": write_content,
-                "status": "pending",
-                "part_id": p.id,
-                "message_id": assistant_msg.id,
-            }
-        )
-    enforce_list_bound(state.app, bucket, "pending_diffs", session_id=state.sid)
+    # Index file_diff parts so /diffs/apply + /diffs/reject find them (guarded owner).
+    index_turn_file_diffs(state.app, state.sid, assistant_parts, message_id=assistant_msg.id)
 
     # #767 PR3: finalize re-publishes NOTHING — every part's message.created /
     # part.added / part.delta / part.completed already went out at append
@@ -550,7 +531,7 @@ def finalize_turn(
     retry_status = (
         "cancelled" if state.cancelled_turn else ("failed" if state.error_info else "completed")
     )
-    _append_session_message(state.app, state.sid, assistant_msg)
+    persist_finalized_message(state.app, state.sid, assistant_msg)  # #1334: barrier first
     # #767 PR3: the ledger is already frozen by transcript.finalize(); settle
     # retires it from the registry so a late producer op is rejected +
     # audited, never absorbed silently.
@@ -755,6 +736,7 @@ def settle_failed_finalize(
         if transcript is not None:
             transcript.abandon()
         registry.close(sid)
+    close_turn_minter(app, sid)  # #1334: drain the deferred persists, stop the thread
 
     # A crashed finalize never reaches the resource_link drain; clear the turn's
     # artifact buffer so a retry of the SAME turn cannot emit each part twice (#968

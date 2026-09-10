@@ -39,6 +39,7 @@ import msgspec
 from fastapi import FastAPI, HTTPException
 
 from clio_agent.gact.agents import runtime as agents_runtime
+from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.runtime.context_tokens import (
     _bucket_context_categories,
     _estimate_text_tokens,
@@ -281,7 +282,9 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
                 "trace_ref": req.trace_ref,
             }
         try:
-            result = app.state.arc.apply_segment_op(req.op, sid, req.scope, **kwargs)
+            result = await run_off_loop(  # #1334: a working-set write is a store RPC
+                lambda: app.state.arc.apply_segment_op(req.op, sid, req.scope, **kwargs)
+            )
         except (ValueError, TypeError) as exc:
             raise HTTPException(
                 status_code=400,
@@ -358,13 +361,15 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        arc.apply_segment_op(
-            "summarize",
-            sid,
-            scope,
-            ids=ids,
-            summary_content={"text": summary},
-            token_count=_estimate_text_tokens(summary),
+        await run_off_loop(  # #1334: the summarize op persists the scope (store RPCs)
+            lambda: arc.apply_segment_op(
+                "summarize",
+                sid,
+                scope,
+                ids=ids,
+                summary_content={"text": summary},
+                token_count=_estimate_text_tokens(summary),
+            )
         )
         return _build_context_state(sid, scope)
 

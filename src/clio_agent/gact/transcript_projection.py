@@ -280,43 +280,114 @@ def materialize_ledger(app: "FastAPI", session_id: str) -> Optional[list[Message
         # only storage (structural degenerate case, not a regime).
         return None if store is None else store.load_session(session_id)
 
-    # A cache miss can arrive concurrently from independent request surfaces. Keep the
-    # has-atoms -> backfill -> assemble decision atomic for this one transcript lane.
-    # Without the lane lock, two cold readers can both observe an empty lane and mint
-    # the same retained ledger. Their per-part appends then interleave, so every
+    # A cache miss can arrive concurrently from independent request surfaces. The
+    # has-atoms / no-atoms DECISION for this one transcript lane is made under the
+    # per-scope lane lock; the actual (re)mint work never runs while that lock is
+    # held by this call — it is dispatched through ``_schedule_lane_mint``, whose
+    # off-loop worker re-takes the SAME lock only around the mint itself (#1334: a
+    # store RPC must never be awaited from the server loop thread). Without the
+    # lock here, two cold readers could both observe an empty lane and mint the
+    # same retained ledger; their per-part appends would then interleave, so every
     # ``part_index == 0`` is mistaken for another message boundary on reload.
     lane_lock = arc._segments._lock_for(session_id, MESSAGE_PART_SCOPE)
     with lane_lock:
-        if has_atoms(arc, session_id):
-            assembled = assemble_session_messages(arc, session_id)
-            # Repair lanes written by the pre-lock race. The retained message ledger is
-            # deliberately kept as the re-derivable fallback for lifecycle-erased atom
-            # lanes; it is also the only trustworthy source for repairing a structurally
-            # divergent lane. This is exact wire comparison, never text heuristics.
-            ledger = None if store is None else store.load_session(session_id)
-            if ledger is None or [m.model_dump(exclude_none=True) for m in assembled] == [
-                m.model_dump(exclude_none=True) for m in ledger
-            ]:
-                return assembled
-            logger.error(
-                "transcript_projection: repairing divergent atom lane session=%s "
-                "assembled_messages=%d retained_messages=%d reason=concurrent_backfill_race",
-                session_id,
-                len(assembled),
-                len(ledger),
-            )
-            arc._segments.drop_scope(session_id, MESSAGE_PART_SCOPE)
-            mint_atoms_from_ledger(arc, session_id, ledger)
-            return assemble_session_messages(arc, session_id)
-
-        # Atoms regime, but no atoms yet: either a brand-new session (no ledger) or a
-        # pre-atom ledger to backfill once. Distinguish via the store (LedgerReadError
-        # propagates — never a silent empty).
+        atoms_present = has_atoms(arc, session_id)
+        assembled = assemble_session_messages(arc, session_id) if atoms_present else None
         ledger = None if store is None else store.load_session(session_id)
-        if not ledger:
-            return ledger  # None (never persisted) or [] (empty) — both pass through
-        mint_atoms_from_ledger(arc, session_id, ledger)
-        return assemble_session_messages(arc, session_id)
+
+    if atoms_present:
+        assert assembled is not None  # narrows for the type checker
+        # Repair lanes written by the pre-lock race. The retained message ledger is
+        # deliberately kept as the re-derivable fallback for lifecycle-erased atom
+        # lanes; it is also the only trustworthy source for repairing a structurally
+        # divergent lane. This is exact wire comparison, never text heuristics.
+        if ledger is None or [m.model_dump(exclude_none=True) for m in assembled] == [
+            m.model_dump(exclude_none=True) for m in ledger
+        ]:
+            return assembled
+        logger.error(
+            "transcript_projection: repairing divergent atom lane session=%s "
+            "assembled_messages=%d retained_messages=%d reason=concurrent_backfill_race",
+            session_id,
+            len(assembled),
+            len(ledger),
+        )
+        return _repair_divergent_lane(arc, session_id, ledger)
+
+    # Atoms regime, but no atoms yet: either a brand-new session (no ledger) or a
+    # pre-atom ledger to backfill once. Distinguish via the store (LedgerReadError
+    # propagates — never a silent empty).
+    if not ledger:
+        return ledger  # None (never persisted) or [] (empty) — both pass through
+    return _backfill_or_serve(arc, session_id, ledger)
+
+
+_LANE_MINT_IN_FLIGHT: set[str] = set()
+
+
+def _schedule_lane_mint(
+    arc: Any, session_id: str, ledger: list[Message], *, repair: bool
+) -> Optional[list[Message]]:
+    """Dedup-schedule a (re)mint of ``session_id``'s atom lane off the loop.
+
+    #1334: a rehydrate/repair happens INSIDE a read that may run on the loop thread
+    (``GET /messages`` on an evicted, pre-atom, or divergent session), and the mint is
+    one store write per message plus, for a repair, a leading ``drop_scope``. The
+    per-scope lane lock is held ONLY around this scheduling decision (acquire, decide,
+    release) — never around the mint itself, which the off-loop worker below re-takes
+    the SAME lock for. With a loop running on this thread the retained ledger is served
+    as-is and the mint is dispatched off the loop (one in flight per session; a failure
+    is audited + logged with its typed reason and the next read retries, since the lane
+    is still absent/divergent). Without a loop (boot, tests, worker threads)
+    ``schedule_off_loop`` runs the worker inline before returning, so the caller's own
+    read is already joined to the completed mint.
+
+    Returns the served ledger when a mint is already in flight or was just dispatched,
+    or ``None`` when the worker ran inline (the caller re-assembles from the now-minted
+    lane).
+    """
+
+    from clio_agent.gact.off_loop import schedule_off_loop  # noqa: PLC0415
+
+    lane_lock = arc._segments._lock_for(session_id, MESSAGE_PART_SCOPE)
+    with lane_lock:
+        if session_id in _LANE_MINT_IN_FLIGHT:
+            return list(ledger)  # someone else's mint is already scheduled/running
+        _LANE_MINT_IN_FLIGHT.add(session_id)
+
+    def _mint() -> None:
+        worker_lock = arc._segments._lock_for(session_id, MESSAGE_PART_SCOPE)
+        with worker_lock:
+            try:
+                if repair:
+                    arc._segments.drop_scope(session_id, MESSAGE_PART_SCOPE)
+                mint_atoms_from_ledger(arc, session_id, ledger)
+            finally:
+                _LANE_MINT_IN_FLIGHT.discard(session_id)
+
+    label = f"transcript.{'repair' if repair else 'backfill'}:{session_id}"
+    future = schedule_off_loop(_mint, label=label)
+    if future is not None:
+        return list(ledger)  # dispatched; on-loop caller never waits
+    return None  # ran inline; already joined
+
+
+def _backfill_or_serve(arc: Any, session_id: str, ledger: list[Message]) -> list[Message]:
+    """Backfill the atom lane from the retained ledger, then assemble from it."""
+
+    served = _schedule_lane_mint(arc, session_id, ledger, repair=False)
+    if served is not None:
+        return served
+    return assemble_session_messages(arc, session_id)
+
+
+def _repair_divergent_lane(arc: Any, session_id: str, ledger: list[Message]) -> list[Message]:
+    """Drop + re-mint a structurally divergent atom lane from the retained ledger."""
+
+    served = _schedule_lane_mint(arc, session_id, ledger, repair=True)
+    if served is not None:
+        return served
+    return assemble_session_messages(arc, session_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -324,7 +395,9 @@ def materialize_ledger(app: "FastAPI", session_id: str) -> Optional[list[Message
 # --------------------------------------------------------------------------- #
 
 
-def on_message_appended(app: "FastAPI", session_id: str, message: Message) -> None:
+def on_message_appended(
+    app: "FastAPI", session_id: str, message: Message, *, atoms_minted: bool = False
+) -> None:
     """Persist-seam hook: pin the regime (first message) + mint the message's atoms.
 
     Called from ``session_store._append_session_message`` — the single append-one
@@ -335,12 +408,19 @@ def on_message_appended(app: "FastAPI", session_id: str, message: Message) -> No
     copy is still authoritative so the mint is best-effort-but-loud, exactly as S4
     landed it.
 
+    ``atoms_minted=True`` (#1334): the caller runs this hook itself later, off the loop
+    thread (``part_atom_minter.run_transcript_job`` / the turn's off-loop setup), so the
+    append returns without touching the store. Nothing is skipped, only deferred.
+
     Args:
         app: The FastAPI app (``app.state.arc`` is the canonical-log home).
         session_id: Owning session.
         message: The just-persisted gact message.
+        atoms_minted: The caller owns the (deferred) mint of this message.
     """
 
+    if atoms_minted:
+        return
     arc = _arc(app)
     if arc is None:
         logger.debug(

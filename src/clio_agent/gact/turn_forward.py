@@ -51,11 +51,11 @@ from clio_agent.gact.agents.resolution import (
 from clio_agent.gact.catalog import _builtin_main_agent
 from clio_agent.gact.evidence import _dynamic_agent_runtime_provenance
 from clio_agent.gact.messaging import _prediction_summary
+from clio_agent.gact.off_loop import emit_semantic_event_async
 from clio_agent.gact.providers.auth import _refresh_argonne_lm_token
 from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.globals import (
     _BlueprintRootDisabled,
-    _emit_semantic_event,
     _llm_provider_payload,
     _NoResolvableAgent,
     _session_agent_id,
@@ -247,7 +247,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
         state.active_agent_id = "main"
     routing_mode = getattr(state.sess, "routing_mode", "auto") or "auto"
     state.invocation_agent_id = state.active_agent_id or "orchestrator"
-    _emit_semantic_event(
+    await emit_semantic_event_async(
         state.app,
         state.sid,
         "agent.invocation.started",
@@ -328,7 +328,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
             dynamic_agent,
             execution_mode=execution_mode,
         )
-        _emit_semantic_event(
+        await emit_semantic_event_async(
             state.app,
             state.sid,
             "agent.toolset.prepare.started",
@@ -358,7 +358,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
 
             module = await _run_turn_setup_off_loop(state, build_module)
         except Exception:
-            _emit_semantic_event(
+            await emit_semantic_event_async(
                 state.app,
                 state.sid,
                 "agent.toolset.prepare.failed",
@@ -373,7 +373,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
             raise
         finally:
             _ctx.reset(session_token)
-        _emit_semantic_event(
+        await emit_semantic_event_async(
             state.app,
             state.sid,
             "agent.toolset.prepare.completed",
@@ -399,7 +399,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
             "prompt_profile": dynamic_agent.prompt_profile,
             "message_id": state.user_msg.id,
         }
-        _emit_semantic_event(
+        await emit_semantic_event_async(
             state.app,
             state.sid,
             "llm.request.started",
@@ -437,7 +437,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
                 ),
             )
         if state.pred is not None:
-            _emit_semantic_event(
+            await emit_semantic_event_async(
                 state.app,
                 state.sid,
                 "llm.response.completed",
@@ -452,7 +452,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
             )
         if state.pred is None:
             degradation = _peek_stream_fallback(state.app, state.sid)
-            _emit_semantic_event(
+            await emit_semantic_event_async(
                 state.app,
                 state.sid,
                 "llm.request.degraded",
@@ -472,7 +472,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
                     "degradation": degradation,
                 },
             )
-            _emit_semantic_event(
+            await emit_semantic_event_async(
                 state.app,
                 state.sid,
                 "llm.request.started",
@@ -514,7 +514,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
                         ),
                     ),
                 )
-            _emit_semantic_event(
+            await emit_semantic_event_async(
                 state.app,
                 state.sid,
                 "llm.response.completed",
@@ -538,7 +538,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
         # so there is nothing to execute. Fail TYPED — never fall through to a
         # legacy pathway.
         raise _NoResolvableAgent(state.active_agent_id or session_agent_id)
-    _emit_semantic_event(
+    await emit_semantic_event_async(
         state.app,
         state.sid,
         "agent.invocation.completed",

@@ -17,10 +17,13 @@ Asserts, per run:
   liveness). The window is read off the server's own SSE audit log (the last
   ``message.completed`` before the goal cleared -> the judge's ``provider.batch_response``
   carrying ``[[ ## met ## ]]``), so the assertion is about the judge, not the turn;
-* the whole-run max latency and every slow probe (>= 0.5 s, wallclock-stamped) are
-  RECORDED as evidence, not asserted: stalls inside the turn (tool execution, ARC
-  writes) are pre-existing loop-blocking work outside this leg's claim and get their
-  own attribution;
+* (#1334) the loop stays live for the WHOLE run: a pure loop probe (``GET
+  /v1/sessions/{sid}``, a locked in-memory read) never exceeds ``--max-health-latency``
+  at any point, the ``POST /messages`` itself acks under ``--max-post-latency`` (the user
+  message's transcript persist no longer runs inside the request), and the turn-start
+  window (POST ack -> the first ``provider.call_started`` row in the audit log) holds
+  the same bound; every slow probe (>= 0.5 s) is wallclock-stamped so a stall can be
+  attributed to an audit-log row;
 * the SSE stream's max inter-event gap is RECORDED as evidence (the 15 s heartbeat).
 
 Run under the private real-CTE daemon (a gate never holds ARC-local)::
@@ -86,11 +89,18 @@ def _session_meta(call: Callable[..., Any], wsid: str, sid: str) -> dict[str, An
 
 
 class _HealthProbe(threading.Thread):
-    """Poll ``/v1/health`` every 250 ms; the max latency is the loop-liveness measure."""
+    """Poll one GET every 250 ms and keep every latency, wallclock-stamped.
 
-    def __init__(self, base: str) -> None:
-        super().__init__(name="health-probe", daemon=True)
+    Two instances run: ``/v1/health`` (the runtime-status probe engine, which itself
+    touches clio-core, so its latency mixes loop liveness with CTE contention) and a
+    pure in-memory route, ``/v1/sessions/{sid}`` (a locked dict read), which is the
+    clean loop-liveness measure the assertions use."""
+
+    def __init__(self, base: str, path: str = "/v1/health", name: str = "health") -> None:
+        super().__init__(name=f"{name}-probe", daemon=True)
         self._base = base
+        self._path = path
+        self.name_tag = name
         self.stop = threading.Event()
         self.max_latency_s = 0.0
         self.samples = 0
@@ -105,7 +115,7 @@ class _HealthProbe(threading.Thread):
             wall = time.time()
             t0 = time.monotonic()
             try:
-                requests.get(f"{self._base}/v1/health", timeout=10)
+                requests.get(f"{self._base}{self._path}", timeout=10)
             except Exception:  # noqa: BLE001 - a failed probe is itself the finding
                 self.failures += 1
             latency = time.monotonic() - t0
@@ -161,6 +171,27 @@ class _SseGapProbe(threading.Thread):
             self.error = f"{type(exc).__name__}: {exc}"
 
 
+def _turn_start_window(sse_log: Path, after_ts: float) -> tuple[float, float] | None:
+    """The turn-start window: ``(after_ts, first provider.call_started ts >= after_ts)``.
+
+    ``after_ts`` is the wallclock of the ``POST /messages`` ack; the first provider call
+    marks the end of the prologue (#1334: the user message's persist, ``turn.started``,
+    enrichment, the hooks). ``None`` when no provider call was logged after the ack."""
+
+    if not sse_log.exists():
+        return None
+    for line in sse_log.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get("stage") == "provider.call_started":
+            ts = float(row.get("ts") or 0.0)
+            if ts >= after_ts:
+                return after_ts, ts
+    return None
+
+
 def _judge_window(sse_log: Path) -> tuple[float, float] | None:
     """Read the judge window off the SSE audit log: ``(message.completed ts, judge ts)``.
 
@@ -186,7 +217,14 @@ def _judge_window(sse_log: Path) -> tuple[float, float] | None:
     return None
 
 
-def run_leg(provider: str, model: str, max_health_latency_s: float, out: Path) -> dict[str, Any]:
+def run_leg(
+    provider: str,
+    model: str,
+    max_health_latency_s: float,
+    out: Path,
+    *,
+    max_post_latency_s: float = 0.5,
+) -> dict[str, Any]:
     """Boot an isolated server, arm the goal, drive the turn, judge the evidence."""
 
     port = _free_port()
@@ -203,6 +241,7 @@ def run_leg(provider: str, model: str, max_health_latency_s: float, out: Path) -
     call = client(base)
     verdict: dict[str, Any] = {"provider": provider, "model": model, "port": port}
     health = _HealthProbe(base)
+    loop_probe: _HealthProbe | None = None
     sse: _SseGapProbe | None = None
     try:
         if not wait_health(call):
@@ -218,8 +257,13 @@ def run_leg(provider: str, model: str, max_health_latency_s: float, out: Path) -
         sse = _SseGapProbe(base, sid)
         sse.start()
         health.start()
+        loop_probe = _HealthProbe(base, f"/v1/sessions/{sid}", "loop")
+        loop_probe.start()
         t_start = time.monotonic()
+        post_wall = time.time()
         post_message(call, sid, TASK)
+        # #1334: the ack must not carry the user message's transcript persist any more.
+        verdict["post_message_latency_s"] = round(time.monotonic() - t_start, 3)
         verdict["first_turn_status"] = wait_turn(call, wsid, sid, max_elapsed=900.0)
 
         def _cleared() -> dict[str, Any] | None:
@@ -230,6 +274,8 @@ def run_leg(provider: str, model: str, max_health_latency_s: float, out: Path) -
         verdict["elapsed_s"] = round(time.monotonic() - t_start, 1)
         health.stop.set()
         health.join(timeout=15)
+        loop_probe.stop.set()
+        loop_probe.join(timeout=15)
         if sse is not None:
             sse.stop.set()
         verdict["goal_meta"] = goal or _session_meta(call, wsid, sid).get("goal", {})
@@ -243,25 +289,43 @@ def run_leg(provider: str, model: str, max_health_latency_s: float, out: Path) -
         ]
         verdict["judge_unavailable_hits"] = sum("judge unavailable" in t for t in texts)
         window = _judge_window(out / "sse.log")
+
+        def _probe_report(probe: _HealthProbe) -> dict[str, Any]:
+            in_window, n = probe.max_in_window(*window) if window else (probe.max_latency_s, 0)
+            return {
+                "route": probe._path,
+                "samples": probe.samples,
+                "failures": probe.failures,
+                "max_latency_overall_s": round(probe.max_latency_s, 3),
+                "slow_samples": probe.slow(),
+                "judge_window": (
+                    {
+                        "start": _dt.datetime.fromtimestamp(window[0], tz=_dt.UTC).isoformat(),
+                        "end": _dt.datetime.fromtimestamp(window[1], tz=_dt.UTC).isoformat(),
+                        "duration_s": round(window[1] - window[0], 1),
+                        "samples": n,
+                        "max_latency_s": round(in_window, 3),
+                    }
+                    if window
+                    else None
+                ),
+            }
+
+        verdict["health"] = _probe_report(health)
+        verdict["loop"] = _probe_report(loop_probe)
         judge_max, judge_samples = (
-            health.max_in_window(*window) if window else (health.max_latency_s, 0)
+            loop_probe.max_in_window(*window) if window else (loop_probe.max_latency_s, 0)
         )
-        verdict["health"] = {
-            "samples": health.samples,
-            "failures": health.failures,
-            "max_latency_overall_s": round(health.max_latency_s, 3),
-            "slow_samples": health.slow(),
-            "judge_window": (
-                {
-                    "start": _dt.datetime.fromtimestamp(window[0], tz=_dt.UTC).isoformat(),
-                    "end": _dt.datetime.fromtimestamp(window[1], tz=_dt.UTC).isoformat(),
-                    "duration_s": round(window[1] - window[0], 1),
-                    "samples": judge_samples,
-                    "max_latency_s": round(judge_max, 3),
-                }
-                if window
-                else None
-            ),
+        # #1334: the turn-start window (POST ack -> first provider call) on the loop probe.
+        start_window = _turn_start_window(out / "sse.log", post_wall)
+        start_max, start_samples = (
+            loop_probe.max_in_window(*start_window) if start_window else (0.0, 0)
+        )
+        verdict["turn_start"] = {
+            "window_found": start_window is not None,
+            "duration_s": round(start_window[1] - start_window[0], 3) if start_window else None,
+            "samples": start_samples,
+            "max_latency_s": round(start_max, 3),
         }
         if sse is not None:
             verdict["sse"] = {
@@ -280,8 +344,14 @@ def run_leg(provider: str, model: str, max_health_latency_s: float, out: Path) -
             "judge_window_found": window is not None,
             "loop_live_during_judge": window is not None
             and judge_samples > 0
-            and health.failures == 0
+            and loop_probe.failures == 0
             and judge_max < max_health_latency_s,
+            "loop_live_whole_run": loop_probe.samples > 0
+            and loop_probe.failures == 0
+            and loop_probe.max_latency_s < max_health_latency_s,
+            # #1334: the accept path and the turn prologue no longer wait on the store.
+            "post_message_fast": verdict["post_message_latency_s"] < max_post_latency_s,
+            "loop_live_turn_start": start_window is not None and start_max < max_health_latency_s,
         }
         verdict["checks"] = checks
         verdict["pass"] = all(checks.values())
@@ -290,6 +360,8 @@ def run_leg(provider: str, model: str, max_health_latency_s: float, out: Path) -
         verdict["pass"] = False
     finally:
         health.stop.set()
+        if loop_probe is not None:
+            loop_probe.stop.set()
         if sse is not None:
             sse.stop.set()
         terminate_server(proc)
@@ -303,12 +375,19 @@ def main() -> int:
     ap.add_argument("--provider", default="codex")
     ap.add_argument("--model", default="gpt-5.6-luna")
     ap.add_argument("--max-health-latency", type=float, default=1.0)
+    ap.add_argument("--max-post-latency", type=float, default=0.5)
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
     stamp = _dt.datetime.now(tz=_dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     out = args.out or (OUT_ROOT / f"goal-judge-{args.provider}-{stamp}")
     out.mkdir(parents=True, exist_ok=True)
-    verdict = run_leg(args.provider, args.model, args.max_health_latency, out)
+    verdict = run_leg(
+        args.provider,
+        args.model,
+        args.max_health_latency,
+        out,
+        max_post_latency_s=args.max_post_latency,
+    )
     write_verdict(out / "verdict.json", verdict)
     print(json.dumps(verdict, indent=2, default=str))
     print(f"[leg_goal_judge] {'PASS' if verdict.get('pass') else 'FAIL'} evidence={out}")

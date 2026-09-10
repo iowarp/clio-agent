@@ -11,6 +11,7 @@ fires :func:`emit_background_exit_part` for observe-later consumption.
 
 from __future__ import annotations
 
+import functools
 import logging
 import uuid
 from collections import deque
@@ -19,8 +20,10 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.agents.spawn_placement import run_handle_fields
 from clio_agent.gact.events import Event
+from clio_agent.gact.part_atom_minter import run_transcript_job
 from clio_agent.gact.parts import Part
 from clio_agent.gact.session_store import _replace_session_messages
+from clio_agent.gact.transcript_projection import on_ledger_replaced
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
@@ -180,7 +183,16 @@ def _reconcile_stored_handoff(app: "FastAPI", task: "AgentTask") -> bool:
             terminal_part = _stored_terminal_handoff_part(app, task)
             terminal_part.sequence = max((row.sequence for row in message.parts), default=0) + 1
             message.parts.append(terminal_part)
-            _replace_session_messages(app, parent_sid, list(messages))
+            # #1334: this sweep also runs inside a GET's rehydrate on the loop thread;
+            # the ledger is replaced now, the atom lane re-materializes off the loop.
+            rows = list(messages)
+            _replace_session_messages(app, parent_sid, rows, atoms_minted=True)
+            run_transcript_job(
+                app,
+                parent_sid,
+                f"stale_handoff:{handle_id}",
+                functools.partial(on_ledger_replaced, app, parent_sid, rows),
+            )
             app.state.bus.publish(
                 Event(
                     type="message.part.added",

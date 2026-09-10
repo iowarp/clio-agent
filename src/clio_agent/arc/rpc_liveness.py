@@ -39,6 +39,12 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from clio_agent.arc.clio_core_liveness import RPC_STALLED_REASON, ClioCoreRuntimeLostError
+from clio_agent.arc.loop_guard import assert_store_write_off_loop, audit_store_read_on_loop
+
+# Store ops that WRITE: waited on from the loop thread they are a typed defect (#1334).
+# The rest (get / exists / search / scan) are audited, not refused: a loop-thread read
+# is the same stall class, but breaking a GET is not the fix — each site gets moved.
+_WRITE_OPS = frozenset({"put", "delete", "clear"})
 
 logger = logging.getLogger(__name__)
 
@@ -440,6 +446,10 @@ def guard_store_op(op_name: str) -> Callable[[Callable[..., Any]], Callable[...,
     def decorator(method: Callable[..., Any]) -> Callable[..., Any]:
         @functools.wraps(method)
         def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+            if op_name in _WRITE_OPS:
+                assert_store_write_off_loop(op_name, scope=str(args[1] if len(args) > 1 else ""))
+            else:
+                audit_store_read_on_loop(op_name, name=str(args[1] if len(args) > 1 else ""))
             self._live()
             return call_with_liveness(
                 lambda: method(self, *args, **kwargs),
@@ -464,6 +474,10 @@ def guarded_store_rpc(store: Any, op_name: str, make_call: Callable[..., Any], *
     ``*args`` are forwarded to ``make_call`` each call so a loop variable is passed as an
     argument (not captured), keeping the thunk re-runnable across a stall retry.
     """
+    if op_name in _WRITE_OPS:
+        assert_store_write_off_loop(op_name)
+    else:
+        audit_store_read_on_loop(op_name)
     store._live()
     return call_with_liveness(
         lambda: make_call(*args),

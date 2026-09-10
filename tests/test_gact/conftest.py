@@ -265,6 +265,10 @@ def complete_turn(
                     and msgs[i - 1]["role"] == "assistant"
                     and not msgs[i - 1].get("metadata", {}).get("live")
                 ):
+                    # #1334: finalize runs on the turn executor, so the assistant
+                    # message can be visible a few ms before the session status and
+                    # retry bookkeeping settle; "the turn completed" = the slot cleared.
+                    settle_turn_slot(client, sid, timeout=max(1.0, deadline - time.monotonic()))
                     return msgs[i - 1]
                 break
         time.sleep(poll_interval)

@@ -28,6 +28,7 @@ per-app ``app.state.ledger_evictions`` audit deque (itself bounded) and emits a
 
 from __future__ import annotations
 
+import threading
 from collections import deque
 from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
@@ -353,6 +354,31 @@ def _record_eviction(app: "FastAPI", payload: dict[str, Any]) -> None:
 # --------------------------------------------------------------------------- #
 
 
+_GUARD_INSTALL_LOCK = threading.Lock()
+
+
+def ledger_guard(app: "FastAPI") -> threading.RLock:
+    """The one re-entrant lock every in-memory list ledger mutation holds (#1334).
+
+    The list ledgers (``pending_diffs``, ``context_frames``, ...) are plain lists on
+    ``app.state``, appended by turn finalize and scanned / popped by the diff and
+    context routes. That was race-free only while finalize ran on the loop thread;
+    finalize now runs on the turn executor, so every append, scan-and-pop
+    (:func:`enforce_list_bound`) and wire snapshot takes this guard. Re-entrant so a
+    caller already holding it can call :func:`enforce_list_bound`. Installed lazily on
+    ``app.state.ledger_lock`` (no app.py growth), creation itself serialized.
+    """
+
+    lock = getattr(app.state, "ledger_lock", None)
+    if lock is None:
+        with _GUARD_INSTALL_LOCK:
+            lock = getattr(app.state, "ledger_lock", None)
+            if lock is None:
+                lock = threading.RLock()
+                app.state.ledger_lock = lock
+    return lock
+
+
 def enforce_list_bound(
     app: "FastAPI",
     ledger: list[Any],
@@ -364,13 +390,25 @@ def enforce_list_bound(
 
     FIFO ledgers are trimmed to ``max_entries`` (oldest first). Terminal-first
     ledgers evict the oldest terminal row down to ``max_entries``, then force the
-    oldest row only past ``hard_cap``.
+    oldest row only past ``hard_cap``. Holds :func:`ledger_guard` for the whole
+    scan-and-pop (the non-atomic part a concurrent append or scan would corrupt).
     """
 
     bound = LEDGER_BOUNDS.get(name)
     if bound is None:
         return
+    with ledger_guard(app):
+        _enforce_list_bound_locked(app, ledger, name, bound, session_id=session_id)
 
+
+def _enforce_list_bound_locked(
+    app: "FastAPI",
+    ledger: list[Any],
+    name: str,
+    bound: "LedgerBound",
+    *,
+    session_id: str,
+) -> None:
     if bound.is_terminal is not None:
         while len(ledger) > bound.max_entries:
             idx = _first_terminal_index(ledger, bound.is_terminal)

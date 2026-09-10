@@ -58,7 +58,7 @@ from clio_agent.gact.runtime.globals import (
     _session_agent_id,
 )
 from clio_agent.gact.runtime.memory_search import _memory_search_response
-from clio_agent.gact.runtime.retention import enforce_list_bound
+from clio_agent.gact.runtime.retention import enforce_list_bound, ledger_guard
 from clio_agent.gact.types import ErrorInfo
 from clio_agent.tools.execution import tool_workspace_context
 from clio_agent.tools.file_policy import validate_write_path
@@ -234,9 +234,10 @@ def _record_context_frame(
             else {},
         },
     }
-    frames = app.state.context_frames.setdefault(sid, [])
-    frames.append(frame)
-    enforce_list_bound(app, frames, "context_frames", session_id=sid)
+    with ledger_guard(app):  # #1334: the frame routes scan this list on the loop
+        frames = app.state.context_frames.setdefault(sid, [])
+        frames.append(frame)
+        enforce_list_bound(app, frames, "context_frames", session_id=sid)
     # NOT on the served UI wire: the context frame ("what the agent saw" — included
     # messages, token estimates) is observability the TUI surfaces on demand, not a
     # ReAct atom it renders inline. It stays queryable via
@@ -253,7 +254,8 @@ def _finalize_context_frame(
     *,
     error_info: Optional[ErrorInfo],
 ) -> None:
-    frames = app.state.context_frames.get(sid, [])
+    with ledger_guard(app):
+        frames = list(app.state.context_frames.get(sid, []))
     for frame in frames:
         if frame.get("id") != frame_id:
             continue

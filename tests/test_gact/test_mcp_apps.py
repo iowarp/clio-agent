@@ -512,9 +512,14 @@ def test_app_message_records_context_provenance_without_exposing_private_data(
     model_prompts: list[str] = []
 
     async def capture_turn(
-        app: Any, sid: str, user_text: str, user_message: Any, turn_agent_id: str
+        app: Any,
+        sid: str,
+        user_text: str,
+        user_message: Any,
+        turn_agent_id: str,
+        transcript_job: Any = None,
     ) -> None:
-        del app, sid, user_message, turn_agent_id
+        del app, sid, user_message, turn_agent_id, transcript_job
         model_prompts.append(user_text)
 
     monkeypatch.setattr(turn_module, "_run_turn_in_background", capture_turn)

@@ -172,6 +172,17 @@ def _review_part(review: ArtifactReview) -> Part:
 
 
 def _emit_review(app: FastAPI, review: ArtifactReview, event_type: str) -> None:
+    """Dispatch the review event off the loop (#1334: the routes are coroutines and the
+    event is a store RPC); inline when no loop runs on this thread."""
+
+    from clio_agent.gact.off_loop import schedule_off_loop  # noqa: PLC0415
+
+    schedule_off_loop(
+        lambda: _emit_review_now(app, review, event_type), label=f"document.review:{event_type}"
+    )
+
+
+def _emit_review_now(app: FastAPI, review: ArtifactReview, event_type: str) -> None:
     from clio_agent.gact.runtime.globals import _emit_semantic_event
 
     _emit_semantic_event(

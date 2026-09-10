@@ -41,7 +41,7 @@ from clio_agent.gact.runtime.memory_search import (
     _memory_search_response,
     _message_text_excerpt,
 )
-from clio_agent.gact.runtime.retention import enforce_list_bound
+from clio_agent.gact.runtime.retention import enforce_list_bound, ledger_guard
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, MemorySearchResponse
 from clio_agent.gact.workspace_scope import GLOBAL_WORKSPACE_ID
 
@@ -664,7 +664,9 @@ def register_memory_routes(app: FastAPI, deps: "GactDeps") -> None:
                 policy=policy,
             )
         frame: Mapping[str, Any] | None = None
-        for row in app.state.context_frames.get(target_sid, []):
+        with ledger_guard(app):
+            frame_rows = list(app.state.context_frames.get(target_sid, []))
+        for row in frame_rows:
             if isinstance(row, Mapping) and row.get("id") == frame_id:
                 frame = row
                 break

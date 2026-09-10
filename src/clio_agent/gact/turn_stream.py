@@ -26,6 +26,7 @@ from __future__ import annotations
 from functools import partial
 from typing import TYPE_CHECKING, Any, Optional
 
+from clio_agent.gact.part_atom_minter import close_turn_minter
 from clio_agent.gact.runtime.globals import _emit_semantic_event, _llm_provider_payload
 from clio_agent.gact.tool_observer import _mirror_transcript_state
 from clio_agent.gact.transcript import _transcript_text_field
@@ -84,6 +85,7 @@ def settle_turn_transcript(state: "TurnState") -> None:
 
     seal_and_settle(state.app, state.sid, state.transcript.snapshot())
     state.app.state.turn_transcripts.close(state.sid)
+    close_turn_minter(state.app, state.sid)  # #1334: deferred persists drained, thread stopped
 
 
 async def emit_chunk(

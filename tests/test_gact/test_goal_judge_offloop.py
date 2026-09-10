@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -111,6 +112,52 @@ def test_codex_shaped_lm_judges_through_the_async_path(tmp_path: Path) -> None:
     _in_ctx(body)
 
 
+def _turn_state() -> SimpleNamespace:
+    """The minimal turn state ``finalize_turn_async`` reads (a top-level, non-child turn)."""
+
+    app = SimpleNamespace(state=SimpleNamespace(sessions=SimpleNamespace(get=lambda _sid: None)))
+    return SimpleNamespace(app=app, sid="sess", turn_id="t", trace_id="tr")
+
+
+def test_finalize_turn_runs_off_the_loop(monkeypatch: Any) -> None:
+    """The sync finalize (ARC persistence RPCs, Stop-hook subprocesses) must not hold the
+    loop (#1334): a parked ``finalize_turn`` leaves the loop yielding."""
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def _parked_finalize(state: Any, pred: Any, **kwargs: Any) -> None:
+        started.set()
+        assert release.wait(timeout=5.0)
+
+    async def _goal(app: Any, **kwargs: Any) -> Any:
+        return None
+
+    monkeypatch.setattr(turn_finalize_goal, "finalize_turn", _parked_finalize)
+    monkeypatch.setattr(turn_finalize_goal, "dispatch_goal_at_finalize", _goal)
+    monkeypatch.setattr(turn_finalize_goal, "compose_goal_loop_stop_at_finalize", lambda *a: False)
+
+    async def exercise() -> None:
+        task = asyncio.create_task(
+            turn_finalize_goal.finalize_turn_async(
+                _turn_state(),
+                None,
+                drain_observed_tool_calls=lambda: [],
+                update_retry_attempt=lambda *a: None,
+            )
+        )
+        while not started.is_set():
+            await asyncio.sleep(0)
+        # An inline finalize could not let this coroutine resume until it had returned.
+        assert not task.done()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        await task
+
+    asyncio.run(exercise())
+
+
 def test_finalize_turn_async_runs_finalize_then_goal_then_compose(monkeypatch: Any) -> None:
     order: list[str] = []
     sentinel = object()
@@ -130,7 +177,7 @@ def test_finalize_turn_async_runs_finalize_then_goal_then_compose(monkeypatch: A
     monkeypatch.setattr(turn_finalize_goal, "finalize_turn", _finalize)
     monkeypatch.setattr(turn_finalize_goal, "dispatch_goal_at_finalize", _goal)
     monkeypatch.setattr(turn_finalize_goal, "compose_goal_loop_stop_at_finalize", _compose)
-    state = SimpleNamespace(app=object(), sid="sess", turn_id="t", trace_id="tr")
+    state = _turn_state()
     asyncio.run(
         turn_finalize_goal.finalize_turn_async(
             state, None, drain_observed_tool_calls=lambda: [], update_retry_attempt=lambda *a: None

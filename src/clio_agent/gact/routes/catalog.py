@@ -46,6 +46,7 @@ from clio_agent.gact.catalog import (
     _truthy_command_field,
 )
 from clio_agent.gact.events import Event
+from clio_agent.gact.off_loop import emit_semantic_event_async, run_off_loop
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.routes.catalog_runtime_tools import agent_runtime_tool_rows
 from clio_agent.gact.runtime.commands import (
@@ -57,7 +58,6 @@ from clio_agent.gact.runtime.commands import (
 )
 from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
-    _emit_semantic_event,
     _gact_app_context,
 )
 from clio_agent.gact.runtime.retention import enforce_list_bound
@@ -418,7 +418,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             ).model_dump(exclude_none=True),
         )
 
-    def _command_audit_row(
+    async def _command_audit_row(  # #1334: awaited; its semantic event is a store RPC
         *,
         sid: str,
         cmd_id: str,
@@ -450,7 +450,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
         app.state.command_audit.append(row)
         enforce_list_bound(app, app.state.command_audit, "command_audit", session_id=sid)
         event_status = status if status in {"completed", "failed", "denied"} else "completed"
-        _emit_semantic_event(
+        await emit_semantic_event_async(
             app,
             sid,
             f"command.invocation.{event_status}",
@@ -575,7 +575,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             elif cmd_id not in allowed_ids:
                 deny_reason = f"command {cmd_id} is not allowed for agent {caller_agent_id}"
             if deny_reason:
-                audit = _command_audit_row(
+                audit = await _command_audit_row(
                     sid=sid,
                     cmd_id=cmd_id,
                     command_meta=command_meta,
@@ -646,7 +646,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                 )
             except HTTPException as exc:
                 if caller_type == "agent":
-                    _command_audit_row(
+                    await _command_audit_row(
                         sid=sid,
                         cmd_id=cmd_id,
                         command_meta=command_meta,
@@ -686,7 +686,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             agent_body_text = str(getattr(pred, "answer", "") or "").strip()
             if not agent_body_text:
                 agent_body_text = f"user command {cmd_id} completed with no answer"
-            audit = _command_audit_row(
+            audit = await _command_audit_row(
                 sid=sid,
                 cmd_id=cmd_id,
                 command_meta=command_meta,
@@ -735,7 +735,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "command_audit": audit,
                 },
             )
-            deps.append_session_message(app, sid, sys_msg)
+            await run_off_loop(deps.append_session_message, app, sid, sys_msg)
             app.state.sessions.update(sid, message_count=len(app.state.messages.get(sid, [])))
             app.state.bus.publish(
                 Event(
@@ -767,7 +767,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                 summary=f"clear session messages for {sid}",
                 reason="user_requested_session_clear",
             )
-            deps.delete_session_messages(app, sid)
+            await run_off_loop(deps.delete_session_messages, app, sid)  # #1334
             app.state.sessions.update(sid, message_count=0)
             app.state.bus.publish(
                 Event(
@@ -865,7 +865,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             stop_reason="end_turn",
             metadata={"synthetic": "command_result", "command": cmd_id},
         )
-        _emit_semantic_event(
+        await emit_semantic_event_async(
             app,
             sid,
             "command.invocation.completed",
@@ -879,7 +879,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                 "command_source": str(command_meta.get("source") or ""),
             },
         )
-        deps.append_session_message(app, sid, sys_msg)
+        await run_off_loop(deps.append_session_message, app, sid, sys_msg)
         app.state.bus.publish(
             Event(
                 type="message.created",

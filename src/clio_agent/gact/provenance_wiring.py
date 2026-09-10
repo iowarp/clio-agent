@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from clio_agent.gact.off_loop import schedule_off_loop
 from clio_agent.gact.runtime.globals import _emit_semantic_event
 
 
@@ -36,22 +37,28 @@ def install_session_lifecycle_observer(app: Any) -> None:
     """
 
     def _observe_session_lifecycle(event_type: str, session: Any) -> None:
-        _emit_semantic_event(
-            app,
-            str(session.id),
-            event_type,
-            trace_id=f"session:{session.id}",
-            status="completed",
-            summary=f"session {session.id} {event_type.rsplit('.', 1)[-1]}",
-            actor={"role": "system"},
-            subject={"session_id": session.id},
-            payload={
-                "workspace_id": session.workspace_id,
-                "parent_session_id": session.parent_session_id,
-                "agent": dict(session.agent),
-                "started_at": session.created_at,
-            },
-        )
+        # #1334: ``SessionStore.create/delete`` are called inline by async routes; the
+        # event's store RPC must not run on the loop thread, so it is dispatched off it
+        # when a loop runs here (inline otherwise), failures audited + logged.
+        def _emit() -> None:
+            _emit_semantic_event(
+                app,
+                str(session.id),
+                event_type,
+                trace_id=f"session:{session.id}",
+                status="completed",
+                summary=f"session {session.id} {event_type.rsplit('.', 1)[-1]}",
+                actor={"role": "system"},
+                subject={"session_id": session.id},
+                payload={
+                    "workspace_id": session.workspace_id,
+                    "parent_session_id": session.parent_session_id,
+                    "agent": dict(session.agent),
+                    "started_at": session.created_at,
+                },
+            )
+
+        schedule_off_loop(_emit, label=f"session.lifecycle:{event_type}")
 
     app.state.sessions.set_lifecycle_observer(_observe_session_lifecycle)
 

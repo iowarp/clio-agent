@@ -21,7 +21,7 @@ Slice 0 (this file's introduction) only stands the dataclass up and threads
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.runtime.globals import _semantic_trace_id
@@ -88,6 +88,13 @@ class TurnState:
     # terminals emitted only at the commit-to-run seam (immediately before forward),
     # so a turn aborted after enrichment leaves them pending for the next turn.
     pending_notification_task_ids: list[str] = field(default_factory=list)
+    # #1334: the user message's deferred ARC transcript persist (staged on the accept
+    # path with ``atoms_minted=True``); the turn's off-loop setup runs it FIRST, must-
+    # succeed. ``None`` when the accept path minted inline (tests / legacy callers).
+    transcript_job: "Optional[Callable[[], None]]" = None
+    # #1334: the attached-context failure the off-loop setup observed, raised as
+    # ``_ContextFileAccessError`` at the commit-to-run seam (formerly a body local).
+    context_file_error: "Optional[ErrorInfo]" = None
 
     # --- Mutable accumulators (reassigned as the turn progresses) ---
     error_info: "Optional[ErrorInfo]" = None

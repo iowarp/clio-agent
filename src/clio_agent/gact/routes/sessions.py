@@ -31,6 +31,7 @@ from clio_agent.gact.events import Event
 from clio_agent.gact.goal import stop_session_goal
 from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
 from clio_agent.gact.messaging import raise_on_reserved_metadata
+from clio_agent.gact.off_loop import emit_semantic_event_async, run_off_loop
 from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.protocol_v3 import project_for_request, session_to_v3
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
@@ -48,7 +49,6 @@ from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.constants import _installed_clio_agent_version
 from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
-    _emit_semantic_event,
     _new_attempt_id,
     _new_memory_event_id,
     _new_question_id,
@@ -314,9 +314,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        deps.delete_session_messages(app, sid)
+        await run_off_loop(deps.delete_session_messages, app, sid)
         deps.delete_session_context_files(app, sid)
-        deps.release_session_arc(app, sid)
+        await run_off_loop(deps.release_session_arc, app, sid)  # #1334: drops _events scopes
         purge_session_tasks(app, sid)
         return Response(status_code=204)
 
@@ -377,7 +377,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         )
 
-    def _commit_rollback(
+    async def _commit_rollback(  # #1334: awaited; the ledger replace is store RPCs
         sid: str,
         *,
         operation: str,
@@ -387,7 +387,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         include_target: bool = False,
     ) -> dict[str, Any]:
         replacement_messages = preserve_a2ui(sid, kept_messages, deleted_messages, operation)
-        deps.replace_session_messages(app, sid, replacement_messages)
+        await run_off_loop(deps.replace_session_messages, app, sid, replacement_messages)
         deleted_ids = [m.id for m in deleted_messages]
         updated = app.state.sessions.update(
             sid,
@@ -482,7 +482,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             summary=f"undo last {count} message(s) in session {sid}",
             reason="user_requested_session_undo",
         )
-        return _commit_rollback(
+        return await _commit_rollback(
             sid,
             operation="undo",
             kept_messages=kept,
@@ -571,7 +571,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             summary=f"rewind session {sid} to message {target_message_id}",
             reason="user_requested_session_rewind",
         )
-        return _commit_rollback(
+        return await _commit_rollback(
             sid,
             operation="rewind",
             kept_messages=kept,
@@ -628,9 +628,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             title=title,
             parent_session_id=sid,
         )
-        # Deep-copy parts so the fork's message log doesn't alias the
-        # source's. Pydantic's model_copy gives us a snapshot.
-        deps.replace_session_messages(
+        # Deep-copy parts so the fork's log doesn't alias the source's (model_copy snapshot).
+        await run_off_loop(
+            deps.replace_session_messages,
             app,
             new_sess.id,
             [m.model_copy(deep=True) for m in src_msgs],
@@ -863,7 +863,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             compacted_message_ids=[mid for m in ledger if (mid := _attr(m, "id", ""))],
         )
         replacement_messages = preserve_a2ui(sid, [compact_message], ledger, "compact")
-        deps.replace_session_messages(app, sid, replacement_messages)
+        await run_off_loop(deps.replace_session_messages, app, sid, replacement_messages)
         memory_event = {
             "id": event_id,
             "version": 1,
@@ -884,7 +884,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             },
         }
         app.state.memory_events.setdefault(sid, []).append(memory_event)
-        _emit_semantic_event(
+        await emit_semantic_event_async(
             app,
             sid,
             "memory.compacted",
@@ -974,7 +974,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 msg_rows.append(msg)
             except Exception:  # noqa: BLE001 - malformed message row skipped during rewind copy
                 continue
-        deps.replace_session_messages(app, new_sess.id, msg_rows)
+        await run_off_loop(deps.replace_session_messages, app, new_sess.id, msg_rows)
         context_files: dict[str, dict[str, Any]] = {}
         for row in blob.get("context_files", []):
             if not isinstance(row, Mapping):

@@ -17,6 +17,8 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
 
+from .conftest import settle_turn_slot
+
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
 # test's ``build_app(agent=...)`` host fake.
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
@@ -85,12 +87,18 @@ class _SlowAgent:
     """Agent that sleeps long enough for /cancel to race in."""
 
     def __init__(self, sleep_s: float = 5.0) -> None:
+        import threading
+
         self.sleep_s = sleep_s
         self.completed = False
+        # #1334: the turn prologue runs on the executor and the POST acks before it,
+        # so "the forward is running" is observed, never assumed from a fixed sleep.
+        self.started = threading.Event()
 
     def forward(self, question: str, session_id: str):
         import time
 
+        self.started.set()
         time.sleep(self.sleep_s)
         self.completed = True
         return type(
@@ -137,9 +145,9 @@ def test_cancel_during_turn_marks_turn_as_cancelled(tmp_path: Path) -> None:
             f"/v1/sessions/{sid}/messages",
             json={"parts": [{"type": "text", "text": "hi"}]},
         )
-        # Give the loop a slice to schedule the task + start the
-        # blocking sleep in the executor.
-        _time.sleep(0.1)
+        # Wait until the forward is actually running in the executor (the prologue
+        # now runs off the loop after the ack, so a fixed slice is not enough).
+        assert agent.started.wait(timeout=10.0), "forward never started"
         c.post(f"/v1/sessions/{sid}/cancel")
         # Poll for the assistant turn to settle as cancelled.
         # complete_turn polls list_messages — the assistant
@@ -159,6 +167,9 @@ def test_cancel_during_turn_marks_turn_as_cancelled(tmp_path: Path) -> None:
                 break
             _time.sleep(0.1)
         assert assistant is not None, "cancel didn't settle the turn within 3s"
+        # #1334: finalize runs on the executor; the persisted message is visible a few
+        # ms before the terminal status publish, so wait for the turn slot to clear.
+        settle_turn_slot(c, sid)
         assert assistant["error_info"]["error"] == "cancelled"
         assert assistant["error_info"]["details"]["execution_cancellation"] == "best_effort"
         assert assistant["error_info"]["details"]["executor_work_may_continue"] is True
@@ -273,6 +284,7 @@ def test_late_tool_completion_after_cancel_is_not_reported_as_success(
                 break
             _time.sleep(0.05)
         assert assistant is not None, "cancel didn't settle the turn within 3s"
+        settle_turn_slot(c, sid)  # #1334: the terminal publishes follow the persist
         assert assistant["error_info"]["error"] == "cancelled"
         assert agent.completed.wait(timeout=2.0)
 

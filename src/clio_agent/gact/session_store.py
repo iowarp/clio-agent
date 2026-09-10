@@ -58,8 +58,15 @@ def _metrics_counters(app: "FastAPI") -> Any:
     return getattr(app.state, "metrics_counters", None)
 
 
-def _append_session_message(app: "FastAPI", session_id: str, message: "Message") -> None:
-    """Append one chronological message to memory and disk."""
+def _append_session_message(
+    app: "FastAPI", session_id: str, message: "Message", *, atoms_minted: bool = False
+) -> None:
+    """Append one chronological message to memory and disk.
+
+    ``atoms_minted=True`` (#1334): the caller persists the message's ARC atoms itself,
+    off the loop thread (the turn's minter / off-loop setup); only the in-memory ledger
+    and the local message store are written here. Explicit, never inferred.
+    """
 
     app.state.messages.setdefault(session_id, []).append(message)
     counters = _metrics_counters(app)
@@ -77,7 +84,7 @@ def _append_session_message(app: "FastAPI", session_id: str, message: "Message")
         on_message_appended,
     )
 
-    on_message_appended(app, session_id, message)
+    on_message_appended(app, session_id, message, atoms_minted=atoms_minted)
 
 
 def _reconcile_restart_interrupted_sessions(app: "FastAPI") -> None:
@@ -195,8 +202,14 @@ def _replace_session_messages(
     app: "FastAPI",
     session_id: str,
     messages: list["Message"],
+    *,
+    atoms_minted: bool = False,
 ) -> None:
-    """Replace one session's message ledger in memory and disk."""
+    """Replace one session's message ledger in memory and disk.
+
+    ``atoms_minted=True`` (#1334): the caller re-materializes the atom lane itself, off
+    the loop thread; see :func:`_append_session_message`.
+    """
 
     app.state.messages[session_id] = list(messages)
     counters = _metrics_counters(app)
@@ -212,7 +225,8 @@ def _replace_session_messages(
         on_ledger_replaced,
     )
 
-    on_ledger_replaced(app, session_id, list(messages))
+    if not atoms_minted:
+        on_ledger_replaced(app, session_id, list(messages))
 
 
 def _delete_session_messages(app: "FastAPI", session_id: str) -> None:

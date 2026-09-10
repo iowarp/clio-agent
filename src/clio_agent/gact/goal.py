@@ -48,6 +48,7 @@ from typing import Any, Literal, Optional
 
 from clio_agent import conf
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.work_state import work_record_patch
 from clio_agent.runtime import trace
 
@@ -505,8 +506,33 @@ def _enqueue_goal_redrive(
     )
 
 
+def _settle_goal_decision(
+    app: Any, session_id: str, goal: dict[str, Any], llm: Any, turn_id: str, trace_id: str
+) -> GoalDecision:
+    """The post-judge persistence (snapshot, redrive enqueue, ``goal.<outcome>`` event).
+
+    Runs OFF the loop (#1334: the semantic event is a store RPC; the loop thread waited
+    on it right after the judge). Sequenced by the caller's await, so the redrive
+    enqueue still precedes the TurnRunner's done-callback drain.
+    """
+
+    elapsed_s, tokens_spent = _budget_spent(app, session_id, goal)
+    decision = evaluate_goal(goal, llm=llm, elapsed_s=elapsed_s, tokens_spent=tokens_spent)
+    if app.state.sessions.get(session_id) is not None:
+        _put_goal(app, session_id, decision.new_state)
+    if decision.outcome == "redrive":
+        _enqueue_goal_redrive(app, session_id, decision, goal)
+    _emit_goal_event(app, session_id, decision, turn_id=turn_id, trace_id=trace_id)
+    return decision
+
+
 async def dispatch_goal_at_finalize(
-    app: Any, *, session_id: str, turn_id: str = "", trace_id: str = ""
+    app: Any,
+    *,
+    session_id: str,
+    turn_id: str = "",
+    trace_id: str = "",
+    executor: Any = None,
 ) -> "GoalDecision | None":
     """Evaluate the session's goal at the turn-finalize boundary (never raises).
 
@@ -539,13 +565,9 @@ async def dispatch_goal_at_finalize(
                 goal.get("goal_id"),
             )
             return None
-        elapsed_s, tokens_spent = _budget_spent(app, session_id, goal)
-        decision = evaluate_goal(goal, llm=llm, elapsed_s=elapsed_s, tokens_spent=tokens_spent)
-        if app.state.sessions.get(session_id) is not None:
-            _put_goal(app, session_id, decision.new_state)
-        if decision.outcome == "redrive":
-            _enqueue_goal_redrive(app, session_id, decision, goal)
-        _emit_goal_event(app, session_id, decision, turn_id=turn_id, trace_id=trace_id)
+        decision = await run_off_loop(
+            _settle_goal_decision, app, session_id, goal, llm, turn_id, trace_id, executor=executor
+        )
         logger.info(
             "goal eval goal_id=%s outcome=%s reason=%s",
             goal.get("goal_id"),

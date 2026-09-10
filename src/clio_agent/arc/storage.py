@@ -65,6 +65,7 @@ from clio_agent.arc.clio_core_liveness import (  # noqa: F401 - re-exported for 
 # module (#892), re-exported above for callers/tests; blob writes ride the
 # bounded rc=13-class retry owner module (#893).
 from clio_agent.arc.clio_core_retry import put_blob_with_retry
+from clio_agent.arc.companion_policy import may_carry_companion
 
 # Per-RPC stall guard (#948 S4): every native op below runs through this so a ZOMBIE
 # daemon (socket alive, RPC hung) degrades typed instead of freezing the caller.
@@ -738,21 +739,21 @@ class ClioCoreStore:
         tier: str = "warm",
         search_text: Optional[str] = None,
     ) -> None:
-        # Multi-RPC method: each native call is guarded INDIVIDUALLY (guarded_store_rpc)
-        # so stall_after_s bounds a single RPC, never the whole method body.
+        # Multi-RPC: each native call is guarded individually so stall_after_s bounds ONE RPC.
         # base64-wrap: CTE GetBlob UTF-8-decodes, so store ascii-safe bytes.
         payload = base64.b64encode(data)
         guarded_store_rpc(
             self, "put", lambda: put_blob_with_retry(self._cte.Tag(kind), name, payload)
         )
-        # Optional plain-text companion for BM25 semantic discovery (Thread D): a UTF-8
-        # companion at <name>.text carries the searchable text (scan()/get() skip it).
+        # Optional BM25 companion (Thread D) at <name>.text; scan()/get() skip it.
         companion = name + _SEARCH_SUFFIX
         if search_text is not None:
             text = search_text.encode("utf-8")
             guarded_store_rpc(
                 self, "put", lambda: put_blob_with_retry(self._cte.Tag(kind), companion, text)
             )
+        elif not may_carry_companion(kind, name):
+            return  # #1334: the reserved ``_events`` family never has a companion; 1 RPC
         elif guarded_store_rpc(self, "put", lambda: self._cte.Tag(kind).GetBlobSize(companion)) > 0:
             guarded_store_rpc(  # drop a now-stale companion
                 self, "put", lambda: self._client.DelBlob(self._cte.Tag(kind).GetTagId(), companion)
@@ -800,10 +801,9 @@ class ClioCoreStore:
         self._client.DelBlob(tag_id, name + _SEARCH_SUFFIX)  # companion (no-op if absent)
 
     def clear(self) -> None:
-        # Multi-RPC method: each DelBlob (and the per-kind listing) is guarded
-        # INDIVIDUALLY so a legitimately long, PROGRESSING clear over many blobs (each
-        # DelBlob prompt, total > stall_after_s) is never misclassified as a stalled
-        # peer. Only a single RPC that itself hangs triggers the stall ladder.
+        # Multi-RPC: each DelBlob (and the per-kind listing) is guarded INDIVIDUALLY so a
+        # long, PROGRESSING clear over many blobs (total > stall_after_s) is never
+        # misclassified as a stalled peer; only a single hanging RPC trips the ladder.
         for kind in ARC_KINDS:
             tag_id = guarded_store_rpc(self, "clear", lambda k: self._cte.Tag(k).GetTagId(), kind)
             blob_names = guarded_store_rpc(
