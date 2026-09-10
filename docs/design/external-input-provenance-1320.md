@@ -1,7 +1,17 @@
 # External input provenance (#1320)
 
-Status: implemented locally; focused backend, component, and contained Chromium
-verification passed.
+Status: backend provenance capture (below) is implemented and gated. The UI
+half — the "Input sources" list and the "provenance incomplete" warning on a
+tool row — was re-landed under #1336, entirely on the backend: presenter
+blocks appended to the `tool_result` part's `presentation.blocks` (one `link`
+block per external input, one `text` warning block when the contract is
+unknown), not client code. The `web/` React workspace (gact-tui #389) renders
+`ToolPresentation` blocks generically, so no client change was needed. The
+original UI implementation below — the `codex/provider-runtime-provenance`
+gact-tui commit @ `d395796e`, written against the legacy `apps/web` client
+that #389 replaced wholesale — is superseded and its branch is gone; the
+Chromium/pnpm verification steps it describes no longer apply to the current
+client.
 
 Successful calls to the qualified built-in filesystem reader and CLIO Kit
 Geo/Pandas/Plot consumers retain external file arguments as durable `used`

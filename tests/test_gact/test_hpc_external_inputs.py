@@ -308,6 +308,27 @@ def test_real_observer_persists_output_free_external_read_for_api_and_tool_row(
             "/v1/sessions", json={"title": "read", "workspace_id": workspace["id"]}
         ).json()
         observer = app.state.make_tool_observer()
+
+        # #1336 ordering decision: the transform record is observed BEFORE the
+        # ``tool.call.completed`` SSE payload is published, so the live payload
+        # and the stored part carry the same provenance-augmented presentation
+        # (reload == live). Pin it directly: at the moment each completed event
+        # reaches the bus, this call's TransformRecord already exists.
+        from clio_agent.gact.artifacts.registry import get_registry
+
+        registry = get_registry(app)
+        transform_present_at_publish: list[bool] = []
+        _original_publish = app.state.bus.publish
+
+        def _pinning_publish(event: Any) -> None:
+            if event.type == "tool.call.completed":
+                transform_present_at_publish.append(
+                    registry.get_transform(event.payload["call_id"]) is not None
+                )
+            return _original_publish(event)
+
+        app.state.bus.publish = _pinning_publish
+
         with _gact_app_context(app), _tool_session_context(session["id"]):
             observer("pandas_profile_csv", {"data_path": str(external)}, "started", None)
             observer(
@@ -335,6 +356,21 @@ def test_real_observer_persists_output_free_external_read_for_api_and_tool_row(
         assert (
             reloaded_part.metadata["provenance_inputs"] == result_part.metadata["provenance_inputs"]
         )
+        # #1336: the input-source link is a presenter block on the tool row, not
+        # only trailing metadata — and the live SSE payload the transcript first
+        # renders carries the identical presentation the reloaded part serves.
+        input_link_blocks = [
+            block for block in result_part.presentation["blocks"] if block["id"] == "input-source-0"
+        ]
+        assert len(input_link_blocks) == 1
+        assert input_link_blocks[0]["uri"] == str(external)
+        assert input_link_blocks[0]["label"] == "real-source.csv"
+        completed_events = [
+            event
+            for event in app.state.bus._history.get(session["id"], [])
+            if event.type == "tool.call.completed"
+        ]
+        assert completed_events[-1].payload["presentation"] == result_part.presentation
         response = client.get(f"/v1/transforms/{call_id}/lineage")
         assert response.status_code == 200
         graph = response.json()
@@ -359,6 +395,26 @@ def test_real_observer_persists_output_free_external_read_for_api_and_tool_row(
         assert reloaded_warning_part.metadata["provenance_warnings"][0]["reason"] == (
             "external_input_contract_unknown"
         )
+        # The warning row carries the degraded-status warning block, and the SSE
+        # payload for THIS completion matches the stored part's presentation too.
+        warning_blocks = [
+            block
+            for block in warning_part.presentation["blocks"]
+            if block["id"] == "provenance-incomplete"
+        ]
+        assert len(warning_blocks) == 1
+        assert warning_blocks[0]["severity"] == "warning"
+        assert warning_part.presentation["status"] == "degraded"
+        completed_events = [
+            event
+            for event in app.state.bus._history.get(session["id"], [])
+            if event.type == "tool.call.completed"
+        ]
+        assert completed_events[-1].payload["presentation"] == warning_part.presentation
+
+        # Both completions observed the transform record before publishing.
+        assert transform_present_at_publish == [True, True]
+        app.state.bus.publish = _original_publish
 
 
 def test_out_of_root_output_that_is_not_an_input_echo_still_rejects_containment(
