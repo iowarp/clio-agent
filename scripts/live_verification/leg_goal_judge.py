@@ -24,6 +24,10 @@ Asserts, per run:
   window (POST ack -> the first ``provider.call_started`` row in the audit log) holds
   the same bound; every slow probe (>= 0.5 s) is wallclock-stamped so a stall can be
   attributed to an audit-log row;
+* (#1334) the run refuses ZERO server-loop store writes: ``store_writes_on_loop`` counts
+  the ``store.write_on_loop_thread`` rows in the audit log, and each one is a semantic
+  event ``arc.memory.record_semantic_event`` then DROPPED. A write on a provider's private
+  loop audits under a different stage and is allowed, so it is not counted;
 * the SSE stream's max inter-event gap is RECORDED as evidence (the 15 s heartbeat).
 
 Run under the private real-CTE daemon (a gate never holds ARC-local)::
@@ -200,6 +204,28 @@ def _turn_start_window(sse_log: Path, after_ts: float) -> tuple[float, float] | 
     return None
 
 
+def _store_writes_on_loop(sse_log: Path) -> int:
+    """Count the server-loop store writes the run REFUSED (#1334).
+
+    ``arc.loop_guard`` writes one ``store.write_on_loop_thread`` audit row per refused
+    write, and ``arc.memory.record_semantic_event`` swallows the raise -- so every row is
+    a semantic event that was DROPPED, not merely delayed. Zero is the invariant: a write
+    reached from a coroutine belongs on the executor (``gact.off_loop``), and a write on a
+    provider's PRIVATE loop is audited under a different stage and allowed."""
+
+    if not sse_log.exists():
+        return 0
+    count = 0
+    for line in sse_log.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get("stage") == "store.write_on_loop_thread":
+            count += 1
+    return count
+
+
 def _judge_window(sse_log: Path) -> tuple[float, float] | None:
     """Read the judge window off the SSE audit log: ``(message.completed ts, judge ts)``.
 
@@ -341,6 +367,8 @@ def run_leg(
                 "max_gap_s": round(sse.max_gap_s, 1),
                 "error": sse.error,
             }
+        # #1334: every refused server-loop store write is a DROPPED semantic event.
+        verdict["store_writes_on_loop"] = _store_writes_on_loop(out / "sse.log")
         gm = verdict["goal_meta"] or {}
         checks = {
             "goal_armed": verdict["goal_armed"],
@@ -364,6 +392,8 @@ def run_leg(
             "loop_live_turn_start": start_window is not None
             and start_samples > 0
             and start_max < max_health_latency_s,
+            # #1334: the guard refused NO write, so no semantic event was dropped.
+            "no_store_writes_on_loop": verdict["store_writes_on_loop"] == 0,
         }
         verdict["checks"] = checks
         verdict["pass"] = all(checks.values())

@@ -682,18 +682,36 @@ def _io_logging_lm_cls() -> Any:
                 # the canonical trace is the single recorder.)
                 app, sid, turn_id, trace_id, emit = target
                 try:
-                    emit(
-                        app,
-                        sid,
-                        "lm.call",
-                        turn_id=turn_id,
-                        trace_id=trace_id,
-                        status="completed",
-                        summary=f"LM call ({record['finish_reason'] or 'ok'}).",
-                        provider={"model_id": str(record["model"] or "")},
-                        payload=record,
-                        detail_level="off",
-                    )
+                    from clio_agent.arc.loop_guard import on_server_loop  # noqa: PLC0415
+
+                    def _emit_lm_call() -> Any:
+                        return emit(
+                            app,
+                            sid,
+                            "lm.call",
+                            turn_id=turn_id,
+                            trace_id=trace_id,
+                            status="completed",
+                            summary=f"LM call ({record['finish_reason'] or 'ok'}).",
+                            provider={"model_id": str(record["model"] or "")},
+                            payload=record,
+                            detail_level="off",
+                        )
+
+                    if on_server_loop():
+                        # #1334: the finalize GOAL judge takes the async path (LM.acall),
+                        # so this ``finally`` runs ON the server loop and the persist is a
+                        # blocking store RPC. Hand it to the executor: the loop stays live
+                        # and the event still lands (the guard would refuse it here, and
+                        # ARC's record_semantic_event swallows that raise -> lost event).
+                        from clio_agent.gact.off_loop import schedule_off_loop  # noqa: PLC0415
+
+                        schedule_off_loop(_emit_lm_call, label="lm.call")
+                    else:
+                        # No loop, or a PRIVATE one (``_clio_streamed_call``'s
+                        # ``asyncio.run`` on an anyio worker): blocking here blocks only
+                        # this call's own thread, never the server.
+                        _emit_lm_call()
                 except Exception as exc:  # noqa: BLE001 - capture must never fail a call
                     # NEVER silent: surfaces e.g. the ARC-as-source fail-loud RuntimeError
                     # (no ARC reachable) without breaking the call.

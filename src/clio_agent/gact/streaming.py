@@ -58,6 +58,7 @@ from clio_agent.gact.native_model_inputs import (
     native_input_kwargs,
     record_dropped_model_inputs,
 )
+from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.providers.config import _provider_runtime_kind
 from clio_agent.gact.stream_chunks import _chunk_reasoning_text, _chunk_text
 from clio_agent.gact.stream_fallbacks import (
@@ -600,10 +601,17 @@ async def _try_streamed_forward(
     # as a streaming error rather than degrading. The predicate is the same one
     # the turn path uses to decide native dispatch (``_agent_accepts_images``),
     # so gate and dispatch cannot disagree.
+    # #1334: resolving that predicate INTROSPECTS the built agent (signature walk, and
+    # for a dspy.Module a ``__getattribute__`` hook that reads source files), and it is
+    # the last thing that runs on the server loop before the stream opens -- the live legs
+    # attributed a whole-run loop stall to it. Take the same off-loop hop the turn setup
+    # uses (``turn_forward._run_turn_setup_off_loop``); the result is identical.
     stream_input: dict[str, Any] = {
         "question": enriched_text,
         "session_id": sid,
-        **native_input_kwargs(app, sid, agent, images=images, files=files),
+        **await run_off_loop(
+            lambda: native_input_kwargs(app, sid, agent, images=images, files=files)
+        ),
     }
     try:
         # StreamListener emits ``StreamResponse`` instances that

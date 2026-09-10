@@ -23,8 +23,14 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+import clio_agent.arc.loop_guard as loop_guard
 import clio_agent.gact.goal as goal_module
-from clio_agent.arc.loop_guard import guard_hits, reset_guard_hits
+from clio_agent.arc.loop_guard import (
+    LoopThreadStoreWrite,
+    guard_hits,
+    on_server_loop,
+    reset_guard_hits,
+)
 from clio_agent.gact.app import build_app
 from clio_agent.gact.goal import dispatch_goal_at_finalize
 from clio_agent.gact.part_atoms import load_message_part_atoms
@@ -38,6 +44,33 @@ pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 def _write_hits() -> list[tuple[str, str, str, str]]:
     return [hit for hit in guard_hits() if hit[0] == "write"]
+
+
+def test_the_apps_lifespan_registers_the_loop_the_guard_refuses(tmp_path: Path) -> None:
+    """The lock's own premise (#1334 follow-up): the guard knows THIS app's loop.
+
+    The guard now refuses writes by loop IDENTITY, so if ``build_app``'s lifespan stopped
+    registering its loop, every test in this file would go green by accident -- a write on
+    the loop would score as a harmless "private loop" write. Assert the registration
+    directly, both while the app runs and after it tears down.
+    """
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=FakeClioAgent())
+    with TestClient(app):
+        loop = app.state.mcp_app_loop
+
+        async def _probe() -> bool:
+            return on_server_loop()
+
+        assert asyncio.run_coroutine_threadsafe(_probe(), loop).result(timeout=10) is True
+
+        async def _write_on_the_loop() -> None:
+            app.state.arc.append_segment("sess_probe", "probe", "observation", {"text": "x"})
+
+        with pytest.raises(LoopThreadStoreWrite):
+            asyncio.run_coroutine_threadsafe(_write_on_the_loop(), loop).result(timeout=10)
+    assert loop not in loop_guard._SERVER_LOOPS
+    assert loop not in loop_guard._DRAINING_LOOPS
 
 
 def test_a_real_turn_never_writes_the_store_from_the_loop(tmp_path: Path) -> None:
