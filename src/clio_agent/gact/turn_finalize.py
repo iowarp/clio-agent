@@ -60,7 +60,11 @@ from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
 from clio_agent.gact.evidence import (
     _tool_result_preview,
 )
-from clio_agent.gact.part_atom_minter import close_turn_minter, persist_finalized_message
+from clio_agent.gact.part_atom_minter import (
+    close_turn_minter,
+    failed_finalize_identity,
+    persist_finalized_message,
+)
 from clio_agent.gact.runtime.globals import (
     _emit_semantic_event,
     _iso_from_epoch,
@@ -698,23 +702,16 @@ def settle_failed_finalize(
 ) -> None:
     """#756: the turn's error envelope for a finalize-region crash.
 
-    Everything after :func:`~clio_agent.gact.turn._run_turn_in_background`'s
-    forward except-chain (answer grounding, part assembly, diff indexing,
-    publishes, persistence) runs inside a fire-and-forget task. An exception
-    escaping there used to die silently -- no ``message.completed``, no
-    ``session.status_changed``, session wedged in ``running`` forever. This
-    settles the turn instead: structured log, ``turn.failed`` semantic event,
-    ``message.completed`` with ``stop_reason=error`` + ``error_info``, a
-    persisted assistant error message (so the failure is visible in the reloaded
-    transcript, not just live), and a terminal ``session.status_changed``.
-    Nothing degrades silently: every best-effort step below logs its reason when
-    it fails.
+    The finalize region runs inside a fire-and-forget task; an exception escaping it
+    used to die silently (no ``message.completed`` / ``session.status_changed``, the
+    session wedged in ``running``). This settles the turn instead: structured log,
+    ``turn.failed`` semantic event, ``message.completed`` with ``stop_reason=error`` +
+    ``error_info``, a persisted assistant error message (visible on reload, not just
+    live; #1337: carrying the parts already sealed) and a terminal status. Nothing
+    degrades silently: every best-effort step below logs its reason when it fails.
+    ``persist_finalized_message`` binds ``gact.app._append_session_message`` at call
+    time so the live==reload test monkeypatches keep intercepting.
     """
-
-    # #714 danger set: bind through app at call time so test monkeypatches of
-    # clio_agent.gact.app._append_session_message (e.g. the live==reload
-    # property fixture) keep intercepting assistant persistence.
-    from clio_agent.gact.app import _append_session_message  # noqa: PLC0415
 
     logger.error(
         "turn finalize failed: reason=turn_finalize_error session=%s turn=%s error=%s",
@@ -726,17 +723,18 @@ def settle_failed_finalize(
     if trace.HF_ON:
         trace.hot("TURN-FINALIZE-FAIL", "%s %s: %s", sid, type(exc).__name__, exc)
 
-    # #767 PR2: a failed finalize must still settle the ledger — freeze it
-    # (late producer ops are rejected + audited) and retire it from the
-    # registry so it can never poison the next turn. Runs unconditionally,
-    # before the already-settled early return below.
+    # #767 PR2: a failed finalize must still settle the ledger — freeze it (late producer
+    # ops are rejected + audited) and retire it from the registry so it can never poison
+    # the next turn. Unconditional, before the already-settled early return below.
+    # #1337: the streamed parts already sealed on the lane survive under this envelope
+    # (their message id + dumps are captured BEFORE the ledger is retired).
+    asst_id, sealed_parts = failed_finalize_identity(app, sid)
     registry = getattr(app.state, "turn_transcripts", None)
     if registry is not None:
         transcript = registry.get(sid)
         if transcript is not None:
             transcript.abandon()
         registry.close(sid)
-    close_turn_minter(app, sid)  # #1334: drain the deferred persists, stop the thread
 
     # A crashed finalize never reaches the resource_link drain; clear the turn's
     # artifact buffer so a retry of the SAME turn cannot emit each part twice (#968
@@ -764,13 +762,13 @@ def settle_failed_finalize(
     )
     now = time.time()
     assistant_msg = Message(
-        id=_new_message_id("asst"),
+        id=asst_id or _new_message_id("asst"),
         turn_id=turn_id,
         session_id=sid,
         role="assistant",
         created_at=_iso_from_epoch(now),
         updated_at=_iso_from_epoch(now),
-        parts=[],
+        parts=sealed_parts,
         tokens=Tokens(**dict(turn_tokens)),
         cost_usd=turn_cost,
         stop_reason="error",
@@ -816,13 +814,14 @@ def settle_failed_finalize(
         )
     )
     try:
-        _append_session_message(app, sid, assistant_msg)
+        persist_finalized_message(app, sid, assistant_msg)  # #1337: remainder + envelope
     except Exception:  # noqa: BLE001 - persistence degraded; the status flip must still happen
         logger.exception(
             "assistant error-message persistence failed during finalize settle: session=%s turn=%s",
             sid,
             turn_id,
         )
+    close_turn_minter(app, sid)  # #1334: after the persist; the thread stops here
     try:
         update_retry_attempt(
             "failed",

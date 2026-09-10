@@ -713,7 +713,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # encapsulation), trimmed from an initial 77-line addition to 43 by cutting
     # the docstring and collapsing the log call before accepting this ratchet.
     # Ratchet back with #714/#767.
-    "src/clio_agent/gact/transcript.py": 1089,
+    # 1089 -> 989 (#1337): FieldStream extracted to field_stream.py; the seal sink added.
+    "src/clio_agent/gact/transcript.py": 989,
     # #918: +17 for the typed SkillNotDelegatableError ladder arm (a skill-bound
     # turn fails typed, never as generic agent_error).
     # #952 S4 Pass C: -1 (the suppressed_parent_resume_offsets init was removed
@@ -766,9 +767,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # explains why the top-level error_info.error stays "agent_error" (the
     # existing wire taxonomy) while details carries the full typed payload --
     # no behavior lines added, only the honesty fix's explanation.
-    # 891 -> 825 (#1334): the turn prologue (deferred user-message persist, turn.started,
+    # 891 -> 822 (#1334): the turn prologue (deferred user-message persist, turn.started,
     # enrichment, hooks) moved to turn_start_offloop.py and runs on the turn executor.
-    "src/clio_agent/gact/turn.py": 825,
+    "src/clio_agent/gact/turn.py": 822,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the
@@ -800,7 +801,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/stream_fallbacks.py, only the stamp lands here.
     # 861 -> 856 (#1333): the GOAL judge step moved to turn_finalize_goal.py (awaited).
     # 856 -> 839 (#1334): file_diff indexing moved to the guarded diff_ledger.py owner.
-    "src/clio_agent/gact/turn_finalize.py": 838,  # Interaction pause ownership moved to user_question_pause.py.
+    "src/clio_agent/gact/turn_finalize.py": 837,  # Interaction pause ownership moved to user_question_pause.py.
     # P5 (owner ask 2026-08-06): +7 for the child/subagent artifact-rollup call
     # site (comment + function-local import + one-line invocation, matching the
     # P4.1/P4.2/P1.6d dispatch idiom already used lower in this file); the

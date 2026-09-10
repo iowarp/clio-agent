@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from clio_agent.gact.part_atoms import (
     MESSAGE_PART_SCOPE,
     build_message_part_atoms,
+    group_atoms_in_order,
     mint_message_part_atoms,
     reproduce_message_wire,
 )
@@ -186,14 +187,13 @@ def assemble_session_messages(arc: Any, session_id: str) -> list[Message]:
     """
 
     store = arc._segments
-    groups: list[list[dict[str, Any]]] = []
-    for seg in store.list_segments(session_id, MESSAGE_PART_SCOPE, include_tombstoned=False):
-        content = seg.content
-        if int(content.get("part_index", 0) or 0) == 0 or not groups:
-            groups.append([content])  # a fresh message begins (part_index resets to 0)
-        else:
-            groups[-1].append(content)
-    messages = [Message(**reproduce_message_wire(atoms)) for atoms in groups]
+    # #1337: ONE grouping rule for both atom profiles (keyed by message id, closed by the
+    # envelope atom, the v1 ordinal boundary as the fallback) — see part_atoms.
+    lane = [
+        seg.content
+        for seg in store.list_segments(session_id, MESSAGE_PART_SCOPE, include_tombstoned=False)
+    ]
+    messages = [Message(**reproduce_message_wire(atoms)) for atoms in group_atoms_in_order(lane)]
     # #737 S6: workflow_state on the delegate rows is the recorded RESULT of the last
     # state_merge op for the scope — materialized schema-free here, NEVER re-folded on
     # read (design §2.8.d). A no-op when no op was recorded (rows keep their verbatim,

@@ -228,12 +228,11 @@ def _open_turn_transcript(app: "FastAPI", sid: str, turn_id: str) -> "TurnTransc
     ``app.state`` dicts so untouched finalize reads and the live projection
     keep working during the PR2/PR3 window.
 
-    The ledger stores every streamed thought/answer part VERBATIM (#881): the
-    server no longer binds a visible-text prose cleaner here — model prose flows
-    to the wire byte-for-byte and the DSPy contract markers are split off at the
-    root (the #877 line-start detector), not scrubbed out of the transcript.
+    Parts are stored VERBATIM (#881; contract markers split at the root, #877). #1337:
+    the seal sink persists each part when it becomes final (part_atom_minter).
     """
 
+    from clio_agent.gact.part_atom_minter import transcript_sink  # noqa: PLC0415
     from clio_agent.gact.transcript import EventBusTranscriptPublisher  # noqa: PLC0415
 
     carried_msg_id = str(
@@ -245,6 +244,7 @@ def _open_turn_transcript(app: "FastAPI", sid: str, turn_id: str) -> "TurnTransc
         sid,
         turn_id,
         EventBusTranscriptPublisher(app.state.bus, sid),
+        sink=transcript_sink(app, sid),
     )
     if carried_msg_id or carried_parts or carried_keys:
         transcript.adopt_carried_state(

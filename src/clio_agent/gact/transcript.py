@@ -48,9 +48,10 @@ import logging
 import threading
 import time
 from collections.abc import Mapping
-from typing import Any, Optional, Protocol
+from typing import Any, Callable, Optional, Protocol
 
 from clio_agent.gact.events import Event, EventBus
+from clio_agent.gact.field_stream import FieldStream  # noqa: F401 - re-export
 from clio_agent.gact.runtime.globals import (
     _iso_from_epoch,
     _new_message_id,
@@ -58,6 +59,10 @@ from clio_agent.gact.runtime.globals import (
 )
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime.stream_audit import stream_audit
+
+#: The seal sink (#1337): ``(message_id, part_dump, part_index, source)`` for a part that
+#: just became final. Called under the transcript lock; MUST NOT block (it queues).
+PartSink = Callable[[str, dict[str, Any], int, str], None]
 
 logger = logging.getLogger(__name__)
 
@@ -153,11 +158,17 @@ class TurnTranscript:
         session_id: str,
         turn_id: str,
         publisher: TranscriptPublisher,
+        sink: Optional[PartSink] = None,
     ) -> None:
         self.session_id = session_id
         self.turn_id = turn_id
         self.message_id: str = ""
         self._publisher = publisher
+        # #1337: the seal sink — called under the lock, NON-BLOCKING, with the dump of a
+        # part that just became final (see ``_seal_locked``); ``None`` = no eager persist.
+        self._sink = sink
+        self._sealed: set[str] = set()
+        self._seal_closed = False
         # Re-entrant: append_part -> ensure_message / close_open_text nest.
         self._lock = threading.RLock()
         # THE ledger. This exact list object is also exposed through
@@ -320,6 +331,12 @@ class TurnTranscript:
             if not part.id:
                 part.id = _new_part_id()
             self._parts.append(part)
+            # #1337: a tool_call is final once its result lands (presentation deltas
+            # mutate it until then); the result itself is final only at finalize.
+            if part.type == "tool_result" and part.call_id:
+                for call_part in self._parts:
+                    if call_part.type == "tool_call" and call_part.call_id == part.call_id:
+                        self._seal_locked(call_part, "live")
             effective_source = str(part.metadata.get("stream_source") or stream_source)
             self._publisher.publish(
                 "message.part.added",
@@ -761,11 +778,35 @@ class TurnTranscript:
 
         with self._lock:
             if not self._frozen:
+                # #1337: the finalize close goes straight to the minter's remainder
+                # (synchronous, on the finalize executor), not through the seal queue.
+                self._seal_closed = True
                 self._close_open_text_locked()
                 for index, part in enumerate(self._parts, start=1):
-                    part.sequence = index
+                    part.sequence = index  # idempotent re-stamp for sealed parts
                 self._frozen = True
             return list(self._parts)
+
+    def _seal_locked(self, part: Part, source: str) -> None:
+        """Hand a part that just became FINAL to the sink, once (#1337).
+
+        Stamps the 1-based ``sequence`` the way :meth:`finalize` will (a sealed part's
+        index never shifts: the open text part is always the tail and only unsealed
+        parts are ever removed), records the id, and calls the sink OUTSIDE any store
+        RPC (the sink only queues). A sink failure is logged, never breaks the ledger.
+        """
+
+        if self._sink is None or self._seal_closed or part.id in self._sealed:
+            return
+        index = next((i for i, c in enumerate(self._parts) if c is part), -1)
+        if index < 0:
+            return
+        part.sequence = index + 1
+        self._sealed.add(part.id)
+        try:
+            self._sink(self.message_id, part.model_dump(), index, source)
+        except Exception:  # noqa: BLE001 - the sink is non-blocking; a failure is audited there
+            logger.warning("transcript seal sink failed part=%s", part.id, exc_info=True)
 
     def abandon(self) -> None:
         """Freeze the ledger WITHOUT closing open text or publishing anything.
@@ -826,6 +867,7 @@ class TurnTranscript:
         # must observe the close (design §9 alias-view aliasing).
         part.text = buffered
         self._closed_text.setdefault((part.agent_id, open_field), []).append(buffered)
+        self._seal_locked(part, "live")  # #1337: final text -> one atom, before the publish
         self._publisher.publish(
             "message.part.completed",
             {
@@ -900,151 +942,6 @@ class TurnTranscript:
         )
 
 
-class FieldStream:
-    """Exactly-once text channel for one ``(agent_id, field)`` within one turn.
-
-    Take the handle around the LM call; deltas reach the transcript either
-    through :meth:`append` or directly through the stream tap
-    (``append_text_delta``) — the handle seeds its identity from the turn's
-    ledger state at construction, so both producer shapes count.
-    :meth:`finish` settles the channel — by op identity, never by string
-    comparison — deciding whether the batch ``fallback_text`` lands:
-
-    - a non-empty part landed for the channel -> keep it (closing the open
-      part first when it carries this channel's field); fallback audited + ignored
-    - nothing landed + fallback               -> ONE added+completed batch burst
-    - neither                                 -> ``None``
-
-    ``covers`` widens the channel to a SET of agent labels
-    (:meth:`TurnTranscript.turn_answer_stream`) — the same logical field can
-    stream under more than one attribution label for one LM call.
-    """
-
-    def __init__(
-        self,
-        transcript: TurnTranscript,
-        agent_id: str,
-        field: str,
-        *,
-        covers: Optional[frozenset[str]] = None,
-    ) -> None:
-        self._transcript = transcript
-        self._agent_id = str(agent_id or "")
-        self._field = str(field or "answer")
-        self._covers = covers if covers is not None else frozenset({self._agent_id})
-        self._finished = False
-        #: The part id this handle's text landed in; ``None`` until a delta
-        #: opens a part (or seeding/finish binds one).
-        self.part_id: Optional[str] = None
-        with transcript._lock:
-            open_part = self._open_channel_part_locked()
-            if open_part is not None:
-                self.part_id = open_part.id
-
-    def _open_channel_part_locked(self) -> Optional[Part]:
-        """The transcript's open part when it carries THIS channel's field."""
-
-        transcript = self._transcript
-        open_part = transcript._open_part
-        if open_part is None or transcript._open_field != self._field:
-            return None
-        if transcript._open_agent not in self._covers:
-            return None
-        return open_part
-
-    def _landed_locked(self) -> bool:
-        """Op identity: did this channel land a non-empty closed part this turn?"""
-
-        closed = self._transcript._closed_text
-        return any(bool(closed.get((agent, self._field))) for agent in self._covers)
-
-    def append(self, chunk: str) -> None:
-        """Route one streamed delta to the transcript; opens the part lazily."""
-
-        if not chunk:
-            return
-        transcript = self._transcript
-        with transcript._lock:
-            if self._finished:
-                transcript._audit_late_op(
-                    "field_stream.append",
-                    agent_id=self._agent_id,
-                    field=self._field,
-                )
-                return
-            transcript.append_text_delta(self._agent_id, self._field, chunk)
-            open_part = transcript._open_part
-            if open_part is not None:
-                self.part_id = open_part.id
-
-    def finish(
-        self,
-        *,
-        fallback_text: str = "",
-        fallback_metadata: Optional[Mapping[str, Any]] = None,
-    ) -> Optional[str]:
-        """Settle the channel; returns the final text that landed, if any.
-
-        ``fallback_metadata`` rides the batch burst's part metadata when the
-        fallback lands (e.g. the turn's ``stream_fallback`` payload).
-        """
-
-        transcript = self._transcript
-        with transcript._lock:
-            if self._finished:
-                transcript._audit_late_op(
-                    "field_stream.finish",
-                    agent_id=self._agent_id,
-                    field=self._field,
-                )
-                return None
-            self._finished = True
-            open_part = self._open_channel_part_locked()
-            if open_part is not None:
-                self.part_id = open_part.id
-                transcript._close_open_text_locked()
-            if self._landed_locked():
-                if fallback_text.strip():
-                    # The batch copy of an already-landed channel is dropped by
-                    # IDENTITY (a part landed this turn), never by text
-                    # comparison; audited so parity data exists (#733/#736's
-                    # replacement).
-                    stream_audit(
-                        "transcript.fieldstream.fallback_ignored",
-                        session_id=transcript.session_id,
-                        turn_id=transcript.turn_id,
-                        agent_id=self._agent_id,
-                        field=self._field,
-                        reason="already_streamed",
-                        fallback_len=len(fallback_text),
-                    )
-                closed = next(
-                    (p for p in transcript._parts if p.id == self.part_id),
-                    None,
-                )
-                return closed.text if closed is not None else ""
-            if transcript._frozen:
-                transcript._audit_late_op(
-                    "field_stream.finish",
-                    agent_id=self._agent_id,
-                    field=self._field,
-                )
-                return None
-            if not fallback_text.strip():
-                return None
-            # #881: the batch fallback is the model's answer field VERBATIM — the
-            # server binds no visible-text prose cleaner, so a non-whitespace
-            # fallback always lands (the whitespace-only case returned above).
-            part = transcript._append_batch_text_locked(
-                self._agent_id,
-                self._field,
-                fallback_text,
-                extra_metadata=fallback_metadata,
-            )
-            self.part_id = part.id
-            return fallback_text
-
-
 class TurnTranscriptRegistry:
     """``app.state.turn_transcripts`` — one open :class:`TurnTranscript` per session.
 
@@ -1063,6 +960,8 @@ class TurnTranscriptRegistry:
         sid: str,
         turn_id: str,
         publisher: TranscriptPublisher,
+        *,
+        sink: Optional[PartSink] = None,
     ) -> TurnTranscript:
         """Open the ledger for ``sid``'s new turn, evicting any leaked one loudly."""
 
@@ -1086,6 +985,7 @@ class TurnTranscriptRegistry:
                 session_id=sid,
                 turn_id=turn_id,
                 publisher=publisher,
+                sink=sink,
             )
             self._by_session[sid] = transcript
             return transcript

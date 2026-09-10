@@ -19,7 +19,9 @@ def persist_paused_transcript(state: "TurnState") -> str:
     existing ledger before it is retired so reload has the same tool activity.
     The question/approval ledger remains authoritative for the pending input.
     """
-    from clio_agent.gact.app import _append_session_message  # noqa: PLC0415
+    # #1337: the parts were sealed live; the pause writes only the remainder + envelope
+    # (barrier, remainder, then the ledger append through the gact.app seam).
+    from clio_agent.gact.part_atom_minter import persist_finalized_message  # noqa: PLC0415
 
     if not state.transcript.snapshot():
         return ""
@@ -40,7 +42,7 @@ def persist_paused_transcript(state: "TurnState") -> str:
         stop_reason="waiting_user",
         metadata=state.assistant_metadata,
     )
-    _append_session_message(state.app, state.sid, message)
+    persist_finalized_message(state.app, state.sid, message)
     payload = {
         "turn_id": state.turn_id,
         "message_id": message.id,
