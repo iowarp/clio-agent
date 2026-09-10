@@ -1240,6 +1240,14 @@ RATCHET_BASELINE: dict[str, int] = {
     # one-command install acceptance) adds it back slightly — net ratchet 1141 -> 1138 (still
     # a reduction vs the inherited baseline).
     "src/clio_agent/ui/cli.py": 1138,
+    # NEW entry (#1325/#1309/#1113): crossed the flat 800 cap (799 -> 1001) for
+    # the MRTR size-guard round-trip answered by the session's agent -- the
+    # inline ChainOfThought answerer, the answer_mode="turn" child-turn
+    # projection wiring, the unhinted-form audience routing, and the
+    # protocol-decline + _clio.elicitation disclosure stamp. Missed at commit
+    # time in #1331; added here while resolving the rebase onto
+    # fix/1333-goal-judge-off-loop so the ratchet gate is green.
+    "src/clio_agent/gact/agent_elicitation.py": 1001,
 }
 
 # Root of the source tree to scan, relative to the repository root.
