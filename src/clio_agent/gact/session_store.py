@@ -137,11 +137,6 @@ def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
     back to ``pop`` for a plain-dict ``app.state.messages`` (older/test wiring).
     """
 
-    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
-        on_ledger_deleted,
-    )
-
-    on_ledger_deleted(app, session_id)
     messages = app.state.messages
     discard = getattr(messages, "discard", None)
     if callable(discard):
@@ -154,6 +149,21 @@ def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.delete_session(session_id)
+    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
+        on_ledger_deleted,
+    )
+
+    try:
+        on_ledger_deleted(app, session_id)
+    except RuntimeError as exc:
+        # The user-visible session is already gone. Retain the immutable trace and
+        # report orphan projection cleanup without turning the completed delete into
+        # a retryable failure.
+        logger.warning(
+            "session transcript atom cleanup failed session_id=%s reason=%s",
+            session_id,
+            exc,
+        )
 
 
 def _release_session_arc(app: "FastAPI", session_id: str) -> None:

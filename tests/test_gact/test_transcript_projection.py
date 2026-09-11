@@ -44,6 +44,7 @@ from fastapi.testclient import TestClient
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact.app import build_app
 from clio_agent.gact.session_store import (
+    _append_session_message,
     _delete_session_messages,
     _replace_session_messages,
 )
@@ -131,6 +132,43 @@ def test_reload_equals_live_multiturn(tmp_path: Path) -> None:
         reloaded = [m.model_dump(exclude_none=True) for m in app.state.messages.get(sid, [])]
         report = N.diff_persistence(live, reloaded)
         assert report.empty, f"reload != live (multiturn):\n{report.pretty()}"
+
+
+def test_cold_reload_reconstructs_messages_from_arc_trace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lifecycle-erased atoms are restored from trace without reading MessageStore."""
+
+    from clio_agent.gact.part_atoms import MESSAGE_PART_SCOPE
+
+    app, arc = _build(tmp_path)
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "trace replay"}).json()["id"]
+        message = Message(
+            id="msg_trace_source",
+            turn_id="turn_trace_source",
+            session_id=sid,
+            role="user",
+            created_at="2026-09-10T12:00:00+00:00",
+            updated_at="2026-09-10T12:00:00+00:00",
+            parts=[Part(id="part_trace_source", type="text", text="retained exactly")],
+        )
+        _append_session_message(app, sid, message)
+        app.state.semantic_trace_backend.flush()
+        arc._segments.drop_scope(sid, MESSAGE_PART_SCOPE)
+        app.state.messages.clear()
+
+        monkeypatch.setattr(
+            app.state.message_store,
+            "load_session",
+            lambda _sid: (_ for _ in ()).throw(AssertionError("MessageStore was read")),
+        )
+        restored = app.state.messages.get(sid, [])
+
+        assert [item.model_dump(exclude_none=True) for item in restored] == [
+            message.model_dump(exclude_none=True)
+        ]
+        assert arc._segments.list_segments(sid, MESSAGE_PART_SCOPE)
 
 
 # --------------------------------------------------------------------------- #

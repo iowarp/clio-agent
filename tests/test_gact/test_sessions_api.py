@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from clio_agent.arc.schema import Conversation as ARCConversation
 from clio_agent.gact.app import build_app
 from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
+from clio_agent.gact.session_store import _append_session_message
 from clio_agent.gact.types import Message, Part, Tokens
 
 
@@ -201,6 +202,16 @@ class CapturingCompactAgent(RetryCompactAgent):
         return call()
 
 
+class SequencedCompactAgent(CapturingCompactAgent):
+    """Return a distinct summary for each model-context checkpoint."""
+
+    def _run_chat_agent(self, question: str, session_id: str) -> str:
+        self.chat_calls += 1
+        self.prompts.append(question)
+        assert session_id == ""
+        return f"SUMMARY {self.chat_calls}"
+
+
 def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
     agent = RetryCompactAgent()
     with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent)) as c:
@@ -216,14 +227,11 @@ def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
         assert body["event_id"].startswith("mem_")
         assert agent.retry_labels == ["compact_summary"]
         assert agent.chat_calls == 2
-        assert agent.arc.conversation is not None
-        arc_messages = agent.arc.conversation.messages
-        assert len(arc_messages) == 1
-        assert arc_messages[0].metadata["source"] == "gact_compact"
-        assert arc_messages[0].metadata["memory_event_id"] == body["event_id"]
-        assert "Recovered compact summary." in arc_messages[0].content
+        # Compaction no longer writes a second, unrelated ARC Conversation summary.
+        assert agent.arc.conversation is None
+        assert agent.arc.stored == []
         messages = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-        assert len(messages) == 1
+        assert len(messages) == 2
         part = messages[0]["parts"][0]
         # #832: the client-facing summary is a structured `compaction` part
         # (SPEC §4.5), not a `[compact summary]`-prefixed synthetic text part.
@@ -232,7 +240,7 @@ def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
         assert not part["summary"].startswith("[compact summary]")
         # `auto` defaults to False (user-triggered /compact); omitempty on the wire.
         assert part.get("auto", False) is False
-        # The archived ledger message ids this summary stands in for (#832).
+        # The model-context message ids this checkpoint stands in for (#832).
         assert part["compacted_message_ids"] == ["msg_seed"]
         assert part["metadata"]["synthetic"] == "compact_summary"
         assert messages[0]["metadata"]["memory_event_id"] == body["event_id"]
@@ -241,6 +249,8 @@ def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
             assert not (
                 p.get("type") == "text" and p.get("text", "").startswith("[compact summary]")
             )
+        assert messages[1]["id"] == "msg_seed"
+        assert messages[1]["parts"][0]["text"] == ("important experiment details and next steps")
         events = c.get(f"/v1/sessions/{sid}/memory/events").json()["events"]
         assert len(events) == 1
         event = events[0]
@@ -248,8 +258,8 @@ def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
         assert event["version"] == 1
         assert event["type"] == "compact_summary"
         assert event["summary_message_id"] == messages[0]["id"]
-        assert event["archived_count"] == 1
-        assert event["arc_status"] == "stored"
+        assert event["compacted_count"] == 1
+        assert "arc_status" not in event
         assert event["metadata"]["source"] == "gact_compact"
         detail = c.get(f"/v1/sessions/{sid}/memory/events/{body['event_id']}").json()
         assert detail["event"]["id"] == body["event_id"]
@@ -300,13 +310,55 @@ def test_compact_preserves_ready_a2ui_surface(tmp_path: Path) -> None:
         assert c.app.state.a2ui_store.projection_degradations(sid) == []
         messages = c.app.state.messages[sid]
         assert [part.type for message in messages for part in message.parts] == [
+            "text",
             "compaction",
-            "a2ui",
         ]
-        assert messages[-1].metadata == {
-            "synthetic": "a2ui_preservation",
-            "preserved_by": "compact",
-        }
+
+
+def test_repeated_compaction_retains_transcript_and_advances_model_checkpoint(
+    tmp_path: Path,
+) -> None:
+    agent = SequencedCompactAgent()
+    with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent)) as c:
+        sid = c.post("/v1/sessions", json={"title": "repeat compact"}).json()["id"]
+        _seed_text_message(c, sid, "ORIGINAL TRANSCRIPT ROW")
+        first = c.post(f"/v1/sessions/{sid}/compact", json={})
+        assert first.status_code == 200, first.text
+
+        now = datetime.now(timezone.utc).isoformat()
+        after_first = Message(
+            id="msg_after_first",
+            session_id=sid,
+            role="user",
+            created_at=now,
+            updated_at=now,
+            parts=[Part(id="part_after_first", type="text", text="AFTER FIRST CHECKPOINT")],
+            tokens=Tokens(),
+            stop_reason="end_turn",
+        )
+        _append_session_message(c.app, sid, after_first)
+        second = c.post(f"/v1/sessions/{sid}/compact", json={})
+        assert second.status_code == 200, second.text
+
+        chronological = list(c.app.state.messages[sid])
+        assert [message.id for message in chronological[:1]] == ["msg_seed"]
+        assert [part.type for message in chronological for part in message.parts] == [
+            "text",
+            "compaction",
+            "text",
+            "compaction",
+        ]
+        assert chronological[0].parts[0].text == "ORIGINAL TRANSCRIPT ROW"
+        assert chronological[1].parts[0].summary == "SUMMARY 1"
+        assert chronological[2].parts[0].text == "AFTER FIRST CHECKPOINT"
+        assert chronological[3].parts[0].summary == "SUMMARY 2"
+        assert chronological[3].parts[0].compacted_message_ids == [
+            chronological[1].id,
+            "msg_after_first",
+        ]
+        assert "SUMMARY 1" in agent.prompts[1]
+        assert "AFTER FIRST CHECKPOINT" in agent.prompts[1]
+        assert "ORIGINAL TRANSCRIPT ROW" not in agent.prompts[1]
 
 
 def test_compact_surfaces_exhausted_transient_provider_errors(tmp_path: Path) -> None:
