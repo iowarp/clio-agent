@@ -566,6 +566,28 @@ def finalize_turn(
             "stop_reason": completed_payload["stop_reason"],
         },
     )
+    metadata_patch: dict[str, Any] | None = None
+    if state.last_prompt_usage:
+        current_session = state.app.state.sessions.get(state.sid)
+        current_usage = (
+            getattr(current_session, "metadata", {}).get("context_usage_by_scope", {})
+            if current_session is not None
+            else {}
+        )
+        usage_by_scope = dict(current_usage) if isinstance(current_usage, dict) else {}
+        session_agent = getattr(current_session, "agent", {})
+        session_agent_id = (
+            str(session_agent.get("id") or "") if isinstance(session_agent, Mapping) else ""
+        )
+        usage_scope = (
+            session_agent_id or state.invocation_agent_id or state.active_agent_id or "main"
+        )
+        usage_by_scope[usage_scope] = {
+            **state.last_prompt_usage,
+            "turn_id": state.turn_id,
+            "recorded_at": assistant_msg.updated_at,
+        }
+        metadata_patch = {"context_usage_by_scope": usage_by_scope}
     state.app.state.sessions.update(
         state.sid,
         status=final_status,
@@ -573,6 +595,7 @@ def finalize_turn(
         add_tokens_input=state.turn_tokens["input"],
         add_tokens_output=state.turn_tokens["output"],
         add_cost_usd=state.turn_cost,
+        metadata_patch=metadata_patch,
     )
     cancellation_status: dict[str, Any] = {}
     if state.cancelled_turn and state.error_info is not None:

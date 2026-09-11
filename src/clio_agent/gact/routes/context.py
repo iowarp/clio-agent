@@ -42,7 +42,6 @@ from clio_agent.gact.agents import runtime as agents_runtime
 from clio_agent.gact.runtime.context_tokens import (
     _bucket_context_categories,
     _estimate_text_tokens,
-    _last_prompt_tokens,
     _resolve_expert_context_window,
     _session_autocompact_preferences,
 )
@@ -119,8 +118,15 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
         segments = arc.render_segments(sid, scope, as_of=as_of)
         live_tokens = sum(tokens_by_kind.values())
         window = _context_window_for_state()
-        used = _last_prompt_tokens()  # model-grounded: last LM call's real prompt tokens
         session = app.state.sessions.get(sid)
+        usage_by_scope = (
+            getattr(session, "metadata", {}).get("context_usage_by_scope", {})
+            if session is not None
+            else {}
+        )
+        stored_usage = usage_by_scope.get(scope, {}) if isinstance(usage_by_scope, dict) else {}
+        stored_usage = stored_usage if isinstance(stored_usage, dict) else {}
+        used = int(stored_usage.get("used_tokens") or 0)
         autocompact_enabled, autocompact_pct = _session_autocompact_preferences(
             getattr(session, "metadata", None)
         )
@@ -133,6 +139,11 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
             pct_used=(live_tokens / window) if window else None,
             used_tokens=used or None,
             used_pct=(used / window) if (window and used) else None,
+            used_tokens_source=stored_usage.get("source") or None,
+            usage_model=stored_usage.get("model") or None,
+            cache_read_tokens=int(stored_usage.get("cache_read_tokens") or 0),
+            cache_write_tokens=int(stored_usage.get("cache_write_tokens") or 0),
+            cache_tokens_measured=bool(stored_usage.get("cache_tokens_measured", False)),
             autocompact_enabled=autocompact_enabled,
             autocompact_pct=autocompact_pct,
             live_block_count=len(segments),

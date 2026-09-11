@@ -239,6 +239,11 @@ class ContextStateResponse(BaseModel):
     pct_used: Optional[float] = None
     used_tokens: Optional[int] = None
     used_pct: Optional[float] = None
+    used_tokens_source: Optional[Literal["provider", "estimated"]] = None
+    usage_model: Optional[str] = None
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    cache_tokens_measured: bool = False
     autocompact_enabled: bool = True
     autocompact_pct: Optional[float] = None
     live_block_count: int = 0

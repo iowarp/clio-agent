@@ -39,14 +39,13 @@ def zero_usage_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force the estimate branch: history grew but every usage source is zero."""
 
     monkeypatch.setattr(turn_usage, "_snapshot_lm_history_index", lambda _app: {0: 3})
+    monkeypatch.setattr(turn_usage, "_usage_from_history_slice", lambda _start, _app: {})
     monkeypatch.setattr(
-        turn_usage, "_usage_from_history_slice", lambda _start, _app: {}
+        turn_usage, "_last_prompt_usage_from_history_slice", lambda _start, _app: {}
     )
     monkeypatch.setattr(turn_usage, "_usage_from_dspy_history", lambda: {})
     monkeypatch.setattr(turn_usage, "_current_lm_model_id", lambda: "test/model")
-    monkeypatch.setattr(
-        turn_usage, "_estimate_cost_usd", lambda _m, _i, _o: 0.0042
-    )
+    monkeypatch.setattr(turn_usage, "_estimate_cost_usd", lambda _m, _i, _o: 0.0042)
 
 
 def test_estimate_path_records_usage_estimated_reason(
@@ -61,9 +60,7 @@ def test_estimate_path_records_usage_estimated_reason(
     with caplog.at_level("WARNING", logger="clio_agent.gact.turn_usage"):
         turn_usage.roll_up_usage(state, SimpleNamespace())
 
-    records = [
-        r for r in caplog.records if "reason=usage_estimated" in r.getMessage()
-    ]
+    records = [r for r in caplog.records if "reason=usage_estimated" in r.getMessage()]
     assert len(records) == 1, "exactly one structured warning per turn"
     msg = records[0].getMessage()
     assert "strategy=" in msg
@@ -85,8 +82,9 @@ def test_no_calls_case_is_silent_and_synthesizes_nothing(
     # History did NOT grow (history_made_calls is False), so the estimate
     # branch must not run even though answer/enriched text is present.
     monkeypatch.setattr(turn_usage, "_snapshot_lm_history_index", lambda _app: {0: 0})
+    monkeypatch.setattr(turn_usage, "_usage_from_history_slice", lambda _start, _app: {})
     monkeypatch.setattr(
-        turn_usage, "_usage_from_history_slice", lambda _start, _app: {}
+        turn_usage, "_last_prompt_usage_from_history_slice", lambda _start, _app: {}
     )
     monkeypatch.setattr(turn_usage, "_usage_from_dspy_history", lambda: {})
 
@@ -99,9 +97,7 @@ def test_no_calls_case_is_silent_and_synthesizes_nothing(
     with caplog.at_level("WARNING", logger="clio_agent.gact.turn_usage"):
         turn_usage.roll_up_usage(state, SimpleNamespace())
 
-    assert not [
-        r for r in caplog.records if "reason=usage_estimated" in r.getMessage()
-    ]
+    assert not [r for r in caplog.records if "reason=usage_estimated" in r.getMessage()]
     # pins turn_usage.py:76-81 — no synthesized tokens when the LM never fired.
     assert state.turn_tokens["output"] == 0
     assert state.turn_tokens["input"] == 0

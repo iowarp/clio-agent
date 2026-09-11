@@ -116,6 +116,7 @@ class TurnState:
         }
     )
     turn_cost: float = 0.0
+    last_prompt_usage: dict[str, Any] = field(default_factory=dict)
     pred: Any = None
     cancelled_turn: bool = False
     assistant_metadata: dict[str, Any] = field(default_factory=dict)

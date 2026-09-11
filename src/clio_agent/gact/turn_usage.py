@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from clio_agent.gact.providers.config import _current_lm_model_id
 from clio_agent.gact.usage import (
     _estimate_cost_usd,
+    _last_prompt_usage_from_history_slice,
     _snapshot_lm_history_index,
     _usage_from_dspy_history,
     _usage_from_history_slice,
@@ -109,3 +110,4 @@ def roll_up_usage(state: "TurnState", pred: Any) -> None:
                 )
     if not state.turn_cost:
         state.turn_cost = float(getattr(pred, "cost_usd", 0.0) or 0.0)
+    state.last_prompt_usage = _last_prompt_usage_from_history_slice(state.history_start, state.app)
