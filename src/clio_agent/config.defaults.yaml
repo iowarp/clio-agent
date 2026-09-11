@@ -823,6 +823,12 @@ arc.lsm_compaction_threshold: 5
 # flushes to disk; raise to batch more writes, lower to bound memory.
 arc.lsm_memtable_size: 1000
 
+# CLIO_ARC_MESSAGE_PART_CHUNK_SEGMENTS  (int)  <- src/clio_agent/gact/part_atoms.py
+# Message-part atoms held per on-disk chunk of a session's transcript atom
+# lane before rolling; raise to cut chunk count, lower to bound re-encode
+# cost.
+arc.message_part_chunk_segments: 512
+
 # CLIO_SERVER_CONF  (str)  <- src/clio_agent/arc/clio_core_liveness.py
 # Path to a clio-core server YAML config the port-resolution logic reads;
 # set to point liveness probing at a non-default config file.

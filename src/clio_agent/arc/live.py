@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Iterator, Optional
 
+from clio_agent.arc import lane_chunking
 from clio_agent.arc.schema import Conversation, Invocation, Message
 
 # ``_encode_safe`` lives in ``segments.py`` (the lowest write chokepoint, so the generic
@@ -78,8 +79,10 @@ def events_chunk_scope(index: int) -> str:
     scope logs keep working unchanged); chunk ``N>=2`` is ``_events/N``. THE single
     naming rule, shared by the writer (:meth:`ARCMemory._append_event_segment`) and the
     reader (:func:`events_chunk_index` / :meth:`LiveRuntimeContext.events_scopes`).
+    A one-line delegation to the generic chunk-family grammar
+    (:mod:`clio_agent.arc.lane_chunking`), shared with the ``message_part`` atom lane.
     """
-    return EVENTS_SCOPE if index <= 1 else f"{EVENTS_SCOPE}/{index}"
+    return lane_chunking.chunk_scope(EVENTS_SCOPE, index)
 
 
 def events_chunk_index(scope: str) -> int:
@@ -88,15 +91,7 @@ def events_chunk_index(scope: str) -> int:
     ``_events`` -> 1; ``_events/N`` -> N. A non-family scope (or an unparsable tail)
     maps to 1 so ordering is total and never raises.
     """
-    if scope == EVENTS_SCOPE:
-        return 1
-    prefix = f"{EVENTS_SCOPE}/"
-    if scope.startswith(prefix):
-        try:
-            return int(scope[len(prefix) :])
-        except ValueError:
-            return 1
-    return 1
+    return lane_chunking.chunk_index(EVENTS_SCOPE, scope)
 
 
 def is_events_scope(scope: str) -> bool:

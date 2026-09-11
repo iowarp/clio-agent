@@ -148,7 +148,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
     "src/clio_agent/agent.py": 1015,  # blueprint activation moved to gact/blueprint_activation.py
-    "src/clio_agent/arc/memory.py": 1389,  # provider ladder moved to provenance_config.py
+    "src/clio_agent/arc/memory.py": 1340,  # #1339: the _events chunk writer cursor moved to arc/lane_chunking.py
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
     # owner ruling 2026-07-14: +3 to route explicit =local through the loud
