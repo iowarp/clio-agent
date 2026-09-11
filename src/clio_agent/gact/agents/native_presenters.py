@@ -159,7 +159,7 @@ def native_presentation(
         task_id = str(row.get("task_id", args.get("task_id", "")))
         semantic_error = str(row.get("error") or row.get("error_reason") or "").strip()
         summary = ""
-        output = str(row.get("output") or "").strip()
+        output = str(row.get("output") or "")
         if output:
             blocks.append({"id": "output", "type": "markdown", "text": output})
         if semantic_error:
