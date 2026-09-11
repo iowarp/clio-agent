@@ -433,7 +433,12 @@ def test_final_message_embed_dropped_under_atoms(tmp_path: Path) -> None:
 
 
 def test_replace_rematerializes_atom_lane_leaves_arc_memory(tmp_path: Path) -> None:
-    """Undo/rewind/fork/compact (replace) re-materialize atoms; ARC memory is untouched."""
+    """Undo/rewind/fork (replace) re-materialize atoms; ARC memory is untouched.
+
+    Compaction no longer replaces the ledger (#1339: it APPENDS a checkpoint via
+    ``_append_session_message`` like any other row), so it is not one of these
+    replace-shaped callers any more.
+    """
 
     app, arc = _build(tmp_path)
     with TestClient(app) as client:

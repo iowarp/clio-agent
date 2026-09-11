@@ -183,48 +183,54 @@ def test_routes_that_touch_the_ledger_never_write_from_the_loop(tmp_path: Path, 
     assert _write_hits() == []
 
 
-def test_compact_stores_the_arc_conversation_record_off_the_loop(tmp_path: Path) -> None:
-    """Review find: ``POST /compact`` still wrote ARC's conversation record on the loop.
-
-    The parametrized sweep above drives this route but cannot see the write: its
-    ``FakeClioAgent`` carries no ``.arc``, so ``routes/sessions.py``'s whole ARC block
-    is skipped -- and the ``conversations`` kind is not on the shared ``segments``
-    persist seam the guard hooks, so the in-memory backend records no hit either. Bind
-    a real ARC and assert the invariant DIRECTLY, with the guard's own predicate: the
-    thread that issues the store call must have no running loop on it.
-
-    Against the real clio-core store the missed write was not merely slow: the guard
-    raised ``LoopThreadStoreWrite``, the handler's ``except Exception`` turned it into
-    an HTTP 500 ``memory_update_failed``, and ``POST /compact`` failed outright.
+def test_compact_folds_the_arc_working_set_off_the_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1339: compaction is now ONE operation whose ARC fold
+    (``compaction._fold_arc_working_set``) runs the SAME ``arc.summarize_segments``
+    store RPC the old conversation-record mirror used to run inline. Between turns
+    there is no active react scope (the parametrized sweep above already proves that
+    leg: ``arc_status == "no_active_scope"``, no store RPC at all) -- to prove the RPC
+    itself is off-loop this test fixes the scope compaction resolves (a real ARC,
+    ``_arc_scope`` monkeypatched to point at it, mirroring turn-scoped resolution)
+    with >=2 live segments so the fold actually runs end-to-end.
     """
 
     reset_guard_hits()
     agent = FakeClioAgent()
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    arc = app.state.arc
-    agent.arc = arc  # the route reads ``agent.arc``; the fake has none by default
     agent._run_chat_agent = lambda prompt, _ctx: "compact summary"  # the summarise step
+    arc = app.state.arc
+    scope = "scope_probe"
 
     on_loop: list[bool] = []
-    real_store = arc.store_conversation
+    real_summarize = arc.summarize_segments
 
-    def _record(conversation: Any) -> Any:
+    def _record(*args: Any, **kwargs: Any) -> Any:
         try:
             asyncio.get_running_loop()
             on_loop.append(True)
         except RuntimeError:
             on_loop.append(False)
-        return real_store(conversation)
+        return real_summarize(*args, **kwargs)
 
-    arc.store_conversation = _record  # type: ignore[method-assign]
+    arc.summarize_segments = _record  # type: ignore[method-assign]
+
     with TestClient(app) as client:
         sid = _create_session(client)
         complete_turn(client, sid, "first")
+        arc.append_segment(sid, scope, "observation", {"text": "first live segment"})
+        arc.append_segment(sid, scope, "observation", {"text": "second live segment"})
+
+        import clio_agent.gact.agents.reactv2_events as reactv2_events
+
+        monkeypatch.setattr(reactv2_events, "_arc_scope", lambda: (arc, sid, scope))
+
         response = client.post(f"/v1/sessions/{sid}/compact", json={})
         assert response.status_code == 200, response.text
         events = app.state.memory_events[sid]
-        assert events[-1]["arc_status"] == "stored", events[-1]
-    assert on_loop == [False], f"the conversation record was stored on the loop: {on_loop}"
+        assert events[-1]["arc_status"] == "folded", events[-1]
+    assert on_loop == [False], f"the ARC fold ran on the loop: {on_loop}"
     assert _write_hits() == []
 
 

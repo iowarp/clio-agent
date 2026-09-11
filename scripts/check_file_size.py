@@ -287,7 +287,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # asyncio.Task/asyncio.run is verify-don't-assume, not safe-by-default)
     # after B1 proved the "F3a's ensure_future boundary is just safe" framing
     # was itself the exact ordering bug the B1 fix corrects.
-    # (reactv2.py's entry retired: 736 lines, back under the flat 800 cap.)
+    # (reactv2.py's entry retired: both #1331 (736 lines) and #1339 (#1339 moved
+    # _maybe_autocompact's body to gact/compaction.py, a 3-line delegation left
+    # behind, 924 -> 698) independently dropped it under the flat 800 cap.)
     # #948 S4/S5/S6 growth already carried this file past the flat 800 cap (to 842)
     # before it was ever added to this baseline — a pre-existing gap this change
     # did not introduce (it was silently exempt from the ratchet, not under it).
@@ -658,7 +660,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1334 review: the compact summary's ARC conversation mirror (read + write, both
     # store RPCs, both on the loop) moved to the gact/compact_memory.py owner module and
     # is now awaited off-loop -- 1436 -> 1407.
-    "src/clio_agent/gact/routes/sessions.py": 1407,
+    # #1339: compact_session collapsed to a ~15-line delegation to
+    # gact/compaction.py::compact_session_context (one operation, two triggers); the
+    # whole manual-compact body, gact/compact_memory.py's import, and the dead
+    # session_archives snapshot are gone -- 1407 -> 1176.
+    "src/clio_agent/gact/routes/sessions.py": 1176,
     # #1215 S5: crossed the 800 new-file cap (793 -> 809) for enrich_turn_context —
     # a thin timed combinator wrapping the TWO existing enrichment calls
     # (_enrich_with_context_files + _enrich_with_requested_memory_search) in ONE

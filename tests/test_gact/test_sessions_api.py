@@ -202,6 +202,11 @@ class CapturingCompactAgent(RetryCompactAgent):
 
 
 def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
+    """#1339: compaction APPENDS a checkpoint -- the seed row is retained, and the
+    fake compact agent's OWN ``.arc`` (a stand-in for the deleted conversation-record
+    mirror) is never touched; the fold now runs through ``app.state.arc`` via the
+    turn-scoped ``_arc_scope()``, which has no active scope between turns."""
+
     agent = RetryCompactAgent()
     with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent)) as c:
         sid = c.post("/v1/sessions", json={"title": "compact me"}).json()["id"]
@@ -214,16 +219,19 @@ def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
         assert body["compacted"] is True
         assert body["summary"] == "Recovered compact summary."
         assert body["event_id"].startswith("mem_")
+        assert body["checkpoint_placement"] == "appended"
         assert agent.retry_labels == ["compact_summary"]
         assert agent.chat_calls == 2
-        assert agent.arc.conversation is not None
-        arc_messages = agent.arc.conversation.messages
-        assert len(arc_messages) == 1
-        assert arc_messages[0].metadata["source"] == "gact_compact"
-        assert arc_messages[0].metadata["memory_event_id"] == body["event_id"]
-        assert "Recovered compact summary." in arc_messages[0].content
+        # The deleted ARC conversation-record mirror is gone: the agent's own (fake)
+        # ARC handle is never touched by the new session-level fold.
+        assert agent.arc.conversation is None
+        ledger = c.app.state.messages[sid]
+        assert len(ledger) == 2
+        assert ledger[0].id == "msg_seed"  # seed first -- history is retained, not replaced
+        assert ledger[1].parts[0].type == "compaction"
         messages = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-        assert len(messages) == 1
+        assert len(messages) == 2
+        # GET serves newest-first: the checkpoint is messages[0], the seed messages[1].
         part = messages[0]["parts"][0]
         # #832: the client-facing summary is a structured `compaction` part
         # (SPEC §4.5), not a `[compact summary]`-prefixed synthetic text part.
@@ -232,10 +240,11 @@ def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
         assert not part["summary"].startswith("[compact summary]")
         # `auto` defaults to False (user-triggered /compact); omitempty on the wire.
         assert part.get("auto", False) is False
-        # The archived ledger message ids this summary stands in for (#832).
+        # The model-context ledger message ids this summary stands in for (#832).
         assert part["compacted_message_ids"] == ["msg_seed"]
         assert part["metadata"]["synthetic"] == "compact_summary"
         assert messages[0]["metadata"]["memory_event_id"] == body["event_id"]
+        assert messages[1]["id"] == "msg_seed"
         # No part on the compaction message is a legacy `[compact summary]` text part.
         for p in messages[0]["parts"]:
             assert not (
@@ -249,7 +258,9 @@ def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
         assert event["type"] == "compact_summary"
         assert event["summary_message_id"] == messages[0]["id"]
         assert event["archived_count"] == 1
-        assert event["arc_status"] == "stored"
+        assert event["arc_status"] == "no_active_scope"
+        assert event["trigger"] == "manual"
+        assert event["checkpoint_placement"] == "appended"
         assert event["metadata"]["source"] == "gact_compact"
         detail = c.get(f"/v1/sessions/{sid}/memory/events/{body['event_id']}").json()
         assert detail["event"]["id"] == body["event_id"]
@@ -259,7 +270,11 @@ def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
         assert compact_events[-1].payload["event_id"] == body["event_id"]
 
 
-def test_compact_preserves_ready_a2ui_surface(tmp_path: Path) -> None:
+def test_compact_retains_the_a2ui_surface_and_every_row(tmp_path: Path) -> None:
+    """#1339: compaction no longer replaces the ledger, so there is no "preserved"
+    a2ui row to synthesize any more -- the original a2ui row is simply still there,
+    like every other row, and the checkpoint is APPENDED after it."""
+
     agent = RetryCompactAgent()
     with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent)) as c:
         sid = c.post("/v1/sessions", json={"title": "compact surface"}).json()["id"]
@@ -300,13 +315,13 @@ def test_compact_preserves_ready_a2ui_surface(tmp_path: Path) -> None:
         assert c.app.state.a2ui_store.projection_degradations(sid) == []
         messages = c.app.state.messages[sid]
         assert [part.type for message in messages for part in message.parts] == [
-            "compaction",
+            "text",
             "a2ui",
+            "compaction",
         ]
-        assert messages[-1].metadata == {
-            "synthetic": "a2ui_preservation",
-            "preserved_by": "compact",
-        }
+        # No synthetic "preserved" row: nothing was removed for the a2ui row to be
+        # preserved FROM.
+        assert not any(m.metadata.get("synthetic") == "a2ui_preservation" for m in messages)
 
 
 def test_compact_surfaces_exhausted_transient_provider_errors(tmp_path: Path) -> None:
@@ -344,6 +359,10 @@ def test_memory_events_unknown_session_and_event_404(tmp_path: Path) -> None:
 
 
 def test_compact_prompt_preserves_late_scientific_identifiers(tmp_path: Path) -> None:
+    """The summariser prompt is built from the FULL model context (#1339: no
+    ``ledger[-50:]`` cap any more -- the checkpoint IS the bound), so an identifier
+    late in a long transcript still reaches the LM verbatim."""
+
     agent = CapturingCompactAgent()
     with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent)) as c:
         sid = c.post("/v1/sessions", json={"title": "compact identifiers"}).json()["id"]
