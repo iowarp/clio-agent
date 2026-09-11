@@ -650,7 +650,7 @@ def test_failed_handoff_live_and_snapshot_explain_the_same_failure() -> None:
                 "iters_elapsed": 2,
                 "budget_spent": {"tokens": 32},
             },
-            ["Finish the report"],
+            ["", "Finish the report"],
         ),
         (
             "resource",
@@ -683,7 +683,7 @@ def test_failed_handoff_live_and_snapshot_explain_the_same_failure() -> None:
                     }
                 ]
             },
-            ["schedule\n0 9 * * *\nUTC\nReview work\nNext: tomorrow"],
+            [""],
         ),
         ("text", {}, ["# Real skill\nLoaded procedure"]),
     ],
@@ -694,7 +694,7 @@ def test_each_native_family_exposes_actual_result_content(
     raw: Any = "# Real skill\nLoaded procedure" if declaration == "text" else row
     before = json.dumps(raw)
     view = native_presentation(declaration, {}, raw, row)
-    assert [block["text"] for block in view["blocks"]] == expected
+    assert [block.get("text", "") for block in view["blocks"]] == expected
     assert json.dumps(raw) == before
 
 
@@ -719,8 +719,17 @@ def test_one_shot_schedule_has_trigger_and_no_empty_separator() -> None:
         ]
     }
     view = native_presentation("schedules", {}, row, None)
-    assert view["summary"] == ""
-    assert view["blocks"][0]["text"] == "s1\nOne-shot\nUTC\nReview\nNext: later"
+    assert view["summary"] == "1 schedule, 0 recurring, 1 one-shot"
+    assert view["blocks"] == [
+        {
+            "id": "schedule-0",
+            "type": "item",
+            "target": "work",
+            "uri": "s1",
+            "label": "Review",
+            "items": ["One-shot", "Runs later", "Time zone UTC"],
+        }
+    ]
 
 
 def test_created_schedule_shows_prompt_and_one_timestamp_without_repeating_acknowledgment() -> None:
@@ -736,7 +745,14 @@ def test_created_schedule_shows_prompt_and_one_timestamp_without_repeating_ackno
     assert view == {
         "summary": "Scheduled to run in 10 minutes",
         "blocks": [
-            {"id": "schedule", "type": "text", "text": "Review\nRuns: later\nTimezone: UTC"}
+            {
+                "id": "schedule",
+                "type": "item",
+                "target": "work",
+                "uri": "s1",
+                "label": "Review",
+                "items": ["One-shot", "Runs later", "Time zone UTC"],
+            }
         ],
     }
 
