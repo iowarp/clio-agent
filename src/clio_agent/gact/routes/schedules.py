@@ -33,7 +33,7 @@ from clio_agent.gact.cron_tools import cancel_schedule
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.scheduler import CronError, default_timezone_name
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
-from clio_agent.gact.work_state import work_snapshot
+from clio_agent.gact.work_state import retained_work_history, work_snapshot
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -64,7 +64,24 @@ def register_schedules_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        return work_snapshot(session.metadata or {}, cursor)
+        snapshot = work_snapshot(session.metadata or {}, cursor)
+        messages = getattr(app.state, "messages", {})
+        rows = list(messages.get(sid, [])) if hasattr(messages, "get") else []
+        schedule_store = getattr(app.state, "schedules", None)
+        current_schedules = (
+            [row.to_wire() for row in schedule_store.list(session_id=sid)]
+            if schedule_store is not None
+            else []
+        )
+        snapshot.update(
+            retained_work_history(
+                rows,
+                current_todos=snapshot["todos"],
+                current_schedules=current_schedules,
+                cursor=cursor,
+            )
+        )
+        return snapshot
 
     @app.get("/v1/sessions/{sid}/schedules")
     async def list_schedules(sid: str) -> dict[str, Any]:

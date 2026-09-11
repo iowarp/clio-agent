@@ -1,6 +1,7 @@
 """Work presentation retains records without changing goal/loop execution."""
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 from fastapi import FastAPI
@@ -10,7 +11,7 @@ from clio_agent.gact.autonomous_loop import _put_loop
 from clio_agent.gact.goal import arm_goal, clear_goal
 from clio_agent.gact.routes.schedules import register_schedules_routes
 from clio_agent.gact.sessions import SessionStore
-from clio_agent.gact.work_state import work_record_patch, work_snapshot
+from clio_agent.gact.work_state import retained_work_history, work_record_patch, work_snapshot
 
 
 def test_work_records_keep_identity_and_private_fields_off_projection() -> None:
@@ -84,3 +85,86 @@ def test_no_history_is_invented_for_legacy_sessions() -> None:
     assert snapshot["goal"]["state"] == "stopped"
     assert snapshot["todos"] == [{"content": "Read evidence", "status": "in_progress"}]
     assert snapshot["loop"] is None
+
+
+def test_previous_todos_and_schedules_are_projected_from_retained_tool_parts() -> None:
+    message = SimpleNamespace(
+        created_at="2026-09-11T14:00:00Z",
+        parts=[
+            SimpleNamespace(
+                type="tool_call",
+                call_id="todo-old",
+                tool_name="write_todos",
+                input={"todos": [{"content": "First", "status": "pending"}]},
+            ),
+            SimpleNamespace(
+                type="tool_result",
+                call_id="todo-old",
+                tool_name="write_todos",
+                structured_content={"todos": [{"content": "First", "status": "pending"}]},
+            ),
+            SimpleNamespace(
+                type="tool_call",
+                call_id="todo-current",
+                tool_name="write_todos",
+                input={"todos": [{"content": "First", "status": "completed"}]},
+            ),
+            SimpleNamespace(
+                type="tool_result",
+                call_id="todo-current",
+                tool_name="write_todos",
+                structured_content={"todos": [{"content": "First", "status": "completed"}]},
+            ),
+            SimpleNamespace(
+                type="tool_call",
+                call_id="schedule-create",
+                tool_name="cron_create",
+                input={"prompt": "Inspect later", "recurring": False},
+            ),
+            SimpleNamespace(
+                type="tool_result",
+                call_id="schedule-create",
+                tool_name="cron_create",
+                structured_content={
+                    "schedule_id": "sched-1",
+                    "recurring": False,
+                    "next_fire_at": "2026-09-11T14:10:00Z",
+                    "timezone": "UTC",
+                },
+            ),
+            SimpleNamespace(
+                type="tool_call",
+                call_id="schedule-delete",
+                tool_name="cron_delete",
+                input={"schedule_id": "sched-1"},
+            ),
+            SimpleNamespace(
+                type="tool_result",
+                call_id="schedule-delete",
+                tool_name="cron_delete",
+                structured_content={"schedule_id": "sched-1", "deleted": True},
+            ),
+        ],
+    )
+    history = retained_work_history(
+        [message],
+        current_todos=[{"content": "First", "status": "completed"}],
+        current_schedules=[],
+    )
+    assert history["todo_history"] == [
+        {
+            "id": "todo-old",
+            "created_at": "2026-09-11T14:00:00Z",
+            "items": [{"content": "First", "status": "pending"}],
+        }
+    ]
+    assert history["schedule_history"][0] == {
+        "id": "sched-1",
+        "question": "Inspect later",
+        "state": "deleted",
+        "created_at": "2026-09-11T14:00:00Z",
+        "ended_at": "2026-09-11T14:00:00Z",
+        "recurring": False,
+        "next_fire_at": "2026-09-11T14:10:00Z",
+        "timezone": "UTC",
+    }
