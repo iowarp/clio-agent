@@ -168,7 +168,7 @@ def native_presentation(
                 {
                     "id": "error",
                     "type": "text",
-                    "label": "Collection failed",
+                    "label": "Full output unavailable",
                     "severity": "error",
                     "text": semantic_error.replace("_", " "),
                 }

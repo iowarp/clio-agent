@@ -882,8 +882,8 @@ def test_spawn_runtime_tools_declare_handoff_for_spawn_and_row_for_collectors(
         "spawn_agent_task": ("handoff", "Spawn Agent"),
         "spawn_agents_parallel": ("handoff", "Spawn Agents"),
         "wait_agent_tasks": ("row", "Wait"),
-        "observe_agent_tasks": ("row", "Observe"),
-        "get_agent_task_output": ("row", "Collect"),
+        "observe_agent_tasks": ("row", "Get status"),
+        "get_agent_task_output": ("row", "Fetch full output"),
         "message_agent": ("row", "Message Agent"),
     }
     assert {t.name for t in tools} == set(expected)
