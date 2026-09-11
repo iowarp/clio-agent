@@ -30,16 +30,15 @@ Design decisions (each answering a named constraint):
   :data:`~clio_agent.arc.schema.SegmentKind` member (additive to the Literal, exactly
   as the S2 fold added ``ws_op`` / ``step_open``): old records still decode (their
   kinds are unchanged), and the new kind is produced only by new code.
-* **On the ``_events/m`` sibling lane (§2.10), raw (§2.9).** Atoms ride a dedicated
+* **On the ``_events/m`` sibling lane (§2.10), trace-backed (§2.9).** Atoms ride a dedicated
   partition of the reserved ``_events`` chunk family (:data:`MESSAGE_PART_SCOPE`), so
   they are search-excluded and lifecycle-erased with the log, and — being neither
   ``semantic_event`` kind nor a working-set kind — are IGNORED by the live
   semantic-event reader (``LiveRuntimeContext._turns`` keeps only ``semantic_event``)
-  and never reach a prompt or a working-set render. They are appended through
-  :func:`_append_segment_raw`, which — exactly like the S2 fold's ``_append_raw`` —
-  NEVER invokes ``_finish_write`` / the ``op_logger`` (routing a log write back
-  through the op-logger re-forms the documented ``record -> op_logger -> arc.op ->
-  record`` recursion, §2.9).
+  and never reach a prompt or a working-set render. They use the ordinary segment
+  append path so every exact message atom is retained in the immutable ``arc.op``
+  trace. The op logger routes directly to the trace sink, so this does not recurse
+  through ARC.
 * **No silent fallback, best-effort during dual-write (§3.4).** ``final_message`` is
   NOT removed in this slice, so the old copy is still the authoritative fallback —
   design §3.4 makes best-effort acceptable UNTIL the old write is removed (S5), with
@@ -73,7 +72,7 @@ MESSAGE_PART_SCOPE = f"{EVENTS_SCOPE}/m"
 
 # Bumped only on a breaking change to the atom ``content`` shape; stored per-atom so a
 # future reader can branch on it (design §2.3 ``schema_version``).
-PART_ATOM_SCHEMA_VERSION = 1
+PART_ATOM_SCHEMA_VERSION = 2
 
 
 # --------------------------------------------------------------------------- #
@@ -138,6 +137,7 @@ def _atom_content(
         "message_id": message.id,
         "part_id": str(part_dump.get("id") or "") if part_dump is not None else "",
         "part_index": part_index,
+        "part_count": len(message.parts),
         "created_at": message.created_at,
         "role": message.role,
         "kind": str(part_dump.get("type") or "") if part_dump is not None else "",
@@ -210,6 +210,17 @@ def reproduce_message_wire(atoms: list[dict[str, Any]]) -> dict[str, Any]:
     ordered = sorted(atoms, key=lambda a: a.get("part_index", 0))
     envelope = dict(ordered[0]["message"])
     part_dicts = [a["part"] for a in ordered if a.get("part") is not None]
+    expected_parts = int(ordered[0].get("part_count", len(part_dicts)) or 0)
+    actual_indexes = [int(atom.get("part_index", 0) or 0) for atom in ordered]
+    if expected_parts and (
+        len(part_dicts) != expected_parts or actual_indexes != list(range(expected_parts))
+    ):
+        raise ValueError(
+            "reproduce_message_wire: incomplete traced message "
+            f"expected_parts={expected_parts} indexes={actual_indexes}"
+        )
+    if not expected_parts and len(ordered) != 1:
+        raise ValueError("reproduce_message_wire: invalid zero-part message atom group")
     message = Message(**envelope, parts=part_dicts)
     return message.model_dump(exclude_none=True)
 
@@ -264,10 +275,9 @@ def _append_segment_raw(
 def mint_message_part_atoms(arc: Any, session_id: str, message: Message) -> list[Segment]:
     """Mint + durably append one message's ``message_part`` atoms to the canonical log.
 
-    Builds the atoms (:func:`build_message_part_atoms`) and appends each to the
-    ``_events/m`` lane via the raw append (§2.9). The atoms are written ALONGSIDE the
-    existing ``final_message`` / messages-store copy (dual-write); no reader consumes
-    them until S5.
+    Builds the atoms (:func:`build_message_part_atoms`) and appends each through the
+    normal ARC operation path. This records the full atom payload in the immutable
+    trace while keeping it outside the model working set.
 
     Args:
         arc: The process ARC memory (``ARCMemory``); its ``_segments`` store is used.
@@ -279,9 +289,40 @@ def mint_message_part_atoms(arc: Any, session_id: str, message: Message) -> list
     """
     store = arc._segments
     return [
-        _append_segment_raw(store, session_id, MESSAGE_PART_SCOPE, MESSAGE_PART_KIND, content)
+        store.append(session_id, MESSAGE_PART_SCOPE, MESSAGE_PART_KIND, content)
         for content in build_message_part_atoms(message)
     ]
+
+
+def restore_message_part_segments(arc: Any, session_id: str, segments: list[Segment]) -> None:
+    """Restore live message atoms reconstructed from the immutable trace.
+
+    Replay must preserve segment ids, ordering, logical times, and trace references,
+    so it cannot call :meth:`SegmentStore.append`, which would mint new identities and
+    emit duplicate ``arc.op`` rows. This is the inverse projection used only after the
+    local ``_events/m`` lane has been lifecycle-erased.
+    """
+
+    store = arc._segments
+    matching = [
+        segment
+        for segment in segments
+        if segment.session_id == session_id and segment.scope == MESSAGE_PART_SCOPE
+    ]
+    if not matching:
+        return
+    with store._lock_for(session_id, MESSAGE_PART_SCOPE):
+        current = store._segs(session_id, MESSAGE_PART_SCOPE)
+        if any(segment.status == "live" for segment in current):
+            raise RuntimeError(f"message atom restore requires an empty lane: session={session_id}")
+        current[:] = matching
+        store._index.drop_scope(session_id, MESSAGE_PART_SCOPE)
+        for segment in matching:
+            store._index.add(session_id, MESSAGE_PART_SCOPE, segment)
+        with store._clock_lock:
+            high_water = max(segment.logical_time for segment in matching) + 1
+            store._next_lt = max(store._next_lt, high_water)
+        store._persist(session_id, MESSAGE_PART_SCOPE)
 
 
 def load_message_part_atoms(arc: Any, session_id: str) -> dict[str, list[dict[str, Any]]]:

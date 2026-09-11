@@ -61,7 +61,9 @@ from clio_agent.gact.part_atoms import (
     build_message_part_atoms,
     mint_message_part_atoms,
     reproduce_message_wire,
+    restore_message_part_segments,
 )
+from clio_agent.gact.transcript_trace import load_message_part_segments_from_trace
 from clio_agent.gact.types import Message
 from clio_agent.gact.workflow_state.state_merge import (
     drop_state_merge_lane,
@@ -158,6 +160,18 @@ def atoms_active(app: "FastAPI") -> bool:
 # --------------------------------------------------------------------------- #
 
 
+def _assemble_part_contents(contents: list[dict[str, Any]]) -> list[Message]:
+    """Assemble chronological messages from ordered message-atom content."""
+
+    groups: list[list[dict[str, Any]]] = []
+    for content in contents:
+        if int(content.get("part_index", 0) or 0) == 0 or not groups:
+            groups.append([content])
+        else:
+            groups[-1].append(content)
+    return [Message(**reproduce_message_wire(atoms)) for atoms in groups]
+
+
 def assemble_session_messages(arc: Any, session_id: str) -> list[Message]:
     """Assemble a session's transcript BY REFERENCE from its ``message_part`` atoms.
 
@@ -186,14 +200,11 @@ def assemble_session_messages(arc: Any, session_id: str) -> list[Message]:
     """
 
     store = arc._segments
-    groups: list[list[dict[str, Any]]] = []
-    for seg in store.list_segments(session_id, MESSAGE_PART_SCOPE, include_tombstoned=False):
-        content = seg.content
-        if int(content.get("part_index", 0) or 0) == 0 or not groups:
-            groups.append([content])  # a fresh message begins (part_index resets to 0)
-        else:
-            groups[-1].append(content)
-    messages = [Message(**reproduce_message_wire(atoms)) for atoms in groups]
+    contents = [
+        segment.content
+        for segment in store.list_segments(session_id, MESSAGE_PART_SCOPE, include_tombstoned=False)
+    ]
+    messages = _assemble_part_contents(contents)
     # #737 S6: workflow_state on the delegate rows is the recorded RESULT of the last
     # state_merge op for the scope — materialized schema-free here, NEVER re-folded on
     # read (design §2.8.d). A no-op when no op was recorded (rows keep their verbatim,
@@ -280,17 +291,43 @@ def materialize_ledger(app: "FastAPI", session_id: str) -> Optional[list[Message
         # only storage (structural degenerate case, not a regime).
         return None if store is None else store.load_session(session_id)
 
-    if has_atoms(arc, session_id):
-        return assemble_session_messages(arc, session_id)
+    segment_store = arc._segments
+    lane_lock = segment_store._lock_for(session_id, MESSAGE_PART_SCOPE)
+    with lane_lock:
+        traced_segments = load_message_part_segments_from_trace(app, session_id)
+        if has_atoms(arc, session_id):
+            local_segments = segment_store.list_segments(
+                session_id, MESSAGE_PART_SCOPE, include_tombstoned=False
+            )
+            current_raw = _assemble_part_contents([segment.content for segment in local_segments])
+            if traced_segments is None:
+                return assemble_session_messages(arc, session_id)
+            traced = _assemble_part_contents([segment.content for segment in traced_segments])
+            current_wire = [message.model_dump(exclude_none=True) for message in current_raw]
+            traced_wire = [message.model_dump(exclude_none=True) for message in traced]
+            if current_wire == traced_wire:
+                return assemble_session_messages(arc, session_id)
 
-    # Atoms regime, but no atoms yet: either a brand-new session (no ledger) or a
-    # pre-atom ledger to backfill once. Distinguish via the store (LedgerReadError
-    # propagates — never a silent empty).
-    ledger = None if store is None else store.load_session(session_id)
-    if not ledger:
-        return ledger  # None (never persisted) or [] (empty) — both pass through
-    mint_atoms_from_ledger(arc, session_id, ledger)
-    return assemble_session_messages(arc, session_id)
+            # Migration from pre-trace message atoms, or repair of an interrupted
+            # migration. Tombstone the current projection and re-mint it through the
+            # traced operation path so the next cold load is trace-complete.
+            live_ids = [segment.id for segment in local_segments]
+            segment_store.delete(session_id, MESSAGE_PART_SCOPE, live_ids)
+            mint_atoms_from_ledger(arc, session_id, current_raw)
+            return assemble_session_messages(arc, session_id)
+
+        if traced_segments:
+            restore_message_part_segments(arc, session_id, traced_segments)
+            return assemble_session_messages(arc, session_id)
+
+        # No traced atoms means this session predates trace-backed message atoms.
+        # The retained ledger is a migration input only; the backfill immediately
+        # records the exact atoms so future recovery comes from the ARC trace.
+        ledger = None if store is None else store.load_session(session_id)
+        if not ledger:
+            return ledger
+        mint_atoms_from_ledger(arc, session_id, ledger)
+        return assemble_session_messages(arc, session_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -377,7 +414,13 @@ def on_ledger_replaced(app: "FastAPI", session_id: str, messages: list[Message])
     arc = _arc(app)
     if arc is None:
         return
-    arc._segments.drop_scope(session_id, MESSAGE_PART_SCOPE)
+    live_ids = [
+        segment.id
+        for segment in arc._segments.list_segments(
+            session_id, MESSAGE_PART_SCOPE, include_tombstoned=False
+        )
+    ]
+    arc._segments.delete(session_id, MESSAGE_PART_SCOPE, live_ids)
     drop_state_merge_lane(arc, session_id)  # #737 S6: re-materialise the op lane too
     for message in messages:
         try:
@@ -401,7 +444,13 @@ def on_ledger_deleted(app: "FastAPI", session_id: str) -> None:
     arc = _arc(app)
     if arc is None:
         return
-    arc._segments.drop_scope(session_id, MESSAGE_PART_SCOPE)
+    live_ids = [
+        segment.id
+        for segment in arc._segments.list_segments(
+            session_id, MESSAGE_PART_SCOPE, include_tombstoned=False
+        )
+    ]
+    arc._segments.delete(session_id, MESSAGE_PART_SCOPE, live_ids)
     drop_state_merge_lane(arc, session_id)  # #737 S6: erase the op lane with the transcript
 
 

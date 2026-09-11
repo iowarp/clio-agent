@@ -35,9 +35,9 @@ def build_compact_summary_message(
         session_id: The session being compacted.
         turn_id: The active semantic turn id to correlate this message with.
         summary: The generated compaction summary (already evidence-augmented).
-        event_id: The memory-event id linking this message to its archive entry.
-        compacted_message_ids: Ids of the archived ledger messages this summary
-            stands in for. May be empty when ids are unavailable.
+        event_id: The memory-event id linking this message to its trace record.
+        compacted_message_ids: Ids of the model-context messages this checkpoint
+            stands in for. The visible transcript rows remain intact.
         auto: ``True`` for a policy-triggered compaction; ``False`` (default) for
             a user-invoked ``POST /v1/sessions/{sid}/compact``.
 

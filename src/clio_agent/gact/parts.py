@@ -287,10 +287,10 @@ class Part(DocumentPartFields):
     lines_added: int = 0
     lines_removed: int = 0
 
-    # compaction part (SPEC §4.5, #832): structured summary replacing archived
-    # history, rendered from typed fields (not a ``[compact summary]`` prefix).
-    # ``auto`` flags a policy- (vs user-) triggered /compact; ``compacted_message_ids``
-    # lists the archived messages it stands in for.
+    # compaction part (SPEC §4.5, #832): a model-context checkpoint rendered from
+    # typed fields (not a ``[compact summary]`` prefix). Human-visible history is
+    # retained. ``auto`` flags policy- versus user-triggered compaction, and
+    # ``compacted_message_ids`` lists the model-context rows represented by the summary.
     summary: str = ""
     auto: bool = False
     compacted_message_ids: list[str] = Field(default_factory=list)

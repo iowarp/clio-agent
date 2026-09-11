@@ -62,23 +62,23 @@ def _metrics_counters(app: "FastAPI") -> Any:
 def _append_session_message(app: "FastAPI", session_id: str, message: "Message") -> None:
     """Append one chronological message to memory and disk."""
 
-    app.state.messages.setdefault(session_id, []).append(message)
+    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
+        on_message_appended,
+    )
+
+    # Resolve the existing resident projection before minting the new atom. Otherwise
+    # a cold ``setdefault`` would rehydrate the just-minted message and append it twice.
+    resident = app.state.messages.setdefault(session_id, [])
+    # The immutable ARC trace is authoritative. Project there before mutating the
+    # resident and MessageStore caches, so a cache write can never be the only copy.
+    on_message_appended(app, session_id, message)
+    resident.append(message)
     counters = _metrics_counters(app)
     if counters is not None:
         counters.add_message(session_id, message)
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.append(session_id, message)
-    # #737 S5: the single append-one persist seam pins the session's transcript regime
-    # (on message #1) and mints the message's ``message_part`` atoms onto the canonical
-    # ARC log. Under the atoms regime the atoms are the transcript's source of truth
-    # (must-succeed, §3.4); under the default legacy regime the messages-store copy above
-    # is authoritative and minting is best-effort-but-loud (as S4 landed it).
-    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
-        on_message_appended,
-    )
-
-    on_message_appended(app, session_id, message)
 
 
 def _extend_session_messages(
@@ -90,19 +90,19 @@ def _extend_session_messages(
 
     if not messages:
         return
-    app.state.messages.setdefault(session_id, []).extend(messages)
+    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
+        on_messages_extended,
+    )
+
+    resident = app.state.messages.setdefault(session_id, [])
+    on_messages_extended(app, session_id, messages)
+    resident.extend(messages)
     counters = _metrics_counters(app)
     if counters is not None:
         counters.add_messages(session_id, messages)
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.extend(session_id, messages)
-    # #737 S5: mirror the extend onto the canonical atom lane (no-op under legacy).
-    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
-        on_messages_extended,
-    )
-
-    on_messages_extended(app, session_id, messages)
 
 
 def _replace_session_messages(
@@ -112,6 +112,11 @@ def _replace_session_messages(
 ) -> None:
     """Replace one session's message ledger in memory and disk."""
 
+    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
+        on_ledger_replaced,
+    )
+
+    on_ledger_replaced(app, session_id, list(messages))
     app.state.messages[session_id] = list(messages)
     counters = _metrics_counters(app)
     if counters is not None:
@@ -119,14 +124,6 @@ def _replace_session_messages(
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.replace_session(session_id, list(messages))
-    # #737 S5: re-materialize the atom lane to the replaced ledger (undo/rewind/fork/
-    # compact/import). Transcript-projection-scoped only; ARC memory untouched. No-op
-    # under legacy.
-    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
-        on_ledger_replaced,
-    )
-
-    on_ledger_replaced(app, session_id, list(messages))
 
 
 def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
@@ -140,6 +137,11 @@ def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
     back to ``pop`` for a plain-dict ``app.state.messages`` (older/test wiring).
     """
 
+    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
+        on_ledger_deleted,
+    )
+
+    on_ledger_deleted(app, session_id)
     messages = app.state.messages
     discard = getattr(messages, "discard", None)
     if callable(discard):
@@ -152,25 +154,6 @@ def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.delete_session(session_id)
-    # #737 S5: drop the session's canonical atom lane (transcript projection erasure);
-    # ARC memory is untouched (gact_visible_transcript_only). Cheap when no atoms exist.
-    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
-        on_ledger_deleted,
-    )
-
-    try:
-        on_ledger_deleted(app, session_id)
-    except RuntimeError as exc:
-        # The session row and durable message ledger are already deleted at this
-        # point. A native ARC cleanup failure must not turn that completed delete
-        # into a misleading HTTP 500 or make the caller retry a now-missing row.
-        # The unreachable atom lane is orphan cleanup, not authorization to
-        # resurrect the user-visible session.
-        logger.warning(
-            "session transcript atom cleanup failed session_id=%s reason=%s",
-            session_id,
-            exc,
-        )
 
 
 def _release_session_arc(app: "FastAPI", session_id: str) -> None:
@@ -212,7 +195,9 @@ def _compile_session_conversation_history(
     restarting blind on a follow-up like "now plot it". General to any blueprint and
     a NO-OP on the first turn (no prior messages), so single-turn behaviour is
     unchanged. The orchestrator otherwise receives only the latest user message."""
-    messages = list(app.state.messages.get(session_id, []))
+    from clio_agent.gact.conversation_projection import model_context_messages
+
+    messages = model_context_messages(app.state.messages.get(session_id, []))
     prior = [m for m in messages if getattr(m, "role", "") in {"user", "assistant"}]
     # The current user message is already appended before the turn runs — drop the
     # trailing user message(s) so only PRIOR turns are carried.
@@ -225,13 +210,20 @@ def _compile_session_conversation_history(
         # Carry the FULL prior message text verbatim — clio must not heuristically
         # truncate content the orchestrator sees; only an LLM may reduce content.
         text = "\n".join(
-            part.text.strip()
+            ((part.summary if part.type == "compaction" else part.text) or "").strip()
             for part in message.parts
-            if part.type in {"text", "thinking", "error"} and part.text.strip()
+            if part.type in {"text", "thinking", "error", "compaction"}
+            and ((part.summary if part.type == "compaction" else part.text) or "").strip()
         ).strip()
         if not text:
             continue
-        speaker = "User" if message.role == "user" else "Assistant"
+        speaker = (
+            "Compacted context"
+            if any(part.type == "compaction" for part in message.parts)
+            else "User"
+            if message.role == "user"
+            else "Assistant"
+        )
         lines.append(f"{speaker}: {text}")
     if not lines:
         return current_prompt

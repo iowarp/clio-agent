@@ -257,7 +257,7 @@ class Part(_WireModel):
 
     # compaction (SPEC §4.5): the canonical structured summary shape. ``summary``
     # is the client-facing prose, ``auto`` flags a policy-triggered compaction,
-    # and ``compacted_message_ids`` lists the archived messages this stands in for.
+    # and ``compacted_message_ids`` lists the model-context rows this stands in for.
     summary: str = ""
     auto: bool = False
     compacted_message_ids: list[str] = Field(default_factory=list)

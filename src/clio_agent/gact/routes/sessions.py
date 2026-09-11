@@ -5,7 +5,7 @@ This concern owns the ``/v1/sessions`` lifecycle and scoped ask/retry protocol:
 * CRUD creates, lists, patches, and permission-gates session deletion.
 * Undo/rewind drop trailing messages and publish their lifecycle events.
 * Fork/import/export provide branching and portable JSON transfer.
-* Compaction replaces the visible transcript with evidence-preserving memory.
+* Compaction appends a model-context checkpoint while retaining the human transcript.
 * Cancel cooperatively stops an in-flight turn and publishes its status.
 * Ask-user and retry own question resumption and recorded source-message attempts.
 Fork, question-answer, and retry share ``deps.start_background_user_turn``. Shared
@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
@@ -27,6 +26,7 @@ from fastapi.responses import JSONResponse
 from clio_agent.gact import context as _ctx
 from clio_agent.gact import context_reference_retry
 from clio_agent.gact.autonomous_loop import stop_session_loop
+from clio_agent.gact.conversation_projection import model_context_messages
 from clio_agent.gact.events import Event
 from clio_agent.gact.goal import stop_session_goal
 from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
@@ -45,7 +45,6 @@ from clio_agent.gact.routes.session_question_helpers import (
 )
 from clio_agent.gact.routes.session_rows import filter_session_rows, rows_to_wire
 from clio_agent.gact.runtime import bringup_timing
-from clio_agent.gact.runtime.constants import _installed_clio_agent_version
 from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
     _emit_semantic_event,
@@ -662,7 +661,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        ledger = app.state.messages.get(sid, [])
+        ledger = list(app.state.messages.get(sid, []))
         if not ledger:
             return {
                 "session_id": sid,
@@ -670,8 +669,12 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 "reason": "session has no messages to compact",
             }
 
-        # Build a transcript blob from the full ledger parts — no deterministic
-        # truncation; the LLM downstream is what compacts.
+        # Compact only the current model projection. The human transcript remains
+        # immutable and visible, including every earlier compaction checkpoint.
+        model_messages = model_context_messages(ledger)
+
+        # Build the model-context blob with no deterministic truncation. The LLM
+        # downstream performs the semantic reduction.
         # ledger entries are Pydantic Message models (see types.py); use
         # attribute access + model_dump() defensively for dict-shaped
         # entries the older code paths still produce.
@@ -682,13 +685,14 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 return o.get(name, default)
             return default
 
-        # Pass the FULL transcript through to the LLM — clio must not heuristically
-        # truncate content a model sees; the LLM is what compacts (that is allowed).
+        # Pass the FULL current model projection through to the LLM.
         chunks: list[str] = []
-        for m in ledger[-50:]:  # last 50 messages should be enough context
+        for m in model_messages:
             role = (_attr(m, "role", "user") or "user").upper()
             for p in _attr(m, "parts", []) or []:
-                txt = (_attr(p, "text", "") or "").strip()
+                part_type = _attr(p, "type", "") or ""
+                txt = _attr(p, "summary", "") if part_type == "compaction" else _attr(p, "text", "")
+                txt = (txt or "").strip()
                 if not txt:
                     continue
                 chunks.append(f"{role}: {txt}")
@@ -707,7 +711,10 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         dispatch_pre_compact(
             session_id=sid,
             cwd=str(getattr(sess, "workspace_root", "") or ""),
-            payload={"message_count": len(ledger), "transcript_chars": len(transcript)},
+            payload={
+                "message_count": len(model_messages),
+                "transcript_chars": len(transcript),
+            },
         )
 
         agent = app.state.agent
@@ -729,7 +736,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         prompt = (
             "Create an evidence-preserving compact memory for the following CLIO "
-            "conversation transcript. This memory will replace the archived transcript, "
+            "conversation context. This becomes the next model-context checkpoint, "
             "so preserve concrete scientific evidence, not just a high-level story.\n\n"
             "Rules:\n"
             "- Keep exact file paths, dataset names, column names, variable names, "
@@ -779,91 +786,20 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             ) from exc
 
-        # Insert the summary as a new assistant message at the head of the
-        # ledger (after archiving the originals to a parallel list so a
-        # future /resume can recover full history). The TUI doesn't see
-        # archived messages — only the compact summary + anything that
-        # comes after it.
+        # Append a visible checkpoint. It changes only subsequent model-context
+        # materialization; it never replaces or archives the human transcript.
         event_id = _new_memory_event_id()
         compacted_at = datetime.now(timezone.utc).isoformat()
-        archive = app.state.__dict__.setdefault("session_archives", {})
-        archive.setdefault(sid, []).append(
-            {
-                "compacted_at": time.time(),
-                "memory_event_id": event_id,
-                "messages": list(ledger),
-            }
-        )
-
-        arc = getattr(agent, "arc", None)
-        arc_status = "not_configured"
-        if arc is not None:
-            try:
-                from clio_agent.arc.schema import (  # noqa: PLC0415
-                    Conversation as ARCConversation,
-                )
-                from clio_agent.arc.schema import Message as ARCMessage  # noqa: PLC0415
-
-                now_ts = time.time()
-                arc_summary = ARCMessage(
-                    role="assistant",
-                    content="[compact summary]\n" + (summary or "").strip(),
-                    timestamp=now_ts,
-                    metadata={
-                        "source": "gact_compact",
-                        "synthetic": "compact_summary",
-                        "memory_event_id": event_id,
-                        "archived_count": len(ledger),
-                    },
-                )
-                conv = arc.get_conversation(sid)
-                if conv is None:
-                    conv = ARCConversation(
-                        session_id=sid,
-                        user_id="default_user",
-                        created_at=now_ts,
-                        updated_at=now_ts,
-                        last_accessed=now_ts,
-                        status="active",
-                        messages=[arc_summary],
-                        routing_decisions=[],
-                        metadata={
-                            "clio_agent_version": _installed_clio_agent_version(),
-                            "arc_enabled": True,
-                            "compacted_by": "gact",
-                        },
-                        storage_tier="warm",
-                    )
-                else:
-                    conv.messages = [arc_summary]
-                    conv.updated_at = now_ts
-                    conv.last_accessed = now_ts
-                    conv.metadata["compacted_by"] = "gact"
-                    conv.metadata["compacted_at"] = now_ts
-                    conv.metadata["archived_message_count"] = len(ledger)
-                arc.store_conversation(conv)
-                arc_status = "stored"
-            except Exception as exc:  # noqa: BLE001
-                raise HTTPException(
-                    status_code=500,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="memory_update_failed",
-                            message=f"compact summary could not be stored in ARC memory: {exc!r}",
-                            recoverable=True,
-                        )
-                    ).model_dump(exclude_none=True),
-                ) from exc
 
         compact_message = build_compact_summary_message(
             session_id=sid,
             turn_id=_active_semantic_turn_id(),
             summary=summary or "",
             event_id=event_id,
-            compacted_message_ids=[mid for m in ledger if (mid := _attr(m, "id", ""))],
+            compacted_message_ids=[mid for m in model_messages if (mid := _attr(m, "id", ""))],
         )
-        replacement_messages = preserve_a2ui(sid, [compact_message], ledger, "compact")
-        deps.replace_session_messages(app, sid, replacement_messages)
+        deps.append_session_message(app, sid, compact_message)
+        app.state.sessions.update(sid, message_count=len(ledger) + 1)
         memory_event = {
             "id": event_id,
             "version": 1,
@@ -872,11 +808,10 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             "created_at": compacted_at,
             "updated_at": compacted_at,
             "summary_message_id": compact_message.id,
-            "archived_count": len(ledger),
+            "compacted_count": len(model_messages),
             "summary_chars": len((summary or "")),
             "transcript_chars": len(transcript),
             "focus": focus,
-            "arc_status": arc_status,
             "metadata": {
                 "source": "gact_compact",
                 "synthetic": "compact_summary",
@@ -890,7 +825,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             "memory.compacted",
             turn_id=_ctx.active_turn_id(),
             trace_id=_ctx.active_trace_id(),
-            summary="Session transcript was compacted into memory.",
+            summary="Model context was compacted; full transcript was retained.",
             actor={"role": "runtime", "component": "memory"},
             subject={"memory_event_id": event_id},
             payload=memory_event,
@@ -903,7 +838,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 session_id=sid,
                 payload={
                     "event_id": event_id,
-                    "archived_count": len(ledger),
+                    "compacted_count": len(model_messages),
                     "summary_chars": len((summary or "")),
                     "summary_message_id": compact_message.id,
                     "version": 1,
@@ -914,7 +849,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             "session_id": sid,
             "compacted": True,
             "event_id": event_id,
-            "archived_count": len(ledger),
+            "compacted_count": len(model_messages),
             "summary": summary,
         }
 
