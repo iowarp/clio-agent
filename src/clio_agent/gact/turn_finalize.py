@@ -591,7 +591,7 @@ def finalize_turn(
     state.app.state.sessions.update(
         state.sid,
         status=final_status,
-        message_count=state.sess.message_count + 2,
+        message_count=len(state.app.state.messages.get(state.sid, [])),
         add_tokens_input=state.turn_tokens["input"],
         add_tokens_output=state.turn_tokens["output"],
         add_cost_usd=state.turn_cost,
@@ -862,7 +862,7 @@ def settle_failed_finalize(
         app.state.sessions.update(
             sid,
             status="error",
-            message_count=sess.message_count + 2,
+            message_count=len(app.state.messages.get(sid, [])),
         )
     bus.publish(
         Event(

@@ -225,6 +225,7 @@ from clio_agent.gact.session_store import (  # noqa: E402,F401
     _extend_session_messages,
     _flush_context_files,
     _load_context_files,
+    _reconcile_restart_interrupted_sessions,
     _release_session_arc,
     _replace_session_messages,
 )
@@ -1205,6 +1206,7 @@ def build_app(
     # Durable per-session message log (POST /messages writes, GET /messages reads);
     # per-session JSON ledgers so adapter deletion/redeploy preserves transcripts.
     app.state.message_store = MessageStore(path=session_store_path.parent / "messages")
+    _reconcile_restart_interrupted_sessions(app)
     # #770 C3: bounded eviction-audit trail (init before the resident set).
     init_retention_state(app)
     # #770 C3 / #889: running metrics aggregate, seeded by a streaming parse-and-

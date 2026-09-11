@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -77,6 +78,93 @@ def _append_session_message(app: "FastAPI", session_id: str, message: "Message")
     )
 
     on_message_appended(app, session_id, message)
+
+
+def _reconcile_restart_interrupted_sessions(app: "FastAPI") -> None:
+    """Settle persisted running sessions whose process-local executor is gone.
+
+    A user message is durable before its assistant turn starts. If the process
+    exits mid-turn, the session registry can therefore retain ``running`` and an
+    older message count even though no :class:`TurnRunner` task can survive the
+    restart. Reconcile only those stale running rows, reading one ledger at a
+    time so ordinary historical sessions remain lazily materialized.
+    """
+
+    store = getattr(app.state, "message_store", None)
+    sessions = getattr(app.state, "sessions", None)
+    if store is None or sessions is None:
+        return
+    for session in sessions.list():
+        if session.status != "running":
+            continue
+        try:
+            messages = store.load_session(session.id) or []
+        except OSError as exc:
+            logger.error(
+                "restart interruption reconciliation failed session=%s error=%r",
+                session.id,
+                exc,
+            )
+            continue
+        durable_messages = list(messages)
+        last_message = durable_messages[-1] if durable_messages else None
+        if last_message is not None and last_message.role == "user":
+            from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
+                _iso_from_epoch,
+                _new_message_id,
+            )
+            from clio_agent.gact.types import ErrorInfo, Message  # noqa: PLC0415
+
+            now = time.time()
+            interrupted_message = Message(
+                id=_new_message_id("asst"),
+                turn_id=last_message.turn_id or last_message.id,
+                session_id=session.id,
+                role="assistant",
+                created_at=_iso_from_epoch(now),
+                updated_at=_iso_from_epoch(now),
+                stop_reason="error",
+                error_info=ErrorInfo(
+                    error="server_restart_interrupted",
+                    message=(
+                        "The agent service restarted before this response completed. "
+                        "Your request was preserved and can be retried."
+                    ),
+                    details={
+                        "reason": "server_restart_interrupted",
+                        "session_id": session.id,
+                        "turn_id": last_message.turn_id or last_message.id,
+                    },
+                    recoverable=True,
+                ),
+            )
+            durable_messages.append(interrupted_message)
+            try:
+                store.replace_session(session.id, durable_messages)
+            except OSError as exc:
+                logger.error(
+                    "restart interruption boundary write failed session=%s error=%r",
+                    session.id,
+                    exc,
+                )
+                continue
+        sessions.update(
+            session.id,
+            status="error",
+            message_count=len(durable_messages),
+            metadata_patch={
+                "restart_interruption": {
+                    "reason": "server_restart_interrupted",
+                    "previous_status": "running",
+                }
+            },
+        )
+        trace.event(
+            "SESSION",
+            "restart_interrupted session=%s messages=%s",
+            session.id,
+            len(durable_messages),
+        )
 
 
 def _extend_session_messages(
@@ -240,8 +328,6 @@ def _compile_session_conversation_history(
         "starting over; only the request after the marker is new:\n"
         f"{transcript}\n\n=== Current request ===\n{current_prompt}"
     )
-
-
 
 
 # ------------------------------------------------------------------------- #

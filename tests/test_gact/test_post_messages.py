@@ -13,6 +13,7 @@ Drives the app with a FakeClioAgent so no LM is needed. Covers:
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
 from clio_agent.gact.providers.config import _effective_lm_config
+from clio_agent.gact.sessions import SessionStore
 from tests._config_layer import set_config
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
@@ -106,6 +108,22 @@ class SlowClioAgent(FakeClioAgent):
     def forward(self, question: str, session_id: str) -> Any:
         self.calls.append((question, session_id))
         time.sleep(self.delay_s)
+        return FakePrediction(answer=self.answer)
+
+
+class BlockingClioAgent(FakeClioAgent):
+    """Hold one real background turn open at a deterministic checkpoint."""
+
+    def __init__(self) -> None:
+        super().__init__(answer="released")
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def forward(self, question: str, session_id: str) -> Any:
+        self.calls.append((question, session_id))
+        self.entered.set()
+        if not self.release.wait(timeout=5.0):
+            raise TimeoutError("test did not release blocked turn")
         return FakePrediction(answer=self.answer)
 
 
@@ -398,6 +416,39 @@ def test_post_message_bumps_message_count_by_two(client: TestClient) -> None:
     complete_turn(client, sid, "second")
     after_two = client.get(f"/v1/sessions/{sid}").json()
     assert after_two["message_count"] == 4
+
+
+def test_running_turn_persists_exact_user_message_count(tmp_path: Path) -> None:
+    """The durable session index counts the user message before finalization."""
+
+    sessions_path = tmp_path / "sessions.json"
+    agent = BlockingClioAgent()
+    app = build_app(sessions_path=sessions_path, agent=agent)
+    with TestClient(app) as client:
+        sid = _create_session(client, title="Count while running")
+        response = client.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "hold this turn"}]},
+        )
+        assert response.status_code == 200
+
+        running = client.get(f"/v1/sessions/{sid}").json()
+        cold_running = SessionStore(sessions_path).get(sid)
+        assert running["status"] == "running"
+        assert running["message_count"] == 1
+        assert cold_running is not None
+        assert cold_running.status == "running"
+        assert cold_running.message_count == 1
+
+        agent.release.set()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            settled = client.get(f"/v1/sessions/{sid}").json()
+            if settled["status"] != "running":
+                break
+            time.sleep(0.02)
+        assert settled["status"] == "idle"
+        assert settled["message_count"] == 2
 
 
 def test_messages_persist_across_backend_restart(tmp_path: Path) -> None:

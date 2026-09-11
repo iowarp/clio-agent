@@ -861,7 +861,11 @@ def _start_background_user_turn(
     )
 
     stage_intent_user_message(app, sid, user_msg, replace_existing=replace_existing_user_message)
-    app.state.sessions.update(sid, status="running")
+    app.state.sessions.update(
+        sid,
+        status="running",
+        message_count=len(app.state.messages.get(sid, [])),
+    )
     app.state.bus.publish(
         Event(
             type="session.status_changed",
