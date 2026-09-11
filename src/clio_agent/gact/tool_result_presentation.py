@@ -33,7 +33,9 @@ class PresentationBlock(BaseModel):
     text: str = ""
     label: str = ""
     language: str = ""
-    target: Literal["artifact", "resource", "session", "url", "file", "work"] | None = None
+    target: Literal["artifact", "resource", "session", "url", "file", "work", "surface"] | None = (
+        None
+    )
     state: Literal["pending", "in_progress", "completed"] | None = None
     previous_state: Literal["pending", "in_progress", "completed"] | None = None
     change: Literal["added", "removed", "status_changed", "unchanged"] | None = None

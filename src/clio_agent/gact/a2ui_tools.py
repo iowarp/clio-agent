@@ -22,19 +22,67 @@ from clio_agent.gact.protocol_v3 import A2UI_V091_WIRE, CLIO_A2UI_CATALOG_ID
 # silent.
 MAX_REPORTED_SURFACE_IDS = 32
 
+_INPUT_COMPONENTS = frozenset(
+    {
+        "TextField",
+        "TextArea",
+        "Checkbox",
+        "RadioGroup",
+        "Select",
+        "Slider",
+        "DateTimeInput",
+    }
+)
+_COMPONENT_KIND_LABELS = {
+    "clio.time-series.v1": "Chart",
+    "clio.data-table.v1": "Table",
+    "clio.map.v1": "Map",
+    "clio.mermaid.v1": "Diagram",
+    "clio.code.v1": "Code",
+    "clio.artifact.v1": "Artifact",
+    "clio.metric.v1": "Metrics",
+    "clio.status.v1": "Status",
+    "clio.progress.v1": "Status",
+}
 
-def _surface_presentation(
-    args: Mapping[str, Any], result: Any, structured: Any
-) -> dict[str, Any]:
+
+def _surface_kind(components: Any) -> str:
+    """Return the dominant human-facing kind in an A2UI component array."""
+
+    if not isinstance(components, list):
+        return "Interface"
+    names = {
+        str(component.get("component"))
+        for component in components
+        if isinstance(component, Mapping) and component.get("component")
+    }
+    if names & _INPUT_COMPONENTS:
+        return "Input"
+    for name, label in _COMPONENT_KIND_LABELS.items():
+        if name in names:
+            return label
+    if "Text" in names:
+        return "Text"
+    return "Interface"
+
+
+def _surface_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, Any]:
     """Describe a surface operation without exposing its protocol envelope."""
 
     call_args = args.get("kwargs") if isinstance(args.get("kwargs"), Mapping) else args
     payload = structured if isinstance(structured, Mapping) else result
     row = payload if isinstance(payload, Mapping) else {}
-    surface_id = str(row.get("surface_id") or call_args.get("surface_id") or "Interactive view")
+    surface_id = str(row.get("surface_id") or call_args.get("surface_id") or "")
+    surface_kind = _surface_kind(call_args.get("components"))
     failed = bool(row.get("error")) or row.get("rendered") is False
     blocks: list[dict[str, Any]] = [
-        {"id": "surface", "type": "text", "text": surface_id},
+        {
+            "id": "surface",
+            "type": "link",
+            "target": "surface",
+            "uri": surface_id,
+            "label": surface_kind,
+        },
     ]
     if failed:
         detail = str(row.get("message") or row.get("reason") or row.get("error") or "")
@@ -48,7 +96,7 @@ def _surface_presentation(
                 }
             )
     return {
-        "action": "Update interactive view" if row.get("created") is False else "Create interactive view",
+        "action": "Update UI element" if row.get("created") is False else "Generate UI element",
         "subject": "surface",
         "status": "failed" if failed else "succeeded",
         "summary": "",
@@ -266,7 +314,7 @@ def build_create_a2ui_surface_tool() -> Any:
         name="create_a2ui_surface",
         presentation=_surface_presentation,
         desc=create_a2ui_surface.__doc__,
-        title="Create interactive view",
+        title="Generate UI element",
         args={
             "surface_id": {
                 "type": "string",
