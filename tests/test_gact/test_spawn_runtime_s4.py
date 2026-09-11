@@ -803,8 +803,7 @@ def test_wait_agent_tasks_declares_typed_structured_content_shape(monkeypatch) -
         "workflow_state_conflicts",
         "merged_workflow_state",
     ]
-    assert shape["summary"].startswith("waited ")
-    assert "1 completed" in shape["summary"]
+    assert shape["summary"] == "1 task: 1 completed"
     (row,) = shape["results"]
     # The compact UI-ladder row: display name (the SAME rule waited_tasks uses),
     # typed status, duration, and the ALREADY-BOUNDED excerpt (never the full
@@ -813,6 +812,7 @@ def test_wait_agent_tasks_declares_typed_structured_content_shape(monkeypatch) -
         "name": "data_expert #1",
         "status": "completed",
         "duration_ms": 0.0,
+        "waited_ms": 0.0,
         "answer_excerpt": "child produced the staged CSV",
     }
     assert shape["workflow_state_conflicts"] == []
