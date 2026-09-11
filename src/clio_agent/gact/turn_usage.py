@@ -16,11 +16,13 @@ fired this turn.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.providers.config import _current_lm_model_id
 from clio_agent.gact.usage import (
     _estimate_cost_usd,
+    _estimated_prompt_usage,
     _last_prompt_usage_from_history_slice,
     _snapshot_lm_history_index,
     _usage_from_dspy_history,
@@ -31,6 +33,21 @@ if TYPE_CHECKING:
     from clio_agent.gact.turn_state import TurnState
 
 logger = logging.getLogger(__name__)
+
+
+def _effective_turn_model_id(state: "TurnState") -> str:
+    """Return the provider/model that actually owned this turn."""
+
+    runtime = state.agent_runtime if isinstance(state.agent_runtime, Mapping) else {}
+    model = runtime.get("model")
+    if isinstance(model, Mapping):
+        provider_id = str(model.get("provider_id") or "")
+        model_id = str(model.get("model_id") or "")
+        if provider_id and model_id:
+            return f"{provider_id}/{model_id}"
+        if model_id:
+            return model_id
+    return _current_lm_model_id()
 
 
 def roll_up_usage(state: "TurnState", pred: Any) -> None:
@@ -111,3 +128,12 @@ def roll_up_usage(state: "TurnState", pred: Any) -> None:
     if not state.turn_cost:
         state.turn_cost = float(getattr(pred, "cost_usd", 0.0) or 0.0)
     state.last_prompt_usage = _last_prompt_usage_from_history_slice(state.history_start, state.app)
+    if (
+        not state.last_prompt_usage
+        and state.enriched_text
+        and str(getattr(pred, "answer", "") or "")
+    ):
+        state.last_prompt_usage = _estimated_prompt_usage(
+            state.enriched_text,
+            _effective_turn_model_id(state),
+        )

@@ -42,6 +42,7 @@ __all__ = [
     "_snapshot_lm_history_index",
     "_usage_from_history_slice",
     "_last_prompt_usage_from_history_slice",
+    "_estimated_prompt_usage",
     "_entry_reasoning_text",
     "_entry_response_text",
     "_entry_prompt_text",
@@ -247,6 +248,42 @@ def _last_prompt_usage_from_history_slice(
         "cache_read_tokens": cache_read,
         "cache_write_tokens": cache_write,
         "cache_tokens_measured": cache_measured,
+    }
+
+
+def _estimated_prompt_usage(prompt: str, model: str) -> dict[str, Any]:
+    """Measure a materialized prompt when the provider emitted no usage record.
+
+    Subscription CLI providers can complete a real turn without adding a DSPy LM
+    history entry.  The exact prompt passed into the agent is still available at
+    the turn boundary, so retain a clearly labelled estimate instead of reporting
+    context usage as unavailable.  Cache fields remain unmeasured.
+    """
+
+    if not prompt:
+        return {}
+    from clio_agent.gact.runtime.context_tokens import (  # noqa: PLC0415
+        _heuristic_text_tokens,
+        _model_uses_tiktoken,
+    )
+
+    used_tokens = 0
+    if model and _model_uses_tiktoken(model):
+        try:
+            import litellm  # noqa: PLC0415
+
+            used_tokens = int(litellm.token_counter(model=model, text=prompt))
+        except Exception:  # noqa: BLE001 - explicit heuristic fallback below
+            used_tokens = 0
+    if used_tokens <= 0:
+        used_tokens = _heuristic_text_tokens(prompt)
+    return {
+        "used_tokens": used_tokens,
+        "source": "estimated",
+        "model": model,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cache_tokens_measured": False,
     }
 
 

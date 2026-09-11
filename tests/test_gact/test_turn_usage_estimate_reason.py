@@ -29,6 +29,8 @@ def _fake_state(**overrides: Any) -> SimpleNamespace:
         "answer_text": "",
         "enriched_text": "",
         "turn_cost": 0.0,
+        "last_prompt_usage": {},
+        "agent_runtime": {},
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -102,3 +104,33 @@ def test_no_calls_case_is_silent_and_synthesizes_nothing(
     assert state.turn_tokens["output"] == 0
     assert state.turn_tokens["input"] == 0
     assert state.turn_cost == 0.0
+    assert state.last_prompt_usage == {}
+
+
+def test_prompt_context_is_estimated_when_cli_provider_has_no_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(turn_usage, "_snapshot_lm_history_index", lambda _app: {0: 0})
+    monkeypatch.setattr(turn_usage, "_usage_from_history_slice", lambda _start, _app: {})
+    monkeypatch.setattr(
+        turn_usage, "_last_prompt_usage_from_history_slice", lambda _start, _app: {}
+    )
+    monkeypatch.setattr(turn_usage, "_usage_from_dspy_history", lambda: {})
+    monkeypatch.setattr(turn_usage, "_current_lm_model_id", lambda: "codex/gpt-5")
+    monkeypatch.setattr(
+        turn_usage,
+        "_estimated_prompt_usage",
+        lambda prompt, model: {"used_tokens": len(prompt), "source": "estimated", "model": model},
+    )
+
+    state = _fake_state(
+        enriched_text="materialized prompt",
+        agent_runtime={"model": {"provider_id": "claude_code", "model_id": "sonnet"}},
+    )
+    turn_usage.roll_up_usage(state, SimpleNamespace(answer="done"))
+
+    assert state.last_prompt_usage == {
+        "used_tokens": len("materialized prompt"),
+        "source": "estimated",
+        "model": "claude_code/sonnet",
+    }

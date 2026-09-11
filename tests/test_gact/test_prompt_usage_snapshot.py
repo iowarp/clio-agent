@@ -32,3 +32,18 @@ def test_last_prompt_usage_normalizes_litellm_cache_details(monkeypatch) -> None
         "cache_write_tokens": 0,
         "cache_tokens_measured": True,
     }
+
+
+def test_estimated_prompt_usage_labels_unmeasured_cache(monkeypatch) -> None:
+    monkeypatch.setattr(usage, "_all_known_lms", lambda _app: [])
+
+    snapshot = usage._estimated_prompt_usage("abcdefgh", "anthropic/claude-sonnet")
+
+    assert snapshot == {
+        "used_tokens": 2,
+        "source": "estimated",
+        "model": "anthropic/claude-sonnet",
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cache_tokens_measured": False,
+    }
