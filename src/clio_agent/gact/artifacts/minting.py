@@ -56,11 +56,12 @@ _DEFAULT_HASH_MAX_FILE_BYTES = 64 * 1024 * 1024
 
 _HASH_CHUNK_BYTES = 1024 * 1024
 
-#: Per-session turn-scoped buffer of the artifact versions minted THIS turn — the
-#: source for the one-``resource_link``-part-per-generated-artifact append at turn
-#: finalize (#968 item 2). Only genuinely NEW versions land here (a W&B same-sha
-#: dedup no-op mints nothing, so it contributes no part — matching "one part per
-#: artifact GENERATED this turn"). ``turn_finalize`` drains + filters by turn id
+#: Per-session turn-scoped buffer of output artifact versions selected THIS turn —
+#: the source for the one-``resource_link``-part-per-returned-artifact append at
+#: turn finalize. Reconciliation observations remain in the registry and Evidence,
+#: but never become answer attachments. Fresh produced versions and explicit
+#: ``create_artifact`` reuse results land here; passive same-sha observations do not.
+#: ``turn_finalize`` drains + filters by turn id
 #: and clears the session's list; ``settle_failed_finalize`` calls
 #: :func:`clear_turn_artifacts` on the failure path so a crashed turn cannot
 #: re-emit its buffered parts when the same turn is retried. Bounded per session
@@ -78,7 +79,7 @@ def _record_turn_artifact(
     version: "ArtifactVersion",
     turn_id: str,
 ) -> None:
-    """Buffer a freshly-minted version for the finalize ``resource_link`` append.
+    """Buffer an explicit output version for the finalize ``resource_link`` append.
 
     Thread-safe: the observer mint runs on a worker thread while a finalize on the
     turn thread may drain concurrently. A single module lock guards the per-session
@@ -91,6 +92,13 @@ def _record_turn_artifact(
             buffers = {}
             app.state.turn_artifacts = buffers
         entries = buffers.setdefault(sid, [])
+        artifact_id = str(getattr(version, "artifact_id", "") or "")
+        if any(
+            str(entry.get("turn_id") or "") == turn_id
+            and str(getattr(entry.get("version"), "artifact_id", "") or "") == artifact_id
+            for entry in entries
+        ):
+            return
         if len(entries) >= _TURN_ARTIFACT_CAP:
             logger.warning(
                 "artifact turn buffer at cap reason=turn_artifact_cap session=%s cap=%d",
@@ -429,10 +437,14 @@ def mint_artifact_outcome(
     # finding [6/7]: bump the in-memory CAS byte counter at this single mint funnel so the
     # on-loop post-turn budget trigger sees store growth without a filesystem walk.
     record_cas_version(app, workspace_id, custody, int(getattr(evidence, "size_bytes", 0) or 0))
-    # Buffer the new version for the finalize ``resource_link`` part append (item 2).
-    _record_turn_artifact(
-        app, sid, workspace_id=workspace_id, name=name, version=version, turn_id=turn_id
-    )
+    # Only produced outputs belong on the assistant answer. Reconciliation mints
+    # describe inputs or externally changed workspace state: their durable home is
+    # the artifact registry and Evidence, not a resource-link attachment appended
+    # to the response.
+    if producing:
+        _record_turn_artifact(
+            app, sid, workspace_id=workspace_id, name=name, version=version, turn_id=turn_id
+        )
     return outcome
 
 

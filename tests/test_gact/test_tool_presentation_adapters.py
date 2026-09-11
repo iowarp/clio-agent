@@ -78,8 +78,31 @@ def test_failed_execution_presents_the_authoritative_reason_without_fabricating_
     )
     assert raw is None
     assert view["blocks"] == [
-        {"id": "execution-error", "type": "text", "text": "Requested file does not exist"}
+        {
+            "id": "execution-error",
+            "type": "text",
+            "label": "Request failed",
+            "severity": "error",
+            "text": "Requested file does not exist",
+        }
     ]
+
+    _raw, denied = completed_presentation(
+        "memory_read_session_summary",
+        {},
+        None,
+        None,
+        "",
+        error=(
+            "403: {'error': {'error': 'memory_policy_denied', "
+            "'message': 'raw policy payload', "
+            "'details': {'policy_decision': 'deny_other_workspace'}}}"
+        ),
+    )
+    assert denied["blocks"][-1]["text"] == (
+        "This session belongs to another workspace and is not accessible "
+        "from the current workspace."
+    )
 
 
 def test_observe_uses_child_identity_and_declared_display_name() -> None:
@@ -381,7 +404,32 @@ def test_resource_inspection_uses_the_custody_size_fields() -> None:
     assert view["blocks"][0]["text"].count("1,200") == 1
 
 
-def test_rejected_artifact_explains_the_actual_rejection() -> None:
+@pytest.mark.parametrize(
+    ("reason", "detail", "expected"),
+    [
+        (
+            "path_missing",
+            "File does not exist",
+            "report.md does not exist, so it cannot be registered as an artifact.",
+        ),
+        (
+            "escapes_root",
+            "C:\\outside\\report.md resolves outside the workspace root",
+            "report.md is outside the active workspace, so it cannot be registered as an artifact.",
+        ),
+        (
+            "would_overwrite",
+            "C:\\workspace\\report.md already exists",
+            "report.md already exists but is not a registered artifact. "
+            "Register the existing file by path or choose another name.",
+        ),
+    ],
+)
+def test_rejected_artifact_explains_the_actual_rejection(
+    reason: str,
+    detail: str,
+    expected: str,
+) -> None:
     view = native_presentation(
         "artifact",
         {},
@@ -389,15 +437,15 @@ def test_rejected_artifact_explains_the_actual_rejection() -> None:
             "artifacts": [
                 {
                     "accepted": False,
-                    "name": "report.md",
-                    "reason": "path_missing",
-                    "detail": "File does not exist",
+                    "name": "C:\\workspace\\report.md",
+                    "reason": reason,
+                    "detail": detail,
                 }
             ]
         },
         None,
     )
-    assert view["blocks"][0]["text"] == "report.md: path_missing\nFile does not exist"
+    assert view["blocks"][0]["text"] == expected
 
 
 def test_web_conversion_exposes_saved_outputs_and_progress() -> None:
@@ -573,7 +621,7 @@ def test_failed_handoff_live_and_snapshot_explain_the_same_failure() -> None:
                 "iters_elapsed": 2,
                 "budget_spent": {"tokens": 32},
             },
-            ["Finish the report", "iters elapsed: 2\ntokens: 32"],
+            ["Finish the report"],
         ),
         (
             "resource",
@@ -606,7 +654,7 @@ def test_failed_handoff_live_and_snapshot_explain_the_same_failure() -> None:
                     }
                 ]
             },
-            ["schedule · 0 9 * * * · UTC\nReview work\nNext: tomorrow"],
+            ["schedule\n0 9 * * *\nUTC\nReview work\nNext: tomorrow"],
         ),
         ("text", {}, ["# Real skill\nLoaded procedure"]),
     ],
@@ -642,7 +690,8 @@ def test_one_shot_schedule_has_trigger_and_no_empty_separator() -> None:
         ]
     }
     view = native_presentation("schedules", {}, row, None)
-    assert view["blocks"][0]["text"] == "s1 · One-shot · UTC\nReview\nNext: later"
+    assert view["summary"] == ""
+    assert view["blocks"][0]["text"] == "s1\nOne-shot\nUTC\nReview\nNext: later"
 
 
 def test_created_schedule_shows_prompt_and_one_timestamp_without_repeating_acknowledgment() -> None:
@@ -656,7 +705,7 @@ def test_created_schedule_shows_prompt_and_one_timestamp_without_repeating_ackno
     }
     view = native_presentation("schedule_created", {"prompt": "Review"}, row, None)
     assert view == {
-        "summary": "One-shot schedule · s1",
+        "summary": "One-shot schedule s1",
         "blocks": [
             {"id": "schedule", "type": "text", "text": "Review\nNext: later\nTimezone: UTC"}
         ],
@@ -671,7 +720,12 @@ def test_schedule_removal_preserves_actual_outcome_without_duplicate_fields(dele
         "message": "cancelled s1" if deleted else "no schedule s1 to cancel",
     }
     view = native_presentation("schedule_deleted", {}, deleted, row)
-    assert view == {"summary": row["message"], "blocks": []}
+    assert view == {
+        "subject": "schedule-subject",
+        **({"status": "error"} if not deleted else {}),
+        "summary": "Schedule deleted." if deleted else "No matching schedule was found.",
+        "blocks": [{"id": "schedule-subject", "type": "text", "text": "s1"}],
+    }
 
 
 def test_failed_task_collection_does_not_claim_it_collected_a_result() -> None:
@@ -719,9 +773,9 @@ def test_model_catalog_exposes_actual_changes_and_failures_without_empty_fields(
     [
         (
             {"loop_id": "l1", "stopped": False, "next_fire_at": "later"},
-            "Next iteration scheduled · l1",
+            "Next iteration scheduled",
         ),
-        ({"loop_id": "l1", "stopped": True, "next_fire_at": ""}, "Loop stopped · l1"),
+        ({"loop_id": "l1", "stopped": True, "next_fire_at": ""}, "Loop stopped"),
         ({"loop_id": "", "stopped": True, "next_fire_at": ""}, "No active loop"),
     ],
 )
@@ -731,7 +785,7 @@ def test_loop_presentation_distinguishes_scheduled_stopped_and_absent(
     view = native_presentation("loop", {"prompt": "Qualification marker"}, row, None)
     assert view["summary"] == summary
     assert view["blocks"] == (
-        [{"id": "next", "type": "text", "text": "Qualification marker\nNext: later"}]
+        [{"id": "next", "type": "text", "text": "Qualification marker\nScheduled for later"}]
         if not row["stopped"]
         else []
     )

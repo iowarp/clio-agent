@@ -57,6 +57,30 @@ def test_declared_search_and_running_shell_headers() -> None:
     assert running["blocks"][0]["command"] == "echo exact"
 
 
+def test_shell_presentation_uses_the_process_exit_status() -> None:
+    succeeded = present_mcp_result(
+        "shell_bash",
+        {"command": "check"},
+        {"structuredContent": {"stdout": "ok", "stderr": "", "exit_code": 0}},
+    )
+    failed = present_mcp_result(
+        "shell_bash",
+        {"command": "check"},
+        {
+            "structuredContent": {
+                "stdout": "",
+                "stderr": "failed",
+                "exit_code": 1,
+            }
+        },
+    )
+
+    assert "status" not in succeeded
+    assert succeeded["blocks"][0]["exit_code"] == 0
+    assert failed["status"] == "failed"
+    assert failed["blocks"][0]["exit_code"] == 1
+
+
 def test_missing_declared_file_subject_does_not_invent_a_header() -> None:
     assert starting_presentation("fs_read_file", {"path": "README.md"}) is None
     original = {"ok": True, "text": "readme contents"}
@@ -72,6 +96,62 @@ def test_unknown_mcp_without_standard_content_keeps_optional_headers_absent() ->
         "summary": "",
         "blocks": [],
     }
+
+
+def test_standard_presentation_marks_typed_tool_errors_failed() -> None:
+    view = present_mcp_result(
+        "raise_alert_card",
+        {},
+        {
+            "error": "alert_card_no_parent",
+            "message": "This session has no parent session.",
+        },
+    )
+
+    assert view["status"] == "failed"
+    assert view["summary"] == ""
+    assert view["blocks"] == [
+        {
+            "id": "semantic-error",
+            "type": "text",
+            "media_type": "",
+            "text": "This session has no parent session.",
+            "label": "Request failed",
+            "language": "",
+            "uri": "",
+            "command": "",
+            "timed_out": False,
+            "status": "",
+            "detail": "",
+            "items": [],
+            "action_label": "",
+            "severity": "error",
+        }
+    ]
+
+
+def test_standard_presentation_marks_content_lane_tool_errors_failed() -> None:
+    view = present_mcp_result(
+        "raise_alert_card",
+        {},
+        {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        '{"error":"alert_card_no_parent",'
+                        '"message":"This session has no parent session."}'
+                    ),
+                }
+            ]
+        },
+    )
+
+    assert view["status"] == "failed"
+    assert view["blocks"][0]["label"] == "Request failed"
+    assert view["blocks"][0]["text"] == "This session has no parent session."
+    assert view["blocks"][0]["severity"] == "error"
+    assert "alert_card_no_parent" not in str(view["blocks"])
 
 
 def test_file_write_diff_is_added_only_to_observer_result(tmp_path) -> None:

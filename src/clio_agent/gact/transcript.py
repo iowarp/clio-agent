@@ -185,6 +185,11 @@ class TurnTranscript:
         # tool-fire by the observer gate — carves the append-only tap bucket into
         # per-ReAct-step slices so step N is not latched by step N-1's chunks (#883).
         self._tap_gate_cursor: dict[tuple[str, str], int] = {}
+        # A model step can issue several tool calls in one parallel batch. Every call
+        # has the same parent span and therefore shares one next_thought owner. Cache
+        # that step verdict so the first call does not consume the evidence and leave
+        # the remaining calls carrying duplicate thought copies.
+        self._tap_step_verdicts: dict[tuple[str, str, str], tuple[bool, bool]] = {}
         # Every accepted streamed chunk in arrival order, across agents AND
         # fields (provider thinking included) — the whole-turn concat the
         # timeout/StreamingOutputError partials read; byte-identical to the
@@ -606,7 +611,9 @@ class TurnTranscript:
         with self._lock:
             self._tap_streamed.setdefault(key, []).append(chunk)
 
-    def tap_step_survives_clean(self, agent_id: str, field: str) -> tuple[bool, bool]:
+    def tap_step_survives_clean(
+        self, agent_id: str, field: str, step_id: str = ""
+    ) -> tuple[bool, bool]:
         """Per-step (consumed) tap classification for the #883 thought-dedup gate.
 
         Returns ``(had_stream, survives_clean)`` for the tap slice since the LAST
@@ -623,13 +630,20 @@ class TurnTranscript:
         """
 
         key = (agent_id, field)
+        verdict_key = (agent_id, field, step_id)
         with self._lock:
+            if step_id and verdict_key in self._tap_step_verdicts:
+                return self._tap_step_verdicts[verdict_key]
             chunks = self._tap_streamed.get(key, [])
             start = self._tap_gate_cursor.get(key, 0)
             self._tap_gate_cursor[key] = len(chunks)
             tail = "".join(chunks[start:])
         survived = bool(tail.strip())
-        return (survived, survived)
+        verdict = (survived, survived)
+        if step_id:
+            with self._lock:
+                self._tap_step_verdicts[verdict_key] = verdict
+        return verdict
 
     def raw_streamed_text(self) -> str:
         """Every accepted streamed chunk THIS turn, concatenated in arrival order.

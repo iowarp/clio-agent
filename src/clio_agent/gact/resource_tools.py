@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -217,23 +218,24 @@ async def wait_for_workspace_resource_processing(
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s
     terminal_states = {"complete", "failed", "cancelled", "not_started"}
+
+    def result_payload(state: Any, *, terminal: bool, timed_out: bool) -> dict[str, Any]:
+        processing = state.model_dump()
+        processing.pop("events", None)
+        return {
+            "task_id": task_id,
+            "terminal": terminal,
+            "timed_out": timed_out,
+            "processing": processing,
+        }
+
     while True:
         state = await refresh_processing(app, record)
         if state.state in terminal_states:
-            return {
-                "task_id": task_id,
-                "terminal": True,
-                "timed_out": False,
-                "processing": state.model_dump(),
-            }
+            return result_payload(state, terminal=True, timed_out=False)
         remaining = deadline - loop.time()
         if remaining <= 0:
-            return {
-                "task_id": task_id,
-                "terminal": False,
-                "timed_out": True,
-                "processing": state.model_dump(),
-            }
+            return result_payload(state, terminal=False, timed_out=True)
         await asyncio.sleep(min(processing_poll_interval_s(), remaining))
 
 
@@ -422,9 +424,14 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
 
     def resource_wait(task_id: str, timeout_s: float) -> dict[str, Any]:
         app, workspace_id = active()
-        return asyncio.run(
+        started = time.perf_counter()
+        result = asyncio.run(
             wait_for_workspace_resource_processing(app, workspace_id, task_id, timeout_s)
         )
+        return {
+            **result,
+            "waited_ms": max(0, round((time.perf_counter() - started) * 1000)),
+        }
 
     def resource_search(resource_id: str, query: str, derivative_id: str = "") -> dict[str, Any]:
         app, workspace_id = active()

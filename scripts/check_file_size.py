@@ -796,7 +796,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # live stream discards the single delivery slot, so a dropped native input
     # would otherwise vanish with it; the ledger + its typed catalog live in
     # gact/stream_fallbacks.py, only the stamp lands here.
-    "src/clio_agent/gact/turn_finalize.py": 861,  # Interaction pause ownership moved to user_question_pause.py.
+    # 861 -> 856 (#1333): the GOAL judge step moved to turn_finalize_goal.py (awaited).
+    "src/clio_agent/gact/turn_finalize.py": 856,  # Interaction pause ownership moved to user_question_pause.py.
     # P5 (owner ask 2026-08-06): +7 for the child/subagent artifact-rollup call
     # site (comment + function-local import + one-line invocation, matching the
     # P4.1/P4.2/P1.6d dispatch idiom already used lower in this file); the
@@ -858,7 +859,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # owning agent task reaches a terminal status. All registry/dispatch logic
     # lives in the owner modules providers/claude_code_stream_bounds.py and
     # providers/session_lifecycle.py -- only the threaded kwarg is here.
-    "src/clio_agent/providers/claude_code_litellm.py": 862,
+    # 862 -> 866 (#1333): acompletion runs the blocking pool bridge off the loop (+1 import,
+    # +2 comment, +1 to_thread call); the bridge itself stays in claude_code_sdk_pool.py.
+    "src/clio_agent/providers/claude_code_litellm.py": 866,
     # NEW entry (MERGE, PR #1298 x #1310): crossed the flat 800 cap (805) because
     # BOTH campaigns' orphan-attribution guards now stack on the same census: the
     # ProcessNode gains executable/cwd (path evidence, PR #1298) AND cmdline

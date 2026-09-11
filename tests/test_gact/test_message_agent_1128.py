@@ -371,8 +371,8 @@ def test_message_agent_tool_declares_typed_structured_content_for_error(
     assert len(declared) == 1
     shape = declared[0]
     assert next(iter(shape)) == "message"
-    assert shape["message"] == f"message rejected: unknown_task — {wire['message']}"
-    # The raw exception text is preserved (never dropped) — renamed to "detail" in
+    assert shape["message"] == f"Message not sent: unknown_task. {wire['message']}"
+    # The raw exception text is preserved and renamed to "detail" in
     # the structured payload only, since "message" now carries our composed
     # presentation summary; the model-facing wire's own "message" is untouched.
     assert shape["detail"] == wire["message"]

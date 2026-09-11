@@ -25,6 +25,7 @@ import json
 import logging
 import uuid
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
@@ -52,6 +53,7 @@ from clio_agent.gact.agents.spawn_events import _started_handoff_part as _starte
 from clio_agent.gact.agents.spawn_events import emit_spawn_started as _emit_spawn_started
 from clio_agent.gact.agents.spawn_group import (
     failed_spawn_metadata_row,
+    wait_completion_offset_ms,
     wait_structured_row,
     wait_summary,
 )
@@ -184,14 +186,32 @@ def _merge_wait_workflow_states(
 
 
 def _failed_spawn_handoff_part(
-    agent_def: "AgentDef", child_id: str, spawn_group_id: str, group_size: int, exc: Exception
+    agent_def: "AgentDef",
+    child_id: str,
+    task: str,
+    spawn_group_id: str,
+    group_size: int,
+    exc: Exception,
 ) -> Part:
     """Terminal Part for a batch sibling refused before it ever spawned (finding
     [E]): builds directly on the terminal lane so the group's declared total
     always reconciles even when one sibling never got a child session."""
 
     reason = getattr(exc, "reason", type(exc).__name__)
-    row = failed_spawn_metadata_row(child_id, agent_def.id, reason, spawn_group_id, group_size)
+    error_message = (
+        "This child is not declared by the current agent, so it was not started."
+        if reason == "undeclared_child"
+        else f"This child was not started because the spawn request failed with {reason}."
+    )
+    row = failed_spawn_metadata_row(
+        child_id,
+        agent_def.id,
+        reason,
+        spawn_group_id,
+        group_size,
+        task=task,
+        error_message=error_message,
+    )
     return Part(
         id=f"live_handoff_{uuid.uuid4().hex[:12]}",
         type="expert_handoff",
@@ -462,7 +482,9 @@ def build_spawn_runtime_tools(
                 _append_live_assistant_part(
                     app,
                     session_id,
-                    _failed_spawn_handoff_part(agent_def, agent, spawn_group_id, group_size, exc),
+                    _failed_spawn_handoff_part(
+                        agent_def, agent, task, spawn_group_id, group_size, exc
+                    ),
                 )
             return json.dumps({"error": exc.reason, "message": str(exc)}, sort_keys=True)
         emit_spawn_started(
@@ -549,29 +571,31 @@ def build_spawn_runtime_tools(
         )
 
         call_start = _time.monotonic()
-        results = []
-        # Typed structured shape (owner ruling, P5): a tool DECLARES its wire
-        # presentation instead of the UI inferring it from JSON key order —
-        # built alongside ``results`` from the SAME per-task facts, and declared
-        # onto the wire's structured_content channel below (never returned to
-        # the model — that lane stays the compact ``results``/conflict rows).
-        structured_rows: list[dict[str, Any]] = []
-        for tid in task_ids or []:
+        wait_started_at = datetime.now(timezone.utc)
+        request_order_results: list[dict[str, Any]] = []
+        collected_rows: list[
+            tuple[int, Any | None, dict[str, Any], dict[str, Any]]
+        ] = []
+        for request_index, tid in enumerate(task_ids or []):
             # Validate the id BEFORE waiting: registry.event() would setdefault a
             # fresh never-set Event for an unknown/typo id and block the FULL budget
             # (starving every real id after it via the shared deadline). An unknown
             # id returns immediately with a typed row and emits nothing.
             task = registry.get(tid)
             if task is None:
-                results.append({"task_id": tid, "error": "unknown_task"})
-                structured_rows.append(wait_structured_row(tid, "unknown_task", 0.0, ""))
+                payload = {"task_id": tid, "error": "unknown_task"}
+                structured_row = wait_structured_row(tid, "unknown_task", 0.0, "")
+                request_order_results.append(payload)
+                collected_rows.append((request_index, None, payload, structured_row))
                 continue
             try:
                 binding = invoker_for_task(app, task)
                 task_result = binding.invoker.wait(TaskHandle.from_task(task), timeout_s=None)
             except (InvokerError, SpawnError) as exc:
-                results.append({"task_id": tid, "error": exc.reason})
-                structured_rows.append(wait_structured_row(tid, exc.reason, 0.0, ""))
+                payload = {"task_id": tid, "error": exc.reason}
+                structured_row = wait_structured_row(tid, exc.reason, 0.0, "")
+                request_order_results.append(payload)
+                collected_rows.append((request_index, None, payload, structured_row))
                 continue
             payload = _completion_payload(app, task_result)
             payload.update(completion_context_fields(app, task_result))
@@ -579,19 +603,48 @@ def build_spawn_runtime_tools(
             # for THIS model-facing row only -- _emit_delegation_terminal below
             # reaches task_result directly and keeps the #880 verbatim payload
             # untouched on its own separate UI/semantic-event lane.
-            results.append(digested_model_row(payload, task_result))
-            structured_rows.append(
-                wait_structured_row(
-                    display_run_name(
-                        task_result.agent_ref.get("expert_id", ""),
-                        task_result.run_index,
-                        task_result.run_label,
-                    ),
-                    task_result.status,
-                    _task_duration_ms(task_result),
-                    (task_result.result or {}).get("answer_excerpt", ""),
-                )
+            model_row = digested_model_row(payload, task_result)
+            structured_row = wait_structured_row(
+                display_run_name(
+                    task_result.agent_ref.get("expert_id", ""),
+                    task_result.run_index,
+                    task_result.run_label,
+                ),
+                task_result.status,
+                _task_duration_ms(task_result),
+                (task_result.result or {}).get("answer_excerpt", ""),
+                wait_completion_offset_ms(wait_started_at, task_result.updated_at),
             )
+            request_order_results.append(model_row)
+            collected_rows.append(
+                (request_index, task_result, model_row, structured_row)
+            )
+
+        def _completion_order_key(
+            row: tuple[int, Any | None, dict[str, Any], dict[str, Any]],
+        ) -> tuple[int, float, int]:
+            request_index, task_result, _payload, _structured_row = row
+            if task_result is None or not task_result.is_terminal:
+                return (1, float(request_index), request_index)
+            try:
+                completed_at = datetime.fromisoformat(
+                    task_result.updated_at.replace("Z", "+00:00")
+                ).timestamp()
+            except (AttributeError, TypeError, ValueError):
+                return (1, float(request_index), request_index)
+            return (0, completed_at, request_index)
+
+        # A grouped wait is a collection boundary, so its result order is the
+        # children’s recorded terminal order rather than the caller’s task-id order.
+        # This same order drives the model-facing rows, transcript lifecycle events,
+        # and compact presentation. Workflow-state merging remains independently
+        # deterministic by run_index below.
+        collected_rows.sort(key=_completion_order_key)
+        results = [row[2] for row in collected_rows]
+        structured_rows = [row[3] for row in collected_rows]
+        for _request_index, task_result, _payload, _structured_row in collected_rows:
+            if task_result is None:
+                continue
             if task_result.is_terminal:
                 # Collecting a terminal task in-turn consumes its observe-later
                 # notification (#948 S6): the model saw the result HERE, so the next
@@ -611,7 +664,7 @@ def build_spawn_runtime_tools(
         # ORDER (run_index, never completion order) and surface every collision as a
         # typed ``workflow_state_merge_conflict`` row + a structured log — no silent
         # last-writer. The model reads the conflict rows and decides.
-        merged_state, conflicts = _merge_wait_workflow_states(results)
+        merged_state, conflicts = _merge_wait_workflow_states(request_order_results)
         for conflict in conflicts:
             logger.warning(
                 "workflow_state_merge_conflict key=%s winner_run=%s winner_agent=%s "
@@ -735,12 +788,12 @@ def build_spawn_runtime_tools(
         )
         return json.dumps(record, sort_keys=True, default=str)
 
-    # Declared presentation (tool_instrumentation): the spawn/fan-out/workflow
-    # tools' wire representation IS their ``expert_handoff`` part — declared
-    # ``handoff`` so the seam-attached observer records telemetry without a
-    # second representation on the wire. The collectors are plain ``row`` tools
-    # (owner, 2026-08-05: a wait/observe is a REAL call, never invisible mechanism
-    # the narration references).
+    # Declared presentation (tool_instrumentation): spawn/fan-out are represented
+    # by their individual ``expert_handoff`` parts. A declared workflow is a
+    # compound operation spanning several handoffs, so it keeps its own tool row
+    # as the operation boundary and the handoffs remain its ordered body. The
+    # collectors are plain ``row`` tools as well: a wait or status check is a real
+    # call, never invisible mechanism the narration references.
     tools = [
         native_tool(
             spawn_agent_task,
@@ -830,7 +883,6 @@ def build_spawn_runtime_tools(
                 presentation="specialized",
                 desc=run_workflow.__doc__,
                 title="Run Workflow",
-                representation="handoff",
                 args={
                     "request": {
                         "type": "string",

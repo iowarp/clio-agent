@@ -33,7 +33,7 @@ from clio_agent.gact.goal import GoalJudgement
 from clio_agent.gact.hooks import HookEnvelope, build_hook_dispatcher
 from clio_agent.gact.hooks.events import PRE_TOOL_USE
 from clio_agent.gact.runtime.grant_resolver import is_read_only, resolve
-from tests.test_gact.conftest import complete_turn
+from tests.test_gact.conftest import complete_turn, settle_turn_slot
 
 
 class _Pred:
@@ -173,17 +173,16 @@ def test_loop_goal_compose_stops_loop_through_real_finalize(
     so no-op'ing the call site turns a test RED (the residual: the glue was silently deletable).
 
     Only the LLM judge (``clio_agent.gact.goal.run_llm_judge``) is patched (-> met). The real
-    chain runs: ``finalize_turn`` -> ``dispatch_goal_at_finalize`` (met) ->
-    ``compose_goal_loop_stop_at_finalize`` -> ``stop_session_loop`` (cancel-both). Neither
-    ``finalize_turn`` nor the goal/compose functions are patched."""
+    chain runs: ``finalize_turn_async`` -> ``finalize_turn`` -> ``dispatch_goal_at_finalize``
+    (awaited, met) -> ``compose_goal_loop_stop_at_finalize`` -> ``stop_session_loop``
+    (cancel-both). Neither ``finalize_turn`` nor the goal/compose functions are patched."""
 
     # The bounded LLM judge is the ONLY completion authority (the deterministic tier was
     # deleted in A4). Patch it met=True so the real finalize goal eval settles 'met'.
-    monkeypatch.setattr(
-        goal_mod,
-        "run_llm_judge",
-        lambda app, sid, goal: GoalJudgement(met=True, reason="the deliverable is complete"),
-    )
+    async def _met_judge(app: Any, sid: str, goal: Any) -> GoalJudgement:
+        return GoalJudgement(met=True, reason="the deliverable is complete")
+
+    monkeypatch.setattr(goal_mod, "run_llm_judge", _met_judge)
 
     with TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent())) as client:
         sid = client.post("/v1/sessions", json={"title": "loop-goal-compose"}).json()["id"]
@@ -212,6 +211,9 @@ def test_loop_goal_compose_stops_loop_through_real_finalize(
         # runs its hooks regardless — dispatch_goal_at_finalize (judge met) then the compose
         # call site under test.
         complete_turn(client, sid, "work on it")
+        # The judge is awaited AFTER the assistant message persists (#1333): wait for the
+        # turn slot to clear before reading the goal/loop verdicts.
+        settle_turn_slot(client, sid)
 
         # GOAL: the finalize judge settled met -> auto-cleared, met recorded.
         goal = (client.app.state.sessions.get(sid).metadata or {})["goal"]

@@ -901,3 +901,17 @@ def test_memory_tool_search_excludes_rewound_messages(tmp_path: Path) -> None:
         ).json()["summary"]
         assert summary["visible_message_ids"] == ["msg_keep"]
         assert summary["excluded_message_ids"] == ["msg_delete"]
+
+
+def test_root_agent_auto_attaches_the_three_policy_gated_memory_tools() -> None:
+    from types import SimpleNamespace
+
+    from clio_agent.gact.agents.auto_tools import build_auto_react_tools
+
+    root = SimpleNamespace(id="main", parent_id="", tools=[])
+    names = {tool.name for tool in build_auto_react_tools(root)}
+    assert {
+        "memory_search_sessions",
+        "memory_read_session_summary",
+        "memory_read_context_frame",
+    } <= names

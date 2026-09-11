@@ -1012,6 +1012,36 @@ def test_live_tool_observer_emits_route_context_before_tool_part(tmp_path: Path)
     assert added_parts[1]["agent_id"] == "ndp_catalog"
 
 
+def test_live_tool_observer_marks_native_semantic_error_failed(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    observer = _make_tool_observer(app)
+
+    observer("raise_alert_card", {"title": "Notice"}, "started", None)
+    observer(
+        "raise_alert_card",
+        {"title": "Notice"},
+        "completed",
+        None,
+        {
+            "error": "alert_card_no_parent",
+            "message": "This session has no parent session.",
+        },
+    )
+
+    completed = [
+        event for event in _settled_history(app, sid) if event.type == "tool.call.completed"
+    ]
+    assert completed[-1].payload["ok"] is False
+    assert completed[-1].payload["error"] == "alert_card_no_parent"
+    assert completed[-1].payload["presentation"]["status"] == "failed"
+    assert completed[-1].payload["presentation"]["summary"] == ""
+    assert completed[-1].payload["presentation"]["blocks"][-1]["text"] == (
+        "This session has no parent session."
+    )
+
+
 def test_tool_result_full_in_trace_but_bounded_in_ledger(tmp_path: Path, monkeypatch) -> None:
     """T1: the canonical trace keeps the FULL tool result (never capped) while the
     ledger/assistant-metadata projection stays bounded. Drives the observer

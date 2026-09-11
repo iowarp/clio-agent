@@ -255,15 +255,26 @@ def test_reject_containment_unresolved(tmp_path):
 
 
 def test_duplicate_returns_existing_created_false(tmp_path):
+    from clio_agent.gact.artifacts.minting import drain_turn_artifacts
+
     app, sess, arc = _make_app(tmp_path)
     report = tmp_path / "d.md"
     report.write_text("same bytes", encoding="utf-8")
     first = promote_proposal(
-        app, sess.id, Proposal(path=str(report), kind="report"), workspace_id="ws1"
+        app,
+        sess.id,
+        Proposal(path=str(report), kind="report"),
+        workspace_id="ws1",
+        turn_id="t1",
     )
     assert first.accepted and first.created
+    assert len(drain_turn_artifacts(app, sess.id, "t1")) == 1
     second = promote_proposal(
-        app, sess.id, Proposal(path=str(report), kind="report"), workspace_id="ws1"
+        app,
+        sess.id,
+        Proposal(path=str(report), kind="report"),
+        workspace_id="ws1",
+        turn_id="t2",
     )
     # Sabotage: raise on a dup instead of returning existing -> this reddens.
     assert second.accepted is True
@@ -274,6 +285,12 @@ def test_duplicate_returns_existing_created_false(tmp_path):
     # Exactly ONE version in the chain — the dup minted nothing new.
     rec = get_registry(app).get("ws1", "d.md")
     assert len(rec.versions) == 1
+    # Reuse is still an explicit output of this create_artifact call. It links the
+    # existing immutable v1 beneath the answer without minting a fake v2.
+    reused = drain_turn_artifacts(app, sess.id, "t2")
+    assert len(reused) == 1
+    assert reused[0]["version"].artifact_id == first.version.artifact_id
+    assert reused[0]["version"].version == 1
 
 
 # --------------------------------------------------------------------------- #

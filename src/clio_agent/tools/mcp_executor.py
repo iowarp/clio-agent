@@ -668,13 +668,19 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         capability-bound app bridge but must not enlarge the model tool surface.
         """
 
-        return [name for name, tool in self._mcp_tools.items() if _tool_visible_to_model(tool)]
+        return [
+            name
+            for name, tool in self._mcp_tools.items()
+            if _tool_visible_to_model(name, tool)
+        ]
 
     def get_tool_definitions(self) -> dict[str, Any]:
         """Return model-visible MCP tool definitions keyed by stable name."""
 
         return {
-            name: tool for name, tool in self._mcp_tools.items() if _tool_visible_to_model(tool)
+            name: tool
+            for name, tool in self._mcp_tools.items()
+            if _tool_visible_to_model(name, tool)
         }
 
     def get_all_tool_definitions(self) -> dict[str, Any]:
@@ -917,13 +923,34 @@ def _tool_ui_metadata(tool: Any) -> Mapping[str, Any]:
     return {"resourceUri": flat_uri} if isinstance(flat_uri, str) else {}
 
 
-def _tool_visible_to_model(tool: Any) -> bool:
+def _active_session_mode() -> str:
+    """Return the active GACT session mode without coupling executor startup to GACT."""
+
+    try:
+        from clio_agent.gact import context as gact_context  # noqa: PLC0415
+
+        app = gact_context.active_app()
+        sid = gact_context.active_session_id() or gact_context.active_tool_session_id()
+        if app is None or not sid:
+            return ""
+        session = app.state.sessions.get(sid)
+        return str(getattr(session, "mode", "") or "")
+    except (AttributeError, LookupError, RuntimeError):
+        return ""
+
+
+def _tool_visible_to_model(name: str, tool: Any) -> bool:
     """Return whether a tool belongs on the model-facing tool surface."""
 
     visibility = _tool_ui_metadata(tool).get("visibility")
     if not isinstance(visibility, Sequence) or isinstance(visibility, (str, bytes)):
         return True
-    return "model" in {str(item) for item in visibility}
+    scopes = {str(item) for item in visibility}
+    if "model" in scopes:
+        return True
+    if "model:plan" in scopes:
+        return _active_session_mode() == "plan"
+    return False
 
 
 __all__ = [

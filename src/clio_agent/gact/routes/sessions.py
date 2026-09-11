@@ -685,7 +685,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         # Pass the FULL transcript through to the LLM — clio must not heuristically
         # truncate content a model sees; the LLM is what compacts (that is allowed).
         chunks: list[str] = []
-        for m in ledger[-50:]:  # last 50 messages should be enough context
+        for m in ledger:
             role = (_attr(m, "role", "user") or "user").upper()
             for p in _attr(m, "parts", []) or []:
                 txt = (_attr(p, "text", "") or "").strip()

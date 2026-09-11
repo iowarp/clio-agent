@@ -198,11 +198,11 @@ def resource_link_part(
 def append_turn_resource_links(
     app: "FastAPI", sid: str, turn_id: str, transcript: Any, *, agent_id: str = ""
 ) -> None:
-    """Append one ``resource_link`` part per artifact generated this turn (#968 item 2).
+    """Append one ``resource_link`` part per artifact explicitly returned this turn.
 
     Drains the mint funnel's turn buffer (filtered to this turn — a leaked entry
     from a prior turn is popped with the list, never rides this message), projects
-    each new version to a ``resource_link`` Part, and appends it to the transcript
+    each buffered output version to a ``resource_link`` Part, and appends it to the transcript
     ledger so it persists + streams as a batch part. Owns the whole finalize-wire
     seam so ``turn_finalize`` stays a one-line caller (no-accretion). Fully guarded
     — a wire-identity append must never break the turn's answer.

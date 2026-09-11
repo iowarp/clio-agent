@@ -630,13 +630,8 @@ def finalize_turn(
     from clio_agent.gact.autonomous_loop import dispatch_loop_at_finalize  # noqa: PLC0415
 
     dispatch_loop_at_finalize(state.app, session_id=state.sid, turn_id=state.turn_id)
-    # P4.2 #1080: run-until GOAL completion gate (owner module; no-op/never-raises).
-    from clio_agent.gact.goal import dispatch_goal_at_finalize  # noqa: PLC0415
-
-    goal_decision = dispatch_goal_at_finalize(
-        state.app, session_id=state.sid, turn_id=state.turn_id, trace_id=state.trace_id
-    )
-    compose_goal_loop_stop_at_finalize(state.app, state.sid, goal_decision)
+    # P4.2 #1080 GOAL gate: an LM call, so it is AWAITED on the loop after this returns
+    # (``turn_finalize_goal.finalize_turn_async``), never run sync on the loop thread (#1333).
     # P1.6d #1068: stall-monitor leaky bucket (owner module; no-op for unstructured sessions).
     from clio_agent.gact.replanning import dispatch_stall_monitor_at_finalize  # noqa: PLC0415
 

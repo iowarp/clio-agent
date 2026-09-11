@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from typing import Any, Optional
 
 from clio_agent.gact import context as _ctx
@@ -20,6 +21,39 @@ from clio_agent.gact.protocol_v3 import A2UI_V091_WIRE, CLIO_A2UI_CATALOG_ID
 # revised, so the newest ids survive the cut and the drop is stated, never
 # silent.
 MAX_REPORTED_SURFACE_IDS = 32
+
+
+def _surface_presentation(
+    args: Mapping[str, Any], result: Any, structured: Any
+) -> dict[str, Any]:
+    """Describe a surface operation without exposing its protocol envelope."""
+
+    call_args = args.get("kwargs") if isinstance(args.get("kwargs"), Mapping) else args
+    payload = structured if isinstance(structured, Mapping) else result
+    row = payload if isinstance(payload, Mapping) else {}
+    surface_id = str(row.get("surface_id") or call_args.get("surface_id") or "Interactive view")
+    failed = bool(row.get("error")) or row.get("rendered") is False
+    blocks: list[dict[str, Any]] = [
+        {"id": "surface", "type": "text", "text": surface_id},
+    ]
+    if failed:
+        detail = str(row.get("message") or row.get("reason") or row.get("error") or "")
+        if detail:
+            blocks.append(
+                {
+                    "id": "error",
+                    "type": "text",
+                    "severity": "error",
+                    "text": detail,
+                }
+            )
+    return {
+        "action": "Update interactive view" if row.get("created") is False else "Create interactive view",
+        "subject": "surface",
+        "status": "failed" if failed else "succeeded",
+        "summary": "",
+        "blocks": blocks,
+    }
 
 
 def _emit_surface_part(app: Any, session_id: str, part: Part) -> bool:
@@ -230,9 +264,9 @@ def build_create_a2ui_surface_tool() -> Any:
     return native_tool(
         create_a2ui_surface,
         name="create_a2ui_surface",
-        presentation="specialized",
+        presentation=_surface_presentation,
         desc=create_a2ui_surface.__doc__,
-        title="Build Analysis View",
+        title="Create interactive view",
         args={
             "surface_id": {
                 "type": "string",

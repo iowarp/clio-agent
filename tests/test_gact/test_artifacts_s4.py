@@ -447,8 +447,11 @@ def test_reconcile_relink_by_hash_records_custody_gap(tmp_path):
 
 
 def test_reconcile_gap_version_when_lease_dirty(tmp_path):
+    from clio_agent.gact.artifacts.minting import drain_turn_artifacts
+
     app, sess, arc = _make_app(tmp_path)
     f = _seed_v1(app, sess.id, tmp_path)
+    assert len(drain_turn_artifacts(app, sess.id)) == 1
     # Undesignated overwrite: content changed with no seam minting it, lease dirty.
     f.write_text("mystery-overwrite\n", encoding="utf-8")
     out = reconcile_designated_path(
@@ -465,6 +468,9 @@ def test_reconcile_gap_version_when_lease_dirty(tmp_path):
     assert gap.mechanism is Mechanism.NONE  # actor unknown, never mis-attributed
     assert gap.custody_gap["lease"] == "dirty"
     assert gap.version == 2  # v1 untouched
+    # Reconciliation records evidence about externally changed input state. It is
+    # not a produced answer attachment and must not enter the finalize link buffer.
+    assert drain_turn_artifacts(app, sess.id) == []
 
 
 def test_reconcile_auto_mint_when_lease_clean(tmp_path):

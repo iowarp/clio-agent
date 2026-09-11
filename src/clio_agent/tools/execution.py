@@ -1125,7 +1125,7 @@ def _make_dspy_tools(
     return [
         _make_dspy_tool(name, mcp_tool, call_tool)
         for name, mcp_tool in mcp_tools.items()
-        if _tool_visible_to_model(mcp_tool)
+        if _tool_visible_to_model(name, mcp_tool)
     ]
 
 

@@ -42,8 +42,6 @@ if TYPE_CHECKING:
     from clio_agent.gact.types import Message
 
 logger = logging.getLogger(__name__)
-
-
 # ------------------------------------------------------------------------- #
 # Session message ledger (in-memory + durable) #
 # ------------------------------------------------------------------------- #
@@ -242,6 +240,8 @@ def _compile_session_conversation_history(
         "starting over; only the request after the marker is new:\n"
         f"{transcript}\n\n=== Current request ===\n{current_prompt}"
     )
+
+
 
 
 # ------------------------------------------------------------------------- #

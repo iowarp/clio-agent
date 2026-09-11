@@ -14,6 +14,7 @@ import yaml
 
 from clio_agent.tools.file_diff import unified_file_diff
 from clio_agent.tools.file_policy import validate_read_path, validate_write_path
+from clio_agent.tools.result_errors import structured_tool_result_error
 
 logger = logging.getLogger(__name__)
 Adapter = Callable[[Mapping[str, Any], Any, Any], dict[str, Any]]
@@ -40,6 +41,38 @@ class FileWriteSnapshot:
 
 
 MCP_PRESENTATION_ADAPTERS: dict[str, PresentationAdapter] = {}
+
+_CODE_LANGUAGE_BY_SUFFIX = {
+    ".c": "c",
+    ".cc": "cpp",
+    ".cpp": "cpp",
+    ".css": "css",
+    ".go": "go",
+    ".h": "c",
+    ".hpp": "cpp",
+    ".html": "html",
+    ".java": "java",
+    ".js": "javascript",
+    ".json": "json",
+    ".jsx": "jsx",
+    ".mjs": "javascript",
+    ".php": "php",
+    ".ps1": "powershell",
+    ".py": "python",
+    ".rb": "ruby",
+    ".rs": "rust",
+    ".sh": "shellscript",
+    ".sql": "sql",
+    ".toml": "toml",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    ".vue": "vue",
+    ".xml": "xml",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+}
+
+_CODE_LANGUAGE_BY_NAME = {"dockerfile": "dockerfile", "makefile": "make"}
 
 
 def register_presentation_adapter(name: str, adapter: PresentationAdapter) -> None:
@@ -83,24 +116,60 @@ def _structured(result: Any) -> Mapping[str, Any]:
     return row if isinstance(row, Mapping) else {}
 
 
+def _semantic_error_message(value: Any, fallback: str) -> str:
+    """Return readable text from a typed tool-error envelope."""
+
+    if isinstance(value, Mapping):
+        message = value.get("message") or value.get("detail")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+        error = value.get("error")
+        if isinstance(error, Mapping):
+            nested = error.get("message") or error.get("detail")
+            if isinstance(nested, str) and nested.strip():
+                return nested.strip()
+        if error:
+            return str(error)
+    return fallback
+
+
 def standard_mcp_presentation(result: Any) -> dict[str, Any]:
     """Present standard MCP content; structured results remain technical detail."""
 
     blocks: list[dict[str, Any]] = []
+    semantic_error = structured_tool_result_error(result)
+    failed = semantic_error is not None
     content = result.get("content", []) if isinstance(result, Mapping) else []
     for index, item in enumerate(content):
         if not isinstance(item, Mapping):
             continue
         block_id = f"content-{index}"
         if item.get("type") == "text" and isinstance(item.get("text"), str):
+            text = item["text"]
+            decoded: Any = text
+            try:
+                decoded = json.loads(text)
+            except json.JSONDecodeError:
+                pass
+            if failed:
+                blocks.append(
+                    {
+                        "id": block_id,
+                        "type": "text",
+                        "label": "Request failed",
+                        "text": _semantic_error_message(decoded, text),
+                        "severity": "error",
+                    }
+                )
+                continue
             duplicate = False
             if "structuredContent" in result:
                 try:
-                    duplicate = json.loads(item["text"]) == result["structuredContent"]
+                    duplicate = decoded == result["structuredContent"]
                 except json.JSONDecodeError:
                     pass
             if not duplicate:
-                blocks.append({"id": block_id, "type": "text", "text": item["text"]})
+                blocks.append({"id": block_id, "type": "text", "text": text})
         elif item.get("type") in {"image", "audio"}:
             blocks.append(
                 {
@@ -128,7 +197,24 @@ def standard_mcp_presentation(result: Any) -> dict[str, Any]:
                             "label": str(resource.get("name") or resource["uri"]),
                         }
                     )
-    return {"summary": "", "blocks": blocks}
+    if failed and not blocks:
+        message = result.get("message") if isinstance(result, Mapping) else None
+        blocks.append(
+            {
+                "id": "semantic-error",
+                "type": "text",
+                "label": "Request failed",
+                "text": _semantic_error_message(
+                    result, str(message or semantic_error or "The tool reported an error.")
+                ),
+                "severity": "error",
+            }
+        )
+    return {
+        **({"status": "failed"} if failed else {}),
+        "summary": "",
+        "blocks": blocks,
+    }
 
 
 def present_mcp_result(
@@ -235,6 +321,9 @@ def _read(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
                     content = "".join(lines[end + 1 :]).lstrip("\r\n")
     elif path.suffix.lower() in {".txt", ".log"}:
         kind = "text"
+    language = _CODE_LANGUAGE_BY_NAME.get(path.name.lower()) or _CODE_LANGUAGE_BY_SUFFIX.get(
+        path.suffix.lower(), "text"
+    )
     return {
         "subject": "file-link",
         "summary": f"{row.get('size_bytes', 0)} bytes",
@@ -251,6 +340,7 @@ def _read(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
                 "id": "file",
                 "type": kind,
                 "text": content,
+                "language": language if kind == "code" else "",
             },
         ],
     }
@@ -287,7 +377,14 @@ def _diff(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
 def _terminal(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
     del snapshot
     row = _structured(result)
+    exit_code = row.get("exit_code")
+    timed_out = bool(row.get("timed_out"))
     return {
+        **(
+            {"status": "failed"}
+            if timed_out or isinstance(exit_code, int) and exit_code != 0
+            else {}
+        ),
         "summary": "",
         "blocks": [
             {
@@ -295,8 +392,8 @@ def _terminal(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, 
                 "type": "terminal",
                 "command": str(row.get("command") or args.get("command") or ""),
                 "text": str(row.get("stdout") or "") + str(row.get("stderr") or ""),
-                "exit_code": row.get("exit_code"),
-                "timed_out": bool(row.get("timed_out")),
+                "exit_code": exit_code,
+                "timed_out": timed_out,
             }
         ],
     }

@@ -656,3 +656,36 @@ async def test_failing_turn_does_not_close_the_client_under_a_live_sibling() -> 
         assert fake.closed is True, "the deferred teardown never ran after the last holder left"
     finally:
         sdk.close_blocking()
+
+
+def _fake_astream(text: str = "judged", **usage: int) -> Any:
+    """A stand-in for ``astream_sdk`` yielding one text chunk and one usage chunk."""
+
+    async def _stream(**_: Any) -> Any:
+        yield {"text": text}
+        yield {"text": "", "usage": usage}
+
+    return _stream
+
+
+def test_run_sdk_blocks_from_a_plain_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        codex_stream, "astream_sdk", _fake_astream(prompt_tokens=3, completion_tokens=2)
+    )
+    text, usage = codex_stream.run_sdk(prompt="p", model="m", cwd=None, effort=None)
+    assert text == "judged"
+    assert usage["input_tokens"] == 3 and usage["output_tokens"] == 2
+
+
+def test_run_sdk_works_under_a_running_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The blocking LiteLLM path is reached from loop threads (the finalize goal judge
+    runs a sync predict on the server loop), so ``run_sdk`` must not ``asyncio.run()``
+    on a thread that already owns a loop."""
+    monkeypatch.setattr(codex_stream, "astream_sdk", _fake_astream("under-loop", total_tokens=9))
+
+    async def _under_loop() -> tuple[str, dict[str, int]]:
+        return codex_stream.run_sdk(prompt="p", model="m", cwd=None, effort=None)
+
+    text, usage = asyncio.run(_under_loop())
+    assert text == "under-loop"
+    assert usage["total_tokens"] == 9

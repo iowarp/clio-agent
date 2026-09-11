@@ -18,6 +18,7 @@ from clio_agent import conf
 from clio_agent.errors import CancellationError
 from clio_agent.gact.artifacts.designation import ground_output_paths
 from clio_agent.tools import foreground_cancellation as foreground_cancel
+from clio_agent.tools import mcp_executor as mcp_executor_module
 from clio_agent.tools.execution import (
     MCPToolBridge,
     RepeatedToolFailureError,
@@ -431,6 +432,36 @@ def test_app_only_tools_are_hidden_from_model_tool_surface() -> None:
         assert [tool.name for tool in executor.to_dspy_tools()] == ["vigil_open"]
         assert set(executor.get_all_tool_definitions()) == {"vigil_open", "vigil_update"}
     assert executor.closed is True
+
+
+def test_plan_only_tools_follow_the_active_session_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Plan-file writes are model-visible only while the active session is planning."""
+
+    class VisibilityClient(FakeClient):
+        async def list_tools(self):
+            return [
+                SimpleNamespace(
+                    name="fs_apply_edit_write",
+                    description="Write the recorded Plan file.",
+                    inputSchema={"properties": {}},
+                    meta={"ui": {"visibility": ["model:plan"]}},
+                ),
+            ]
+
+    active_mode = "plan"
+    monkeypatch.setattr(mcp_executor_module, "_active_session_mode", lambda: active_mode)
+
+    with create_sync_tool_executor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _server: VisibilityClient(),
+    ) as executor:
+        assert executor.get_tool_names() == ["fs_apply_edit_write"]
+        assert [tool.name for tool in executor.to_dspy_tools()] == ["fs_apply_edit_write"]
+
+        active_mode = "execute"
+        assert executor.get_tool_names() == []
+        assert executor.to_dspy_tools() == []
 
 
 @pytest.mark.asyncio

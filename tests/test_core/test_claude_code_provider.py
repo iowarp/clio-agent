@@ -670,3 +670,51 @@ def test_registers_once() -> None:
     entries = [e for e in litellm.custom_provider_map if e.get("provider") == "claude_code"]
     assert len(entries) == 1
     assert isinstance(entries[0]["custom_handler"], ClaudeCodeLLM)
+
+
+def test_acompletion_does_not_hold_the_callers_loop(monkeypatch) -> None:
+    """``acompletion`` must not block the awaiting loop (#1333).
+
+    The pooled SDK session is a blocking contract; the finalize goal judge awaits this
+    path on the server loop, so the block has to land on a worker thread. A stand-in
+    ``_run_sdk`` parks on a threading.Event while the test proves the loop keeps
+    yielding, then releases it and checks the response came through."""
+    import asyncio
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def _parked_sdk(*, prompt, native_blocks, model, timeout, cwd, thinking=None):
+        started.set()
+        assert release.wait(timeout=5.0)
+        return "judged", {"input_tokens": 1, "output_tokens": 1}
+
+    monkeypatch.setattr(claude_code_litellm, "_run_sdk", _parked_sdk)
+
+    async def exercise() -> None:
+        task = asyncio.create_task(
+            ClaudeCodeLLM().acompletion(
+                model="claude_code/cc-sonnet",
+                messages=[{"role": "user", "content": "is it done?"}],
+                api_base="",
+                custom_prompt_dict={},
+                model_response=MagicMock(),
+                print_verbose=None,
+                encoding=None,
+                api_key=None,
+                logging_obj=None,
+                optional_params={"claude_code_transport": "sdk"},
+            )
+        )
+        while not started.is_set():
+            await asyncio.sleep(0)
+        # A blocking bridge on the loop could not let this coroutine resume here.
+        assert not task.done()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        resp = await task
+        assert resp.choices[0].message.content == "judged"
+
+    asyncio.run(exercise())

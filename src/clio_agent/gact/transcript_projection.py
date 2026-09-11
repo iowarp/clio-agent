@@ -280,17 +280,43 @@ def materialize_ledger(app: "FastAPI", session_id: str) -> Optional[list[Message
         # only storage (structural degenerate case, not a regime).
         return None if store is None else store.load_session(session_id)
 
-    if has_atoms(arc, session_id):
-        return assemble_session_messages(arc, session_id)
+    # A cache miss can arrive concurrently from independent request surfaces. Keep the
+    # has-atoms -> backfill -> assemble decision atomic for this one transcript lane.
+    # Without the lane lock, two cold readers can both observe an empty lane and mint
+    # the same retained ledger. Their per-part appends then interleave, so every
+    # ``part_index == 0`` is mistaken for another message boundary on reload.
+    lane_lock = arc._segments._lock_for(session_id, MESSAGE_PART_SCOPE)
+    with lane_lock:
+        if has_atoms(arc, session_id):
+            assembled = assemble_session_messages(arc, session_id)
+            # Repair lanes written by the pre-lock race. The retained message ledger is
+            # deliberately kept as the re-derivable fallback for lifecycle-erased atom
+            # lanes; it is also the only trustworthy source for repairing a structurally
+            # divergent lane. This is exact wire comparison, never text heuristics.
+            ledger = None if store is None else store.load_session(session_id)
+            if ledger is None or [m.model_dump(exclude_none=True) for m in assembled] == [
+                m.model_dump(exclude_none=True) for m in ledger
+            ]:
+                return assembled
+            logger.error(
+                "transcript_projection: repairing divergent atom lane session=%s "
+                "assembled_messages=%d retained_messages=%d reason=concurrent_backfill_race",
+                session_id,
+                len(assembled),
+                len(ledger),
+            )
+            arc._segments.drop_scope(session_id, MESSAGE_PART_SCOPE)
+            mint_atoms_from_ledger(arc, session_id, ledger)
+            return assemble_session_messages(arc, session_id)
 
-    # Atoms regime, but no atoms yet: either a brand-new session (no ledger) or a
-    # pre-atom ledger to backfill once. Distinguish via the store (LedgerReadError
-    # propagates — never a silent empty).
-    ledger = None if store is None else store.load_session(session_id)
-    if not ledger:
-        return ledger  # None (never persisted) or [] (empty) — both pass through
-    mint_atoms_from_ledger(arc, session_id, ledger)
-    return assemble_session_messages(arc, session_id)
+        # Atoms regime, but no atoms yet: either a brand-new session (no ledger) or a
+        # pre-atom ledger to backfill once. Distinguish via the store (LedgerReadError
+        # propagates — never a silent empty).
+        ledger = None if store is None else store.load_session(session_id)
+        if not ledger:
+            return ledger  # None (never persisted) or [] (empty) — both pass through
+        mint_atoms_from_ledger(arc, session_id, ledger)
+        return assemble_session_messages(arc, session_id)
 
 
 # --------------------------------------------------------------------------- #

@@ -320,7 +320,7 @@ def _declare_message_agent_structured_content(
         # instead (renamed, never dropped: the model-facing JSON built by the
         # caller still carries the original "message" field unchanged).
         detail = str(wire.get("message", ""))
-        message = f"message rejected: {wire.get('error', '')} — {detail}"
+        message = f"Message not sent: {wire.get('error', '')}. {detail}"
         fields = {k: v for k, v in wire.items() if k != "message"}
         fields["detail"] = detail
     else:

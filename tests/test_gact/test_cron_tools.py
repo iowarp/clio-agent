@@ -408,7 +408,7 @@ def test_cron_list_declares_typed_structured_content(
         _bind(app, "sess_1")
         # Empty case first: the honest "no schedules" message, never "0 schedules: ".
         build_cron_list_tool().func()
-        assert declared[-1] == {"message": "no schedules armed for this session", "schedules": []}
+        assert declared[-1] == {"message": "There are no schedules.", "schedules": []}
 
         build_cron_create_tool().func(cron="0 9 * * *", prompt="daily standup")
         build_cron_create_tool().func(prompt="one shot", delay_s=60, recurring=False)
@@ -416,7 +416,7 @@ def test_cron_list_declares_typed_structured_content(
 
         shape = declared[-1]
         assert next(iter(shape)) == "message"
-        assert shape["message"] == "2 schedules: 1 recurring, 1 one-shot"
+        assert shape["message"] == "2 schedules, 1 recurring and 1 one-shot"
         assert shape["schedules"] == listed
 
     _in_ctx(body)

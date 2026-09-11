@@ -36,6 +36,7 @@ from clio_agent import conf
 from clio_agent.gact.artifacts.cas import IngestedIdentity
 from clio_agent.gact.artifacts.minting import (
     _contained,
+    _record_turn_artifact,
     _workspace_root,
     artifact_name_for_path,
     mint_artifact_outcome,
@@ -515,6 +516,14 @@ def promote_proposal(
             proposal=proposal,
             source=source,
         )
+        _record_turn_artifact(
+            app,
+            sid,
+            workspace_id=workspace_id,
+            name=name,
+            version=existing_version,
+            turn_id=turn_id,
+        )
         return outcome
 
     # New promotion — enforce the per-turn cap BEFORE minting.
@@ -601,6 +610,14 @@ def promote_proposal(
             outcome=outcome,
             proposal=proposal,
             source=source,
+        )
+        _record_turn_artifact(
+            app,
+            sid,
+            workspace_id=workspace_id,
+            name=name,
+            version=mint.version,
+            turn_id=turn_id,
         )
         return outcome
     _increment_proposal_count(app, sid, turn_id)

@@ -507,7 +507,8 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
     """Drive the real react-runtime observed-call path for every tool
     auto-attached to a dynamic react expert (``auto_tools.build_auto_react_tools``:
     create_artifact, plan_exit, write_todos, the cron triad, loop_wakeup,
-    goal_status, raise_alert_card, refresh_provider_models) plus a plain
+    goal_status, raise_alert_card, refresh_provider_models, and the retained-memory
+    triad) plus a plain
     curated native "row" tool, and assert each
     EXECUTED call lands at least one ``tool_call`` part on the live transcript
     — whether the call itself succeeds or raises (the tool_call part is
@@ -583,6 +584,12 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
             # the wait loop ever touches the processing task record — fast,
             # deterministic, and offline, like the rest of this table.
             "workspace_resource_wait": {"task_id": "missing", "timeout_s": 0},
+            "memory_search_sessions": {"query": "missing"},
+            "memory_read_session_summary": {"target_session_id": sid},
+            "memory_read_context_frame": {
+                "target_session_id": sid,
+                "frame_id": "missing",
+            },
         }
         assert set(calls) == set(auto_tools), (
             "auto_tools.build_auto_react_tools grew/shrank — update this sabotage test's "
@@ -842,9 +849,9 @@ def test_auto_react_tools_carry_their_declared_presentation() -> None:
     for name, title in [
         ("plan_exit", "Exit Plan"),
         ("write_todos", "Update tasks"),
-        ("cron_create", "Create Cron"),
-        ("cron_list", "List Crons"),
-        ("cron_delete", "Delete Cron"),
+        ("cron_create", "Create schedule"),
+        ("cron_list", "List schedules"),
+        ("cron_delete", "Delete schedule"),
         ("loop_wakeup", "Loop Wakeup"),
         ("goal_status", "Goal Status"),
     ]:
@@ -883,6 +890,35 @@ def test_spawn_runtime_tools_declare_handoff_for_spawn_and_row_for_collectors(
     for name, (representation, title) in expected.items():
         assert declared_tool_representation(name) == representation, name
         assert declared_tool_title(name) == title, name
+
+
+def test_declared_workflow_keeps_a_tool_row_around_its_child_handoffs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A compound workflow owns one visible operation boundary around its stages."""
+
+    from clio_agent.gact.agents import spawn_runtime
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.resolution._runtime_declared_child_ids",
+        lambda a, pid, session_id="": {"child_a"},
+    )
+    agent = SimpleNamespace(
+        id="main",
+        metadata={
+            "agent_blueprint_id": "bp",
+            "workflow": {
+                "steps": [{"id": "inspect", "child": "child_a", "task": "Inspect"}]
+            },
+        },
+    )
+    with TestClient(app), _gact_app_context(app), _tool_session_context("sess_x"):
+        tools = spawn_runtime.build_spawn_runtime_tools(SimpleNamespace(), agent)
+    instrument_tools(tools)
+
+    assert declared_tool_representation("run_workflow") == "row"
+    assert declared_tool_title("run_workflow") == "Run Workflow"
 
 
 def test_invalid_representation_is_a_typed_error() -> None:

@@ -178,12 +178,20 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             **({"thought": str(part["thought"])} if part.get("thought") else {}),
             **common,
         }
-    if part_type in {"plan", "compaction"}:
+    if part_type == "plan":
         return {
             "id": part_id,
             "type": "plan",
             "title": str(part.get("title") or "Plan"),
-            "detail": str(part.get("summary") or part.get("text") or ""),
+            "detail": str(part.get("text") or ""),
+            **common,
+        }
+    if part_type == "compaction":
+        return {
+            "id": part_id,
+            "type": "compaction",
+            "summary": str(part.get("summary") or ""),
+            **({"auto": part["auto"]} if isinstance(part.get("auto"), bool) else {}),
             **common,
         }
     if part_type in {"task", "session_task", "task_notification"}:
@@ -460,9 +468,10 @@ def _project_subagent(
     )
     result = str(metadata.get("output") or link.get("result") or "")
     summary = str(
-        metadata.get("error")
-        or metadata.get("error_reason")
+        metadata.get("error_message")
         or metadata.get("summary")
+        or metadata.get("error_reason")
+        or metadata.get("error")
         or link.get("summary")
         or result
         or part.get("text")

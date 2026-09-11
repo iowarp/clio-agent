@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import ast
+import json
 import logging
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -10,6 +13,55 @@ from clio_agent.gact.events import Event
 from clio_agent.gact.tool_result_presentation import ToolPresentation
 
 logger = logging.getLogger(__name__)
+
+
+def _human_execution_error(error: str) -> str:
+    """Project a structured execution failure to a useful primary message.
+
+    The unmodified error remains on the tool invocation for technical details.
+    """
+
+    payload_text = re.sub(r"^\s*\d{3}:\s*", "", error.strip())
+    payload: Any = None
+    for loader in (json.loads, ast.literal_eval):
+        try:
+            payload = loader(payload_text)
+        except (ValueError, SyntaxError):
+            continue
+        break
+    if not isinstance(payload, Mapping):
+        return error.strip()
+    envelope = payload.get("error", payload)
+    if not isinstance(envelope, Mapping):
+        return error.strip()
+    code = str(envelope.get("error") or "")
+    details = envelope.get("details", {})
+    detail_map = details if isinstance(details, Mapping) else {}
+    if code == "memory_policy_denied":
+        if detail_map.get("policy_decision") == "deny_other_workspace":
+            return (
+                "This session belongs to another workspace and is not accessible "
+                "from the current workspace."
+            )
+        return "This memory request is outside the permitted session and workspace scope."
+    message = str(envelope.get("message") or "").strip()
+    return message or error.strip()
+
+
+def _result_error_message(result: Any) -> str:
+    """Return a tool-declared human message without exposing its envelope."""
+
+    if not isinstance(result, Mapping):
+        return ""
+    message = result.get("message") or result.get("detail")
+    if isinstance(message, str) and message.strip():
+        return message.strip()
+    envelope = result.get("error")
+    if isinstance(envelope, Mapping):
+        nested = envelope.get("message") or envelope.get("detail")
+        if isinstance(nested, str) and nested.strip():
+            return nested.strip()
+    return ""
 
 
 def starting_presentation(name: str, args: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -57,7 +109,18 @@ def completed_presentation(
             presentation = present_mcp_result(name, args, result)
         presentation = ToolPresentation.model_validate(presentation).model_dump(exclude_none=True)
         if error:
-            presentation["blocks"].append({"id": "execution-error", "type": "text", "text": error})
+            presentation["status"] = "failed"
+            presentation["summary"] = ""
+            if not any(block.get("severity") == "error" for block in presentation["blocks"]):
+                presentation["blocks"].append(
+                    {
+                        "id": "execution-error",
+                        "type": "text",
+                        "label": "Request failed",
+                        "severity": "error",
+                        "text": _result_error_message(result) or _human_execution_error(error),
+                    }
+                )
         if terminal_output:
             for block in presentation["blocks"]:
                 if block["type"] == "terminal":

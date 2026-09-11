@@ -9,6 +9,7 @@ every public name here so historical ``from clio_agent.config import X`` seams
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from clio_agent.errors import ProviderError
@@ -101,6 +102,29 @@ _TRANSIENT_PROVIDER_MARKERS = (
     # Keep in sync with providers.claude_code_lifecycle.DEAD_ENTRY_MARKER.
     "claude agent sdk entry released during a queued connect",
 )
+
+
+def _shim_lmstudio_response_format(kwargs: dict[str, Any]) -> None:
+    """Rewrite a ``json_object`` response_format into the json_schema form LM Studio accepts.
+
+    DSPy's JSONAdapter sends ``response_format={"type":"json_object"}`` for any signature
+    with an open-ended field; LM Studio 400s on it ("'response_format.type' must be
+    'json_schema' or 'text'"). Translate to a permissive json_schema (json_object
+    semantics). Strict per-signature schemas already flow through as pydantic models and
+    are untouched. No-op when guided output is off. Shared by ``__call__`` and ``acall``
+    so the sync and async paths cannot drift (#1333)."""
+    if not _guided_output_enabled():
+        return
+    _rf = kwargs.get("response_format")
+    if isinstance(_rf, dict) and _rf.get("type") == "json_object":
+        kwargs["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "output",
+                "strict": False,
+                "schema": {"type": "object", "additionalProperties": True},
+            },
+        }
 
 
 def _is_transient_provider_error(exc: BaseException) -> bool:
@@ -207,27 +231,9 @@ def _io_logging_lm_cls() -> Any:
             return outputs
 
         def __call__(self, prompt=None, messages=None, **kwargs):  # type: ignore[override]
-            # LM Studio response_format shim (guided output only). DSPy's
-            # JSONAdapter sends ``response_format={"type":"json_object"}`` for any
-            # signature with an open-ended field (qwopus experts: main's
-            # delegation/workflow_state, ReAct's next_tool_args:dict). LM Studio
-            # REJECTS json_object ("'response_format.type' must be 'json_schema'
-            # or 'text'"), 400-ing the call. Translate it to a permissive
-            # json_schema (constrain to a valid JSON object -- json_object
-            # semantics -- in the form LM Studio accepts). Strict per-signature
-            # schemas (clean signatures) already flow through as pydantic models
-            # and are untouched. No-op when guided output is off.
-            if _guided_output_enabled():
-                _rf = kwargs.get("response_format")
-                if isinstance(_rf, dict) and _rf.get("type") == "json_object":
-                    kwargs["response_format"] = {
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": "output",
-                            "strict": False,
-                            "schema": {"type": "object", "additionalProperties": True},
-                        },
-                    }
+            # LM Studio response_format shim (guided output only; qwopus experts:
+            # main's delegation/workflow_state, ReAct's next_tool_args:dict).
+            _shim_lmstudio_response_format(kwargs)
             # Bounded retry on TRANSIENT provider failures -- e.g. a local model
             # process crashing mid-inference (LM Studio "the model has crashed" ->
             # MidStreamFallbackError), a dropped connection, or a 503. These abort a
@@ -266,6 +272,41 @@ def _io_logging_lm_cls() -> Any:
                     raise
             assert last_exc is not None  # unreachable; loop returns or raises
             raise last_exc
+
+        async def acall(self, prompt=None, messages=None, **kwargs):  # type: ignore[override]
+            # The async twin of ``__call__`` (#1333). The finalize GOAL judge is
+            # awaited on the server loop (``Predict.acall`` -> ``LM.acall``) and must
+            # keep the same provider contract: the LM Studio response_format shim,
+            # the bounded transient retry (same markers/backoff, ``asyncio.sleep``),
+            # and exactly one canonical ``lm.call`` trace per call. No streamed
+            # branch: ``_clio_can_stream()`` is False under a running loop by
+            # construction, so the blocking-equivalent ``super().acall`` is the
+            # only path here.
+            _shim_lmstudio_response_format(kwargs)
+            attempts = _lm_transient_retries() + 1
+            last_exc: BaseException | None = None
+            for attempt in range(attempts):
+                try:
+                    return await self._clio_ainvoke_once(prompt, messages, **kwargs)
+                except BaseException as exc:  # noqa: BLE001 - re-raised unless transient
+                    last_exc = exc
+                    if attempt + 1 < attempts and _is_transient_provider_error(exc):
+                        from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
+                            note_lm_retry_reset,
+                        )
+
+                        note_lm_retry_reset()
+                        await asyncio.sleep(_lm_transient_backoff_s())
+                        continue
+                    raise
+            assert last_exc is not None  # unreachable; loop returns or raises
+            raise last_exc
+
+        async def _clio_ainvoke_once(self, prompt=None, messages=None, **kwargs):  # type: ignore[no-untyped-def]
+            try:
+                return await super().acall(prompt=prompt, messages=messages, **kwargs)
+            finally:
+                self._clio_log_last_call()
 
         def _clio_invoke_once(self, prompt=None, messages=None, **kwargs):  # type: ignore[no-untyped-def]
             # Token-streaming liveness: when enabled AND this call is synchronous

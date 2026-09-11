@@ -203,8 +203,35 @@ def _judge_route(app: Any) -> tuple[Any, Any]:
     return route.lm, route.adapter
 
 
+def _bounded_judge_fact(value: Any, *, limit: int = 500) -> str:
+    """Return one compact fact for the judge without admitting raw result payloads."""
+
+    return " ".join(str(value or "").split())[:limit]
+
+
+def _tool_result_fact(part: Any) -> str:
+    """Project the user-facing result summary already recorded on a tool part."""
+
+    for owner, keys in (
+        (getattr(part, "presentation", None), ("summary",)),
+        (getattr(part, "structured_content", None), ("message", "summary", "status")),
+        (getattr(part, "metadata", None), ("result",)),
+    ):
+        if not isinstance(owner, Mapping):
+            continue
+        for key in keys:
+            fact = _bounded_judge_fact(owner.get(key))
+            if fact:
+                return fact
+    for child in getattr(part, "content", []) or []:
+        fact = _bounded_judge_fact(getattr(child, "text", ""))
+        if fact:
+            return fact
+    return ""
+
+
 def _build_transcript(app: Any, sid: str, *, max_messages: int = 40) -> str:
-    """Render the recent session transcript for the judge (text parts only, role-tagged)."""
+    """Render recent prose and bounded tool facts for the completion judge."""
 
     store = getattr(app.state, "messages", None)
     if store is None:
@@ -217,14 +244,27 @@ def _build_transcript(app: Any, sid: str, *, max_messages: int = 40) -> str:
     for message in list(messages)[-max_messages:]:
         role = str(getattr(message, "role", "") or "")
         for part in getattr(message, "parts", []) or []:
-            if str(getattr(part, "type", "")) == "text":
+            part_type = str(getattr(part, "type", ""))
+            if part_type == "text":
                 text = str(getattr(part, "text", "") or "").strip()
                 if text:
                     lines.append(f"{role}: {text}")
+            elif part_type == "tool_call":
+                name = _bounded_judge_fact(getattr(part, "tool_name", ""), limit=120)
+                if name:
+                    lines.append(f"{role} tool call: {name}")
+            elif part_type == "tool_result":
+                name = _bounded_judge_fact(getattr(part, "tool_name", ""), limit=120)
+                if not name:
+                    continue
+                outcome = "failed" if bool(getattr(part, "is_error", False)) else "completed"
+                fact = _tool_result_fact(part)
+                suffix = f": {fact}" if fact else ""
+                lines.append(f"{role} tool result: {name} {outcome}{suffix}")
     return "\n".join(lines)
 
 
-def run_llm_judge(app: Any, sid: str, goal: Mapping[str, Any]) -> "GoalJudgement":
+async def run_llm_judge(app: Any, sid: str, goal: Mapping[str, Any]) -> "GoalJudgement":
     """Run the bounded cheap-model judge: decide whether the condition is satisfied.
 
     A separate judge model (``dspy.context``) that ONLY reads the transcript — it never acts.
@@ -234,20 +274,21 @@ def run_llm_judge(app: Any, sid: str, goal: Mapping[str, Any]) -> "GoalJudgement
 
     condition = str(goal.get("condition") or "")
     transcript = _build_transcript(app, sid)
+
     try:
         import dspy  # noqa: PLC0415
 
         judge = dspy.Predict(_judge_signature())
         lm, adapter = _judge_route(app)
         with dspy.context(lm=lm, adapter=adapter):
-            pred = judge(goal_condition=condition, transcript=transcript)
+            pred = await judge.acall(goal_condition=condition, transcript=transcript)
         return GoalJudgement(
             met=bool(getattr(pred, "met", False)),
             reason=str(getattr(pred, "reason", "") or ""),
         )
     except Exception as exc:  # noqa: BLE001 - the judge is advisory; degrade to not-met
-        logger.warning("goal LLM judge failed: %s", exc)
-        return GoalJudgement(met=False, reason=f"judge unavailable ({exc})")
+        logger.warning("goal LLM judge failed: %s", exc, exc_info=True)
+        return GoalJudgement(met=False, reason="Goal evaluation is temporarily unavailable.")
 
 
 # Bounded decision (PURE — no I/O, unit-testable).
@@ -458,7 +499,7 @@ def _enqueue_goal_redrive(
     )
 
 
-def dispatch_goal_at_finalize(
+async def dispatch_goal_at_finalize(
     app: Any, *, session_id: str, turn_id: str = "", trace_id: str = ""
 ) -> "GoalDecision | None":
     """Evaluate the session's goal at the turn-finalize boundary (never raises).
@@ -475,7 +516,19 @@ def dispatch_goal_at_finalize(
         goal = _get_goal(app, session_id)
         if not goal or not goal.get("active") or goal.get("cleared"):
             return None
-        llm = run_llm_judge(app, session_id, goal)
+        llm = await run_llm_judge(app, session_id, goal)
+        current = _get_goal(app, session_id)
+        if (
+            not current
+            or current.get("goal_id") != goal.get("goal_id")
+            or not current.get("active")
+            or current.get("cleared")
+        ):
+            logger.info(
+                "goal eval discarded: goal cleared or replaced during judge goal_id=%s",
+                goal.get("goal_id"),
+            )
+            return None
         elapsed_s, tokens_spent = _budget_spent(app, session_id, goal)
         decision = evaluate_goal(goal, llm=llm, elapsed_s=elapsed_s, tokens_spent=tokens_spent)
         if app.state.sessions.get(session_id) is not None:
@@ -565,25 +618,16 @@ def run_goal_command(app: Any, sid: str, request_body: Mapping[str, Any]) -> str
     condition, bounds, clear = parse_goal_command(request_body)
     if clear:
         cleared = clear_goal(app, sid, reason="goal_abandoned")
-        return "goal cleared" if cleared else "no active goal to clear"
+        return "Goal cleared." if cleared else "There is no active goal to clear."
     if not condition:
         return (
-            "usage: /goal <condition> — a condition is required to gate completion "
-            "(e.g. /goal all tests pass). Bounds via args (max_goal_iters/max_wallclock_s/"
-            "max_tokens); /goal clear to remove the active goal."
+            "Enter a completion condition after /goal. Use /goal clear to remove the active goal."
         )
     try:
         armed = arm_goal(app, sid, condition=condition, **bounds)
     except GoalError as exc:
         return f"/goal rejected: {exc} (reason={exc.reason})"
-    return (
-        f"goal {armed['goal_id']} set — gating completion on: {armed['condition']}. "
-        "Evaluation: LLM judge (bounded); bounds are the hard stops. "
-        f"Bounds max_goal_iters={armed['max_goal_iters']}, "
-        f"max_wallclock_s={int(armed['max_wallclock_s'])}, max_tokens={armed['max_tokens']}. "
-        "The goal re-drives while unmet and auto-clears when satisfied (or a bound trips). "
-        "Only you can set or clear it (/goal clear); the agent cannot."
-    )
+    return "Goal set at iteration 0. Open Session work to inspect it."
 
 
 def _goal_status_result(result: dict[str, Any]) -> dict[str, Any]:

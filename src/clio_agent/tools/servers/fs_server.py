@@ -138,12 +138,18 @@ def propose_edit(filepath: str, new_content: str) -> dict[str, Any]:
     }
 
 
-@fs_server.tool(annotations=_APPLY_EDIT_WRITE_ANNOTATIONS)
+@fs_server.tool(
+    annotations=_APPLY_EDIT_WRITE_ANNOTATIONS,
+    meta={"ui": {"visibility": ["model:plan"]}},
+)
 def apply_edit_write(filepath: str, new_content: str) -> dict[str, Any]:
     """Write ``new_content`` to ``filepath`` on disk. Its declared MCP
     annotations (``destructiveHint=True``, not read-only) project to the
-    catalog ``write`` tag, so the permission gate treats it as destructive
-    automatically — direct agent invocation requires user approval.
+    catalog ``write`` tag. The tool remains in the effective runtime catalog
+    for audit and harness execution. It is model-visible only while the active
+    session is in Plan mode, where the permission resolver limits it to the
+    recorded ``.clio/plans/*.md`` file. Outside Plan mode the model proposes a
+    reviewable edit and the approved ``/diffs/apply`` route owns this write.
 
     Designed for the GACT /diffs/apply path: when the user accepts
     a file_diff, the layer calls apply_edit_write with the full

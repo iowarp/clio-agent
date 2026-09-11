@@ -463,6 +463,39 @@ def test_normalization_keeps_bounded_research_tool_coordinates_and_failure() -> 
     assert "upstream refused" not in str(span["attributes"])
 
 
+def test_normalization_keeps_file_coordinates_without_file_content() -> None:
+    rows = []
+    for call_id, filepath in (
+        ("call_code", "D:/workspace/triage/api_gateway.py"),
+        ("call_log", "D:/workspace/triage/api_gateway.log"),
+    ):
+        for event_type, status in (
+            ("tool.call.started", "running"),
+            ("tool.call.completed", "completed"),
+        ):
+            event = _event(event_type, status=status).to_dict()
+            event["payload"] = {
+                "tool": "fs_read_file",
+                "call_id": call_id,
+                "args": {
+                    "filepath": filepath,
+                    "new_content": "must-not-appear",
+                },
+            }
+            rows.append(event)
+
+    result = normalize_semantic_events(rows, provider="native", session_id="sess_root")
+
+    spans = result["spans"]
+    assert len(spans) == 2
+    assert [span["attributes"]["tool_input"]["filepath"] for span in spans] == [
+        "D:/workspace/triage/api_gateway.py",
+        "D:/workspace/triage/api_gateway.log",
+    ]
+    assert all(span["attributes"]["tool_name"] == "fs_read_file" for span in spans)
+    assert "must-not-appear" not in str(spans)
+
+
 def test_execution_endpoint_is_provider_independent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

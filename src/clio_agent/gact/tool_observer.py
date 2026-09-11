@@ -42,6 +42,7 @@ from clio_agent.gact.types import Message, Part
 from clio_agent.runtime import trace
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools.mcp_results import content_blocks_for_wire
+from clio_agent.tools.result_errors import structured_tool_result_error
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -707,8 +708,11 @@ def _make_tool_observer(app: "FastAPI"):
             transcript = _session_turn_transcript(app, sid)
             # #953: read the RUN-KEYED tap bucket (bare invoking_expert still owns attribution).
             _tap_scope = _ctx.run_keyed_scope(invoking_expert)
+            thought_step_id = _ctx.active_parent_span_id()
             had_stream, survived = (
-                transcript.tap_step_survives_clean(_tap_scope, "next_thought")
+                transcript.tap_step_survives_clean(
+                    _tap_scope, "next_thought", thought_step_id
+                )
                 if transcript is not None
                 else (False, False)
             )
@@ -726,7 +730,11 @@ def _make_tool_observer(app: "FastAPI"):
                 )
             if decision.clear or not step_thought:
                 step_thought = ""
-            call_metadata = {"stream_source": "live", "telemetry_source": "live_observer"}
+            call_metadata = {
+                "stream_source": "live",
+                "telemetry_source": "live_observer",
+                **({"thought_step_id": thought_step_id} if thought_step_id else {}),
+            }
             # Per-tool STARTED metadata via the registry (tool_instrumentation.py)
             # -- never a hardcoded tool name in this generic path.
             metadata_resolver = tool_call_metadata_resolver(name)
@@ -762,6 +770,8 @@ def _make_tool_observer(app: "FastAPI"):
                 cancel_event is not None and cancel_event.is_set()
             )
             completion_error = error
+            if completion_error is None and result is not None:
+                completion_error = structured_tool_result_error(result)
             cancellation_metadata: dict[str, Any] = {}
             if completed_after_cancel:
                 completion_error = (

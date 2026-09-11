@@ -611,9 +611,10 @@ def _launch(app: "FastAPI", task: AgentTask, spec: TaskSpec) -> AgentTask:
     child_task = app.state.in_flight_turns.get(task.child_session_id)
     if child_task is not None:
         child_task.add_done_callback(
-            lambda _t, tid=task.task_id, csid=task.child_session_id, mode=spec.mode: _on_child_done(
-                app, tid, csid, mode
-            )
+            lambda finished,
+            tid=task.task_id,
+            csid=task.child_session_id,
+            mode=spec.mode: _on_child_done(app, tid, csid, mode, finished_turn=finished)
         )
     else:
         # The turn already settled (a very fast child); collect now.
@@ -665,7 +666,14 @@ def finalize_child_task_terminal(app: "FastAPI", task: AgentTask, child_sid: str
     release_session_resources(child_sid)
 
 
-def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> None:
+def _on_child_done(
+    app: "FastAPI",
+    task_id: str,
+    child_sid: str,
+    mode: str,
+    *,
+    finished_turn: Any = None,
+) -> None:
     """Completion hook: read the child's terminal message, transition the task to a
     terminal state with a result (message ref + bounded excerpt + workflow_state),
     publish + fire the wait-Event, and admit one queued task into the freed slot."""
@@ -699,6 +707,23 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
             fail_child_task(app, task, child_sid, "child_question_forward_failed", mode)
         else:
             arm_forward_deadline(app, forwarded_qid)
+        return
+
+    # A message accepted while this child was running may miss the final tool
+    # boundary by a few milliseconds. The turn-runner owns that race: its idle
+    # hook promotes the residual steer into the next turn before this later
+    # task-specific callback runs. Keep the ONE logical AgentTask attached to
+    # that continuation instead of terminalizing it from the stale first answer.
+    # Wait and Collect then observe the final answer that actually incorporates
+    # the accepted message. The identity check prevents following the turn whose
+    # completion invoked this callback if callback ordering ever changes.
+    continuation = app.state.in_flight_turns.get(child_sid)
+    if continuation is not None and continuation is not finished_turn:
+        continuation.add_done_callback(
+            lambda finished, tid=task_id, csid=child_sid, run_mode=mode: _on_child_done(
+                app, tid, csid, run_mode, finished_turn=finished
+            )
+        )
         return
 
     msgs = app.state.messages.get(child_sid, []) or []

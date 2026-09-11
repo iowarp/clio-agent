@@ -49,6 +49,32 @@ def _create_message(surface_id: str = "surface_1") -> dict[str, object]:
     }
 
 
+def test_surface_tool_presentation_uses_the_surface_as_its_qualifying_subject() -> None:
+    presentation = a2ui_tools_module._surface_presentation(
+        {"surface_id": "qualification-scenario-5"},
+        {
+            "created": True,
+            "rendered": True,
+            "surface_id": "qualification-scenario-5",
+        },
+        None,
+    )
+
+    assert presentation == {
+        "action": "Create interactive view",
+        "subject": "surface",
+        "status": "succeeded",
+        "summary": "",
+        "blocks": [
+            {
+                "id": "surface",
+                "type": "text",
+                "text": "qualification-scenario-5",
+            }
+        ],
+    }
+
+
 def test_surface_lifecycle_persists_and_reconciles(tmp_path: Path) -> None:
     client, sid, sessions_path = _session_client(tmp_path)
     update = {

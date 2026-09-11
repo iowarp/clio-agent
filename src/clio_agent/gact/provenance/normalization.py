@@ -15,6 +15,9 @@ _SPAN_FAMILIES = {
     "llm.response.completed": "llm.request",
 }
 _TOOL_INPUT_FIELDS: dict[str, tuple[str, ...]] = {
+    "fs_apply_edit_write": ("filepath",),
+    "fs_propose_edit": ("filepath",),
+    "fs_read_file": ("filepath",),
     "web_search": ("query", "count"),
     "web_fetch": ("target", "to_file"),
     "workspace_resource_inspect": ("resource_id",),
@@ -80,6 +83,7 @@ def _correlation(event: dict[str, Any]) -> str:
     if isinstance(payload, dict):
         for key in (
             "tool_call_id",
+            "call_id",
             "expert_span_id",
             "step_span_id",
             "invocation_id",
@@ -153,6 +157,8 @@ def normalize_semantic_events(
                 "resource_id",
             )
         }
+        if not identity["tool_name"]:
+            identity["tool_name"] = str(payload.get("tool") or "")
         span_id = str(event.get("span_id") or event.get("event_id") or f"event-{position}")
         if span_id in seen_ids:
             span_id = f"{span_id}-{position}"
@@ -260,6 +266,8 @@ def _tool_input_attributes(tool_name: str, payload: dict[str, Any]) -> dict[str,
     """Keep bounded, non-secret tool coordinates useful for execution lineage."""
     allowed = _TOOL_INPUT_FIELDS.get(tool_name)
     raw_args = payload.get("tool_args")
+    if not isinstance(raw_args, dict):
+        raw_args = payload.get("args")
     if allowed is None or not isinstance(raw_args, dict):
         return {}
     visible: dict[str, object] = {}

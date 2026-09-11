@@ -83,6 +83,11 @@ def _process_is_alive(pid: int) -> bool:
         return True
     except OSError:
         return False
+    except SystemError:
+        # CPython on Windows can surface a failed ``os.kill(pid, 0)`` as a
+        # SystemError whose attached exception is OSError. Treat that the same
+        # as a missing process so one stale owner marker cannot block SDK boot.
+        return False
     return True
 
 

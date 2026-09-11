@@ -98,10 +98,10 @@ from clio_agent.gact.tool_observer import (
 )
 from clio_agent.gact.turn_cancellation import settle_asyncio_cancellation
 from clio_agent.gact.turn_finalize import (
-    finalize_turn,
     maybe_pause_for_user,
     settle_failed_finalize,
 )
+from clio_agent.gact.turn_finalize_goal import finalize_turn_async
 from clio_agent.gact.turn_forward import forward_turn
 from clio_agent.gact.turn_state import new_turn_state
 from clio_agent.gact.turn_stream import (
@@ -521,7 +521,10 @@ async def _run_turn_in_background(
             # Dynamic tool agents call fs_propose_edit as a TOOL and never set
             # pred.file_diffs; promote those results so they materialize as
             # file_diff parts + pending /diffs rows (iowarp/clio-agent#674).
-            state.proposed_diffs = _propose_edit_diffs_from_pred(state.pred)
+            state.proposed_diffs = _propose_edit_diffs_from_pred(
+                state.pred,
+                state.tools_called,
+            )
         state.nanoagents = list(getattr(state.pred, "nanoagents_spawned", None) or [])
         for req in getattr(state.pred, "permissions_requested", None) or []:
             src = (
@@ -774,7 +777,7 @@ async def _run_turn_in_background(
     # orchestrator so a finalize crash is settled by ``settle_failed_finalize``
     # (a visible error turn + terminal session status), never re-raised.
     try:
-        finalize_turn(
+        await finalize_turn_async(
             state,
             state.pred,
             drain_observed_tool_calls=_drain_observed_tool_calls,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping
+from datetime import datetime
 from typing import Any
 
 Presenter = Callable[[Mapping[str, Any], Any, Any], dict[str, Any]]
@@ -52,6 +53,74 @@ def _record(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _readable_timestamp(value: Any) -> str:
+    """Format an ISO timestamp for people while retaining the precise instant."""
+
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    zone = parsed.tzname() or ""
+    rendered = (
+        f"{parsed.strftime('%b')} {parsed.day}, "
+        f"{parsed.strftime('%I').lstrip('0')}:{parsed.strftime('%M %p')}"
+    )
+    return f"{rendered} {zone}".strip()
+
+
+def _visible_skill_body(result: str, skill_id: str) -> str:
+    """Remove the model-facing skill identity already owned by the tool header."""
+
+    lines = result.splitlines()
+    if lines and lines[0].strip() == f"# Skill: {skill_id}":
+        lines = lines[1:]
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        return "\n".join(lines)
+    return result
+
+
+def _context_leaf_lines(value: Any, path: tuple[str, ...] = ()) -> list[str]:
+    """Describe collected structured context as bounded human-readable facts."""
+
+    if isinstance(value, Mapping):
+        lines: list[str] = []
+        for key, child in value.items():
+            label = str(key).replace("_", " ").strip()
+            lines.extend(_context_leaf_lines(child, (*path, label)))
+        return lines
+    if isinstance(value, list):
+        lines = []
+        for index, child in enumerate(value, start=1):
+            lines.extend(_context_leaf_lines(child, (*path, str(index))))
+        return lines
+    label = " ".join(part for part in path if part).strip()
+    rendered = "yes" if value is True else "no" if value is False else str(value)
+    return [f"{label.capitalize()}: {rendered}" if label else rendered]
+
+
+def _received_context_detail(task: Mapping[str, Any], fallback: str) -> str:
+    """Show the meaningful child answer and structured state that entered context."""
+
+    answer = str(task.get("output") or fallback or "").strip()
+    workflow_state = task.get("workflow_state")
+    structured_lines = _context_leaf_lines(workflow_state) if workflow_state else []
+    generic_answers = {"complete", "completed", "done", "success", "succeeded"}
+    lines = (
+        []
+        if structured_lines and answer.lower() in generic_answers
+        else ([answer] if answer else [])
+    )
+    lines.extend(line for line in structured_lines if line and line not in lines)
+    detail = "\n".join(lines)
+    if len(detail) <= 1800:
+        return detail
+    return f"{detail[:1740].rstrip()}\nMore context is available in technical details"
+
+
 def native_presentation(
     declaration: str, args: Mapping[str, Any], result: Any, structured: Any
 ) -> dict[str, Any]:
@@ -61,15 +130,31 @@ def native_presentation(
     summary = str(row.get("message") or row.get("error") or "")
     blocks: list[dict[str, Any]] = []
     header_action = ""
+    presentation_status = ""
+    subject = ""
     if declaration == "text":
         if isinstance(result, str):
-            blocks.append({"id": "content", "type": "markdown", "text": result})
+            skill_id = str(args.get("skill_id") or "").strip()
+            visible = _visible_skill_body(result, skill_id) if skill_id else result
+            blocks.append({"id": "content", "type": "markdown", "text": visible})
     elif declaration == "task_output":
         task_id = str(row.get("task_id", args.get("task_id", "")))
-        summary = f"Task {task_id}: {row.get('error') or row.get('status') or 'output'}"
-        blocks.append({"id": "output", "type": "markdown", "text": str(row.get("output") or "")})
-        if row.get("error_reason"):
-            blocks.append({"id": "error", "type": "text", "text": str(row["error_reason"])})
+        semantic_error = str(row.get("error") or row.get("error_reason") or "").strip()
+        summary = ""
+        output = str(row.get("output") or "").strip()
+        if output:
+            blocks.append({"id": "output", "type": "markdown", "text": output})
+        if semantic_error:
+            presentation_status = "failed"
+            blocks.append(
+                {
+                    "id": "error",
+                    "type": "text",
+                    "label": "Collection failed",
+                    "severity": "error",
+                    "text": semantic_error.replace("_", " "),
+                }
+            )
         child = _child_session(str(row.get("task_id") or args.get("task_id") or ""))
         if child:
             blocks.insert(
@@ -79,14 +164,14 @@ def native_presentation(
                     "type": "link",
                     "target": "session",
                     "uri": child,
-                    "label": "Open child conversation",
+                    "label": _child_name(task_id) or "Child task",
                 },
             )
     elif declaration in {"tasks", "wait"}:
         summary = str(row.get("summary") or summary)
-        source = _record(result)
-        task_rows = source.get(
-            "results", source.get("tasks", row.get("results", row.get("tasks", [])))
+        result_record = _record(result)
+        task_rows = result_record.get(
+            "results", result_record.get("tasks", row.get("results", row.get("tasks", [])))
         )
         display_rows = row.get("results", [])
         for index, task in enumerate(task_rows):
@@ -94,32 +179,29 @@ def native_presentation(
                 continue
             task_id = str(task.get("task_id") or task.get("id") or "")
             display = display_rows[index] if index < len(display_rows) else {}
-            label = str(display.get("name") or task.get("name") or task_id or "Task")
+            label = str(
+                display.get("name") or task.get("name") or _child_name(task_id) or task_id or "Task"
+            )
             status = "failed" if task.get("error") else str(task.get("status") or "")
-            duration = display.get("duration_ms")
             child = str(
                 task.get("child_session_id") or task.get("session_id") or _child_session(task_id)
             )
-            excerpt = display.get("answer_excerpt")
             details: list[str] = []
             if declaration == "tasks":
                 for event in task.get("new_events", []):
-                    if isinstance(event, Mapping):
-                        # These event types carry serialized model calls or full
-                        # extracted output, not a second conversation result.
-                        keys = (
-                            ("summary",)
-                            if event.get("event_type")
-                            in {"react.step.completed", "expert.extract.completed"}
-                            else ("summary", "excerpt")
-                        )
-                        text = "\n".join(
-                            dict.fromkeys(str(event[key]) for key in keys if event.get(key))
-                        )
-                        if text:
+                    if not isinstance(event, Mapping):
+                        continue
+                    for key in ("summary", "excerpt"):
+                        text = str(event.get(key) or "").strip()
+                        if text and text not in details:
                             details.append(text)
-            if declaration == "tasks" and isinstance(excerpt, str) and excerpt:
-                details.insert(0, excerpt)
+            else:
+                detail = _received_context_detail(
+                    task,
+                    str(display.get("answer_excerpt") or "").strip(),
+                )
+                if detail:
+                    details.append(detail)
             blocks.append(
                 {
                     "id": f"task-{index}",
@@ -128,11 +210,11 @@ def native_presentation(
                     "uri": child,
                     "label": label,
                     "status": status,
+                    "result_kind": "snapshot" if declaration == "tasks" else "completion",
                     "duration_ms": (
-                        float(duration)
+                        float(display.get("waited_ms") or 0)
                         if declaration == "wait"
-                        and isinstance(duration, int | float)
-                        and duration > 0
+                        and isinstance(display.get("waited_ms"), int | float)
                         else None
                     ),
                     "detail": "\n".join(details),
@@ -148,7 +230,7 @@ def native_presentation(
                     "type": "link",
                     "target": "session",
                     "uri": child,
-                    "label": task_id or "Recipient",
+                    "label": _child_name(task_id) or task_id or "Recipient",
                 }
             )
         action = row.get("action")
@@ -157,24 +239,49 @@ def native_presentation(
             if isinstance(action, str)
             else summary
         )
-        summary = str(row.get("error") or action_summary)
+        summary = "" if not row.get("error") else str(action_summary)
         if row.get("error"):
-            blocks.append({"id": "error", "type": "text", "text": str(row["error"])})
+            presentation_status = "failed"
+            reason = str(row.get("error") or "message_rejected")
+            detail = str(row.get("detail") or row.get("message") or "").strip()
+            readable = {
+                "child_not_running": "The child was not active, so the message was not sent.",
+                "unknown_task": "The child task was not found, so the message was not sent.",
+            }.get(reason, "The child rejected the message.")
+            blocks.append(
+                {
+                    "id": "error",
+                    "type": "text",
+                    "label": "Message not sent",
+                    "severity": "error",
+                    "text": f"{readable}{f' {detail}' if detail else ''}",
+                }
+            )
+        sent_message = str(args.get("message") or "").strip()
+        if sent_message:
+            blocks.append(
+                {
+                    "id": "message",
+                    "type": "item",
+                    "result_kind": "message",
+                    "label": "Message attempted" if row.get("error") else "Message sent",
+                    "text": sent_message,
+                }
+            )
     elif declaration == "goal":
-        summary = "Active goal" if row.get("active") else "No active goal"
+        summary = "" if row.get("active") else "There is no goal."
+        if row.get("active"):
+            blocks.append(
+                {
+                    "id": "goal",
+                    "type": "link",
+                    "target": "work",
+                    "uri": "session-work",
+                    "label": f"Goal is at iteration {row.get('iters_elapsed', 0)}",
+                }
+            )
         if row.get("condition"):
             blocks.append({"id": "condition", "type": "text", "text": str(row["condition"])})
-        progress = []
-        for field in ("iters_elapsed", "max_goal_iters"):
-            if field in row:
-                progress.append(f"{field.replace('_', ' ')}: {row[field]}")
-        budget = row.get("budget_spent")
-        if isinstance(budget, Mapping):
-            for field in ("wallclock_s", "tokens"):
-                if field in budget:
-                    progress.append(f"{field}: {budget[field]}")
-        if progress and (row.get("active") or row.get("condition") or row.get("iters_elapsed")):
-            blocks.append({"id": "progress", "type": "text", "text": "\n".join(progress)})
     elif declaration == "model_catalog":
         entries = 0
         for provider in row.get("results", []):
@@ -182,7 +289,7 @@ def native_presentation(
                 continue
             entries += 1
             provider_id = str(provider.get("provider") or f"provider-{entries}")
-            source = str(provider.get("source") or "")
+            provider_source = str(provider.get("source") or "")
             default_model = str(provider.get("default_model") or "")
             failed_reason = str(provider.get("failed_reason") or "")
             models: list[str] = []
@@ -191,8 +298,8 @@ def native_presentation(
                 if isinstance(value, list):
                     models.extend(str(item) for item in value if isinstance(item, str))
             details = []
-            if source:
-                details.append(f"Source: {source}")
+            if provider_source:
+                details.append(f"Source: {provider_source}")
             if default_model:
                 details.append(f"Default model: {default_model}")
             if failed_reason:
@@ -219,14 +326,16 @@ def native_presentation(
         summary = f"{entries} provider results" if entries else "No provider results"
     elif declaration == "loop":
         if row.get("stopped") is True:
-            summary = f"Loop {row['loop_id']} stopped" if row.get("loop_id") else "No active loop"
+            summary = "Loop stopped" if row.get("loop_id") else "No active loop"
+            reason = str(args.get("reason") or "").strip()
+            if reason:
+                blocks.append({"id": "reason", "type": "text", "text": reason})
         elif row.get("next_fire_at"):
-            summary = (
-                f"Next iteration scheduled for loop {row['loop_id']}"
-                if row.get("loop_id")
-                else "Next iteration scheduled"
-            )
-            details = [str(args.get("prompt") or ""), f"Next: {row['next_fire_at']}"]
+            summary = "Next iteration scheduled"
+            details = [
+                str(args.get("prompt") or ""),
+                f"Scheduled for {_readable_timestamp(row['next_fire_at'])}",
+            ]
             blocks.append({"id": "next", "type": "text", "text": "\n".join(filter(None, details))})
     elif declaration == "todos":
         summary = "" if row.get("todos") else "No tasks in this list"
@@ -256,7 +365,10 @@ def native_presentation(
             if isinstance(schedule, Mapping)
         )
         if text:
+            summary = ""
             blocks.append({"id": "schedules", "type": "text", "text": text})
+        else:
+            summary = "There are no schedules."
     elif declaration == "schedule_created":
         if row.get("schedule_id"):
             summary = (
@@ -275,9 +387,130 @@ def native_presentation(
                 {"id": "schedule", "type": "text", "text": "\n".join(filter(None, details))}
             )
     elif declaration == "schedule_deleted":
-        # The declared message already names the schedule and actual removal state.
-        # Repeating the identifier and boolean beneath it adds no result evidence.
-        pass
+        schedule_id = str(row.get("schedule_id") or args.get("schedule_id") or "").strip()
+        if schedule_id:
+            subject = "schedule-subject"
+            blocks.append({"id": subject, "type": "text", "text": schedule_id})
+        deleted = row.get("deleted")
+        if deleted is None and isinstance(result, bool):
+            deleted = result
+        summary = "Schedule deleted." if deleted else "No matching schedule was found."
+        if deleted is False:
+            presentation_status = "error"
+    elif declaration == "memory":
+        memory_tool = str(row.get("tool") or "")
+        if memory_tool == "memory_search_sessions":
+            query = str(row.get("query") or args.get("query") or "").strip()
+            if query:
+                subject = "query"
+                blocks.append({"id": subject, "type": "text", "text": query})
+            hits = [hit for hit in row.get("hits", []) if isinstance(hit, Mapping)]
+            searched = [str(value) for value in row.get("searched_sessions", []) if str(value)]
+            if hits:
+                summary = (
+                    f"{len(hits)} {'match' if len(hits) == 1 else 'matches'} "
+                    f"in {len(searched)} {'session' if len(searched) == 1 else 'sessions'}"
+                )
+            else:
+                summary = "No matching sessions"
+            for index, hit in enumerate(hits):
+                session_id = str(hit.get("session_id") or "")
+                session_title = str(hit.get("session_title") or session_id or "Session")
+                if session_id:
+                    blocks.append(
+                        {
+                            "id": f"hit-{index}-session",
+                            "type": "link",
+                            "target": "session",
+                            "uri": session_id,
+                            "label": session_title,
+                        }
+                    )
+                excerpt = str(hit.get("text") or "").strip()
+                if excerpt:
+                    role = str(hit.get("role") or "").strip().replace("_", " ").capitalize()
+                    blocks.append(
+                        {
+                            "id": f"hit-{index}-excerpt",
+                            "type": "text",
+                            "label": role,
+                            "text": excerpt,
+                        }
+                    )
+        elif memory_tool == "memory_read_session_summary":
+            remembered = row.get("summary")
+            if isinstance(remembered, Mapping):
+                session_id = str(remembered.get("session_id") or "")
+                session_title = str(remembered.get("title") or session_id or "Session")
+                if session_id:
+                    subject = "session"
+                    blocks.append(
+                        {
+                            "id": subject,
+                            "type": "link",
+                            "target": "session",
+                            "uri": session_id,
+                            "label": session_title,
+                        }
+                    )
+                message_count = remembered.get("message_count")
+                state = str(remembered.get("status") or "").strip().replace("_", " ")
+                facts = []
+                if isinstance(message_count, int):
+                    facts.append(
+                        f"{message_count} {'message' if message_count == 1 else 'messages'}"
+                    )
+                if state:
+                    facts.append(f"Status: {state.capitalize()}")
+                summary = "\n".join(facts) or "Session summary"
+                for index, excerpt in enumerate(remembered.get("recent_excerpts", [])):
+                    if not isinstance(excerpt, Mapping):
+                        continue
+                    text = str(excerpt.get("excerpt") or "").strip()
+                    if not text:
+                        continue
+                    role = str(excerpt.get("role") or "").strip().replace("_", " ").capitalize()
+                    blocks.append(
+                        {
+                            "id": f"excerpt-{index}",
+                            "type": "text",
+                            "label": role,
+                            "text": text,
+                        }
+                    )
+        elif memory_tool == "memory_read_context_frame":
+            frame = row.get("frame")
+            if isinstance(frame, Mapping):
+                session_id = str(frame.get("session_id") or "")
+                session_link = _session_link(session_id)
+                if session_link is not None:
+                    subject = "session"
+                    session_link["id"] = subject
+                    blocks.append(session_link)
+                items = [item for item in frame.get("items", []) if isinstance(item, Mapping)]
+                summary = (
+                    f"{len(items)} retained {'item' if len(items) == 1 else 'items'}"
+                    if items
+                    else "No retained context items"
+                )
+                for index, item in enumerate(items):
+                    kind = str(item.get("kind") or "Context item").replace("_", " ").capitalize()
+                    role = str(item.get("role") or "").strip().replace("_", " ").capitalize()
+                    if kind == "Message" and role:
+                        kind = f"{role} message"
+                    source = str(item.get("display_path") or item.get("path") or "").strip()
+                    included = "Included" if item.get("included", True) else "Excluded"
+                    reason = str(item.get("reason") or "").strip().replace("_", " ")
+                    state = f"{included} from {reason}" if reason else included
+                    detail = "\n".join(value for value in (source, state) if value)
+                    blocks.append(
+                        {
+                            "id": f"item-{index}",
+                            "type": "text",
+                            "label": kind,
+                            "text": detail,
+                        }
+                    )
     elif declaration == "resource":
         summary = str(row.get("name") or row.get("resource_id") or summary)
         if row.get("resources") == []:
@@ -369,8 +602,23 @@ def native_presentation(
             blocks.append({"id": "node", "type": "text", "text": "\n".join(fields)})
         content = row.get("text", row.get("content"))
         if isinstance(content, str):
-            kind = "markdown" if row.get("representation") == "markdown" else "text"
-            blocks.append({"id": "content", "type": kind, "text": content})
+            resource_name = (
+                str(resource_link.get("label") or "") if isinstance(resource_link, Mapping) else ""
+            )
+            language = _resource_code_language(resource_name)
+            if row.get("representation") == "markdown":
+                blocks.append({"id": "content", "type": "markdown", "text": content})
+            elif language:
+                blocks.append(
+                    {
+                        "id": "content",
+                        "type": "code",
+                        "language": language,
+                        "text": content,
+                    }
+                )
+            else:
+                blocks.append({"id": "content", "type": "text", "text": content})
         if row.get("truncated") is True:
             blocks.append(
                 {"id": "bounded", "type": "text", "text": "Result truncated by the resource tool"}
@@ -387,19 +635,26 @@ def native_presentation(
                     }
                 )
     elif declaration == "artifact":
-        for index, artifact in enumerate(row.get("artifacts", [row])):
+        artifact_rows = row.get("artifacts", [row])
+        accepted = 0
+        rejected = 0
+        for index, artifact in enumerate(artifact_rows):
             if isinstance(artifact, Mapping):
                 if artifact.get("accepted") is False:
+                    rejected += 1
                     blocks.append(
                         {
                             "id": f"rejection-{index}",
                             "type": "text",
-                            "text": f"{artifact.get('name') or 'Artifact'}: {artifact.get('reason') or 'rejected'}\n{artifact.get('detail') or ''}".rstrip(),
+                            "label": "Artifact rejected",
+                            "severity": "error",
+                            "text": _artifact_rejection_message(artifact),
                         }
                     )
                     continue
                 uri = str(artifact.get("uri") or artifact.get("artifact_id") or "")
                 if uri:
+                    accepted += 1
                     blocks.append(
                         {
                             "id": f"artifact-{index}",
@@ -411,6 +666,9 @@ def native_presentation(
                             ),
                         }
                     )
+        if rejected:
+            presentation_status = "degraded" if accepted else "failed"
+            summary = ""
     elif declaration.startswith("fields:"):
         for field in declaration.removeprefix("fields:").split(","):
             value = row.get(field)
@@ -426,22 +684,34 @@ def native_presentation(
         raise ValueError(f"Unknown native presentation declaration: {declaration}")
     # Header subjects are explicitly chosen by each result family. The client
     # never guesses arguments or promotes arbitrary output into an action label.
-    subject = ""
+    if declaration in {"tasks", "wait"}:
+        item_blocks = [block for block in blocks if block["type"] == "item"]
+        if item_blocks:
+            if declaration == "wait":
+                item_blocks.sort(key=lambda block: float(block.get("duration_ms") or 0))
+                blocks = item_blocks
+            labels = [str(block.get("label") or "Task") for block in item_blocks]
+            subject_text = ", ".join(labels) if len(labels) <= 2 else f"{len(labels)} tasks"
+            subject = "task-subject"
+            blocks.insert(0, {"id": subject, "type": "text", "text": subject_text})
+            summary = ""
     if declaration in {"resource", "task_output", "message", "artifact"}:
         links = [block for block in blocks if block["type"] == "link"]
         if len(links) == 1:
             subject = links[0]["id"]
             if declaration == "task_output":
-                links[0]["label"] = str(args.get("task_id") or "Child task")
-                summary = str(row.get("error") or row.get("error_reason") or "")
+                task_id = str(row.get("task_id") or args.get("task_id") or "")
+                links[0]["label"] = _child_name(task_id) or "Child task"
+                summary = ""
             elif declaration == "artifact":
                 artifacts = row.get("artifacts", [])
                 if len(artifacts) == 1 and artifacts[0].get("accepted") is True:
                     artifact = artifacts[0]
-                    summary = ""
-                    header_action = "Created" if artifact.get("created") else "Reused"
+                    header_action = "Create Artifact"
+                    outcome = "Created" if artifact.get("created") else "Already registered as"
+                    summary = outcome
                     if artifact.get("version"):
-                        summary = f"Version {artifact['version']}"
+                        summary = f"{outcome} version {artifact['version']}"
     if declaration == "text" and args.get("skill_id"):
         subject = "skill-name"
         blocks.insert(0, {"id": subject, "type": "text", "text": str(args["skill_id"])})
@@ -453,6 +723,7 @@ def native_presentation(
             else ({"action": header_action} if header_action else {})
         ),
         **({"subject": subject} if subject else {}),
+        **({"status": presentation_status} if presentation_status else {}),
         "summary": summary,
         "blocks": blocks,
     }
@@ -469,6 +740,7 @@ def validate_declaration(value: str | Presenter) -> None:
         "wait",
         "task_output",
         "resource",
+        "memory",
         "artifact",
         "specialized",
         "todos",
@@ -495,6 +767,39 @@ def _child_session(task_id: str) -> str:
     return str(getattr(task, "child_session_id", "") or "")
 
 
+def _artifact_rejection_message(artifact: Mapping[str, Any]) -> str:
+    """Explain a rejected artifact with user-facing workspace semantics."""
+
+    reason = str(artifact.get("reason") or "rejected")
+    raw_name = str(artifact.get("name") or "").strip()
+    name = raw_name.replace("\\", "/").rsplit("/", 1)[-1] or "This artifact"
+    explanations = {
+        "escapes_root": f"{name} is outside the active workspace, so it cannot be registered as an artifact.",
+        "would_overwrite": (
+            f"{name} already exists but is not a registered artifact. "
+            "Register the existing file by path or choose another name."
+        ),
+        "path_missing": f"{name} does not exist, so it cannot be registered as an artifact.",
+        "missing": f"{name} does not exist, so it cannot be registered as an artifact.",
+        "not_found": f"{name} does not exist, so it cannot be registered as an artifact.",
+    }
+    return explanations.get(reason, f"{name} was rejected because {reason.replace('_', ' ')}.")
+
+
+def _child_name(task_id: str) -> str:
+    """Resolve the recorded child label without exposing an opaque task id."""
+    from clio_agent.gact import context
+    from clio_agent.gact.agent_tasks import display_run_name
+
+    app = context.active_app()
+    registry = getattr(app.state, "agent_task_registry", None) if app is not None else None
+    task = registry.get(task_id) if registry is not None else None
+    if task is None:
+        return ""
+    agent_id = str(task.agent_ref.get("expert_id") or task.agent_ref.get("blueprint_id") or "Task")
+    return display_run_name(agent_id, task.run_index, task.run_label)
+
+
 def _resource_link(resource_id: str) -> dict[str, Any] | None:
     """Resolve a display name only inside the observing session's workspace."""
     from clio_agent.gact import context
@@ -517,3 +822,63 @@ def _resource_link(resource_id: str) -> dict[str, Any] | None:
         "uri": resource_id,
         "label": record.name,
     }
+
+
+def _session_link(session_id: str) -> dict[str, Any] | None:
+    """Resolve a retained session to the shared transcript-navigation link."""
+
+    from clio_agent.gact import context
+
+    if not session_id:
+        return None
+    app = context.active_app()
+    if app is None:
+        return None
+    session = app.state.sessions.get(session_id)
+    if session is None:
+        return None
+    return {
+        "id": "session",
+        "type": "link",
+        "target": "session",
+        "uri": session_id,
+        "label": session.title or session_id,
+    }
+
+
+def _resource_code_language(name: str) -> str:
+    """Return the shared viewer language for a code-bearing resource name."""
+
+    lowered = name.rsplit("/", maxsplit=1)[-1].rsplit("\\", maxsplit=1)[-1].lower()
+    if lowered in {"dockerfile", "makefile"}:
+        return {"dockerfile": "dockerfile", "makefile": "make"}[lowered]
+    extension = lowered.rsplit(".", maxsplit=1)[-1] if "." in lowered else ""
+    return {
+        "c": "c",
+        "cc": "cpp",
+        "cpp": "cpp",
+        "css": "css",
+        "go": "go",
+        "h": "c",
+        "hpp": "cpp",
+        "html": "html",
+        "java": "java",
+        "js": "javascript",
+        "json": "json",
+        "jsx": "jsx",
+        "mjs": "javascript",
+        "php": "php",
+        "ps1": "powershell",
+        "py": "python",
+        "rb": "ruby",
+        "rs": "rust",
+        "sh": "shellscript",
+        "sql": "sql",
+        "toml": "toml",
+        "ts": "typescript",
+        "tsx": "tsx",
+        "vue": "vue",
+        "xml": "xml",
+        "yaml": "yaml",
+        "yml": "yaml",
+    }.get(extension, "")
