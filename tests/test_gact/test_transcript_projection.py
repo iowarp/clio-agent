@@ -33,7 +33,9 @@ SABOTAGE (recorded, run manually):
 
 from __future__ import annotations
 
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -131,6 +133,64 @@ def test_reload_equals_live_multiturn(tmp_path: Path) -> None:
         reloaded = [m.model_dump(exclude_none=True) for m in app.state.messages.get(sid, [])]
         report = N.diff_persistence(live, reloaded)
         assert report.empty, f"reload != live (multiturn):\n{report.pretty()}"
+
+
+def test_concurrent_cold_readers_backfill_one_exact_atom_lane(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent first reads cannot duplicate or interleave retained messages."""
+
+    from clio_agent.gact import transcript_projection as projection
+
+    app, arc = _build(tmp_path)
+    sid = "sess_concurrent_backfill"
+    ledger = [
+        Message(
+            id="msg_user_concurrent",
+            turn_id="msg_user_concurrent",
+            session_id=sid,
+            role="user",
+            created_at="2026-09-11T10:00:00+00:00",
+            updated_at="2026-09-11T10:00:00+00:00",
+            parts=[Part(id="part_user_concurrent", type="text", text="first")],
+        ),
+        Message(
+            id="msg_asst_concurrent",
+            turn_id="msg_user_concurrent",
+            session_id=sid,
+            role="assistant",
+            created_at="2026-09-11T10:00:01+00:00",
+            updated_at="2026-09-11T10:00:01+00:00",
+            parts=[Part(id="part_asst_concurrent", type="text", text="second")],
+        ),
+    ]
+    app.state.message_store.replace_session(sid, ledger)
+    expected = [message.model_dump(exclude_none=True) for message in ledger]
+
+    original_mint = projection.mint_message_part_atoms
+
+    def slow_mint(*args: Any, **kwargs: Any) -> Any:
+        time.sleep(0.01)
+        return original_mint(*args, **kwargs)
+
+    monkeypatch.setattr(projection, "mint_message_part_atoms", slow_mint)
+    start = threading.Barrier(8)
+
+    def cold_read() -> list[dict[str, Any]]:
+        start.wait(timeout=2.0)
+        materialized = projection.materialize_ledger(app, sid)
+        assert materialized is not None
+        return [message.model_dump(exclude_none=True) for message in materialized]
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _index: cold_read(), range(8)))
+
+    assert results == [expected] * 8
+    assert [
+        message.model_dump(exclude_none=True)
+        for message in projection.assemble_session_messages(arc, sid)
+    ] == expected
 
 
 # --------------------------------------------------------------------------- #
