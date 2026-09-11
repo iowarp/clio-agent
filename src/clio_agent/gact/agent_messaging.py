@@ -17,12 +17,14 @@ from clio_agent.gact.agent_tasks import (
     AgentTask,
 )
 from clio_agent.gact.agents.invoker import InvokerError, TaskHandle, TaskSpec
+from clio_agent.gact.agents.spawn_completion import resolve_verbatim_output
 from clio_agent.gact.agents.spawn_placement import invoker_for_task, run_handle_fields
 from clio_agent.gact.events import Event
 from clio_agent.gact.runtime.globals import _active_semantic_turn_id
 from clio_agent.gact.spawn_context import bind_task_spec_to_parent
 from clio_agent.gact.tool_observer import _append_live_assistant_part
 from clio_agent.gact.turn_spawn import SpawnError
+from clio_agent.gact.turn_spawn_result import message_text
 from clio_agent.gact.types import Part
 
 
@@ -159,6 +161,34 @@ def _supersede_part(
     )
 
 
+def _successor_task_text(app: Any, task: AgentTask, message: str) -> str:
+    """Continue a completed child with its retained briefing and return.
+
+    The child session ledger already owns the original, evidence-augmented task
+    text. Reuse that authoritative record instead of adding another archive or
+    widening the AgentTask wire solely for successor construction.
+    """
+
+    original = ""
+    for row in app.state.messages.get(task.child_session_id, []) or []:
+        if getattr(row, "role", "") != "user":
+            continue
+        original = message_text(row)
+        if original:
+            break
+    previous_output, _markers = resolve_verbatim_output(app, task)
+    sections = [
+        "Continue the completed delegated task below. Preserve its original evidence and "
+        "apply the new parent constraint without treating this as an unrelated task."
+    ]
+    if original:
+        sections.extend(["## Original delegated task", original])
+    if previous_output:
+        sections.extend(["## Previous child return", previous_output])
+    sections.extend(["## New parent constraint", message])
+    return "\n\n".join(sections)
+
+
 def _wake_finished(
     app: Any,
     task: AgentTask,
@@ -193,7 +223,7 @@ def _wake_finished(
             app,
             TaskSpec(
                 child_expert_id=task.agent_ref.get("expert_id", ""),
-                task_text=message,
+                task_text=_successor_task_text(app, task, message),
                 parent_session_id=task.parent_session_id,
                 requesting_expert_id=(
                     task.agent_ref.get("requesting_expert_id") or parent_agent_id

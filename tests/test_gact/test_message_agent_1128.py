@@ -20,7 +20,8 @@ from clio_agent.gact.agent_tasks import (
 )
 from clio_agent.gact.agents.invoker import TaskHandle
 from clio_agent.gact.app import build_app
-from clio_agent.gact.types import Part
+from clio_agent.gact.turn_spawn_result import message_text
+from clio_agent.gact.types import Message, Part
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "message_agent_parts_1128.json"
 
@@ -243,6 +244,30 @@ def test_finished_child_wake_emits_parent_supersede_event_and_part(
             placement=placement,
             task_id=f"task_old_{placement.replace(':', '_')}",
         )
+        app.state.messages[old.child_session_id] = [
+            Message(
+                id="msg_original_task",
+                session_id=old.child_session_id,
+                role="user",
+                created_at="2026-09-11T00:00:00+00:00",
+                updated_at="2026-09-11T00:00:00+00:00",
+                parts=[
+                    Part(
+                        id="part_original_task",
+                        type="text",
+                        text="Inspect snapshots A and B using sample values 2.5 and 3.5.",
+                    )
+                ],
+            ),
+            Message(
+                id="msg_old",
+                session_id=old.child_session_id,
+                role="assistant",
+                created_at="2026-09-11T00:00:01+00:00",
+                updated_at="2026-09-11T00:00:01+00:00",
+                parts=[Part(id="part_old_return", type="text", text="old return")],
+            ),
+        ]
         result = message_agent_task(app, old.task_id, "Recheck with the new constraint.")
 
     assert result.action == "wake"
@@ -261,6 +286,17 @@ def test_finished_child_wake_emits_parent_supersede_event_and_part(
     assert parts[0].stage == "delegate.superseded"
     assert parts[0].supersedes_handle_id == old.task_id
     assert parts[0].superseded_by_handle_id == result.task_id
+    if placement.startswith("relay:"):
+        successor_briefing = relay.specs[0].task_text
+    else:
+        successor_messages = app.state.messages.get(result.child_session_id, [])
+        successor_briefing = next(
+            message_text(row) for row in successor_messages if row.role == "user"
+        )
+    assert "## Original delegated task" in successor_briefing
+    assert "sample values 2.5 and 3.5" in successor_briefing
+    assert "## Previous child return\n\nold return" in successor_briefing
+    assert "## New parent constraint\n\nRecheck with the new constraint." in successor_briefing
 
 
 @pytest.mark.parametrize(
