@@ -35,6 +35,8 @@ class PresentationBlock(BaseModel):
     language: str = ""
     target: Literal["artifact", "resource", "session", "url", "file", "work"] | None = None
     state: Literal["pending", "in_progress", "completed"] | None = None
+    previous_state: Literal["pending", "in_progress", "completed"] | None = None
+    change: Literal["added", "removed", "status_changed", "unchanged"] | None = None
     uri: str = ""
     command: str = ""
     exit_code: int | None = None

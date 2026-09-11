@@ -71,6 +71,24 @@ def _readable_timestamp(value: Any) -> str:
     return f"{rendered} {zone}".strip()
 
 
+def _readable_delay(seconds: Any) -> str:
+    """Render a relative trigger interval without hiding its exact scheduled instant."""
+
+    try:
+        value = int(seconds or 0)
+    except (TypeError, ValueError):
+        return ""
+    if value <= 0:
+        return ""
+    if value % 3600 == 0:
+        count, unit = value // 3600, "hour"
+    elif value % 60 == 0:
+        count, unit = value // 60, "minute"
+    else:
+        count, unit = value, "second"
+    return f"{count} {unit}{'' if count == 1 else 's'}"
+
+
 def _visible_skill_body(result: str, skill_id: str) -> str:
     """Remove the model-facing skill identity already owned by the tool header."""
 
@@ -269,6 +287,7 @@ def native_presentation(
                 }
             )
     elif declaration == "goal":
+        header_action = "Get goal status"
         summary = "" if row.get("active") else "There is no goal."
         if row.get("active"):
             blocks.append(
@@ -277,7 +296,7 @@ def native_presentation(
                     "type": "link",
                     "target": "work",
                     "uri": "session-work",
-                    "label": f"Goal is at iteration {row.get('iters_elapsed', 0)}",
+                    "label": f"Goal active at iteration {row.get('iters_elapsed', 0)}",
                 }
             )
         if row.get("condition"):
@@ -326,29 +345,42 @@ def native_presentation(
         summary = f"{entries} provider results" if entries else "No provider results"
     elif declaration == "loop":
         if row.get("stopped") is True:
+            header_action = "Stop loop"
             summary = "Loop stopped" if row.get("loop_id") else "No active loop"
             reason = str(args.get("reason") or "").strip()
             if reason:
                 blocks.append({"id": "reason", "type": "text", "text": reason})
         elif row.get("next_fire_at"):
-            summary = "Next iteration scheduled"
+            header_action = "Schedule next iteration"
+            delay = _readable_delay(args.get("delay_seconds"))
+            summary = f"Next iteration runs in {delay}" if delay else "Next iteration scheduled"
             details = [
                 str(args.get("prompt") or ""),
-                f"Scheduled for {_readable_timestamp(row['next_fire_at'])}",
+                f"Runs {_readable_timestamp(row['next_fire_at'])}",
             ]
             blocks.append({"id": "next", "type": "text", "text": "\n".join(filter(None, details))})
     elif declaration == "todos":
-        summary = "" if row.get("todos") else "No tasks in this list"
-        blocks.extend(
-            {
+        header_action = "Update tasks"
+        changes = [change for change in row.get("changes", []) if isinstance(change, Mapping)]
+        changed = [change for change in changes if change.get("change") != "unchanged"]
+        if changes:
+            summary = f"{len(changed)} task{'' if len(changed) == 1 else 's'} changed"
+            source = changes
+        else:
+            source = [todo for todo in row.get("todos", []) if isinstance(todo, Mapping)]
+            summary = "" if source else "No tasks in this list"
+        for index, todo in enumerate(source):
+            block = {
                 "id": f"todo-{index}",
                 "type": "check",
                 "state": todo.get("status", "pending"),
                 "text": str(todo.get("content", "")),
             }
-            for index, todo in enumerate(row.get("todos", []))
-            if isinstance(todo, Mapping)
-        )
+            if todo.get("previous_status"):
+                block["previous_state"] = todo["previous_status"]
+            if todo.get("change"):
+                block["change"] = todo["change"]
+            blocks.append(block)
     elif declaration == "schedules":
         text = "\n".join(
             "\n".join(
@@ -371,16 +403,18 @@ def native_presentation(
             summary = "There are no schedules."
     elif declaration == "schedule_created":
         if row.get("schedule_id"):
+            delay = _readable_delay(args.get("delay_s"))
             summary = (
-                f"{'Recurring' if row.get('recurring') else 'One-shot'} schedule "
-                f"{row['schedule_id']}"
+                f"Scheduled to run in {delay}"
+                if delay
+                else f"{'Recurring' if row.get('recurring') else 'One-shot'} schedule created"
             )
             details = [str(args.get("prompt") or "")]
             if row.get("cron"):
                 details.append(f"Cron: {row['cron']}")
             details.extend(
-                f"{label}: {row[key]}"
-                for key, label in (("next_fire_at", "Next"), ("timezone", "Timezone"))
+                f"{label}: {_readable_timestamp(row[key]) if key == 'next_fire_at' else row[key]}"
+                for key, label in (("next_fire_at", "Runs"), ("timezone", "Timezone"))
                 if row.get(key)
             )
             blocks.append(

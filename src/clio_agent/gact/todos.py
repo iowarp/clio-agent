@@ -133,6 +133,41 @@ def recorded_todos(session: Any) -> list[dict[str, str]]:
     return []
 
 
+def _todo_changes(
+    previous: list[dict[str, str]], current: list[dict[str, str]]
+) -> list[dict[str, str]]:
+    """Describe one whole-list replacement without inventing persistent item IDs.
+
+    Matching is occurrence-aware by content, so duplicate labels remain deterministic. The
+    receipt records additions, removals, status transitions, and unchanged items while the
+    authoritative current list continues to live only in session metadata.
+    """
+
+    unmatched = list(previous)
+    changes: list[dict[str, str]] = []
+    for todo in current:
+        match = next(
+            (index for index, old in enumerate(unmatched) if old.get("content") == todo["content"]),
+            None,
+        )
+        if match is None:
+            changes.append({**todo, "change": "added"})
+            continue
+        old = unmatched.pop(match)
+        before = str(old.get("status") or "pending")
+        change = "unchanged" if before == todo["status"] else "status_changed"
+        changes.append({**todo, "previous_status": before, "change": change})
+    changes.extend(
+        {
+            "content": str(todo.get("content") or ""),
+            "status": str(todo.get("status") or "pending"),
+            "change": "removed",
+        }
+        for todo in unmatched
+    )
+    return changes
+
+
 def _write_todos(app: "FastAPI", sid: str, session: Any, todos: Any) -> str:
     """Validate + apply a whole-list ``write_todos`` (mode-gated, parallel-safe). Returns a
     compact confirmation. Raises :class:`TodoError` (mutating nothing) on any rejection."""
@@ -146,9 +181,11 @@ def _write_todos(app: "FastAPI", sid: str, session: Any, todos: Any) -> str:
         )
     normalized = _normalize_todos(todos)
     step_key = _current_step_key(sid)
+    previous: list[dict[str, str]] = []
     with _WRITE_LOCK:
         fresh = app.state.sessions.get(sid)
         metadata = getattr(fresh, "metadata", None) if fresh is not None else None
+        previous = recorded_todos(fresh)
         last_step = metadata.get(_TODOS_WRITE_STEP_KEY) if isinstance(metadata, Mapping) else None
         if last_step == step_key:
             raise TodoError(
@@ -181,7 +218,15 @@ def _write_todos(app: "FastAPI", sid: str, session: Any, todos: Any) -> str:
         declare_structured_content,
     )
 
-    declare_structured_content({"message": confirmation, "todos": normalized, "counts": counts})
+    declare_structured_content(
+        {
+            "message": confirmation,
+            "todos": normalized,
+            "previous_todos": previous,
+            "changes": _todo_changes(previous, normalized),
+            "counts": counts,
+        }
+    )
     return confirmation
 
 

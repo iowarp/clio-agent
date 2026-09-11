@@ -53,6 +53,35 @@ def test_todos_show_indexed_content_and_status_not_only_acknowledgement() -> Non
     assert view["summary"] == ""
 
 
+def test_todos_show_the_actual_status_transition() -> None:
+    view = native_presentation(
+        "todos",
+        {},
+        "Recorded 1 todo",
+        {
+            "changes": [
+                {
+                    "content": "Inspect evidence",
+                    "status": "completed",
+                    "previous_status": "pending",
+                    "change": "status_changed",
+                }
+            ]
+        },
+    )
+    assert view["summary"] == "1 task changed"
+    assert view["blocks"] == [
+        {
+            "id": "todo-0",
+            "type": "check",
+            "state": "completed",
+            "previous_state": "pending",
+            "change": "status_changed",
+            "text": "Inspect evidence",
+        }
+    ]
+
+
 def test_presenter_failure_is_diagnostic_without_rewriting_observation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -703,11 +732,11 @@ def test_created_schedule_shows_prompt_and_one_timestamp_without_repeating_ackno
         "timezone": "UTC",
         "message": "armed s1 later",
     }
-    view = native_presentation("schedule_created", {"prompt": "Review"}, row, None)
+    view = native_presentation("schedule_created", {"prompt": "Review", "delay_s": 600}, row, None)
     assert view == {
-        "summary": "One-shot schedule s1",
+        "summary": "Scheduled to run in 10 minutes",
         "blocks": [
-            {"id": "schedule", "type": "text", "text": "Review\nNext: later\nTimezone: UTC"}
+            {"id": "schedule", "type": "text", "text": "Review\nRuns: later\nTimezone: UTC"}
         ],
     }
 
@@ -782,10 +811,14 @@ def test_model_catalog_exposes_actual_changes_and_failures_without_empty_fields(
 def test_loop_presentation_distinguishes_scheduled_stopped_and_absent(
     row: dict[str, Any], summary: str
 ) -> None:
-    view = native_presentation("loop", {"prompt": "Qualification marker"}, row, None)
-    assert view["summary"] == summary
+    view = native_presentation(
+        "loop", {"prompt": "Qualification marker", "delay_seconds": 600}, row, None
+    )
+    assert view["summary"] == (
+        "Next iteration runs in 10 minutes" if not row["stopped"] else summary
+    )
     assert view["blocks"] == (
-        [{"id": "next", "type": "text", "text": "Qualification marker\nScheduled for later"}]
+        [{"id": "next", "type": "text", "text": "Qualification marker\nRuns later"}]
         if not row["stopped"]
         else []
     )
