@@ -624,7 +624,7 @@ def run_goal_command(app: Any, sid: str, request_body: Mapping[str, Any]) -> str
             "Enter a completion condition after /goal. Use /goal clear to remove the active goal."
         )
     try:
-        armed = arm_goal(app, sid, condition=condition, **bounds)
+        arm_goal(app, sid, condition=condition, **bounds)
     except GoalError as exc:
         return f"/goal rejected: {exc} (reason={exc.reason})"
     return "Goal set at iteration 0. Open Session work to inspect it."

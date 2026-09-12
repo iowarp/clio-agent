@@ -479,7 +479,7 @@ def build_observe_tool() -> Any:
         name="observe_agent_tasks",
         presentation="tasks",
         desc=observe_agent_tasks.__doc__,
-        title="Get status",
+        title="Observe",
         args={
             "task_ids": {
                 "type": "array",

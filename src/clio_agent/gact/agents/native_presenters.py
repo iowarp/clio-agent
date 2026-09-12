@@ -9,6 +9,10 @@ from typing import Any
 
 Presenter = Callable[[Mapping[str, Any], Any, Any], dict[str, Any]]
 
+_TERMINAL_TASK_STATUSES = frozenset(
+    {"completed", "failed", "cancelled", "interrupted", "succeeded", "denied"}
+)
+
 
 def build_wait_tool(callback: Callable[..., Any]) -> Any:
     """Declare the committed collector's model interface and observer result view."""
@@ -139,6 +143,57 @@ def _received_context_detail(task: Mapping[str, Any], fallback: str) -> str:
     return f"{detail[:1740].rstrip()}\nMore context is available in technical details"
 
 
+def _observe_task_status(task: Mapping[str, Any]) -> str:
+    """Describe one observed child without presenting observation as collection."""
+
+    error = str(task.get("error") or "").strip()
+    status = str(task.get("status") or "").strip().lower()
+    if error:
+        return f"terminal ({error.replace('_', ' ')})"
+    if status in _TERMINAL_TASK_STATUSES:
+        return f"terminal ({status})"
+    return status or "unknown"
+
+
+def _observe_status_line(
+    args: Mapping[str, Any], row: Mapping[str, Any], tasks: list[tuple[str, Mapping[str, Any]]]
+) -> str:
+    """Summarize the exact cursor read, hold outcome, and child states."""
+
+    cursor = row.get("cursor", args.get("cursor", 1))
+    next_cursor = row.get("next_cursor", cursor)
+    parts = [f"Cursor {cursor} -> {next_cursor}"]
+    pattern = str(args.get("pattern") or "").strip()
+    if pattern:
+        if row.get("matched") is True:
+            parts.append(f'Pattern "{pattern}" matched')
+        elif any(_observe_task_status(task).startswith("terminal") for _, task in tasks):
+            parts.append(f'Pattern "{pattern}" did not match; hold released by terminal child')
+        else:
+            parts.append(f'Pattern "{pattern}" did not match')
+    else:
+        parts.append("No pattern; returned immediately")
+    parts.extend(f"{label}: {_observe_task_status(task)}" for label, task in tasks)
+    return " · ".join(parts)
+
+
+def _observe_evidence(task: Mapping[str, Any]) -> str:
+    """Return only curated observe excerpts, excluding child lifecycle chatter."""
+
+    details: list[str] = []
+    for event in task.get("new_events", []):
+        if not isinstance(event, Mapping):
+            continue
+        if event.get("family") == "lifecycle" or event.get("event_type") == (
+            "expert.lifecycle.started"
+        ):
+            continue
+        text = str(event.get("excerpt") or event.get("summary") or "").strip()
+        if text and text not in details:
+            details.append(text)
+    return "\n".join(details)
+
+
 def native_presentation(
     declaration: str, args: Mapping[str, Any], result: Any, structured: Any
 ) -> dict[str, Any]:
@@ -185,7 +240,67 @@ def native_presentation(
                     "label": _child_name(task_id) or "Child task",
                 },
             )
-    elif declaration in {"tasks", "wait"}:
+    elif declaration == "tasks":
+        result_record = _record(result)
+        task_rows = result_record.get(
+            "results", result_record.get("tasks", row.get("results", row.get("tasks", [])))
+        )
+        display_rows = row.get("results", [])
+        observed: list[tuple[str, Mapping[str, Any]]] = []
+        child_links: list[dict[str, Any]] = []
+        evidence_blocks: list[dict[str, Any]] = []
+        for index, task in enumerate(task_rows):
+            if not isinstance(task, Mapping):
+                continue
+            task_id = str(task.get("task_id") or task.get("id") or "")
+            display = display_rows[index] if index < len(display_rows) else {}
+            label = str(
+                display.get("name") or task.get("name") or _child_name(task_id) or task_id or "Task"
+            )
+            child = str(
+                task.get("child_session_id") or task.get("session_id") or _child_session(task_id)
+            )
+            observed.append((label, task))
+            if child:
+                child_links.append(
+                    {
+                        "id": f"task-{index}",
+                        "type": "link",
+                        "target": "session",
+                        "uri": child,
+                        "label": label,
+                    }
+                )
+            evidence = _observe_evidence(task)
+            if evidence:
+                evidence_blocks.append(
+                    {
+                        "id": f"evidence-{index}",
+                        "type": "text",
+                        "label": f"Evidence · {label}",
+                        "text": evidence,
+                    }
+                )
+        if len(observed) == 1 and child_links:
+            blocks.append({**child_links[0], "id": "task-subject"})
+        else:
+            labels = [label for label, _task in observed]
+            subject_text = ", ".join(labels) if len(labels) <= 2 else f"{len(labels)} tasks"
+            blocks.append(
+                {"id": "task-subject", "type": "text", "text": subject_text or "No tasks"}
+            )
+            blocks.extend(child_links)
+        blocks.append(
+            {
+                "id": "observation",
+                "type": "text",
+                "label": "Observed",
+                "text": _observe_status_line(args, result_record or row, observed),
+            }
+        )
+        blocks.extend(evidence_blocks)
+        summary = ""
+    elif declaration == "wait":
         summary = str(row.get("summary") or summary)
         result_record = _record(result)
         task_rows = result_record.get(
@@ -205,13 +320,12 @@ def native_presentation(
                 task.get("child_session_id") or task.get("session_id") or _child_session(task_id)
             )
             details: list[str] = []
-            if declaration == "wait":
-                detail = _received_context_detail(
-                    task,
-                    str(display.get("answer_excerpt") or "").strip(),
-                )
-                if detail:
-                    details.append(detail)
+            detail = _received_context_detail(
+                task,
+                str(display.get("answer_excerpt") or "").strip(),
+            )
+            if detail:
+                details.append(detail)
             blocks.append(
                 {
                     "id": f"task-{index}",
@@ -220,11 +334,10 @@ def native_presentation(
                     "uri": child,
                     "label": label,
                     "status": status,
-                    "result_kind": "snapshot" if declaration == "tasks" else "completion",
+                    "result_kind": "completion",
                     "duration_ms": (
                         float(display.get("waited_ms") or 0)
-                        if declaration == "wait"
-                        and isinstance(display.get("waited_ms"), int | float)
+                        if isinstance(display.get("waited_ms"), int | float)
                         else None
                     ),
                     "detail": "\n".join(details),
@@ -733,7 +846,9 @@ def native_presentation(
         raise ValueError(f"Unknown native presentation declaration: {declaration}")
     # Header subjects are explicitly chosen by each result family. The client
     # never guesses arguments or promotes arbitrary output into an action label.
-    if declaration in {"tasks", "wait"}:
+    if declaration == "tasks":
+        subject = "task-subject"
+    if declaration == "wait":
         item_blocks = [block for block in blocks if block["type"] == "item"]
         if item_blocks:
             if declaration == "wait":

@@ -145,10 +145,124 @@ def test_observe_uses_child_identity_and_declared_display_name() -> None:
         ],
     }
     view = native_presentation("tasks", {}, raw, structured)
-    assert view["blocks"][1]["uri"] == "child"
-    assert view["blocks"][1]["label"] == "Researcher #1"
-    assert view["blocks"][1]["result_kind"] == "snapshot"
-    assert view["blocks"][1]["detail"] == ""
+    assert view["summary"] == ""
+    assert view["blocks"][0] == {
+        "id": "task-subject",
+        "type": "link",
+        "target": "session",
+        "uri": "child",
+        "label": "Researcher #1",
+    }
+    assert view["blocks"][1] == {
+        "id": "observation",
+        "type": "text",
+        "label": "Observed",
+        "text": "Cursor 1 -> 1 · No pattern; returned immediately · Researcher #1: terminal (completed)",
+    }
+
+
+def test_patterned_observe_presents_match_cursor_status_and_curated_evidence() -> None:
+    row = {
+        "cursor": 7,
+        "next_cursor": 10,
+        "matched": True,
+        "tasks": [
+            {
+                "task_id": "task",
+                "child_session_id": "child",
+                "name": "Research methodologist #1",
+                "status": "running",
+                "new_events": [
+                    {
+                        "family": "lifecycle",
+                        "event_type": "expert.lifecycle.started",
+                        "summary": "Context received expert research_methodologist started",
+                        "excerpt": "Context received expert research_methodologist started",
+                    },
+                    {
+                        "family": "react.step",
+                        "event_type": "react.step.completed",
+                        "summary": "Checking method",
+                        "excerpt": 'thought: compare methods | tool: search({"query": "evidence"})',
+                        "matched": True,
+                    },
+                ],
+            }
+        ],
+    }
+
+    view = native_presentation("tasks", {"pattern": "station=KOOT"}, row, None)
+
+    assert view == {
+        "subject": "task-subject",
+        "summary": "",
+        "blocks": [
+            {
+                "id": "task-subject",
+                "type": "link",
+                "target": "session",
+                "uri": "child",
+                "label": "Research methodologist #1",
+            },
+            {
+                "id": "observation",
+                "type": "text",
+                "label": "Observed",
+                "text": (
+                    'Cursor 7 -> 10 · Pattern "station=KOOT" matched · '
+                    "Research methodologist #1: running"
+                ),
+            },
+            {
+                "id": "evidence-0",
+                "type": "text",
+                "label": "Evidence · Research methodologist #1",
+                "text": 'thought: compare methods | tool: search({"query": "evidence"})',
+            },
+        ],
+    }
+    assert "Context received" not in json.dumps(view)
+
+
+def test_patterned_observe_presents_terminal_release_without_claiming_a_match() -> None:
+    row = {
+        "cursor": 10,
+        "next_cursor": 12,
+        "matched": False,
+        "tasks": [
+            {
+                "task_id": "task",
+                "child_session_id": "child",
+                "name": "Research methodologist #1",
+                "status": "completed",
+                "new_events": [
+                    {
+                        "family": "delegation",
+                        "event_type": "delegation.completed",
+                        "excerpt": "delegation.completed | workflow_state: complete",
+                    }
+                ],
+            }
+        ],
+    }
+
+    view = native_presentation("tasks", {"pattern": "never-matches"}, row, None)
+
+    assert view["blocks"][1] == {
+        "id": "observation",
+        "type": "text",
+        "label": "Observed",
+        "text": (
+            'Cursor 10 -> 12 · Pattern "never-matches" did not match; '
+            "hold released by terminal child · Research methodologist #1: terminal (completed)"
+        ),
+    }
+    assert view["blocks"][2] == {
+        "id": "evidence-0",
+        "type": "text",
+        "label": "Evidence · Research methodologist #1",
+        "text": "delegation.completed | workflow_state: complete",
+    }
 
 
 @pytest.mark.parametrize("status", ["completed", "failed", "cancelled", "unknown_task"])
@@ -359,8 +473,7 @@ def test_observation_keeps_incremental_events_in_technical_result() -> None:
     }
     before = json.dumps(row)
     view = native_presentation("tasks", {}, row, None)
-    assert view["blocks"][-1]["result_kind"] == "snapshot"
-    assert view["blocks"][-1]["detail"] == ""
+    assert view["blocks"][-1]["text"] == "Official guide fetched"
     assert json.dumps(row) == before
 
 
@@ -391,11 +504,11 @@ def test_observation_keeps_serialized_action_and_full_extraction_technical(event
     }
     before = json.dumps(row)
     view = native_presentation("tasks", {}, row, None)
-    assert view["blocks"][-1]["detail"] == ""
+    assert view["blocks"][-1]["text"] == 'tool: submit({"answer": "FULL REPORT"})'
     assert json.dumps(row) == before
 
 
-def test_observation_does_not_repeat_an_identical_event_excerpt() -> None:
+def test_observation_drops_child_lifecycle_chatter() -> None:
     row = {
         "tasks": [
             {
@@ -411,7 +524,7 @@ def test_observation_does_not_repeat_an_identical_event_excerpt() -> None:
         ]
     }
     view = native_presentation("tasks", {}, row, None)
-    assert view["blocks"][-1]["detail"] == ""
+    assert all(block["id"] != "evidence-0" for block in view["blocks"])
 
 
 def test_resource_inspection_uses_the_custody_size_fields() -> None:
