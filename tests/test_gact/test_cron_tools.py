@@ -385,8 +385,7 @@ def test_cron_create_declares_typed_structured_content(
         shape = declared[0]
         assert next(iter(shape)) == "message"
         assert shape["message"] == (
-            f"armed schedule {result['schedule_id']} — recurring cron 0 9 * * *; "
-            f"next fire {result['next_fire_at']}"
+            f"Created recurring schedule {result['schedule_id']}, next run {result['next_fire_at']}"
         )
         # SAME facts as the model-facing return, riding after the message.
         assert {k: v for k, v in shape.items() if k != "message"} == result
@@ -440,7 +439,7 @@ def test_cron_delete_declares_typed_structured_content(
         deleted = build_cron_delete_tool().func(schedule_id=sid)
         assert deleted is True
         assert declared[-1] == {
-            "message": f"cancelled schedule {sid}",
+            "message": "Schedule deleted.",
             "schedule_id": sid,
             "deleted": True,
         }
@@ -449,7 +448,7 @@ def test_cron_delete_declares_typed_structured_content(
         again = build_cron_delete_tool().func(schedule_id=sid)
         assert again is False
         assert declared[-1] == {
-            "message": f"no schedule {sid} to cancel (already gone or never armed)",
+            "message": "No matching schedule was found.",
             "schedule_id": sid,
             "deleted": False,
         }
