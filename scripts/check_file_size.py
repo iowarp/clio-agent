@@ -147,7 +147,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # comment lines explaining why the stamp is deliberately absent here.
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
-    "src/clio_agent/agent.py": 1032,  # blueprint activation moved to gact/blueprint_activation.py
+    "src/clio_agent/agent.py": 1015,  # blueprint activation moved to gact/blueprint_activation.py
     "src/clio_agent/arc/memory.py": 1389,  # provider ladder moved to provenance_config.py
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -176,7 +176,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # bind-time site), not a new module, because it is a single conf.resolve call
     # tightly coupled to the existing window-vs-override decision. Ratchet down
     # as config.py's modular decomposition continues.
-    "src/clio_agent/config.py": 855,
+    "src/clio_agent/config.py": 844,
     # #1326: adapters.py was 780 lines (under the 800 cap). +56 for: a new
     # _ContextOverflowError typed exception, a _check_context_overflow pre-flight
     # helper (mirrors the guided path's _bound_guided_output_kwargs shape), pre-
@@ -263,7 +263,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # HeaderMismatch, SEP-2578) -- the retry logic itself lives in the owner
     # module tools/mcp_header_mismatch.py; only the lazy import + call-site swap
     # land here.
-    "src/clio_agent/gact/agents/builders.py": 1947,
+    "src/clio_agent/gact/agents/builders.py": 1619,
     # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
     # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
     # tool callable this loop will ever run (MCP-bridged, instrumented
@@ -287,9 +287,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # asyncio.Task/asyncio.run is verify-don't-assume, not safe-by-default)
     # after B1 proved the "F3a's ensure_future boundary is just safe" framing
     # was itself the exact ordering bug the B1 fix corrects.
-    # MERGE (PR #1298 x #1310): 921 -> 924. Both campaigns' additive call sites
-    # land in this file; no logic moved in from either owner module.
-    "src/clio_agent/gact/agents/reactv2.py": 924,
+    # (reactv2.py's entry retired: 736 lines, back under the flat 800 cap.)
     # #948 S4/S5/S6 growth already carried this file past the flat 800 cap (to 842)
     # before it was ever added to this baseline — a pre-existing gap this change
     # did not introduce (it was silently exempt from the ratchet, not under it).
@@ -596,13 +594,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # the MCP_APP_MIME_TYPE literal (was hand-typed here AND in gact/artifacts/
     # wire.py) from the registry's re-export of fastmcp's own UI_MIME_TYPE.
     # Zero behavior change -- the value is byte-identical.
-    # #1308: +22 (780 -> 802) for the three typed no-silent-fallback call sites
-    # in the observer's early-return gates (mcp_app_skipped_no_resource_uri /
-    # _error_result / _no_session) plus the two re-export imports. The reason
-    # CATALOG + recording/query logic itself lives in the NEW owner module
-    # gact/mcp_app_observer_reasons.py (no-accretion) -- only the minimal
-    # per-gate call + a re-export land here.
-    "src/clio_agent/gact/mcp_apps.py": 802,
+    # (mcp_apps.py's entry retired: 661 lines, back under the flat 800 cap.)
     # #895: +6 for threading the provider-generic thinking_level onto the LM bind
     # (LMProviderConfig arg + app.state.lm_config + the GET's thinking_level /
     # thinking_effective fields). The mapping logic itself lives in the owner
@@ -626,7 +618,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # planning reads modalities out of; leaving the previous provider's snapshot
     # in place decided what bytes reached a model it never described. The catalog
     # itself is built in gact/provider_catalog.py; only the invalidation lands here.
-    "src/clio_agent/gact/routes/providers.py": 1351,
+    "src/clio_agent/gact/routes/providers.py": 1339,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the
@@ -808,16 +800,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1333 ratchet payment: 822 -> 818, single-item multi-line imports (the
     # turn_finalize/turn_stream/types blocks) consolidated to one line each.
     "src/clio_agent/gact/turn.py": 818,
-    # NEW entry (#1282, C1-S2 F5): crossed the flat 800 cap (798 -> 807) for
-    # two new typed reason strings (mcp_capability_refused/
-    # mcp_protocol_refused) added to ERROR_REASONS so turn.py's ClioError
-    # branch's stamped detail reason projects onto a spawned child's
-    # AgentTask record (turn_spawn_failures.child_task_error_reason already
-    # reads it back unchanged) instead of falling back to "agent_error".
-    # +7 (#1282, re-verify round N3): the two backstop reasons
-    # (mcp_call_timeout_backstop / mcp_task_drive_timeout_backstop) joined
-    # ERROR_REASONS -- same diagnosability class as F5's two refusal reasons.
-    "src/clio_agent/gact/agent_tasks.py": 802,
+    # (agent_tasks.py's entry retired: exactly 800 lines, at the flat cap.)
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the
@@ -876,15 +859,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/elicitation_schema.py, only the wire-model literal lands here.
     # C1-S7 (#1309): +26 (896 -> 922) for four additive, all-Optional
     # attribution/routing wire fields on UserQuestion (audience / answered_by /
-    # agent_elicitation_routing / agent_elicitation_fallback_detail) — every
-    # decision/dispatch/validation LOGIC these fields carry lives entirely in
-    # the new owner module gact/agent_elicitation.py; only the wire-model
-    # declarations (+ their per-field rationale docstrings, most of this
-    # delta) land here. All four default to ``None`` and are excluded by
-    # ``exclude_none`` on every existing dump, so a no-audience-hint question
-    # is byte-identical to the pre-#1309 shape (regression-locked,
-    # test_agent_elicitation.py::test_no_audience_hint_mints_a_question_with_no_new_fields).
-    "src/clio_agent/gact/types.py": 862,
+    # (types.py's entry retired: 741 lines, back under the flat 800 cap.)
     # -120 (#891): the SDK-session machinery moved out to sibling owner modules —
     # the blocking-path pool to providers/claude_code_sdk_pool.py and the per-expert
     # streaming session/delta transport to providers/claude_code_sessions.py; this
@@ -915,15 +890,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # 862 -> 866 (#1333): acompletion runs the blocking pool bridge off the loop (+1 import,
     # +2 comment, +1 to_thread call); the bridge itself stays in claude_code_sdk_pool.py.
     "src/clio_agent/providers/claude_code_litellm.py": 866,
-    # NEW entry (MERGE, PR #1298 x #1310): crossed the flat 800 cap (805) because
-    # BOTH campaigns' orphan-attribution guards now stack on the same census: the
-    # ProcessNode gains executable/cwd (path evidence, PR #1298) AND cmdline
-    # (#1303 product evidence), and the reparented-orphan branch runs
-    # _belongs_to_runtime BEFORE lazily attaching the live cmdline, so a row must
-    # clear both gates. Neither guard was dropped to fit the cap and the rationale
-    # is not trimmed to fit a ratchet; the baseline moves instead. Ratchets back
-    # when the snapshot/classify/reap trio is split into its own module.
-    "src/clio_agent/runtime/process_census.py": 805,
+    # (process_census.py's entry retired: 711 lines, back under the flat 800 cap.)
     # NEW entry (#1305 review round): crossed the flat 800 cap (800 -> 825)
     # for the F2/F4/F6b fixes an adversarial review demanded on
     # _StreamClientEntry itself: (F2) the STREAM_END sentinel now queues
