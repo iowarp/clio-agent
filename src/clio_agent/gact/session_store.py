@@ -87,6 +87,79 @@ def _append_session_message(
     on_message_appended(app, session_id, message, atoms_minted=atoms_minted)
 
 
+def _interrupted_assistant_row(
+    app: "FastAPI", session_id: str, last_user_message: "Message"
+) -> "Message":
+    """Build the typed interrupted-turn row a crashed-mid-turn session gets.
+
+    #1334 review round (Fable, F2): a synthetic empty row here would DESTROY a
+    partial answer the crashed turn already streamed and sealed onto the atom
+    lane (owner rule: deleting a vehicle keeps the feature — reload already
+    surfaces that partial as a typed ``stop_reason="incomplete"`` message,
+    ``metadata.transcript_incomplete`` named, via
+    :func:`~clio_agent.gact.part_atoms.reproduce_message_wire`). When the lane
+    holds that trailing incomplete assistant message, this reuses it VERBATIM
+    (id/turn_id/created_at/parts/metadata — ``transcript_incomplete`` stays) and
+    only overlays the restart's ``stop_reason``/``error_info``, so the streamed
+    text survives. Only a session whose lane has no such message (the crash hit
+    before the first part ever sealed) falls back to the empty synthetic row.
+    """
+
+    from clio_agent.gact.runtime.globals import _iso_from_epoch, _new_message_id  # noqa: PLC0415
+    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
+        assemble_session_messages,
+        has_atoms,
+    )
+    from clio_agent.gact.types import ErrorInfo  # noqa: PLC0415
+
+    now = time.time()
+    turn_id = last_user_message.turn_id or last_user_message.id
+    error_info = ErrorInfo(
+        error="server_restart_interrupted",
+        message=(
+            "The agent service restarted before this response completed. "
+            "Your request was preserved and can be retried."
+        ),
+        details={
+            "reason": "server_restart_interrupted",
+            "session_id": session_id,
+            "turn_id": turn_id,
+        },
+        recoverable=True,
+    )
+
+    arc = getattr(app.state, "arc", None)
+    if arc is not None and getattr(arc, "_segments", None) is not None:
+        try:
+            lane_has_atoms = has_atoms(arc, session_id)
+        except OSError:
+            lane_has_atoms = False
+        if lane_has_atoms:
+            assembled = assemble_session_messages(arc, session_id)
+            trailing = assembled[-1] if assembled else None
+            if (
+                trailing is not None
+                and trailing.role == "assistant"
+                and trailing.stop_reason == "incomplete"
+            ):
+                return trailing.model_copy(
+                    update={"stop_reason": "error", "error_info": error_info}
+                )
+
+    from clio_agent.gact.types import Message  # noqa: PLC0415
+
+    return Message(
+        id=_new_message_id("asst"),
+        turn_id=turn_id,
+        session_id=session_id,
+        role="assistant",
+        created_at=_iso_from_epoch(now),
+        updated_at=_iso_from_epoch(now),
+        stop_reason="error",
+        error_info=error_info,
+    )
+
+
 def _reconcile_restart_interrupted_sessions(app: "FastAPI") -> None:
     """Settle persisted running sessions whose process-local executor is gone.
 
@@ -116,38 +189,17 @@ def _reconcile_restart_interrupted_sessions(app: "FastAPI") -> None:
         durable_messages = list(messages)
         last_message = durable_messages[-1] if durable_messages else None
         if last_message is not None and last_message.role == "user":
-            from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
-                _iso_from_epoch,
-                _new_message_id,
-            )
-            from clio_agent.gact.types import ErrorInfo, Message  # noqa: PLC0415
-
-            now = time.time()
-            interrupted_message = Message(
-                id=_new_message_id("asst"),
-                turn_id=last_message.turn_id or last_message.id,
-                session_id=session.id,
-                role="assistant",
-                created_at=_iso_from_epoch(now),
-                updated_at=_iso_from_epoch(now),
-                stop_reason="error",
-                error_info=ErrorInfo(
-                    error="server_restart_interrupted",
-                    message=(
-                        "The agent service restarted before this response completed. "
-                        "Your request was preserved and can be retried."
-                    ),
-                    details={
-                        "reason": "server_restart_interrupted",
-                        "session_id": session.id,
-                        "turn_id": last_message.turn_id or last_message.id,
-                    },
-                    recoverable=True,
-                ),
-            )
+            interrupted_message = _interrupted_assistant_row(app, session.id, last_message)
             durable_messages.append(interrupted_message)
             try:
-                store.replace_session(session.id, durable_messages)
+                # #1334 review round (Fable, F2): through the sanctioned replace
+                # seam (the same one undo/rewind uses) so the atom lane is
+                # re-materialized to match -- file and lane agree by
+                # construction and materialize_ledger's divergence repair never
+                # fires on this session's first post-restart read. At boot there
+                # is no loop running, so on_ledger_replaced's mint runs inline
+                # (never deferred), still off any server loop thread.
+                _replace_session_messages(app, session.id, durable_messages)
             except OSError as exc:
                 logger.error(
                     "restart interruption boundary write failed session=%s error=%r",

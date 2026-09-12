@@ -69,6 +69,7 @@ from clio_agent.gact.workflow_state.state_merge import (
     materialize_state_merge_projection,
     record_state_merge_best_effort,
 )
+from clio_agent.runtime.stream_audit import stream_audit
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -303,11 +304,28 @@ def materialize_ledger(app: "FastAPI", session_id: str) -> Optional[list[Message
     # lock here, two cold readers could both observe an empty lane and mint the
     # same retained ledger; their per-part appends would then interleave, so every
     # ``part_index == 0`` is mistaken for another message boundary on reload.
+    #
+    # The acquire is NON-BLOCKING (#1334 review round): this exact RLock is also
+    # held by ``part_atoms._append_segment_raw`` around every atom append (a store
+    # RPC) and by the off-loop mint/repair worker around a whole backfill. A
+    # blocking acquire here would let a read on the server loop wait behind a
+    # store write in progress -- precisely the stall class #1334 forbids. A busy
+    # lane serves the retained ledger (a file read, never the store append path)
+    # with a typed audit reason; the next read retries once the writer releases.
     lane_lock = arc._segments._lock_for(session_id, MESSAGE_PART_SCOPE)
-    with lane_lock:
+    if not lane_lock.acquire(blocking=False):
+        stream_audit(
+            "transcript.lane_busy_served_retained",
+            session_id=session_id,
+            source="materialize_ledger",
+        )
+        return None if store is None else store.load_session(session_id)
+    try:
         atoms_present = has_atoms(arc, session_id)
         assembled = assemble_session_messages(arc, session_id) if atoms_present else None
         ledger = None if store is None else store.load_session(session_id)
+    finally:
+        lane_lock.release()
 
     if atoms_present:
         assert assembled is not None  # narrows for the type checker

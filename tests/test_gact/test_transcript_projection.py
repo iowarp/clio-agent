@@ -33,6 +33,7 @@ SABOTAGE (recorded, run manually):
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -195,6 +196,172 @@ def test_concurrent_cold_readers_backfill_one_exact_atom_lane(
         message.model_dump(exclude_none=True)
         for message in projection.assemble_session_messages(arc, sid)
     ] == expected
+
+
+def _time_materialize_ledger(app: Any, sid: str, *, use_loop: bool) -> tuple[Any, float]:
+    """Call ``materialize_ledger`` either from inside a running loop (an async
+    route handler calling it synchronously) or from a plain worker thread (no
+    running loop), timing the call either way."""
+
+    from clio_agent.gact import transcript_projection as projection
+
+    outcome: dict[str, Any] = {}
+
+    def _call() -> None:
+        start = time.monotonic()
+        outcome["messages"] = projection.materialize_ledger(app, sid)
+        outcome["elapsed"] = time.monotonic() - start
+
+    if use_loop:
+
+        async def _coro() -> None:
+            _call()
+
+        asyncio.run(_coro())
+    else:
+        worker = threading.Thread(target=_call)
+        worker.start()
+        worker.join(timeout=2.0)
+    return outcome["messages"], outcome["elapsed"]
+
+
+@pytest.mark.parametrize("use_loop", [True, False], ids=["loop_registered", "worker_no_loop"])
+def test_materialize_ledger_serves_retained_ledger_without_waiting_when_lane_busy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, use_loop: bool
+) -> None:
+    """#1334 review round (Fable, F1): the lane lock guards only the has-atoms
+    DECISION, never a read waiting on an in-flight append or mint. A busy lane
+    (another thread mid-append, exactly what ``part_atoms._append_segment_raw``
+    holds around every store RPC) must be served from the retained ledger
+    IMMEDIATELY, on the calling thread's own loop or a plain worker thread alike
+    -- a blocking acquire here would let a GET /messages on the server loop wait
+    behind a store write, the exact #1334 stall class."""
+
+    from clio_agent.gact import transcript_projection as projection
+
+    app, arc = _build(tmp_path)
+    sid = f"sess_lane_busy_{use_loop}"
+    ledger = [
+        Message(
+            id="msg_user_busy",
+            turn_id="msg_user_busy",
+            session_id=sid,
+            role="user",
+            created_at="2026-09-12T10:00:00+00:00",
+            updated_at="2026-09-12T10:00:00+00:00",
+            parts=[Part(id="part_user_busy", type="text", text="hello")],
+        )
+    ]
+    app.state.message_store.replace_session(sid, ledger)
+    expected = [message.model_dump(exclude_none=True) for message in ledger]
+
+    audited: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        projection,
+        "stream_audit",
+        lambda stage, **fields: audited.append({"stage": stage, **fields}),
+    )
+
+    lane_lock = arc._segments._lock_for(sid, projection.MESSAGE_PART_SCOPE)
+    holder_ready = threading.Event()
+
+    def _hold_lock_briefly() -> None:
+        lane_lock.acquire()
+        holder_ready.set()
+        time.sleep(0.4)  # simulates an in-flight append/mint under the same lock
+        lane_lock.release()
+
+    holder = threading.Thread(target=_hold_lock_briefly, daemon=True)
+    holder.start()
+    assert holder_ready.wait(timeout=2.0)
+    try:
+        messages, elapsed = _time_materialize_ledger(app, sid, use_loop=use_loop)
+    finally:
+        holder.join(timeout=2.0)
+
+    assert elapsed < 0.2, f"materialize_ledger waited on the busy lane ({elapsed:.3f}s)"
+    assert messages is not None
+    assert [message.model_dump(exclude_none=True) for message in messages] == expected
+    assert any(
+        row["stage"] == "transcript.lane_busy_served_retained" and row.get("session_id") == sid
+        for row in audited
+    )
+
+
+def test_restart_reconciliation_preserves_streamed_partial_from_the_atom_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1334 review round (Fable, F2): a crash mid-turn already sealed a partial
+    assistant answer onto the atom lane. The restart reconciliation must not
+    destroy it with the deleted-vehicle synthetic empty row (owner rule:
+    deleting a vehicle keeps the feature) -- it overlays the restart's
+    stop_reason/error_info onto the lane's OWN typed-incomplete trailing
+    message, through materialize_ledger (the real read path), not assemble."""
+
+    from clio_agent.gact import transcript_projection as projection
+    from clio_agent.gact.part_atom_minter import open_turn_minter, transcript_sink
+    from clio_agent.gact.session_store import _reconcile_restart_interrupted_sessions
+    from clio_agent.gact.transcript import EventBusTranscriptPublisher, TurnTranscript
+
+    app, arc = _build(tmp_path)
+    sid = app.state.sessions.create(workspace_id="ws_default", title="crashed").id
+    turn_id = "msg_user_crash"
+
+    user_message = Message(
+        id=turn_id,
+        turn_id=turn_id,
+        session_id=sid,
+        role="user",
+        created_at="2026-09-12T09:00:00+00:00",
+        updated_at="2026-09-12T09:00:00+00:00",
+        parts=[Part(id="part_user_crash", type="text", text="how many stations?")],
+    )
+    projection.mint_message_part_atoms(arc, sid, user_message)
+    # File: only the user message -- the assistant turn never reached finalize.
+    app.state.message_store.replace_session(sid, [user_message])
+
+    # Lane: the user message's atoms plus a SEALED partial assistant text part
+    # with no trailing envelope atom -- the exact crash-before-finalize shape
+    # `_incomplete_envelope` (part_atoms.py) types as stop_reason="incomplete".
+    minter = open_turn_minter(app, sid, turn_id)
+    transcript = TurnTranscript(
+        session_id=sid,
+        turn_id=turn_id,
+        publisher=EventBusTranscriptPublisher(app.state.bus, sid),
+        sink=transcript_sink(app, sid),
+    )
+    transcript.append_text_delta("main", "answer", "five dense stations near")
+    transcript.close_open_text()
+    assert minter.drain(timeout=5.0)
+    minter.close()  # never finalized: no envelope atom ever lands
+
+    app.state.sessions.update(sid, status="running")
+
+    errors_logged: list[Any] = []
+    monkeypatch.setattr(
+        projection.logger, "error", lambda *args, **kwargs: errors_logged.append(args)
+    )
+
+    _reconcile_restart_interrupted_sessions(app)
+
+    materialized = projection.materialize_ledger(app, sid)
+    assert materialized is not None
+    assert [m.role for m in materialized] == ["user", "assistant"]
+    asst = materialized[1]
+    assert [p.text for p in asst.parts if p.type == "text"] == ["five dense stations near"]
+    assert asst.stop_reason == "error"
+    assert asst.error_info is not None
+    assert asst.error_info.error == "server_restart_interrupted"
+    assert asst.metadata.get("transcript_incomplete")
+
+    # The divergence-repair path (materialize_ledger's own logger.error) never
+    # fires: the reconciliation kept file and lane in agreement by construction.
+    assert not errors_logged, errors_logged
+
+    on_disk = app.state.message_store.load_session(sid)
+    assert [m.role for m in on_disk] == ["user", "assistant"]
+    assert on_disk[1].stop_reason == "error"
+    assert on_disk[1].metadata.get("transcript_incomplete")
 
 
 # --------------------------------------------------------------------------- #

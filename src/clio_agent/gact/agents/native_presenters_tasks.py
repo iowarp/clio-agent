@@ -103,11 +103,11 @@ def _observe_status_line(
         if row.get("matched") is True:
             parts.append(f'Pattern "{pattern}" matched')
         elif any(_observe_task_status(task).startswith("terminal") for _, task in tasks):
-            parts.append(f'Pattern "{pattern}" did not match; hold released by terminal child')
+            parts.append(f'Pattern "{pattern}" did not match, hold released by terminal child')
         else:
             parts.append(f'Pattern "{pattern}" did not match')
     else:
-        parts.append("No pattern; returned immediately")
+        parts.append("No pattern, returned immediately")
     parts.extend(f"{label}: {_observe_task_status(task)}" for label, task in tasks)
     return "; ".join(parts)
 
