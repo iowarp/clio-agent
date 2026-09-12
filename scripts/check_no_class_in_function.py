@@ -42,12 +42,10 @@ from typing import NamedTuple
 # (or drop the entry once the file reaches zero) in the same change. Paths are
 # relative to the repository root, forward slashes.
 RATCHET_BASELINE: dict[str, int] = {
-    # #1331 review round: agent_elicitation.py split by behaviour (size
-    # ratchet); the hidden ``_AgentAnswer`` dspy.Signature class moved with
-    # its function to the new owner module gact/agent_elicitation_answer_
-    # inline.py, still nested (the entry moves with it) -- hoisted to module
-    # scope in the very next commit, which removes this entry entirely.
-    "src/clio_agent/gact/agent_elicitation_answer_inline.py": 1,
+    # (agent_elicitation_answer_inline.py's entry retired, #1331 review round:
+    # the hidden ``_AgentAnswer`` dspy.Signature class was HOISTED to module
+    # scope -- the fix is to hoist a class out of a function, not to record
+    # and baseline-exempt it. Zero violations now.)
     "src/clio_agent/gact/agents/builders.py": 3,
     "src/clio_agent/gact/app.py": 1,
     "src/clio_agent/lm/adapters.py": 2,

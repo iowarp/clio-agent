@@ -6,7 +6,15 @@ goes in an owner module of its own, not appended past its recorded line
 count) as its own small, focused owner for exactly one concern: ONE bounded,
 tool-less completion on the session's own model (``answer_mode="inline"``,
 the default -- see the parent module's docstring for why the child-turn
-mechanism deadlocks and this one cannot). Moved verbatim, no behavior change.
+mechanism deadlocks and this one cannot).
+
+The ``_AgentAnswer`` DSPy signature is at MODULE scope here (#1331 review
+round: a class defined inside a function is a
+``check_no_class_in_function.py`` ratchet violation -- the fix is to hoist
+it, not to record/baseline-exempt it). This is its natural owner module now
+that the inline answerer has one of its own, matching the existing
+``signatures/main_agent_sig.py`` convention of a module-level ``dspy``
+import for a dedicated signature owner. No behavior change.
 """
 
 from __future__ import annotations
@@ -14,9 +22,25 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import dspy
+
 from clio_agent.gact.agent_elicitation_context import _bounded_transcript_excerpt
 
 logger = logging.getLogger(__name__)
+
+
+class _AgentAnswer(dspy.Signature):
+    """Answer a paused MCP tool's typed question using ONLY this conversation's
+    own context. Never guess -- decline unless the conversation established it."""
+
+    conversation: str = dspy.InputField(desc="Bounded excerpt of THIS session's own transcript.")
+    instruction: str = dspy.InputField(
+        desc="The paused tool's question, its answer fields, and the reply format."
+    )
+    answer_json: str = dspy.OutputField(
+        desc='Exactly one JSON object and nothing else: {"answer": {<one key per '
+        'field>}} or {"decline": true, "reason": "..."}.'
+    )
 
 
 def _resolve_answer_lm(app: Any) -> tuple[Any, Any]:
@@ -26,8 +50,6 @@ def _resolve_answer_lm(app: Any) -> tuple[Any, Any]:
     inline answer runs on a fresh thread that does not inherit the parent turn's
     thread-locals, so the app's accepted main identity is the explicit fallback.
     """
-
-    import dspy  # noqa: PLC0415
 
     from clio_agent.gact.runtime.ambient_lm import active_lm  # noqa: PLC0415
 
@@ -51,8 +73,6 @@ def _run_agent_answer_inline(app: Any, *, answer_session_id: str, prompt: str) -
     call is paused on this session.
     """
 
-    import dspy  # noqa: PLC0415
-
     lm, _adapter = _resolve_answer_lm(app)
     if lm is None:
         raise RuntimeError("no LM resolved for inline agent-elicitation answer")
@@ -60,22 +80,6 @@ def _run_agent_answer_inline(app: Any, *, answer_session_id: str, prompt: str) -
 
     # ChainOfThought, not Predict: a reasoning model needs a reasoning output
     # field, or its whole output is prose and ``answer_json`` never gets filled.
-
-    class _AgentAnswer(dspy.Signature):
-        """Answer a paused MCP tool's typed question using ONLY this conversation's
-        own context. Never guess -- decline unless the conversation established it."""
-
-        conversation: str = dspy.InputField(
-            desc="Bounded excerpt of THIS session's own transcript."
-        )
-        instruction: str = dspy.InputField(
-            desc="The paused tool's question, its answer fields, and the reply format."
-        )
-        answer_json: str = dspy.OutputField(
-            desc='Exactly one JSON object and nothing else: {"answer": {<one key per '
-            'field>}} or {"decline": true, "reason": "..."}.'
-        )
-
     cot = dspy.ChainOfThought(_AgentAnswer)
     logger.info(
         "agent_elicitation inline answer START lm.model=%r seed_len=%d",
