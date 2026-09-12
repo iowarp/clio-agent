@@ -852,7 +852,7 @@ artifacts.cas_max_file_bytes: 16777216
 # NOASSERTION = none declared); set to your org's license.
 artifacts.export_license: "NOASSERTION"
 
-# CLIO_ARTIFACTS_HASH_MAX_FILE_BYTES  (int)  <- src/clio_agent/gact/artifacts/minting.py
+# CLIO_ARTIFACTS_HASH_MAX_FILE_BYTES  (int)  <- src/clio_agent/gact/artifacts/hashing.py
 # Byte ceiling on hashing a designated output at mint time; larger files are
 # stat-pinned (no sha256) to avoid multi-GB reads on the turn thread.
 artifacts.hash_max_file_bytes: 67108864
