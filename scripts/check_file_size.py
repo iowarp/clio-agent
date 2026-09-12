@@ -1207,14 +1207,18 @@ RATCHET_BASELINE: dict[str, int] = {
     # one-command install acceptance) adds it back slightly — net ratchet 1141 -> 1138 (still
     # a reduction vs the inherited baseline).
     "src/clio_agent/ui/cli.py": 1138,
-    # NEW entry (#1325/#1309/#1113): crossed the flat 800 cap (799 -> 1001) for
-    # the MRTR size-guard round-trip answered by the session's agent -- the
-    # inline ChainOfThought answerer, the answer_mode="turn" child-turn
-    # projection wiring, the unhinted-form audience routing, and the
-    # protocol-decline + _clio.elicitation disclosure stamp. Missed at commit
-    # time in #1331; added here while resolving the rebase onto
-    # fix/1333-goal-judge-off-loop so the ratchet gate is green.
-    "src/clio_agent/gact/agent_elicitation.py": 1001,
+    # (agent_elicitation.py's entry retired, #1331 review round: the file was a
+    # NEW god-file at 1001 lines, never a legitimate baseline target -- the 800
+    # cap is a backstop, not a license. Split by behavior into owner modules
+    # (moved code byte-equal): agent_elicitation_reasons.py (shared reason
+    # catalog + AgentElicitationDecision), agent_elicitation_policy.py (config
+    # knobs), agent_elicitation_context.py (shared prompt/transcript-excerpt
+    # helpers), agent_elicitation_answer_turn.py (the child-turn answerer),
+    # agent_elicitation_answer_inline.py (the inline answerer -- also the
+    # hoisted _AgentAnswer signature's new home, see check_no_class_in_
+    # function.py), and agent_elicitation_dispatch.py (the routed background
+    # task). agent_elicitation.py itself is now 379 lines, back under the flat
+    # 800 cap, re-exporting every public/monkeypatch-reached name unchanged.)
 }
 
 # Root of the source tree to scan, relative to the repository root.

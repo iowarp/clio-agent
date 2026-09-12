@@ -42,7 +42,12 @@ from typing import NamedTuple
 # (or drop the entry once the file reaches zero) in the same change. Paths are
 # relative to the repository root, forward slashes.
 RATCHET_BASELINE: dict[str, int] = {
-    "src/clio_agent/gact/agent_elicitation.py": 1,
+    # #1331 review round: agent_elicitation.py split by behaviour (size
+    # ratchet); the hidden ``_AgentAnswer`` dspy.Signature class moved with
+    # its function to the new owner module gact/agent_elicitation_answer_
+    # inline.py, still nested (the entry moves with it) -- hoisted to module
+    # scope in the very next commit, which removes this entry entirely.
+    "src/clio_agent/gact/agent_elicitation_answer_inline.py": 1,
     "src/clio_agent/gact/agents/builders.py": 3,
     "src/clio_agent/gact/app.py": 1,
     "src/clio_agent/lm/adapters.py": 2,
@@ -163,9 +168,7 @@ def check_no_class_in_function(
         if count > recorded:
             failures.append(Failure(rel, count, "regressed", recorded, sites))
         elif count < recorded:
-            ratchet_downs.append(
-                RatchetDown(rel, count, recorded, cleared=count == 0)
-            )
+            ratchet_downs.append(RatchetDown(rel, count, recorded, cleared=count == 0))
 
     # A baselined file that vanished (deleted/renamed) is also a ratchet-down:
     # its recorded violations are gone. Report so the stale entry gets removed.
@@ -197,10 +200,7 @@ def _print_report(result: Result) -> None:
         return
 
     total = sum(len(entry.sites) for entry in result.failures)
-    print(
-        f"FAIL: {total} class-in-function violation(s) break the ratchet "
-        f"(#714, #774):"
-    )
+    print(f"FAIL: {total} class-in-function violation(s) break the ratchet (#714, #774):")
     for entry in result.failures:
         if entry.kind == "new":
             note = "new violation(s) in a non-baselined file"
