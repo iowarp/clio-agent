@@ -69,7 +69,8 @@ def _surface_kind(components: Any) -> str:
 def _surface_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, Any]:
     """Describe a surface operation without exposing its protocol envelope."""
 
-    call_args = args.get("kwargs") if isinstance(args.get("kwargs"), Mapping) else args
+    kwargs = args.get("kwargs")
+    call_args: Mapping[str, Any] = kwargs if isinstance(kwargs, Mapping) else args
     payload = structured if isinstance(structured, Mapping) else result
     row = payload if isinstance(payload, Mapping) else {}
     surface_id = str(row.get("surface_id") or call_args.get("surface_id") or "")
