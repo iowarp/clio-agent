@@ -402,6 +402,59 @@ def test_replace_rematerializes_across_chunks_with_no_resurrected_atoms(
     assert not any(t and t.startswith("old-text") for t in texts)
 
 
+def test_repair_across_a_chunk_family_drops_every_chunk_no_orphan_survives(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, hermetic_conf: None
+) -> None:
+    """#1339 review round: ``materialize_ledger``'s silent-divergence REPAIR path
+    (distinct from the explicit ``on_ledger_replaced`` above) must erase the WHOLE
+    chunk family, not just chunk 1 -- a bare ``drop_scope`` on chunk 1 alone would
+    leave chunks 2..N orphaned on disk (unreachable, but never re-minted either),
+    and ``chunk_for_append``'s cursor validation would then start a NEW chunk 1
+    while the stale chunks 2..N still sit on disk under the same family prefix.
+
+    Seeds a lane with capacity 2 and 5 atoms (chunks 1, 2, 3 holding 2/2/1 atoms),
+    then makes the RETAINED store diverge from the atom lane (a different ledger,
+    never persisted through the lane's own write seam -- exactly the
+    "concurrent_backfill_race" shape ``materialize_ledger`` detects by exact wire
+    comparison). Calling ``materialize_ledger`` OFF-LOOP (a bare sync call, no
+    running loop -- ``schedule_off_loop`` runs the repair mint inline before
+    returning) must drop chunks 1-3 entirely and re-mint the family from the
+    retained ledger alone: ``lane_scopes`` afterwards is EXACTLY the re-minted
+    family (chunk 1 only, for a 2-message ledger under capacity 2), and chunks 2
+    and 3 are provably gone (zero segments, not merely unreachable)."""
+
+    monkeypatch.setenv("CLIO_ARC_MESSAGE_PART_CHUNK_SEGMENTS", "2")
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    for i in range(5):
+        mint_message_part_atoms(arc, SID, _message(f"old{i}", f"old-text-{i}"))
+    chunk2 = chunk_scope(MESSAGE_PART_SCOPE, 2)
+    chunk3 = chunk_scope(MESSAGE_PART_SCOPE, 3)
+    # Precondition: the 5-atom, capacity-2 lane really did roll into 3 chunks.
+    assert lane_scopes(arc._segments, SID, MESSAGE_PART_SCOPE) == [
+        MESSAGE_PART_SCOPE,
+        chunk2,
+        chunk3,
+    ]
+
+    # The retained ledger diverges from the atom lane (never written through the
+    # lane's own append seam) -- the silent-race shape the repair branch exists for.
+    new_messages = [_message("new0", "new-text-0"), _message("new1", "new-text-1")]
+    app = _fake_app(arc, message_store=_FakeMessageStore(new_messages))
+
+    result = materialize_ledger(app, SID)  # off-loop: no running loop in this thread
+
+    assert result is not None
+    assert [m.id for m in result] == ["new0", "new1"]
+    # The re-minted family is EXACTLY chunk 1 (2 messages under capacity 2) -- no
+    # chunk 2/3 survives in the scope list.
+    assert lane_scopes(arc._segments, SID, MESSAGE_PART_SCOPE) == [MESSAGE_PART_SCOPE]
+    # And provably gone, not merely unreachable by the dense walk: a direct read of
+    # the old chunk 2/3 scopes (bypassing lane_scopes' walk-stops-at-first-gap
+    # shortcut) finds zero segments, live or tombstoned.
+    assert arc._segments.list_segments(SID, chunk2, include_tombstoned=True) == []
+    assert arc._segments.list_segments(SID, chunk3, include_tombstoned=True) == []
+
+
 def test_arc_working_set_untouched_across_a_roll(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch, hermetic_conf: None
 ) -> None:
