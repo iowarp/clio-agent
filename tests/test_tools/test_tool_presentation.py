@@ -91,10 +91,35 @@ def test_missing_declared_file_subject_does_not_invent_a_header() -> None:
     assert original == {"ok": True, "text": "readme contents"}
 
 
-def test_unknown_mcp_without_standard_content_keeps_optional_headers_absent() -> None:
+def test_unknown_mcp_with_ok_false_structured_content_surfaces_failed() -> None:
+    """#1333 (de0b7dd7): ``structured_tool_result_error`` widened typed-error
+    qualification to the ``{"ok": false}`` MCP convention (alongside an explicit
+    ``error`` field or a ``status in {error, failed, failure}``) -- an unknown
+    third-party MCP's structured ``ok: false`` result now surfaces as FAILED
+    telemetry with one semantic-error block, never a silently empty/neutral
+    presentation for a result that already signals its own failure."""
+
     assert present_mcp_result("third_party", {}, {"structuredContent": {"ok": False}}) == {
+        "status": "failed",
         "summary": "",
-        "blocks": [],
+        "blocks": [
+            {
+                "id": "semantic-error",
+                "type": "text",
+                "media_type": "",
+                "text": "ok=false",
+                "label": "Request failed",
+                "language": "",
+                "uri": "",
+                "command": "",
+                "timed_out": False,
+                "status": "",
+                "detail": "",
+                "items": [],
+                "action_label": "",
+                "severity": "error",
+            }
+        ],
     }
 
 

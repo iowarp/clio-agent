@@ -771,7 +771,19 @@ def test_sync_mcp_tool_executor_reports_structured_tool_error_result():
             "args": {"output_path": "/missing/plot.png"},
         },
     }
-    assert observed[-1][4]["presentation"] == {"summary": "", "blocks": []}
+    # #1333 (de0b7dd7): a structured error now surfaces as FAILED telemetry, never
+    # hidden -- one semantic-error text block carrying the error's own type/message
+    # (never a silently empty presentation for a real failure).
+    presentation = observed[-1][4]["presentation"]
+    assert presentation["status"] == "failed"
+    assert presentation["summary"] == ""
+    assert len(presentation["blocks"]) == 1
+    block = presentation["blocks"][0]
+    assert block["id"] == "semantic-error"
+    assert block["type"] == "text"
+    assert block["severity"] == "error"
+    assert "parent_not_found" in block["text"]
+    assert "Output directory does not exist" in block["text"]
 
 
 def test_oversized_structured_failure_uses_raw_result_for_error_truth() -> None:
