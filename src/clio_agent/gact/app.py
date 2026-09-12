@@ -1211,6 +1211,8 @@ def build_app(
     # Durable per-session message log (POST /messages writes, GET /messages reads);
     # per-session JSON ledgers so adapter deletion/redeploy preserves transcripts.
     app.state.message_store = MessageStore(path=session_store_path.parent / "messages")
+    # #1334 F2: placeholder for the reconciliation's _replace_session_messages write.
+    app.state.messages = {}
     _reconcile_restart_interrupted_sessions(app)
     # #770 C3: bounded eviction-audit trail (init before the resident set).
     init_retention_state(app)
