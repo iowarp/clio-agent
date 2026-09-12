@@ -145,9 +145,10 @@ def test_observe_uses_child_identity_and_declared_display_name() -> None:
         ],
     }
     view = native_presentation("tasks", {}, raw, structured)
-    assert view["blocks"][0]["uri"] == "child"
-    assert view["blocks"][0]["label"] == "Researcher #1 · completed"
-    assert view["blocks"][1]["text"] == "Evidence packet"
+    assert view["blocks"][1]["uri"] == "child"
+    assert view["blocks"][1]["label"] == "Researcher #1"
+    assert view["blocks"][1]["result_kind"] == "snapshot"
+    assert view["blocks"][1]["detail"] == ""
 
 
 @pytest.mark.parametrize("status", ["completed", "failed", "cancelled", "unknown_task"])
@@ -344,7 +345,7 @@ def test_resource_truncation_is_not_mistaken_for_a_complete_document() -> None:
     assert result == {"resource_id": "paper", "content": "First passage", "truncated": True}
 
 
-def test_observation_displays_incremental_events_not_only_task_status() -> None:
+def test_observation_keeps_incremental_events_in_technical_result() -> None:
     row = {
         "tasks": [
             {
@@ -358,7 +359,8 @@ def test_observation_displays_incremental_events_not_only_task_status() -> None:
     }
     before = json.dumps(row)
     view = native_presentation("tasks", {}, row, None)
-    assert view["blocks"][-1]["text"] == "Reading evidence\nOfficial guide fetched"
+    assert view["blocks"][-1]["result_kind"] == "snapshot"
+    assert view["blocks"][-1]["detail"] == ""
     assert json.dumps(row) == before
 
 
@@ -389,7 +391,7 @@ def test_observation_keeps_serialized_action_and_full_extraction_technical(event
     }
     before = json.dumps(row)
     view = native_presentation("tasks", {}, row, None)
-    assert view["blocks"][-1]["text"] == "Researcher completed its analysis"
+    assert view["blocks"][-1]["detail"] == ""
     assert json.dumps(row) == before
 
 
@@ -409,7 +411,7 @@ def test_observation_does_not_repeat_an_identical_event_excerpt() -> None:
         ]
     }
     view = native_presentation("tasks", {}, row, None)
-    assert view["blocks"][-1]["text"] == "Researcher started"
+    assert view["blocks"][-1]["detail"] == ""
 
 
 def test_resource_inspection_uses_the_custody_size_fields() -> None:

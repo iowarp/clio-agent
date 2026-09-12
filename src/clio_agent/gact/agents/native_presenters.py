@@ -205,15 +205,7 @@ def native_presentation(
                 task.get("child_session_id") or task.get("session_id") or _child_session(task_id)
             )
             details: list[str] = []
-            if declaration == "tasks":
-                for event in task.get("new_events", []):
-                    if not isinstance(event, Mapping):
-                        continue
-                    for key in ("summary", "excerpt"):
-                        text = str(event.get(key) or "").strip()
-                        if text and text not in details:
-                            details.append(text)
-            else:
+            if declaration == "wait":
                 detail = _received_context_detail(
                     task,
                     str(display.get("answer_excerpt") or "").strip(),
