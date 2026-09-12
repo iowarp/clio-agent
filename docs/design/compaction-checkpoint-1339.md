@@ -197,7 +197,9 @@ return value.
 ## The wire
 
 The wire is deliberately unchanged where gact-tui already depends on it, pinned by that
-repo's `wire_shapes.test.ts`. `session.compacted` still carries exactly `{event_id,
+repo's own zod schema (`packages/core/src/v3/administration-repository.ts:113-114`,
+the `archived_count`/`summary_chars` fields) and its round-trip test
+(`packages/core/src/v3/repository.test.ts:481`). `session.compacted` still carries exactly `{event_id,
 archived_count, summary_chars, summary_message_id, version}` — `append_checkpoint`
 additionally sets `trigger` on the payload, which is additive (existing clients that
 don't read it are unaffected). `archived_count` is the same FIELD but a redefined
