@@ -419,14 +419,17 @@ def test_goal_command_arms_and_clears(tmp_path: Path) -> None:
 
 
 def test_goal_command_message_says_llm_judge(tmp_path: Path) -> None:
-    """The /goal confirmation is honest about the LLM-judge-only contract + hard bounds."""
+    """The /goal confirmation confirms arming (the verbose LLM-judge/bounds prose
+    this test name predates was replaced by the simplified copy at de0b7dd7;
+    the LLM-judge-only contract is still enforced -- see run_llm_judge -- just
+    no longer restated in the command's own confirmation text)."""
 
     def body() -> None:
         app = _app(tmp_path)
         sid = _session(app)
         _bind(app, sid)
         msg = run_goal_command(app, sid, {"input": "the report reads well"})
-        assert "LLM judge" in msg
+        assert msg == "Goal set at iteration 0. Open Session work to inspect it."
         assert "deterministic" not in msg.lower()
 
     _in_ctx(body)
@@ -438,7 +441,10 @@ def test_goal_command_usage_when_no_condition(tmp_path: Path) -> None:
         sid = _session(app)
         _bind(app, sid)
         msg = run_goal_command(app, sid, {"input": ""})
-        assert "usage" in msg.lower()
+        assert (
+            msg
+            == "Enter a completion condition after /goal. Use /goal clear to remove the active goal."
+        )
         assert _goal_state(app, sid) == {}
 
     _in_ctx(body)
