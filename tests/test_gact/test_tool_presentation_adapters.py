@@ -291,17 +291,27 @@ def test_wait_reports_lifecycle_without_repeating_child_output(status: str) -> N
         ],
     }
     view = native_presentation("wait", {}, raw, structured)
-    assert view["summary"] == structured["summary"]
+    # #1306: the model-facing "output" is already the digested (bounded) child
+    # answer (digested_model_row) -- that IS the meaningful received context, so
+    # it wins over the separate structured "answer_excerpt" fallback. The
+    # committed wait never shows BOTH; the untaken fallback never leaks.
+    assert view["summary"] == ""
+    assert view["subject"] == "task-subject"
     assert view["blocks"] == [
+        {"id": "task-subject", "type": "text", "text": "Researcher #1"},
         {
             "id": "task-0",
-            "type": "link",
+            "type": "item",
             "target": "session",
             "uri": "child",
-            "label": f"Researcher #1 · {status} · 11 s",
-        }
+            "label": "Researcher #1",
+            "status": status,
+            "result_kind": "completion",
+            "duration_ms": None,
+            "detail": "FULL CHILD ANSWER",
+        },
     ]
-    assert "CHILD" not in json.dumps(view)
+    assert "CHILD EXCERPT" not in json.dumps(view)
     assert json.loads(raw)["results"][0]["output"] == "FULL CHILD ANSWER"
 
 
@@ -399,7 +409,7 @@ def test_file_format_is_declared_by_read_presenter(path: str, content: str, kind
 def test_resource_outline_exposes_the_returned_collections() -> None:
     result = {"resource_id": "paper", "collections": {"pages": 7, "tables": 3, "texts": 28}}
     view = native_presentation("resource", {}, result, None)
-    assert view["blocks"][0]["text"] == "Pages: 7 · Tables: 3 · Texts: 28"
+    assert view["blocks"][0]["text"] == "Pages: 7\nTables: 3\nTexts: 28"
 
 
 def test_resource_markdown_derivative_declares_rendered_document_content() -> None:
@@ -544,7 +554,7 @@ def test_resource_inspection_uses_the_custody_size_fields() -> None:
         },
         None,
     )
-    assert view["blocks"][0]["text"] == "application/pdf · 1,200 bytes · Revision 1 · Ready"
+    assert view["blocks"][0]["text"] == "application/pdf\n1,200 bytes\nRevision 1\nReady"
     assert view["blocks"][0]["text"].count("1,200") == 1
 
 
@@ -703,6 +713,10 @@ def test_file_result_has_one_portable_filename_link() -> None:
         "command": "",
         "timed_out": False,
         "media_type": "",
+        "status": "",
+        "detail": "",
+        "items": [],
+        "action_label": "",
     }
     assert view["blocks"][1]["label"] == ""
 
@@ -884,7 +898,15 @@ def test_schedule_removal_preserves_actual_outcome_without_duplicate_fields(dele
         "subject": "schedule-subject",
         **({"status": "error"} if not deleted else {}),
         "summary": "Schedule deleted." if deleted else "No matching schedule was found.",
-        "blocks": [{"id": "schedule-subject", "type": "text", "text": "s1"}],
+        "blocks": [
+            {
+                "id": "schedule-subject",
+                "type": "link",
+                "target": "work",
+                "uri": "s1",
+                "label": "s1",
+            }
+        ],
     }
 
 
@@ -892,8 +914,9 @@ def test_failed_task_collection_does_not_claim_it_collected_a_result() -> None:
     view = native_presentation(
         "task_output", {}, {"task_id": "missing", "error": "unknown_task"}, None
     )
-    assert view["summary"] == "Task missing · unknown_task"
-    assert view["blocks"][0]["text"] == ""
+    assert view["summary"] == ""
+    assert view["blocks"][0]["label"] == "Full output unavailable"
+    assert view["blocks"][0]["text"] == "unknown task"
 
 
 def test_model_catalog_exposes_actual_changes_and_failures_without_empty_fields() -> None:
@@ -921,10 +944,30 @@ def test_model_catalog_exposes_actual_changes_and_failures_without_empty_fields(
     before = json.dumps(row)
     view = native_presentation("model_catalog", {}, row, None)
     assert view["summary"] == "2 provider results"
-    assert (
-        view["blocks"][0]["text"]
-        == "codex · codex_sdk · default: model-a\nUnchanged: model-a\n\nlocal · live_handshake\nUnavailable: Connection refused"
-    )
+    assert view["blocks"] == [
+        {
+            "id": "provider-1",
+            "type": "item",
+            "target": "url",
+            "uri": "/settings/providers?provider=codex",
+            "label": "codex",
+            "status": "succeeded",
+            "detail": "Source: codex_sdk\nDefault model: model-a",
+            "items": ["model-a"],
+            "action_label": "Change",
+        },
+        {
+            "id": "provider-2",
+            "type": "item",
+            "target": "url",
+            "uri": "/settings/providers?provider=local",
+            "label": "local",
+            "status": "failed",
+            "detail": "Source: live_handshake\nConnection refused",
+            "items": [],
+            "action_label": "Change",
+        },
+    ]
     assert json.dumps(row) == before
 
 
