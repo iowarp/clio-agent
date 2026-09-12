@@ -309,7 +309,7 @@ def present_task_family(
             if isinstance(action, str)
             else summary
         )
-        summary = "" if not row.get("error") else str(action_summary)
+        summary = str(action_summary) if not row.get("error") else ""
         if row.get("error"):
             presentation_status = "failed"
             reason = str(row.get("error") or "message_rejected")
