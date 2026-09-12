@@ -188,12 +188,19 @@ def settle_or_attach_forwarded_task(app: "FastAPI", task_id: str) -> None:
         return
     child_sid = task.child_session_id
 
+    from clio_agent.gact.agent_task_wake import build_child_done_callback  # noqa: PLC0415
     from clio_agent.gact.turn_spawn import _on_child_done  # noqa: PLC0415
 
     in_flight = getattr(app.state, "in_flight_turns", {}).get(child_sid)
     if in_flight is not None:
+        # #1334 review round: MUST pass the finished-turn identity through (the
+        # same builder _launch uses) so _on_child_done's continuation check
+        # (agent_task_wake.resume_on_continuation_turn) recognizes THIS callback
+        # as belonging to the very turn it fired on, rather than mistaking the
+        # still-in-flight entry for a newer continuation and re-chaining forever
+        # (a bare no-finished_turn lambda here stalled the task at RUNNING).
         in_flight.add_done_callback(
-            lambda _t, tid=task_id, csid=child_sid: _on_child_done(app, tid, csid, "async")
+            build_child_done_callback(_on_child_done, app, task_id, child_sid, "async")
         )
         return
     _complete_forwarded_task(app, task)
