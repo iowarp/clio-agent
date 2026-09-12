@@ -137,3 +137,37 @@ def roll_up_usage(state: "TurnState", pred: Any) -> None:
             state.enriched_text,
             _effective_turn_model_id(state),
         )
+
+
+def context_usage_metadata_patch(
+    state: "TurnState", session: Any, assistant_msg: Any
+) -> dict[str, Any] | None:
+    """Return the ``{"context_usage_by_scope": ...}`` metadata patch for finalize.
+
+    Moved out of ``turn_finalize.py`` (#1333 ratchet payment). Records this turn's
+    prompt usage under the scope that actually ran it (the session's pinned agent,
+    falling back to the turn's invocation/active agent, then "main"), keyed onto
+    the session metadata's running per-scope map so a multi-agent session's usage
+    stays attributable per scope rather than overwritten by whichever agent ran
+    last. ``None`` when the turn recorded no usage (nothing to patch).
+    """
+
+    if not state.last_prompt_usage:
+        return None
+    current_usage = (
+        getattr(session, "metadata", {}).get("context_usage_by_scope", {})
+        if session is not None
+        else {}
+    )
+    usage_by_scope = dict(current_usage) if isinstance(current_usage, dict) else {}
+    session_agent = getattr(session, "agent", {})
+    session_agent_id = (
+        str(session_agent.get("id") or "") if isinstance(session_agent, Mapping) else ""
+    )
+    usage_scope = session_agent_id or state.invocation_agent_id or state.active_agent_id or "main"
+    usage_by_scope[usage_scope] = {
+        **state.last_prompt_usage,
+        "turn_id": state.turn_id,
+        "recorded_at": assistant_msg.updated_at,
+    }
+    return {"context_usage_by_scope": usage_by_scope}

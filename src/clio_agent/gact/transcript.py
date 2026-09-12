@@ -57,6 +57,7 @@ from clio_agent.gact.runtime.globals import (
     _new_message_id,
     _new_part_id,
 )
+from clio_agent.gact.tap_step_verdicts import resolve_tap_step_verdict
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime.stream_audit import stream_audit
 
@@ -196,10 +197,7 @@ class TurnTranscript:
         # tool-fire by the observer gate — carves the append-only tap bucket into
         # per-ReAct-step slices so step N is not latched by step N-1's chunks (#883).
         self._tap_gate_cursor: dict[tuple[str, str], int] = {}
-        # A model step can issue several tool calls in one parallel batch. Every call
-        # has the same parent span and therefore shares one next_thought owner. Cache
-        # that step verdict so the first call does not consume the evidence and leave
-        # the remaining calls carrying duplicate thought copies.
+        # Per-step verdict memo -- see tap_step_survives_clean below.
         self._tap_step_verdicts: dict[tuple[str, str, str], tuple[bool, bool]] = {}
         # Every accepted streamed chunk in arrival order, across agents AND
         # fields (provider thinking included) — the whole-turn concat the
@@ -633,34 +631,22 @@ class TurnTranscript:
     ) -> tuple[bool, bool]:
         """Per-step (consumed) tap classification for the #883 thought-dedup gate.
 
-        Returns ``(had_stream, survives_clean)`` for the tap slice since the LAST
-        call for ``(agent_id, field)`` — a per-key cursor carves the append-only
-        ``_tap_streamed`` bucket into ReAct steps. Computed SYNCHRONOUSLY in the
-        caller's thread with NO cross-thread-close dependency (why ``has_closed_text``
-        is rejected: it reads False for a not-yet-closed non-empty row -> double
-        render). Since #881 the transcript stores text VERBATIM, so "survives as a
-        visible row" is exactly "has non-whitespace content" — the SAME whitespace-
-        only close drop :meth:`_close_open_text_locked` applies (the DSPy contract
-        markers that used to empty a slice are split off at the root, #877, and can
-        no longer reach a field's streamed text). CONSUMING READ — called EXACTLY
-        ONCE per tool-fire (the observer gate).
+        Memoized per ``step_id`` so a parallel tool-call batch (one shared parent
+        span) reads ONE verdict — see
+        :func:`clio_agent.gact.tap_step_verdicts.resolve_tap_step_verdict` for the
+        cursor/whitespace mechanism. CONSUMING READ — called EXACTLY ONCE per
+        tool-fire (the observer gate).
         """
 
-        key = (agent_id, field)
-        verdict_key = (agent_id, field, step_id)
-        with self._lock:
-            if step_id and verdict_key in self._tap_step_verdicts:
-                return self._tap_step_verdicts[verdict_key]
-            chunks = self._tap_streamed.get(key, [])
-            start = self._tap_gate_cursor.get(key, 0)
-            self._tap_gate_cursor[key] = len(chunks)
-            tail = "".join(chunks[start:])
-        survived = bool(tail.strip())
-        verdict = (survived, survived)
-        if step_id:
-            with self._lock:
-                self._tap_step_verdicts[verdict_key] = verdict
-        return verdict
+        return resolve_tap_step_verdict(
+            lock=self._lock,
+            tap_streamed=self._tap_streamed,
+            tap_gate_cursor=self._tap_gate_cursor,
+            tap_step_verdicts=self._tap_step_verdicts,
+            agent_id=agent_id,
+            field=field,
+            step_id=step_id,
+        )
 
     def raw_streamed_text(self) -> str:
         """Every accepted streamed chunk THIS turn, concatenated in arrival order.

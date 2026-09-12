@@ -39,8 +39,43 @@ __all__ = [
     "arm_forward_deadline",
     "fail_child_task",
     "fail_forwarded_child_task",
+    "forward_waiting_child",
     "settle_or_attach_forwarded_task",
 ]
+
+
+def forward_waiting_child(
+    app: "FastAPI", task: Any, child_sess: Any, child_sid: str, mode: str
+) -> bool:
+    """HITL-in-child (#1113): forward a paused child's pending question to the parent.
+
+    An unattended child cannot answer its own user question. If its turn paused
+    (``waiting_user``), FORWARD the pending question to the parent's HITL surface
+    instead of failing (replaces the deleted ``child_requires_user_input`` fail
+    path). Every edge terminates typed, nothing hangs: no pending question to
+    forward -> :func:`fail_child_task` now; forwarded -> the task stays in
+    progress but :func:`arm_forward_deadline` bounds an unattended-parent deadline
+    that terminates it typed and frees the slot; a parent answer resumes the child
+    (the caller's completion hook runs again at true completion); a parent
+    cancel/decline relays down to :func:`fail_forwarded_child_task`.
+
+    Returns ``True`` when the child was waiting and this call handled it (the
+    caller must return without its own terminal handling); ``False`` when the
+    child was not paused for user input (the caller proceeds as normal).
+    """
+
+    from clio_agent.gact.elicitation_forwarding import (  # noqa: PLC0415
+        forward_child_question_to_parent,
+    )
+
+    if child_sess is None or getattr(child_sess, "status", "") != "waiting_user":
+        return False
+    forwarded_qid = forward_child_question_to_parent(app, task, child_sid)
+    if forwarded_qid is None:
+        fail_child_task(app, task, child_sid, "child_question_forward_failed", mode)
+    else:
+        arm_forward_deadline(app, forwarded_qid)
+    return True
 
 
 def fail_child_task(app: "FastAPI", task: Any, child_sid: str, reason: str, mode: str) -> None:

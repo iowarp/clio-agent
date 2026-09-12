@@ -157,7 +157,7 @@ def test_observe_uses_child_identity_and_declared_display_name() -> None:
         "id": "observation",
         "type": "text",
         "label": "Observed",
-        "text": "Cursor 1 -> 1 · No pattern; returned immediately · Researcher #1: terminal (completed)",
+        "text": "Cursor 1 -> 1; No pattern; returned immediately; Researcher #1: terminal (completed)",
     }
 
 
@@ -209,7 +209,7 @@ def test_patterned_observe_presents_match_cursor_status_and_curated_evidence() -
                 "type": "text",
                 "label": "Observed",
                 "text": (
-                    'Cursor 7 -> 10 · Pattern "station=KOOT" matched · '
+                    'Cursor 7 -> 10; Pattern "station=KOOT" matched; '
                     "Research methodologist #1: running"
                 ),
             },
@@ -253,8 +253,8 @@ def test_patterned_observe_presents_terminal_release_without_claiming_a_match() 
         "type": "text",
         "label": "Observed",
         "text": (
-            'Cursor 10 -> 12 · Pattern "never-matches" did not match; '
-            "hold released by terminal child · Research methodologist #1: terminal (completed)"
+            'Cursor 10 -> 12; Pattern "never-matches" did not match; '
+            "hold released by terminal child; Research methodologist #1: terminal (completed)"
         ),
     }
     assert view["blocks"][2] == {

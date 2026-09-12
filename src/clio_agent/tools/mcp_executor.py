@@ -45,6 +45,9 @@ from clio_agent.tools.mcp_task_routing import (
     resolve_and_build_direct_client,
 )
 from clio_agent.tools.mcp_timeout_budget import component_declared_timeout_seconds
+from clio_agent.tools.tool_ui_metadata import (
+    _tool_visible_to_model as _tool_visible_to_model,  # re-exported for execution.py
+)
 
 logger = logging.getLogger(__name__)
 
@@ -669,9 +672,7 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         """
 
         return [
-            name
-            for name, tool in self._mcp_tools.items()
-            if _tool_visible_to_model(name, tool)
+            name for name, tool in self._mcp_tools.items() if _tool_visible_to_model(name, tool)
         ]
 
     def get_tool_definitions(self) -> dict[str, Any]:
@@ -898,31 +899,6 @@ def _result_to_text(result: Any) -> str:
         return _bounded_model_tool_result(str(data))
 
 
-def _tool_ui_metadata(tool: Any) -> Mapping[str, Any]:
-    """Return normalized MCP Apps metadata from a FastMCP tool definition."""
-
-    if tool is None:
-        return {}
-    meta = getattr(tool, "meta", None) or getattr(tool, "_meta", None)
-    if meta is None and isinstance(tool, Mapping):
-        meta = tool.get("_meta") or tool.get("meta")
-    meta_dump = getattr(meta, "model_dump", None)
-    if callable(meta_dump):
-        meta = meta_dump(by_alias=True, exclude_none=True)
-    if not isinstance(meta, Mapping):
-        return {}
-    ui = meta.get("ui")
-    ui_dump = getattr(ui, "model_dump", None)
-    if callable(ui_dump):
-        ui = ui_dump(by_alias=True, exclude_none=True)
-    if isinstance(ui, Mapping):
-        return ui
-    # Deprecated flat metadata remains readable for interoperability, while
-    # new servers should emit the stable nested ``_meta.ui`` shape.
-    flat_uri = meta.get("ui/resourceUri")
-    return {"resourceUri": flat_uri} if isinstance(flat_uri, str) else {}
-
-
 def _active_session_mode() -> str:
     """Return the active GACT session mode without coupling executor startup to GACT."""
 
@@ -937,20 +913,6 @@ def _active_session_mode() -> str:
         return str(getattr(session, "mode", "") or "")
     except (AttributeError, LookupError, RuntimeError):
         return ""
-
-
-def _tool_visible_to_model(name: str, tool: Any) -> bool:
-    """Return whether a tool belongs on the model-facing tool surface."""
-
-    visibility = _tool_ui_metadata(tool).get("visibility")
-    if not isinstance(visibility, Sequence) or isinstance(visibility, (str, bytes)):
-        return True
-    scopes = {str(item) for item in visibility}
-    if "model" in scopes:
-        return True
-    if "model:plan" in scopes:
-        return _active_session_mode() == "plan"
-    return False
 
 
 __all__ = [

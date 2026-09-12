@@ -795,12 +795,8 @@ from clio_agent.gact.usage import (  # noqa: E402,F401
     _usage_from_dspy_history,
     _usage_from_history_slice,
 )
-from clio_agent.gact.workspaces import (
-    WorkspaceStore,
-)
-from clio_agent.gact.workspaces import (
-    _default_store_path as _ws_default_store_path,
-)
+from clio_agent.gact.workspaces import WorkspaceStore
+from clio_agent.gact.workspaces import _default_store_path as _ws_default_store_path
 
 
 class AgentLike(Protocol):

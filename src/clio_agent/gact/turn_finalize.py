@@ -43,23 +43,17 @@ import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.gact.agents.resolution import (
-    _runtime_active_agent_blueprint_id,
-)
+from clio_agent.gact.agents.resolution import _runtime_active_agent_blueprint_id
 from clio_agent.gact.artifacts.cas_gc import finalize_cas_budget_check
 from clio_agent.gact.artifacts.grounding import ground_answer_artifacts
 from clio_agent.gact.artifacts.minting import clear_turn_artifacts
 from clio_agent.gact.artifacts.wire import append_turn_resource_links, proposed_diff_payload
-from clio_agent.gact.delegation import (
-    _produced_turn_workflow_state,
-)
+from clio_agent.gact.delegation import _produced_turn_workflow_state
 from clio_agent.gact.diff_ledger import index_turn_file_diffs
 from clio_agent.gact.direct_response import promote_tool_free_response
 from clio_agent.gact.enrichment import _finalize_context_frame
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
-from clio_agent.gact.evidence import (
-    _tool_result_preview,
-)
+from clio_agent.gact.evidence import _tool_result_preview
 from clio_agent.gact.part_atom_minter import (
     close_turn_minter,
     failed_finalize_identity,
@@ -83,6 +77,7 @@ from clio_agent.gact.tool_observer import (
 )
 from clio_agent.gact.transcript_projection import final_message_embed
 from clio_agent.gact.turn_stream import assemble_stream_metadata, settle_turn_transcript
+from clio_agent.gact.turn_usage import context_usage_metadata_patch
 from clio_agent.gact.types import (
     ErrorInfo,
     Message,
@@ -551,28 +546,8 @@ def finalize_turn(
             "stop_reason": completed_payload["stop_reason"],
         },
     )
-    metadata_patch: dict[str, Any] | None = None
-    if state.last_prompt_usage:
-        current_session = state.app.state.sessions.get(state.sid)
-        current_usage = (
-            getattr(current_session, "metadata", {}).get("context_usage_by_scope", {})
-            if current_session is not None
-            else {}
-        )
-        usage_by_scope = dict(current_usage) if isinstance(current_usage, dict) else {}
-        session_agent = getattr(current_session, "agent", {})
-        session_agent_id = (
-            str(session_agent.get("id") or "") if isinstance(session_agent, Mapping) else ""
-        )
-        usage_scope = (
-            session_agent_id or state.invocation_agent_id or state.active_agent_id or "main"
-        )
-        usage_by_scope[usage_scope] = {
-            **state.last_prompt_usage,
-            "turn_id": state.turn_id,
-            "recorded_at": assistant_msg.updated_at,
-        }
-        metadata_patch = {"context_usage_by_scope": usage_by_scope}
+    current_session = state.app.state.sessions.get(state.sid)
+    metadata_patch = context_usage_metadata_patch(state, current_session, assistant_msg)
     state.app.state.sessions.update(
         state.sid,
         status=final_status,

@@ -323,7 +323,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # in the owner module agents/agent_task_input_refs.py; only this file's own
     # tuple-unpack + one added kwarg on two call sites (emit_spawn_started's
     # wrapper + _do_spawn's own call) landed here.
-    "src/clio_agent/gact/agents/spawn_runtime.py": 842,
+    # (spawn_runtime.py's entry retired 2026-09: the #1333 ratchet payment split
+    # the tool-declaration blocks into the new owner module
+    # agents/spawn_runtime_declarations.py, dropping the file to 757 -- back
+    # under the flat 800 cap, no baseline entry needed.)
     # NEW entry (C1-S7, #1309 gate-review F1): crossed the flat 800 cap
     # (791 -> 842) for the new _apply_session_tool_allowlist owner function --
     # the ONE place that forces an agent-elicitation answer child's bound
@@ -350,7 +353,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # other TaskSpec field already uses in this file.
     # MERGE (PR #1298 x #1310): 820 -> 824. Both campaigns' additive spawn-path
     # lines coexist.
-    "src/clio_agent/gact/turn_spawn.py": 823,
+    # #1333 ratchet payment: 823 -> 818. The done-callback lambda + the
+    # continuation-chaining check landed in the new owner module
+    # gact/agent_task_wake.py; the waiting_user HITL-forward branch moved to
+    # its natural owner gact/child_forward.py (forward_waiting_child).
+    "src/clio_agent/gact/turn_spawn.py": 818,
     # (invoker.py's entry retired 2026-08: RelayExpertInvoker moved to its own
     # owner module agents/relay_expert_invoker.py, dropping invoker.py under the
     # 800 default cap — the #1221/#1222 contract-alignment growth that broke the
@@ -430,7 +437,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # never disagree with what the runtime turn path actually executes). All
     # decision logic lives in the owner module; only the two wrapping calls
     # landed here.
-    "src/clio_agent/gact/app.py": 2493,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247)
+    "src/clio_agent/gact/app.py": 2491,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247); #1333: 2493 -> 2491, two workspaces imports merged to one line each
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -448,7 +455,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # surface with nothing to show for it). All logic (materialize + emit) lives in
     # the owner module artifacts/versions.py (emit_artifact_used); only the guarded
     # call site is here. Ratchets back with the #714 mint/registry split.
-    "src/clio_agent/gact/artifacts/minting.py": 862,  # external-input echo classification moved to its provenance owner (#1320)
+    "src/clio_agent/gact/artifacts/minting.py": 805,  # external-input echo classification moved to its provenance owner (#1320); #1333: 862 -> 805, identity hashing (compute_identity/_stat_and_hash/hash_max_file_bytes) moved to the new owner module gact/artifacts/hashing.py
     # #1191: not previously baselined (silently over the 800 cap already, from
     # earlier unbaselined growth on this branch — the create_artifact tool floor).
     # +19 net for the OPTIONAL used=[...] input-refs param on create_artifact (the
@@ -671,7 +678,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/native_model_inputs.py; what lands here is its import, one call in the
     # stream_input literal, one call in the compat shim, and the pop/record
     # re-export lines the historical `from gact.streaming import ...` seam needs.
-    "src/clio_agent/gact/streaming.py": 925,
+    # #1334: 925 -> 885, the pooled-provider off-loop hop (run_off_loop) replaced
+    # an inline blocking predicate check on the server loop thread.
+    "src/clio_agent/gact/streaming.py": 885,
     # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
     # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
     # merge(main->develop): +10 (932 -> 942) integrating main's #964 structured
@@ -772,7 +781,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # no behavior lines added, only the honesty fix's explanation.
     # 891 -> 822 (#1334): the turn prologue (deferred user-message persist, turn.started,
     # enrichment, hooks) moved to turn_start_offloop.py and runs on the turn executor.
-    "src/clio_agent/gact/turn.py": 822,
+    # #1333 ratchet payment: 822 -> 818, single-item multi-line imports (the
+    # turn_finalize/turn_stream/types blocks) consolidated to one line each.
+    "src/clio_agent/gact/turn.py": 818,
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the
@@ -804,7 +815,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/stream_fallbacks.py, only the stamp lands here.
     # 861 -> 856 (#1333): the GOAL judge step moved to turn_finalize_goal.py (awaited).
     # 856 -> 839 (#1334): file_diff indexing moved to the guarded diff_ledger.py owner.
-    "src/clio_agent/gact/turn_finalize.py": 837,  # Interaction pause ownership moved to user_question_pause.py.
+    "src/clio_agent/gact/turn_finalize.py": 835,  # Interaction pause ownership moved to user_question_pause.py.; #1333: 837 -> 835, context_usage_by_scope moved to turn_usage.context_usage_metadata_patch
     # P5 (owner ask 2026-08-06): +7 for the child/subagent artifact-rollup call
     # site (comment + function-local import + one-line invocation, matching the
     # P4.1/P4.2/P1.6d dispatch idiom already used lower in this file); the
@@ -1073,7 +1084,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1285 (C1-S5, item 1): +5 for the two ``client.call_tool`` call sites
     # (unbounded + activity-backstop-bounded) routed through
     # ``call_tool_with_header_retry`` -- same owner module as above.
-    "src/clio_agent/tools/mcp_executor.py": 934,
+    # #1333 ratchet payment: 934 -> 923, _tool_ui_metadata/_tool_visible_to_model
+    # moved to the new owner module tools/tool_ui_metadata.py (re-exported here).
+    "src/clio_agent/tools/mcp_executor.py": 923,
     # AF-FOLD (PR #1298): ratcheted DOWN 817 -> 816. Credential redaction moved to
     # the owner module tools/mcp_redaction.py, which more than paid for the
     # ``declared`` pre-expansion field this file gained.

@@ -36,7 +36,7 @@ from clio_agent.gact.runtime.globals import (
     _new_message_id,
     _resolve_tool_session,
 )
-from clio_agent.gact.thought_dedup import TOOL_THOUGHT_STAGE, classify_live_thought
+from clio_agent.gact.thought_dedup import TOOL_THOUGHT_STAGE, resolve_started_tool_call_thought
 from clio_agent.gact.tool_progress import ToolProgressRegistry
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime import trace
@@ -698,26 +698,18 @@ def _make_tool_observer(app: "FastAPI"):
             if representation == "handoff":
                 return observer_handle
             step_thought = _ctx.active_step_thought()
-            # #732/#883: next_thought owns its OWN streamed text row; the copy on
-            # tool_call.thought is redundant. Clear it IFF THIS step's next_thought
-            # tap slice SURVIVES cleaning as a visible row — a per-step, in-thread,
-            # format-only predicate (never a prose compare). A marker-only slice that
-            # cleans to empty, or no slice at all (SDK gap), KEEPS the thought so it
-            # never vanishes. Every outcome emits a structured reason (no silent
-            # fallback). See tests/test_gact/test_next_thought_single_owner.py.
+            raw_step_thought = step_thought
             transcript = _session_turn_transcript(app, sid)
             # #953: read the RUN-KEYED tap bucket (bare invoking_expert still owns attribution).
             _tap_scope = _ctx.run_keyed_scope(invoking_expert)
             thought_step_id = _ctx.active_parent_span_id()
-            had_stream, survived = (
-                transcript.tap_step_survives_clean(
-                    _tap_scope, "next_thought", thought_step_id
-                )
-                if transcript is not None
-                else (False, False)
+            step_thought, decision = resolve_started_tool_call_thought(
+                transcript=transcript,
+                tap_scope=_tap_scope,
+                thought_step_id=thought_step_id,
+                step_thought=step_thought,
             )
-            decision = classify_live_thought(had_stream, survived)
-            if step_thought:
+            if raw_step_thought:
                 stream_audit(
                     TOOL_THOUGHT_STAGE,
                     agent_id=invoking_expert,
@@ -725,11 +717,9 @@ def _make_tool_observer(app: "FastAPI"):
                     visible=False,
                     duplicate_suppressed=decision.clear,
                     duplicate_reason=decision.reason,
-                    step_id=_ctx.active_parent_span_id(),
-                    head=step_thought[:120],
+                    step_id=thought_step_id,
+                    head=raw_step_thought[:120],
                 )
-            if decision.clear or not step_thought:
-                step_thought = ""
             call_metadata = {
                 "stream_source": "live",
                 "telemetry_source": "live_observer",

@@ -30,15 +30,12 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents.blueprint_commission import (
-    SPAWN_AGENT_ARGUMENT,
-    SPAWN_BLUEPRINT_ARGUMENT,
     collect_commission_artifact,
     completion_context_fields,
     emit_commission_artifact_returned,
     emit_commission_started,
     resolve_commission_target,
 )
-from clio_agent.gact.agents.native_presenters import build_wait_tool
 from clio_agent.gact.agents.spawn_completion import (
     completion_payload as _completion_payload,
 )
@@ -52,20 +49,22 @@ from clio_agent.gact.agents.spawn_completion import (
 from clio_agent.gact.agents.spawn_events import _started_handoff_part as _started_handoff_part
 from clio_agent.gact.agents.spawn_events import emit_spawn_started as _emit_spawn_started
 from clio_agent.gact.agents.spawn_group import (
-    failed_spawn_metadata_row,
     wait_completion_offset_ms,
     wait_structured_row,
     wait_summary,
 )
 from clio_agent.gact.agents.spawn_placement import run_handle_fields
+from clio_agent.gact.agents.spawn_runtime_declarations import (
+    _failed_spawn_handoff_part,
+    assemble_spawn_runtime_tools,
+)
 from clio_agent.gact.runtime.globals import (
     _active_semantic_trace_id,
     _active_semantic_turn_id,
     _emit_semantic_event,
 )
 from clio_agent.gact.spawn_context import current_session_depth as _current_session_depth
-from clio_agent.gact.tool_observer import _append_live_assistant_part, _handoff_part_metadata
-from clio_agent.gact.types import Part
+from clio_agent.gact.tool_observer import _append_live_assistant_part
 
 if TYPE_CHECKING:
     from clio_agent.gact.agents.types import AgentDef
@@ -183,46 +182,6 @@ def _merge_wait_workflow_states(
         if isinstance(row.get("workflow_state"), dict) and "run_index" in row
     ]
     return merge_run_workflow_states(runs)
-
-
-def _failed_spawn_handoff_part(
-    agent_def: "AgentDef",
-    child_id: str,
-    task: str,
-    spawn_group_id: str,
-    group_size: int,
-    exc: Exception,
-) -> Part:
-    """Terminal Part for a batch sibling refused before it ever spawned (finding
-    [E]): builds directly on the terminal lane so the group's declared total
-    always reconciles even when one sibling never got a child session."""
-
-    reason = getattr(exc, "reason", type(exc).__name__)
-    error_message = (
-        "This child is not declared by the current agent, so it was not started."
-        if reason == "undeclared_child"
-        else f"This child was not started because the spawn request failed with {reason}."
-    )
-    row = failed_spawn_metadata_row(
-        child_id,
-        agent_def.id,
-        reason,
-        spawn_group_id,
-        group_size,
-        task=task,
-        error_message=error_message,
-    )
-    return Part(
-        id=f"live_handoff_{uuid.uuid4().hex[:12]}",
-        type="expert_handoff",
-        agent_id=agent_def.id,
-        parent_agent=agent_def.id,
-        child_agent=child_id,
-        stage="delegate.completed",
-        status="failed",
-        text=f"{agent_def.id} -> {child_id}",
-        metadata={**_handoff_part_metadata(row), "stream_source": "live"},
-    )
 
 
 def _emit_delegation_terminal(app: Any, session_id: str, agent_def: "AgentDef", task: Any) -> None:
@@ -352,12 +311,10 @@ def build_spawn_runtime_tools(
     does not expose the declared-child spawn or workflow controls.
     """
 
-    from clio_agent.gact.agent_messaging import build_message_agent_tool  # noqa: PLC0415
     from clio_agent.gact.agents.agent_task_input_refs import (  # noqa: PLC0415
         resolve_input_task_evidence,
     )
     from clio_agent.gact.agents.agent_task_output_digest import (  # noqa: PLC0415
-        build_agent_task_output_tool,
         digested_model_row,
     )
     from clio_agent.gact.agents.invoker import (  # noqa: PLC0415
@@ -366,14 +323,12 @@ def build_spawn_runtime_tools(
         TaskHandle,
         TaskSpec,
     )
-    from clio_agent.gact.agents.observe_runtime import build_observe_tool  # noqa: PLC0415
     from clio_agent.gact.agents.resolution import _runtime_declared_child_ids  # noqa: PLC0415
     from clio_agent.gact.agents.spawn_placement import (  # noqa: PLC0415
         invoker_for_placement,
         invoker_for_task,
         resolve_batch_placement,
     )
-    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
     from clio_agent.gact.spawn_context import bind_task_spec_to_parent  # noqa: PLC0415
 
     # Declared children own the complete routing surface. A spawn-effect skill can
@@ -573,9 +528,7 @@ def build_spawn_runtime_tools(
         call_start = _time.monotonic()
         wait_started_at = datetime.now(timezone.utc)
         request_order_results: list[dict[str, Any]] = []
-        collected_rows: list[
-            tuple[int, Any | None, dict[str, Any], dict[str, Any]]
-        ] = []
+        collected_rows: list[tuple[int, Any | None, dict[str, Any], dict[str, Any]]] = []
         for request_index, tid in enumerate(task_ids or []):
             # Validate the id BEFORE waiting: registry.event() would setdefault a
             # fresh never-set Event for an unknown/typo id and block the FULL budget
@@ -616,9 +569,7 @@ def build_spawn_runtime_tools(
                 wait_completion_offset_ms(wait_started_at, task_result.updated_at),
             )
             request_order_results.append(model_row)
-            collected_rows.append(
-                (request_index, task_result, model_row, structured_row)
-            )
+            collected_rows.append((request_index, task_result, model_row, structured_row))
 
         def _completion_order_key(
             row: tuple[int, Any | None, dict[str, Any], dict[str, Any]],
@@ -788,107 +739,15 @@ def build_spawn_runtime_tools(
         )
         return json.dumps(record, sort_keys=True, default=str)
 
-    # Declared presentation (tool_instrumentation): spawn/fan-out are represented
-    # by their individual ``expert_handoff`` parts. A declared workflow is a
-    # compound operation spanning several handoffs, so it keeps its own tool row
-    # as the operation boundary and the handoffs remain its ordered body. The
-    # collectors are plain ``row`` tools as well: a wait or status check is a real
-    # call, never invisible mechanism the narration references.
-    tools = [
-        native_tool(
-            spawn_agent_task,
-            name="spawn_agent_task",
-            presentation="specialized",
-            desc=spawn_agent_task.__doc__,
-            title="Spawn Agent",
-            representation="handoff",
-            args={
-                "agent": SPAWN_AGENT_ARGUMENT,
-                "task": {"type": "string", "description": "The specific task for that child."},
-                "placement": {
-                    "type": "string",
-                    "description": (
-                        "Optional execution placement: local or relay:<cluster>. "
-                        "Omit to use the session policy, then the local default."
-                    ),
-                },
-                "input_task_ids": {
-                    "type": "array",
-                    "description": (
-                        "Optional ids of YOUR OWN already-finished spawned tasks whose "
-                        "full stored output to hand this child as labeled evidence in "
-                        "its own briefing (e.g. a critic reviewing researchers' full "
-                        "material) -- the parent never sees this text. A foreign, "
-                        "unknown, or still-running id refuses the spawn (typed reason; "
-                        "no child created)."
-                    ),
-                },
-                "blueprint_id": SPAWN_BLUEPRINT_ARGUMENT,
-            },
-        ),
-        build_wait_tool(wait_agent_tasks),
-        build_message_agent_tool(agent_def),
-        # OBSERVE posture (#1000): the read-only child-progress surface, built in
-        # its owner module (observe_runtime) so this file stays under the size ratchet.
-        build_observe_tool(),
-        # #1306 recoverability: fetches a digested (oversize) completed task's full
-        # stored output on demand; built in its own owner module for the same reason.
-        build_agent_task_output_tool(),
-        native_tool(
-            spawn_agents_parallel,
-            name="spawn_agents_parallel",
-            presentation="specialized",
-            desc=spawn_agents_parallel.__doc__,
-            title="Spawn Agents",
-            representation="handoff",
-            args={
-                "spawns": {
-                    "type": "array",
-                    "description": (
-                        "List of {agent, task, input_task_ids?, blueprint_id?} to fan out. "
-                        "input_task_ids works exactly like spawn_agent_task's own "
-                        "parameter, per entry."
-                    ),
-                },
-                "placement": {
-                    "type": "string",
-                    "description": ("Optional placement applied to every spawn in this batch."),
-                },
-            },
-        ),
-    ]
-    if not has_declared_children:
-        collection_names = {
-            "wait_agent_tasks",
-            "message_agent",
-            "observe_agent_tasks",
-            "get_agent_task_output",
-            *(
-                {"spawn_agent_task", "spawn_agents_parallel"}
-                if can_commission_blueprints
-                else set()
-            ),
-        }
-        tools = [tool for tool in tools if getattr(tool, "name", "") in collection_names]
-
-    # run_workflow is gated on a DECLARED workflow (mirroring the children-gated
-    # toolset above): a blueprint with no ``workflow:`` block never sees the tool.
-    from clio_agent.gact.workflows import parse_workflow  # noqa: PLC0415
-
-    if has_declared_children and parse_workflow(agent_def) is not None:
-        tools.append(
-            native_tool(
-                run_workflow,
-                name="run_workflow",
-                presentation="specialized",
-                desc=run_workflow.__doc__,
-                title="Run Workflow",
-                args={
-                    "request": {
-                        "type": "string",
-                        "description": "The user's request, grounding each declared step's task.",
-                    },
-                },
-            )
-        )
-    return tools
+    # Tool declarations (names/desc/JSON-schema args) live in their own owner
+    # module (spawn_runtime_declarations) so this file stays under the size
+    # ratchet; the closures above are this function's own contribution.
+    return assemble_spawn_runtime_tools(
+        agent_def,
+        spawn_agent_task=spawn_agent_task,
+        wait_agent_tasks=wait_agent_tasks,
+        spawn_agents_parallel=spawn_agents_parallel,
+        run_workflow=run_workflow,
+        has_declared_children=has_declared_children,
+        can_commission_blueprints=can_commission_blueprints,
+    )

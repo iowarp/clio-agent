@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact.agent_task_artifacts import returned_artifact_ref
+from clio_agent.gact.agent_task_wake import build_child_done_callback, resume_on_continuation_turn
 from clio_agent.gact.agent_tasks import (
     AGENT_TASK_EVENTS,
     STATUS_CANCELLED,
@@ -611,10 +612,9 @@ def _launch(app: "FastAPI", task: AgentTask, spec: TaskSpec) -> AgentTask:
     child_task = app.state.in_flight_turns.get(task.child_session_id)
     if child_task is not None:
         child_task.add_done_callback(
-            lambda finished,
-            tid=task.task_id,
-            csid=task.child_session_id,
-            mode=spec.mode: _on_child_done(app, tid, csid, mode, finished_turn=finished)
+            build_child_done_callback(
+                _on_child_done, app, task.task_id, task.child_session_id, spec.mode
+            )
         )
     else:
         # The turn already settled (a very fast child); collect now.
@@ -684,46 +684,16 @@ def _on_child_done(
         return
     now = _now()
 
-    # HITL-in-child (#1113): an unattended child cannot answer its own user question.
-    # If its turn paused (waiting_user), FORWARD the pending question to the parent's
-    # HITL surface instead of failing (replaces the deleted child_requires_user_input
-    # fail path). Every edge terminates typed, nothing hangs: no pending question to
-    # forward -> typed terminal now; forwarded -> the task stays in progress but arms a
-    # bounded unattended-parent deadline that terminates it typed and frees the slot;
-    # a parent answer resumes the child (then _on_child_done runs again at true
-    # completion); a parent cancel/decline relays down and fails the task.
-    child_sess = app.state.sessions.get(child_sid)
-    if child_sess is not None and getattr(child_sess, "status", "") == "waiting_user":
-        from clio_agent.gact.child_forward import (  # noqa: PLC0415
-            arm_forward_deadline,
-            fail_child_task,
-        )
-        from clio_agent.gact.elicitation_forwarding import (  # noqa: PLC0415
-            forward_child_question_to_parent,
-        )
+    # HITL-in-child (#1113): see child_forward.forward_waiting_child.
+    from clio_agent.gact.child_forward import forward_waiting_child  # noqa: PLC0415
 
-        forwarded_qid = forward_child_question_to_parent(app, task, child_sid)
-        if forwarded_qid is None:
-            fail_child_task(app, task, child_sid, "child_question_forward_failed", mode)
-        else:
-            arm_forward_deadline(app, forwarded_qid)
+    child_sess = app.state.sessions.get(child_sid)
+    if forward_waiting_child(app, task, child_sess, child_sid, mode):
         return
 
-    # A message accepted while this child was running may miss the final tool
-    # boundary by a few milliseconds. The turn-runner owns that race: its idle
-    # hook promotes the residual steer into the next turn before this later
-    # task-specific callback runs. Keep the ONE logical AgentTask attached to
-    # that continuation instead of terminalizing it from the stale first answer.
-    # Wait and Collect then observe the final answer that actually incorporates
-    # the accepted message. The identity check prevents following the turn whose
-    # completion invoked this callback if callback ordering ever changes.
-    continuation = app.state.in_flight_turns.get(child_sid)
-    if continuation is not None and continuation is not finished_turn:
-        continuation.add_done_callback(
-            lambda finished, tid=task_id, csid=child_sid, run_mode=mode: _on_child_done(
-                app, tid, csid, run_mode, finished_turn=finished
-            )
-        )
+    # A residual steer accepted mid-turn is promoted to a continuation turn the
+    # turn-runner's idle hook owns; see agent_task_wake.resume_on_continuation_turn.
+    if resume_on_continuation_turn(app, task_id, child_sid, mode, finished_turn, _on_child_done):
         return
 
     msgs = app.state.messages.get(child_sid, []) or []

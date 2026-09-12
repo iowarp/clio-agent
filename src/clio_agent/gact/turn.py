@@ -87,26 +87,15 @@ from clio_agent.gact.tool_observer import (
     _tool_calls_from_handoff_rows,
 )
 from clio_agent.gact.turn_cancellation import settle_asyncio_cancellation
-from clio_agent.gact.turn_finalize import (
-    maybe_pause_for_user,
-    settle_failed_finalize,
-)
+from clio_agent.gact.turn_finalize import maybe_pause_for_user, settle_failed_finalize
 from clio_agent.gact.turn_finalize_goal import finalize_turn_async
 from clio_agent.gact.turn_forward import _run_turn_setup_off_loop, forward_turn
 from clio_agent.gact.turn_start_offloop import prepare_turn_off_loop, spawn_user_turn
 from clio_agent.gact.turn_state import DeferredTranscriptJob, new_turn_state
-from clio_agent.gact.turn_stream import (
-    bind_live_emitter,
-    settle_turn_transcript,
-)
+from clio_agent.gact.turn_stream import bind_live_emitter, settle_turn_transcript
 from clio_agent.gact.turn_usage import roll_up_usage
 from clio_agent.gact.turn_watchdog import make_turn_cancel_event
-from clio_agent.gact.types import (
-    ErrorInfo,
-    Message,
-    Part,
-    Session,
-)
+from clio_agent.gact.types import ErrorInfo, Message, Part, Session
 from clio_agent.gact.usage import _snapshot_lm_history_index
 
 # NOTE (#714): every turn helper above is imported from its true *leaf* owner,

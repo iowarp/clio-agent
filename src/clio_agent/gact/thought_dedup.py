@@ -10,7 +10,7 @@ cannot drift across the ``_clean_text`` boundary -- the exact divergence #883 na
 from __future__ import annotations
 
 import re
-from typing import Callable, Literal, NamedTuple
+from typing import Any, Callable, Literal, NamedTuple
 
 TOOL_THOUGHT_STAGE = "bridge.tool_thought"
 
@@ -78,3 +78,33 @@ def classify_live_thought(had_stream: bool, survived: bool) -> ThoughtDecision:
     if had_stream:
         return ThoughtDecision(False, REASON_CLEANED_EMPTY)
     return ThoughtDecision(False, REASON_NO_STREAM)
+
+
+def resolve_started_tool_call_thought(
+    *, transcript: Any, tap_scope: str, thought_step_id: str, step_thought: str
+) -> tuple[str, ThoughtDecision]:
+    """Decide whether THIS step's next_thought clears the tool_call's thought copy.
+
+    Split out of ``tool_observer._make_tool_observer`` (#1333 ratchet payment):
+    next_thought owns its OWN streamed text row; the copy on ``tool_call.thought``
+    is redundant. Clear it IFF this step's next_thought tap slice SURVIVES
+    cleaning as a visible row -- a per-step, in-thread, format-only predicate
+    (never a prose compare). A marker-only slice that cleans to empty, or no
+    slice at all (SDK gap), KEEPS the thought so it never vanishes.
+
+    Returns ``(step_thought, decision)`` -- ``step_thought`` cleared to ``""``
+    when the caller's own next_thought row already owns the visible content.
+    The caller still performs its OWN ``stream_audit`` emission (its structured
+    reason + the ``tests/test_gact/test_next_thought_single_owner.py`` patch
+    surface binds ``stream_audit`` inside ``tool_observer``, not here).
+    """
+
+    had_stream, survived = (
+        transcript.tap_step_survives_clean(tap_scope, "next_thought", thought_step_id)
+        if transcript is not None
+        else (False, False)
+    )
+    decision = classify_live_thought(had_stream, survived)
+    if decision.clear or not step_thought:
+        step_thought = ""
+    return step_thought, decision
