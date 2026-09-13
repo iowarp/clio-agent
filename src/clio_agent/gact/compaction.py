@@ -648,6 +648,12 @@ def maybe_autocompact() -> None:
     if arc is None:
         return
     app = _ctx.active_app()
+    if app is None:
+        # #1339 review round: active_app() is documented nullable
+        # (gact/context.py); compact_session_context requires a real app
+        # (it reads app.state.sessions unguarded) -- never a hard crash for a
+        # proactive optimization the docstring itself promises is optional.
+        return
     sessions = getattr(getattr(app, "state", None), "sessions", None)
     session_row = sessions.get(session) if sessions is not None else None
     enabled, threshold = _session_autocompact_preferences(getattr(session_row, "metadata", None))
