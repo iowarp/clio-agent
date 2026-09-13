@@ -383,4 +383,80 @@ def _add_external_node(edge: Any, add_node: Any) -> bool:
     )
 
 
-__all__ = ["build_lineage", "lineage_max_nodes"]
+def build_activity_lineage(registry: "ArtifactRegistry", call_id: str) -> Optional[dict[str, Any]]:
+    """Build the direct data-flow graph rooted at one tool activity.
+
+    This keeps a consuming call queryable when it minted no output artifact.
+    External inputs remain inert locator nodes; the graph never invents a
+    registry artifact or a download for them.
+    """
+    transform = registry.get_transform(call_id)
+    if transform is None:
+        return None
+    activity_id = f"activity:{call_id}"
+    nodes: dict[str, dict[str, Any]] = {activity_id: _activity_node(transform)}
+    edges: list[dict[str, Any]] = []
+    edge_keys: set[tuple[str, str, str]] = set()
+    clipped = False
+
+    def add_node(node: dict[str, Any]) -> bool:
+        nonlocal clipped
+        node_id = str(node.get("id") or "")
+        if not node_id:
+            return False
+        if node_id in nodes:
+            return True
+        if len(nodes) >= _MAX_NODES:
+            clipped = True
+            return False
+        nodes[node_id] = node
+        return True
+
+    def add_edge(source: str, target: str, edge_type: str, evidence: str) -> None:
+        if source not in nodes or target not in nodes:
+            return
+        key = (source, target, edge_type)
+        if key in edge_keys:
+            return
+        edge_keys.add(key)
+        edges.append({"from": source, "to": target, "type": edge_type, "evidence": evidence})
+
+    for edge in transform.used:
+        if edge.external_ref or edge.authority:
+            ref = edge.external_ref or edge.authority
+            if ref and add_node(
+                {
+                    "id": ref,
+                    "type": "artifact",
+                    "external": True,
+                    "authority": edge.authority,
+                    "sha256": edge.sha256,
+                    "evidence": edge.evidence.value,
+                    "name": edge.name,
+                }
+            ):
+                add_edge(ref, activity_id, "used", edge.evidence.value)
+            continue
+        resolved = registry.get_by_artifact_id(edge.artifact_id) if edge.artifact_id else None
+        if resolved is not None:
+            record, version = resolved
+            if add_node(_artifact_node(record, version)):
+                add_edge(edge.artifact_id, activity_id, "used", edge.evidence.value)
+    for edge in transform.generated:
+        resolved = registry.get_by_artifact_id(edge.artifact_id) if edge.artifact_id else None
+        if resolved is None:
+            continue
+        record, version = resolved
+        if add_node(_artifact_node(record, version)):
+            add_edge(activity_id, edge.artifact_id, "generated", edge.evidence.value)
+    return {
+        "root": activity_id,
+        "direction": "both",
+        "depth": 1,
+        "nodes": list(nodes.values()),
+        "edges": edges,
+        "truncated": {"reason": "node_cap", "nodes": _MAX_NODES} if clipped else None,
+    }
+
+
+__all__ = ["build_activity_lineage", "build_lineage", "lineage_max_nodes"]

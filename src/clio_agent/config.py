@@ -99,6 +99,10 @@ from clio_agent.providers.catalog import (
 from clio_agent.providers.catalog import (
     as_provider_defaults_dict as _registry_provider_defaults,
 )
+from clio_agent.providers.catalog import get_provider as _catalog_provider
+from clio_agent.providers.catalog import kind_default as _catalog_kind_default
+from clio_agent.providers.catalog import normalize_provider_options as _normalize_provider_options
+from clio_agent.providers.catalog import provider_defaults as _catalog_provider_defaults
 
 PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = _registry_provider_defaults()
 
@@ -205,28 +209,18 @@ class LMProviderConfig:
         "codex",
         "claude_code",
     ] = "lm_studio"
+    provider_id: str = ""
     api_base: str = ""
     model: str = ""
     api_key: str = ""
-    # Default to greedy/deterministic decoding for the agentic LM path.
-    # CLIO drives the LM almost exclusively for STRUCTURED output —
-    # ReAct tool calls, typed routing decisions, JSON workflow_state,
-    # field-formatted DSPy adapter responses. At temperature 1.0 the
-    # sampler injects entropy into exactly those structured fields,
-    # which is how small/cheap models (and the occasional large one)
-    # drift: hallucinated plot columns, fabricated CSV/PNG paths,
-    # parse-time field-format breakage. Per DSPy norms, structured/
-    # tool-calling predictors want deterministic decoding (temp 0.0)
-    # for reproducible, parseable outputs; creativity isn't the job
-    # here. Overridable via CLIO_LM_TEMPERATURE / the PUT body / the
-    # config field for callers who want sampling.
+    provider_options: dict[str, str] = field(default_factory=dict)
+    # Greedy decoding is the safe default for structured agent/tool output.
+    # Explicit modules and callers may override it when sampling is desired.
     temperature: float = 0.0
-    # 0 is a sentinel "use the provider's max_tokens override (see
-    # PROVIDER_DEFAULTS) if it has one, else 32000". Callers who
-    # explicitly pass any non-zero value win.
+    # 0 omits the client output cap; positive values set an explicit cap.
     max_tokens: int = 0
     planner_temperature: float = 0.3
-    planner_max_tokens: int = 0
+    planner_max_tokens: int | None = None
     router_temperature: float | None = None
     # Sampling surface (None = omit -> the provider/model's own default applies).
     # Greedy decoding (temperature 0) makes Qwen-family REASONING models (qwopus,
@@ -283,10 +277,21 @@ class LMProviderConfig:
 
     def __post_init__(self) -> None:
         """Fill empty fields + capability flags from provider defaults."""
+        identity = self.provider_id or str(self.provider)
+        preset = _catalog_provider(identity) or _catalog_kind_default(identity)
+        if preset is not None:
+            self.provider_id = preset.id
+            self.provider = cast(Any, preset.provider_kind)
+            defaults = _catalog_provider_defaults(preset)
+            if self.provider_options:
+                self.provider_options = _normalize_provider_options(
+                    preset.id, self.provider_options
+                )
+        else:
+            raise ValueError(f"Unknown LM provider {identity!r}; configure a supported provider")
         if self.router_temperature is not None:
             self.planner_temperature = self.router_temperature
         self.router_temperature = self.planner_temperature
-        defaults = PROVIDER_DEFAULTS.get(self.provider, PROVIDER_DEFAULTS["lm_studio"])
         from clio_agent.providers.thinking import shipped_default_level  # noqa: PLC0415
 
         self.thinking_level = shipped_default_level(
@@ -304,15 +309,16 @@ class LMProviderConfig:
             # ``or defaults["api_key"]`` preserves the local-provider
             # placeholder (e.g. "lm-studio") — a provider default, not a
             # credential — so behaviour stays byte-identical.
-            self.api_key = _credentials.resolve(self.provider, "") or defaults["api_key"]
-        # max_tokens=0 is the sentinel "pick a sensible default for
-        # this provider" — Argonne/ALCF model availability and context
-        # windows vary by running gateway job, and some paths reject
-        # the global 32000 default.
-        if self.max_tokens == 0:
-            self.max_tokens = int(defaults.get("max_tokens", 32000))
+            self.api_key = (
+                _credentials.resolve(self.provider_id or self.provider, "") or defaults["api_key"]
+            )
+        # Zero means no client output cap (#1323).
+        if self.max_tokens < 0 or (
+            self.planner_max_tokens is not None and self.planner_max_tokens < 0
+        ):
+            raise ValueError("max_tokens and planner_max_tokens must be non-negative")
         self._apply_model_profile_defaults()
-        if self.planner_max_tokens == 0:
+        if self.planner_max_tokens is None:
             self.planner_max_tokens = self.max_tokens
         # Capability flags. defaults dict wins — these aren't user-set
         # via env vars (they're wire-protocol facts about the provider),
@@ -348,22 +354,16 @@ class LMProviderConfig:
         if self.planner_temperature == 0.3:
             self.planner_temperature = 0.0
             self.router_temperature = self.planner_temperature
-        if self.planner_max_tokens == 0:
-            self.planner_max_tokens = max(self.max_tokens, 4096)
-        elif self.planner_max_tokens < 4096:
-            self.planner_max_tokens = 4096
+        # Output caps are exact operator choices (#1323). Model profiles may
+        # tune sampling, but must not invent or raise a client-side cap.
 
     def apply_handshake(self, report: Any, *, user_set_max_tokens: bool = False) -> None:
         """Fold a provider handshake report into this config (call at bind time).
 
-        Sets the discovered per-model fields (context window, reasoning/tool
-        capabilities) and, unless the caller explicitly set ``max_tokens``,
-        recomputes a context-aware ``max_tokens`` — replacing the static
-        provider default (e.g. the ALCF 4096 cap on 256K-context models).
-        ``user_set_max_tokens`` must be True when the user/env supplied an
-        explicit value so their choice always wins. No-op when the report has no
-        usable profile (handshake failed / model not found), preserving today's
-        static behaviour.
+        Sets the discovered context window and reasoning/tool capabilities.
+        Output caps remain operator choices: zero omits the cap, and positive
+        values are preserved. ``user_set_max_tokens`` is retained for callers
+        using the earlier signature. No-op when the report has no usable profile.
         """
         profile = None
         models = getattr(report, "models", None) or ()
@@ -386,14 +386,8 @@ class LMProviderConfig:
         self.tool_call_parser = profile.tool_call_parser
         window = profile.effective_context_window
         self.chosen_context = window
-        if not user_set_max_tokens:
-            self.max_tokens = resolve_effective_max_tokens(
-                user_max_tokens=0,
-                provider_default=self.max_tokens,
-                output_limit=profile.output_limit,
-                context_window=window,
-            )
-            self.planner_max_tokens = self.max_tokens
+        # Discovery describes capacity; it does not configure an output cap.
+        # Keep both zero (uncapped) and explicit per-role limits intact.
 
 
 def resolve_effective_max_tokens(
@@ -550,6 +544,7 @@ def load_config_from_env() -> LMProviderConfig:
 
     kwargs: dict = {
         "provider": provider,
+        "provider_id": provider,
         "environment": environment,
     }
     if api_base:
@@ -585,11 +580,12 @@ def load_config_from_env() -> LMProviderConfig:
 
     config = LMProviderConfig(**kwargs)
 
-    # Validate cloud providers have API keys
-    if config.provider in ("openai", "anthropic") and not config.api_key:
-        env_var = _CLOUD_API_KEY_ENV[config.provider]
+    # Validate catalog providers that explicitly require an API key.
+    selected_provider = _catalog_provider(config.provider_id)
+    if selected_provider is not None and selected_provider.requires_api_key and not config.api_key:
+        env_var = selected_provider.api_key_env or "CLIO_LM_API_KEY"
         raise ValueError(
-            f"Cloud provider '{config.provider}' requires an API key. "
+            f"Cloud provider '{config.provider_id}' requires an API key. "
             f"Set CLIO_LM_API_KEY or {env_var} environment variable."
         )
 

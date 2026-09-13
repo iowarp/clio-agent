@@ -73,9 +73,9 @@ def test_no_window_no_output_uses_provider_default() -> None:
 
 
 # ---- apply_handshake ----
-def test_apply_handshake_sets_max_tokens_from_output_limit() -> None:
+def test_apply_handshake_preserves_uncapped_output() -> None:
     cfg = LMProviderConfig(provider="argonne", model="openai/gpt-oss-120b", api_key="x")
-    assert cfg.max_tokens == 4096  # the ALCF static default
+    assert cfg.max_tokens == 0
     cfg.apply_handshake(
         _report(
             "openai/gpt-oss-120b",
@@ -88,7 +88,7 @@ def test_apply_handshake_sets_max_tokens_from_output_limit() -> None:
     assert cfg.context_window == 65536
     assert cfg.chosen_context == 65536
     assert cfg.native_tool_calling is True
-    assert cfg.max_tokens == 32768  # the discovered output cap, not magic
+    assert cfg.max_tokens == 0  # discovery must not introduce a client cap
 
 
 def test_apply_handshake_no_output_limit_keeps_provider_default() -> None:
@@ -98,7 +98,7 @@ def test_apply_handshake_no_output_limit_keeps_provider_default() -> None:
         user_set_max_tokens=False,
     )
     assert cfg.chosen_context == 65536
-    assert cfg.max_tokens == 4096  # provider default, no context-minus-magic
+    assert cfg.max_tokens == 0
 
 
 def test_apply_handshake_user_max_tokens_preserved() -> None:

@@ -60,7 +60,9 @@ class TestRegistryInvariants:
             # registry entry switches to the CustomLLM path in #51, this
             # check may need a "provider_kind == 'codex' or api_base"
             # exemption.
-            assert p.api_base, f"{p.id}: empty api_base"
+            assert p.api_base or p.litellm_prefix in {"azure", "gemini", "vertex_ai", "bedrock"}, (
+                f"{p.id}: empty api_base without a cloud-native LiteLLM route"
+            )
 
     def test_at_most_one_kind_default_per_kind(self) -> None:
         seen: set[str] = set()
@@ -173,6 +175,10 @@ class TestDerivedViews:
         assert env_map == {
             "openai": "OPENAI_API_KEY",
             "anthropic": "ANTHROPIC_API_KEY",
+            "openrouter": "OPENROUTER_API_KEY",
+            "azure_openai": "AZURE_API_KEY",
+            "gemini": "GOOGLE_API_KEY",
+            "nvidia_nim": "NVIDIA_NIM_API_KEY",
         }
 
     def test_lm_presets_includes_every_provider(self) -> None:
@@ -241,6 +247,7 @@ def test_provider_dataclass_round_trip() -> None:
         label="Test",
         description="",
         provider_kind="openai",
+        litellm_prefix="openai",
         api_base="http://localhost",
         suggested_model="x",
     )

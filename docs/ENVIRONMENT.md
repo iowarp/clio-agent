@@ -15,6 +15,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP` | `agents.disable_default_registry_bootstrap` | bool | `false` | `src/clio_agent/gact/agent_blueprint_refresh.py` |
 | `CLIO_AGENT_TASK_ARTIFACT_CONTEXT_CHARS` | `limits.agent_task_artifact_context_chars` | int | `64000` | `src/clio_agent/gact/agent_task_artifacts.py` |
 | `CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS` | `limits.agent_task_output_digest_chars` | int | `8000` | `src/clio_agent/gact/agents/agent_task_output_digest.py` |
+| `CLIO_AI_REVIEW_MODEL` | `permissions.ai_review_model` | str | _(unset)_ | `src/clio_agent/gact/runtime/ai_review.py` |
 | `CLIO_AI_REVIEW_TIMEOUT_S` | `permissions.ai_review_timeout_s` | str | `45.0` | `src/clio_agent/gact/runtime/ai_review.py` |
 | `CLIO_ALLOWED_ROOTS` | `tools.file_policy.allowed_roots` | str | `_default_allowed_roots()` _(computed)_ | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_ALLOW_SYMLINKS` | `tools.file_policy.allow_symlinks` | bool | `false` | `src/clio_agent/tools/file_policy.py` |
@@ -283,6 +284,12 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SSE_EVENT_LOG` | `debug.sse_event_log` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
 | `CLIO_SSE_WIRE_TAP` | `debug.sse_wire_tap` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
 | `CLIO_STREAM_AUDIT_LOG` | `debug.stream_audit_log` | str | _(unset)_ | `src/clio_agent/runtime/stream_audit.py` |
+| `CLIO_SUMMARIZER_API_BASE` | `summarizer.api_base` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
+| `CLIO_SUMMARIZER_CREDENTIAL_REF` | `summarizer.credential_ref` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
+| `CLIO_SUMMARIZER_MAX_TOKENS` | `summarizer.max_tokens` | int | _(unset)_ | `src/clio_agent/lm/secondary.py` |
+| `CLIO_SUMMARIZER_MODEL` | `summarizer.model` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
+| `CLIO_SUMMARIZER_PROVIDER` | `summarizer.provider` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
+| `CLIO_SUMMARIZER_TRANSPORT` | `summarizer.transport` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
 | `CLIO_TOOL_RESULT_CHARS` | `limits.tool_result_chars` | int | `12000` | `src/clio_agent/gact/evidence.py` |
 | `CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS` | `limits.transient_provider_retry_delays` | list | _(unset)_ | `src/clio_agent/agent.py` |
 | `CLIO_WEB_DIR` | `paths.web_dir` | str | _(unset)_ | `src/clio_agent/gact/app.py` |

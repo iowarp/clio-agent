@@ -108,13 +108,12 @@ class TestLMProviderConfig:
         assert config.router_temperature == 0.2
 
     def test_default_max_tokens(self):
-        """Default max_tokens should be 32000."""
+        """Default max_tokens leaves the output budget to the provider (#1323)."""
         config = LMProviderConfig()
-        assert config.max_tokens == 32000
-        assert config.planner_max_tokens == 32000
+        assert config.max_tokens == 0
+        assert config.planner_max_tokens == 0
 
-    def test_qwopus_profile_hardens_planner_defaults(self):
-        """Qwopus should get deterministic planning and a planner token floor."""
+    def test_qwopus_profile_keeps_exact_inherited_cap(self):
         config = LMProviderConfig(
             provider="lm_studio",
             model="qwopus3.5-9b-v3",
@@ -123,10 +122,9 @@ class TestLMProviderConfig:
         assert config.max_tokens == 1024
         assert config.planner_temperature == 0.0
         assert config.router_temperature == 0.0
-        assert config.planner_max_tokens == 4096
+        assert config.planner_max_tokens == 1024
 
-    def test_qwopus_profile_respects_temperature_but_enforces_planner_token_floor(self):
-        """Qwopus should keep manual temperature but reject too-small planner caps."""
+    def test_qwopus_profile_respects_exact_explicit_planner_cap(self):
         config = LMProviderConfig(
             provider="lm_studio",
             model="qwopus3.5-9b-v3",
@@ -135,7 +133,7 @@ class TestLMProviderConfig:
             planner_max_tokens=2048,
         )
         assert config.planner_temperature == 0.2
-        assert config.planner_max_tokens == 4096
+        assert config.planner_max_tokens == 2048
 
     def test_qwopus_profile_respects_explicit_planner_cap_above_floor(self):
         """Explicit planner caps above the local reasoning floor should win."""
@@ -258,7 +256,7 @@ class TestLoadConfigFromEnv:
         env = {"CLIO_LM_PLANNER_MAX_TOKENS": "2048"}
         with isolated_environ(env):
             config = load_config_from_env()
-            assert config.max_tokens == 32000
+            assert config.max_tokens == 0
             assert config.planner_max_tokens == 2048
 
     def test_env_qwopus_profile_without_manual_planner_tuning(self):
@@ -271,10 +269,10 @@ class TestLoadConfigFromEnv:
         with isolated_environ(env):
             config = load_config_from_env()
             assert config.planner_temperature == 0.0
-            assert config.planner_max_tokens == 4096
+            assert config.planner_max_tokens == 1024
 
-    def test_env_qwopus_profile_raises_too_small_manual_planner_cap(self):
-        """Qwopus planner caps below the known reliable floor are raised."""
+    def test_env_qwopus_profile_preserves_small_manual_planner_cap(self):
+        """Explicit positive planner caps are sent exactly."""
         env = {
             "CLIO_LM_PROVIDER": "lm_studio",
             "CLIO_LM_MODEL": "qwopus3.5-9b-v3",
@@ -284,7 +282,7 @@ class TestLoadConfigFromEnv:
         with isolated_environ(env):
             config = load_config_from_env()
             assert config.max_tokens == 8192
-            assert config.planner_max_tokens == 4096
+            assert config.planner_max_tokens == 1024
 
     def test_env_environment(self):
         """CLIO_ENVIRONMENT should set environment field."""
@@ -488,11 +486,11 @@ class TestCreateLM:
             lm = create_lm(config)
         assert lm.model == "openai/qwopus3.5-9b-v3"
 
-    def test_ollama_uses_openai_prefix(self):
-        """Ollama models should get openai/ prefix."""
+    def test_ollama_uses_native_litellm_prefix(self):
+        """Ollama chat models use LiteLLM's explicit Ollama chat route."""
         config = LMProviderConfig(provider="ollama")
         lm = create_lm(config)
-        assert "openai/" in lm.model
+        assert lm.model.startswith("ollama_chat/")
 
     def test_argonne_sophia_preserves_openai_prefixed_model_ids(self):
         """Sophia GPT-OSS ids include openai/ as part of the served model id."""
@@ -505,7 +503,7 @@ class TestCreateLM:
 
         lm = create_lm(config)
 
-        assert lm.model == "openai/openai/gpt-oss-120b"
+        assert lm.model == "hosted_vllm/openai/gpt-oss-120b"
 
     def test_argonne_metis_keeps_single_openai_provider_prefix(self):
         """Metis GPT-OSS ids do not need Sophia's double-prefix workaround."""
@@ -518,7 +516,7 @@ class TestCreateLM:
 
         lm = create_lm(config)
 
-        assert lm.model == "openai/gpt-oss-120b"
+        assert lm.model == "hosted_vllm/openai/gpt-oss-120b"
 
     def test_argonne_sophia_huggingface_ids_keep_single_provider_prefix(self):
         """Sophia non-openai model ids still use the normal LiteLLM provider prefix."""
@@ -531,7 +529,7 @@ class TestCreateLM:
 
         lm = create_lm(config)
 
-        assert lm.model == "openai/meta-llama/Llama-4-Scout-17B-16E-Instruct"
+        assert lm.model == "hosted_vllm/meta-llama/Llama-4-Scout-17B-16E-Instruct"
 
     def test_openai_uses_native_prefix(self):
         """OpenAI models should get openai/ prefix (native)."""

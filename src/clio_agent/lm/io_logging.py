@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from clio_agent.errors import ProviderError
 from clio_agent.lm.adapters import _guided_output_enabled
 from clio_agent.runtime.stream_audit import stream_audit
 
@@ -150,6 +151,18 @@ def _lm_transient_backoff_s() -> float:
 _IO_LOGGING_LM_CLS: Any = None
 
 
+class LMOutputTruncatedError(ProviderError):
+    """The provider exhausted its output budget before completing the response."""
+
+    def __init__(self, model: str) -> None:
+        super().__init__(
+            f"Model {model!r} output was truncated (finish_reason=length). "
+            "Increase the configured output limit or reduce the requested output; "
+            "with no client cap, check the serving model's output/context limits.",
+            details={"reason": "output_truncated", "finish_reason": "length", "model": model},
+        )
+
+
 def _io_logging_lm_cls() -> Any:
     """Build (once) a dspy.LM subclass that logs every call's full I/O."""
     global _IO_LOGGING_LM_CLS  # noqa: PLW0603
@@ -167,6 +180,31 @@ def _io_logging_lm_cls() -> Any:
         executors the settle path cannot reach). The happy path is unchanged.
         The canonical trace is the single recorder (no separate JSONL mirror).
         """
+
+        def _get_initial_kwargs(
+            self, *, temperature: float | None, max_tokens: int | None, **kwargs: Any
+        ) -> dict[str, Any]:
+            initial = super()._get_initial_kwargs(
+                temperature=temperature, max_tokens=max_tokens, **kwargs
+            )
+            # DSPy retains None-valued token keys. Remove them so every transport
+            # receives an omitted cap, including copies made by Refine/BestOfN.
+            return {
+                key: value
+                for key, value in initial.items()
+                if key not in {"max_tokens", "max_completion_tokens"} or value is not None
+            }
+
+        def _process_lm_response(
+            self, response: Any, prompt: Any, messages: Any, **kwargs: Any
+        ) -> Any:
+            outputs = super()._process_lm_response(response, prompt, messages, **kwargs)
+            # Check after DSPy records usage and history, so failed responses
+            # retain the same trace evidence as successful calls.
+            choices = getattr(response, "choices", None) or ()
+            if any(getattr(choice, "finish_reason", None) == "length" for choice in choices):
+                raise LMOutputTruncatedError(self.model)
+            return outputs
 
         def __call__(self, prompt=None, messages=None, **kwargs):  # type: ignore[override]
             # LM Studio response_format shim (guided output only). DSPy's
@@ -263,10 +301,9 @@ def _io_logging_lm_cls() -> Any:
             # json/constructor-repr repair then handles its shape). Normal calls
             # (non-empty content) are untouched.
             outputs = super()._process_completion(response, merged_kwargs)
-            # Per-model: only reasoning models (qwopus/qwen ...) route output into
-            # reasoning_content and need this extraction. Non-reasoning models never
-            # leave content empty, so this is a no-op for them, but gate it
-            # explicitly per model (set in create_lm) rather than running globally.
+            # This is response-evidenced, not model-name-gated: any generic
+            # LiteLLM provider can carry reasoning_content. Codex and Claude Code
+            # keep their dedicated SDK parsing unchanged via the factory flag.
             if not getattr(self, "_clio_reasoning_fallback", True):
                 return outputs
             try:
@@ -355,6 +392,7 @@ def _io_logging_lm_cls() -> Any:
                 from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
                     note_lm_activity,
                     note_lm_answer_delta,
+                    note_lm_provider_thinking_delta,
                     note_lm_token_event,
                 )
                 from clio_agent.runtime.lm_stream import (  # noqa: PLC0415
@@ -392,6 +430,12 @@ def _io_logging_lm_cls() -> Any:
                 visible_contract_fields = {"reasoning", "next_thought", "answer"}
                 acc_answer = ""
                 acc_reasoning = ""
+                provider_id = str(
+                    getattr(self, "_clio_provider_id", "")
+                    or str(getattr(self, "model", "")).split("/", 1)[0]
+                    or "provider"
+                )
+                generic_provider_thinking = provider_id not in {"codex", "claude_code"}
                 last_event = _time.monotonic()
                 async with _anyio.create_task_group() as tg:
                     tg.start_soon(_produce)
@@ -425,6 +469,11 @@ def _io_logging_lm_cls() -> Any:
                                         acc_answer += answer_delta  # highway gets all
                             if reasoning:
                                 acc_reasoning += reasoning
+                                if generic_provider_thinking:
+                                    note_lm_provider_thinking_delta(
+                                        reasoning,
+                                        provider=provider_id,
+                                    )
                             # highway event (trace + ARC), coalesced so the durable
                             # stream isn't one event per token.
                             now = _time.monotonic()

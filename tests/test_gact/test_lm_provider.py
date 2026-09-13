@@ -780,10 +780,10 @@ def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) ->
         # lm_provider row). That surface is covered in test_doctor_integrations.
 
 
-def test_put_argonne_uses_provider_default_max_tokens_when_omitted(
+def test_put_argonne_omits_client_output_cap_when_omitted(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """TUI default save should not force the global 32k cap onto ALCF."""
+    """TUI default save should not invent a finite output cap for ALCF."""
 
     captured: dict[str, Any] = {}
 
@@ -840,7 +840,7 @@ def test_put_argonne_uses_provider_default_max_tokens_when_omitted(
         "api_base": "https://inference-api.alcf.anl.gov/resource_server/metis/api/v1",
         "model": "gpt-oss-120b",
         "api_key": "token",
-        "max_tokens": 4096,
+        "max_tokens": 0,
     }
 
 

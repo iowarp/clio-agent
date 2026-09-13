@@ -75,8 +75,8 @@ HANDSHAKE_FALLBACK_REASONS: dict[str, dict[str, Any]] = {
         "recovery_actions": ["retry", "reconfigure", "continue_with_static_caps"],
         "description": (
             "The provider handshake could not connect or authenticate, so the "
-            "expert LM config uses the static PROVIDER_DEFAULTS caps "
-            "(context_window unknown, provider-default max_tokens)."
+            "expert LM config keeps its configured output-cap policy "
+            "(context_window unknown)."
         ),
     },
     "handshake_model_unresolved": {
@@ -86,7 +86,7 @@ HANDSHAKE_FALLBACK_REASONS: dict[str, dict[str, Any]] = {
         "description": (
             "The handshake connected but reported no matching model profile for "
             "the requested model, so the expert LM config uses the static "
-            "PROVIDER_DEFAULTS caps instead of discovered ones."
+            "configured output-cap policy without discovered context metadata."
         ),
     },
     "handshake_error": {
@@ -95,7 +95,7 @@ HANDSHAKE_FALLBACK_REASONS: dict[str, dict[str, Any]] = {
         "recovery_actions": ["retry", "reconfigure", "continue_with_static_caps"],
         "description": (
             "The provider handshake raised unexpectedly; the expert LM config "
-            "falls back to the static PROVIDER_DEFAULTS caps."
+            "keeps its configured output-cap policy without handshake metadata."
         ),
     },
 }
@@ -230,7 +230,9 @@ class ResolvedLMSpec:
             lifetime.
         """
         resolver = cred_resolver if cred_resolver is not None else CredentialResolver()
-        key = resolver.resolve(self.spec.provider, self.spec.credential_ref)
+        key = resolver.resolve(
+            self.spec.provider_id or self.spec.provider, self.spec.credential_ref
+        )
         config = copy.copy(self.config_skeleton)
         if self._default_ref:
             config.api_key = self.default_credential or key or self.placeholder_key
@@ -254,8 +256,10 @@ def _build_key_less_skeleton(spec: "LMSpec") -> tuple["LMProviderConfig", str]:
     provider = spec.provider
     kwargs: dict[str, Any] = {
         "provider": provider,
+        "provider_id": spec.provider_id or provider,
         "api_base": spec.api_base,
         "model": spec.model,
+        "provider_options": dict(spec.provider_options),
         "api_key": _CRED_DEFERRED_SENTINEL,
         "temperature": spec.temperature if spec.temperature is not None else 0.0,
         "max_tokens": spec.max_tokens or 0,
@@ -273,7 +277,7 @@ def _build_key_less_skeleton(spec: "LMSpec") -> tuple["LMProviderConfig", str]:
     config = LMProviderConfig(**kwargs)  # type: ignore[arg-type]
     # Drop the sentinel: the skeleton is key-less by construction.
     config.api_key = ""
-    defaults = PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["lm_studio"])
+    defaults = PROVIDER_DEFAULTS.get(provider, {})
     placeholder = str(defaults.get("api_key", "") or "")
     return config, placeholder
 
@@ -304,7 +308,7 @@ def _fold_handshake(
     try:
         report = run_handshake_sync(
             HandshakeContext(
-                provider_id=spec.provider,
+                provider_id=spec.provider_id or spec.provider,
                 provider_kind=spec.provider,
                 api_base=config.api_base,
                 api_key="",

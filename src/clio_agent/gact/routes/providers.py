@@ -57,13 +57,13 @@ from clio_agent.gact.providers.auth import (
 from clio_agent.gact.providers.config import (
     _default_profile_spec,
     _effective_lm_config,
-    _provider_runtime_kind,
 )
 from clio_agent.gact.providers.lmstudio import (
     _lm_studio_api_root,
     _lm_studio_headers,
     _release_owned_lm_studio_instance,
 )
+from clio_agent.gact.providers.request_normalization import normalize_lm_provider_request
 from clio_agent.gact.relay_wiring import construct_agent_with_relay
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.globals import _process_arc, _set_app_arc
@@ -506,36 +506,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     # ---- /v1/providers/lm ------------------------
 
-    def _normalize_lm_provider_request(req: LMProviderRequest) -> LMProviderRequest:
-        """Convert catalog preset ids to runtime provider kinds before wiring DSPy,
-        and fill an omitted model from the (overlay-aware) preset default.
-
-        An omitted ``model`` resolves through ``_default_model_for`` — the
-        overlay's discovered default when a refresh has run, else the frozen
-        static ``suggested_model`` (#1211 review D2) — so an omitted-model bind
-        follows the CLI's/account's OWN live default (e.g. codex's rotated
-        ``gpt-5.6-sol``) rather than a snapshot id the account may already
-        reject (#1184). Applied UNCONDITIONALLY (not gated behind the
-        provider_kind conversion below): codex/claude_code's catalog id already
-        equals their runtime provider_kind, so the kind-conversion branch alone
-        would never touch ``model`` for them.
-        """
-
-        preset = next((p for p in _LM_PRESETS if p.id == req.provider), None)
-        if preset is None:
-            return req
-        provider_kind = _provider_runtime_kind(req.provider)
-        default_model = req.model or _default_model_for(preset)
-        if provider_kind == req.provider and default_model == req.model:
-            return req
-        return req.model_copy(
-            update={
-                "provider": provider_kind,
-                "api_base": req.api_base or preset.api_base,
-                "model": default_model,
-            }
-        )
-
     def _preset_api_key_env(preset: LMProviderPreset) -> str:
         if preset.api_key_env:
             return preset.api_key_env
@@ -658,9 +628,11 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         default_spec = _default_profile_spec(app)
         if default_spec is not None:
             for key in (
+                "provider_id",
                 "provider",
                 "api_base",
                 "model",
+                "provider_options",
                 "temperature",
                 "max_tokens",
                 "thinking_budget",
@@ -679,6 +651,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         pending = status if state == "configuring" else {}
         return LMProviderInfo(
             configured=app.state.agent is not None and state != "configuring",
+            provider_id=str(pending.get("provider_id") or cfg.get("provider_id", "")),
             provider=str(pending.get("provider") or cfg.get("provider", "")),
             api_base=str(pending.get("api_base") or cfg.get("api_base", "")),
             model=str(pending.get("model") or cfg.get("model", "")),
@@ -732,6 +705,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             status_message=str(status.get("message") or ""),
             error=str(status.get("error") or ""),
             operation_id=str(status.get("operation_id") or ""),
+            provider_options=dict(cfg.get("provider_options") or {}),
             presets=presets if presets is not None else _lm_presets_with_status(),
         )
 
@@ -755,7 +729,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         messages) is preserved across the swap.
         """
 
-        req = _normalize_lm_provider_request(req)
+        req = normalize_lm_provider_request(req, _LM_PRESETS, _default_model_for)
 
         def _apply_lm_studio_load_config() -> None:
             """Apply LM Studio load-time options before wiring DSPy."""
@@ -919,9 +893,11 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             is_codex, is_cc = req.provider == "codex", req.provider == "claude_code"
             cfg = LMProviderConfig(
                 provider=req.provider,  # type: ignore[arg-type]  # str validated at boundary
+                provider_id=req.provider_id,
                 api_base=req.api_base,
                 model=req.model,
                 api_key=resolved_api_key or "x",
+                provider_options=req.provider_options,
                 temperature=req.temperature,
                 max_tokens=req.max_tokens,
                 top_p=req.top_p,
@@ -950,7 +926,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
                 handshake_report = await run_handshake(
                     HandshakeContext(
-                        provider_id=req.provider,
+                        provider_id=req.provider_id or req.provider,
                         provider_kind=req.provider,
                         api_base=req.api_base,
                         api_key=resolved_api_key or "",
@@ -1091,6 +1067,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             req.provider
         )
         app.state.lm_config = {
+            "provider_id": req.provider_id or req.provider,
             "provider": req.provider,
             "api_base": req.api_base,
             "model": req.model,
@@ -1101,6 +1078,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             "thinking_level": cfg.thinking_level,  # resolved level (shipped default) #895
             "turn_timeout_s": req.turn_timeout_s,
             "transport": transport,
+            "provider_options": dict(req.provider_options),
         }
         deps.clear_session_model_refs(app)
         # Invalidate the normalized provider catalog. It is a per-app snapshot of
@@ -1118,6 +1096,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 type="lm.provider.changed",
                 session_id="",
                 payload={
+                    "provider_id": req.provider_id or req.provider,
                     "provider": req.provider,
                     "model": req.model,
                     "api_base": req.api_base,
@@ -1130,6 +1109,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
         return LMProviderInfo(
             configured=True,
+            provider_id=req.provider_id or req.provider,
             provider=req.provider,
             api_base=req.api_base,
             model=req.model,
@@ -1138,6 +1118,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             context_length=req.context_length,
             thinking_budget=req.thinking_budget,
             transport=transport,  # type: ignore[arg-type]  # values are the narrowed config Literals
+            provider_options=dict(req.provider_options),
             presets=_lm_presets_with_status(),
         )
 
@@ -1164,6 +1145,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             app.state.lm_config_status = {
                 "state": "error",
                 "operation_id": operation_id,
+                "provider_id": req.provider_id or req.provider,
                 "provider": req.provider,
                 "api_base": req.api_base,
                 "model": req.model,
@@ -1177,6 +1159,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     session_id="",
                     payload={
                         "operation_id": operation_id,
+                        "provider_id": req.provider_id or req.provider,
                         "provider": req.provider,
                         "model": req.model,
                         "error": error_code,
@@ -1188,6 +1171,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             app.state.lm_config_status = {
                 "state": "error",
                 "operation_id": operation_id,
+                "provider_id": req.provider_id or req.provider,
                 "provider": req.provider,
                 "api_base": req.api_base,
                 "model": req.model,
@@ -1201,6 +1185,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     session_id="",
                     payload={
                         "operation_id": operation_id,
+                        "provider_id": req.provider_id or req.provider,
                         "provider": req.provider,
                         "model": req.model,
                         "error": "config_error",
@@ -1212,6 +1197,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             app.state.lm_config_status = {
                 "state": "ready",
                 "operation_id": operation_id,
+                "provider_id": info.provider_id or info.provider,
                 "provider": info.provider,
                 "api_base": info.api_base,
                 "model": info.model,
@@ -1228,7 +1214,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def put_lm_provider(req: LMProviderRequest) -> LMProviderInfo:
         """Start or perform an LM provider swap without freezing the backend."""
 
-        req = _normalize_lm_provider_request(req)
+        req = normalize_lm_provider_request(req, _LM_PRESETS, _default_model_for)
         running_task = getattr(app.state, "lm_config_task", None)
         if running_task is not None and not running_task.done():
             status = _lm_provider_status()
@@ -1260,6 +1246,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             app.state.lm_config_status = {
                 "state": "configuring",
                 "operation_id": operation_id,
+                "provider_id": req.provider_id or req.provider,
                 "provider": req.provider,
                 "api_base": req.api_base,
                 "model": req.model,
@@ -1295,6 +1282,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         app.state.lm_config_status = {
             "state": "ready",
             "operation_id": "",
+            "provider_id": info.provider_id or info.provider,
             "provider": info.provider,
             "api_base": info.api_base,
             "model": info.model,

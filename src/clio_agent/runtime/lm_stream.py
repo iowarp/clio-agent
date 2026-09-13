@@ -156,7 +156,10 @@ def extract_delta(chunk: object) -> tuple[str, str]:
         if delta is None:
             return "", ""
         content = _get(delta, "content") or ""
-        reasoning = _get(delta, "reasoning_content") or ""
+        # LiteLLM normalizes provider ``reasoning`` to ``reasoning_content``,
+        # but accepting both keeps this seam correct for raw OpenAI-compatible
+        # chunks too (vLLM 0.28 emits ``delta.reasoning``).
+        reasoning = _get(delta, "reasoning_content") or _get(delta, "reasoning") or ""
         return str(content), str(reasoning)
     except Exception:  # noqa: BLE001 - extraction is best-effort
         return "", ""

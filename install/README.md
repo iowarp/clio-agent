@@ -26,8 +26,9 @@ Windows 10/11).
 - `gact` (CLIO-branded TUI binary, Go) — matching `clio-agent`
   **GitHub Release** asset for your OS/arch (`clio-tui-linux-amd64`,
   `clio-tui-darwin-arm64`, `clio-tui-windows-amd64.exe`, …)
-- `clio-kit` MCP tool launcher — provisioned via `uv tool install
-  clio-kit==2.10.6` (idempotent) when `uv` is present. Marketplace packs
+- `clio-kit` MCP launcher — provisioned via `uv tool install clio-kit==2.10.6`
+  (idempotent) when `uv` is present. This released version retains legacy runtime
+  semantics until the paired shared-runtime release. Marketplace packs
   launch their MCP servers through the installed `clio-kit mcp-server
   <name>` launcher; the installed tool (not `uvx clio-kit@…`) avoids the
   concurrent cold-cache ephemeral-env race and `uv cache prune` deleting
@@ -35,6 +36,11 @@ Windows 10/11).
   Without `uv`, this step is skipped with a warning — install `uv`, then
   run `uv tool install clio-kit==2.10.6` and ensure the directory from
   `uv tool dir --bin` is on PATH. `clio doctor` flags a missing launcher.
+
+For local qualification of an unreleased shared-runtime CLIO Kit wheel, set
+`CLIO_KIT_PACKAGE` to its absolute path before running the installer. Only this
+explicit candidate path adds the `science` extra. Validate it with `clio-kit
+runtime-info ndp geo pandas plot`; the released pin does not provide that contract.
 - `clio` launcher — a small CLI that boots the server on `:17800` if
   not already running, attaches the TUI, and manages the server
   process (`clio start|stop|restart|status|logs|doctor|report`)

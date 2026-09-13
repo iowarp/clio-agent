@@ -723,6 +723,39 @@ async def test_expert_stream_responses_emit_live_field_chunks(
     ]
 
 
+async def test_raw_generic_provider_reasoning_reaches_thinking_bridge(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from clio_agent.runtime import lm_activity
+
+    async def fake_streamed(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        yield {"choices": [{"delta": {"reasoning": "native thought"}}]}
+        yield dspy.Prediction(answer="done")
+
+    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return fake_streamed
+
+    streamify_module = importlib.import_module("dspy.streaming.streamify")
+    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
+    observed: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        lm_activity,
+        "note_lm_provider_thinking_delta",
+        lambda text, *, provider="": observed.append((provider, text)),
+    )
+    agent = _DspyAgent("sync fallback should not run")
+    agent._provider_config = SimpleNamespace(provider_id="vllm", provider="openai")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+
+    result = await _try_streamed_forward(app, "reasoning", "sid", lambda _text: None)
+
+    assert result is not None
+    assert result.answer == "done"
+    assert observed == [("vllm", "native thought")]
+
+
 async def test_stream_failure_after_delta_raises_instead_of_sync_fallback(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

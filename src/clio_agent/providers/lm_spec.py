@@ -21,7 +21,7 @@ introduces the data type plus two pure helpers:
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -62,8 +62,10 @@ class LMSpec:
 
     provider: str
     model: str
+    provider_id: str = ""
     api_base: str = ""
     credential_ref: str = ""
+    provider_options: dict[str, str] = field(default_factory=dict)
     transport: str = ""
     temperature: float | None = None
     max_tokens: int | None = None
@@ -100,8 +102,10 @@ def spec_from_config(cfg: "LMProviderConfig") -> LMSpec:
     return LMSpec(
         provider=cfg.provider,
         model=cfg.model,
+        provider_id=cfg.provider_id,
         api_base=cfg.api_base,
         credential_ref="",
+        provider_options=dict(cfg.provider_options),
         transport=transport,
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
@@ -180,8 +184,10 @@ def build_spec(agent_def: "AgentDef", default_spec: LMSpec) -> LMSpec:
     return LMSpec(
         provider=provider,
         model=model,
+        provider_id=getattr(agent_def, "default_provider", "") or default_spec.provider_id,
         api_base=api_base,
         credential_ref=credential_ref,
+        provider_options=dict(default_spec.provider_options),
         transport=transport,
         temperature=_opt_float(params, "temperature", default_spec.temperature),
         max_tokens=_opt_int(params, "max_tokens", default_spec.max_tokens),

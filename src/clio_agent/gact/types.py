@@ -37,6 +37,12 @@ from clio_agent.gact.interaction_types import (
 )
 from clio_agent.gact.interaction_types import UserQuestion as UserQuestion
 from clio_agent.gact.interaction_types import UserQuestionOption as UserQuestionOption
+from clio_agent.gact.lm_provider_types import (
+    LMProviderConfigurationField as LMProviderConfigurationField,
+)
+from clio_agent.gact.lm_provider_types import LMProviderInfo as LMProviderInfo
+from clio_agent.gact.lm_provider_types import LMProviderPreset as LMProviderPreset
+from clio_agent.gact.lm_provider_types import LMProviderRequest as LMProviderRequest
 from clio_agent.gact.parts import CapabilityFlags, Part
 from clio_agent.gact.workspace_types import (
     CreateWorkspaceRequest as CreateWorkspaceRequest,
@@ -728,135 +734,3 @@ class Metrics(BaseModel):
     tokens: MetricsTokens = Field(default_factory=MetricsTokens)
     cost: MetricsCost = Field(default_factory=MetricsCost)
     latencies: dict[str, MetricsLatencyStat] = Field(default_factory=dict)
-
-
-# ---------------------------------------------------------------------------
-# /v1/providers/lm — TUI-side LM config
-# ---------------------------------------------------------------------------
-
-
-class LMProviderInfo(BaseModel):
-    """GET /v1/providers/lm body: current LM config state + the preset list the
-    TUI's picker shows. ``api_key`` is never echoed back.
-    ``thinking_level`` (off|low|medium|high, null=unset) is the provider-generic
-    reasoning control; ``thinking_budget`` is the explicit token override; and
-    ``thinking_effective`` is the resolved per-provider effect (#895), so the
-    knob is never invisible on the wire — including a typed ``unsupported`` note.
-    """
-
-    configured: bool
-    provider: str = ""
-    api_base: str = ""
-    model: str = ""
-    # Mirrors LMProviderConfig's deterministic default (see config.py):
-    # the agentic LM path is structured/tool-calling, so greedy decoding
-    # is the sane default. Overridable from the TUI.
-    temperature: float = 0.0
-    max_tokens: int = 32000
-    context_length: int = 0
-    # Handshake-discovered, queryable. ``chosen_context`` is the active context
-    # limit clio operates against (the "context budget" other subsystems query);
-    # ``context_window`` is the model's hard ceiling; the capability flags reflect
-    # what the provider reported (reasoning model / native tool-calling).
-    chosen_context: Optional[int] = None
-    context_window: Optional[int] = None
-    is_reasoning: bool = False
-    native_tool_calling: bool = False
-    thinking_level: Optional[str] = None
-    thinking_effective: str = ""
-    thinking_budget: int = 0
-    transport: Optional[Literal["sdk"]] = None
-    state: Literal["idle", "configuring", "ready", "error"] = "idle"
-    status_message: str = ""
-    error: str = ""
-    operation_id: str = ""
-    presets: list["LMProviderPreset"] = Field(default_factory=list)
-
-
-class LMProviderPreset(BaseModel):
-    """One row in the TUI's provider picker. ``requires_api_key``
-    tells the modal whether to render the api_key field; some
-    presets (LM Studio, Ollama, local vLLM) don't need one."""
-
-    id: str
-    label: str
-    provider: str
-    api_base: str
-    suggested_model: str
-    requires_api_key: bool = True
-    api_key_env: str = ""
-    auth_method: Literal["none", "api_key", "oauth"] = "api_key"
-    is_authenticated: bool = False
-    description: str = ""
-    status: Literal[
-        "ready",
-        "missing_key",
-        "auth_required",
-        "auth_check_required",
-        "unavailable",
-        "unknown",
-    ] = "unknown"
-    status_message: str = ""
-    supports_live_catalog: bool = True
-    supports_vision: bool = False
-
-
-class LMProviderRequest(BaseModel):
-    """PUT /v1/providers/lm body. Provider is one of
-    `openai|anthropic|openrouter|lm_studio|ollama|...` — anything
-    LiteLLM understands. ``api_key`` is required for cloud
-    providers; locally-OpenAI-compatible backends (LM Studio,
-    Ollama, local vLLM) tolerate any non-empty string.
-
-    ``temperature`` + ``max_tokens`` are forwarded to dspy.LM so
-    the user can tune behaviour from the TUI without touching env
-    vars. Defaults match LMProviderConfig's defaults
-    (temperature=0.0 — deterministic, structured/tool-calling agentic
-    output; max_tokens=32000).
-    """
-
-    provider: str
-    api_base: str
-    model: str
-    api_key: str = "x"
-    temperature: float = 0.0
-    max_tokens: int = 0
-    # Sampling surface forwarded to dspy.LM/LiteLLM (None = omit -> the model's own
-    # default). Greedy decoding (temperature 0) makes Qwen-family reasoning models
-    # degenerate into endless repetition; Qwen recommends temp 0.6 / top_p 0.95 /
-    # top_k 20 for thinking mode. top_p/presence_penalty are OpenAI-standard;
-    # top_k/min_p are forwarded via extra_body (llama.cpp / LM Studio / vLLM).
-    top_p: Optional[float] = None
-    top_k: Optional[int] = None
-    min_p: Optional[float] = None
-    presence_penalty: Optional[float] = None
-    # Context window requested/expected for the model load. This is
-    # not forwarded to DSPy/LiteLLM as a completion parameter; local
-    # runtimes such as LM Studio must load the model with this context
-    # separately.
-    context_length: int = 0
-    # Max concurrent predictions the local backend may run at once
-    # (LM Studio's load-time ``parallel`` field, the UI's "Max Concurrent
-    # Predictions"). The agent issues parallel sub-calls; a single-GPU box
-    # OOMs/stalls when the backend serves them concurrently, so this caps
-    # backend concurrency at load time. 0 = clio's default (1 for LM Studio,
-    # so concurrent pipeline calls queue instead of thrashing the GPU).
-    parallel: int = 0
-    # Per-turn no-progress watchdog (seconds): bounds the gap between observable
-    # progress events within one turn, NOT total duration. Exposed here so a
-    # client (e.g. the test harness) can drive it on the SAME channel it
-    # configures the LM, instead of it being a disconnected server-launch env.
-    # 0 = unset → fall back to conf `limits.turn_timeout_s` /
-    # CLIO_GACT_TURN_TIMEOUT_S / 900s default. Slow reasoning models over a long
-    # multi-stage pipeline need ~1800.
-    turn_timeout_s: float = 0.0
-    # A string lets the provider validator return a typed 400 for deleted transports.
-    transport: Optional[str] = None
-    # Reasoning knobs, mapped per-provider in providers.thinking (#895).
-    # thinking_level (off|low|medium|high, null=unset → shipped per-model default)
-    # is the provider-generic control (budget_tokens for anthropic/claude_code,
-    # reasoning_effort for openai/codex); an invalid string is a structured 422 and
-    # a provider with no mapping surfaces a typed ``unsupported`` in the GET.
-    # thinking_budget is the explicit token override (0 = defer to the level).
-    thinking_level: Optional[Literal["off", "low", "medium", "high"]] = None
-    thinking_budget: int = 0
