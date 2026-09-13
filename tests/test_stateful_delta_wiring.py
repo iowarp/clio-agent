@@ -128,58 +128,97 @@ def test_note_prefix_reset_is_noop_off_scope() -> None:
 
 
 def test_maybe_autocompact_wires_ops_reset_through_the_v2_loop(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A forced V2 auto-compaction flags ``ops_reset`` on the active scope's registries.
 
-    Integration-shaped: drives ``_RetainingReActV2._maybe_autocompact`` with its ARC /
-    runtime dependencies stubbed to trigger a real ``arc.summarize_segments`` (the
-    History-prefix rewrite), then asserts the next Claude SDK send is a typed
-    ``ops_reset``. Sabotage: delete the ``note_prefix_reset_for_active_scope`` call in
-    ``_maybe_autocompact`` → the next plan is ``delta`` (or ``prefix_mismatch``) → red.
+    Drives the real :func:`clio_agent.gact.compaction.maybe_autocompact` (the #1339
+    unification target -- ``_RetainingReActV2._maybe_autocompact`` is now a 3-line
+    delegation to it) with its ARC/runtime dependencies stubbed to trigger a real
+    ``arc.summarize_segments`` (the History-prefix rewrite), then asserts the next
+    Claude SDK send is a typed ``ops_reset``. Sabotage: delete the
+    ``note_prefix_reset_for_active_scope`` call in ``compaction.py`` -> the next plan
+    is ``delta`` (or ``prefix_mismatch``) -> red.
+
+    #1339 review round: the ORIGINAL version of this test drove a bare ``_FakeArc``
+    with no real app at all, patching ``agents.runtime._last_prompt_tokens`` -- both
+    stale relative to the #1339 unification, which routes through the real
+    ``compact_session_context`` (needing ``app.state.sessions``/``.messages``/``.agent``)
+    and reads ``_last_prompt_tokens`` from its true origin module
+    (``runtime.context_tokens``, matched by ``tests/test_gact/test_compaction.py``'s
+    already-passing ``test_auto_trigger_stages_and_flushes_after_the_turns_assistant_row``
+    sibling coverage of the SAME wiring). Rebuilt on that same proven pattern: a real
+    ``build_app`` + a seeded ledger + ``_ctx.set_app`` to bind the active app
+    ``compact_session_context`` requires (a bare fake object -- no app at all --
+    crashed ``compact_session_context``'s unguarded ``app.state.sessions.get(sid)``,
+    which is what ``compaction.py``'s new ``app is None`` early-return guards).
     """
+    from clio_agent.arc.live import _MemoryStore
+    from clio_agent.arc.memory import ARCMemory
     from clio_agent.gact import context as _ctx
     from clio_agent.gact.agents import reactv2_events as _events
-    from clio_agent.gact.agents import runtime as _rt
-    from clio_agent.gact.agents.reactv2 import retaining_reactv2_cls
+    from clio_agent.gact.app import build_app
+    from clio_agent.gact.compaction import maybe_autocompact
     from clio_agent.gact.runtime import context_tokens as _ctok
+    from clio_agent.gact.types import Message, Part
 
-    class _Seg:
-        def __init__(self, sid: str) -> None:
-            self.id = sid
+    class _CapturingAgent:
+        """Minimal compact agent (matches test_compaction.py's ``_CapturingAgent``)."""
 
-    summarized: dict[str, Any] = {}
+        def _run_chat_agent(self, question: str, _session_id: str) -> str:
+            return "auto summary"
 
-    class _FakeArc:
-        def render_working_set(self, session: str, scope: str) -> list[_Seg]:
-            return [_Seg("s0"), _Seg("s1")]  # len > 1 so compaction proceeds
+        def _call_with_transient_provider_retries(self, _label: str, call: Any) -> Any:
+            return call()
 
-        def summarize_segments(
-            self, session: str, scope: str, ids: list[str], payload: dict[str, Any]
-        ) -> None:
-            summarized["ids"] = ids
+    now = "2026-09-11T00:00:00+00:00"
+    # This file lives outside tests/test_gact/, so it does not get that package's
+    # conftest.py in-memory-ARC-by-default wrapper around build_app -- construct one
+    # explicitly, the same shape (a real ARCMemory, no filesystem persistence).
+    arc_store = ARCMemory(data_dir=str(tmp_path / "arc"), store=_MemoryStore())
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_CapturingAgent(), arc=arc_store)
+    sid = app.state.sessions.create(workspace_id="ws_default", title="t").id
+    seeded = [
+        Message(
+            id="msg_user_1",
+            session_id=sid,
+            role="user",
+            created_at=now,
+            updated_at=now,
+            parts=[Part(id="part_user_1", type="text", text="hello")],
+        )
+    ]
+    app.state.messages[sid] = seeded
+    app.state.message_store.replace_session(sid, seeded)
 
-    monkeypatch.setattr(_events, "_arc_scope", lambda: (_FakeArc(), "sess", "arcscope"))
+    arc = app.state.arc
+    scope = "scope_auto"
+    arc.append_segment(sid, scope, "observation", {"text": "first live segment"})
+    arc.append_segment(sid, scope, "observation", {"text": "second live segment"})
+
+    monkeypatch.setattr(_events, "_arc_scope", lambda: (arc, sid, scope))
     monkeypatch.setattr(_ctx, "active_react_context_window", lambda: 1000)
-    monkeypatch.setattr(_rt, "_last_prompt_tokens", lambda: 950)
-    monkeypatch.setattr(_rt, "_summarize_segments_llm", lambda live: "summary")
+    monkeypatch.setattr(_ctok, "_last_prompt_tokens", lambda: 950)
     monkeypatch.setattr(_ctok, "_autocompact_threshold", lambda: 0.5)
 
-    class _Sig(dspy.Signature):
-        question: str = dspy.InputField()
-        answer: str = dspy.OutputField()
+    summarize_calls: list[tuple[Any, ...]] = []
+    real_summarize = arc.summarize_segments
 
-    def _tool(x: str) -> str:
-        """A tool."""
-        return x
+    def _spy_summarize(*args: Any, **kwargs: Any) -> Any:
+        summarize_calls.append(args)
+        return real_summarize(*args, **kwargs)
 
-    agent = retaining_reactv2_cls()(_Sig, tools=[_tool], max_iters=1)
+    arc.summarize_segments = _spy_summarize  # type: ignore[method-assign]
 
     ccs.stateful_registry().reset_for_tests()
     with stateful_scope("s"):
         ccs.stateful_registry().plan(session_key=_key("s"), scope_token="s", messages=_m("a", "b"))
-        agent._maybe_autocompact()
-        assert summarized.get("ids") == ["s0", "s1"]  # the op really fired
+        app_token = _ctx.set_app(app)
+        try:
+            maybe_autocompact()
+        finally:
+            _ctx.reset(app_token)
+        assert len(summarize_calls) == 1  # the op really fired
         plan, _handle = ccs.stateful_registry().plan(
             session_key=_key("s"), scope_token="s", messages=_m("a", "b", "c")
         )

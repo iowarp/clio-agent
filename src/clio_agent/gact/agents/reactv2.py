@@ -295,50 +295,12 @@ class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
             return pred
 
     def _maybe_autocompact(self) -> None:
-        """Proactive, scope-aware auto-compaction — the V2 trigger (#901 S6).
+        """Proactive auto-compaction -- the V2 trigger (#901 S6), unified onto the
+        ONE compaction operation by #1339: see
+        :func:`clio_agent.gact.compaction.maybe_autocompact`."""
+        from clio_agent.gact.compaction import maybe_autocompact  # noqa: PLC0415
 
-        When ``prompt_tokens / context_window`` crosses the threshold, fold the live
-        working set into ONE ARC ``summarize`` op (V2's sole prefix-reset author; LM
-        helpers resolve via ``runtime`` for test-monkeypatch). No-op on ARC-off/no-summary.
-        """
-        from clio_agent.gact import context as _ctx  # noqa: PLC0415
-        from clio_agent.gact.agents import runtime as _rt  # noqa: PLC0415
-        from clio_agent.gact.agents.reactv2_events import _arc_scope  # noqa: PLC0415
-        from clio_agent.gact.runtime.context_tokens import (  # noqa: PLC0415
-            _session_autocompact_preferences,
-        )
-        from clio_agent.providers.stateful_common import (
-            note_prefix_reset_for_active_scope,  # noqa: PLC0415, E501
-        )
-
-        arc, session, scope = _arc_scope()
-        if arc is None:
-            return
-        app = _ctx.active_app()
-        sessions = getattr(getattr(app, "state", None), "sessions", None)
-        session_row = sessions.get(session) if sessions is not None else None
-        enabled, threshold = _session_autocompact_preferences(
-            getattr(session_row, "metadata", None)
-        )
-        if not enabled:
-            return
-        window = _ctx.active_react_context_window()
-        last = _rt._last_prompt_tokens()
-        if not window or not last:
-            return
-        if (last / window) < threshold:
-            return
-        live = arc.render_working_set(session, scope)
-        if len(live) <= 1:
-            return
-        summary = _rt._summarize_segments_llm(live)
-        if not summary:
-            return
-        arc.summarize_segments(session, scope, [s.id for s in live], {"text": summary})
-        # The summarize op rewrote the History prefix: flag the active stateful scope so
-        # both legs' next send is a typed ``ops_reset`` (not a generic ``prefix_mismatch``);
-        # inert when the feature is off / no scope active (#891).
-        note_prefix_reset_for_active_scope("ops_reset")
+        maybe_autocompact()
 
     def _publish_retained_history(self, pred: Any, pending: dict[str, Any]) -> None:
         """Publish the retained ``History`` + pending inputs to the active trajectory cell.

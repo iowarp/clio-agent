@@ -56,6 +56,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
+from clio_agent.arc.lane_chunking import drop_lane, lane_has_segments, lane_segments
 from clio_agent.gact.part_atoms import (
     MESSAGE_PART_SCOPE,
     build_message_part_atoms,
@@ -204,9 +205,11 @@ def assemble_session_messages(arc: Any, session_id: str) -> list[Message]:
     store = arc._segments
     # #1337: ONE grouping rule for both atom profiles (keyed by message id, closed by the
     # envelope atom, the v1 ordinal boundary as the fallback) — see part_atoms.
+    # #1339: the lane is a CHUNK FAMILY; ``lane_segments`` concatenates every present
+    # chunk in append order, so chunking is invisible to this projection.
     lane = [
         seg.content
-        for seg in store.list_segments(session_id, MESSAGE_PART_SCOPE, include_tombstoned=False)
+        for seg in lane_segments(store, session_id, MESSAGE_PART_SCOPE, include_tombstoned=False)
     ]
     messages = [Message(**reproduce_message_wire(atoms)) for atoms in group_atoms_in_order(lane)]
     # #737 S6: workflow_state on the delegate rows is the recorded RESULT of the last
@@ -218,11 +221,14 @@ def assemble_session_messages(arc: Any, session_id: str) -> list[Message]:
 
 
 def has_atoms(arc: Any, session_id: str) -> bool:
-    """Whether the session has ANY live ``message_part`` atom on the canonical log."""
+    """Whether the session has ANY live ``message_part`` atom on the canonical log.
 
-    store = arc._segments
-    segs = store.list_segments(session_id, MESSAGE_PART_SCOPE, include_tombstoned=False)
-    return bool(segs)
+    #1339: family-aware by construction (:func:`~clio_agent.arc.lane_chunking.lane_has_segments`) —
+    chunk 1 is always filled first, so ONE read of it answers the question for the
+    whole lane.
+    """
+
+    return lane_has_segments(arc._segments, session_id, MESSAGE_PART_SCOPE)
 
 
 # --------------------------------------------------------------------------- #
@@ -364,7 +370,9 @@ def _schedule_lane_mint(
 
     #1334: a rehydrate/repair happens INSIDE a read that may run on the loop thread
     (``GET /messages`` on an evicted, pre-atom, or divergent session), and the mint is
-    one store write per message plus, for a repair, a leading ``drop_scope``. The
+    one store write per message plus, for a repair, a leading ``drop_lane`` of the
+    WHOLE chunk family (#1339; a bare ``drop_scope`` on chunk 1 alone would orphan
+    chunks 2..N). The
     per-scope lane lock is held ONLY around this scheduling decision (acquire, decide,
     release) — never around the mint itself, which the off-loop worker below re-takes
     the SAME lock for. With a loop running on this thread the retained ledger is served
@@ -392,7 +400,11 @@ def _schedule_lane_mint(
         with worker_lock:
             try:
                 if repair:
-                    arc._segments.drop_scope(session_id, MESSAGE_PART_SCOPE)
+                    # #1339: erase the WHOLE chunk family, not just chunk 1 (a bare
+                    # drop_scope on chunk 1 alone would leave chunks 2..N orphaned,
+                    # and chunk_for_append's cursor validation would then start a
+                    # NEW chunk 1 while the stale chunks 2..N still read after it).
+                    drop_lane(arc._segments, session_id, MESSAGE_PART_SCOPE)
                 mint_atoms_from_ledger(arc, session_id, ledger)
             finally:
                 _LANE_MINT_IN_FLIGHT.discard(session_id)
@@ -515,7 +527,7 @@ def on_ledger_replaced(app: "FastAPI", session_id: str, messages: list[Message])
     arc = _arc(app)
     if arc is None:
         return
-    arc._segments.drop_scope(session_id, MESSAGE_PART_SCOPE)
+    drop_lane(arc._segments, session_id, MESSAGE_PART_SCOPE)  # #1339: the whole chunk family
     drop_state_merge_lane(arc, session_id)  # #737 S6: re-materialise the op lane too
     for message in messages:
         try:
@@ -539,7 +551,7 @@ def on_ledger_deleted(app: "FastAPI", session_id: str) -> None:
     arc = _arc(app)
     if arc is None:
         return
-    arc._segments.drop_scope(session_id, MESSAGE_PART_SCOPE)
+    drop_lane(arc._segments, session_id, MESSAGE_PART_SCOPE)  # #1339: the whole chunk family
     drop_state_merge_lane(arc, session_id)  # #737 S6: erase the op lane with the transcript
 
 

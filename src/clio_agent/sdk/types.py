@@ -255,9 +255,10 @@ class Part(_WireModel):
     rationale: str = ""
     execution_path: str = ""
 
-    # compaction (SPEC §4.5): the canonical structured summary shape. ``summary``
-    # is the client-facing prose, ``auto`` flags a policy-triggered compaction,
-    # and ``compacted_message_ids`` lists the archived messages this stands in for.
+    # compaction (SPEC §4.5): a model-context checkpoint; history is retained,
+    # nothing is deleted (#1339). ``summary`` is the client-facing prose, ``auto``
+    # flags a policy-triggered compaction, and ``compacted_message_ids`` lists
+    # the rows this checkpoint stands in for in the model context.
     summary: str = ""
     auto: bool = False
     compacted_message_ids: list[str] = Field(default_factory=list)

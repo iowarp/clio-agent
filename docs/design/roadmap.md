@@ -6,6 +6,10 @@ auto-compaction + ARC/Trace separation are proven (byte-equality, mutation-propa
 needle-in-haystack, real provider-driven compaction). See `GOAL.md`,
 `docs/archive/arc-live-context-plane.md`, `docs/archive/implementation-spec.md`.
 
+The v1 compaction path itself was later found to destroy the human-visible transcript
+and to amplify the `_events/m` atom lane Θ(N²) per append; both are fixed by an appended
+checkpoint + a chunked atom lane. See `docs/design/compaction-checkpoint-1339.md` (#1339).
+
 This file captures the larger arc we scoped early but the v1 GOAL did not — written as a
 dependency graph of threads, not a phased timeline. Threads marked *(independent)* can run
 in parallel with the rest.

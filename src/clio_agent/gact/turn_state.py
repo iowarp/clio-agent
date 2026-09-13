@@ -127,6 +127,15 @@ class TurnState:
     # ``turn_watchdog.py`` (no longer state-carried closures).
     turn_progress_timeout_s: float = 0.0
     _watchdog_poll_s: float = 0.0
+    # #1339 round 5: true only once ``prepare_turn_off_loop`` has run to completion
+    # and assigned every prologue-derived field below (context_frame, context_file_
+    # provenance, enriched_text, memory_search_metadata). A turn interrupted before
+    # entering the prologue (see ``turn_start_offloop.DEFERRED_JOB_ORPHANED`` for the
+    # same "never entered" proof on the deferred transcript job) reaches ``turn.py``'s
+    # finalize dispatch with this still ``False`` -- the ONE guard
+    # ``turn_prologue_guard.run_finalize_or_settle_prologue_gap`` checks, replacing a
+    # None-check per field.
+    prologue_completed: bool = field(default=False, init=False)
     history_start: dict[int, int] = field(default_factory=dict)
     context_frame: Any = None
     context_file_provenance: dict[str, Any] = field(default_factory=_unset_context_file_provenance)

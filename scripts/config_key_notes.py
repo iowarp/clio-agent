@@ -184,6 +184,10 @@ KEY_NOTES: dict[str, str] = {
         "Max entries in the ARC metrics LSM tree's in-memory memtable before it flushes to disk; "
         "raise to batch more writes, lower to bound memory."
     ),
+    "arc.message_part_chunk_segments": (
+        "Message-part atoms held per on-disk chunk of a session's transcript atom lane before "
+        "rolling; raise to cut chunk count, lower to bound re-encode cost."
+    ),
     "arc.server_conf": (
         "Path to a clio-core server YAML config the port-resolution logic reads; set to point "
         "liveness probing at a non-default config file."

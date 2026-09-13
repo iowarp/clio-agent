@@ -187,9 +187,16 @@ def test_finalize_turn_async_runs_finalize_then_goal_then_compose(monkeypatch: A
 
 
 def test_turn_orchestrator_awaits_the_async_finalize() -> None:
-    from clio_agent.gact import turn  # noqa: PLC0415
+    """#1339 round 5: the orchestrator's choke point moved from ``turn.py`` calling
+    ``finalize_turn_async`` directly to ``turn_prologue_guard.
+    run_finalize_or_settle_prologue_gap`` (the prologue-completion guard, #775
+    no-accretion: ``turn.py`` is at its size-ratchet baseline) -- assert THAT is the
+    coroutine the turn's task now awaits, alongside the seam it wraps."""
 
-    assert inspect.iscoroutinefunction(turn.finalize_turn_async)
+    from clio_agent.gact import turn_prologue_guard  # noqa: PLC0415
+
+    assert inspect.iscoroutinefunction(turn_prologue_guard.run_finalize_or_settle_prologue_gap)
+    assert inspect.iscoroutinefunction(turn_finalize_goal.finalize_turn_async)
     assert inspect.iscoroutinefunction(dispatch_goal_at_finalize)
     assert inspect.iscoroutinefunction(goal_mod.run_llm_judge)
 

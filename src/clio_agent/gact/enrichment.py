@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from clio_agent.gact import context_reference_delivery
 from clio_agent.gact.agent_task_artifacts import emit_commission_parent_use
 from clio_agent.gact.agent_task_notifications import compose_task_notification
+from clio_agent.gact.conversation_projection import model_context_messages
 from clio_agent.gact.events import Event
 from clio_agent.gact.permission_gate import (
     _policy_action_for_tool,
@@ -141,6 +142,10 @@ def _record_context_frame(
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     visible_messages = list(app.state.messages.get(sid, []))
+    # #1339: rows a checkpoint covers are still VISIBLE (history is retained) but no
+    # longer in the MODEL context -- compared by identity, not ``msg.id``: real
+    # ledgers carry duplicate ``msg_asst_*`` ids.
+    in_model_context = {id(row) for row in model_context_messages(visible_messages)}
     items: list[dict[str, Any]] = []
     token_total = 0
     for msg in visible_messages:
@@ -154,13 +159,14 @@ def _record_context_frame(
         if tokens <= 0:
             tokens = _estimate_context_tokens(msg_text)
         token_total += tokens
+        included = id(msg) in in_model_context
         items.append(
             {
                 "kind": "message",
                 "source_id": msg.id,
                 "role": msg.role,
-                "included": True,
-                "reason": "visible_transcript",
+                "included": included,
+                "reason": "visible_transcript" if included else "compacted",
                 "tokens_estimated": tokens,
                 "metadata": {
                     "synthetic": (msg.metadata or {}).get("synthetic", ""),

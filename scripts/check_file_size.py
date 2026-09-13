@@ -148,7 +148,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
     "src/clio_agent/agent.py": 1015,  # blueprint activation moved to gact/blueprint_activation.py
-    "src/clio_agent/arc/memory.py": 1389,  # provider ladder moved to provenance_config.py
+    "src/clio_agent/arc/memory.py": 1340,  # #1339: the _events chunk writer cursor moved to arc/lane_chunking.py
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
     # owner ruling 2026-07-14: +3 to route explicit =local through the loud
@@ -287,7 +287,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # asyncio.Task/asyncio.run is verify-don't-assume, not safe-by-default)
     # after B1 proved the "F3a's ensure_future boundary is just safe" framing
     # was itself the exact ordering bug the B1 fix corrects.
-    # (reactv2.py's entry retired: 736 lines, back under the flat 800 cap.)
+    # (reactv2.py's entry retired: both #1331 (736 lines) and #1339 (#1339 moved
+    # _maybe_autocompact's body to gact/compaction.py, a 3-line delegation left
+    # behind, 924 -> 698) independently dropped it under the flat 800 cap.)
     # #948 S4/S5/S6 growth already carried this file past the flat 800 cap (to 842)
     # before it was ever added to this baseline — a pre-existing gap this change
     # did not introduce (it was silently exempt from the ratchet, not under it).
@@ -658,7 +660,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1334 review: the compact summary's ARC conversation mirror (read + write, both
     # store RPCs, both on the loop) moved to the gact/compact_memory.py owner module and
     # is now awaited off-loop -- 1436 -> 1407.
-    "src/clio_agent/gact/routes/sessions.py": 1407,
+    # #1339: compact_session collapsed to a ~15-line delegation to
+    # gact/compaction.py::compact_session_context (one operation, two triggers); the
+    # whole manual-compact body, gact/compact_memory.py's import, and the dead
+    # session_archives snapshot are gone -- 1407 -> 1176.
+    "src/clio_agent/gact/routes/sessions.py": 1176,
     # #1215 S5: crossed the 800 new-file cap (793 -> 809) for enrich_turn_context —
     # a thin timed combinator wrapping the TWO existing enrichment calls
     # (_enrich_with_context_files + _enrich_with_requested_memory_search) in ONE
@@ -799,7 +805,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # enrichment, hooks) moved to turn_start_offloop.py and runs on the turn executor.
     # #1333 ratchet payment: 822 -> 818, single-item multi-line imports (the
     # turn_finalize/turn_stream/types blocks) consolidated to one line each.
-    "src/clio_agent/gact/turn.py": 818,
+    # #1339 round 5: 818 -> 794 (<= 800, entry retired). The former ``_settle_failed``
+    # closure + the finalize try/except dispatch moved to the new owner module
+    # turn_prologue_guard.py (run_finalize_or_settle_prologue_gap /
+    # settle_finalize_crash), which also gates finalize on TurnState.prologue_
+    # completed instead of turn.py growing a per-field None-check guard.
     # (agent_tasks.py's entry retired: exactly 800 lines, at the flat cap.)
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).

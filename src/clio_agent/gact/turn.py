@@ -87,9 +87,9 @@ from clio_agent.gact.tool_observer import (
     _tool_calls_from_handoff_rows,
 )
 from clio_agent.gact.turn_cancellation import settle_asyncio_cancellation
-from clio_agent.gact.turn_finalize import maybe_pause_for_user, settle_failed_finalize
-from clio_agent.gact.turn_finalize_goal import finalize_turn_async
+from clio_agent.gact.turn_finalize import maybe_pause_for_user
 from clio_agent.gact.turn_forward import _run_turn_setup_off_loop, forward_turn
+from clio_agent.gact.turn_prologue_guard import run_finalize_or_settle_prologue_gap
 from clio_agent.gact.turn_start_offloop import prepare_turn_off_loop, spawn_user_turn
 from clio_agent.gact.turn_state import DeferredTranscriptJob, new_turn_state
 from clio_agent.gact.turn_stream import bind_live_emitter, settle_turn_transcript
@@ -244,23 +244,6 @@ async def _run_turn_in_background(
                 session_id=state.sid,
                 payload=updated.model_dump(exclude_none=True),
             )
-        )
-
-    async def _settle_failed(exc: BaseException) -> None:
-        # #756 envelope, off the loop (#1334: it persists the error turn's message).
-        await _run_turn_setup_off_loop(
-            state,
-            lambda: settle_failed_finalize(
-                state.app,
-                state.sid,
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                turn_tokens=state.turn_tokens,
-                turn_cost=state.turn_cost,
-                turn_cancel_event=state.turn_cancel_event,
-                update_retry_attempt=_update_retry_attempt,
-                exc=exc,
-            ),
         )
 
     if state.retry_attempt_id:
@@ -692,23 +675,16 @@ async def _run_turn_in_background(
             recoverable=True,
         )
 
-    # #756: everything below (answer grounding, part assembly, diff indexing,
-    # nanoagent spawn, publishes, persistence) is the ``finalize_turn`` seam
-    # (#767 Phase B Slice 6). It runs inside a fire-and-forget task; an
-    # exception escaping it used to vanish (the done-callback only pops
-    # in_flight_turns) and wedge the session in 'running' with no completion
-    # event. The ``try/except finalize_exc`` #756 envelope stays HERE in the
-    # orchestrator so a finalize crash is settled by ``settle_failed_finalize``
-    # (a visible error turn + terminal session status), never re-raised.
-    try:
-        await finalize_turn_async(
-            state,
-            state.pred,
-            drain_observed_tool_calls=_drain_observed_tool_calls,
-            update_retry_attempt=_update_retry_attempt,
-        )
-    except Exception as finalize_exc:  # noqa: BLE001 - detached task: settle, no re-raise
-        await _settle_failed(finalize_exc)
+    # #756 / #1339 round 5: everything finalize does (answer grounding, part assembly,
+    # diff indexing, nanoagent spawn, publishes, persistence) reads prologue-derived
+    # state -- ``turn_prologue_guard`` gates it on ``state.prologue_completed`` (a
+    # turn whose prologue never ran settles typed instead of crashing on an unset
+    # field) and keeps the #756 envelope for an ordinary finalize-region crash.
+    await run_finalize_or_settle_prologue_gap(
+        state,
+        drain_observed_tool_calls=_drain_observed_tool_calls,
+        update_retry_attempt=_update_retry_attempt,
+    )
 
 
 def _start_background_user_turn(

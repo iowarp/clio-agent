@@ -25,13 +25,11 @@ from typing import Any, Callable, Dict, List, Optional, cast
 from clio_agent import conf
 from clio_agent.arc.cache import LRUCache
 from clio_agent.arc.index import BTreeIndex
+from clio_agent.arc.lane_chunking import chunk_for_append
 from clio_agent.arc.live import (
     EVENTS_SCOPE,
     LiveRuntimeContext,
     build_event_content,
-    events_chunk_index,
-    events_chunk_scope,
-    is_events_scope,
 )
 from clio_agent.arc.lsm import LSMTree
 from clio_agent.arc.schema import (
@@ -154,20 +152,17 @@ class ARCMemory:
         # the store is a ``FoldingSegmentStore`` (working set = a fold of ``_events``).
         self._segments = make_segment_store(self._store, working_set_fold=working_set_fold)
 
-        # Per-session writer cursor for the ``_events`` chunk family:
-        # ``session_id -> (chunk_index, segments_in_chunk)``. The append path rolls to
-        # the next chunk once the active one reaches ``events_chunk_segments`` segments,
-        # so a single event re-encodes only the active chunk (O(chunk)) instead of the
-        # whole log (O(N) => O(N²)/session). Recovered lazily on first append after a
-        # restart by scanning the persisted family (:meth:`_events_chunk_for_append`).
+        # Segments held per on-disk chunk of the ``_events`` family before the writer
+        # rolls to the next one (so a single event re-encodes only the active chunk --
+        # O(chunk) -- instead of the whole log, O(N) => O(N^2)/session). The writer
+        # cursor itself (recovery + roll-over) is owned by ``arc.lane_chunking``
+        # (:func:`chunk_for_append`), shared with the ``message_part`` atom lane.
         self._events_chunk_segments = conf.resolve(
             "arc.events_chunk_segments",
             env="CLIO_ARC_EVENTS_CHUNK_SEGMENTS",
             default=512,
             cast=conf.as_int,
         )
-        self._events_writer: dict[str, tuple[int, int]] = {}
-        self._events_writer_lock = threading.Lock()
 
         # Live runtime context: PROJECTS the canonical semantic-event stream into
         # per-session turn records so Invocation/Conversation are projections of the
@@ -862,12 +857,15 @@ class ARCMemory:
         """Build (via the shared :func:`~clio_agent.arc.live.build_event_content`) +
         append the lean ``semantic_event`` segment to the session's ACTIVE ``_events``
         chunk. ONE builder is shared with the standalone observer so the persisted log
-        is identical regardless of path. The chunk cursor (:meth:`_events_chunk_for_append`)
-        bounds each append's re-encode to one chunk instead of the whole log."""
+        is identical regardless of path. The chunk cursor
+        (:func:`~clio_agent.arc.lane_chunking.chunk_for_append`) bounds each append's
+        re-encode to one chunk instead of the whole log."""
         content = build_event_content(event)
         if content is None:
             return
-        scope = self._events_chunk_for_append(sid)
+        scope = chunk_for_append(
+            self._segments, sid, EVENTS_SCOPE, capacity=self._events_chunk_segments
+        )
         self._segments.append(
             sid,
             scope,
@@ -877,48 +875,6 @@ class ARCMemory:
             turn_id=str(getattr(event, "turn_id", "") or ""),
             expert_span_id=str(getattr(event, "expert_span_id", "") or ""),
         )
-
-    def _events_chunk_for_append(self, sid: str) -> str:
-        """Reserve a slot in the session's active ``_events`` chunk and return its scope.
-
-        Advances the per-session cursor, rolling to the next chunk once the active one
-        has reached ``events_chunk_segments`` segments (so appends stay O(chunk)). On the
-        first append after a restart the cursor is recovered from the persisted family
-        (:meth:`_recover_events_writer`) so the log resumes at its last chunk instead of
-        overwriting or fragmenting it. Guarded by ``_events_writer_lock`` — the cursor is
-        the sole shared mutable state and events can arrive from multiple threads."""
-        with self._events_writer_lock:
-            state = self._events_writer.get(sid)
-            if state is None:
-                state = self._recover_events_writer(sid)
-            index, count = state
-            if count >= self._events_chunk_segments:
-                index += 1
-                count = 0
-            self._events_writer[sid] = (index, count + 1)
-            return events_chunk_scope(index)
-
-    def _recover_events_writer(self, sid: str) -> tuple[int, int]:
-        """Cold-start cursor for a session: resume at the highest persisted chunk.
-
-        Scans the session's ``_events`` family; with none persisted the cursor starts at
-        chunk 1 empty, otherwise at the max chunk index with its current segment count
-        (so the next append continues that chunk until it rolls). Called under
-        ``_events_writer_lock``."""
-        indices = [
-            events_chunk_index(s)
-            for s in self._segments.scan_scopes(sid, EVENTS_SCOPE)
-            if is_events_scope(s)
-        ]
-        if not indices:
-            return (1, 0)
-        max_index = max(indices)
-        count = len(
-            self._segments.list_segments(
-                sid, events_chunk_scope(max_index), include_tombstoned=True
-            )
-        )
-        return (max_index, count)
 
     def on_semantic_event(self, event: Any) -> None:
         """Persist one RAW semantic event as the single ``_events`` log record.
@@ -1162,8 +1118,7 @@ class ARCMemory:
             self._inflight_cv.notify_all()
 
     def _drain_inflight_invocations(self, session_id: str, timeout: float = 5.0) -> int:
-        """Block until no ``session_id`` invocation write is in flight, then return the residual in-flight count -- 0 on a clean drain, ``>0`` only on the ``timeout`` path (which logs a structured reason and proceeds, not a silent wait). :meth:`release_session` drains before it counts/evicts the index so an in-flight ``store_invocation`` (mid store-RPC, index insert not yet applied) is not under-counted, and surfaces this return as ``inflight_pending`` so a degraded release is visible in the return value, not only the log (no silent fallback; #804).
-        """
+        """Block until no ``session_id`` invocation write is in flight, then return the residual in-flight count -- 0 on a clean drain, ``>0`` only on the ``timeout`` path (which logs a structured reason and proceeds, not a silent wait). :meth:`release_session` drains before it counts/evicts the index so an in-flight ``store_invocation`` (mid store-RPC, index insert not yet applied) is not under-counted, and surfaces this return as ``inflight_pending`` so a degraded release is visible in the return value, not only the log (no silent fallback; #804)."""
         deadline = time.monotonic() + timeout
         with self._inflight_cv:
             while self._inflight_inv.get(session_id, 0) > 0:
@@ -1239,10 +1194,10 @@ class ARCMemory:
             )
         else:
             live = self._live.release(session_id)
-            # The chunk family is gone; drop the write cursor so the next event for this
-            # session recovers to a fresh chunk 1 (retention keeps it — same chunk continues).
-            with self._events_writer_lock:
-                self._events_writer.pop(session_id, None)
+            # The chunk family is gone; the write cursor (arc.lane_chunking) notices on
+            # its own next append -- the erase already discarded ``store._loaded`` for
+            # every dropped chunk, which is exactly the staleness signal it checks
+            # (retention keeps the cursor valid — same chunk continues).
             logger.info(
                 "arc: erased _events log session=%s reason=durable_trace_enabled "
                 "backend=%r turns=%d (the durable trace keeps the full history)",
@@ -1299,8 +1254,6 @@ class ARCMemory:
                 backend,
             )
             self._live.clear()
-            with self._events_writer_lock:
-                self._events_writer.clear()
         self._segments.clear()
 
     def clear_cache(self) -> None:
@@ -1323,15 +1276,13 @@ class ARCMemory:
         Examples:
             >>> arc.clear_all()  # Only use in tests or to reset state
         """
-        # Hot-structure surgery under _lock: cache, index, event write cursors, and
-        # counters. The _events chunk family is wiped from disk below, so reset the
-        # write cursors here so the next event for any session recovers to a fresh
-        # chunk 1.
+        # Hot-structure surgery under _lock: cache, index, and counters. The _events
+        # chunk family is wiped from disk below (``_store.clear()`` / ``_segments.clear()``),
+        # which already invalidates every writer cursor (arc.lane_chunking checks
+        # ``store._loaded``, cleared there) — no separate cursor reset needed.
         with self._lock:
             self._cache.clear()
             self._inv_index.clear()
-            with self._events_writer_lock:
-                self._events_writer.clear()
             self._disk_reads = 0
             self._disk_writes = 0
 

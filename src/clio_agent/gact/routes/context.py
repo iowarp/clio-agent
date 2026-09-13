@@ -320,7 +320,12 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
         working-set into ONE summary segment — the SAME summarizer the in-turn
         auto-compactor uses — via the sanctioned ``summarize`` op, then returns the fresh
         context state. The caller chooses WHEN to compact; clio chooses WHAT to keep (a
-        faithful summary). 409 if nothing live; 503 if no LM is bound / the summary fails."""
+        faithful summary). 409 if nothing live; 503 if no LM is bound / the summary fails.
+
+        A different, LOWER-level op than session-level compaction
+        (:func:`clio_agent.gact.compaction.compact_session_context`, #1339): this one
+        operates on an explicit ARC ``scope`` directly, not a session's ledger/checkpoint.
+        """
         if app.state.sessions.get(sid) is None:
             raise _session_not_found(sid)
         arc = app.state.arc
