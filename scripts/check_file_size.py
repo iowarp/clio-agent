@@ -805,7 +805,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # enrichment, hooks) moved to turn_start_offloop.py and runs on the turn executor.
     # #1333 ratchet payment: 822 -> 818, single-item multi-line imports (the
     # turn_finalize/turn_stream/types blocks) consolidated to one line each.
-    "src/clio_agent/gact/turn.py": 818,
+    # #1339 round 5: 818 -> 794 (<= 800, entry retired). The former ``_settle_failed``
+    # closure + the finalize try/except dispatch moved to the new owner module
+    # turn_prologue_guard.py (run_finalize_or_settle_prologue_gap /
+    # settle_finalize_crash), which also gates finalize on TurnState.prologue_
+    # completed instead of turn.py growing a per-field None-check guard.
     # (agent_tasks.py's entry retired: exactly 800 lines, at the flat cap.)
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).

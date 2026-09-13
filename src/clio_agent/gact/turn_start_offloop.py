@@ -203,6 +203,11 @@ def prepare_turn_off_loop(state: "TurnState", *, update_retry_attempt: Callable[
             subject={"message_id": state.user_msg.id},
             payload=state.memory_search_metadata,
         )
+    # #1339 round 5: every prologue-derived field above (context_frame,
+    # context_file_provenance, enriched_text, memory_search_metadata) is now
+    # assigned -- flip the ONE structural fact ``turn_prologue_guard`` gates finalize
+    # on, before either return below (both are reached only from this point).
+    state.prologue_completed = True
     # P2.2 #1070 / P2.6 #1074: UserPromptSubmit hooks (the ported ``pre_message``
     # consumer). A deny VETOES the turn (session -> error); a ``defer`` SUSPENDS it for
     # out-of-band approval (waiting_user, resume as a new turn). The whole finalize-

@@ -523,17 +523,18 @@ def finalize_turn(
         )
     )
 
-    # Persist + settle.
+    # Persist + settle. #1339: close the registry FIRST -- persist's mint_remainder
+    # RPC can release the GIL while the message is already visible (#1334 append-
+    # first), letting an observer see it before the registry entry clears.
     final_status = (
         "cancelled" if state.cancelled_turn else ("error" if state.error_info else "idle")
     )
     retry_status = (
         "cancelled" if state.cancelled_turn else ("failed" if state.error_info else "completed")
     )
+    state.app.state.turn_transcripts.close(state.sid)
     persist_finalized_message(state.app, state.sid, assistant_msg)  # #1334: barrier first
-    # #767 PR3: the ledger is already frozen by transcript.finalize(); settle
-    # retires it from the registry so a late producer op is rejected +
-    # audited, never absorbed silently.
+    # #767 PR3: already frozen by transcript.finalize(); close() below no-ops.
     settle_turn_transcript(state)
     getattr(state.app.state, "live_assistant_message_ids", {}).pop(state.sid, None)
     getattr(state.app.state, "live_assistant_parts", {}).pop(state.sid, None)
@@ -685,11 +686,14 @@ def settle_failed_finalize(
     live; #1337: carrying the parts already sealed) and a terminal status. Nothing
     degrades silently: every best-effort step below logs its reason when it fails.
     ``persist_finalized_message`` binds ``gact.app._append_session_message`` at call
-    time so the live==reload test monkeypatches keep intercepting.
+    time so the live==reload test monkeypatches keep intercepting. #1339: ``exc`` may
+    carry ``settle_reason``/``settle_error_code`` (turn_prologue_guard) instead.
     """
 
+    reason = getattr(exc, "settle_reason", "turn_finalize_error")
     logger.error(
-        "turn finalize failed: reason=turn_finalize_error session=%s turn=%s error=%s",
+        "turn finalize failed: reason=%s session=%s turn=%s error=%s",
+        reason,
         sid,
         turn_id,
         type(exc).__name__,
@@ -698,11 +702,7 @@ def settle_failed_finalize(
     if trace.HF_ON:
         trace.hot("TURN-FINALIZE-FAIL", "%s %s: %s", sid, type(exc).__name__, exc)
 
-    # #767 PR2: a failed finalize must still settle the ledger — freeze it (late producer
-    # ops are rejected + audited) and retire it from the registry so it can never poison
-    # the next turn. Unconditional, before the already-settled early return below.
-    # #1337: the streamed parts already sealed on the lane survive under this envelope
-    # (their message id + dumps are captured BEFORE the ledger is retired).
+    # #767 PR2/#1337: freeze+retire the ledger (sealed parts survive) before the return.
     asst_id, sealed_parts = failed_finalize_identity(app, sid)
     registry = getattr(app.state, "turn_transcripts", None)
     if registry is not None:
@@ -724,10 +724,10 @@ def settle_failed_finalize(
         return
 
     error_info = ErrorInfo(
-        error="finalize_error",
+        error=getattr(exc, "settle_error_code", "finalize_error"),
         message=f"turn finalize raised: {exc}",
         details={
-            "reason": "turn_finalize_error",
+            "reason": reason,
             "session_id": sid,
             "turn_id": turn_id,
             "original_error": type(exc).__name__,
