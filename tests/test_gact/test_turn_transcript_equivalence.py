@@ -596,3 +596,57 @@ def test_turn_loop_settles_the_transcript_registry_after_a_turn(tmp_path: Path) 
         sid = client.post("/v1/sessions", json={"title": "n"}).json()["id"]
         _complete_turn(client, sid, "hello")
         assert app.state.turn_transcripts.get(sid) is None
+
+
+def test_transcript_registry_closes_before_persist_can_release_the_gil(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1339 round 5: the test above is timing-sensitive -- looped 20x locally on
+    this 3.12 machine, the PRE-fix ordering (registry closed AFTER
+    ``persist_finalized_message``) failed 3/20 with
+    ``assert <TurnTranscript object> is None`` (CI hit the same assertion on
+    py3.13, 3.12 green, one of the three transient failures under contention on
+    #1338's local suite). Mechanism: ``persist_finalized_message``'s
+    ``_append_session_message`` call (which makes the assistant message visible
+    via GET, #1334 append-first-so-a-failed-mint-never-loses-it) runs BEFORE its
+    own ``minter.mint_remainder`` ARC RPC -- a real call that can release the GIL
+    for wall-clock time -- so a foreign thread reacting to the now-visible
+    message could still find ``app.state.turn_transcripts.get(sid)`` non-``None``
+    if the registry closed only afterward (the old order, `settle_turn_transcript`
+    called once at the very end).
+
+    This test pins the ordering DETERMINISTICALLY (no GIL-timing luck needed): a
+    monkeypatched ``persist_finalized_message`` RECORDS whether the registry was
+    already closed at call time, rather than asserting in place -- raising inside
+    it would be swallowed by ``run_finalize_or_settle_prologue_gap``'s own
+    finalize-crash envelope (turning the violation into a settled error turn
+    instead of a test failure) and mask the very race under test. The recorded
+    observation is asserted at the top level, outside the turn's error handling.
+    Reverting ``finalize_turn``'s ``state.app.state.turn_transcripts.close(
+    state.sid)`` line (moving it back to run only via the later
+    ``settle_turn_transcript(state)`` call) makes this fail on every run, not
+    just 3/20.
+    """
+
+    import clio_agent.gact.turn_finalize as turn_finalize_module
+
+    observed: list[bool] = []
+    real_persist = turn_finalize_module.persist_finalized_message
+
+    def _record_registry_state_then_persist(app: Any, session_id: str, message: Any) -> None:
+        observed.append(app.state.turn_transcripts.get(session_id) is None)
+        real_persist(app, session_id, message)
+
+    monkeypatch.setattr(
+        turn_finalize_module, "persist_finalized_message", _record_registry_state_then_persist
+    )
+
+    app = _build(tmp_path, "noturn2", _PlainAgent("plain answer"))
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "n2"}).json()["id"]
+        _complete_turn(client, sid, "hello")
+        assert observed == [True], (
+            "persist_finalized_message must observe the transcript registry "
+            f"ALREADY closed every time it runs; got {observed!r}"
+        )
+        assert app.state.turn_transcripts.get(sid) is None
