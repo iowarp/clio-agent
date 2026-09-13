@@ -1,7 +1,27 @@
 # External input provenance (#1320)
 
-Status: implemented locally; focused backend, component, and contained Chromium
-verification passed.
+Status: backend provenance capture (below) is implemented and gated. The UI
+half — the "Input sources" list and the "provenance incomplete" warning on a
+tool row — was re-landed under #1336, entirely on the backend: presenter
+blocks appended to the `tool_result` part's `presentation.blocks` (one `link`
+block per external input, one `text` warning block when the contract is
+unknown), not client code. The `web/` React workspace (gact-tui #389) renders
+`ToolPresentation` blocks generically, so no client change was needed. The
+original UI implementation below — the `codex/provider-runtime-provenance`
+gact-tui commit @ `d395796e`, written against the legacy `apps/web` client
+that #389 replaced wholesale — is superseded and its branch is gone; the
+Chromium/pnpm verification steps it describes no longer apply to the current
+client.
+
+Because the block projection runs on the tool-completion hot path — ahead of
+the `tool.call.completed` publish, so the live payload and the stored part
+carry the same presentation — it can never break the row: a provenance record
+`with_provenance_blocks` cannot shape returns the tool's own presentation
+carrying the typed `provenance_presentation_failed` diagnostic (logged with the
+same `reason=` shape as the other degraded paths), never a raised
+`ValidationError`. Moving the seam ahead of the publish also moved
+`artifact.created` — an SSE UI event — ahead of the completion of the row that
+minted it; that order is pinned in `test_artifacts_s5.py`.
 
 Successful calls to the qualified built-in filesystem reader and CLIO Kit
 Geo/Pandas/Plot consumers retain external file arguments as durable `used`
