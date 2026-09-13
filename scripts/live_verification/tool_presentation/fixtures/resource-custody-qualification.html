@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Resource Custody Qualification Brief</title>
+  </head>
+  <body>
+    <main>
+      <h1>Resource Custody Qualification Brief</h1>
+      <p>This document is a deterministic fixture for the contained Tool UI qualification workspace.</p>
+
+      <h2>Custody</h2>
+      <p>The immutable source label is Aurora Meridian. The record belongs only to the qualification workspace.</p>
+      <p>The source should be identified by its resource link, detected media type, byte size, revision, and readiness.</p>
+
+      <h2>Measurements</h2>
+      <table>
+        <thead>
+          <tr><th>Station</th><th>Reading</th><th>Unit</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Alpha</td><td>4</td><td>counts</td></tr>
+          <tr><td>Beta</td><td>7</td><td>counts</td></tr>
+          <tr><td>Total</td><td>11</td><td>counts</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Interpretation</h2>
+      <p>Alpha and Beta are supplied facts. Their expected total is eleven.</p>
+      <p>No external source, inferred coordinate, or remembered identifier is needed for this fixture.</p>
+      <p>The search qualification must find Aurora Meridian and show the matching text rather than transport metadata.</p>
+
+      <h2>Ordered checks</h2>
+      <ol>
+        <li>List the workspace resources.</li>
+        <li>Wait once for conversion when a processing task is supplied.</li>
+        <li>Inspect custody and derivative state.</li>
+        <li>Read the document using a bounded resource operation.</li>
+        <li>Search for Aurora Meridian.</li>
+        <li>Inspect the hierarchical structure and one concrete node.</li>
+      </ol>
+
+      <h2>Long-form verification notes</h2>
+      <p>These notes intentionally make the readable result longer than the compact transcript preview. Expanded content must remain readable, keyboard reachable, and visually subordinate to the tool header.</p>
+      <p>The first expansion line confirms that the original upload remains immutable while derivatives are separately identified.</p>
+      <p>The second expansion line confirms that conversion status is not the same thing as custody status.</p>
+      <p>The third expansion line confirms that a successful transport cannot conceal a semantic processing failure.</p>
+      <p>The fourth expansion line confirms that ordinary textual results do not require decorative boxes.</p>
+      <p>The fifth expansion line confirms that structure, search matches, and bounded text have distinct presentation semantics.</p>
+      <p>The sixth expansion line confirms that the information control retains exact technical provenance.</p>
+      <p>The seventh expansion line confirms that narrow layouts wrap content without moving status controls into the operation name.</p>
+      <p>The eighth expansion line confirms that the final response remains separate from every tool result.</p>
+    </main>
+  </body>
+</html>
+

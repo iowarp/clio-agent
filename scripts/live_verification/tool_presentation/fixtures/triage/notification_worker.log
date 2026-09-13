@@ -1,0 +1,5 @@
+2026-09-10T16:02:11Z dequeued notification=nt_208 queue=receipts
+2026-09-10T16:02:11Z acknowledged notification=nt_208
+2026-09-10T16:02:12Z process_exit notification=nt_208 reason=database_connection_reset
+2026-09-10T16:07:12Z reconciliation notification=nt_208 state=missing queue_state=absent
+

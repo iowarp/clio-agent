@@ -1,0 +1,8 @@
+[gateway]
+max_attempts = 3
+retry_statuses = [502, 503, 504]
+
+[notifications]
+ack_mode = "manual"
+reconciliation_interval_seconds = 300
+
