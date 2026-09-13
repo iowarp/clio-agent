@@ -39,10 +39,9 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Dict, Optional, Protocol, runtime_checkable
 
-# The clio-core CTE config generation + capacity policy lives in its own owner module
-# (iowarp/clio-agent#774/#890). Re-exported here so existing callers/tests that reach
-# ``storage._default_cte_dir`` / ``storage.default_cte_config_path`` / etc. keep working
-# while the capacity policy (the bounded ram hot-tier cap) has a single home.
+# CTE config generation + capacity policy (the bounded ram hot-tier cap) live in
+# their own owner module (iowarp/clio-agent#774/#890); re-exported here so callers/
+# tests reaching ``storage._default_cte_dir`` / ``default_cte_config_path`` keep working.
 from clio_agent.arc.clio_core_config import (  # noqa: F401 - re-exported for callers/tests
     _DEFAULT_CTE_CONFIG_TEMPLATE,
     _cte_yaml_path,
@@ -62,8 +61,7 @@ from clio_agent.arc.clio_core_liveness import (  # noqa: F401 - re-exported for 
 )
 
 # Daemon port-resolution + socket-liveness helpers live in the liveness owner
-# module (#892), re-exported above for callers/tests; blob writes ride the
-# bounded rc=13-class retry owner module (#893).
+# module (#892); blob writes ride the bounded rc=13-class retry module (#893).
 from clio_agent.arc.clio_core_retry import put_blob_with_retry
 from clio_agent.arc.companion_policy import may_carry_companion
 
@@ -77,19 +75,18 @@ from clio_agent.arc.rpc_liveness import (
 )
 from clio_agent.arc.runtime_crash import clear_crash_record, watch_daemon_process
 
-# Per-OS spawn primitives live in their own owner module (#1148); re-exported here
-# for existing callers/tests that reach ``storage._detached_popen_kwargs`` etc.
+# Per-OS spawn primitives live in owner module (#1148); re-exported for callers/tests.
 from clio_agent.arc.runtime_spawn import (  # noqa: F401 - re-exported for callers/tests
     _detached_popen_kwargs,
     _dynamic_library_env_var,
     _runtime_launcher_path,
 )
+from clio_agent.runtime.stream_audit import stream_audit
 
 logger = logging.getLogger(__name__)
 
-# The logical record families ARC persists. Each maps to one physical
-# container in a store (a directory for LocalFSStore; a namespace/key prefix
-# for a clio-core-backed store). Keep this list as the single source of truth.
+# The logical record families ARC persists (a directory per kind for LocalFSStore;
+# a namespace/key prefix for a clio-core-backed store). Single source of truth.
 ARC_KINDS: tuple[str, ...] = (
     "conversations",
     "invocations",
@@ -97,9 +94,8 @@ ARC_KINDS: tuple[str, ...] = (
     "segments",  # live context plane: one record per (session_id, scope)
 )
 
-# Suffix for the optional plain-text companion blob a backend may store next to a
-# record for BM25 semantic discovery (Thread D). Companions are NOT records:
-# scan()/get() skip them. Record names must not end with this suffix.
+# Suffix for the optional plain-text companion blob (BM25 discovery, Thread D) a
+# backend may store next to a record. NOT a record: scan()/get() skip it.
 _SEARCH_SUFFIX = ".text"
 
 
@@ -197,6 +193,8 @@ class LocalFSStore:
         tier: str = "warm",
         search_text: Optional[str] = None,
     ) -> None:
+        if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
+            stream_audit("store.put", kind=kind, name=name, size=len(data))
         directory = self._dir(kind)
         (directory / f"{name}.msgpack").write_bytes(data)
         # Plain-text companion sidecar for search (Thread D). ``.search`` so the
@@ -742,6 +740,8 @@ class ClioCoreStore:
         # Multi-RPC: each native call is guarded individually so stall_after_s bounds ONE RPC.
         # base64-wrap: CTE GetBlob UTF-8-decodes, so store ascii-safe bytes.
         payload = base64.b64encode(data)
+        if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
+            stream_audit("store.put", kind=kind, name=name, size=len(payload))
         guarded_store_rpc(
             self, "put", lambda: put_blob_with_retry(self._cte.Tag(kind), name, payload)
         )

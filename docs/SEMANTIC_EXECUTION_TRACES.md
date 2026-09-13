@@ -47,7 +47,8 @@ Current CLIO events include:
   `hook.invocation.blocked`, `hook.invocation.deferred`
 - `hook.invoked` — the P2.7 per-invocation governance audit (one per hook run;
   trace-only, never on the live UI wire)
-- `memory.search.completed`, `memory.compacted`
+- `memory.search.completed`, `memory.compacted` (an appended checkpoint, #1339 --
+  history is retained, never replaced)
 - `permission.requested`
 - `user_question.created`
 - `artifact.proposed`, `artifact.created`, `artifact.version.added`,

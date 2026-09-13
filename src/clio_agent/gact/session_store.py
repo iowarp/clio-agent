@@ -35,6 +35,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact.conversation_projection import model_context_messages
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
@@ -355,6 +356,19 @@ def _release_session_arc(app: "FastAPI", session_id: str) -> None:
 # ------------------------------------------------------------------------- #
 
 
+def _prior_message_text(message: "Message") -> str:
+    """The prior-turn text this message contributes: ``part.summary`` for a
+    checkpoint's ``compaction`` part (#1339), ``part.text`` for text/thinking/error."""
+
+    chunks = [
+        (part.summary if part.type == "compaction" else part.text).strip()
+        for part in message.parts
+        if part.type in {"text", "thinking", "error", "compaction"}
+        and (part.summary if part.type == "compaction" else part.text).strip()
+    ]
+    return "\n".join(chunks).strip()
+
+
 def _compile_session_conversation_history(
     app: "FastAPI", session_id: str, current_prompt: str
 ) -> str:
@@ -363,8 +377,14 @@ def _compile_session_conversation_history(
     established (the resolved region, ranked stations, staged file paths) instead of
     restarting blind on a follow-up like "now plot it". General to any blueprint and
     a NO-OP on the first turn (no prior messages), so single-turn behaviour is
-    unchanged. The orchestrator otherwise receives only the latest user message."""
-    messages = list(app.state.messages.get(session_id, []))
+    unchanged. The orchestrator otherwise receives only the latest user message.
+
+    Renders the MODEL CONTEXT (:func:`~clio_agent.gact.conversation_projection.
+    model_context_messages`), not the raw ledger (#1339): rows a checkpoint covers
+    are skipped here too, and a checkpoint row itself renders as "Compacted context"
+    from its ``summary`` field rather than the (empty) ``text`` field.
+    """
+    messages = model_context_messages(list(app.state.messages.get(session_id, [])))
     prior = [m for m in messages if getattr(m, "role", "") in {"user", "assistant"}]
     # The current user message is already appended before the turn runs — drop the
     # trailing user message(s) so only PRIOR turns are carried.
@@ -376,14 +396,14 @@ def _compile_session_conversation_history(
     for message in prior:
         # Carry the FULL prior message text verbatim — clio must not heuristically
         # truncate content the orchestrator sees; only an LLM may reduce content.
-        text = "\n".join(
-            part.text.strip()
-            for part in message.parts
-            if part.type in {"text", "thinking", "error"} and part.text.strip()
-        ).strip()
+        text = _prior_message_text(message)
         if not text:
             continue
-        speaker = "User" if message.role == "user" else "Assistant"
+        is_checkpoint = any(part.type == "compaction" for part in message.parts)
+        if is_checkpoint:
+            speaker = "Compacted context"
+        else:
+            speaker = "User" if message.role == "user" else "Assistant"
         lines.append(f"{speaker}: {text}")
     if not lines:
         return current_prompt

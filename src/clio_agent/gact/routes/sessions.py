@@ -5,7 +5,8 @@ This concern owns the ``/v1/sessions`` lifecycle and scoped ask/retry protocol:
 * CRUD creates, lists, patches, and permission-gates session deletion.
 * Undo/rewind drop trailing messages and publish their lifecycle events.
 * Fork/import/export provide branching and portable JSON transfer.
-* Compaction replaces the visible transcript with evidence-preserving memory.
+* Compaction appends one evidence-preserving checkpoint (``gact.compaction``); the
+  visible transcript is retained in full, only the MODEL-facing context shrinks.
 * Cancel cooperatively stops an in-flight turn and publishes its status.
 * Ask-user and retry own question resumption and recorded source-message attempts.
 Fork, question-answer, and retry share ``deps.start_background_user_turn``. Shared
@@ -14,9 +15,7 @@ cross-concern helpers travel on :class:`GactDeps`; private helpers stay here.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
@@ -24,19 +23,17 @@ from typing import TYPE_CHECKING, Any, Optional
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
-from clio_agent.gact import context as _ctx
 from clio_agent.gact import context_reference_retry
 from clio_agent.gact.autonomous_loop import stop_session_loop
-from clio_agent.gact.compact_memory import ARC_NOT_CONFIGURED, store_compact_conversation
+from clio_agent.gact.compaction import CompactionError, compact_session_context
 from clio_agent.gact.events import Event
 from clio_agent.gact.goal import stop_session_goal
 from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
 from clio_agent.gact.messaging import raise_on_reserved_metadata
-from clio_agent.gact.off_loop import emit_semantic_event_async, run_off_loop
+from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.protocol_v3 import project_for_request, session_to_v3
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
-from clio_agent.gact.routes.compaction import build_compact_summary_message
 from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui, split_preserved_a2ui
 from clio_agent.gact.routes.session_cancellation import cancel_session_state
 from clio_agent.gact.routes.session_question_helpers import (
@@ -47,11 +44,8 @@ from clio_agent.gact.routes.session_question_helpers import (
 )
 from clio_agent.gact.routes.session_rows import filter_session_rows, rows_to_wire
 from clio_agent.gact.runtime import bringup_timing
-from clio_agent.gact.runtime.constants import _installed_clio_agent_version
 from clio_agent.gact.runtime.globals import (
-    _active_semantic_turn_id,
     _new_attempt_id,
-    _new_memory_event_id,
     _new_question_id,
 )
 from clio_agent.gact.runtime.retention import enforce_dict_bound
@@ -651,243 +645,18 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.post("/v1/sessions/{sid}/compact")
     async def compact_session(sid: str, request: Request) -> dict[str, Any]:
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"session not found: {sid}",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        ledger = app.state.messages.get(sid, [])
-        if not ledger:
-            return {
-                "session_id": sid,
-                "compacted": False,
-                "reason": "session has no messages to compact",
-            }
+        """Append one evidence-preserving checkpoint (#1339). One operation, two
+        triggers -- see :func:`clio_agent.gact.compaction.compact_session_context`;
+        this route is the manual trigger."""
 
-        # Build a transcript blob from the full ledger parts — no deterministic
-        # truncation; the LLM downstream is what compacts.
-        # ledger entries are Pydantic Message models (see types.py); use
-        # attribute access + model_dump() defensively for dict-shaped
-        # entries the older code paths still produce.
-        def _attr(o, name, default=None):
-            if hasattr(o, name):
-                return getattr(o, name)
-            if isinstance(o, dict):
-                return o.get(name, default)
-            return default
-
-        # Pass the FULL transcript through to the LLM — clio must not heuristically
-        # truncate content a model sees; the LLM is what compacts (that is allowed).
-        chunks: list[str] = []
-        for m in ledger:
-            role = (_attr(m, "role", "user") or "user").upper()
-            for p in _attr(m, "parts", []) or []:
-                txt = (_attr(p, "text", "") or "").strip()
-                if not txt:
-                    continue
-                chunks.append(f"{role}: {txt}")
-        transcript = "\n".join(chunks)
-        if not transcript.strip():
-            return {
-                "session_id": sid,
-                "compacted": False,
-                "reason": "transcript is empty after part filtering",
-            }
-
-        # P2.3 PreCompact lifecycle hook (observation): fires exactly once, before
-        # the transcript is summarised into memory (there is real work to compact).
-        from clio_agent.gact.hooks import dispatch_pre_compact  # noqa: PLC0415
-
-        dispatch_pre_compact(
-            session_id=sid,
-            cwd=str(getattr(sess, "workspace_root", "") or ""),
-            payload={"message_count": len(ledger), "transcript_chars": len(transcript)},
-        )
-
-        agent = app.state.agent
-        if agent is None:
-            raise HTTPException(
-                status_code=503,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="agent_unavailable",
-                        message="no LM agent wired; configure one via PUT /v1/providers/lm",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        # Try to extract optional focus instructions from the body.
         body = await json_body(request, route="POST /v1/sessions/{sid}/compact")
         focus = (body.get("focus") or "").strip()
-
-        prompt = (
-            "Create an evidence-preserving compact memory for the following CLIO "
-            "conversation transcript. This memory will replace the archived transcript, "
-            "so preserve concrete scientific evidence, not just a high-level story.\n\n"
-            "Rules:\n"
-            "- Keep exact file paths, dataset names, column names, variable names, "
-            "units, dimensions, counts, statistics, artifact paths, and error messages "
-            "when they appear in the transcript.\n"
-            "- Preserve which findings came from which source, grouped by file/provider "
-            "or workflow stage.\n"
-            "- Preserve unresolved gaps, failed inspections, missing dependencies, and "
-            "next checks.\n"
-            "- If evidence is missing or a source was not inspected, say that explicitly. "
-            "Do not fill gaps with plausible details.\n"
-            "- Do not invent dataset names, columns, statistics, compression settings, "
-            "or readiness conclusions that are not supported by the transcript.\n"
-            "- Prefer concise structured bullets over prose. Keep the summary compact, "
-            "but do not omit identifiers needed for a later expert to continue the work."
-        )
-        if focus:
-            prompt += f"\n\nFocus the summary on: {focus}"
-        prompt += f"\n\n--- transcript ---\n{transcript}\n--- end ---"
-
-        def _summarize_with_provider_retries() -> str:
-            def summarize() -> str:
-                return agent._run_chat_agent(prompt, "")
-
-            retry_call = getattr(agent, "_call_with_transient_provider_retries", None)
-            if callable(retry_call):
-                return retry_call("compact_summary", summarize)
-            return summarize()
-
         try:
-            summary = await asyncio.get_running_loop().run_in_executor(
-                None,
-                _summarize_with_provider_retries,
+            return await run_off_loop(
+                lambda: compact_session_context(app, sid, trigger="manual", focus=focus)
             )
-            evidence_index = deps.compact_exact_evidence_index(transcript)
-            if evidence_index:
-                summary = (summary or "").rstrip() + "\n\n" + evidence_index
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(
-                status_code=502,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="upstream_error",
-                        message=f"compact summarisation failed: {exc!r}",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-
-        # Insert the summary as a new assistant message at the head of the
-        # ledger (after archiving the originals to a parallel list so a
-        # future /resume can recover full history). The TUI doesn't see
-        # archived messages — only the compact summary + anything that
-        # comes after it.
-        event_id = _new_memory_event_id()
-        compacted_at = datetime.now(timezone.utc).isoformat()
-        archive = app.state.__dict__.setdefault("session_archives", {})
-        archive.setdefault(sid, []).append(
-            {
-                "compacted_at": time.time(),
-                "memory_event_id": event_id,
-                "messages": list(ledger),
-            }
-        )
-
-        arc = getattr(agent, "arc", None)
-        arc_status = ARC_NOT_CONFIGURED
-        if arc is not None:
-            try:
-                # #1334 review: the conversation-record read + write are store RPCs and
-                # must not run on the loop (against the real store the guard REFUSES the
-                # write and the handler below turned that into a 500). Owner module:
-                # gact/compact_memory.py.
-                arc_status = await run_off_loop(
-                    lambda: store_compact_conversation(
-                        arc,
-                        sid,
-                        summary=summary or "",
-                        event_id=event_id,
-                        archived_count=len(ledger),
-                        clio_agent_version=_installed_clio_agent_version(),
-                    )
-                )
-            except Exception as exc:  # noqa: BLE001
-                raise HTTPException(
-                    status_code=500,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="memory_update_failed",
-                            message=f"compact summary could not be stored in ARC memory: {exc!r}",
-                            recoverable=True,
-                        )
-                    ).model_dump(exclude_none=True),
-                ) from exc
-
-        compact_message = build_compact_summary_message(
-            session_id=sid,
-            turn_id=_active_semantic_turn_id(),
-            summary=summary or "",
-            event_id=event_id,
-            compacted_message_ids=[mid for m in ledger if (mid := _attr(m, "id", ""))],
-        )
-        replacement_messages = preserve_a2ui(sid, [compact_message], ledger, "compact")
-        await run_off_loop(deps.replace_session_messages, app, sid, replacement_messages)
-        memory_event = {
-            "id": event_id,
-            "version": 1,
-            "type": "compact_summary",
-            "session_id": sid,
-            "created_at": compacted_at,
-            "updated_at": compacted_at,
-            "summary_message_id": compact_message.id,
-            "archived_count": len(ledger),
-            "summary_chars": len((summary or "")),
-            "transcript_chars": len(transcript),
-            "focus": focus,
-            "arc_status": arc_status,
-            "metadata": {
-                "source": "gact_compact",
-                "synthetic": "compact_summary",
-                "evidence_index": "[exact retained evidence index]" in (summary or ""),
-            },
-        }
-        app.state.memory_events.setdefault(sid, []).append(memory_event)
-        await emit_semantic_event_async(
-            app,
-            sid,
-            "memory.compacted",
-            turn_id=_ctx.active_turn_id(),
-            trace_id=_ctx.active_trace_id(),
-            summary="Session transcript was compacted into memory.",
-            actor={"role": "runtime", "component": "memory"},
-            subject={"memory_event_id": event_id},
-            payload=memory_event,
-        )
-
-        # Publish so any open SSE stream redraws.
-        app.state.bus.publish(
-            Event(
-                type="session.compacted",
-                session_id=sid,
-                payload={
-                    "event_id": event_id,
-                    "archived_count": len(ledger),
-                    "summary_chars": len((summary or "")),
-                    "summary_message_id": compact_message.id,
-                    "version": 1,
-                },
-            )
-        )
-        return {
-            "session_id": sid,
-            "compacted": True,
-            "event_id": event_id,
-            "archived_count": len(ledger),
-            "summary": summary,
-        }
+        except CompactionError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.envelope()) from exc
 
     # ---- /v1/sessions/{sid}/export + /v1/sessions/import (#16) -------
 

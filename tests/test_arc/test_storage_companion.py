@@ -8,17 +8,22 @@ sequence the daemon would see.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
+import pytest
+
+from clio_agent import conf
 from clio_agent.arc.clio_core_liveness import LivenessGate
 from clio_agent.arc.companion_policy import (
     NEVER_INDEXED_SCOPE_PREFIX,
     SEGMENT_NAME_SEP,
     may_carry_companion,
 )
+from clio_agent.arc.lane_chunking import chunk_for_append, chunk_scope
 from clio_agent.arc.live import EVENTS_SCOPE
 from clio_agent.arc.segments import SegmentStore
-from clio_agent.arc.storage import ClioCoreStore
+from clio_agent.arc.storage import ClioCoreStore, LocalFSStore
 
 
 class _RecordingCte:
@@ -108,3 +113,65 @@ def test_non_segment_kinds_are_untouched_by_the_policy() -> None:
     cte = _RecordingCte()
     _store(cte).put("variants", "v1", b"x")
     assert [op for op, _n in cte.calls] == ["PutBlob", "GetBlobSize"]
+
+
+# --------------------------------------------------------------------------- #
+# #1339 review F4: the live-lane audit evidence -- one append re-puts ONLY the
+# active chunk record, never a sibling. Against a REAL LocalFSStore (not the
+# recording fake above): the ``store.put`` audit row this test pins is emitted
+# from inside ``LocalFSStore.put`` / ``ClioCoreStore.put`` themselves, so a real
+# backend is the honest proof.
+# --------------------------------------------------------------------------- #
+
+
+def test_variant_put_carries_no_store_put_audit_row(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit is ``kind == "segments"`` only -- a non-segment put is silent."""
+
+    monkeypatch.setattr(conf, "_STORE", conf.ConfigStore(home=tmp_path, cwd=tmp_path))
+    audit_path = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit_path))
+
+    LocalFSStore(str(tmp_path / "fs")).put("variants", "v1", b"x")
+
+    rows = audit_path.read_text().splitlines() if audit_path.exists() else []
+    assert not any(json.loads(row)["stage"] == "store.put" for row in rows)
+
+
+def test_one_append_on_a_full_three_chunk_lane_puts_only_the_active_chunk(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mint a 4th message onto a lane whose first three chunks are already full
+    (capacity 1 -- each append rolls to a fresh chunk): the ONE resulting
+    ``store.put`` audit row names the newly active (4th) chunk's record, never
+    one of the three sibling chunks the earlier appends already sealed."""
+
+    monkeypatch.setattr(conf, "_STORE", conf.ConfigStore(home=tmp_path, cwd=tmp_path))
+    audit_path = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit_path))
+
+    sid = "sess-storage-audit"
+    base = "_events/m"
+    ss = SegmentStore(LocalFSStore(str(tmp_path / "arc")))
+    for _ in range(3):
+        scope = chunk_for_append(ss, sid, base, capacity=1)
+        ss.append(sid, scope, "message_part", {})
+
+    before = len(audit_path.read_text().splitlines()) if audit_path.exists() else 0
+
+    active_scope = chunk_for_append(ss, sid, base, capacity=1)
+    assert active_scope == chunk_scope(base, 4)
+    ss.append(sid, active_scope, "message_part", {})
+
+    rows = audit_path.read_text().splitlines()
+    new_rows = [json.loads(row) for row in rows[before:]]
+    put_rows = [row for row in new_rows if row["stage"] == "store.put"]
+    assert put_rows, new_rows
+
+    active_name = SegmentStore._record_name(sid, active_scope)
+    assert all(row["name"] == active_name for row in put_rows)
+    assert all(row["kind"] == "segments" for row in put_rows)
+    for n in (1, 2, 3):
+        sibling_name = SegmentStore._record_name(sid, chunk_scope(base, n))
+        assert not any(row["name"] == sibling_name for row in put_rows)
