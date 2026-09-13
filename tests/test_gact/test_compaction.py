@@ -392,6 +392,39 @@ def test_auto_trigger_stages_and_flushes_after_the_turns_assistant_row(
         assert [m.id for m in reloaded] == [m.id for m in ledger]
 
 
+def test_maybe_autocompact_skips_typed_with_no_active_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No silent fallback (owner rule): with no active app bound,
+    ``maybe_autocompact`` returns without raising AND records a typed,
+    audited skip -- never a bare no-op.
+
+    ``_ctx.active_app()`` is documented nullable; ``compact_session_context``
+    reads ``app.state.sessions`` unguarded, so this path must never reach it.
+    """
+
+    import clio_agent.gact.compaction as compaction_module
+    from clio_agent.gact import context as _ctx
+    from clio_agent.gact.agents import reactv2_events as _events
+    from clio_agent.gact.compaction import AUDIT_AUTO_SKIPPED, maybe_autocompact
+
+    audits: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        compaction_module,
+        "stream_audit",
+        lambda stage, **fields: audits.append((stage, fields)),
+    )
+    monkeypatch.setattr(_events, "_arc_scope", lambda: (object(), "sess-no-app", "scope"))
+
+    assert _ctx.active_app() is None  # precondition: nothing bound in this thread
+    maybe_autocompact()  # must not raise
+
+    skipped = [f for stage, f in audits if stage == AUDIT_AUTO_SKIPPED]
+    assert skipped, audits
+    assert skipped[-1]["reason"] == "no_active_app"
+    assert skipped[-1]["session_id"] == "sess-no-app"
+
+
 def test_manual_compaction_during_a_running_turn_also_stages(tmp_path: Path) -> None:
     agent = _CapturingAgent(["staged summary"])
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)

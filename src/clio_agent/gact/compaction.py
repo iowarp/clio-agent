@@ -60,6 +60,7 @@ __all__ = [
     "ARC_NO_ACTIVE_SCOPE",
     "ARC_WORKING_SET_TOO_SMALL",
     "AUDIT_AUTO_FAILED",
+    "AUDIT_AUTO_SKIPPED",
     "AUDIT_INPUT_OVER_WINDOW",
     "AUDIT_PERSIST_FAILED",
     "AUDIT_STAGED_FLUSH_AT_CLOSE",
@@ -104,6 +105,7 @@ PLACEMENT_STAGED = "staged_for_finalize"
 #: Audit reasons (``stream_audit`` stage names double as the reason).
 AUDIT_INPUT_OVER_WINDOW = "compaction.input_over_window"
 AUDIT_AUTO_FAILED = "compaction.auto_failed"
+AUDIT_AUTO_SKIPPED = "compaction.auto_skipped"
 AUDIT_STAGED_FLUSH_AT_CLOSE = "compaction.staged_flush_at_close"
 AUDIT_PERSIST_FAILED = "compaction.persist_failed"
 AUDIT_STAGED_FLUSH_FAILED = "compaction.staged_flush_failed"
@@ -635,7 +637,10 @@ def maybe_autocompact() -> None:
     ``trigger="auto"``. A failure is audited (:data:`AUDIT_AUTO_FAILED`) and
     swallowed -- the loop continues, backstopped by the existing
     ``ContextWindowExceededError`` handling; auto-compaction is a proactive
-    optimization, never a hard turn dependency.
+    optimization, never a hard turn dependency. No active app to compact
+    through (``_ctx.active_app()`` is documented nullable) is likewise a typed,
+    audited skip (:data:`AUDIT_AUTO_SKIPPED`, ``reason="no_active_app"``), never
+    a silent no-op.
     """
 
     from clio_agent.gact.agents.reactv2_events import _arc_scope  # noqa: PLC0415
@@ -653,6 +658,9 @@ def maybe_autocompact() -> None:
         # (gact/context.py); compact_session_context requires a real app
         # (it reads app.state.sessions unguarded) -- never a hard crash for a
         # proactive optimization the docstring itself promises is optional.
+        # No silent fallback (owner rule): the skip is typed and audited, not
+        # merely swallowed.
+        stream_audit(AUDIT_AUTO_SKIPPED, reason="no_active_app", session_id=session)
         return
     sessions = getattr(getattr(app, "state", None), "sessions", None)
     session_row = sessions.get(session) if sessions is not None else None
