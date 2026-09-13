@@ -129,13 +129,13 @@ spawn-vs-wait-vs-observe; CLIO carries the decision, it does not make it.
   and returns a `task_id` immediately.
 - `spawn_agents_parallel([...])` fans a batch of declared children out at once
   (bounded by the parent's declared `fanout.max_workers`; see [Fanout](#fanout)).
-- `wait_agent_tasks([task_id], timeout_s=...)` — `timeout_s` is **REQUIRED** (a wait
-  without a budget is a hang). It blocks up to the budget for the named child turns
-  to reach a terminal state and returns each child's `output` (its verbatim
-  `answer`) and typed `workflow_state`. On timeout it returns the current statuses
-  and the model decides whether to keep waiting, keep working, or finish.
-- `check_agent_tasks([task_id]?)` polls NON-blocking: the tasks this session spawned
-  and their status, plus a bounded result excerpt + `message_ref` for finished ones.
+- `wait_agent_tasks([task_id, ...])` performs a committed wait and returns after all
+  named child turns reach a terminal state, avoiding model-visible polling loops.
+  It has no timeout argument and returns each child's `output` (its verbatim
+  `answer`) and typed `workflow_state`.
+- `observe_agent_tasks([task_id, ...], cursor=...)` returns an incremental snapshot
+  immediately. Supplying `pattern` holds that same call open until the regex matches
+  or a requested child becomes terminal; child events wake it without poll retries.
 
 Whichever collection path reaches a finished task first CONSUMES it exactly once
 (durable `consumed_at` + an `agent.task.consumed` event). A completed-but-unconsumed

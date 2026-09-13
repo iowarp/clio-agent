@@ -33,6 +33,7 @@ from clio_agent.gact.runtime.grant_resolver import (
     KIND_ROOT,
     KIND_TOOL,
     PLAN_ACL_ALLOW_TOOL_PRIORITY,
+    PLAN_ACL_ARCHITECT_TOOLS,
     PLAN_ACL_DENY_PRIORITY,
     PLAN_ACL_PLAN_FILE_PRIORITY,
     PLAN_ACL_PLAN_TOOLS,
@@ -827,7 +828,7 @@ def test_default_plan_acl_rows_shape() -> None:
     """The engine ships banded plan_acl defaults: deny-all @40, a plan-tool allow-band @50, plan-file @70."""
     rows = default_plan_acl_rows()
     # 1 deny + one allow row per plan tool + 1 plan-file carve-out.
-    assert len(rows) == 2 + len(PLAN_ACL_PLAN_TOOLS)
+    assert len(rows) == 2 + len(PLAN_ACL_PLAN_TOOLS) + len(PLAN_ACL_ARCHITECT_TOOLS)
     deny = rows[0]
     allow = rows[-1]
     assert deny["action"] == "deny"
@@ -838,12 +839,43 @@ def test_default_plan_acl_rows_shape() -> None:
     assert allow["modes"] == ["plan"]
     assert allow["path_pattern"].endswith(".md")
     # The middle band re-allows exactly the plan-safe tools, scoped to plan mode, @50 (above deny).
-    allow_tools = rows[1:-1]
+    allow_tools = [r for r in rows[1:-1] if r["modes"] == ["plan"]]
     assert {r["tool_name_pattern"] for r in allow_tools} == set(PLAN_ACL_PLAN_TOOLS)
     for r in allow_tools:
         assert r["action"] == "allow"
         assert r["priority"] == PLAN_ACL_ALLOW_TOOL_PRIORITY == 50
         assert r["modes"] == ["plan"]
+
+    architect_tools = [r for r in rows[1:-1] if r["modes"] == ["architect"]]
+    assert {r["tool_name_pattern"] for r in architect_tools} == set(
+        PLAN_ACL_ARCHITECT_TOOLS
+    )
+    for r in architect_tools:
+        assert r["action"] == "allow"
+        assert r["priority"] == PLAN_ACL_ALLOW_TOOL_PRIORITY == 50
+
+
+def test_plan_acl_allows_registered_artifact_publication_in_architect_mode() -> None:
+    """Architect may publish a registered artifact, but cannot use arbitrary write tools."""
+    assert resolve("tool", "create_artifact", policies=[], session_id="s", mode="architect") == (
+        "allow"
+    )
+    assert resolve("tool", _WRITE_TOOL, policies=[], session_id="s", mode="architect") == "deny"
+
+
+def test_plan_acl_user_deny_blocks_architect_artifact_publication() -> None:
+    """The Architect publication exception does not override an explicit user deny."""
+    policies = [
+        {
+            "scope": "session",
+            "scope_id": "s",
+            "tool_name_pattern": "create_artifact",
+            "action": "deny",
+        }
+    ]
+    assert resolve(
+        "tool", "create_artifact", policies=policies, session_id="s", mode="architect"
+    ) == "deny"
 
 
 def test_plan_acl_allows_plan_safe_tools_in_plan_mode() -> None:

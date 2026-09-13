@@ -312,30 +312,23 @@ from clio_agent.gact.agents import resolution as _resolution  # noqa: E402, F401
 # the kept turn-handler dispatch wrappers below reach the builders through these.
 from clio_agent.gact.agents.builders import (  # noqa: E402,F401
     _active_base_agent_tool_executor,
-    _adapter_tool_intent_from_exception,
     _blueprint_runtime_signature,
     _build_blueprint_dspy_module,
     _build_prompt_user_agent_module,
     _build_tool_user_agent_module,
     _call_enabled_external_mcp_tool,
-    _call_recovered_dspy_tool,
     _dynamic_agent_lm_config,
     _dynamic_agent_tools,
     _emit_blueprint_llm_failure,
     _emit_invalid_tool_selection_event,
     _enabled_external_mcp_dspy_tools,
-    _extract_repair_attempts,
     _invalid_tool_selection_from_exception,
-    _is_repairable_typed_output_error,
     _prompt_user_agent_signature,
     _recording_blueprint_tool,
-    _recover_blueprint_react_tool_intent,
-    _repair_temperature,
     _run_external_mcp_tool_sync,
     _tool_names,
     _tool_user_agent_max_iters,
     _tool_user_agent_signature,
-    _typed_output_repair_hint,
 )
 from clio_agent.gact.agents.composition import (  # noqa: E402, F401
     _agent_prompt_request,
@@ -399,9 +392,7 @@ from clio_agent.gact.evidence import (  # noqa: E402,F401
     _dynamic_agent_runtime_provenance,
     _extract_tools_called_from_trajectory,
     _is_bounded_tool_result,
-    _is_empty_dynamic_agent_answer_error,
     _propose_edit_diffs_from_pred,
-    _tool_agent_empty_answer_fallback,
     _tool_result_is_error,
     _tool_result_preview,
 )
@@ -601,6 +592,7 @@ from clio_agent.gact.runtime.type_parsing import (  # noqa: E402,F401
     _parse_field_annotation,
     _sanitize_model_name,
 )
+from clio_agent.gact.user_question_ledger import restore_user_questions  # noqa: E402
 
 # gact/workflow_state/merge.py -- pure workflow_state merge/normalize helpers.
 from clio_agent.gact.workflow_state.merge import (  # noqa: E402,F401
@@ -2259,10 +2251,9 @@ def build_app(
     # resolution-derived-policy + validation/persistence data layer lives in
     # runtime/permission_policies.py (shared with the build_app startup load).
     register_permission_and_interaction_routes(app, deps)
-    # Crash recovery is APP ASSEMBLY, not route registration: rehydrating surfaced
-    # native questions from durable session metadata mutates live state, so it
-    # belongs here beside the other recovery steps rather than as a side effect of
-    # registering a route factory.
+    # Restore durable question history before legacy/native pending snapshots;
+    # Recovery mutates live state, so it belongs in app assembly.
+    restore_user_questions(app)
     restore_pending_ask_user_questions(app)
 
     # ---- DELETE /v1/sessions/{sid}/messages/{id} + /v1/messages/{id} -

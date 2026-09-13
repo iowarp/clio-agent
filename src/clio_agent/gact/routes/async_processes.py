@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException
 
 from clio_agent.gact.agent_tasks import AgentTask, display_run_name
+from clio_agent.gact.agents.tool_instrumentation import declared_tool_title
 from clio_agent.gact.mcp_task_store import app_task_store
 from clio_agent.gact.provenance.child_projection import child_session_lineage
 from clio_agent.gact.session_descendants import descendant_session_ids
@@ -34,7 +35,11 @@ from clio_agent.tools.mcp_task_records import TaskRecord
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
 
-__all__ = ["project_session_async_processes", "register_async_process_routes"]
+__all__ = [
+    "mcp_task_display_title",
+    "project_session_async_processes",
+    "register_async_process_routes",
+]
 
 # Mirrors run_registry.py's ``_RELAY_LIVE_STATES`` intentionally rather than
 # importing it: that mapping is private to the (unrelated) global run-history
@@ -88,10 +93,24 @@ def _mcp_task_process(record: TaskRecord) -> dict[str, Any]:
     return {
         "kind": "mcp-task",
         "id": record.task_id,
-        "title": record.tool or f"mcp task {record.task_id}",
+        "title": mcp_task_display_title(record),
         "live_state": _MCP_TASK_LIVE_STATES.get(record.display_status, record.display_status),
         **record.to_wire(),
     }
+
+
+def mcp_task_display_title(record: TaskRecord) -> str:
+    """Return a readable server/tool identity without exposing the raw task id."""
+
+    curated = declared_tool_title(record.tool)
+    if curated:
+        return curated
+    if record.tool:
+        return record.tool.replace("_", " ").replace("-", " ").strip().title()
+    backend_name = record.backend.get("name")
+    if isinstance(backend_name, str) and backend_name.strip():
+        return f"{backend_name.strip()} task"
+    return "Background task"
 
 
 def project_session_async_processes(

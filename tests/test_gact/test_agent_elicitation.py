@@ -414,9 +414,12 @@ def test_agent_answer_passing_schema_resolves_and_attributes_agent(
     question = _mint_pending_form_question(app, sid)
     app.state.user_questions[question.id] = question
 
-    monkeypatch.setattr(
-        ae, "_run_agent_answer_turn", lambda *a, **k: '{"answer": {"nonce": "xyz-42"}}'
-    )
+    def answer_turn(*args: Any, **kwargs: Any) -> str:
+        del args
+        kwargs["on_spawn"](SimpleNamespace(task_id="task_answer", child_session_id="sess_answer"))
+        return '{"answer": {"nonce": "xyz-42"}}'
+
+    monkeypatch.setattr(ae, "_run_agent_answer_turn", answer_turn)
     invocation = MCPInvocationContext(
         invocation_id="inv", session_id=sid, namespace="v2ex", tool_name="agent_guarded_input"
     )
@@ -428,6 +431,10 @@ def test_agent_answer_passing_schema_resolves_and_attributes_agent(
     assert updated.status == "answered"
     assert updated.answered_by == "agent"
     assert updated.answer_metadata == {"nonce": "xyz-42"}
+    assert updated.metadata["agent_answer_task"] == {
+        "task_id": "task_answer",
+        "child_session_id": "sess_answer",
+    }
 
 
 def test_agent_answer_failing_schema_never_reaches_the_server(
@@ -769,6 +776,12 @@ def test_agent_answer_child_resolves_to_an_empty_toolset(client: TestClient) -> 
 
     handle = asyncio.run(_spawn())
     try:
+        task = app.state.agent_task_registry.get(handle.task_id)
+        assert task is not None
+        assert task.project_to_parent is False
+        assert not any(
+            event.type.startswith("agent.task.") for event in app.state.bus._history.get(sid, ())
+        ), "an internal elicitation helper leaked into the attended task feed"
         rows = client.get("/v1/agents", params={"session_id": handle.child_session_id}).json()[
             "agents"
         ]

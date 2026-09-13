@@ -404,7 +404,7 @@ def _fold_completed(app: object, running: object, *, answer: str) -> object:
     return fold_agent_task_event(app, event)
 
 
-def test_terminal_task_fold_closes_dangling_started_handoff(tmp_path: Path) -> None:
+def test_terminal_task_fold_appends_return_after_stored_start(tmp_path: Path) -> None:
     """Round-9 wire defect: a parent turn that ends WITHOUT waiting on a spawned
     child leaves that child's delegate.started expert_handoff part stuck
     "running" forever on the parent's STORED message once the child later
@@ -412,9 +412,9 @@ def test_terminal_task_fold_closes_dangling_started_handoff(tmp_path: Path) -> N
     (enrichment.consume_pending_agent_task_notifications) nor a mid-turn inbox
     drain (loop_inbox) ever runs for a parent that gets no further turn. The
     task-terminal-transition seam (task_fold.finish_agent_task_transition ->
-    background_exit.reconcile_stored_handoff_part) must upsert the STORED part
-    to terminal directly and publish message.part.updated so an already-open
-    client corrects too."""
+    background_exit.reconcile_stored_handoff_part) must append the return to the
+    STORED ledger and publish message.part.added so an already-open client sees
+    the completed lifecycle without history being rewritten."""
 
     client, state = _client(tmp_path)
     parent, running = _seed_stranded_handoff(client, state, task_id="task_stranded")
@@ -422,27 +422,27 @@ def test_terminal_task_fold_closes_dangling_started_handoff(tmp_path: Path) -> N
     outcome = _fold_completed(client.app, running, answer="3 stations profiled")
     assert outcome.applied is True
 
-    # The STORED message's part flips to terminal IN PLACE (same part id) --
-    # the started row's own fields (e.g. "question") survive under the terminal ones.
-    stored = state.messages[parent][0].parts[0]
-    assert stored.id == "part_handoff_started"
-    assert stored.stage == "delegate.completed"
-    assert stored.status == "completed"
-    assert stored.metadata["question"] == "profile the dataset"
-    assert stored.metadata["output"] == "3 stations profiled"
+    started, returned = state.messages[parent][0].parts
+    assert started.id == "part_handoff_started"
+    assert started.stage == "delegate.started"
+    assert started.metadata["question"] == "profile the dataset"
+    assert "output" not in started.metadata
+    assert returned.stage == "delegate.completed"
+    assert returned.status == "completed"
+    assert returned.metadata["output"] == "3 stations profiled"
+    assert "question" not in returned.metadata
 
     # A client already watching the session gets the correction pushed over SSE.
-    updates = [e for e in state.bus._history.get(parent, []) if e.type == "message.part.updated"]
-    assert len(updates) == 1
-    assert updates[0].payload["message_id"] == "msg_parent_turn"
-    assert updates[0].payload["part"]["stage"] == "delegate.completed"
-    assert updates[0].payload["part"]["id"] == "part_handoff_started"
+    additions = [e for e in state.bus._history.get(parent, []) if e.type == "message.part.added"]
+    assert len(additions) == 1
+    assert additions[0].payload["message_id"] == "msg_parent_turn"
+    assert additions[0].payload["part"]["stage"] == "delegate.completed"
 
     # GET /messages agrees -- no more lying "running" render on a fresh load.
     fetched = client.get(f"/v1/sessions/{parent}/messages").json()["messages"]
-    handoff = next(p for m in fetched for p in m["parts"] if p["type"] == "expert_handoff")
-    assert handoff["stage"] == "delegate.completed"
-    assert handoff["status"] == "completed"
+    handoffs = [p for m in fetched for p in m["parts"] if p["type"] == "expert_handoff"]
+    assert [row["stage"] for row in handoffs] == ["delegate.started", "delegate.completed"]
+    assert handoffs[1]["status"] == "completed"
 
 
 def test_terminal_task_fold_stored_handoff_writeback_is_idempotent(tmp_path: Path) -> None:
@@ -456,21 +456,24 @@ def test_terminal_task_fold_stored_handoff_writeback_is_idempotent(tmp_path: Pat
 
     outcome = _fold_completed(client.app, running, answer="done")
     assert outcome.applied is True
-    before_updates = len(
-        [e for e in state.bus._history.get(parent, []) if e.type == "message.part.updated"]
+    before_additions = len(
+        [e for e in state.bus._history.get(parent, []) if e.type == "message.part.added"]
     )
 
     # Simulate a later consumer reaching this SAME terminal task again (a
     # retried fold, or a duplicate transport observation).
     again = reconcile_stored_handoff_part(client.app, outcome.task)
 
-    after_updates = len(
-        [e for e in state.bus._history.get(parent, []) if e.type == "message.part.updated"]
+    after_additions = len(
+        [e for e in state.bus._history.get(parent, []) if e.type == "message.part.added"]
     )
     assert again is False
-    assert after_updates == before_updates
-    assert len(state.messages[parent][0].parts) == 1
-    assert state.messages[parent][0].parts[0].stage == "delegate.completed"
+    assert after_additions == before_additions
+    assert len(state.messages[parent][0].parts) == 2
+    assert [part.stage for part in state.messages[parent][0].parts] == [
+        "delegate.started",
+        "delegate.completed",
+    ]
 
 
 def _seed_historically_stale_handoff(client: TestClient, *, task_id: str) -> tuple[str, object]:
@@ -550,9 +553,9 @@ def test_stale_handoff_reconciled_lazily_on_session_load(tmp_path: Path) -> None
     state.messages.discard(parent)
 
     fetched = client.get(f"/v1/sessions/{parent}/messages").json()["messages"]
-    handoff = next(p for m in fetched for p in m["parts"] if p["type"] == "expert_handoff")
-    assert handoff["stage"] == "delegate.completed"
-    assert handoff["status"] == "completed"
+    handoffs = [p for m in fetched for p in m["parts"] if p["type"] == "expert_handoff"]
+    assert [row["stage"] for row in handoffs] == ["delegate.started", "delegate.completed"]
+    assert handoffs[1]["status"] == "completed"
 
     events = list(state.handoff_reconciliations)
     assert len(events) == 1
@@ -572,17 +575,23 @@ def test_stale_handoff_reconcile_sweep_is_idempotent_across_reloads(tmp_path: Pa
 
     state.messages.discard(parent)
     first = client.get(f"/v1/sessions/{parent}/messages").json()["messages"]
-    first_handoff = next(p for m in first for p in m["parts"] if p["type"] == "expert_handoff")
-    assert first_handoff["stage"] == "delegate.completed"
+    first_handoffs = [p for m in first for p in m["parts"] if p["type"] == "expert_handoff"]
+    assert [row["stage"] for row in first_handoffs] == [
+        "delegate.started",
+        "delegate.completed",
+    ]
     assert len(state.handoff_reconciliations) == 1
 
     # A second cold load of the SAME (now-reconciled, durably-persisted) session.
     state.messages.discard(parent)
     second = client.get(f"/v1/sessions/{parent}/messages").json()["messages"]
-    second_handoff = next(p for m in second for p in m["parts"] if p["type"] == "expert_handoff")
+    second_handoffs = [p for m in second for p in m["parts"] if p["type"] == "expert_handoff"]
 
-    assert second_handoff["stage"] == "delegate.completed"
-    assert second_handoff["status"] == "completed"
+    assert [row["stage"] for row in second_handoffs] == [
+        "delegate.started",
+        "delegate.completed",
+    ]
+    assert second_handoffs[1]["status"] == "completed"
     # No re-write, no second typed event.
     assert len(state.handoff_reconciliations) == 1
     assert state.handoff_reconciliations[0]["handle_id"] == completed.handle_id

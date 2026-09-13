@@ -25,6 +25,10 @@ class JsonlProvenanceProvider:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        # Artifact-registry boot replay consumes the same durable journal.  Keep
+        # this provider-owned instead of teaching the registry about dispatcher
+        # internals; a dispatcher can aggregate these roots across providers.
+        self.replay_paths = (path,)
         self._backend = FileSemanticTraceBackend(path)
 
     def emit(self, event: SemanticEvent) -> ProviderReceipt:

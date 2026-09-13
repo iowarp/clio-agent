@@ -409,6 +409,8 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
             subagent_links: dict[str, dict[str, Any]] = {}
             if task_registry is not None:
                 for task in task_registry.for_parent(sid):
+                    if not task.project_to_parent:
+                        continue
                     agent_id = str(task.agent_ref.get("expert_id") or "")
                     result = task.result if isinstance(task.result, Mapping) else {}
                     answer_excerpt = str(result.get("answer_excerpt") or "")

@@ -42,14 +42,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact.artifacts.observer_bridge import observer_call_id
+from clio_agent.gact.plan_review import ensure_owned_plan_directory, plan_review_content
 from clio_agent.gact.planning import (
     PLAN_MODE_REMINDER_MARKER,
-    PLAN_VARIANT_METADATA_KEY,
     plan_mode_reminder_block,
     plan_variant_guidance,
     recorded_plan_variant,
     recorded_playbook,
-    transition_playbook_to_execution,
 )
 from clio_agent.gact.user_question_ledger import record_user_question
 from clio_agent.runtime import trace
@@ -193,6 +193,11 @@ def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_t
     if plan_file is None:
         plan_file = str(_compute_plan_file_path(app, sid, session))
         metadata_patch[_PLAN_FILE_METADATA_KEY] = plan_file
+    # CLIO owns the plan path and its parent directory; the model owns only the
+    # Markdown content. Without this, a clean checkout cannot make its first
+    # permitted plan write because the edit tool intentionally does not create
+    # missing parent directories.
+    ensure_owned_plan_directory(plan_file)
     exists = Path(plan_file).exists()
 
     # P1.6a #1068: a recorded plan VARIANT (plan_workflow / plan_small) shapes the reminder — a
@@ -243,10 +248,7 @@ def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_t
     )
 
 
-# =========================================================================== #
-# P1.4 #1066 — plan_exit tool + N-way approval + constraint-lift + durable defer
-# =========================================================================== #
-#
+# P1.4 #1066 — plan_exit tool + N-way approval + constraint-lift + durable defer.
 # ``plan_exit`` is a TURN-ENDING YIELD, structurally identical to the ask-user pause
 # (``turn_finalize.maybe_pause_for_user``): the model records the request via the tool, the
 # post-forward seam (:func:`maybe_pause_for_plan_exit`) mints an approval ``UserQuestion`` and
@@ -258,24 +260,15 @@ def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_t
 
 
 class PlanExitError(RuntimeError):
-    """A ``plan_exit`` precondition failed (not in plan mode, or no plan file exists).
-
-    Raised by the ``plan_exit`` tool BEFORE any session mutation, so a rejected call leaves the
-    session in plan mode unchanged (no silent fallback — the model sees a typed reason it can act
-    on). ReAct surfaces the message as a tool observation the model reads and retries against.
-    """
+    """A ``plan_exit`` precondition failed before any session mutation."""
 
 
-#: ``session.metadata`` key: a ``plan_exit`` the model requested this turn, awaiting the post-forward
-#: seam to surface it as an approval question (no fifth store — rides the session record, #948 pattern).
+#: Pending model-requested plan exit, stored on the existing session record.
 _PLAN_EXIT_PENDING_KEY = "pending_plan_exit"
 
-#: ``question.metadata`` flag marking a ``UserQuestion`` as a plan-exit N-way approval (P1.4 #1066).
-#: The ask-user answer route branches on it to run :func:`resolve_plan_exit_answer` instead of the
-#: generic ask-user resume.
+#: Marks a ``UserQuestion`` as a Plan-exit N-way approval.
 PLAN_EXIT_APPROVAL_META = "plan_exit_approval"
 
-#: The exit postures the model MAY hint via ``recommendedMode`` (the approver still has final say).
 _PLAN_EXIT_RECOMMENDED_MODES = frozenset({"auto", "interactive", "exit_only"})
 
 #: The approval decisions the approver selects. ``clear_context`` is a co-selectable MODIFIER, not a
@@ -332,6 +325,7 @@ def _record_plan_exit_request(
                 "recommended_mode": rec,
                 "risk_notes": str(risk_notes or "").strip(),
                 "plan_file": plan_file,
+                "invocation_id": observer_call_id(),
                 "surfaced": False,
             }
         },
@@ -425,7 +419,7 @@ def _plan_exit_options() -> list[Any]:
             description="Leave plan mode but do NOT execute; await further direction.",
         ),
         UserQuestionOption(
-            label="Reject — keep planning",
+            label="Request changes — keep planning",
             value="reject",
             description="Stay in plan mode; return feedback so the plan can be revised.",
         ),
@@ -486,6 +480,7 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
 
     from clio_agent.gact.enrichment import _finalize_context_frame  # noqa: PLC0415
     from clio_agent.gact.events import Event  # noqa: PLC0415
+    from clio_agent.gact.plan_reuse import save_approved_plan  # noqa: PLC0415
     from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
         _emit_semantic_event,
         _new_question_id,
@@ -497,6 +492,16 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
     summary = str(pending.get("summary") or "")
     recommended = str(pending.get("recommended_mode") or "")
     risk_notes = str(pending.get("risk_notes") or "")
+    # The document presented for human review is the durable plan record. Register it at the
+    # plan-exit boundary, before approval, so the review and the eventual execution reference the
+    # same immutable artifact version. Approval reuses this ref; it must not mint a second version.
+    plan_artifact_ref = save_approved_plan(
+        app,
+        state.sid,
+        plan_file=plan_file,
+        turn_id=state.turn_id,
+        trace_id=state.trace_id,
+    )
     now_iso = datetime.now(timezone.utc).isoformat()
     from clio_agent.gact.permission_delivery import attended_session_id  # noqa: PLC0415
 
@@ -521,6 +526,9 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
             "summary": summary,
             "risk_notes": risk_notes,
             "plan_file": plan_file,
+            "artifact_ref": plan_artifact_ref,
+            "invocation_id": str(pending.get("invocation_id") or ""),
+            **plan_review_content(plan_file),
             "source_user_message_id": state.user_msg.id,
         },
     )
@@ -573,228 +581,9 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
     return True
 
 
-#: The Gemini "State Transition Override" constraint-lifting preamble injected into the resumed
-#: turn on approval — the explicit signal that plan mode's read-only restrictions are lifted.
-_CONSTRAINT_LIFT_HEADER = "[STATE TRANSITION OVERRIDE]"
-
-
-def _plan_exit_constraint_lift_text(decision: str, plan_file: str) -> str:
-    """Compose the constraint-lifting resume text for an APPROVED plan exit (auto/interactive).
-
-    Names the state transition explicitly (previous read-only/plan constraints are lifted; the model
-    is authorized to modify files to implement the approved plan) and points at the plan file. The
-    ``auto`` variant tells the model to begin executing now; the ``interactive`` variant tells it to
-    expect a prompt per action. Never used for ``exit_only`` (which injects NO execute-now message).
-    """
-
-    base = (
-        f"{_CONSTRAINT_LIFT_HEADER} Your plan at {plan_file} has been APPROVED. The previous "
-        "read-only / plan-mode constraints are now LIFTED — you are authorized to modify files to "
-        "implement the approved plan."
-    )
-    if decision == "interactive":
-        return base + " Begin implementing it; you will be prompted to approve each action."
-    return base + " Begin implementing the approved plan now."
-
-
-def _plan_exit_reject_text(feedback: str, plan_file: str) -> str:
-    """Compose the resume text for a REJECTED plan exit (stays in plan mode with feedback)."""
-
-    note = feedback or "(no additional feedback provided)"
-    return (
-        "Your request to exit plan mode was REJECTED — you are STILL in plan mode. Revise the plan "
-        f"at {plan_file} per the reviewer's feedback, then call plan_exit again.\n\n"
-        f"Reviewer feedback: {note}"
-    )
-
-
-def _stage_plan_exit_resume(
-    app: "FastAPI",
-    deps: "GactDeps",
-    sid: str,
-    session: Any,
-    resume_text: str,
-    resume_metadata: dict[str, Any],
-    *,
-    question_id: str,
-) -> None:
-    """Resume the run after a plan-exit decision, riding the #1031 deferred-resume fold.
-
-    Mirrors the ask-user answer staging: if a turn is in flight the resume is folded into the loop
-    inbox as a user steer (drained mid-turn or re-driven into one new turn by the idle hook); if the
-    session is idle/waiting_user (the durable-defer case — approval arrived after the turn ended) it
-    stages a background user turn immediately. No held thread, no new store.
-    """
-
-    from clio_agent.gact.events import Event  # noqa: PLC0415
-    from clio_agent.gact.loop_inbox import enqueue_user_steer  # noqa: PLC0415
-
-    if app.state.agent is not None and app.state.turn_runner.busy(sid):
-        enqueue_user_steer(
-            app,
-            sid,
-            resume_text,
-            {**resume_metadata, "plan_exit_resume": True, "question_id": question_id},
-        )
-        app.state.bus.publish(
-            Event(
-                type="plan_exit.resume_deferred",
-                session_id=sid,
-                payload={"session_id": sid, "question_id": question_id, "reason": "session_busy"},
-            )
-        )
-        return
-    if app.state.agent is not None:
-        resumed = deps.start_background_user_turn(
-            sid,
-            session,
-            resume_text,
-            metadata={**resume_metadata, "plan_exit_resume": True},
-            prev_status=str(getattr(session, "status", "waiting_user") or "waiting_user"),
-        )
-        app.state.bus.publish(
-            Event(
-                type="plan_exit.resumed",
-                session_id=sid,
-                payload={
-                    "session_id": sid,
-                    "question_id": question_id,
-                    "queued_user_message_id": resumed.id,
-                },
-            )
-        )
-        return
-    app.state.sessions.update(sid, status="idle")
-    app.state.bus.publish(
-        Event(
-            type="session.status_changed",
-            session_id=sid,
-            payload={"session_id": sid, "status": "idle", "prev_status": "waiting_user"},
-        )
-    )
-
-
 def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, question: Any) -> None:
-    """Apply an answered plan-exit approval: mode transition + constraint-lift + resume (P1.4 #1066).
+    """Apply a plan-exit answer through the dedicated lifecycle owner."""
 
-    Called from the ask-user answer route when the answered question carries
-    :data:`PLAN_EXIT_APPROVAL_META`. Parses the decision (``auto``/``interactive``/``exit_only``/
-    ``reject``) and the ``clear_context`` modifier from the answer, then:
+    from clio_agent.gact.plan_exit_resolution import resolve_plan_exit_answer as resolve
 
-    * **reject** — leaves ``session.mode`` == ``plan`` and resumes with the reviewer's feedback so
-      the model can revise the plan.
-    * **auto / interactive** — transitions ``session.mode`` to ``edit`` (approval_mode ``auto-edits``
-      for auto, ``ask`` for interactive), optionally clears history, and resumes with the
-      constraint-lifting message.
-    * **exit_only** — transitions ``session.mode`` to ``edit`` but does NOT resume a turn and injects
-      NO execute-now message; the model must wait for the user's next direction before editing.
-    """
-
-    from clio_agent.gact.events import Event  # noqa: PLC0415
-
-    session = app.state.sessions.get(sid)
-    q_meta = getattr(question, "metadata", None) or {}
-    selected = [str(s) for s in (getattr(question, "selected_options", None) or [])]
-    answer_meta = getattr(question, "answer_metadata", None) or {}
-    plan_file = str(q_meta.get("plan_file") or "")
-    decision = next((s for s in selected if s in _PLAN_EXIT_DECISIONS), "")
-    if not decision:
-        # No explicit human decision selected: reject-safe unconditionally (stay in plan mode —
-        # NEVER silently execute an unapproved plan). The model's recommended_mode may pre-select
-        # or hint the option in the UI, but it MUST NOT substitute for the human's decision here;
-        # the approver still has final say (see the invariant at the top of this module).
-        decision = "reject"
-    clear_context = (_PLAN_EXIT_CLEAR_CONTEXT in selected) or bool(answer_meta.get("clear_context"))
-    feedback = str(getattr(question, "answer", "") or "").strip()
-
-    # Clear the surfaced-request bookkeeping first (the decision is now being applied).
-    app.state.sessions.update(
-        sid, metadata_patch={_PLAN_EXIT_PENDING_KEY: {}, "pending_user_question_id": ""}
-    )
-
-    if decision == "reject":
-        session = app.state.sessions.get(sid)
-        _stage_plan_exit_resume(
-            app,
-            deps,
-            sid,
-            session,
-            _plan_exit_reject_text(feedback, plan_file),
-            {"plan_exit_result": "rejected", "plan_file": plan_file},
-            question_id=question.id,
-        )
-        return
-
-    # Approve: the SANCTIONED plan-mode exit (unlike the enter_mode no-escape guard). Clear any
-    # plan VARIANT tag (P1.6a #1068) as the session leaves plan mode. An ACTIVE operator playbook
-    # (P1.6b) does NOT just clear — it is CARRIED into an execution record (P1.6d #1068) so its
-    # per-step tools_allowed keeps narrowing during execution and its active step advances off the
-    # write_todos signal. (Reject stays in plan mode and returns earlier, keeping the plan-phase
-    # scaffold so the revision turn is unchanged.)
-    approval_mode = "auto-edits" if decision == "auto" else "ask"
-    app.state.sessions.update(
-        sid,
-        mode="edit",
-        approval_mode=approval_mode,
-        metadata_patch={PLAN_VARIANT_METADATA_KEY: ""},
-    )
-    transition_playbook_to_execution(app, sid)
-    # P1.6c #1068: register the approved plan as a provenance-tracked artifact (save-and-reuse).
-    # Guarded + non-fatal: a degraded save records a typed reason but never blocks this resume.
-    from clio_agent.gact.plan_reuse import save_approved_plan  # noqa: PLC0415
-
-    save_approved_plan(app, sid, plan_file=plan_file)
-    cleared = False
-    if clear_context:
-        # The wipe destroys transcript-owned A2UI surfaces; announce each one
-        # with its typed reason so no client renders a surface the server lost.
-        app.state.a2ui_store.announce_ledger_clear(sid, "plan_exit_context_cleared")
-        deps.replace_session_messages(app, sid, [])
-        app.state.sessions.update(
-            sid, message_count=0, metadata_patch={"plan_exit_context_cleared": True}
-        )
-        cleared = True
-    session = app.state.sessions.get(sid)
-    resume_metadata = {
-        "plan_exit_result": "approved",
-        "plan_exit_mode": decision,
-        "plan_exit_context_cleared": cleared,
-        "plan_file": plan_file,
-    }
-
-    if decision == "exit_only":
-        # Leave plan mode but do NOT execute: no resume turn, no execute-now message.
-        app.state.sessions.update(
-            sid,
-            status="idle",
-            metadata_patch={"plan_exit_result": "approved_exit_only"},
-        )
-        app.state.bus.publish(
-            Event(
-                type="session.status_changed",
-                session_id=sid,
-                payload={"session_id": sid, "status": "idle", "prev_status": "waiting_user"},
-            )
-        )
-        app.state.bus.publish(
-            Event(
-                type="plan_exit.resolved",
-                session_id=sid,
-                payload={
-                    "decision": "exit_only",
-                    "cleared_context": cleared,
-                    "plan_file": plan_file,
-                },
-            )
-        )
-        return
-
-    _stage_plan_exit_resume(
-        app,
-        deps,
-        sid,
-        session,
-        _plan_exit_constraint_lift_text(decision, plan_file),
-        resume_metadata,
-        question_id=question.id,
-    )
+    resolve(app, deps, sid, question)

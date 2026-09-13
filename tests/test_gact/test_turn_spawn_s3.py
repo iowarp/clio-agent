@@ -102,6 +102,93 @@ def test_spawn_produces_child_session_and_completed_record(tmp_path: Path, monke
         assert _bus(app, parent, "agent.task.completed"), "no parent-visible completion event"
 
 
+def test_commissioned_child_activates_target_blueprint_scope(tmp_path: Path, monkeypatch) -> None:
+    from clio_agent.gact.agents.resolution import _runtime_declared_child_ids
+    from clio_agent.gact.turn_spawn import spawn_child_turn
+
+    blueprint = tmp_path / "deep-researcher"
+    (blueprint / "experts").mkdir(parents=True)
+    blueprint.joinpath("AGENT.md").write_text(
+        """---
+id: deep-researcher
+version: 1.0.0
+title: Deep Researcher
+root_expert: main
+---
+Own the complete research tree.
+""",
+        encoding="utf-8",
+    )
+    blueprint.joinpath("experts", "main.md").write_text(
+        """---
+id: main
+title: Research Lead
+tier: 1
+module:
+  kind: react
+---
+Commission researchers and critics.
+""",
+        encoding="utf-8",
+    )
+    for expert_id, title in (("researcher", "Researcher"), ("critic", "Critic")):
+        blueprint.joinpath("experts", f"{expert_id}.md").write_text(
+            f"""---
+id: {expert_id}
+title: {title}
+parent_id: main
+tier: 2
+---
+Do the assigned research work.
+""",
+            encoding="utf-8",
+        )
+
+    target_scope = {
+        "active_agent_blueprint_id": "deep-researcher",
+        "active_agent_blueprint_name": "Deep Researcher",
+        "active_agent_blueprint_version": "1.0.0",
+        "active_agent_blueprint_path": str(blueprint),
+    }
+    monkeypatch.setattr(
+        "clio_agent.gact.spawn_context.resolve_installed_blueprint_target",
+        lambda app, blueprint_id, workspace_id="": (
+            "main",
+            target_scope,
+            "Deep Researcher",
+        ),
+    )
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        parent = app.state.sessions.create(workspace_id="ws_default", title="parent")
+        task = spawn_child_turn(
+            app,
+            TaskSpec(
+                child_expert_id="main",
+                task_text="Research this fully.",
+                parent_session_id=parent.id,
+                requesting_expert_id="main",
+                session_scope_metadata=target_scope,
+                target_blueprint_id="deep-researcher",
+                start_turn=False,
+            ),
+        )
+
+        child = app.state.sessions.get(task.child_session_id)
+        assert child.metadata["active_agent_blueprint_id"] == "deep-researcher"
+        assert child.metadata["active_agent_blueprint_name"] == "Deep Researcher"
+        assert task.agent_ref == {
+            "expert_id": "main",
+            "requesting_expert_id": "main",
+            "blueprint_id": "deep-researcher",
+        }
+        assert child.metadata["pending_spawn"]["target_blueprint_id"] == "deep-researcher"
+        assert _runtime_declared_child_ids(app, "main", session_id=child.id) == {
+            "researcher",
+            "critic",
+        }
+
+
 def test_depth_cap_rejected(tmp_path: Path, monkeypatch) -> None:
     # Unit guard on the backstop itself. The TOOL-PATH lock (that the tools actually
     # COMPUTE a depth that reaches this guard) lives in test_spawn_runtime_s4.py

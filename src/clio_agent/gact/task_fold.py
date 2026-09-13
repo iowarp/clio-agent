@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
+from clio_agent.gact.agent_task_artifacts import ArtifactRefValue
 from clio_agent.gact.agent_tasks import (
     AGENT_TASK_EVENTS,
     STATUS_COMPLETED,
@@ -43,7 +44,7 @@ def fold_agent_task_transition(
     *,
     error_reason: str = "",
     result: Optional[dict[str, Any]] = None,
-    artifact_ref: Optional[str] = None,
+    artifact_ref: Optional[ArtifactRefValue] = None,
     notify_pending: Optional[bool] = None,
     updated_at: str = "",
 ) -> AgentTaskFoldOutcome:
@@ -56,27 +57,31 @@ def fold_agent_task_transition(
     """
 
     reg = app.state.agent_task_registry
-    try:
-        updated = reg.transition(
-            task_id,
-            status,
-            error_reason=error_reason,
-            result=result,
-            artifact_ref=artifact_ref,
-            notify_pending=notify_pending,
-            updated_at=updated_at,
-        )
-    except AgentTaskError as exc:
-        if exc.reason != "already_terminal":
-            raise
-        current = reg.get(task_id)
-        if current is None:  # pragma: no cover - transition found it a moment ago
-            raise AgentTaskError(f"unknown task {task_id!r}", reason="unknown_task") from exc
-        return AgentTaskFoldOutcome(task=current, applied=False, reason=exc.reason)
+    # ``transition()`` updates the projection before the authoritative session
+    # write and ledger publication. Keep that complete lifecycle edge ordered so
+    # an older nonterminal fold cannot persist or publish after a terminal fold.
+    with reg.lifecycle_lock:
+        try:
+            updated = reg.transition(
+                task_id,
+                status,
+                error_reason=error_reason,
+                result=result,
+                artifact_ref=artifact_ref,
+                notify_pending=notify_pending,
+                updated_at=updated_at,
+            )
+        except AgentTaskError as exc:
+            if exc.reason != "already_terminal":
+                raise
+            current = reg.get(task_id)
+            if current is None:  # pragma: no cover - transition found it a moment ago
+                raise AgentTaskError(f"unknown task {task_id!r}", reason="unknown_task") from exc
+            return AgentTaskFoldOutcome(task=current, applied=False, reason=exc.reason)
 
-    persist_agent_task(app, updated)
-    publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[updated.status])
-    return AgentTaskFoldOutcome(task=updated, applied=True)
+        persist_agent_task(app, updated)
+        publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[updated.status])
+        return AgentTaskFoldOutcome(task=updated, applied=True)
 
 
 def finish_agent_task_transition(app: "FastAPI", outcome: AgentTaskFoldOutcome) -> None:
@@ -182,7 +187,13 @@ def fold_agent_task_event(
     error_reason = str(payload.get("error_reason", ""))
     updated_at = str(payload.get("updated_at", ""))
     artifact_obj = payload.get("artifact_ref")
-    artifact_ref = str(artifact_obj) if artifact_obj is not None else None
+    artifact_ref: ArtifactRefValue | None
+    if isinstance(artifact_obj, Mapping):
+        artifact_ref = dict(artifact_obj)
+    elif artifact_obj is not None:
+        artifact_ref = str(artifact_obj)
+    else:
+        artifact_ref = None
 
     folded_notify = notify_pending
     if folded_notify is None and isinstance(payload.get("notify_pending"), bool):

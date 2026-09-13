@@ -59,13 +59,6 @@ from clio_agent.tools.mcp_runtime import wire_value
 
 logger = logging.getLogger(__name__)
 
-REACT_EMPTY_TOOL_RETRY = "react_empty_tool_retry"
-REACT_EMPTY_TOOL_EXHAUSTED = "react_empty_tool_exhausted"
-
-#: The committed default budget (``limits.empty_tool_repair_attempts``), also
-#: the fallback when an operator's configured value cannot be resolved.
-_DEFAULT_EMPTY_TOOL_REPAIR_ATTEMPTS = 3
-
 # Tools whose successful call is itself the terminal outcome of the current
 # model turn.  Their authoritative payload remains in session metadata until
 # the post-forward pause seam mints the user-facing interaction.
@@ -113,54 +106,6 @@ def is_turn_yield_prediction(prediction: Any) -> bool:
     """Return whether a ReAct prediction intentionally yielded for user input."""
 
     return str(getattr(prediction, "termination_reason", "") or "").endswith("_yield")
-
-
-def _empty_tool_repair_attempts() -> int:
-    """Return the bounded retry budget for a tool-less ReAct response.
-
-    Some bare-model transports can return a valid ``next_thought`` while omitting the
-    structured ``tool_calls`` field. That is malformed ReAct output, not proof that the
-    task is complete. The retry keeps the real response in History and asks the model
-    again with the normal catalog; it never infers a call from the thought text.
-
-    A configured value that cannot be resolved (a malformed
-    ``limits.empty_tool_repair_attempts`` / ``CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS``
-    makes ``conf.as_int`` raise by design) falls back to the committed default —
-    but never silently: the discarded configuration is reported with a typed
-    ``empty_tool_repair_budget_unresolved`` reason.
-    """
-    try:
-        from clio_agent import conf  # noqa: PLC0415
-
-        attempts = conf.resolve(
-            "limits.empty_tool_repair_attempts",
-            env="CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS",
-            default=_DEFAULT_EMPTY_TOOL_REPAIR_ATTEMPTS,
-            cast=conf.as_int,
-        )
-    except Exception as exc:  # noqa: BLE001 - config failure must not make recovery unbounded
-        logger.warning(
-            "empty_tool_repair_budget_unresolved reason=config_resolve_failed fallback=%s error=%r",
-            _DEFAULT_EMPTY_TOOL_REPAIR_ATTEMPTS,
-            exc,
-        )
-        return _DEFAULT_EMPTY_TOOL_REPAIR_ATTEMPTS
-    return max(0, attempts)
-
-
-def _record_empty_tool_response(reason: str, thought: Any, attempt: int) -> None:
-    """Record a malformed provider response without inventing transcript semantics."""
-    from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
-
-    text = str(thought or "")
-    stream_audit(
-        "react.empty_tool_calls",
-        duplicate_reason=reason,
-        attempt=attempt,
-        chunk_len=len(text),
-        head=text[:120],
-        full_text=text[:12000],
-    )
 
 
 def _arc_scope() -> tuple[Any, str, str]:
@@ -367,13 +312,12 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
     )
     parent_token = _ctx.set_parent_span(expert_span_id)
     break_reason = "max_iters"
-    empty_tool_streak = 0
     # #1226 D1b: max_iters <= 0 is UNLIMITED, not an error and not a silent
     # 0-iteration loop -- the standing ruling is 0/unlimited by default; a
     # cap survives only as an explicit, blueprint-declared opt-in runaway
     # backstop (see ``_tool_user_agent_max_iters``). itertools.count() never
     # exhausts, so the loop below can only end via an explicit break (parse
-    # error / context window / empty tool calls) or a submit return -- never
+    # error / context window) or a direct-response/submit return -- never
     # by "running out of turns" mid-task.
     turn_indices = range(max_iters) if max_iters > 0 else itertools.count()
     # Both iterables always yield at least once (range(max_iters) for
@@ -407,8 +351,8 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
                     break
 
                 if not tool_calls.tool_calls:
-                    break_reason = "empty_tool_calls"
                     thought = getattr(pred, "next_thought", "")
+                    reasoning = _active_lm_last_reasoning()
                     event = agent._history_event(
                         pending_inputs,
                         pred,
@@ -417,23 +361,34 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
                     )
                     _append_history_event(history, event)
                     pending_inputs = {}
-                    empty_tool_streak += 1
-                    budget = _empty_tool_repair_attempts()
-                    reason = (
-                        REACT_EMPTY_TOOL_RETRY
-                        if empty_tool_streak <= budget
-                        else REACT_EMPTY_TOOL_EXHAUSTED
+                    _emit_turn(
+                        arc,
+                        session,
+                        scope,
+                        turn_index=turn_index,
+                        thought=thought,
+                        reasoning=reasoning,
+                        tool_calls=tool_calls,
+                        tool_call_results=ToolCallResults(tool_call_results=[]),
+                        expert_id=expert_id,
+                        expert_span_id=expert_span_id,
+                        step_span_id=step_span_id,
+                        turn_id=turn_id,
                     )
-                    _record_empty_tool_response(reason, thought, empty_tool_streak)
-                    if empty_tool_streak <= budget:
-                        continue
-                    break
+                    answer = str(thought or "")
+                    outputs = {"answer": answer}
+                    _emit_expert_completed(
+                        expert_id,
+                        expert_span_id,
+                        outputs,
+                        turn_index + 1,
+                    )
+                    return Prediction(
+                        **outputs,
+                        history=history,
+                        termination_reason="direct_response",
+                    )
 
-                # The provider recovered: the loop's exit label goes back to the
-                # neutral default. A stale "empty_tool_calls" here would relabel a
-                # LATER, healthy max_iters exhaustion as a provider protocol
-                # failure and settle the whole turn as failed.
-                empty_tool_streak = 0
                 break_reason = "max_iters"
                 tool_calls = _ensure_tool_call_ids(tool_calls, turn_index)
                 thought = getattr(pred, "next_thought", "")
@@ -497,24 +452,14 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
                     _ctx.reset(thought_token)
                 _ctx.reset(step_token)
 
-        # Bounded (max_iters > 0): byte-identical to stock -- the loop only
-        # reaches here by exhausting range(max_iters), so max_iters IS the
-        # next turn index. Unbounded (max_iters <= 0): itertools.count()
-        # never exhausts, so reaching here means an explicit break fired at
-        # `turn_index`; the next turn index is one past that, never the
-        # (here, meaningless) 0/negative sentinel.
-        forced_submit_turn_index = max_iters if max_iters > 0 else turn_index + 1
-        result = agent._forced_submit(
-            history, pending_inputs, break_reason, forced_submit_turn_index
-        )
-        produced = set(result.keys()) if hasattr(result, "keys") else set()
+        step_count = max_iters if max_iters > 0 else turn_index + 1
         _emit_expert_completed(
             expert_id,
             expert_span_id,
-            {k: getattr(result, k) for k in agent.signature.output_fields if k in produced},
-            forced_submit_turn_index,
+            {},
+            step_count,
         )
-        return result
+        return Prediction(history=history, termination_reason=break_reason)
     except ClioError as exc:
         # #1282 F6 (#1275 ask 3): a TYPED clio escalation (the D1 refusal
         # escalation is the concrete reproducer; ClioError/MCPProtocolError

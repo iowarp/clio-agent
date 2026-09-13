@@ -47,6 +47,8 @@ from clio_agent.gact.artifacts.registry import (
     rebuild_registry_at_boot,
     rehydrate_session_index,
 )
+from clio_agent.gact.provenance.dispatcher import ProvenanceDispatcher
+from clio_agent.gact.provenance.jsonl import JsonlProvenanceProvider
 from clio_agent.gact.sessions import SessionStore
 
 # --------------------------------------------------------------------------- #
@@ -429,6 +431,42 @@ def test_boot_fold_from_jsonl_trace(tmp_path, monkeypatch):
     reg = rebuild_registry_at_boot(app)
     assert reg.count() == 1
     assert reg.get("ws1", "d.csv") is not None
+    assert reg.capture_released is None
+
+
+def test_boot_fold_from_jsonl_provider_behind_dispatcher(tmp_path, monkeypatch):
+    """The provider dispatcher must not hide JSONL from artifact boot replay."""
+    trace_dir = tmp_path / "semantic_traces"
+    trace_dir.mkdir()
+    line = {
+        "event_type": "artifact.created",
+        "event_id": "e-dispatched",
+        "payload": _payload(
+            event_id="",
+            name="dispatched.csv",
+            version=1,
+            sha="d" * 64,
+            kind="dataset",
+        ),
+    }
+    (trace_dir / "sess_x.semantic.jsonl").write_text(
+        json.dumps(line) + "\n", encoding="utf-8"
+    )
+    monkeypatch.setattr("clio_agent.gact.runtime.globals._PROCESS_ARC", None)
+    dispatcher = ProvenanceDispatcher([JsonlProvenanceProvider(trace_dir)])
+    try:
+        state = SimpleNamespace(
+            arc=None,
+            semantic_trace_backend=dispatcher,
+            artifact_registry=None,
+        )
+        reg = rebuild_registry_at_boot(SimpleNamespace(state=state))
+    finally:
+        dispatcher.close()
+
+    # Sabotage: remove dispatcher.replay_paths (the production regression) and
+    # the boot fold cannot see this event, so both assertions turn red.
+    assert reg.get("ws1", "dispatched.csv") is not None
     assert reg.capture_released is None
 
 

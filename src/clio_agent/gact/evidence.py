@@ -9,11 +9,10 @@ of truth for:
   bounding individual tool results (:func:`_tool_result_preview`,
   :func:`_tool_result_is_error`, :func:`_is_bounded_tool_result`,
   :func:`_bounded_tool_call_result`).
-* **Trajectory evidence recovery** -- pulling bounded tool-call evidence out of
-  DSPy ReAct trajectories (:func:`_extract_tools_called_from_trajectory`), the
-  no-prose-answer fallback that surfaces retained tool observations
-  (:func:`_tool_agent_empty_answer_fallback`), and promotion of ``fs_propose_edit``
-  tool results into file-diff proposals (:func:`_propose_edit_diffs_from_pred`).
+* **Trajectory evidence projection** -- pulling bounded tool-call evidence out of
+  DSPy ReAct trajectories (:func:`_extract_tools_called_from_trajectory`) and
+  promoting ``fs_propose_edit`` tool results into file-diff proposals
+  (:func:`_propose_edit_diffs_from_pred`).
 * **Runtime provenance** -- non-secret provenance for the dynamic agent used this
   turn (:func:`_dynamic_agent_runtime_provenance`).
 
@@ -55,12 +54,6 @@ TOOL_RESULT_TRUNCATED_REASON = "tool_result_oversize"
 # ------------------------------------------------------------------------- #
 # Tool-result inspection #
 # ------------------------------------------------------------------------- #
-
-
-def _is_empty_dynamic_agent_answer_error(exc: Exception) -> bool:
-    """Return whether a dynamic expert failed only because it produced no answer."""
-
-    return "returned an empty answer" in str(exc)
 
 
 def _tool_result_preview(result: Any) -> str:
@@ -153,77 +146,8 @@ def _bounded_tool_call_result(value: Any, *, max_result_chars: int | None = None
 
 
 # ------------------------------------------------------------------------- #
-# Trajectory evidence recovery #
+# Trajectory evidence projection #
 # ------------------------------------------------------------------------- #
-
-
-_TOOL_TRAJECTORY_EVIDENCE_KEYS = (
-    "observation",
-    "observations",
-    "result",
-    "results",
-    "output",
-    "outputs",
-    "response",
-    "responses",
-    "tool_result",
-    "tool_results",
-    "tool_output",
-    "tool_outputs",
-)
-
-
-def _tool_agent_empty_answer_fallback(trajectory: Any, *, max_items: int = 6) -> str:
-    """Return bounded tool evidence when a ReAct tool agent produced no answer."""
-
-    if not trajectory:
-        return ""
-
-    evidence: list[tuple[str, Any]] = []
-
-    def collect(label: str, value: Any) -> None:
-        if len(evidence) >= max_items:
-            return
-        if _tool_result_is_error(value):
-            return
-        preview = _tool_result_preview(value).strip()
-        normalized_preview = preview.rstrip(".").casefold()
-        if not preview or normalized_preview == "completed":
-            return
-        evidence.append((label, value))
-
-    def visit(label: str, value: Any) -> None:
-        if len(evidence) >= max_items:
-            return
-        if isinstance(value, Mapping):
-            for key, child in value.items():
-                child_label = f"{label}.{key}" if label else str(key)
-                normalized_key = str(key).lower()
-                if any(token in normalized_key for token in _TOOL_TRAJECTORY_EVIDENCE_KEYS):
-                    collect(child_label, child)
-                elif isinstance(child, Mapping | list | tuple):
-                    visit(child_label, child)
-            return
-        if isinstance(value, list | tuple):
-            for idx, item in enumerate(value):
-                visit(f"{label}[{idx}]" if label else f"[{idx}]", item)
-
-    visit("trajectory", trajectory)
-    if not evidence:
-        return ""
-
-    lines = [
-        "The tool-backed expert produced no final prose answer, but CLIO retained "
-        "successful tool-grounded evidence from its ReAct trajectory.",
-        "",
-        "Retained tool observations:",
-    ]
-    for label, value in evidence:
-        preview = _tool_result_preview(value).strip()
-        if len(preview) > 1200:
-            preview = f"{preview[:1200].rstrip()}..."
-        lines.append(f"- {label}: {preview}")
-    return "\n".join(lines)
 
 
 def _extract_tools_called_from_trajectory(

@@ -215,7 +215,7 @@ def claim_question_transition(
             if answered_by:
                 update["answered_by"] = answered_by
         updated = row.model_copy(update=update)
-        questions[question_id] = updated
+        record_user_question(app, updated)
     # The ONE serialization point is also the one place the armed expiry timer is
     # released, so no settled question leaves a live timer behind (outside the lock).
     cancel_ask_user_deadline(app, question_id)
@@ -242,8 +242,8 @@ def stamp_question_routing_fields(app: Any, question_id: str, **fields: Any) -> 
         if row is None or row.status != "pending":
             return None
         updated = row.model_copy(update=dict(fields))
-        questions[question_id] = updated
-        return updated
+        record_user_question(app, updated)
+    return updated
 
 
 async def _await_answer(

@@ -622,7 +622,7 @@ def drain_active_session_inbox(app: "FastAPI") -> str:
                 )
 
                 emit_background_exit_part(app, sid, claimed)
-                task_blocks.append(_notify_block(claimed))
+                task_blocks.append(_notify_block(claimed, app=app))
                 # Pair the consume with the delegation TERMINAL — the SAME choreography the
                 # next-turn commit (consume_pending_agent_task_notifications) and wait/check
                 # emit: blueprint.delegation.completed|failed + the return expert_handoff Part

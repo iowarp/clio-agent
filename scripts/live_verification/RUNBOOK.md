@@ -72,10 +72,48 @@ required."** This package builds the **E2E tier** only (`leg_b_web_fetch.py`
 install + activate the `web-testing` Agent Blueprint pack (see "Testing-agent
 pack mechanism" for why a bare session + workdir `.clio/mcp.yaml` no longer
 proves this -- #1301); handshake shows web ready; PRE-TURN READINESS GATE on
-the resolved agent's tools; drive one headless turn calling `web_fetch` on a
-stable URL; verdict JSON to out/). Go = `leg_b_web_fetch.json`: `web_ready`
-and `web_tools_match` both true at handshake, `readiness_gate.ready` true,
-`web_fetch_succeeded` true, `turn_status` terminal.
+the resolved agent's tools; drive one headless turn calling `web_search`,
+`web_fetch(to_file=true)` on a stable official PDF through a configured CLIO
+Web Search deployment, and `web_fetch_events` on the returned conversion ID;
+verdict JSON to out/). Go = `leg_b_web_fetch.json`: `web_ready` and
+`web_tools_match` both true at handshake, `readiness_gate.ready` true, all
+three web tool success flags true, `turn_status` terminal.
+
+### Web-fetch qualification rule
+
+A successful HTML or plain-text fetch does **not** qualify the asynchronous
+document path. Those formats can complete inline before meaningful task
+progress is visible. Leg B must use a PDF, Office document, XML document, or
+image that CLIO Web Search converts, and the Web MCP must be launched with a
+working `--remote-url` (or `WEB_REMOTE_URL`). The fetch must set
+`to_file=true`, expose the conversion ID and progress while running, complete
+with Markdown and metadata paths, and be followed by `web_fetch_events` for
+the same conversion ID. If any of those observations is missing, preserve the
+session as failed evidence and run a new visible qualification session; do not
+substitute a fast HTML result.
+
+This is the deployment gate, not a smoke-test preference. A qualifying
+PDF/Office/XML/image run must prove all of the following from authoritative
+structured results: `web_fetch(to_file=true)` accepted the document, returned
+a conversion ID, emitted asynchronous progress, completed with saved Markdown
+and metadata outputs, registered the returned files as artifacts, and
+`web_fetch_events` returned the lifecycle for that same conversion ID. The
+configured `web` MCP declaration must be ready and point at a service with the
+document-conversion capacity needed by the selected input. Endpoint discovery
+by network scanning and development/homelab addresses hard-coded into the
+qualification are forbidden. An HTML fetch alone cannot pass this gate.
+
+### Windows and CI validation policy
+
+On Windows, run focused unit and integration suites first with repository-owned
+isolated scratch directories and caches. Never disable, weaken, or add
+exclusions to Microsoft Defender to make a suite pass. Host-policy or ACL
+failures are reported as failures or explicitly blocked evidence; they are not
+converted into skips or green claims. GitHub Actions owns the broad platform
+and version matrix. Observe one authoritative CI run at the exact changed head
+through completion. A failed, skipped, cancelled, pending, or unrun required
+check is not acceptance.
+
 **The WIRE tier** (#1286: "conformance test with a kit-web backend ...
 client built through the GATEWAY construction path, assert `fetch` reaches
 `tasks/get`; `_NoExtensionClient` negative control adjacent") is a

@@ -104,7 +104,7 @@ from clio_agent.gact.app import build_app
 # routes/interactions.py.
 # -1 (AF1 F10): the day-one ``/interactions/{id}/response`` alias was deleted;
 # ``/respond`` is the one door into the normalized interaction responder.
-EXPECTED_ROUTE_METHOD_PAIRS = 235
+EXPECTED_ROUTE_METHOD_PAIRS = 238
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

@@ -468,7 +468,91 @@ def build_exerciser_server(
         _resource_payload`` requires.
         """
 
-        return "<!doctype html><title>v2ex panel</title><body>v2ex</body>"
+        return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="color-scheme" content="light dark">
+  <title>v2ex panel</title>
+  <style>
+    :root { font: 14px/1.5 system-ui, sans-serif; }
+    body { margin: 0; color: CanvasText; background: Canvas; }
+    main { display: grid; gap: 12px; padding: 24px; }
+    h1, p { margin: 0; }
+    h1 { font-size: 18px; }
+    button {
+      justify-self: start; border: 1px solid ButtonBorder; border-radius: 8px;
+      padding: 8px 12px; color: ButtonText; background: ButtonFace; font: inherit;
+    }
+    button:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
+    button:disabled { opacity: .55; }
+    [role=status] { min-height: 21px; color: GrayText; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>V2EX interactive result</h1>
+    <p id="payload">Waiting for tool input</p>
+    <button id="continue" type="button" disabled>Continue with this result</button>
+    <p id="delivery" role="status"></p>
+  </main>
+  <script>
+  (() => {
+    const target = window.parent;
+    const send = (message) => target.postMessage(message, '*');
+    const reportSize = () => requestAnimationFrame(() => send({
+      jsonrpc:'2.0',
+      method:'ui/notifications/size-changed',
+      params:{height:Math.ceil(document.querySelector('main').getBoundingClientRect().bottom)}
+    }));
+    window.addEventListener('message', (event) => {
+      const message = event.data;
+      if (!message || message.jsonrpc !== '2.0') return;
+      if (message.id === 'v2ex-init' && message.result) {
+        send({jsonrpc:'2.0',method:'ui/notifications/initialized',params:{}});
+        reportSize();
+        return;
+      }
+      if (message.method === 'ui/notifications/tool-input') {
+        const payload = message.params?.arguments?.payload;
+        document.querySelector('#payload').textContent =
+          typeof payload === 'string' ? `Result for ${payload}` : 'Result ready';
+        document.querySelector('#continue').disabled = false;
+        reportSize();
+        return;
+      }
+      if (message.id === 'v2ex-message') {
+        document.querySelector('#delivery').textContent =
+          message.error ? message.error.message : 'Sent to the agent';
+        reportSize();
+      }
+    });
+    document.querySelector('#continue').addEventListener('click', () => {
+      document.querySelector('#delivery').textContent = 'Sending';
+      send({
+        jsonrpc:'2.0',
+        id:'v2ex-message',
+        method:'ui/message',
+        params:{
+          role:'user',
+          content:[{type:'text',text:'Continue from the V2EX interactive result'}]
+        }
+      });
+    });
+    send({
+      jsonrpc:'2.0',
+      id:'v2ex-init',
+      method:'ui/initialize',
+      params:{
+        protocolVersion:'2026-01-26',
+        appInfo:{name:'v2ex panel',version:'1.0.0'},
+        appCapabilities:{availableDisplayModes:['inline']}
+      }
+    });
+  })();
+  </script>
+</body>
+</html>"""
 
     @server.tool
     async def header_annotated_echo(

@@ -22,6 +22,48 @@ def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+def _message_presentation_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """Project only metadata needed to classify visible transcript records.
+
+    Composer prompts expose only the special execution mode needed to label
+    Plan and Deep Research turns; ordinary Execute prompts need no marker.
+    Native ``ask_user`` answers and approved plans are delivered back to the
+    runtime as user-role resume envelopes. The v3 client needs their public
+    classification to avoid presenting transport records as human prompts.
+    MCP App ``ui/message`` calls are also user-role transport records, but they
+    remain visible as their own causal activity rather than masquerading as an
+    ordinary composer message. Only the already-public app identity and its
+    delivery state cross this boundary; model context, capability data, and
+    server-owned routing metadata remain private.
+
+    Answer content and all other runtime metadata stay in their authoritative
+    stores and off the public transcript projection.
+    """
+
+    projected: dict[str, Any] = {}
+    behavior = metadata.get("behavior")
+    if isinstance(behavior, Mapping):
+        execution_mode = behavior.get("execution_mode")
+        if execution_mode in {"plan", "deep_research"}:
+            projected["behavior"] = {"execution_mode": execution_mode}
+    if metadata.get("plan_exit_resume") is True:
+        projected["plan_exit_resume"] = True
+    if metadata.get("ask_user_resume") is True:
+        question_id = metadata.get("ask_user_question_id")
+        if isinstance(question_id, str) and question_id:
+            projected.update({"ask_user_resume": True, "ask_user_question_id": question_id})
+
+    mcp_app = metadata.get("mcp_app")
+    if isinstance(mcp_app, Mapping):
+        app_instance_id = mcp_app.get("app_instance_id")
+        if isinstance(app_instance_id, str) and app_instance_id:
+            projected["mcp_app_response"] = {
+                "app_instance_id": app_instance_id,
+                "state": "pending" if metadata.get("pending_steer") is True else "delivered",
+            }
+    return projected
+
+
 def _action_cards(part: Mapping[str, Any]) -> list[dict[str, Any]]:
     actions = part.get("actions")
     if not isinstance(actions, list):
@@ -150,10 +192,15 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             **common,
         }
     if part_type == "expert_handoff":
+        metadata = _mapping(part.get("metadata"))
+        stage = str(part.get("stage") or metadata.get("stage") or "")
+        task = str(metadata.get("question") or "")
         return {
             "id": part_id,
             "type": "subagent",
             "subagent_id": str(part.get("handle_id") or part_id),
+            **({"stage": stage} if stage else {}),
+            **({"task": task} if task else {}),
             **common,
         }
     if part_type == "resource_link":
@@ -202,6 +249,23 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "severity": str(part.get("severity") or "info"),
             "status": str(part.get("status") or "active"),
             "actions": _action_cards(part),
+            **common,
+        }
+    if part_type == "mcp_app":
+        return {
+            "id": part_id,
+            "type": "mcp_app",
+            "app_instance_id": str(part.get("app_instance_id") or part_id),
+            "resource_uri": str(part.get("resource_uri") or ""),
+            "source_server": str(part.get("source_server") or ""),
+            "tool_name": str(part.get("tool_name") or ""),
+            "data_ref": str(part.get("data_ref") or ""),
+            "mime_type": str(part.get("mime_type") or "text/html;profile=mcp-app"),
+            **(
+                {"height": int(part["height"])}
+                if isinstance(part.get("height"), int) and int(part["height"]) > 0
+                else {}
+            ),
             **common,
         }
     if part_type == "a2ui":
@@ -287,6 +351,9 @@ def message_to_v3(message: Any) -> dict[str, Any]:
     if turn_id:
         row["run_id"] = turn_id
     metadata = _mapping(wire.get("metadata"))
+    presentation_metadata = _message_presentation_metadata(metadata)
+    if presentation_metadata:
+        row["metadata"] = presentation_metadata
     tokens = _mapping(wire.get("tokens"))
     row["usage"] = {
         "input": int(tokens.get("input") or 0),
@@ -375,7 +442,9 @@ def _project_subagent(
         metadata.get("summary") or link.get("summary") or result or part.get("text") or ""
     )
     task = str(metadata.get("question") or link.get("task") or "")
+    previous = context.subagents.get(subagent_id, {})
     context.subagents[subagent_id] = {
+        **previous,
         "id": subagent_id,
         "session_id": context.session_id,
         **({"parent_run_id": str(context.wire["turn_id"])} if context.wire.get("turn_id") else {}),

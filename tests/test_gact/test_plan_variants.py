@@ -55,13 +55,18 @@ _GOLDEN_FULL_CREATE = (
     "task → Objective, Key Files & Context, Implementation Steps, Verification; Complex / "
     "architectural → Background, Scope, Proposed Solution, Alternatives, a phased Plan, "
     "Verification, Migration/Rollback.\n"
+    "- The plan file is NOT the user's requested target or final deliverable. Never copy "
+    "the requested target contents alone into the plan file; the plan must describe how "
+    "the requested result will be implemented and verified after approval. Never infer "
+    "a requested filename from the plan-file path or its generated slug; preserve targets "
+    "from the user's request exactly.\n"
     "- Keep an epistemic ledger of what you know vs. must find out, under the headers: "
     "Given / Learned / To look up / To derive.\n"
     "- If a plan already exists, evaluate whether it is still relevant to THIS task before "
     "editing; treat a new task as a fresh plan.\n"
     "- Show the plan to the user in your response — don't just write it to disk.\n"
-    "- Turn-ending contract: when the plan is complete, END YOUR TURN and hand it back for "
-    "approval — do NOT try to execute the plan while in plan mode."
+    "- Turn-ending contract: when the plan is complete, call plan_exit to hand the saved plan "
+    "back for approval, then END YOUR TURN — do NOT try to execute the plan while in plan mode."
 )
 
 _GOLDEN_FULL_EDIT = (
@@ -73,18 +78,23 @@ _GOLDEN_FULL_EDIT = (
     "task → Objective, Key Files & Context, Implementation Steps, Verification; Complex / "
     "architectural → Background, Scope, Proposed Solution, Alternatives, a phased Plan, "
     "Verification, Migration/Rollback.\n"
+    "- The plan file is NOT the user's requested target or final deliverable. Never copy "
+    "the requested target contents alone into the plan file; the plan must describe how "
+    "the requested result will be implemented and verified after approval. Never infer "
+    "a requested filename from the plan-file path or its generated slug; preserve targets "
+    "from the user's request exactly.\n"
     "- Keep an epistemic ledger of what you know vs. must find out, under the headers: "
     "Given / Learned / To look up / To derive.\n"
     "- If a plan already exists, evaluate whether it is still relevant to THIS task before "
     "editing; treat a new task as a fresh plan.\n"
     "- Show the plan to the user in your response — don't just write it to disk.\n"
-    "- Turn-ending contract: when the plan is complete, END YOUR TURN and hand it back for "
-    "approval — do NOT try to execute the plan while in plan mode."
+    "- Turn-ending contract: when the plan is complete, call plan_exit to hand the saved plan "
+    "back for approval, then END YOUR TURN — do NOT try to execute the plan while in plan mode."
 )
 
 _GOLDEN_SPARSE = (
     "## Plan Mode active — read-only except the plan file (/tmp/plans/x.md). Keep writing "
-    "your plan there; end your turn to hand it back for approval rather than executing it "
+    "your plan there; end your turn to hand it back for approval with plan_exit rather than executing it "
     "yourself."
 )
 

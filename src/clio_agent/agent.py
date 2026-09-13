@@ -22,7 +22,6 @@ Usage:
 
 import contextvars
 import json
-import re
 import threading
 import time
 from collections.abc import Mapping
@@ -747,19 +746,12 @@ class ClioAgent(dspy.Module):
                     files=file_inputs,
                     session_context=chat_context,
                 )
-            answer = self._coerce_text(getattr(result, "answer", None)).strip()
-            self._raise_if_cancelled("chat_after")
-            if answer:
-                return answer
-            raise ValueError("Chat agent returned an empty answer.")
         except Exception as chat_error:
-            recovered = self._parse_answer_from_adapter_error(chat_error)
-            if recovered:
-                self._raise_if_cancelled("chat_after")
-                return recovered
             if self.verbose:
                 print(f"[ClioAgent] ChatAgent failed: {chat_error}")
             raise
+        self._raise_if_cancelled("chat_after")
+        return self._coerce_text(getattr(result, "answer", None))
 
     @classmethod
     def _chat_session_context(cls, session_context: str) -> str:
@@ -930,44 +922,6 @@ class ClioAgent(dspy.Module):
         if caps is None or not caps.parent_id:
             return None
         return caps.parent_id
-
-    @classmethod
-    def _parse_answer_from_adapter_error(cls, error: Exception) -> str | None:
-        """Recover visible answer text from a DSPy answer-field parse error.
-
-        Local models sometimes return useful prose while omitting DSPy's
-        ``answer`` marker. This accepts only the already-returned model text
-        and only when DSPy was explicitly expecting an ``answer`` field.
-        """
-        if not cls._is_answer_adapter_parse_error(error):
-            return None
-        message = str(error)
-        marker = "LM Response:"
-        expected = "Expected to find output fields"
-
-        raw_response = message.split(marker, 1)[1].split(expected, 1)[0].strip()
-        if not raw_response:
-            return None
-        raw_response = re.sub(r"\[\[\s*##\s*completed\s*##\s*\]\]", "", raw_response).strip()
-        raw_response = re.sub(
-            r"^\[\[\s*##\s*answer\s*##\s*(?:\]\])?\s*",
-            "",
-            raw_response,
-        ).strip()
-        if raw_response.startswith("[[") or raw_response in {"[", "]"}:
-            return None
-        return raw_response or None
-
-    @staticmethod
-    def _is_answer_adapter_parse_error(error: Exception) -> bool:
-        """Return whether an exception contains an unparsed answer-field response."""
-        message = str(error)
-        marker = "LM Response:"
-        expected = "Expected to find output fields"
-        if marker not in message or expected not in message:
-            return False
-        expected_fields = message.split(expected, 1)[1].lower()
-        return "answer" in expected_fields
 
     @staticmethod
     def _coerce_text(value: Any) -> str:

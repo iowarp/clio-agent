@@ -125,6 +125,13 @@ class PendingInteraction(BaseModel):
     status: Literal["pending", "answered", "cancelled", "expired"] = "pending"
     title: str
     prompt: str = ""
+    requires_human_response: bool = False
+    audience: Optional[Literal["human", "agent"]] = None
+    routing_state: Optional[
+        Literal["elicitation_routed_to_agent", "agent_elicitation_fallback_to_human"]
+    ] = None
+    fallback_detail: str = ""
+    answered_by: Optional[Literal["human", "agent"]] = None
     source: PendingInteractionSource
     created_at: str
     #: Monotonic-per-row marker of the version this projection saw. A poll is a

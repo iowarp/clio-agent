@@ -74,6 +74,12 @@ The branch nonetheless could not be merged:
 
 **Ground-rule violations dropped rather than ported**
 
+> Superseded on 2026-09-05 for ReAct completion only: the accepted contract now
+> treats non-empty tool-free prose as a direct response and removes every
+> post-loop forced-submit/repair call. See
+> `docs/design/react-loop-completion-2026-09.md`. The bullets below record the
+> earlier landing decision for historical accuracy.
+
 - `lm/io_logging.py::_frame_codex_answer` — wraps markerless Codex output in `[[ ## answer ## ]]` at
   the LM transport layer: a fabricated field assignment (⚑#1/#2), justified by a ChatAdapter
   behavior claim the DSPy source contradicts. **Deleted.**

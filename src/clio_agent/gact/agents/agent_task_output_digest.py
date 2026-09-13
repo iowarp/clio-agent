@@ -1,8 +1,6 @@
 """Bounded model-lane digest for a completed child task's output (#1306).
 
-``check_agent_tasks`` already returns only a bounded ``answer_excerpt``
-(``turn_spawn.py``'s ``_ANSWER_EXCERPT_MAX = 2000``) -- never the full text.
-``wait_agent_tasks`` instead honors the #880 verbatim contract: its
+``wait_agent_tasks`` honors the #880 verbatim contract: its
 completion payload's ``output`` is the child's FULL answer, byte-for-byte,
 ALWAYS. For a short (earthscope-class) answer that is the right call; for a
 content-producing child (a multi-page research report) it means a
@@ -191,7 +189,7 @@ def get_agent_task_output_impl(app: Any, task_id: str) -> str:
     """Resolve ``task_id``'s full stored output, or a typed error row.
 
     Works for ANY terminal task, success or failure alike (mirrors
-    ``check_agent_tasks``'s "uniform fields for every terminal task" rule):
+    the terminal task-result contract):
     a FAILED task's stored material (whatever answer text it produced before
     failing, plus its typed ``error_reason``) is returned the SAME way a
     completed one's is -- never a refusal. Only an unknown id or one that has
@@ -254,7 +252,7 @@ def build_agent_task_output_tool() -> Any:
 
     Bound into the spawn-runtime toolset (registered alongside the other
     collector tools in ``spawn_runtime.build_spawn_runtime_tools``, same
-    gating as ``wait_agent_tasks``/``check_agent_tasks``).
+    gating as ``wait_agent_tasks``/``observe_agent_tasks``).
     """
 
     from clio_agent.gact import context as _ctx  # noqa: PLC0415

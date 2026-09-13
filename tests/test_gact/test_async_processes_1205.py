@@ -90,7 +90,7 @@ def test_route_unions_agent_and_mcp_task_rows_with_kind_discriminator(tmp_path: 
     assert agent_row["title"]  # display_run_name always yields a non-empty label
 
     mcp_row = next(row for row in processes if row["kind"] == "mcp-task")
-    assert mcp_row["title"] == "jarvis_run"
+    assert mcp_row["title"] == "Jarvis Run"
     assert mcp_row["status"] == "working"
     assert mcp_row["live_state"] == "running"
     assert mcp_row["updated_at"], "put() must stamp updated_at on every write"
@@ -138,6 +138,19 @@ def test_project_session_async_processes_excludes_other_sessions(tmp_path: Path)
 
         assert project_session_async_processes(app, sid_a) == []
         assert len(project_session_async_processes(app, sid_b)) == 1
+
+
+def test_mcp_task_title_never_uses_the_raw_task_id_as_display_copy(tmp_path: Path) -> None:
+    app = _build(tmp_path)
+    with TestClient(app):
+        sid = app.state.sessions.create(workspace_id="ws", title="parent").id
+        key = TaskKey(server_id="server", session_id=sid, task_id="opaque-task-id")
+        task_record_store().put(TaskRecord(key=key, status="working"))
+
+        row = project_session_async_processes(app, sid)[0]
+
+    assert row["title"] == "Background task"
+    assert row["id"] == "opaque-task-id"
 
 
 # --------------------------------------------------------------------------- #

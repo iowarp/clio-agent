@@ -455,11 +455,20 @@ async def accept_message_async(
     deps: "GactDeps",
     sid: str,
     req: PostMessageRequest,
+    *,
+    internal_model_text: str | None = None,
 ) -> tuple[PostMessageResponse, int]:
-    """Accept one message from an async producer, resolving references off-loop."""
+    """Accept an async-produced message, optionally with private model-only context."""
 
     prepared = await prepare_references(app, sid, req)
-    return accept_message(app, deps, sid, req, prepared=prepared)
+    return accept_message(
+        app,
+        deps,
+        sid,
+        req,
+        prepared=prepared,
+        internal_model_text=internal_model_text,
+    )
 
 
 def accept_message(
@@ -469,6 +478,7 @@ def accept_message(
     req: PostMessageRequest,
     *,
     prepared: PreparedReferences | None = None,
+    internal_model_text: str | None = None,
 ) -> tuple[PostMessageResponse, int]:
     """Accept one message using explicit start-or-steer semantics.
 
@@ -576,7 +586,7 @@ def accept_message(
             parts=parts,
             metadata=metadata,
         )
-        model_text = (
+        model_text = internal_model_text or (
             prepared.model_text
             if prepared is not None
             else _model_text(app, sid, user_text, message)
@@ -640,7 +650,7 @@ def accept_message(
     user_msg = deps.start_background_user_turn(
         sid,
         sess,
-        user_text,
+        internal_model_text or user_text,
         request_parts=resolved_parts,
         metadata=metadata,
         prev_status="idle",

@@ -15,8 +15,9 @@ Three surfaces layer over that one truth:
 * **Registry** — :class:`AgentTaskRegistry` on ``app.state``: a dict + a per-parent
   index + one ``threading.Event`` per task (the S6 wait primitive), rebuilt at boot
   by folding ``session_type == "agent_task"`` sessions.
-* **Live feed** — ``agent.task.*`` events published to BOTH the parent and child
-  session channels (see :func:`publish_agent_task_event`).
+* **Live feed** — ``agent.task.*`` events published to delegated parent/child
+  channels (see :func:`publish_agent_task_event`). Internal runtime turns stay
+  observable only on their own channel.
 
 The record vocabulary deliberately mirrors clio-relay's durable job records (status
 lifecycle, timelines, artifact ref) so federation (#671) later swaps the executor
@@ -33,6 +34,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
+from clio_agent.gact.agent_task_artifacts import ArtifactRefValue
 from clio_agent.gact.runtime.permission_policies import inherit_child_session_policies
 
 if TYPE_CHECKING:
@@ -182,6 +184,8 @@ class AgentTask:
     # authoritative child-session record so local and relay runs project identically.
     handle_id: str = ""
     run_label: str = ""
+    # Internal helper turns are real children without being delegated work.
+    project_to_parent: bool = True
     live_state: str = ""
     host: str = "local"
     placement: str = "local"
@@ -194,9 +198,10 @@ class AgentTask:
     updated_at: str = ""
     # ``result``: {message_ref, answer_excerpt (bounded), workflow_state}.
     result: Optional[dict[str, Any]] = None
-    # RESERVED — the artifacts campaign (#670) fills this with a spill ref when a
-    # child's output is large; carried from day one so federation records match.
-    artifact_ref: str = ""
+    # A commissioned blueprint returns its registered deliverable through the
+    # canonical ArtifactVersion.to_artifact_ref() mapping. A string remains
+    # accepted for older relay records during rolling upgrades.
+    artifact_ref: ArtifactRefValue = ""
     # Async observe-later (#948 S6/S8): completed-but-unconsumed tasks set
     # ``notify_pending``; the parent's next turn consumes them (``consumed_at``).
     notify_pending: bool = False
@@ -250,7 +255,7 @@ class AgentTaskRegistry:
     """
 
     def __init__(self) -> None:
-        self._lock = threading.RLock()
+        self.lifecycle_lock = self._lock = threading.RLock()
         self._tasks: dict[str, AgentTask] = {}
         self._by_parent: dict[str, set[str]] = {}
         self._events: dict[str, threading.Event] = {}
@@ -330,7 +335,7 @@ class AgentTaskRegistry:
         *,
         error_reason: str = "",
         result: Optional[dict[str, Any]] = None,
-        artifact_ref: Optional[str] = None,
+        artifact_ref: Optional[ArtifactRefValue] = None,
         notify_pending: Optional[bool] = None,
         updated_at: str = "",
     ) -> AgentTask:
@@ -396,7 +401,7 @@ class AgentTaskRegistry:
 
         The claim is a check-and-set under the registry lock — mirroring
         :meth:`mark_delegation_reported` — so two concurrent consumers
-        (``wait_agent_tasks`` / ``check_agent_tasks`` / next-turn injection) race to
+        (``wait_agent_tasks`` / next-turn injection) race to
         claim exactly once: the FIRST call on a terminal, still-``notify_pending``
         task flips the flag and returns the record; every LATER call returns ``None``
         (already consumed) with no restamp, so :func:`consume_notification` never
@@ -538,8 +543,8 @@ def settle_interrupted_agent_tasks(app: "FastAPI") -> int:
     A ``queued``/``running`` task in the rebuilt registry was interrupted by an
     unclean stop (crash / power loss / SIGKILL): its in-flight turn does not exist
     on this fresh process and cannot be resumed, so leaving it non-terminal makes it
-    a permanent zombie — ``wait_agent_tasks`` blocks its full budget on a never-set
-    Event, ``check_agent_tasks`` reports it ``running`` forever, and it permanently
+    a permanent zombie — ``wait_agent_tasks`` blocks on a never-set Event,
+    ``observe_agent_tasks`` reports it ``running`` forever, and it permanently
     counts against the per-depth concurrency cap (progressive slot starvation across
     restarts). Each such task is transitioned to ``failed`` with the typed reason
     ``server_restart_interrupted`` and ``notify_pending=True``, so the parent's next
@@ -606,6 +611,7 @@ def seed_agent_task(
     placement: str = "local",
     host: str = "",
     run_label: str = "",
+    project_to_parent: bool = True,
     spawn_group_id: str = "",
     group_size: int = 0,
 ) -> AgentTask:
@@ -649,6 +655,7 @@ def seed_agent_task(
         group_size=group_size,
         handle_id=tid,
         run_label=run_label or f"{agent_ref.get('expert_id', 'agent')} #{run_index + 1}",
+        project_to_parent=project_to_parent,
         live_state=status,
         host=host or (placement.split(":", 1)[1] if placement.startswith("relay:") else "local"),
         placement=placement,
@@ -698,7 +705,7 @@ AGENT_TASK_CONSUMED_EVENT = "agent.task.consumed"
 
 def pending_notifications(app: "FastAPI", parent_session_id: str) -> list[AgentTask]:
     """Terminal, still-``notify_pending`` tasks a parent spawned async and has NOT
-    yet consumed (via wait/check/injection), oldest-completed first (#948 S6).
+    yet consumed (via wait/injection), oldest-completed first (#948 S6).
 
     This is the observe-later feed the parent's NEXT turn drains: an async child
     that finished after (or during) the spawning turn sets ``notify_pending`` at
@@ -714,8 +721,8 @@ def pending_notifications(app: "FastAPI", parent_session_id: str) -> list[AgentT
 def consume_notification(app: "FastAPI", task_id: str) -> Optional[AgentTask]:
     """Mark ONE async task's result consumed — exactly once (#948 S6).
 
-    Shared by the three consumers (``wait_agent_tasks`` / ``check_agent_tasks`` /
-    next-turn injection). The claim is ATOMIC: :meth:`AgentTaskRegistry.mark_consumed`
+    Shared by the two live consumers (``wait_agent_tasks`` / next-turn injection).
+    The claim is ATOMIC: :meth:`AgentTaskRegistry.mark_consumed`
     does the ``notify_pending`` check-and-set under the registry lock (like
     ``mark_delegation_reported``), so exactly one caller flips ``notify_pending``
     off + stamps ``consumed_at`` and returns the record; a concurrent/later caller
@@ -762,22 +769,11 @@ def consume_notification(app: "FastAPI", task_id: str) -> Optional[AgentTask]:
 
 
 def publish_agent_task_event(app: "FastAPI", task: AgentTask, event_type: str) -> None:
-    """Publish an ``agent.task.*`` event to the parent, the child, and the
-    human-ATTENDED root (the bus is per-session), so a parent watching its SSE
-    stream sees its children's lifecycle, a child's own stream carries it, and a
-    NESTED spawn is visible to the person actually watching.
+    """Publish task lifecycle to its visible owners and attended root.
 
-    The attended mirror is the same rule ``permission_delivery`` already applies:
-    a grandchild's lifecycle used to reach only its own parent and itself, so the
-    root session's stream showed nothing at all while work ran two levels down.
-    The mirrored copy retains the owning ``parent_session_id`` and adds delivery
-    metadata, keeping ownership distinct from the stream the human watches.
-
-    These are OPERATIONAL events — like ``message.created`` / ``session.status_changed``
-    they go straight to the bus, NOT through ``_emit_semantic_event``: the task's
-    durable state is its child-session metadata (the authoritative store), so the
-    event carries no ARC dependency and can never crash a seed/cancel on a server
-    whose semantic sink is wired but whose ARC is not yet ready.
+    Internal helpers stay on their child channel. Delegated work also reaches its
+    parent and attended root with ownership metadata. These operational events go
+    directly to the bus because child-session metadata is the durable store.
     """
 
     from clio_agent.gact.events import Event  # noqa: PLC0415 - avoid import cycle
@@ -785,7 +781,9 @@ def publish_agent_task_event(app: "FastAPI", task: AgentTask, event_type: str) -
 
     payload = asdict(task)
     owners = [sid for sid in (task.parent_session_id, task.child_session_id) if sid]
-    attended = attended_session_id(app, task.parent_session_id) if task.parent_session_id else ""
+    if not task.project_to_parent:
+        owners = owners[-1:]
+    attended = attended_session_id(app, task.parent_session_id) if task.project_to_parent else ""
     for sid in owners:
         app.state.bus.publish(Event(type=event_type, session_id=sid, payload=payload))
     if attended and attended not in owners:

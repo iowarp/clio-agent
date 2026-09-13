@@ -1,4 +1,4 @@
-"""Recovery contract for provider responses that omit structured ReAct tool calls."""
+"""Direct-response contract for tool-free ReActV2 model output."""
 
 from __future__ import annotations
 
@@ -6,26 +6,67 @@ from typing import Any
 
 import dspy
 import pytest
-from dspy.utils.dummies import DummyLM
 
 from clio_agent.gact.agents.reactv2 import retaining_reactv2_cls
 
 
-def test_empty_tool_response_reasks_with_normal_tools(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A tool-less planning response is not mistaken for task completion.
+def _agent(*, max_iters: int = 0) -> Any:
+    return retaining_reactv2_cls()(
+        "question -> answer",
+        tools=[dspy.Tool(lambda q: f"result:{q}", name="search")],
+        max_iters=max_iters,
+    )
 
-    The provider must emit the structured call itself: CLIO retains the real response,
-    re-exposes the normal catalog once, and executes only the subsequent model-produced
-    call. No tool name or arguments are inferred from prose.
-    """
-    monkeypatch.setenv("CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS", "1")
-    from clio_agent import conf
 
-    conf.reload()
-    calls: list[str] = []
+def test_tool_free_prose_is_the_direct_answer_after_one_model_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Not choosing a tool is ordinary completion, not a repair condition."""
+    agent = _agent()
+    calls: list[dict[str, Any]] = []
+
+    def react(**kwargs: Any) -> dspy.Prediction:
+        calls.append(kwargs)
+        return dspy.Prediction(next_thought="Ready.", tool_calls={"tool_calls": []})
+
+    monkeypatch.setattr(agent, "react", react)
+    prediction = agent(question="Reply ready. Do not call tools.")
+
+    assert len(calls) == 1
+    assert prediction.answer == "Ready."
+    assert prediction.termination_reason == "direct_response"
+    assert prediction.history.messages[0]["next_thought"] == "Ready."
+
+
+def test_blank_tool_free_response_completes_without_resampling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ReAct path does not semantically classify even blank model prose."""
+    agent = _agent()
+    calls = 0
+
+    def react(**_kwargs: Any) -> dspy.Prediction:
+        nonlocal calls
+        calls += 1
+        return dspy.Prediction(next_thought="", tool_calls={"tool_calls": []})
+
+    monkeypatch.setattr(agent, "react", react)
+    prediction = agent(question="hello")
+
+    assert calls == 1
+    assert prediction.answer == ""
+    assert prediction.termination_reason == "direct_response"
+
+
+def test_model_can_use_a_tool_then_finish_with_plain_prose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later tool-free response ends the same loop without a hidden submit."""
+    observed: list[dict[str, Any]] = []
+    tool_calls: list[str] = []
 
     def search(q: str) -> str:
-        calls.append(q)
+        tool_calls.append(q)
         return "SEARCH_RESULT"
 
     agent = retaining_reactv2_cls()(
@@ -33,165 +74,46 @@ def test_empty_tool_response_reasks_with_normal_tools(monkeypatch: pytest.Monkey
         tools=[dspy.Tool(search)],
         max_iters=0,
     )
-    lm = DummyLM(
-        [
-            {
-                "next_thought": "I need to search for the grounded result.",
-                "tool_calls": {"tool_calls": []},
-            },
-            {
-                "next_thought": "Calling the declared tool now.",
-                "tool_calls": {"tool_calls": [{"name": "search", "args": {"q": "grounded"}}]},
-            },
-            {
-                "next_thought": "The observed result answers the question.",
-                "tool_calls": {"tool_calls": [{"name": "submit", "args": {"answer": "DONE"}}]},
-            },
-        ]
-    )
-
-    with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
-        prediction = agent(question="find it")
-
-    assert prediction.answer == "DONE"
-    assert prediction.termination_reason == "submit"
-    assert calls == ["grounded"]
-    assert prediction.history.messages[0]["next_thought"] == (
-        "I need to search for the grounded result."
-    )
-    assert "tool_calls" not in prediction.history.messages[0]
-
-
-def test_repeated_empty_tool_responses_stop_at_the_repair_budget(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Malformed provider output cannot turn the recovery path into an infinite loop."""
-    monkeypatch.setenv("CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS", "1")
-    monkeypatch.setenv("CLIO_SUBMIT_REPAIR_ATTEMPTS", "0")
-    from clio_agent import conf
-
-    conf.reload()
-    agent = retaining_reactv2_cls()(
-        "question -> answer",
-        tools=[dspy.Tool(lambda q: q, name="search")],
-        max_iters=0,
-    )
-    observed: list[dict[str, Any]] = []
 
     def react(**kwargs: Any) -> dspy.Prediction:
         observed.append(kwargs)
-        return dspy.Prediction(next_thought="still planning", tool_calls={"tool_calls": []})
+        if len(observed) == 1:
+            return dspy.Prediction(
+                next_thought="I will check.",
+                tool_calls={"tool_calls": [{"name": "search", "args": {"q": "grounded"}}]},
+            )
+        return dspy.Prediction(
+            next_thought="The grounded answer is complete.",
+            tool_calls={"tool_calls": []},
+        )
 
     monkeypatch.setattr(agent, "react", react)
     prediction = agent(question="find it")
 
-    # Initial response + exactly one bounded recovery + one forced-submit attempt.
-    assert len(observed) == 3
-    assert prediction.termination_reason == "empty_tool_calls"
-    assert [tool.name for tool in observed[-1]["tools"]] == ["submit"]
+    assert len(observed) == 2
+    assert tool_calls == ["grounded"]
+    assert prediction.answer == "The grounded answer is complete."
+    assert prediction.termination_reason == "direct_response"
 
 
-def test_default_repair_budget_allows_three_consecutive_provider_reasks(
+def test_iteration_cap_does_not_trigger_an_out_of_loop_model_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Normal long workflows survive several malformed tool-less provider turns."""
-    monkeypatch.delenv("CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS", raising=False)
-    monkeypatch.setenv("CLIO_SUBMIT_REPAIR_ATTEMPTS", "0")
-    from clio_agent import conf
+    """An explicit runaway cap stops rather than invoking a forced-submit tail."""
+    agent = _agent(max_iters=1)
+    calls = 0
 
-    conf.reload()
-    agent = retaining_reactv2_cls()(
-        "question -> answer",
-        tools=[dspy.Tool(lambda q: q, name="search")],
-        max_iters=0,
-    )
-    observed: list[dict[str, Any]] = []
-
-    def react(**kwargs: Any) -> dspy.Prediction:
-        observed.append(kwargs)
-        return dspy.Prediction(next_thought="still planning", tool_calls={"tool_calls": []})
+    def react(**_kwargs: Any) -> dspy.Prediction:
+        nonlocal calls
+        calls += 1
+        return dspy.Prediction(
+            next_thought="still working",
+            tool_calls={"tool_calls": [{"name": "search", "args": {"q": "x"}}]},
+        )
 
     monkeypatch.setattr(agent, "react", react)
     prediction = agent(question="find it")
 
-    # Initial response + three bounded recoveries + one forced-submit attempt.
-    assert len(observed) == 5
-    assert prediction.termination_reason == "empty_tool_calls"
-
-
-def test_recovered_empty_tool_blip_does_not_poison_a_later_max_iters_exhaustion(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A RECOVERED tool-less blip must not relabel a later, healthy cap exhaustion.
-
-    A blueprint-declared ``max_iters`` cap is an ordinary runaway backstop, not a
-    provider protocol failure. Exhausting it after the model already recovered
-    from an early empty-tool response must terminate as ``max_iters`` and carry
-    no ``provider_protocol_error`` payload -- otherwise the turn settles failed
-    and the user is told the provider repeatedly returned no structured call.
-    """
-    monkeypatch.setenv("CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS", "1")
-    monkeypatch.setenv("CLIO_SUBMIT_REPAIR_ATTEMPTS", "0")
-    from clio_agent import conf
-
-    conf.reload()
-    agent = retaining_reactv2_cls()(
-        "question -> answer",
-        tools=[dspy.Tool(lambda q: q, name="search")],
-        max_iters=3,
-    )
-    responses: list[dspy.Prediction] = [
-        # Iteration 0: a tool-less blip -- recovered by the bounded retry.
-        dspy.Prediction(next_thought="still planning", tool_calls={"tool_calls": []}),
-        # Iterations 1 and 2: healthy tool work that simply never submits.
-        dspy.Prediction(
-            next_thought="working",
-            tool_calls={"tool_calls": [{"name": "search", "args": {"q": "a"}}]},
-        ),
-        dspy.Prediction(
-            next_thought="working",
-            tool_calls={"tool_calls": [{"name": "search", "args": {"q": "b"}}]},
-        ),
-    ]
-    seen: list[dict[str, Any]] = []
-
-    def react(**kwargs: Any) -> dspy.Prediction:
-        seen.append(kwargs)
-        if responses:
-            return responses.pop(0)
-        return dspy.Prediction(next_thought="done", tool_calls={"tool_calls": []})
-
-    monkeypatch.setattr(agent, "react", react)
-    prediction = agent(question="find it")
-
-    # Three loop iterations (0 empty + recovery at 1 and 2) then the forced submit.
-    assert len(seen) == 4
+    assert calls == 1
+    assert "answer" not in prediction
     assert prediction.termination_reason == "max_iters"
-    assert getattr(prediction, "error_info", None) is None
-
-
-def test_unresolvable_repair_budget_reports_a_typed_reason(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """A discarded operator configuration is a degradation, not a silent default.
-
-    ``conf.as_int`` raises on garbage by design, so a malformed
-    ``CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS`` reaches the fallback. The committed
-    default still bounds recovery, but the ignored configuration must be
-    reported with a typed reason rather than swallowed.
-    """
-    from clio_agent.gact.agents import reactv2_events
-
-    monkeypatch.setenv("CLIO_EMPTY_TOOL_REPAIR_ATTEMPTS", "not-a-number")
-    from clio_agent import conf
-
-    conf.reload()
-
-    with caplog.at_level("WARNING", logger="clio_agent.gact.agents.reactv2_events"):
-        assert reactv2_events._empty_tool_repair_attempts() == 3
-
-    assert any(
-        "empty_tool_repair_budget_unresolved" in record.message
-        and "reason=config_resolve_failed" in record.message
-        for record in caplog.records
-    ), [record.message for record in caplog.records]

@@ -158,7 +158,7 @@ def plan_mode_reminder_block(
         return (
             PLAN_MODE_REMINDER_MARKER
             + f" ({plan_file}). Keep writing your plan there; end your turn to hand it back "
-            "for approval rather than executing it yourself."
+            "for approval with plan_exit rather than executing it yourself."
         )
     if exists:
         create_or_edit = (
@@ -178,13 +178,19 @@ def plan_mode_reminder_block(
     bullets.extend(f"- {extra}" for extra in guide.extra_full_bullets)
     bullets.extend(
         (
+            "- The plan file is NOT the user's requested target or final deliverable. Never copy "
+            "the requested target contents alone into the plan file; the plan must describe how "
+            "the requested result will be implemented and verified after approval. Never infer "
+            "a requested filename from the plan-file path or its generated slug; preserve targets "
+            "from the user's request exactly.",
             "- Keep an epistemic ledger of what you know vs. must find out, under the headers: "
             "Given / Learned / To look up / To derive.",
             "- If a plan already exists, evaluate whether it is still relevant to THIS task before "
             "editing; treat a new task as a fresh plan.",
             "- Show the plan to the user in your response — don't just write it to disk.",
-            "- Turn-ending contract: when the plan is complete, END YOUR TURN and hand it back for "
-            "approval — do NOT try to execute the plan while in plan mode.",
+            "- Turn-ending contract: when the plan is complete, call plan_exit to hand the saved "
+            "plan back for approval, then END YOUR TURN — do NOT try to execute the plan while in "
+            "plan mode.",
         )
     )
     return (

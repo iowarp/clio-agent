@@ -53,6 +53,7 @@ from clio_agent.gact.artifacts.wire import append_turn_resource_links, proposed_
 from clio_agent.gact.delegation import (
     _produced_turn_workflow_state,
 )
+from clio_agent.gact.direct_response import promote_tool_free_response
 from clio_agent.gact.enrichment import _finalize_context_frame
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
 from clio_agent.gact.evidence import (
@@ -95,6 +96,14 @@ if TYPE_CHECKING:
     from clio_agent.gact.turn_state import TurnState
 
 logger = logging.getLogger(__name__)
+
+
+def _row_value(row: Any, key: str, default: Any = None) -> Any:
+    """Read a proposal field from either its mapping or object representation."""
+
+    if isinstance(row, Mapping):
+        return row.get(key, default)
+    return getattr(row, key, default)
 
 
 def finalize_turn(
@@ -150,6 +159,7 @@ def finalize_turn(
         and not state.proposed_diffs
         and not state.nanoagents
     ):
+        termination_reason = str(getattr(pred, "termination_reason", "") or "")
         state.error_info = ErrorInfo(
             error="empty_response",
             message="Agent completed without user-visible output.",
@@ -157,17 +167,17 @@ def finalize_turn(
                 "session_id": state.sid,
                 "routing_mode": getattr(state.sess, "routing_mode", "auto"),
                 "selected_agent": state.selected_agent,
+                "termination_reason": termination_reason,
             },
             recoverable=True,
         )
 
-    # ---- #767 PR3: finalize is a READER of the TurnTranscript ledger. ----
-    # Live parts already streamed as they happened; finalize only appends ITS OWN parts (route
-    # banner, wrap-up thinking, the canonical answer channel, file diffs) through the same producer
-    # API and persists the ledger verbatim — no live-parts scans, no rebuild-from-rows, no text swap,
-    # no dedup, no re-publish. Capture stream provenance BEFORE any finalize-time append: an atomic
-    # append is the runtime boundary and clears ``current_stream_part_id`` (the legacy closure var
-    # was only reset by mid-turn boundaries).
+    responder_agent_id = state.selected_agent or state.invocation_agent_id or "main"
+    answer_agent_ids = {
+        responder_agent_id,
+        state.active_agent_id or state.invocation_agent_id or "main",
+    } - {""}
+    promote_tool_free_response(state.transcript, pred, answer_agent_ids)
     current_stream_part_id = state.transcript.current_stream_part_id
     live_assistant_parts = state.transcript.snapshot()
     has_live_parts = bool(live_assistant_parts or current_stream_part_id)
@@ -196,9 +206,6 @@ def finalize_turn(
             ]
             break
 
-    # The expert that produced this turn's thinking/answer/diff parts: the routed
-    # expert when one was selected, else the active orchestrator.
-    responder_agent_id = state.selected_agent or state.invocation_agent_id or "main"
     # Take the canonical-answer channel FIRST: its exactly-once identity seeds
     # from the pre-append ledger (the still-open streamed answer part included).
     # It covers the responder PLUS the stream tap's attribution fallback label
@@ -294,19 +301,12 @@ def finalize_turn(
         ),
     )
     for row in state.proposed_diffs:
-        if isinstance(row, dict):
-            getf = row.get
-        else:
-
-            def getf(k, default=None, _r=row):
-                return getattr(_r, k, default)
-
-        path = getf("path", "") or ""
-        udiff = getf("unified_diff", "") or ""
-        new_content = getf("new_content", "") or ""
-        edit_mode = getf("edit_mode", "") or ""
-        lines_added = int(getf("lines_added", 0) or 0)
-        lines_removed = int(getf("lines_removed", 0) or 0)
+        path = _row_value(row, "path", "") or ""
+        udiff = _row_value(row, "unified_diff", "") or ""
+        new_content = _row_value(row, "new_content", "") or ""
+        edit_mode = _row_value(row, "edit_mode", "") or ""
+        lines_added = int(_row_value(row, "lines_added", 0) or 0)
+        lines_removed = int(_row_value(row, "lines_removed", 0) or 0)
         if not path:
             continue
         # In "whole" mode the unified_diff may be empty by design;

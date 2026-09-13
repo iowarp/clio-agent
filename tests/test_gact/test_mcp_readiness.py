@@ -1,13 +1,4 @@
-"""Bounded cold-MCP preparation coverage.
-
-The readiness ladder used to publish an ``infrastructure.dependency.changed``
-bus event per attempt -- a vocabulary no client, schema or route consumed, and
-one every generic bus reader filters out. The retry is now recorded the way
-every other bounded retry in the tree is: a typed loud warning. The lane that
-reaches a consumer is unchanged (a terminal failure raises into
-``builders._resolve_requested_tools``, which records the typed
-``mount_failures`` reason the ``_UnsupportedSessionAgent`` boundary carries).
-"""
+"""Bounded cold-MCP preparation coverage."""
 
 from __future__ import annotations
 
@@ -17,7 +8,9 @@ from typing import Any
 
 import pytest
 
+from clio_agent.gact import context as runtime_context
 from clio_agent.gact import mcp_readiness
+from clio_agent.gact.events import EventBus
 
 
 class _Executor:
@@ -45,11 +38,17 @@ def test_mount_retries_persistent_connect_with_a_typed_reason(
 ) -> None:
     executor = _Executor(fail_connect_once=True)
     sleeps: list[float] = []
+    events: list[dict[str, Any]] = []
     monkeypatch.setattr(
         "clio_agent.tools.mcp_discovery.ensure_namespace",
         lambda namespace, spec: {"geo_geocode": SimpleNamespace(name="geo_geocode")},
     )
     monkeypatch.setattr(mcp_readiness.time, "sleep", sleeps.append)
+    monkeypatch.setattr(
+        mcp_readiness,
+        "_publish_dependency_state",
+        lambda namespace, **payload: events.append({"namespace": namespace, **payload}),
+    )
 
     with caplog.at_level(logging.WARNING, logger="clio_agent.gact.mcp_readiness"):
         tools = mcp_readiness.mount_namespace_for_session(
@@ -63,6 +62,17 @@ def test_mount_retries_persistent_connect_with_a_typed_reason(
     assert executor.connect_attempts == 2
     assert executor.connect_timeouts == [10.0, 30.0]
     assert sleeps == [0.25]
+    assert [(event["phase"], event["state"]) for event in events] == [
+        ("launch", "running"),
+        ("connect", "running"),
+        ("retry", "retrying"),
+        ("launch", "running"),
+        ("connect", "running"),
+        ("connect", "ready"),
+    ]
+    assert events[2]["reason"] == "mcp_namespace_discovery_unreachable"
+    assert events[2]["retry_in_ms"] == 250
+    assert events[-1]["tool_count"] == 1
 
     retries = [
         record
@@ -83,6 +93,12 @@ def test_terminal_launcher_failure_raises_without_retrying(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     executor = _Executor()
+    events: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        mcp_readiness,
+        "_publish_dependency_state",
+        lambda namespace, **payload: events.append({"namespace": namespace, **payload}),
+    )
 
     def _missing_launcher(namespace: str, spec: Any) -> dict[str, Any]:
         del namespace, spec
@@ -109,13 +125,47 @@ def test_terminal_launcher_failure_raises_without_retrying(
         for record in caplog.records
         if mcp_readiness.MCP_MOUNT_RETRY_REASON in record.getMessage()
     ] == []
+    assert [(event["phase"], event["state"]) for event in events] == [
+        ("launch", "running"),
+        ("launch", "failed"),
+    ]
+    assert events[-1]["reason"] == "mcp_namespace_discovery_unreachable"
 
 
-def test_readiness_publishes_no_bus_event_vocabulary() -> None:
-    """No dead wire vocabulary: the module owns no event type at all."""
+def test_namespace_title_preserves_known_acronyms() -> None:
+    assert mcp_readiness._namespace_title("geo") == "Geo MCP"
+    assert mcp_readiness._namespace_title("ndp") == "NDP MCP"
+    assert mcp_readiness._namespace_title("pandas") == "Pandas MCP"
 
-    source = mcp_readiness.__file__
-    with open(source, encoding="utf-8") as handle:
-        body = handle.read()
-    assert "infrastructure.dependency" not in body
-    assert "bus.publish" not in body
+
+def test_dependency_state_publishes_the_v3_consumed_payload() -> None:
+    bus = EventBus()
+    app = SimpleNamespace(state=SimpleNamespace(bus=bus))
+    app_token = runtime_context.set_app(app)
+    session_token = runtime_context.set_session_id("sess_1")
+    try:
+        mcp_readiness._publish_dependency_state(
+            "geo",
+            phase="launch",
+            state="running",
+            attempt=1,
+            max_attempts=3,
+        )
+    finally:
+        runtime_context.reset(session_token)
+        runtime_context.reset(app_token)
+
+    events = bus.session_events_since("sess_1")
+    assert len(events) == 1
+    assert events[0].type == "infrastructure.dependency.changed"
+    assert events[0].payload == {
+        "id": "sess_1:mcp:geo",
+        "session_id": "sess_1",
+        "category": "mcp",
+        "namespace": "geo",
+        "title": "Geo MCP",
+        "phase": "launch",
+        "state": "running",
+        "attempt": 1,
+        "max_attempts": 3,
+    }

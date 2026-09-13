@@ -2,8 +2,8 @@
 
 Covers the three-part contract:
 
-* (1) REGISTER — a plan-exit APPROVE registers the approved plan file as a provenance-tracked
-  artifact through the ONE ``promote_proposal`` path (registry row + version chain + producer
+* (1) REGISTER — a plan-exit review registers the plan file as a provenance-tracked artifact
+  through the ONE mint funnel (registry row + version chain + producer
   provenance), recording the artifact ref on ``session.metadata`` (no fifth store);
 * (2) DEGRADE — a registration failure is TYPED and NON-FATAL: the plan-exit resume still
   proceeds, the degrade reason is recorded on the session record AND emitted on the semantic
@@ -205,7 +205,7 @@ def test_registration_failure_is_typed_and_recorded(
     def _boom(*a, **k):
         raise RuntimeError("registry exploded")
 
-    monkeypatch.setattr("clio_agent.gact.plan_reuse.promote_proposal", _boom)
+    monkeypatch.setattr("clio_agent.gact.plan_reuse.mint_artifact_outcome", _boom)
 
     ref = save_approved_plan(app, sess.id, plan_file=str(plan_file))  # must NOT raise
 
@@ -227,7 +227,7 @@ def test_registration_failure_emits_typed_highway_reason(
     def _boom(*a, **k):
         raise RuntimeError("registry exploded")
 
-    monkeypatch.setattr("clio_agent.gact.plan_reuse.promote_proposal", _boom)
+    monkeypatch.setattr("clio_agent.gact.plan_reuse.mint_artifact_outcome", _boom)
 
     save_approved_plan(app, sess.id, plan_file=str(plan_file))
 
@@ -248,7 +248,7 @@ def test_plan_exit_resume_proceeds_despite_save_failure(
     deps = _fake_deps()
 
     monkeypatch.setattr(
-        "clio_agent.gact.plan_reuse.promote_proposal",
+        "clio_agent.gact.plan_reuse.mint_artifact_outcome",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
     )
 
@@ -461,25 +461,30 @@ def test_plan_ref_beside_inline_playbook_is_typed_reject() -> None:
     assert exc.value.reason == "conflicting_playbook_declarations"
 
 
-def test_save_approved_plan_content_channel_outside_workspace(tmp_path: Path) -> None:
-    """A plan file OUTSIDE the workspace root saves via the inline-content channel.
+def test_save_approved_plan_ingests_owned_plan_outside_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The session-owned plan outside the workspace is ingested without a workspace write.
 
     This is the realistic topology: ``plan_acl.plans_dir()`` is cwd-relative while the
-    session workspace root can be elsewhere. The path channel would reject the escape, so
-    ``save_approved_plan`` must fall through to inline content — and still round-trip.
+    session workspace root can be elsewhere. Registration must retain Plan mode's workspace edit
+    lock while still round-tripping the report through artifact storage.
     """
     ws = tmp_path / "ws"
     ws.mkdir()
     outside = tmp_path / "elsewhere"
     outside.mkdir()
     app = _plan_app(ws)
-    # Save runs after plan-exit flips the mode; mirror that (plan mode denies content writes).
-    sess = app.state.sessions.create(workspace_id="ws_default", title="t", mode="edit")
+    sess = app.state.sessions.create(workspace_id="ws_default", title="t", mode="plan")
     plan_file = outside / "fix-it.md"
     plan_file.write_text(_PLAN_MD, encoding="utf-8")
+    app.state.sessions.update(sess.id, metadata_patch={"plan_file": str(plan_file)})
+    process_root = tmp_path / "process-root"
+    process_root.mkdir()
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(process_root))
 
     ref = save_approved_plan(app, sess.id, plan_file=str(plan_file))
 
-    assert ref["saved"] is True, f"content-channel save failed: {ref!r}"
+    assert ref["saved"] is True, f"owned-plan ingest failed: {ref!r}"
     derived = resolve_saved_plan_playbook(app, "ws_default", ref["name"], name=ref["name"])
     assert derived.steps  # the saved content round-trips into a usable skeleton

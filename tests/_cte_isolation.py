@@ -32,6 +32,7 @@ import shutil
 import socket
 import stat
 import time
+from collections.abc import MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -125,7 +126,7 @@ def reserve_port_block(block: int = 5) -> int:
     raise RuntimeError("could not reserve a free contiguous port block for the private daemon")
 
 
-def isolate_cte_env(root: Path, environ: dict[str, str]) -> CteIsolation:
+def isolate_cte_env(root: Path, environ: MutableMapping[str, str]) -> CteIsolation:
     """Write the private config under ``root`` and set the isolation env in ``environ``.
 
     Sets ``CLIO_RUNTIME_STATE_DIR`` (coordination state), ``CLIO_ARC_STORE_CONFIG`` +

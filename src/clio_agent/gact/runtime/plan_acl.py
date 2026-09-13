@@ -48,9 +48,14 @@ PLAN_ACL_PLAN_FILE_PRIORITY = 70
 #: (F1 #1057 B5); a user ``deny`` on ``ask_user``/``web_fetch`` is honoured.
 PLAN_ACL_PLAN_TOOLS: tuple[str, ...] = ("plan_exit", "ask_user", "web_fetch")
 
+#: The registered-publication tool Architect mode ALLOWS despite the @40 deny-everything default.
+#: ``create_artifact`` remains subject to workspace containment, overwrite, custody, and registry
+#: checks; this does not grant direct file/edit/shell tools. An explicit user deny still wins.
+PLAN_ACL_ARCHITECT_TOOLS: tuple[str, ...] = ("create_artifact",)
+
 #: The modes the built-in plan ACL constrains. The DENY-everything default applies in both; the
-#: plans-dir write carve-out and the plan-tool allow-band are ``plan`` only (architect proposes
-#: diffs, it never writes files and has no plan_exit).
+#: plans-dir write carve-out and plan lifecycle tools are ``plan`` only. Architect can publish a
+#: registered artifact, but direct file/edit/shell tools remain blocked and it has no ``plan_exit``.
 PLAN_ACL_MODES = frozenset({"plan", "architect"})
 
 
@@ -89,6 +94,8 @@ def default_plan_acl_rows() -> list[dict[str, Any]]:
       first, so this is exactly the write/edit/shell surface the deleted hardcoded lock covered).
     * ``allow <plan tool> @50 modes=[plan]`` — one row per :data:`PLAN_ACL_PLAN_TOOLS` entry, the
       non-write tools plan mode needs, re-allowed one band above the deny (P1.4 #1066).
+    * ``allow create_artifact @50 modes=[architect]`` — registered report publication only;
+      arbitrary file/edit/shell tools remain denied.
     * ``allow "*" path=<plans>/*.md @70 modes=[plan]`` — the SOLE writable carve-out (a ``.md``
       write under the plans dir), matched against the CALLER-NORMALIZED target so ``..`` traversal
       can't satisfy it (see :func:`grant_resolver._plan_acl_default_matches`).
@@ -123,6 +130,17 @@ def default_plan_acl_rows() -> list[dict[str, Any]]:
             "band": "allow_tool",
         }
         for tool_name in PLAN_ACL_PLAN_TOOLS
+    )
+    rows.extend(
+        {
+            "kind": "plan_acl",
+            "action": "allow",
+            "tool_name_pattern": tool_name,
+            "modes": ["architect"],
+            "priority": PLAN_ACL_ALLOW_TOOL_PRIORITY,
+            "band": "allow_tool",
+        }
+        for tool_name in PLAN_ACL_ARCHITECT_TOOLS
     )
     rows.append(
         {
@@ -203,10 +221,9 @@ def plan_mode_deny_message(mode: str, tool_name: str = "") -> str:
     * ``mode == "plan"``: names the restriction (Plan Mode is read-only), points at the sole
       writable path (the plan file), and says what IS allowed (write the plan, or exit plan mode
       to execute).
-    * ``mode == "architect"`` (or any other plan-restricted mode): architect has NO plan-file
-      carve-out — it proposes diffs and never writes files directly — so the message states that
-      instead of pointing at a plan-file path or telling the model to "exit plan mode" (which is
-      inaccurate for architect).
+    * ``mode == "architect"`` (or any other plan-restricted mode): architect has NO direct-file
+      carve-out — it may publish registered artifacts, but proposes source changes as diffs — so
+      the message does not point at a plan-file path or tell the model to "exit plan mode".
 
     This is the HUMAN/MODEL-facing text only — the typed audit reason stays ``policy_deny`` — and
     it deliberately does NOT suggest any workaround that defeats the mode. ``tool_name`` is woven
@@ -229,10 +246,9 @@ def plan_mode_deny_message(mode: str, tool_name: str = "") -> str:
             "Write your plan to the plan file, or exit plan mode to execute."
         )
     return (
-        f"You are in Architect Mode: propose changes as diffs; direct file "
-        f"modification is blocked. This tool{tool_ref} would modify the system, so "
-        "it is blocked. Describe the change as a diff for the user to apply, rather "
-        "than writing or editing files directly."
+        f"You are in Architect Mode: direct file modification is blocked except registered "
+        f"artifact publication. This tool{tool_ref} would modify the system, so it is blocked. "
+        "Describe source changes as diffs for the user to apply."
     )
 
 

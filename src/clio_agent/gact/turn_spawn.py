@@ -1,9 +1,7 @@
 """Spawn a child expert in a real child session projected as an AgentTask.
 
-``spawn_child_turn(app, TaskSpec) -> AgentTask`` mints a child session with
-``parent_session_id`` lineage and ``session_type=="agent_task"``, stages the
-same background turn as a user POST, and records its terminal lifecycle. Child
-forwards use a dedicated executor so a waiting parent cannot starve them.
+``spawn_child_turn`` mints lineage, stages a user-equivalent background turn,
+and records lifecycle. A dedicated executor prevents parent starvation.
 """
 
 from __future__ import annotations
@@ -13,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
+from clio_agent.gact.agent_task_artifacts import returned_artifact_ref
 from clio_agent.gact.agent_tasks import (
     AGENT_TASK_EVENTS,
     STATUS_CANCELLED,
@@ -42,6 +41,7 @@ from clio_agent.gact.turn_spawn_failures import (
     child_task_failure_result,
 )
 from clio_agent.gact.turn_spawn_result import child_workflow_state as _child_workflow_state
+from clio_agent.gact.turn_spawn_result import message_text as _message_text
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -137,7 +137,8 @@ class TaskSpec:
     # named surveillance task in the tray, not an ensemble run). Empty keeps the
     # existing default-label behavior verbatim.
     run_label: str = ""
-    # Spotter-ai standing-watcher follow-on: when False, mint the child session +
+    project_to_parent: bool = True  # Internal helpers need no parent projection.
+    # Spotter standing-watcher: when False, mint the child session +
     # AgentTask record WITHOUT starting a first turn -- the record transitions
     # straight to RUNNING (never QUEUED-at-cap, never ``_launch``ed) so it stands
     # as a live, non-terminal row a later independent wake can drive turns on
@@ -156,6 +157,8 @@ class TaskSpec:
     # #1309 C1-S7 F3: the bounded agent-elicitation recursion depth, stamped
     # onto the child's metadata at the SAME mint point for the same reason.
     agent_elicitation_depth: Optional[int] = None
+    # Kept last for positional compatibility; selects an installed blueprint root.
+    target_blueprint_id: str = ""
 
 
 class SpawnError(Exception):
@@ -213,18 +216,6 @@ def _running_in_batch(snapshot: Any, batch_key: tuple[str, str, int]) -> int:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _message_text(msg: Any) -> str:
-    parts = getattr(msg, "parts", None) or []
-    out = []
-    for p in parts:
-        text = getattr(p, "text", None)
-        if text is None and isinstance(p, dict):
-            text = p.get("text")
-        if getattr(p, "type", None) == "text" or (isinstance(p, dict) and p.get("type") == "text"):
-            out.append(str(text or ""))
-    return "".join(out).strip()
 
 
 def _next_run_index(app: "FastAPI", spec: TaskSpec) -> int:
@@ -356,6 +347,7 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         agent_ref={
             "expert_id": spec.child_expert_id,
             "requesting_expert_id": spec.requesting_expert_id,
+            **({"blueprint_id": spec.target_blueprint_id} if spec.target_blueprint_id else {}),
         },
         depth=spec.depth,
         run_index=run_index,
@@ -364,6 +356,7 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         group_size=spec.group_size,
         handle_id="task_" + child.id.split("_")[-1],
         run_label=spec.run_label or f"{spec.child_expert_id} #{run_index + 1}",
+        project_to_parent=spec.project_to_parent,
         live_state=STATUS_QUEUED,
         host=(spec.placement.split(":", 1)[1] if spec.placement.startswith("relay:") else "local"),
         placement=spec.placement,
@@ -415,6 +408,7 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
                 # skill-subagent launches faithfully later (parity with task_text).
                 "seed_context": spec.seed_context,
                 "skip_declared_check": spec.skip_declared_check,
+                "target_blueprint_id": spec.target_blueprint_id,
                 # Persist resolved values so queued admission stays self-contained
                 # even when the parent session disappears before launch.
                 "workspace_id": workspace_id,
@@ -756,11 +750,13 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
                 "answer_excerpt": _message_text(final)[:_ANSWER_EXCERPT_MAX],
                 "workflow_state": _child_workflow_state(app, child_sid, final),
             }
+            artifact_ref = returned_artifact_ref(app, final)
             outcome = fold_agent_task_transition(
                 app,
                 task_id,
                 STATUS_COMPLETED,
                 result=result,
+                artifact_ref=artifact_ref or None,
                 notify_pending=(mode == "async"),
                 updated_at=now,
             )
@@ -807,6 +803,9 @@ def _admit_next_queued(app: "FastAPI") -> None:
             child_expert_id=task.agent_ref.get("expert_id", ""),
             task_text=pending.get("task_text", ""),
             parent_session_id=task.parent_session_id,
+            target_blueprint_id=str(
+                pending.get("target_blueprint_id") or task.agent_ref.get("blueprint_id") or ""
+            ),
             requesting_expert_id=task.agent_ref.get("requesting_expert_id", "main"),
             parent_turn_id=task.parent_turn_id,
             depth=task.depth,

@@ -22,16 +22,12 @@ SPEC §6.7 third-party MCP server surface the gact-tui MCP browser and the
   -- detail enumeration plus protocol prompt fetches (bundled via the in-process
   gateway, external via a short-lived ``fastmcp.Client`` connection).
 
-Handlers close over the ``app`` argument (FastAPI's decorators need it) and
-read/write the live third-party registry via ``app.state.external_mcp_servers``.
-The permission gate / tool observer are read from the constructors stored on
-``app.state.make_permission_gate`` / ``app.state.make_tool_observer`` (DI seam),
-the workspace-scoped catalog cwd via
+Handlers close over ``app`` and read/write the live third-party registry via
+``app.state.external_mcp_servers``. The permission gate / tool observer use the
+constructors on app state, the workspace-scoped catalog cwd via
 :func:`~clio_agent.gact.agents.resolution._runtime_workspace_catalog_cwd`, and the
 cross-concern destructive-action guard through
-:class:`~clio_agent.gact.routes.deps.GactDeps`. The module imports only already
-extracted gact packages (runtime globals, agents.resolution, agent_blueprints,
-events, types) and never loads :mod:`clio_agent.gact.app`.
+:class:`~clio_agent.gact.routes.deps.GactDeps`. It never loads the app module.
 """
 
 from __future__ import annotations
@@ -137,6 +133,10 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
     through the ``app.state.make_permission_gate`` / ``app.state.make_tool_observer``
     constructors and the destructive-action guard through ``deps``.
     """
+
+    from clio_agent.gact.routes.mcp_configuration import register_mcp_configuration_routes
+
+    register_mcp_configuration_routes(app)
 
     @app.get("/v1/mcp/servers")
     async def list_mcp_servers(workspace_id: str = "", session_id: str = "") -> dict[str, Any]:

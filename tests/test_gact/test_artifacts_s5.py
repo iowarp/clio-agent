@@ -1509,6 +1509,36 @@ def test_create_artifact_declared_used_refs_gain_lineage_input_chain(tmp_path):
     assert rec.generated[0].artifact_id == new_id
 
 
+def test_create_artifact_declared_source_url_is_an_honest_external_lineage_leaf(tmp_path):
+    app, sess, arc = _make_app(tmp_path)
+    report, result = _mint_report_via_create_artifact(app, sess, tmp_path, "report-url.md")
+    new_id = result["artifacts"][0]["artifact_id"]
+    source_url = "https://docs.example.test/papers/result.pdf"
+    call_args = {
+        "name": "",
+        "kind": "report",
+        "path": str(report),
+        "content": "",
+        "annotation": "",
+        "artifacts": None,
+        "used": [source_url],
+    }
+
+    observe_tool_transform(app, sess.id, "create_artifact", call_args, "call_url", True, result)
+
+    rec = get_registry(app).get_transform("call_url")
+    assert rec is not None
+    declared = [edge for edge in rec.used if edge.arg == "used"]
+    assert len(declared) == 1
+    assert declared[0].external_ref == f"external:{source_url}"
+    assert declared[0].evidence is EdgeEvidence.ASSERTION
+    graph = build_lineage(get_registry(app), new_id, direction="upstream", depth=5)
+    assert graph is not None
+    external = next(node for node in graph["nodes"] if node["id"] == f"external:{source_url}")
+    assert external["authority"] == source_url
+    assert external["evidence"] == "assertion"
+
+
 def test_create_artifact_declared_used_unresolvable_ref_is_typed_never_fabricated(tmp_path):
     """An unresolvable used ref (bad id, path naming no registered artifact) never
     becomes an edge — it lands as a typed ``used_ref_unresolved`` note. The declared

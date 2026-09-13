@@ -2,16 +2,18 @@
 
 The routing surface that replaces the inline delegate_to_<child> / fanout tools +
 the next_expert settle loop. A react main with declared children gets
-spawn_agent_task / wait_agent_tasks / check_agent_tasks / spawn_agents_parallel;
+spawn_agent_task / wait_agent_tasks / observe_agent_tasks / spawn_agents_parallel;
 a leaf (no children) gets none.
 """
 
 from __future__ import annotations
 
 import json
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -53,6 +55,7 @@ class _Agent:
 class _Def:
     def __init__(self, agent_id: str) -> None:
         self.id = agent_id
+        self.parent_id = "" if agent_id == "main" else "main"
         self.metadata = {"agent_blueprint_id": "bp"}
 
 
@@ -80,10 +83,10 @@ class _ProtocolSpy(_InvokeSpy):
     def __init__(self, registry: AgentTaskRegistry) -> None:
         super().__init__()
         self.registry = registry
-        self.wait_calls: list[tuple[TaskHandle, float]] = []
+        self.wait_calls: list[tuple[TaskHandle, float | None]] = []
         self.check_calls: list[list[TaskHandle]] = []
 
-    def wait(self, handle: TaskHandle, timeout_s: float) -> TaskResult:
+    def wait(self, handle: TaskHandle, timeout_s: float | None) -> TaskResult:
         self.wait_calls.append((handle, timeout_s))
         task = self.registry.get(handle.task_id)
         assert task is not None
@@ -130,7 +133,6 @@ def test_react_main_with_children_gets_spawn_tools(tmp_path: Path, monkeypatch) 
         assert set(names) == {
             "spawn_agent_task",
             "wait_agent_tasks",
-            "check_agent_tasks",
             "message_agent",
             "observe_agent_tasks",
             "get_agent_task_output",
@@ -142,6 +144,22 @@ def test_leaf_expert_without_children_gets_no_spawn_tools(tmp_path: Path, monkey
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app):
         assert _tool_names(app, "leaf_expert", set(), monkeypatch) == []
+
+
+def test_root_without_children_can_commission_installed_blueprint(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        names = _tool_names(app, "main", set(), monkeypatch)
+        assert set(names) == {
+            "spawn_agent_task",
+            "wait_agent_tasks",
+            "message_agent",
+            "observe_agent_tasks",
+            "get_agent_task_output",
+            "spawn_agents_parallel",
+        }
 
 
 def test_spawn_effect_leaf_gets_collectors_not_declared_child_spawners(
@@ -160,7 +178,6 @@ def test_spawn_effect_leaf_gets_collectors_not_declared_child_spawners(
         )
         assert set(names) == {
             "wait_agent_tasks",
-            "check_agent_tasks",
             "message_agent",
             "observe_agent_tasks",
             "get_agent_task_output",
@@ -347,6 +364,59 @@ def test_spawn_agent_task_success_emits_delegation_started_and_returns_task(monk
     }
 
 
+def test_spawn_agent_task_commissions_installed_blueprint_root(monkeypatch) -> None:
+    app = _fake_app()
+    emitted = _capture_emits(monkeypatch)
+    target_scope = {
+        "active_agent_blueprint_id": "deep-researcher",
+        "active_agent_blueprint_name": "Deep Researcher",
+    }
+    monkeypatch.setattr(
+        "clio_agent.gact.spawn_context.resolve_installed_blueprint_target",
+        lambda app, blueprint_id, workspace_id="": (
+            "main",
+            target_scope,
+            "Deep Researcher",
+        ),
+    )
+    invoked: list[Any] = []
+
+    def _invoke(spec: Any) -> SimpleNamespace:
+        invoked.append(spec)
+        return SimpleNamespace(
+            task_id="task_research",
+            status="running",
+            run_index=0,
+            queued_reason="",
+            child_session_id="child_research",
+            run_label=spec.run_label,
+        )
+
+    monkeypatch.setattr(app.state.expert_invoker, "invoke", _invoke)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", set(), monkeypatch)
+        result = json.loads(
+            tools["spawn_agent_task"].func(
+                task="Produce the evidence-backed report.",
+                blueprint_id="deep-researcher",
+            )
+        )
+
+    assert result["task_id"] == "task_research"
+    assert result["run_label"] == "Deep Researcher"
+    assert len(invoked) == 1
+    spec = invoked[0]
+    assert spec.child_expert_id == "main"
+    assert spec.target_blueprint_id == "deep-researcher"
+    assert spec.session_scope_metadata == target_scope
+    assert [event["event_type"] for event in emitted] == [
+        "blueprint.delegation.started",
+        "blueprint.commission.started",
+    ]
+    assert emitted[1]["payload"]["child_session_id"] == "child_research"
+
+
 def test_spawn_agent_task_routes_invoke_through_app_expert_invoker(monkeypatch) -> None:
     """P2.6: the model-facing spawn crosses the configured invoker boundary."""
 
@@ -380,8 +450,8 @@ def test_spawn_runtime_has_no_direct_spawn_substrate_reference() -> None:
     assert "spawn_child_turn_threadsafe" not in source
 
 
-def test_spawn_wait_and_check_all_route_through_expert_invoker(monkeypatch) -> None:
-    """P2.6: the complete model-facing operation set crosses one invoker stub."""
+def test_spawn_and_committed_wait_route_through_expert_invoker(monkeypatch) -> None:
+    """P2.6: spawn and committed wait cross one invoker stub."""
 
     registry = AgentTaskRegistry()
     registry.register(_completed_task())
@@ -393,12 +463,92 @@ def test_spawn_wait_and_check_all_route_through_expert_invoker(monkeypatch) -> N
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
         tools["spawn_agent_task"].func(agent="data_expert", task="analyze")
-        tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
-        tools["check_agent_tasks"].func(task_ids=["task_done"])
+        tools["wait_agent_tasks"].func(task_ids=["task_done"])
 
     assert len(spy.specs) == 1
     assert [handle.task_id for handle, _timeout in spy.wait_calls] == ["task_done"]
-    assert [[handle.task_id for handle in batch] for batch in spy.check_calls] == [["task_done"]]
+    assert spy.check_calls == []
+
+
+def test_wait_agent_tasks_omitted_timeout_is_committed_wait(monkeypatch) -> None:
+    """The optional timeout crosses the invoker boundary as ``None``."""
+
+    registry = AgentTaskRegistry()
+    registry.register(_completed_task())
+    app = _fake_app(registry)
+    spy = _ProtocolSpy(registry)
+    app.state.expert_invoker = spy
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        tools["wait_agent_tasks"].func(task_ids=["task_done"])
+
+    assert [timeout for _handle, timeout in spy.wait_calls] == [None]
+
+
+@pytest.mark.parametrize("terminal_status", ["completed", "failed", "cancelled"])
+def test_wait_agent_tasks_blocks_until_each_terminal_status(
+    monkeypatch,
+    terminal_status: str,
+) -> None:
+    """The public wait has no checkpoint return; every terminal edge releases it."""
+
+    registry = AgentTaskRegistry()
+    registry.register(
+        AgentTask(
+            task_id="task_running",
+            parent_session_id="sess_x",
+            child_session_id="child_wait",
+            agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
+            status="running",
+        )
+    )
+    app = _fake_app(
+        registry,
+        messages={
+            "child_wait": [_assistant_message("msg_wait", "child_wait", "terminal child response")]
+        },
+    )
+    _capture_emits(monkeypatch)
+
+    def finish_child() -> None:
+        time.sleep(0.15)
+        registry.transition(
+            "task_running",
+            terminal_status,
+            error_reason="agent_error" if terminal_status == "failed" else "",
+            result={
+                "answer_excerpt": "terminal child response",
+                "message_ref": "msg_wait",
+                "workflow_state": {},
+            },
+        )
+
+    finisher = threading.Thread(target=finish_child)
+    finisher.start()
+    started = time.monotonic()
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_running"]))
+    elapsed = time.monotonic() - started
+    finisher.join()
+
+    assert elapsed >= 0.1
+    assert result["results"][0]["status"] == terminal_status
+
+
+def test_wait_agent_tasks_schema_requires_only_task_ids(monkeypatch) -> None:
+    """The model-facing schema has no timeout or checkpoint posture."""
+
+    app = _fake_app()
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        schema = tools["wait_agent_tasks"].format_as_litellm_function_call()
+
+    parameters = schema["function"]["parameters"]
+    assert parameters["required"] == ["task_ids"]
+    assert set(parameters["properties"]) == {"task_ids"}
 
 
 def test_spawn_agent_task_spawn_error_returns_reason_and_emits_nothing(monkeypatch) -> None:
@@ -435,7 +585,7 @@ def test_wait_agent_tasks_completed_returns_wire_payload_and_emits_completed(mon
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0))
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_done"]))
 
     (payload,) = result["results"]
     assert payload["task_id"] == "task_done"
@@ -466,6 +616,59 @@ def test_wait_agent_tasks_completed_returns_wire_payload_and_emits_completed(mon
     assert completed["payload"]["stage"] == "delegate.completed"
 
 
+def test_commission_wait_orders_artifact_return_before_parent_use(monkeypatch) -> None:
+    task = replace(
+        _completed_task("task_commission"),
+        agent_ref={
+            "expert_id": "main",
+            "requesting_expert_id": "main",
+            "blueprint_id": "deep-researcher",
+        },
+        artifact_ref={
+            "artifact_id": "artifact_report",
+            "sha256": "a" * 64,
+            "metadata": {"kind": "report", "version": 1},
+        },
+    )
+    registry = AgentTaskRegistry()
+    registry.register(task)
+    app = _fake_app(
+        registry,
+        messages={"child_1": [_assistant_message("msg_1", "child_1", "The report is registered.")]},
+    )
+    emitted = _capture_emits(monkeypatch)
+    monkeypatch.setattr(
+        "clio_agent.gact.agent_task_artifacts.artifact_context_for_task",
+        lambda app, task: {"artifact_ref": task.artifact_ref, "content": "# Report"},
+    )
+
+    def _parent_use(app: Any, session_id: str, task: Any) -> bool:
+        emitted.append(
+            {
+                "event_type": "blueprint.commission.parent_used_artifact",
+                "session_id": session_id,
+                "task_id": task.task_id,
+            }
+        )
+        return True
+
+    monkeypatch.setattr(
+        "clio_agent.gact.agent_task_artifacts.emit_commission_parent_use", _parent_use
+    )
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", set(), monkeypatch)
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_commission"]))
+
+    assert result["results"][0]["artifact_context"]["content"] == "# Report"
+    assert [event["event_type"] for event in emitted] == [
+        "blueprint.delegation.completed",
+        "blueprint.commission.artifact_returned",
+        "blueprint.delegation.parent_resumed",
+        "blueprint.commission.parent_used_artifact",
+    ]
+
+
 def test_wait_agent_tasks_return_key_order_matches_declared_tail(monkeypatch) -> None:
     """Harmless-but-matching courtesy (owner amendment): the model-facing return's
     TOP-LEVEL key order is ``results``, then ``workflow_state_conflicts``, then
@@ -486,7 +689,7 @@ def test_wait_agent_tasks_return_key_order_matches_declared_tail(monkeypatch) ->
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        raw = tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
+        raw = tools["wait_agent_tasks"].func(task_ids=["task_done"])
 
     # Content is unchanged (parses to the same rows the wire-payload test above
     # asserts) — only ORDER is under test here, on the raw JSON text itself
@@ -528,7 +731,7 @@ def test_wait_agent_tasks_declares_typed_structured_content_shape(monkeypatch) -
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
+        tools["wait_agent_tasks"].func(task_ids=["task_done"])
 
     assert len(declared) == 1
     shape = declared[0]
@@ -555,60 +758,17 @@ def test_wait_agent_tasks_declares_typed_structured_content_shape(monkeypatch) -
 
 
 # --------------------------------------------------------------------------- #
-# check_agent_tasks — the SAME declared structured_content grammar (P5).       #
+# check_agent_tasks — removed from the model-visible lifecycle.                #
 # --------------------------------------------------------------------------- #
 
 
-def test_check_agent_tasks_declares_typed_structured_content_shape(monkeypatch) -> None:
-    """check_agent_tasks gets wait_agent_tasks's OWN treatment: a tally ``message``
-    FIRST, then the SAME per-task rows the model-facing return already carries."""
-
-    registry = AgentTaskRegistry()
-    registry.register(_completed_task("task_done"))
-    registry.register(
-        AgentTask(
-            task_id="task_running",
-            parent_session_id="sess_x",
-            child_session_id="child_2",
-            agent_ref={"expert_id": "hpc_expert", "requesting_expert_id": "main"},
-            status="running",
-        )
-    )
-    app = _fake_app(registry)
-    _capture_emits(monkeypatch)
-    declared: list[dict[str, Any]] = []
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
-        lambda value: declared.append(dict(value)),
-    )
-
-    with _active_turn(app):
-        tools = _tools_by_name(app, "main", {"data_expert", "hpc_expert"}, monkeypatch)
-        tools["check_agent_tasks"].func()
-
-    assert len(declared) == 1
-    shape = declared[0]
-    assert list(shape.keys()) == ["message", "tasks"]
-    assert shape["message"] == "2 tasks: 1 running, 1 completed"
-    assert {row["task_id"] for row in shape["tasks"]} == {"task_done", "task_running"}
-
-
-def test_check_agent_tasks_structured_content_empty_case(monkeypatch) -> None:
-    """No spawned tasks at all -> the honest "no tasks" message, never "0 tasks: "."""
+def test_check_agent_tasks_is_absent_from_model_inventory(monkeypatch) -> None:
+    """Snapshots belong to observe_agent_tasks; no compatibility alias is exposed."""
 
     app = _fake_app()
-    _capture_emits(monkeypatch)
-    declared: list[dict[str, Any]] = []
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
-        lambda value: declared.append(dict(value)),
-    )
-
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        tools["check_agent_tasks"].func()
-
-    assert declared == [{"message": "no tasks", "tasks": []}]
+    assert "check_agent_tasks" not in tools
 
 
 def test_wait_agent_tasks_failed_emits_delegation_failed_with_status(monkeypatch) -> None:
@@ -631,7 +791,7 @@ def test_wait_agent_tasks_failed_emits_delegation_failed_with_status(monkeypatch
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_bad"], timeout_s=1.0))
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_bad"]))
 
     (payload,) = result["results"]
     assert payload["status"] == "failed"
@@ -651,10 +811,7 @@ def test_wait_agent_tasks_unknown_task_returns_error_and_emits_nothing(monkeypat
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        # timeout_s=0 so the never-set completion Event of an unknown id returns at once.
-        result = json.loads(
-            tools["wait_agent_tasks"].func(task_ids=["task_missing"], timeout_s=0.0)
-        )
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_missing"]))
 
     assert result["results"] == [{"task_id": "task_missing", "error": "unknown_task"}]
     assert emitted == []
@@ -943,7 +1100,7 @@ def test_wait_returns_child_answer_verbatim_past_the_excerpt_bound(monkeypatch) 
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_big"], timeout_s=1.0))
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_big"]))
 
     (payload,) = result["results"]
     # Byte-identical, FULL length — the truncated excerpt would be 2000 chars.
@@ -986,7 +1143,7 @@ def test_wait_digests_oversize_child_answer_with_durable_reference(monkeypatch) 
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_big"], timeout_s=1.0))
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_big"]))
 
     (payload,) = result["results"]
     # The MODEL-facing row never carries the raw full text a second time. The
@@ -1050,45 +1207,11 @@ def test_wait_verbatim_at_default_cap_boundary_through_real_path(monkeypatch) ->
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_exact"], timeout_s=1.0))
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_exact"]))
 
     (payload,) = result["results"]
     assert payload["output"] == exact
     assert len(payload["output"]) == default_cap
-
-
-def test_check_agent_tasks_never_inlines_full_output_regardless_of_size(monkeypatch) -> None:
-    """Regression pin: check_agent_tasks already returns only the bounded
-    ``answer_excerpt`` (never the raw ``output``) — true both below and above
-    the #1306 digest cap, so this tool needed no change to satisfy #1306."""
-
-    big = " | ".join(f"line-{i:04d} the child's deliverable" for i in range(400))
-    assert len(big) > 8_000
-    registry = AgentTaskRegistry()
-    registry.register(
-        AgentTask(
-            task_id="task_big",
-            parent_session_id="sess_x",
-            child_session_id="child_big",
-            agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
-            status="completed",
-            result={"answer_excerpt": big[:2000], "workflow_state": {}, "message_ref": "msg_big"},
-        )
-    )
-    app = _fake_app(
-        registry, messages={"child_big": [_assistant_message("msg_big", "child_big", big)]}
-    )
-    _capture_emits(monkeypatch)
-
-    with _active_turn(app):
-        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        result = json.loads(tools["check_agent_tasks"].func(task_ids=["task_big"]))
-
-    (row,) = result["tasks"]
-    assert "output" not in row["result"]
-    assert row["result"]["answer_excerpt"] == big[:2000]
-    assert row["result"]["message_ref"] == "msg_big"
-    assert row["result"]["child_session_id"] == "child_big"
 
 
 def test_get_agent_task_output_tool_fetches_full_output_for_completed_task(monkeypatch) -> None:
@@ -1476,7 +1599,7 @@ def test_wait_falls_back_to_excerpt_with_typed_marker_when_message_gone(monkeypa
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_gone"], timeout_s=1.0))
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_gone"]))
 
     (payload,) = result["results"]
     # Never silent: the excerpt is served WITH a typed degradation marker.
@@ -1498,9 +1621,7 @@ def test_unknown_task_id_returns_immediately_not_after_timeout(monkeypatch) -> N
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
         start = time.monotonic()
-        # A LARGE timeout: the old code (event().wait BEFORE get) would block the
-        # full 30s on an unknown id's freshly-minted, never-set Event.
-        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["ghost"], timeout_s=30.0))
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["ghost"]))
         elapsed = time.monotonic() - start
 
     assert result["results"] == [{"task_id": "ghost", "error": "unknown_task"}]
@@ -1528,8 +1649,8 @@ def test_double_wait_emits_terminal_event_once_but_returns_row_each_time(monkeyp
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        first = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0))
-        second = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0))
+        first = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_done"]))
+        second = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_done"]))
 
     # The row is RETURNED both times (the model may legitimately re-collect).
     assert first["results"][0]["output"] == "child produced the staged CSV"
@@ -1555,9 +1676,7 @@ def test_same_terminal_id_twice_in_one_batch_emits_event_once(monkeypatch) -> No
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        result = json.loads(
-            tools["wait_agent_tasks"].func(task_ids=["task_done", "task_done"], timeout_s=1.0)
-        )
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_done", "task_done"]))
 
     # Two rows returned (once per requested id), but exactly one terminal + one
     # parent_resumed wire event.
@@ -1715,7 +1834,7 @@ def test_wait_completed_appends_return_part_with_verbatim_output(monkeypatch) ->
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
+        tools["wait_agent_tasks"].func(task_ids=["task_done"])
 
     assert len(parts) == 1
     _sid, part = parts[0]
@@ -1749,7 +1868,7 @@ def test_wait_failed_appends_return_part_on_terminal_lane_visible(monkeypatch) -
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        tools["wait_agent_tasks"].func(task_ids=["task_bad"], timeout_s=1.0)
+        tools["wait_agent_tasks"].func(task_ids=["task_bad"])
 
     # A FAILED child is NOT invisible: it still gets a return Part, on the SAME terminal
     # lane (stage delegate.completed, #882) with status=failed and the typed reason.
@@ -1776,8 +1895,8 @@ def test_return_part_appended_once_on_double_wait(monkeypatch) -> None:
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
-        tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
+        tools["wait_agent_tasks"].func(task_ids=["task_done"])
+        tools["wait_agent_tasks"].func(task_ids=["task_done"])
 
     # The return Part shares the once-per-task gate with the terminal event: exactly one
     # across both waits (no duplicate return row on a re-collect).
@@ -1805,7 +1924,7 @@ def test_parent_resumed_event_re_pins_parent_after_terminal(monkeypatch) -> None
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        tools["wait_agent_tasks"].func(task_ids=["task_done"], timeout_s=1.0)
+        tools["wait_agent_tasks"].func(task_ids=["task_done"])
 
     resumed = [e for e in emitted if e["event_type"] == "blueprint.delegation.parent_resumed"]
     assert len(resumed) == 1
@@ -2190,11 +2309,8 @@ def test_return_handoff_part_survives_unparseable_timestamps() -> None:
     assert part.duration_ms == 0.0
 
 
-def test_terminal_handoff_updates_started_part_in_place() -> None:
-    """ONE delegation = ONE expert_handoff part (clean-wire rule): the terminal
-    return UPDATES the started part (same id/sequence, merged metadata carrying
-    the brief AND the output) and publishes message.part.updated — never a
-    second part for the same handle."""
+def test_terminal_handoff_appends_after_started_part() -> None:
+    """Start and return remain separate chronological ledger events."""
 
     from clio_agent.gact.transcript import TurnTranscript
 
@@ -2233,16 +2349,19 @@ def test_terminal_handoff_updates_started_part_in_place() -> None:
     transcript.upsert_delegation_part(terminal)
 
     parts = [p for p in transcript._parts if p.type == "expert_handoff"]
-    assert len(parts) == 1
-    merged = parts[0]
-    assert merged.id == "p_started"  # identity survives the update
-    assert merged.stage == "delegate.completed"
-    assert merged.metadata["question"] == "Resolve LA."
-    assert merged.metadata["output"] == "Resolved."
-    assert merged.duration_ms == 1234.0
+    assert len(parts) == 2
+    assert parts[0].id == "p_started"
+    assert parts[0].stage == "delegate.started"
+    assert parts[0].metadata["question"] == "Resolve LA."
+    assert "output" not in parts[0].metadata
+    assert parts[1].id == "p_terminal"
+    assert parts[1].stage == "delegate.completed"
+    assert parts[1].metadata["output"] == "Resolved."
+    assert "question" not in parts[1].metadata
+    assert parts[1].duration_ms == 1234.0
     kinds = [e for e, _ in events]
-    assert kinds.count("message.part.added") == 1
-    assert kinds.count("message.part.updated") == 1
+    assert kinds.count("message.part.added") == 2
+    assert kinds.count("message.part.updated") == 0
 
 
 def _collector_transcript_app(sid: str = "sess_x") -> tuple[Any, Any, list[tuple[str, dict]]]:
@@ -2319,448 +2438,51 @@ def _collector_result(
     )
 
 
-def test_repeated_same_args_waits_collapse_to_one_tool_pair() -> None:
-    """One logical activity (waiting on task_X) = ONE tool_call+tool_result pair
-    (clean-wire rule): a re-polled wait with identical args REPLACES the prior
-    pair in place — same part ids, cumulative attempts/total_wait_ms, the NEWEST
-    result text verbatim — publishing message.part.updated, never new rows."""
+def test_repeated_waits_remain_separate_tool_pairs() -> None:
+    """Every model-emitted wait remains a distinct ledger event."""
 
     from clio_agent.gact.tool_observer import _append_live_assistant_part
 
     app, transcript, events = _collector_transcript_app()
-    for call_id, text in [
-        ("call_a", "running"),
-        ("call_b", "still running"),
-        ("call_c", "completed"),
-    ]:
+    for call_id, text in [("call_a", "running"), ("call_b", "completed")]:
         _append_live_assistant_part(
-            app, "sess_x", _collector_call(call_id, task_ids=["task_1"], timeout_s=30.0)
+            app, "sess_x", _collector_call(call_id, task_ids=["task_1"])
         )
-        _append_live_assistant_part(app, "sess_x", _collector_result(call_id, text, 30000.0))
+        _append_live_assistant_part(app, "sess_x", _collector_result(call_id, text, 5.0))
 
     parts = transcript.snapshot()
-    assert [p.type for p in parts] == ["tool_call", "tool_result"]
-    call, result = parts
-    assert call.id == "live_call_a_call"  # identity survives the collapse
-    assert call.call_id == "call_c"  # ...but the newest attempt owns the call
-    assert call.metadata["attempts"] == 3
-    assert result.id == "live_call_a_result"
-    assert result.metadata["attempts"] == 3
-    assert result.metadata["total_wait_ms"] == 90000.0
-    assert result.content[0].text == "completed"  # newest result VERBATIM
-    kinds = [e for e, _ in events]
-    assert kinds.count("message.part.added") == 2  # one pair, ever
-    assert kinds.count("message.part.updated") == 4  # 2 re-polls x (call + result)
+    assert [part.type for part in parts] == ["tool_call", "tool_result"] * 2
+    assert [part.call_id for part in parts] == ["call_a", "call_a", "call_b", "call_b"]
+    assert [event for event, _ in events].count("message.part.added") == 4
+    assert [event for event, _ in events].count("message.part.updated") == 0
 
 
-def test_different_timeout_budget_same_task_ids_still_collapses() -> None:
-    """Round-6 real-turn evidence: the model re-polls the SAME task set with a
-    DIFFERENT ``timeout_s`` each time (observed 60 then 90 on one task set —
-    the owner's original wait-wall varied budgets 60/90/120s too). Canonicalizing
-    the FULL args dict (timeout_s included) never collapses this shape — the
-    EXACT case the feature exists for. The collapse identity is the SEMANTIC
-    activity (tool name + task set) only, so this still collapses to one pair,
-    and the per-attempt budgets are recorded honestly rather than silently
-    dropped."""
+def test_historical_check_agent_tasks_call_renders_without_translation() -> None:
+    """A stored legacy tool name remains visible as the actual historical call."""
 
     from clio_agent.gact.tool_observer import _append_live_assistant_part
 
     app, transcript, events = _collector_transcript_app()
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=60.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 60000.0))
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_b", task_ids=["task_1"], timeout_s=90.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 90000.0))
-
-    parts = transcript.snapshot()
-    assert [p.type for p in parts] == ["tool_call", "tool_result"]
-    call, result = parts
-    assert call.id == "live_call_a_call"  # identity survives the collapse
-    assert call.call_id == "call_b"  # ...but the newest attempt owns the call
-    assert call.metadata["attempts"] == 2
-    assert call.metadata["budgets"] == [60.0, 90.0]  # honest per-attempt budgets
-    assert result.id == "live_call_a_result"
-    assert result.metadata["attempts"] == 2
-    assert result.metadata["total_wait_ms"] == 150000.0
-    assert result.content[0].text == "completed"  # newest result VERBATIM
-    kinds = [e for e, _ in events]
-    assert kinds.count("message.part.added") == 2  # one pair, ever
-    assert kinds.count("message.part.updated") == 2  # 1 re-poll x (call + result)
-
-
-def test_task_ids_reordered_between_polls_still_collapses() -> None:
-    """The collapse identity sorts ``task_ids`` (order-insensitive): a re-poll
-    that lists the same task set in a different order is still ONE activity."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, _events = _collector_transcript_app()
-    _append_live_assistant_part(
-        app,
-        "sess_x",
-        _collector_call("call_a", task_ids=["task_1", "task_2"], timeout_s=30.0),
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
-    _append_live_assistant_part(
-        app,
-        "sess_x",
-        _collector_call("call_b", task_ids=["task_2", "task_1"], timeout_s=45.0),
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 45000.0))
-
-    parts = transcript.snapshot()
-    assert [p.type for p in parts] == ["tool_call", "tool_result"]
-    assert parts[0].metadata["attempts"] == 2
-    assert parts[0].metadata["budgets"] == [30.0, 45.0]
-
-
-def test_check_error_repoll_collapses_and_shows_newest_error_verbatim() -> None:
-    """check_agent_tasks collapses the same way, and a failed re-poll's VISIBLE
-    result is the newest error verbatim — never a merge that keeps the prior
-    attempt's stale result evidence under the failure."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, _events = _collector_transcript_app()
     _append_live_assistant_part(
         app, "sess_x", _collector_call("call_a", tool_name="check_agent_tasks", task_ids=None)
     )
     _append_live_assistant_part(
         app,
         "sess_x",
-        _collector_result("call_a", '{"results": []}', 5.0, tool_name="check_agent_tasks"),
-    )
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_b", tool_name="check_agent_tasks", task_ids=None)
-    )
-    _append_live_assistant_part(
-        app,
-        "sess_x",
         _collector_result(
-            "call_b", "registry gone", 3.0, tool_name="check_agent_tasks", is_error=True
+            "call_a", '{"results": []}', 5.0, tool_name="check_agent_tasks"
         ),
     )
 
     parts = transcript.snapshot()
-    assert [p.type for p in parts] == ["tool_call", "tool_result"]
-    result = parts[1]
-    assert result.is_error is True
-    assert result.content[0].text == "registry gone"
-    assert result.metadata["attempts"] == 2
-    assert result.metadata["total_wait_ms"] == 8.0
-    assert "result" not in result.metadata  # no stale prior-attempt evidence
+    assert [part.type for part in parts] == ["tool_call", "tool_result"]
+    assert [part.tool_name for part in parts] == ["check_agent_tasks", "check_agent_tasks"]
+    assert [event for event, _ in events].count("message.part.added") == 2
+    assert [event for event, _ in events].count("message.part.updated") == 0
 
 
-def test_repoll_structured_content_follows_the_newest_attempt() -> None:
-    """#1190: the TOP-LEVEL ``structured_content`` field stays consistent across
-    collector re-poll upserts — the newest attempt's value (or absence) owns the
-    merged part, exactly like the visible result text. A prior attempt's
-    structured payload must never survive under a newer attempt that lacks it,
-    and never leak back in via the metadata merge (metadata carries no copy)."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, _events = _collector_transcript_app()
-    # Attempt 1 carries a structured payload; the re-poll (attempt 2) does not.
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(
-        app,
-        "sess_x",
-        _collector_result("call_a", "running", 30000.0, structured_content={"status": "running"}),
-    )
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_b", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 5.0))
-
-    parts = transcript.snapshot()
-    assert [p.type for p in parts] == ["tool_call", "tool_result"]
-    result = parts[1]
-    assert result.metadata["attempts"] == 2
-    assert result.structured_content is None  # newest attempt owns the facts
-    assert "structured_content" not in result.to_wire()  # absent-when-None
-    assert "structured_content" not in result.metadata  # ONE home: never metadata
-
-    # And the reverse: a re-poll that GAINS a structured payload serves it.
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_c", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(
-        app,
-        "sess_x",
-        _collector_result("call_c", "completed", 3.0, structured_content={"status": "completed"}),
-    )
-    result = transcript.snapshot()[1]
-    assert result.metadata["attempts"] == 3
-    assert result.structured_content == {"status": "completed"}
-    assert result.to_wire()["structured_content"] == {"status": "completed"}
-    assert "structured_content" not in result.metadata
-
-
-def test_repoll_waited_tasks_union_by_task_id() -> None:
-    """A collapsed wait covering two re-poll attempts on the SAME task set must
-    carry the UNION of resolved ``waited_tasks`` rows, never a narrower result
-    than either attempt saw (the collector collapse's generic ``{**existing,
-    **new}`` metadata merge would otherwise let the newest attempt silently
-    drop a row an earlier attempt resolved)."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, _events = _collector_transcript_app()
-    row_a = {
-        "task_id": "task_1",
-        "agent_id": "geospatial",
-        "run_index": 0,
-        "run_label": "",
-        "child_session_id": "child_1",
-        "name": "geospatial #1",
-    }
-    row_b = {
-        "task_id": "task_2",
-        "agent_id": "ndp",
-        "run_index": 0,
-        "run_label": "",
-        "child_session_id": "child_2",
-        "name": "ndp #1",
-    }
-    # Attempt 1 resolves only task_1 (task_2's registry row wasn't there yet, or
-    # attempt 1 simply requested a subset); attempt 2 resolves BOTH, with an
-    # updated row_a (its run_label got set in between).
-    _append_live_assistant_part(
-        app,
-        "sess_x",
-        _collector_call(
-            "call_a", task_ids=["task_1", "task_2"], timeout_s=30.0, waited_tasks=[row_a]
-        ),
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
-    row_a_updated = {**row_a, "run_label": "LA scan", "name": "LA scan"}
-    _append_live_assistant_part(
-        app,
-        "sess_x",
-        _collector_call(
-            "call_b",
-            task_ids=["task_1", "task_2"],
-            timeout_s=30.0,
-            waited_tasks=[row_a_updated, row_b],
-        ),
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 5.0))
-
-    call_part = next(p for p in transcript.snapshot() if p.type == "tool_call")
-    assert call_part.metadata["attempts"] == 2
-    # Union by task_id: BOTH rows present, and task_1's NEWEST (attempt 2) facts win.
-    assert call_part.metadata["waited_tasks"] == [row_a_updated, row_b]
-
-
-def test_different_args_waits_stay_separate_rows() -> None:
-    """A wait on DIFFERENT task ids is a different activity — separate row pairs,
-    never an in-place update."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, events = _collector_transcript_app()
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_b", task_ids=["task_2"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "running", 30000.0))
-
-    parts = transcript.snapshot()
-    assert [p.type for p in parts] == ["tool_call", "tool_result", "tool_call", "tool_result"]
-    assert "attempts" not in parts[2].metadata
-    assert [e for e, _ in events].count("message.part.updated") == 0
-
-
-def test_narration_between_waits_collapses_and_keeps_narration() -> None:
-    """Real turns interleave narration TEXT between every re-poll (round-4 live
-    evidence, msg_asst_bf61e558ce51: 5 separate wait rows under the strict
-    adjacency rule). Narration never breaks the chain: the same-args re-poll
-    still collapses onto the prior pair at its ORIGINAL position, while the
-    narration parts stay exactly where they are, in order, as separate text
-    parts — never absorbed, never reordered."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, events = _collector_transcript_app()
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
-    transcript.append_text_delta("main", "next_thought", "Still waiting on task_1...")
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_b", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(
-        app, "sess_x", _collector_result("call_b", "still running", 30000.0)
-    )
-    transcript.append_text_delta("main", "next_thought", "Task_1 is close, polling again...")
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_c", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_c", "completed", 30000.0))
-
-    parts = transcript.snapshot()
-    assert [p.type for p in parts] == ["tool_call", "tool_result", "text", "text"]
-    call, result, narration1, narration2 = parts
-    assert call.id == "live_call_a_call"  # the pair keeps its ORIGINAL position/id
-    assert call.call_id == "call_c"  # ...owned by the newest attempt
-    assert call.metadata["attempts"] == 3
-    assert result.id == "live_call_a_result"
-    assert result.metadata["attempts"] == 3
-    assert result.metadata["total_wait_ms"] == 90000.0
-    assert result.content[0].text == "completed"  # newest result VERBATIM
-    assert narration1.text == "Still waiting on task_1..."
-    assert narration2.text == "Task_1 is close, polling again..."
-    kinds = [e for e, _ in events]
-    assert kinds.count("message.part.added") == 4  # one pair + the two narrations
-    assert kinds.count("message.part.updated") == 4  # 2 re-polls x (call + result)
-
-
-def test_thinking_and_text_between_waits_collapses_and_keeps_both_verbatim() -> None:
-    """LIVE evidence (rerun sess_c6241fc8906f, msg_asst_8894cb745b15): the
-    provider-thinking lane came alive alongside narration text, so the stored
-    shape between two same-args re-polls is tool_call, tool_result,
-    THINKING, text, tool_call(same args)... — not just text. A ``thinking``
-    part is the same narration lane as ``text`` (both stay exactly where they
-    streamed, never absorbed): it must not break the collapse chain either."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, events = _collector_transcript_app()
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
-    transcript.append_text_delta("main", "provider_thinking:main", "Checking on task_1...")
-    transcript.append_text_delta("main", "next_thought", "Still waiting on task_1...")
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_b", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 30000.0))
-
-    parts = transcript.snapshot()
-    assert [p.type for p in parts] == ["tool_call", "tool_result", "thinking", "text"]
-    call, result, thinking, narration = parts
-    assert call.id == "live_call_a_call"  # the pair keeps its ORIGINAL position/id
-    assert call.call_id == "call_b"  # ...owned by the newest attempt
-    assert call.metadata["attempts"] == 2
-    assert result.id == "live_call_a_result"
-    assert result.metadata["attempts"] == 2
-    assert result.metadata["total_wait_ms"] == 60000.0
-    assert result.content[0].text == "completed"  # newest result VERBATIM
-    assert thinking.text == "Checking on task_1..."
-    assert narration.text == "Still waiting on task_1..."
-    kinds = [e for e, _ in events]
-    assert kinds.count("message.part.added") == 4  # one pair + thinking + text
-    assert kinds.count("message.part.updated") == 2  # 1 re-poll x (call + result)
-
-
-def test_interleaved_other_tool_call_breaks_the_collapse_chain() -> None:
-    """A DIFFERENT tool's call/result pair between same-args waits BREAKS the
-    chain — collapsing across another tool's activity would reorder reality."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, events = _collector_transcript_app()
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_x", tool_name="read_file", filepath="x.h5")
-    )
-    _append_live_assistant_part(
-        app, "sess_x", _collector_result("call_x", "bytes", 5.0, tool_name="read_file")
-    )
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_b", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 30000.0))
-
-    parts = transcript.snapshot()
-    assert [p.type for p in parts] == [
-        "tool_call",
-        "tool_result",
-        "tool_call",
-        "tool_result",
-        "tool_call",
-        "tool_result",
-    ]
-    assert "attempts" not in parts[4].metadata
-    assert [e for e, _ in events].count("message.part.updated") == 0
-
-
-def test_interleaved_expert_handoff_breaks_the_collapse_chain() -> None:
-    """A spawn (expert_handoff) between same-args waits BREAKS the chain — the
-    wait after a new delegation is a new activity, never a re-poll of the old."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, events = _collector_transcript_app()
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_a", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_a", "running", 30000.0))
-    _append_live_assistant_part(
-        app,
-        "sess_x",
-        Part(
-            id="p_handoff",
-            type="expert_handoff",
-            agent_id="main",
-            child_agent="data_expert",
-            stage="delegate.started",
-            handle_id="task_9",
-            status="running",
-        ),
-    )
-    _append_live_assistant_part(
-        app, "sess_x", _collector_call("call_b", task_ids=["task_1"], timeout_s=30.0)
-    )
-    _append_live_assistant_part(app, "sess_x", _collector_result("call_b", "completed", 30000.0))
-
-    parts = transcript.snapshot()
-    assert [p.type for p in parts] == [
-        "tool_call",
-        "tool_result",
-        "expert_handoff",
-        "tool_call",
-        "tool_result",
-    ]
-    assert [e for e, _ in events].count("message.part.updated") == 0
-
-
-def test_non_collector_tools_never_collapse() -> None:
-    """Scope is STRICTLY the two collector tools by name — an identical-args
-    re-run of any other tool appends normally (no generic tool collapsing)."""
-
-    from clio_agent.gact.tool_observer import _append_live_assistant_part
-
-    app, transcript, events = _collector_transcript_app()
-    for call_id in ("call_a", "call_b"):
-        _append_live_assistant_part(
-            app, "sess_x", _collector_call(call_id, tool_name="read_file", filepath="x.h5")
-        )
-        _append_live_assistant_part(
-            app, "sess_x", _collector_result(call_id, "bytes", 5.0, tool_name="read_file")
-        )
-
-    parts = transcript.snapshot()
-    assert [p.type for p in parts] == ["tool_call", "tool_result", "tool_call", "tool_result"]
-    assert [e for e, _ in events].count("message.part.updated") == 0
-
-
-def test_collector_tools_notify_the_live_observer() -> None:
-    """wait/check are REAL tool calls the model makes; they must reach the
+def test_wait_and_observe_tools_notify_the_live_observer() -> None:
+    """wait/observe are REAL tool calls the model makes; they must reach the
     observer (started + completed with the verbatim result) instead of being
     invisible mechanism the narration references (owner, 2026-08-05). The
     per-tool ``_observed_collector`` shim is generalized into the default-on
@@ -2778,32 +2500,32 @@ def test_collector_tools_notify_the_live_observer() -> None:
     _execution.notify_global_tool_observer = _capture
     try:
 
-        def fake_wait(task_ids: list[str], timeout_s: float) -> str:
+        def fake_wait(task_ids: list[str]) -> str:
             return '{"results": []}'
 
         wrapped = observed_tool_callable(fake_wait, "wait_agent_tasks")
-        out = wrapped(["task_1"], 30.0)
+        out = wrapped(["task_1"])
         assert out == '{"results": []}'
         assert [(c[0], c[2]) for c in calls] == [
             ("wait_agent_tasks", "started"),
             ("wait_agent_tasks", "completed"),
         ]
-        assert calls[0][1] == {"task_ids": ["task_1"], "timeout_s": 30.0}
+        assert calls[0][1] == {"task_ids": ["task_1"]}
         assert calls[1][4] == '{"results": []}'
 
         calls.clear()
 
-        def boom(task_ids: list[str] | None = None) -> str:
+        def boom(task_ids: list[str]) -> str:
             raise RuntimeError("registry gone")
 
-        wrapped_boom = observed_tool_callable(boom, "check_agent_tasks")
+        wrapped_boom = observed_tool_callable(boom, "observe_agent_tasks")
         with pytest.raises(RuntimeError):
-            wrapped_boom()
+            wrapped_boom(["task_1"])
         assert [(c[0], c[2], c[3]) for c in calls] == [
-            ("check_agent_tasks", "started", None),
-            ("check_agent_tasks", "completed", "registry gone"),
+            ("observe_agent_tasks", "started", None),
+            ("observe_agent_tasks", "completed", "registry gone"),
         ]
-        assert calls[0][1] == {"task_ids": None}
+        assert calls[0][1] == {"task_ids": ["task_1"]}
     finally:
         _execution.notify_global_tool_observer = original
 

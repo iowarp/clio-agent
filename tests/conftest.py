@@ -28,6 +28,59 @@ from tests._process_hygiene import (
     daemon_pid,
     release_this_process_client,
 )
+from tests._test_runtime_isolation import (
+    TestRuntime,
+    cleanup_test_runtime,
+    create_test_runtime,
+    resolve_test_runtime_parent,
+    stale_test_runtimes,
+)
+
+_TEST_RUNTIME: TestRuntime | None = None
+
+
+def _reap_stale_test_runtimes(parent: Path) -> None:
+    """Reap dead prior suites before removing their authenticated scratch roots."""
+    for stale in stale_test_runtimes(parent):
+        for state_dir in stale.glob("cte/*/clio-state"):
+            reap_private_daemon(state_dir)
+        cleanup_test_runtime(stale, parent)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config: pytest.Config) -> None:
+    """Redirect pytest, Python, children, and CTE away from the system temp directory."""
+    global _TEST_RUNTIME
+
+    if _TEST_RUNTIME is not None:
+        return
+    checkout = Path(__file__).resolve().parents[1]
+    parent = resolve_test_runtime_parent(checkout, os.environ)
+    _reap_stale_test_runtimes(parent)
+    runtime = create_test_runtime(checkout, os.environ)
+    tempfile.tempdir = str(runtime.temp_dir)
+    config.option.basetemp = str(runtime.pytest_dir)
+    _TEST_RUNTIME = runtime
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Remove the entire run root after session fixtures have released their children."""
+    del exitstatus
+    global _TEST_RUNTIME
+
+    runtime = _TEST_RUNTIME
+    if runtime is None:
+        return
+    try:
+        cleanup_test_runtime(runtime.root, runtime.parent)
+    except (OSError, RuntimeError) as exc:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        if reporter is not None:
+            reporter.write_sep("!", f"CLIO test runtime cleanup failed: {exc}")
+        return
+    _TEST_RUNTIME = None
 
 
 @pytest.fixture
@@ -84,7 +137,13 @@ def _clio_private_cte_daemon():
     if not cte_isolation_available():
         yield None
         return
-    isolation_root = Path(tempfile.mkdtemp(prefix=f"clio-agent-cte-{os.getpid()}-"))
+    runtime_dir = Path(os.environ["CLIO_TEST_RUNTIME_DIR"])
+    isolation_root = Path(
+        tempfile.mkdtemp(
+            prefix=f"clio-agent-cte-{os.getpid()}-",
+            dir=runtime_dir / "cte",
+        )
+    )
     isolation = isolate_cte_env(isolation_root, os.environ)
     try:
         # Eager spawn+attach: boot the private daemon deterministically at session
