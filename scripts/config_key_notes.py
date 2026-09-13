@@ -1111,6 +1111,19 @@ KEY_NOTES: dict[str, str] = {
         "Seconds between background re-probes of MCP namespaces that failed discovery; lower to "
         "recover faster, raise to cut retry noise."
     ),
+    "tools.mcp.elicitation.agent_audience.answer_mode": (
+        "Which answerer fulfills a routed agent-audience elicitation: 'inline' (default) runs "
+        "one bounded tool-less completion on the session's own model; 'turn' spawns the child "
+        "answer turn (deadlocks while the parent tool call holds the session's turn slot -- "
+        "retained for lifecycle parity only)."
+    ),
+    "tools.mcp.elicitation.agent_audience.default_unhinted": (
+        "Whether an UNHINTED form-mode elicitation defaults to the agent. fastmcp drops the "
+        "nested _meta on the InputRequiredResult round-trip, so an explicit "
+        "x-clio-agent/audience tag cannot survive MRTR; on = route by the negotiated "
+        "agent-driven-elicitation extension contract, off = strict explicit-tag routing "
+        "(unhinted questions go to the human)."
+    ),
     "tools.mcp.elicitation.agent_audience.denied_servers": (
         "CSV of declared MCP server names whose agent-audience elicitations always fall back to "
         "the human; the per-server opt-out for agent-driven elicitation (#1309)."

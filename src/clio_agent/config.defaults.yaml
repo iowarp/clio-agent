@@ -92,13 +92,11 @@ sandbox.enabled: true
 # explicit contract check, not a tuning knob.
 # lm.codex_transport:  # default unset; resolved in code
 
-# CLIO_LM_CONTEXT_WINDOW  (int)  <- src/clio_agent/config.py (apply_handshake)
-# Override the effective context window (tokens) used by clio. 0 = auto-derive
-# from the handshake-discovered served window (max_model_len / loaded_context_
-# length). Set to a positive integer to assert a larger window than the provider
-# serves — e.g. when vLLM's --max-model-len clips a model's native 131072 to
-# 32768. A warning is still logged when the served window is below the model's
-# native catalog maximum regardless of this override.
+# CLIO_LM_CONTEXT_WINDOW  (int)  <- src/clio_agent/config.py
+# Override the effective context window (tokens); 0 auto-derives from the
+# handshake-discovered served window, set >0 to assert a larger window than
+# the provider serves (e.g. when vLLM's --max-model-len clips the native
+# maximum).
 lm.context_window: 0
 
 # CLIO_LM_DEFER_TIKTOKEN  (bool)  <- src/clio_agent/lm/factory.py
@@ -1101,41 +1099,42 @@ tools.mcp.discovery_concurrency: 8
 # discovery; lower to recover faster, raise to cut retry noise.
 tools.mcp.discovery_heal_interval_s: 20.0
 
-# CLIO_MCP_ELICITATION_AGENT_AUDIENCE_ANSWER_MODE  (str)  <- src/clio_agent/gact/agent_elicitation.py
-# Which answerer fulfills a routed agent-audience elicitation: "inline"
-# (default) runs one bounded tool-less completion on the session's own model;
-# "turn" spawns the child answer turn (deadlocks while the parent tool call
-# holds the session's turn slot — retained for lifecycle parity only).
+# CLIO_MCP_ELICITATION_AGENT_AUDIENCE_ANSWER_MODE  (str)  <- src/clio_agent/gact/agent_elicitation_policy.py
+# Which answerer fulfills a routed agent-audience elicitation: 'inline'
+# (default) runs one bounded tool-less completion on the session's own
+# model; 'turn' spawns the child answer turn (deadlocks while the parent
+# tool call holds the session's turn slot -- retained for lifecycle parity
+# only).
 tools.mcp.elicitation.agent_audience.answer_mode: "inline"
 
-# CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DEFAULT_UNHINTED  (bool)  <- src/clio_agent/gact/agent_elicitation.py
+# CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DEFAULT_UNHINTED  (bool)  <- src/clio_agent/gact/agent_elicitation_policy.py
 # Whether an UNHINTED form-mode elicitation defaults to the agent. fastmcp
-# drops the nested _meta on the InputRequiredResult round-trip, so an explicit
-# x-clio-agent/audience tag cannot survive MRTR; on = route by the negotiated
-# agent-driven-elicitation extension contract, off = strict explicit-tag
-# routing (unhinted questions go to the human).
+# drops the nested _meta on the InputRequiredResult round-trip, so an
+# explicit x-clio-agent/audience tag cannot survive MRTR; on = route by the
+# negotiated agent-driven-elicitation extension contract, off = strict
+# explicit-tag routing (unhinted questions go to the human).
 tools.mcp.elicitation.agent_audience.default_unhinted: true
 
-# CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DENIED_SERVERS  (list)  <- src/clio_agent/gact/agent_elicitation.py
+# CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DENIED_SERVERS  (list)  <- src/clio_agent/gact/agent_elicitation_policy.py
 # CSV of declared MCP server names whose agent-audience elicitations always
 # fall back to the human; the per-server opt-out for agent-driven
 # elicitation (#1309).
 # tools.mcp.elicitation.agent_audience.denied_servers:  # computed at runtime: default
 
-# CLIO_MCP_ELICITATION_AGENT_AUDIENCE_ENABLED  (bool)  <- src/clio_agent/gact/agent_elicitation.py
+# CLIO_MCP_ELICITATION_AGENT_AUDIENCE_ENABLED  (bool)  <- src/clio_agent/gact/agent_elicitation_policy.py
 # Master switch for agent-driven elicitation: a form-mode elicitation
 # carrying the x-clio-agent/audience=agent hint may be answered by the
 # session's agent (tool-less, schema-validated); off routes every question
 # to the human as before.
 tools.mcp.elicitation.agent_audience.enabled: true
 
-# CLIO_MCP_ELICITATION_AGENT_AUDIENCE_MAX_DEPTH  (int)  <- src/clio_agent/gact/agent_elicitation.py
+# CLIO_MCP_ELICITATION_AGENT_AUDIENCE_MAX_DEPTH  (int)  <- src/clio_agent/gact/agent_elicitation_policy.py
 # Recursion bound for agent-answer turns: a nested agent-audience
 # elicitation beyond this depth falls back typed to the human; raise only
 # for deliberately layered server flows.
 tools.mcp.elicitation.agent_audience.max_depth: 1
 
-# CLIO_MCP_ELICITATION_AGENT_AUDIENCE_TIMEOUT_S  (float)  <- src/clio_agent/gact/agent_elicitation.py
+# CLIO_MCP_ELICITATION_AGENT_AUDIENCE_TIMEOUT_S  (float)  <- src/clio_agent/gact/agent_elicitation_policy.py
 # Seconds an agent-answer turn may take before the question falls back typed
 # to the human; bounds the 'agent is answering' window a pending question
 # can sit in.
@@ -1409,13 +1408,6 @@ debug.memprof_frames: 20
 # events, receive times); set to diagnose streaming issues.
 # debug.stream_audit_log:  # default unset; resolved in code
 
-# CLIO_PROVENANCE_KVNORM  (bool)  <- src/clio_agent/provenance_config.py
-# Stamp the vLLM response id (chatcmpl-*) onto each lm.call provenance record
-# as the join key between clio's ai_model_invocation stream and vllm-kvnorm's
-# kv_token_importance stream; only effective when Flowcept is a configured
-# provenance provider.
-provenance.kvnorm: false
-
 # CLIO_FLOWCEPT_CAMPAIGN_ID  (str)  <- src/clio_agent/gact/provenance/factory.py
 # Free-text campaign label attached to every Flowcept provenance record; set
 # to group runs under one campaign.
@@ -1532,6 +1524,13 @@ provenance.artifacts.provider: "native"
 # Max queued artifact-provenance events awaiting async dispatch; raise if a
 # slow provider causes drops under bursty activity.
 provenance.artifacts.queue_size: 4096
+
+# CLIO_PROVENANCE_KVNORM  (bool)  <- src/clio_agent/provenance_config.py
+# Stamp the vLLM response id (chatcmpl-*) onto each lm.call provenance
+# record as the join key between clio's ai_model_invocation stream and vllm-
+# kvnorm's kv_token_importance stream; only effective when Flowcept is a
+# configured provenance provider.
+provenance.kvnorm: false
 
 # CLIO_SEMANTIC_TRACE_DETAIL  (str)  <- src/clio_agent/gact/_params.py
 # Verbosity of recorded semantic-trace events; raise for deeper post-hoc
