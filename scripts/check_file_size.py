@@ -984,7 +984,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # thin sync delegate to AsyncMCPToolExecutor.merge_namespace_tools
     # (mcp_executor.py), the actual live-tool-table merge target for an
     # on-demand mount (gact/agents/builders.py).
-    "src/clio_agent/tools/execution.py": 1206,  # structured result parsing moved to tools/result_errors.py
+    "src/clio_agent/tools/execution.py": 1191,  # structured result parsing moved to tools/result_errors.py
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.
@@ -1064,7 +1064,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1285 (C1-S5, item 1): +5 for the two ``client.call_tool`` call sites
     # (unbounded + activity-backstop-bounded) routed through
     # ``call_tool_with_header_retry`` -- same owner module as above.
-    "src/clio_agent/tools/mcp_executor.py": 940,
+    "src/clio_agent/tools/mcp_executor.py": 934,
     # AF-FOLD (PR #1298): ratcheted DOWN 817 -> 816. Credential redaction moved to
     # the owner module tools/mcp_redaction.py, which more than paid for the
     # ``declared`` pre-expansion field this file gained.

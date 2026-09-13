@@ -167,6 +167,40 @@ def _tool_started(event: Event, payload: dict[str, Any], session: Any) -> _Proje
     return _Projection("tool.upserted", projected, entity_id)
 
 
+def _tool_progress(event: Event, payload: dict[str, Any], session: Any) -> _Projection:
+    """Project correlated MCP progress onto the live tool entity."""
+
+    del session
+    entity_id = str(payload.get("call_id") or "")
+    projected = {
+        "id": entity_id,
+        "session_id": event.session_id,
+        "name": str(payload.get("tool") or "Tool"),
+        "state": "running",
+        **(
+            {"output_stream": str(payload["output_stream"])}
+            if payload.get("output_stream") is not None
+            else {}
+        ),
+        **(
+            {"progress_message": str(payload["progress_message"])}
+            if payload.get("progress_message")
+            else {}
+        ),
+        **(
+            {"progress": float(payload["progress"])}
+            if isinstance(payload.get("progress"), int | float)
+            else {}
+        ),
+        **(
+            {"progress_total": float(payload["total"])}
+            if isinstance(payload.get("total"), int | float)
+            else {}
+        ),
+    }
+    return _Projection("tool.upserted", projected, entity_id)
+
+
 def _tool_completed(event: Event, payload: dict[str, Any], session: Any) -> _Projection:
     del session
     entity_id = str(payload.get("call_id") or "")
@@ -309,6 +343,7 @@ _EVENT_PROJECTORS: dict[str, _Projector] = {
     "message.part.completed": _message_block_completed,
     "message.completed": _message_completed,
     "tool.call.started": _tool_started,
+    "tool.call.progress": _tool_progress,
     "tool.call.completed": _tool_completed,
     "permission.requested": _permission_requested,
     "permission.resolved": _permission_resolved,

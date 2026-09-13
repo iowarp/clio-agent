@@ -223,6 +223,38 @@ class _LiveObservedResultAgent:
         return _Pred()
 
 
+class _LiveObservedProgressAgent:
+    def forward(self, question: str, session_id: str):
+        from clio_agent.tools.execution import current_tool_runtime, notify_global_tool_observer
+
+        assert current_tool_runtime().tool_observer is not None
+        args = {"command": "run checks"}
+        handle = notify_global_tool_observer("shell_bash", args, "started", None)
+        for stream, text in (("stdout", "collecting\n"), ("stderr", "warning\n")):
+            notify_global_tool_observer(
+                "shell_bash",
+                args,
+                "progress",
+                None,
+                {
+                    "observer_handle": handle,
+                    "progress": 1.0,
+                    "total": None,
+                    "message": json.dumps(
+                        {"type": "clio.terminal.chunk", "stream": stream, "text": text}
+                    ),
+                },
+            )
+        notify_global_tool_observer(
+            "shell_bash",
+            args,
+            "completed",
+            None,
+            {"stdout": "collecting\n", "stderr": "warning\n", "exit_code": 0},
+        )
+        return _Pred()
+
+
 class _LiveObservedWaitAgentTasksAgent:
     """Drives the observer directly for ``wait_agent_tasks`` (#... P5 wire
     semantics): the started tool_call Part must carry ``metadata.waited_tasks``
@@ -648,6 +680,34 @@ def test_live_observer_records_completed_tool_result_evidence(tmp_path: Path) ->
         # field at all (absent-when-None wire semantics), and never a metadata copy.
         assert "structured_content" not in tool_results[0]
         assert "structured_content" not in tool_results[0]["metadata"]
+
+
+def test_live_observer_correlates_and_accumulates_terminal_progress(tmp_path: Path) -> None:
+    """Typed terminal progress updates the same call before its completion event."""
+
+    from .conftest import complete_turn
+
+    app = build_app(
+        sessions_path=tmp_path / "s.json",
+        agent=_LiveObservedProgressAgent(),
+    )
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        complete_turn(client, sid, "run checks")
+        history = _settled_history(app, sid)
+
+    started = [event for event in history if event.type == "tool.call.started"]
+    progress = [event for event in history if event.type == "tool.call.progress"]
+    completed = [event for event in history if event.type == "tool.call.completed"]
+
+    assert len(started) == 1
+    assert len(progress) == 2
+    assert len(completed) == 1
+    call_id = started[0].payload["call_id"]
+    assert [event.payload["call_id"] for event in progress] == [call_id, call_id]
+    assert completed[0].payload["call_id"] == call_id
+    assert progress[0].payload["output_stream"] == "collecting\n"
+    assert progress[1].payload["output_stream"] == ("collecting\n\x1b[31mwarning\n\x1b[0m")
 
 
 def test_wait_agent_tasks_tool_call_stamps_waited_tasks_display_rows(tmp_path: Path) -> None:

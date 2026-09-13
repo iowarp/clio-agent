@@ -74,6 +74,16 @@ class FakeClient:
         return [SimpleNamespace(uri=uri, mimeType="text/plain", text="resource")]
 
 
+class ProgressClient(FakeClient):
+    """Fake client that emits one correlated progress notification."""
+
+    async def call_tool(self, name: str, args: dict[str, Any], *, progress_handler: Any = None):
+        self.started_call = True
+        assert progress_handler is not None
+        await progress_handler(4.0, 10.0, "working")
+        return SimpleNamespace(data={"name": name, "args": args})
+
+
 class FailingClient(FakeClient):
     """Fake client that raises configured errors from call_tool.
 
@@ -194,6 +204,46 @@ async def test_async_mcp_tool_executor_uses_explicit_async_lifecycle():
         assert not hasattr(executor, "_thread")
 
     assert fake_client.exited is True
+
+
+def test_sync_executor_forwards_progress_with_started_observer_handle() -> None:
+    """MCP progress keeps the exact observer identity across executor threads."""
+
+    fake_client = ProgressClient()
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _: fake_client,
+    )
+    observed: list[tuple[str | None, Any | None]] = []
+    handle = {"call_id": "call_stream", "session_id": "sess_stream"}
+
+    def observer(
+        _name: str,
+        _args: Mapping[str, Any],
+        phase: str | None,
+        _error: str | None,
+        result: Any | None = None,
+    ) -> Any | None:
+        observed.append((phase, result))
+        return handle if phase == "started" else None
+
+    try:
+        set_tool_runtime_fallback(ToolRuntimeHooks(tool_observer=observer))
+        executor.call_tool("fake_echo", {"value": "stream"})
+    finally:
+        set_tool_runtime_fallback(ToolRuntimeHooks())
+        executor.close()
+
+    phases = [phase for phase, _result in observed]
+    assert phases == ["started", "progress", "completed"]
+    progress = observed[1][1]
+    assert progress == {
+        "observer_handle": handle,
+        "progress": 4.0,
+        "total": 10.0,
+        "message": "working",
+    }
 
 
 @pytest.mark.asyncio
