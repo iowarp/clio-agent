@@ -12,11 +12,12 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.artifacts.ingest_edges import join_call_to_serving_child
 from clio_agent.gact.artifacts.observer_provenance import tool_provenance_metadata
+from clio_agent.gact.artifacts.provenance_presentation import with_provenance_blocks
 from clio_agent.gact.delegation import _expert_handoff_fields
 from clio_agent.gact.elicitation_correlation import close_invocation, open_invocation
 from clio_agent.gact.events import Event
@@ -793,6 +794,17 @@ def _make_tool_observer(app: "FastAPI"):
             result, presentation = completed_presentation(
                 name, args, result, structured_content, terminal_output, error=completion_error
             )
+            # Seam #966 S1+S5 (#971): TransformRecord before the SSE payload (reload==live).
+            from clio_agent.gact.artifacts.transforms import observe_tool_transform  # noqa: PLC0415
+
+            transform_record = (
+                observe_tool_transform(app, sid, name, dict(args), call_id, ok, result)
+                if not completed_after_cancel
+                else None
+            )
+            provenance = tool_provenance_metadata(transform_record)
+            # Never None here (completed_presentation returns dict); narrows the Optional cast.
+            presentation = cast(dict[str, Any], with_provenance_blocks(presentation, provenance))
             # Served payload = the tool-response atom's FACTS (ok/duration/cached/result/
             # error). No ui_summary/result_summary captions — clio transmits, it does not
             # author UI labels; the envelope ``summary`` below is the one short caption.
@@ -862,18 +874,6 @@ def _make_tool_observer(app: "FastAPI"):
             from clio_agent.gact.spotter_watcher import wake_on_parent_activity  # noqa: PLC0415
 
             wake_on_parent_activity(app, sid, tool_name=name, ok=ok, result=structured_content)
-            # Seam #966 S1+S5 (#971): mint generated versions + record the coarse
-            # TransformRecord (success AND failure — a failed write is provenance).
-            if not completed_after_cancel:
-                from clio_agent.gact.artifacts.transforms import (  # noqa: PLC0415
-                    observe_tool_transform,
-                )
-
-                transform_record = observe_tool_transform(
-                    app, sid, name, dict(args), call_id, ok, result
-                )
-            else:
-                transform_record = None
             _OBSERVER_CALL_T0.value = (
                 None  # finding [3]: clear the latch (idle thread -> DIRTY lease)
             )
@@ -918,7 +918,7 @@ def _make_tool_observer(app: "FastAPI"):
                             else {}
                         ),
                         **cancellation_metadata,
-                        **tool_provenance_metadata(transform_record),
+                        **provenance,
                     },
                 ),
             )
