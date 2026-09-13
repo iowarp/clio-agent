@@ -27,6 +27,10 @@ The two dependency releases must exist before the clio-agent release commit pins
 
 ## Feature-presence audit
 
+The scoped 2026-08-30 through 2026-09-13 reconciliation is recorded in
+`docs/release-v0.9.2-feature-reconciliation.md`. Its feature-convergence gate passes; live,
+version, packaging, and publication gates remain separate.
+
 - The clio-agent stack PRs 1314, 1329, 1330, 1335, 1331, 1338, and 1340 are all ancestors of
   def21cfb. PR 1332 was carried by PR 1335 and is also present.
 - The GACT stack PRs 389, 390, 391, 392, and 393 are all present at 91c6e232.
@@ -37,9 +41,8 @@ The two dependency releases must exist before the clio-agent release commit pins
   model-authored completion predicate. The bounded LLM judge remains the sole semantic completion
   decision; hard loop bounds remain enforcement. This must be rechecked by the focused goal tests
   on the release candidate.
-- feat/case13-live-verification-harvest is not in develop. It contains an unreviewed preservation
-  commit with both benchmark material and production changes. It is not silently part of v0.9.2;
-  it requires an independent decision and validation before inclusion.
+- feat/case13-live-verification-harvest predates the scoped two-week audit and is not a v0.9.2
+  release input. It is neither evidence for nor a blocker to this release gate.
 
 ## Required live gates
 
@@ -74,4 +77,3 @@ The following are real residuals but are tracked separately from the release mec
 semantic-event sibling reader's cross-chunk concurrent ordering exposure, richer live-probe
 exception/timestamp evidence, and the Windows CTE teardown crash 0xC0000409. Their release-blocking
 status must be decided explicitly before the final tag.
-
